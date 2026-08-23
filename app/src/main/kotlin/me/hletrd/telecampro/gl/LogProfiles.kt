@@ -9,10 +9,10 @@ import kotlin.math.pow
  * shader and the unit-tested reference cannot drift apart (same single-source pattern as
  * [SdrToHlgMapping]).
  *
- * Pipeline order per profile (mirrors the BT.2408 HLG chain documented in [Shaders]): BT.1886 2.4
- * decode of the display-referred SDR preview, linear 3×3 BT.709→target-gamut matrix, defensive
+ * Pipeline order per profile (mirrors [Shaders]): source-aware standard/HLG decode into the common
+ * display-light domain, linear 3×3 BT.709→target-gamut matrix, defensive
  * lower clamp ([GAMUT_LINEAR_FLOOR]) so both curves' log/linear segments stay defined, then the
- * profile's OETF. Like the removed O-Log2 option, these are display-referred SDR-source curves:
+ * profile's OETF. These remain display-referred curves:
  * the ISP has already tone-mapped the stream, so clipped highlights cannot be recovered and the
  * result is NOT scene-referred camera log — a grading convenience with standard-shaped curves.
  *

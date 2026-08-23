@@ -997,10 +997,8 @@ class GlPipeline {
                     peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
                     digitalGain = previewDigitalGain,
-                    // NO preview mirror on this device: the front stream arrives pre-mirrored
-                    // (FrontMirrorConvention), which IS the selfie-mirror view. The
-                    // encoder/analysis draws below apply the inversion instead to record the true
-                    // scene. All four draw roles derive from the ONE convention constant.
+                    // Profile-resolved selfie-preview role; encoder/analysis derive their matching
+                    // true-scene roles from the same FrontMirrorConvention.
                     mirrorX = FrontMirrorConvention.previewDrawMirrorX(frontRoute, frontStreamPreMirrored),
                     // Undo the WINDOW's rotation so the field stays upright when a large screen
                     // hands this portrait-designed activity a landscape window (Android 16+ ignores

@@ -8,8 +8,9 @@ import kotlin.math.sqrt
  * Android-free reference for the simplified display-referred SDR-to-HLG mapping in
  * ITU-R BT.2408-9 §5.1.3.4.
  *
- * The camera preview is already a display-referred SDR signal. The mapping therefore decodes that
- * signal with the BT.1886 2.4-power approximation, converts linear-light BT.709 to BT.2020, scales
+ * The accepted camera signal is already display-referred. Standard input is BT.1886-decoded and
+ * HLG10 input is inverse-HLG-decoded into the same display-light domain before this mapping converts
+ * linear-light BT.709 to BT.2020 and scales
  * normalized display light so SDR reference white lands at 75% HLG, applies the simplified inverse
  * HLG OOTF independently to each component, and finally applies the BT.2100 HLG OETF. This does not
  * recover highlights that were removed by the ISP's SDR tone mapping.

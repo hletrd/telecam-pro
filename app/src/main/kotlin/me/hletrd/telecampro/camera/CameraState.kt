@@ -46,7 +46,8 @@ enum class MediaDeleteScope { CAPTURE_FAMILY, FILE_ONLY }
  * behavior: encoder gets the curve, preview renders it flat, Gamma Display Assist skips the forward
  * curve on the monitor only, and the container is tagged BT.2020 full-range with an explicit
  * SDR-class transfer (see [me.hletrd.telecampro.video.hevcColorTagsFor]). Like the old option,
- * these are display-referred SDR-source curves — the ISP has already tone-mapped the stream, so
+ * these are display-referred curves — the accepted standard or HLG10 source is decoded first, and
+ * the ISP has already tone-mapped either stream, so
  * this is grading convenience, NOT scene-referred camera log with recovered highlight latitude.
  */
 enum class ColorTransfer(val isLog: Boolean = false) {
@@ -858,30 +859,6 @@ enum class LensChoice(val targetEquivMm: Float, val zoomPreset: Float) {
         }
     }
 }
-
-/**
- * HAL-native log video via the vendor key `com.oplus.log.video.mode` (int32) — the device's own
- * session key for O-Log recording. Unlike the GL-baked curve (which can only re-map the ISP's
- * display-referred SDR output), this makes the ISP emit a SCENE-REFERRED log stream from sensor
- * data, before the OEM display tone mapping.
- *
- * The key is advertised in this device's `availableRequestKeys` AND `availableSessionKeys` for the
- * tele, so setting it via Camera2 is standard vendor-tag usage. SUPERSEDED 2026-07-09: the key is
- * INERT for third-party Camera2 — with it set (session parameter + every request, both
- * TEMPLATE_PREVIEW and TEMPLATE_RECORD) the preview AND recorded clip stay display-referred 709;
- * the earlier 2026-07-06 "genuinely engages the log pipeline" reading was the BT.2020 full-range
- * container tag being misread as a washed look (see CameraEngine.setTransfer and CLAUDE.md). The
- * plumbing below stays DORMANT for a future CameraUnit-authenticated scene-referred stream.
- *
- * CAVEAT: the resulting log is not a drop-in for OPPO's published O-Log2 LUT — it appears
- * scene-referred WITHOUT baked white balance (warm ambient reads warm), which a colorist neutralizes
- * in grade. The user-facing GL O-Log2 option (`ColorTransfer.LOG`) that once offered a LUT-accurate
- * deliverable was removed 2026-07-22 in favor of the standard S-Log3/LogC3 profiles; a future
- * activation of this native path owns its own curve and container-tagging decisions (the de-log
- * assist shader [olog2Inv] remains O-Log2-shaped for it). This mode is for maximum latitude /
- * minimal in-camera processing. Deliberately NOT persisted: an experimental device mode must never
- * survive a relaunch.
- */
 
 /** Shutter drive mode. */
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }

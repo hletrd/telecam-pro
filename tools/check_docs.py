@@ -270,5 +270,77 @@ for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
     wrong = {c for c in claimed if c != min_sdk}
     check(not wrong, f"{rel} names no wrong minSdk", f"says {sorted(wrong)}, build says {min_sdk}")
 
+# ---- current camera/architecture ownership must not revive retired seams ------------------------
+architecture = read("docs/ARCHITECTURE.md")
+required_owners = (
+    "CameraStatus.kt", "DeviceProfile.kt", "FrontMirrorConvention.kt", "MotionInversion.kt",
+    "EncoderSizeLadder.kt", "CameraScreenPolicy.kt", "LocalizedStatus.kt",
+)
+check(
+    all(owner in architecture for owner in required_owners),
+    "architecture maps every current review-critical owner",
+    f"missing {[owner for owner in required_owners if owner not in architecture]}",
+)
+retired_claims = (
+    "Absorbed the former `FrontMirrorConvention.kt`",
+    "This is the ONLY model-string branch",
+    "also owns the dormant O-Log2 de-log assist",
+)
+check(
+    not any(claim in architecture for claim in retired_claims),
+    "architecture carries no retired ownership claim",
+)
+stage_text = architecture + read("docs/play-store-listing.md")
+check(
+    all(term in stage_text for term in (
+        "HLG10 Camera2 source", "display-referred", "8-bit", "Main10",
+    )),
+    "camera/store authority names every non-SDR pipeline stage",
+)
+production_comments = "\n".join(
+    read(rel) for rel in (
+        "app/src/main/kotlin/me/hletrd/telecampro/gl/Shaders.kt",
+        "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt",
+        "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+    )
+)
+check(
+    "only its INVERSE stays" not in production_comments
+    and "plumbing below stays DORMANT" not in production_comments
+    and "de-log O-Log2" not in production_comments,
+    "production comments carry no affirmative retired native-log plumbing",
+)
+
+# ---- Device Catalog is one classified matrix, not mutually inconsistent counts -----------------
+catalog_start = submit.index("## Device Catalog")
+catalog_end = submit.index("\n## ", catalog_start + 4)
+device_catalog = submit[catalog_start:catalog_end]
+for classification in (
+    "Physical capture", "Preview/layout-only", "Emulator", "Unvalidated equivalent",
+):
+    check(classification in device_catalog, f"Device Catalog includes {classification}")
+for model in (
+    "PMA110", "SM-S918N", "TB331FC", "TB336ZU", "21061110AG",
+    "sdk_gphone64_arm64", "CPH2841",
+):
+    check(model in device_catalog, f"Device Catalog classifies {model}")
+check(
+    "Synthetic camera" in device_catalog and "no optics" in device_catalog,
+    "emulator evidence disclaims optics/HAL validation",
+)
+check(
+    "Not measured" in device_catalog and "not capture-verified" in device_catalog,
+    "CPH2841 remains explicitly unvalidated",
+)
+check(
+    "do not attest current HEAD" in device_catalog or "does not attest current HEAD" in device_catalog,
+    "historical device evidence does not attest current HEAD",
+)
+check(
+    "Only the PMA110 is device-verified" not in device_catalog
+    and "Two devices are capture-verified" not in device_catalog,
+    "active Device Catalog carries no obsolete device count",
+)
+
 print(f"\n{CHECKS} checks, {len(FAILURES)} failed")
 sys.exit(1 if FAILURES else 0)

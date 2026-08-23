@@ -448,8 +448,8 @@ internal fun formatShutterSpeed(ns: Long): String {
 /** Transfer-function display label: what the footage IS, not just the enum name. */
 internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
-    // The log profiles are GL-baked standard curves applied to the display-referred SDR stream
-    // (the architecture inherited from the removed O-Log2 option). The native HAL log key is INERT
+    // The log profiles are GL-baked standard curves applied after source-aware decode of the
+    // accepted display-referred standard/HLG stream. The native HAL log key is INERT
     // for third-party Camera2 on this device (settled 2026-07-09) — see CLAUDE.md /
     // CameraEngine.setTransfer.
     ColorTransfer.SLOG3 -> "S-Log3"

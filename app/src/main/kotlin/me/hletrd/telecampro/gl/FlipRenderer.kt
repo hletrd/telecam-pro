@@ -179,11 +179,9 @@ class FlipRenderer {
         viewportX: Int = 0,
         viewportY: Int = 0,
         // Selfie mirror axis (route state, not an assist). WHICH draws set it derives from
-        // FrontMirrorConvention: this front HAL PRE-mirrors its stream, so the PREVIEW draw passes
-        // false (the delivered texture already IS the selfie-mirror view) and the ENCODER/ANALYSIS
-        // draws pass true to un-mirror — files and scopes keep the true scene per the framework
-        // convention. Do not hand a literal to any call site; consume the convention's derived
-        // values so a future re-diagnosis stays a one-constant edit.
+        // FrontMirrorConvention resolves profile truth: PMA110 passes its pre-mirrored preview as-is
+        // and un-mirrors encoder/analysis; GENERIC adds only the selfie preview mirror. Callers pass
+        // the derived role, never a literal.
         mirrorX: Boolean = false,
         // Per-draw content-rotation override, in place of the shared [rotationDeg] field.
         //

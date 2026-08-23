@@ -783,9 +783,9 @@ internal fun videoResolutionLabel(size: Size): String = videoResolutionLabelFor(
 // ---------------------------------------------------------------------------
 
 /**
- * HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR transfer-function selector. Only HEVC's Main10 encoder
- * profile carries the HLG/log tag — the capture source stays SDR/8-bit (see CLAUDE.md; not an
- * end-to-end 10-bit claim).
+ * HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR selector. Non-SDR HEVC requests an HLG10 Camera2 source
+ * and writes Main10 output. The source remains ISP-tone-mapped/display-referred and release EGL
+ * remains 8-bit, so this is neither recovered HDR nor an end-to-end 10-bit claim.
  */
 @Composable
 internal fun TransferSelector(

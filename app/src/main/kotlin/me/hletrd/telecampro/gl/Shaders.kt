@@ -11,13 +11,14 @@ package me.hletrd.telecampro.gl
  *    S-Log3/S-Gamut3.Cine, ARRI LogC3 EI800/AWG3) for the video encoder path,
  *  - focus peaking (edge highlight) and zebra (clipping stripes) for the preview path.
  *
- * NOTE: the camera preview signal is display-referred (already non-linear). HLG follows the
- * simplified ITU-R BT.2408-9 display-referred mapping: BT.1886 decode, linear BT.709→BT.2020,
+ * NOTE: the camera signal is display-referred (already non-linear). Accepted HLG10 input is
+ * inverse-HLG decoded; standard input is BT.1886 decoded. HLG then follows the simplified
+ * ITU-R BT.2408-9 display-referred mapping: linear BT.709→BT.2020,
  * reference-white/inverse-OOTF adjustment, then the BT.2100 HLG OETF. Each log profile follows the
  * same chain shape: BT.1886 decode, linear BT.709→target-gamut 3×3 matrix, defensive lower clamp,
- * then the profile's OETF — constants single-sourced from [LogProfiles] (the former user-facing
- * O-Log2 forward curve was removed 2026-07-22 with the option; only its INVERSE stays, dormant,
- * for the Gamma Display Assist of a future native scene-referred stream). No path can recover
+ * then the profile's OETF — constants single-sourced from [LogProfiles]. The former O-Log2 forward
+ * and inverse paths are both removed and shader code 3 stays vacant. Gamma Display Assist bypasses
+ * S-Log3/LogC3 on preview only while encoder output retains the curve. No path can recover
  * above-white highlights removed by the ISP's SDR tone mapping. Verify on device.
  */
 object Shaders {
@@ -34,8 +35,7 @@ object Shaders {
         }
     """
 
-    // Plain val (not const): the O-Log2 inverse boundary above is a DERIVED expression, which a
-    // compile-time constant string cannot interpolate. Behavior is identical.
+    // Plain val because the GLSL string interpolates Kotlin reference constants.
     val FRAGMENT = """
         #extension GL_OES_EGL_image_external : require
         precision highp float;
@@ -43,7 +43,7 @@ object Shaders {
         // 1 when the CAMERA stream is a 10-bit HLG-encoded buffer (HLG10 / DV session).
         uniform int uSourceHlg;
         uniform int uTransfer;   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
-                                 // 5 = LogC3/AWG3, 3 = de-log O-Log2→709 (DORMANT Gamma Disp. Assist)
+                                 // 5 = LogC3/AWG3, 3 = vacant (removed O-Log2 branch)
         uniform int uPeaking;    // 0/1  (preview only)
         uniform float uPeakThreshold; // edge magnitude above which peaking paints
         uniform vec3 uPeakColor;      // peaking highlight color
@@ -184,9 +184,7 @@ object Shaders {
             // (S-Log3 0.596, LogC3 0.571), which sits BELOW every zebra preset (0.70-1.00) and the
             // false-color near-clip bands — metered post-transfer, the overlays go dead the moment
             // a log profile is selected. Same domain rule the analysis readback already enforces
-            // (analysisReadbackTransfer: the meter must not move with the log toggle). Only the
-            // dormant native-log assist reassigns this: there the INPUT is the log stream and the
-            // de-logged monitor image is the display-referred rendition.
+            // (analysisReadbackTransfer: the meter must not move with the log toggle).
             vec3 meter = base;
 
             if (uTransfer == 1) {
