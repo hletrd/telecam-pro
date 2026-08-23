@@ -187,9 +187,9 @@ tasks.withType<Test>().configureEach {
 // offline against that dir — so its sha256 lives in gradle/verification-metadata.xml like any
 // other dependency. The pinned version must move in lockstep with Robolectric upgrades; on drift
 // the test task fails with the expected coordinate printed in the message.
-val robolectricJars: Configuration by configurations.creating
+val robolectricJars = configurations.create("robolectricJars")
 val robolectricJarsDir = layout.buildDirectory.dir("robolectric-jars")
-val fetchRobolectricJars by tasks.registering(Copy::class) {
+val fetchRobolectricJars = tasks.register<Copy>("fetchRobolectricJars") {
     from(robolectricJars)
     into(robolectricJarsDir)
 }

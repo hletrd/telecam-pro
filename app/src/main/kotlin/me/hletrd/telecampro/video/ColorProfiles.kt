@@ -16,8 +16,11 @@ import me.hletrd.telecampro.camera.VideoCodec
  *   - SDR: plain Rec.709/SDR — the GL pipeline applies no curve (camera frames are already SDR),
  *          for footage that plays correctly everywhere with zero grading.
  *
- *   The shipping Camera2/EGL path is deliberately SDR/8-bit because HLG10 + full-res JPEG/RAW crashes
- *   this HAL. Main10 here is the encoder/container profile, not an end-to-end 10-bit source claim.
+ *   For non-SDR video, the shipping Camera2 session first requests HLG10 and removes both still
+ *   readers because HLG10 + full-res JPEG/RAW crashes this HAL. Accepted HLG buffers are decoded
+ *   by the source-aware GL shader before the selected HLG/log curve is applied. The release EGL
+ *   render target remains 8-bit; Main10 here describes the encoded output profile, not recovered
+ *   highlight latitude, scene-referred log, or an end-to-end 10-bit processing claim.
  * - AVC: H.264 High profile, 8-bit SDR (BT.709). No HDR/log support; the engine forces SDR
  *        transfer when AVC is selected.
  */

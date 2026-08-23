@@ -1,15 +1,15 @@
 [versions]
-# AGP 9.3 supports API 37 and requires Gradle 9.5+; the wrapper is already 9.6.1.
+# AGP 9.3 supports API 37 and requires Gradle 9.5+; the wrapper is 9.7.1.
 # Ships the baseline profile so ART AOT-compiles the hot paths at install instead of
 # leaving the app on `status=verify` (device-measured: settings-open p99 61 ms -> 26 ms).
 profileinstaller = "1.4.1"
-agp = "9.3.0"
+agp = "9.3.1"
 # Matches the latest stable Compose compiler plugin; AGP 9 supplies Kotlin Android support.
 kotlin = "2.4.10"
 coreKtx = "1.19.0"
 activityCompose = "1.13.0"
 lifecycle = "2.11.0"
-composeBom = "2026.06.01"
+composeBom = "2026.08.00"
 coroutines = "1.11.0"
 # Latest STABLE (per the always-latest-stable policy). A stable 1.1.0 exists on Google Maven —
 # the earlier "no stable 1.1.0 exists" note that justified the 1.2.0-alpha01 pin was wrong.
