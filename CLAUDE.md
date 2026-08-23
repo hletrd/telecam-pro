@@ -995,8 +995,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **DNG publication does not hold the camera callback.** `DngCreator.writeImage` and the durable
   `COMPLETE` marker attempt remain synchronous while the RAW `Image` is valid; `saveDng` returns a
   frozen `PendingDngPublication` carrying whether that commit succeeded. Only `publishDng`
-  (including the durable gate, resolver retry backoff, and callbacks) runs on `ioExecutor`. Queue
-  rejection or marker exhaustion keeps the structurally complete pending row for launch recovery.
+  (including the durable gate, resolver retry backoff, and callbacks) leaves the camera thread.
+  RAW-only SINGLE tails use one process-wide finite owner (two daemon workers + two backlog slots)
+  shared across Engine generations; mixed-output and sequence drives preserve their processed-save
+  ordering on `ioExecutor`. Capacity overflow, facade shutdown, queue rejection, or marker exhaustion
+  settles the live capture family exactly once and keeps the structurally complete private row for
+  launch recovery; provider work never falls back inline and complete DNG bytes are never deleted for
+  lack of live publication capacity.
 - **A logged `CameraAccessException` may have NO app frame in it — read the stack before believing
   the app did something (2026-08-09).** Rapid Photo↔Video / front-rear churn logs
   `E CameraCaptureSession: CAMERA_ERROR (3) ... Function not implemented (-38)`, which reads like an
