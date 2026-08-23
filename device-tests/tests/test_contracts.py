@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import subprocess
 import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 DEVICE_TESTS = Path(__file__).resolve().parents[1]
@@ -14,11 +18,20 @@ sys.path.insert(0, str(DEVICE_TESTS))
 
 from dtest.adb import Adb, MEDIA_RELATIVE_PATH, UiTree  # noqa: E402
 from dtest import selectors  # noqa: E402
+from dtest import contracts  # noqa: E402
 from dtest.contracts import (  # noqa: E402
+    ContractError,
+    DebugSourceIdentity,
+    SourceManifestEntry,
+    current_debug_source_identity,
     harness_source_manifest,
+    inspect_apk_source_identity,
     inspect_apk_contract,
     parse_apk_contract,
+    parse_debug_source_manifest,
     production_capture_subdir,
+    render_debug_source_manifest,
+    require_apk_source_match,
     source_manifest_sha256,
 )
 from dtest.selectors import FULL_ACTION_SELECTORS, OPEN_SETTINGS, START_RECORDING  # noqa: E402
@@ -72,6 +85,35 @@ class ApkContractTest(unittest.TestCase):
 
 
 class SourceIdentityTest(unittest.TestCase):
+    @staticmethod
+    def identity(
+        *,
+        commit: str = "a" * 40,
+        dirty: bool = False,
+        payload: bytes = b"source\n",
+    ) -> DebugSourceIdentity:
+        entry = SourceManifestEntry(
+            "app/src/main/source.kt",
+            len(payload),
+            hashlib.sha256(payload).hexdigest(),
+        )
+        canonical = f"{entry.sha256}  {entry.bytes}  {entry.path}\n".encode()
+        return DebugSourceIdentity(
+            commit,
+            dirty,
+            hashlib.sha256(canonical).hexdigest(),
+            (entry,),
+        )
+
+    @staticmethod
+    def apk(path: Path, identity: DebugSourceIdentity | None, *, member: str | None = None) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            if identity is not None:
+                archive.writestr(
+                    member or contracts.DEBUG_PROVENANCE_MEMBER,
+                    render_debug_source_manifest(identity),
+                )
+
     def test_sorted_source_manifest_changes_after_one_byte_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -89,6 +131,86 @@ class SourceIdentityTest(unittest.TestCase):
 
             self.assertEqual([entry["path"] for entry in before], ["README.md", "dtest/runner.py"])
             self.assertNotEqual(before_digest, source_manifest_sha256(after))
+
+    def test_packaged_manifest_clean_match_and_attestation_identity(self) -> None:
+        identity = self.identity()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apk = Path(temp_dir) / "debug.apk"
+            self.apk(apk, identity)
+            self.assertEqual(parse_debug_source_manifest(render_debug_source_manifest(identity)), identity)
+            self.assertEqual(inspect_apk_source_identity(apk), identity)
+            with patch.object(contracts, "current_debug_source_identity", return_value=identity):
+                proven = require_apk_source_match(apk, Path(temp_dir))
+            self.assertEqual(proven.identity, identity.identity)
+            self.assertIn(identity.content_sha256, proven.as_attestation()["identity"])
+
+    def test_stale_commit_and_dirty_content_mismatch_fail_closed(self) -> None:
+        packaged = self.identity(commit="a" * 40)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apk = Path(temp_dir) / "debug.apk"
+            self.apk(apk, packaged)
+            stale_current = self.identity(commit="b" * 40)
+            with patch.object(
+                contracts, "current_debug_source_identity", return_value=stale_current
+            ):
+                with self.assertRaisesRegex(ContractError, "stale/mismatched.*commit"):
+                    require_apk_source_match(apk, Path(temp_dir))
+
+            dirty_packaged = self.identity(dirty=True, payload=b"dirty A\n")
+            self.apk(apk, dirty_packaged)
+            dirty_current = self.identity(dirty=True, payload=b"dirty B\n")
+            with patch.object(
+                contracts, "current_debug_source_identity", return_value=dirty_current
+            ):
+                with self.assertRaisesRegex(ContractError, "stale/mismatched.*content"):
+                    require_apk_source_match(apk, Path(temp_dir))
+
+    def test_missing_duplicate_and_malformed_provenance_fail_closed(self) -> None:
+        identity = self.identity()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apk = Path(temp_dir) / "debug.apk"
+            self.apk(apk, None)
+            with self.assertRaisesRegex(ContractError, "exactly one"):
+                inspect_apk_source_identity(apk)
+
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(contracts.DEBUG_PROVENANCE_MEMBER, b"schema=999\n")
+            with self.assertRaisesRegex(ContractError, "schema/header"):
+                inspect_apk_source_identity(apk)
+
+            with zipfile.ZipFile(apk, "w") as archive:
+                manifest = render_debug_source_manifest(identity)
+                archive.writestr(contracts.DEBUG_PROVENANCE_MEMBER, manifest)
+                archive.writestr(
+                    contracts.DEBUG_PROVENANCE_NAMESPACE + "stale.manifest", manifest
+                )
+            with self.assertRaisesRegex(ContractError, "exactly one"):
+                inspect_apk_source_identity(apk)
+
+    def test_current_manifest_distinguishes_clean_and_exact_dirty_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "src/source.kt"
+            source.parent.mkdir()
+            source.write_text("clean\n", encoding="utf-8")
+            build = root / "build.gradle.kts"
+            build.write_text("plugins {}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            clean = current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+            self.assertFalse(clean.dirty)
+            source.write_text("dirty one\n", encoding="utf-8")
+            dirty_one = current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+            source.write_text("dirty two\n", encoding="utf-8")
+            dirty_two = current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+            self.assertTrue(dirty_one.dirty)
+            self.assertTrue(dirty_two.dirty)
+            self.assertNotEqual(clean.content_sha256, dirty_one.content_sha256)
+            self.assertNotEqual(dirty_one.content_sha256, dirty_two.content_sha256)
 
 
 class ProductionContractTest(unittest.TestCase):

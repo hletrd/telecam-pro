@@ -32,6 +32,7 @@ from dtest.contracts import (  # noqa: E402
     harness_source_manifest,
     inspect_apk_contract,
     production_capture_subdir,
+    require_apk_source_match,
     source_manifest_sha256,
 )
 from dtest.framework import TIERS, run  # noqa: E402
@@ -65,6 +66,18 @@ def installed_apk_sha256(sha256sum_output: str) -> str | None:
     if not fields or re.fullmatch(r"[0-9a-fA-F]{64}", fields[0]) is None:
         return None
     return fields[0].lower()
+
+
+def require_installed_apk_match(expected_sha256: str, installed_output: str) -> str:
+    """Return the installed digest only when it proves byte identity with the host APK."""
+    actual = installed_apk_sha256(installed_output)
+    if actual is None:
+        raise ContractError("installed base.apk SHA-256 output is missing or malformed")
+    if actual != expected_sha256:
+        raise ContractError(
+            f"stale/mismatched install: host={expected_sha256}, installed={actual}"
+        )
+    return actual
 
 
 def utc_now() -> str:
@@ -123,6 +136,10 @@ def restoration_errors(
             "foreground component was not restored to MainActivity: "
             f"{after.get('foreground_component')!r}"
         )
+    if after.get("display") != before.get("display"):
+        errors.append(
+            f"display changed from {before.get('display')!r} to {after.get('display')!r}"
+        )
     before_settings = before.get("settings")
     after_settings = after.get("settings")
     if not isinstance(before_settings, dict) or not isinstance(after_settings, dict):
@@ -169,6 +186,7 @@ def append_attestation_summary(
     *,
     final_exit_code: int,
     errors: list[str],
+    source_identity: str,
 ) -> None:
     report = report_dir / "report.md"
     if not report.is_file():
@@ -180,6 +198,7 @@ def append_attestation_summary(
         "",
         f"- restoration: **{status}**",
         f"- final CLI exit code: `{final_exit_code}`",
+        f"- APK source identity: `{source_identity}`",
         f"- metadata: `{ATTESTATION_NAME}` (`{ATTESTATION_SHA_NAME}`)",
     ]
     if errors:
@@ -225,6 +244,7 @@ def main() -> int:
     try:
         expected_sha = sha256_file(expected_apk)
         apk_contract = inspect_apk_contract(expected_apk)
+        packaged_source = require_apk_source_match(expected_apk, REPO_ROOT)
         if sha256_file(expected_apk) != expected_sha:
             raise ContractError("APK changed while its manifest contract was being inspected")
         production_subdir = production_capture_subdir(REPO_ROOT)
@@ -285,23 +305,17 @@ def main() -> int:
               "(adb install -r app/build/outputs/apk/debug/app-debug.apk)", file=sys.stderr)
         return 2
 
-    sha_output = adb.shell(f"sha256sum {shlex.quote(installed_apk)}")
-    actual_sha = installed_apk_sha256(sha_output)
-    if actual_sha is None:
-        print(
-            f"could not hash the installed APK on-device: {sha_output[:200] or '<empty>'!r}",
-            file=sys.stderr,
+    try:
+        actual_sha = require_installed_apk_match(
+            expected_sha,
+            adb.shell(f"sha256sum {shlex.quote(installed_apk)}"),
         )
-        return 2
-    if actual_sha != expected_sha:
-        print(
-            f"refusing stale/mismatched install: host={expected_sha}, installed={actual_sha or '?'}",
-            file=sys.stderr,
-        )
+    except ContractError as error:
+        print(f"refusing {error}", file=sys.stderr)
         return 2
 
     try:
-        source = git_identity()
+        workspace = git_identity()
         before_state = device_state(adb)
         build_fingerprint = adb.shell("getprop ro.build.fingerprint")
     except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
@@ -337,9 +351,10 @@ def main() -> int:
         report_dir,
         final_exit_code=final_exit_code,
         errors=restore_errors,
+        source_identity=packaged_source.identity,
     )
     document: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "started_at_utc": started_at,
         "completed_at_utc": utc_now(),
         "invocation": {
@@ -354,7 +369,8 @@ def main() -> int:
                 "media_writes": args.allow_media_writes,
             },
         },
-        "source": source,
+        "source": packaged_source.as_attestation(),
+        "workspace": workspace,
         "harness": {
             "source_manifest": harness_sources,
             "source_manifest_sha256": source_manifest_sha256(harness_sources),
@@ -394,6 +410,7 @@ def main() -> int:
         return 2
     print(f"Attestation: {attestation}")
     print(f"Attestation SHA-256: {sidecar}")
+    print(f"APK source identity: {packaged_source.identity}")
     if restore_errors:
         print("Restoration attestation failed: " + "; ".join(restore_errors), file=sys.stderr)
     return final_exit_code

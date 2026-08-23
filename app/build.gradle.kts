@@ -1,12 +1,17 @@
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.provider.ListProperty
+import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
 import org.gradle.work.DisableCachingByDefault
@@ -184,6 +189,128 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
     }
 }
 
+@DisableCachingByDefault(because = "Debug provenance must capture the checkout contents every invocation")
+abstract class GenerateDebugSourceProvenanceTask : DefaultTask() {
+    @get:Internal
+    abstract val repositoryDirectory: DirectoryProperty
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val packagedSourceInputs: ConfigurableFileCollection
+
+    @get:Input
+    abstract val sourceScopes: ListProperty<String>
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        val root = repositoryDirectory.get().asFile.canonicalFile
+        val outputRoot = outputDirectory.get().asFile
+        val namespace = outputRoot.resolve("telecam-debug-provenance")
+        val output = namespace.resolve("source.manifest")
+
+        fun gitBytes(vararg arguments: String): ByteArray {
+            val command = listOf("git", *arguments)
+            val process = ProcessBuilder(command)
+                .directory(root)
+                .redirectErrorStream(true)
+                .start()
+            val bytes = process.inputStream.use { it.readBytes() }
+            if (process.waitFor() != 0) {
+                throw GradleException(
+                    "${command.joinToString(" ")} failed: " +
+                        bytes.toString(Charsets.UTF_8).trim(),
+                )
+            }
+            return bytes
+        }
+
+        fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+        fun scopedGitBytes(vararg arguments: String): ByteArray = gitBytes(
+            *arguments,
+            "--",
+            *sourceScopes.get().toTypedArray(),
+        )
+
+        val head = gitBytes("rev-parse", "HEAD").toString(Charsets.US_ASCII).trim()
+        if (!head.matches(Regex("[0-9a-f]{40}"))) {
+            throw GradleException("Git debug-source identity is not canonical: $head")
+        }
+        val changed = scopedGitBytes(
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        val ignored = scopedGitBytes(
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        )
+
+        val entries = packagedSourceInputs.files
+            .map { it.canonicalFile }
+            .filter { it.isFile }
+            .map { file ->
+                val relative = file.relativeTo(root).invariantSeparatorsPath
+                if (relative.startsWith("../") || '\n' in relative || '\r' in relative) {
+                    throw GradleException("Unsafe debug source input path: $relative")
+                }
+                val bytes = file.readBytes()
+                Triple(relative, bytes.size.toLong(), sha256(bytes))
+            }
+            .sortedBy { it.first }
+        if (entries.isEmpty()) {
+            throw GradleException("No debug source inputs were found")
+        }
+        val duplicatePaths = entries.groupBy { it.first }.filterValues { it.size != 1 }.keys
+        if (duplicatePaths.isNotEmpty()) {
+            throw GradleException("Duplicate debug source inputs: $duplicatePaths")
+        }
+        val canonicalEntries = entries.joinToString("") { (path, size, digest) ->
+            "$digest  $size  $path\n"
+        }
+        val contentSha256 = sha256(canonicalEntries.toByteArray(Charsets.UTF_8))
+        val dirty = changed.isNotEmpty() || ignored.isNotEmpty()
+
+        if (outputRoot.exists()) {
+            val members = outputRoot.walkTopDown()
+                .filter { it != outputRoot }
+                .map { it.relativeTo(outputRoot).invariantSeparatorsPath }
+                .toSet()
+            val expected = setOf(
+                "telecam-debug-provenance",
+                "telecam-debug-provenance/source.manifest",
+            )
+            if ((members - expected).isNotEmpty()) {
+                throw GradleException(
+                    "Generated debug provenance namespace contains unexpected members: $members",
+                )
+            }
+        }
+        namespace.mkdirs()
+        output.writeText(
+            buildString {
+                append("schema=1\n")
+                append("commit=$head\n")
+                append("dirty=$dirty\n")
+                append("content_sha256=$contentSha256\n")
+                append("file_count=${entries.size}\n")
+                append(canonicalEntries)
+            },
+            Charsets.UTF_8,
+        )
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -233,6 +360,42 @@ val verifyCleanReleaseGit = tasks.register<VerifyCleanReleaseGitTask>("verifyCle
     requireImmutableSnapshot.set(true)
     outputDirectory.set(releaseSourceProvenanceDir)
     outputs.upToDateWhen { false }
+}
+
+// The external device harness exercises an already-built debug APK. Package an exact content
+// identity for every checked-in or local source/configuration input that can change those APK
+// bytes, so the harness can refuse a stale artifact before touching a device. Tests and device
+// harness files are deliberately outside this identity: they do not enter the application APK and
+// have their own attested source manifest.
+val debugSourceScopes = listOf(
+    "app/src/main",
+    "app/src/debug",
+    "app/build.gradle.kts",
+    "app/compose_stability.conf",
+    "build.gradle.kts",
+    "settings.gradle.kts",
+    "gradle.properties",
+    "gradle/libs.versions.toml",
+    "gradle/wrapper/gradle-wrapper.properties",
+)
+val debugSourceProvenanceDir = layout.buildDirectory.dir("generated/debug-source-provenance")
+val generateDebugSourceProvenance =
+    tasks.register<GenerateDebugSourceProvenanceTask>("generateDebugSourceProvenance") {
+        repositoryDirectory.set(rootProject.layout.projectDirectory)
+        sourceScopes.set(debugSourceScopes)
+        packagedSourceInputs.from(
+            fileTree(rootProject.file("app/src/main")),
+            fileTree(rootProject.file("app/src/debug")),
+            debugSourceScopes.drop(2).map(rootProject::file),
+        )
+        outputDirectory.set(debugSourceProvenanceDir)
+        outputs.upToDateWhen { false }
+    }
+
+// Establish the source snapshot before any debug compile/resource task can consume it. The
+// generated-assets edge below guarantees packaging; this pre-build edge guarantees ordering.
+tasks.matching { it.name == "preDebugBuild" }.configureEach {
+    dependsOn(generateDebugSourceProvenance)
 }
 
 // Executable tools-suite seam. It exists only when the test supplies a disposable repository;
@@ -382,6 +545,12 @@ android {
 }
 
 androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            generateDebugSourceProvenance,
+            GenerateDebugSourceProvenanceTask::outputDirectory,
+        )
+    }
     onVariants(selector().withBuildType("release")) { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(
             verifyCleanReleaseGit,

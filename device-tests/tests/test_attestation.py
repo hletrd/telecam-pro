@@ -16,9 +16,36 @@ sys.path.insert(0, str(DEVICE_TESTS))
 
 import run as runner  # noqa: E402
 from dtest.adb import MAIN_ACTIVITY, DisplayMetrics  # noqa: E402
+from dtest.contracts import ContractError  # noqa: E402
 
 
 class RunAttestationTest(unittest.TestCase):
+    def test_restoration_attests_display_geometry(self) -> None:
+        before = {
+            "foreground_component": MAIN_ACTIVITY,
+            "display": {"width_px": 1440, "height_px": 3168, "density_dpi": 560},
+            "settings": {},
+            "locale": {},
+        }
+        after = {
+            **before,
+            "display": {"width_px": 640, "height_px": 600, "density_dpi": 320},
+        }
+        self.assertTrue(
+            any("display changed" in error for error in runner.restoration_errors(before, after))
+        )
+
+    def test_host_and_installed_apk_must_match_exactly(self) -> None:
+        expected = "a" * 64
+        self.assertEqual(
+            runner.require_installed_apk_match(expected, f"{expected.upper()}  /base.apk\n"),
+            expected,
+        )
+        with self.assertRaisesRegex(ContractError, "stale/mismatched install"):
+            runner.require_installed_apk_match(expected, f"{'b' * 64}  /base.apk\n")
+        with self.assertRaisesRegex(ContractError, "missing or malformed"):
+            runner.require_installed_apk_match(expected, "not-a-digest /base.apk\n")
+
     def test_git_identity_records_head_and_exact_dirty_rows(self) -> None:
         responses = [
             SimpleNamespace(stdout="0123456789abcdef\n"),
@@ -165,12 +192,14 @@ class RunAttestationTest(unittest.TestCase):
                 report_dir,
                 final_exit_code=2,
                 errors=["font_scale changed from '0.8' to '1.0'"],
+                source_identity="git:" + "a" * 40 + "/content-sha256:" + "b" * 64 + "/clean",
             )
 
             rendered = report.read_text(encoding="utf-8")
             self.assertIn("restoration: **FAIL**", rendered)
             self.assertIn("final CLI exit code: `2`", rendered)
             self.assertIn(runner.ATTESTATION_NAME, rendered)
+            self.assertIn("APK source identity", rendered)
             self.assertIn("font_scale changed", rendered)
 
 
