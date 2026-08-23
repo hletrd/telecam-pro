@@ -86,6 +86,7 @@ class CameraEngine internal constructor(
     private val retainedStillDeletionOwner = RetainedStillDeletionOwner<android.net.Uri>(
         maxTombstones = MAX_RETAINED_STILL_DELETE_TOMBSTONES,
         discard = { uri -> MediaStoreWriter.discardPendingOutput(context, uri) },
+        persistDeletionIntent = { family -> MediaStoreWriter.markFamilyDeleted(context, family) },
     )
     // Launch MediaStore reconciliation may perform several provider scans/probes and bounded
     // backoffs. Keep it independent from camera setup so recovery can never delay first preview.
@@ -3668,6 +3669,10 @@ class CameraEngine internal constructor(
 
     /** Returns true only when this press was admitted to a real still target. */
     fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
+        if (!retainedStillDeletionOwner.canAdmitCapture()) {
+            onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+            return false
+        }
         // Same gate startRecording has: during a session-key reopen (cameraReady=false) the
         // controller guards make a capture attempt safe but silent — give the user the status
         // instead of a shutter press that does nothing.
@@ -4023,7 +4028,7 @@ class CameraEngine internal constructor(
                 route = optics.route,
             )
         } ?: 0
-        return ShotSpec(
+        val spec = ShotSpec(
             controls = shotControls,
             caps = optics.caps,
             selection = optics.selection,
@@ -4043,7 +4048,12 @@ class CameraEngine internal constructor(
             takenAtMs = requestedAtMs,
             hiRes = hiRes,
             frontFacing = optics.frontFacing,
+            route = optics.route,
         )
+        // Register before Camera2 sees the request, so review deletion can synchronously persist
+        // the whole family without a MediaStore query even while output siblings are still late.
+        retainedStillDeletionOwner.registerCaptureFamily(captureId, spec.familyKey)
+        return spec
     }
 
     /**

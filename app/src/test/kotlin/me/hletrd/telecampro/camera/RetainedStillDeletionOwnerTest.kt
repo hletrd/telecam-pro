@@ -4,6 +4,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.OrphanDisposition
+import me.hletrd.telecampro.storage.PendingJournalState
+import me.hletrd.telecampro.storage.PendingProbe
+import me.hletrd.telecampro.storage.orphanDisposition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -23,6 +29,15 @@ class RetainedStillDeletionOwnerTest {
         RetainedStillDeletionOwner<String>(
             maxTombstones = 1,
             maxDiscardAttempts = 0,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `unresolved discard capacity must be positive`() {
+        RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxUnresolvedDiscards = 0,
             discard = { PendingOutputDiscardResult.DELETED },
         )
     }
@@ -254,5 +269,65 @@ class RetainedStillDeletionOwnerTest {
         assertEquals(1, owner.unresolvedDiscardCount())
         assertEquals(0, owner.retryUnresolvedDiscards())
         assertEquals(1, discardCalls)
+    }
+
+    @Test
+    fun `more than 32 persistent failures stay bounded and close capture admission`() {
+        val durableFamilies = linkedSetOf<CaptureFamilyKey>()
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 32,
+            maxUnresolvedDiscards = 32,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+            persistDeletionIntent = { durableFamilies.add(it) },
+        )
+
+        repeat(40) { index ->
+            val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_000L + index, index.toLong())
+            owner.registerCaptureFamily(index, family)
+            owner.markCaptureDeleted(index)
+            assertEquals(
+                RetainedStillDisposition.DISCARD_RETRY_PENDING,
+                owner.discardDeleted("content://image/$index", index),
+            )
+        }
+
+        assertEquals(40, durableFamilies.size)
+        assertEquals(32, owner.unresolvedDiscardCount())
+        assertEquals(32, owner.tombstoneCount())
+        assertFalse(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `release retry then late failure remains deleted for replacement recovery`() {
+        val durableFamilies = linkedSetOf<CaptureFamilyKey>()
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_123L, 91L)
+        val oldEngineOwner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+            persistDeletionIntent = { durableFamilies.add(it) },
+        )
+        oldEngineOwner.registerCaptureFamily(91, family)
+        oldEngineOwner.markCaptureDeleted(91)
+
+        // Engine release performs its final retry before the accepted save tail arrives.
+        assertEquals(0, oldEngineOwner.retryUnresolvedDiscards())
+        assertEquals(
+            RetainedStillDisposition.DISCARD_RETRY_PENDING,
+            oldEngineOwner.discardDeleted("content://image/late-after-release", 91),
+        )
+
+        // A replacement Engine/launch sees the family journal, so even COMPLETE valid bytes are
+        // deleted rather than adopted when the URI-level DISCARD and provider delete both failed.
+        assertTrue(family in durableFamilies)
+        assertEquals(
+            OrphanDisposition.DELETE,
+            orphanDisposition(
+                PendingJournalState.COMPLETE,
+                PendingProbe.VALID,
+                familyDeleted = family in durableFamilies,
+            ),
+        )
     }
 }

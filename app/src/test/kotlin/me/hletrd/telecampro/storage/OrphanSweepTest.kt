@@ -82,6 +82,19 @@ class OrphanSweepTest {
     }
 
     @Test
+    fun `deleted family journal overrides a complete valid row after replacement recovery`() {
+        PendingJournalState.entries.forEach { journal ->
+            PendingProbe.entries.forEach { probe ->
+                assertEquals(
+                    "$journal/$probe",
+                    OrphanDisposition.DELETE,
+                    orphanDisposition(journal, probe, familyDeleted = true),
+                )
+            }
+        }
+    }
+
+    @Test
     fun `valid legacy or registered rows are adopted`() {
         assertEquals(
             OrphanDisposition.ADOPT,

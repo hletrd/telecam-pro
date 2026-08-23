@@ -13,6 +13,7 @@ import java.io.File
 import java.io.FileOutputStream
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraCaps
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusMessage
@@ -27,6 +28,7 @@ import me.hletrd.telecampro.camera.centerCropBox
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 
 /** Immutable request-time state consumed by every output belonging to one shutter press. */
 internal data class ShotSpec(
@@ -56,6 +58,8 @@ internal data class ShotSpec(
     // Snapshotted at dispatch like [teleconverter]: a facing flip mid-save must not relabel this
     // shot's EXIF lens model or rotation. Front stills save UNMIRRORED (only the preview mirrors).
     val frontFacing: Boolean = false,
+    // First-class route identity: EXTERNAL must never inherit the host handset's EXIF identity.
+    val route: CameraRoute = if (frontFacing) CameraRoute.FRONT else CameraRoute.BACK,
 )
 
 /**
@@ -92,6 +96,7 @@ internal data class ExifShot(
 internal data class PendingDngPublication(
     val uri: android.net.Uri,
     val captureId: Int,
+    val familyKey: CaptureFamilyKey,
     val completionMarkerDurable: Boolean,
 )
 
@@ -239,7 +244,7 @@ internal class StillCapturePipeline(
             output = u,
             captureId = spec.captureId,
             markerDurable = completion.durable,
-            effects = publicationEffects(),
+            effects = publicationEffects(spec.familyKey),
         )
     }
 
@@ -270,7 +275,7 @@ internal class StillCapturePipeline(
             output = u,
             captureId = spec.captureId,
             markerDurable = completion.durable,
-            effects = publicationEffects(),
+            effects = publicationEffects(spec.familyKey),
         )
     }
 
@@ -304,7 +309,7 @@ internal class StillCapturePipeline(
             output = u,
             captureId = spec.captureId,
             markerDurable = completion.durable,
-            effects = publicationEffects(),
+            effects = publicationEffects(spec.familyKey),
         )
     }
 
@@ -336,6 +341,7 @@ internal class StillCapturePipeline(
             return PendingDngPublication(
                 uri = uri,
                 captureId = spec.captureId,
+                familyKey = spec.familyKey,
                 completionMarkerDurable = completion.durable,
             )
         } catch (t: Throwable) {
@@ -353,13 +359,16 @@ internal class StillCapturePipeline(
             output = pending.uri,
             captureId = pending.captureId,
             markerDurable = pending.completionMarkerDurable,
-            effects = publicationEffects(emitSaved = emitRawSaved),
+            effects = publicationEffects(pending.familyKey, emitSaved = emitRawSaved),
         )
     }
 
     private fun publicationEffects(
+        familyKey: CaptureFamilyKey,
         emitSaved: (android.net.Uri, Int) -> Unit = emitMediaSaved,
     ) = StillPublicationEffects(
+        familyDeleted = { MediaStoreWriter.isFamilyDeleted(context, familyKey) },
+        discardDeletedFamily = { output -> MediaStoreWriter.discardPendingOutput(context, output) },
         publishOwned = { output, captureId ->
             publishStillOutput(output, captureId) { MediaStoreWriter.publish(context, output) }
         },
@@ -429,6 +438,10 @@ internal class StillCapturePipeline(
 
 /** Injectable still-caller effects for the durable-before-publication contract. */
 internal data class StillPublicationEffects<T>(
+    val familyDeleted: () -> Boolean = { false },
+    val discardDeletedFamily: (T) -> PendingOutputDiscardResult = {
+        PendingOutputDiscardResult.UNRESOLVED
+    },
     val publishOwned: (T, Int) -> DeletedStillPublication,
     val finishPublished: (T, Int) -> Unit,
     val emitSaved: (T, Int) -> Unit,
@@ -456,6 +469,12 @@ internal fun <T> completeStillPublication(
     markerDurable: Boolean,
     effects: StillPublicationEffects<T>,
 ): StillOutputPublication {
+    if (effects.familyDeleted()) {
+        // The family marker itself is the durable launch veto. Exact-URI DISCARD/delete remains a
+        // best-effort cleanup; even its double-failure must never fall through to publication.
+        effects.discardDeletedFamily(output)
+        return StillOutputPublication.DISCARDED_DELETED_CAPTURE
+    }
     if (!markerDurable) {
         effects.emitStatus(retainedSaveStatus(kind, markerDurable = false))
         return effects.emitRetained(output, captureId).toStillOutputPublication(

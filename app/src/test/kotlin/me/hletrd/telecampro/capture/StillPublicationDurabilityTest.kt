@@ -207,4 +207,39 @@ class StillPublicationDurabilityTest {
             assertEquals(expected, result)
         }
     }
+
+    @Test
+    fun `durable family veto wins when exact discard and provider delete both fail`() {
+        val events = mutableListOf<String>()
+        val result = completeStillPublication(
+            kind = "JPEG",
+            output = "late-jpeg-row",
+            captureId = 90,
+            markerDurable = true,
+            effects = StillPublicationEffects(
+                familyDeleted = {
+                    events += "family-veto"
+                    true
+                },
+                discardDeletedFamily = { output ->
+                    events += "discard:$output"
+                    me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
+                },
+                publishOwned = { _, _ ->
+                    events += "publish"
+                    DeletedStillPublication.LIVE_PUBLISHED
+                },
+                finishPublished = { _, _ -> events += "finish" },
+                emitSaved = { _, _ -> events += "saved" },
+                emitRetained = { _, _ ->
+                    events += "retained"
+                    RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                },
+                emitStatus = { events += "status" },
+            ),
+        )
+
+        assertEquals(StillOutputPublication.DISCARDED_DELETED_CAPTURE, result)
+        assertEquals(listOf("family-veto", "discard:late-jpeg-row"), events)
+    }
 }

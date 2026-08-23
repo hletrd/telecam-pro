@@ -16,6 +16,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.UUID
 
 /**
  * Thin wrapper around MediaStore for saving photos/videos into DCIM/<subDir> using the
@@ -44,8 +45,11 @@ object MediaStoreWriter {
     private const val PENDING_REGISTERED = "registered"
     private const val PENDING_COMPLETE = "complete"
     private const val PENDING_DISCARD = "discard"
+    private const val DELETED_FAMILY_JOURNAL = "deleted_capture_family_journal"
+    private const val DELETED_FAMILY_PREFIX = "F1|"
     private const val COMPLETION_MARK_ATTEMPTS = 3
     private const val COMPLETION_MARK_BACKOFF_MS = 25L
+    private val processJournalOwner = UUID.randomUUID().toString()
 
     /**
      * Reconstructs the newest published capture THIS APP saved under its own folder.
@@ -194,12 +198,18 @@ object MediaStoreWriter {
             buildList {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
+                    val displayName = cursor.getString(nameColumn)
+                    val family = CaptureFamilyKey.parse(displayName)?.familyKey
+                    // A family delete is a durable review veto, including for a published row that
+                    // survived its provider delete. Never let replacement-Engine restoration adopt
+                    // it while the journal still owns that intent.
+                    if (family != null && isFamilyDeleted(context, family)) continue
                     add(
                         StoredMediaRow(
                             output = ContentUris.withAppendedId(base, id),
                             collection = collection,
                             rowId = id,
-                            displayName = cursor.getString(nameColumn),
+                            displayName = displayName,
                             mimeType = cursor.getString(mimeColumn),
                             dateTakenEpochMillis = if (cursor.isNull(takenColumn)) null else cursor.getLong(takenColumn),
                             dateAddedEpochSeconds = cursor.getLong(addedColumn),
@@ -310,6 +320,33 @@ object MediaStoreWriter {
             else -> PendingOutputDiscardResult.UNRESOLVED
         }
     }
+
+    /**
+     * Commits capture-family delete intent before the UI acknowledges deletion.
+     *
+     * The key is independent of any one MediaStore URI, so HEIF/JPEG/DNG rows created after the
+     * delete (and published rows whose exact-URI discard failed) remain vetoed across Engine and
+     * process replacement. The process token lets launch recovery retain current-process markers:
+     * an old Engine may still produce a sibling after a replacement Engine's recovery pass.
+     */
+    internal fun markFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
+        markCompletionWithRetry(
+            maxAttempts = COMPLETION_MARK_ATTEMPTS,
+            commit = {
+                context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(deletedFamilyJournalKey(family), processJournalOwner)
+                    .commit()
+            },
+            backoff = { attempt ->
+                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
+            },
+        ).durable
+
+    /** Fast shared-preference read used by still publication and launch restoration. */
+    internal fun isFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
+        context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+            .contains(deletedFamilyJournalKey(family))
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
@@ -481,7 +518,7 @@ object MediaStoreWriter {
         // tombstone. Recover durable DISCARD entries by exact URI first, so published as well as
         // pending rows are deleted. Successful [delete] clears the journal; failures retain it for
         // the next bounded recovery attempt.
-        var report = cleanupDiscardJournal(context)
+        var report = cleanupDeletedFamilyJournal(context).merge(cleanupDiscardJournal(context))
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -500,6 +537,7 @@ object MediaStoreWriter {
                         MediaStore.MediaColumns.IS_PENDING,
                         MediaStore.MediaColumns.MIME_TYPE,
                         MediaStore.MediaColumns.SIZE,
+                        MediaStore.MediaColumns.DISPLAY_NAME,
                     ),
                     queryArgs,
                     null,
@@ -509,11 +547,16 @@ object MediaStoreWriter {
                     val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
                     val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                     val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
                     while (cursor.moveToNext()) {
                         if (cursor.getInt(pendingCol) != 1) continue
                         report = report.record(RecoveryEvent.SCANNED)
                         val uri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
                         val journalState = pendingJournalState(context, uri)
+                        val familyDeleted = CaptureFamilyKey.parse(cursor.getString(nameCol))
+                            ?.familyKey
+                            ?.let { isFamilyDeleted(context, it) }
+                            ?: false
                         val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
                         val probeOutcome = when {
                             sizeBytes <= 0L -> PendingProbeOutcome(PendingProbe.INVALID)
@@ -531,7 +574,7 @@ object MediaStoreWriter {
                         if (probeOutcome.failed) {
                             report = report.record(RecoveryEvent.PROBE_FAILED)
                         }
-                        when (orphanDisposition(journalState, probeOutcome.probe)) {
+                        when (orphanDisposition(journalState, probeOutcome.probe, familyDeleted)) {
                             OrphanDisposition.ADOPT -> {
                                 report = report.record(
                                     if (publish(context, uri)) RecoveryEvent.ADOPTED
@@ -550,6 +593,81 @@ object MediaStoreWriter {
                 }
             }
             if (collectionResult.isFailure) report = report.record(RecoveryEvent.QUERY_FAILED)
+        }
+        return report
+    }
+
+    /**
+     * Reconciles family tombstones against both pending and published rows.
+     *
+     * A marker written by this process is deliberately never cleared here: a retired Engine may
+     * still own an accepted save tail. A prior-process marker can be removed only after its exact,
+     * bounded family query completed and every matching row was authoritatively deleted/absent.
+     */
+    private fun cleanupDeletedFamilyJournal(context: Context): RecoveryReport {
+        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+        val entries = runCatching { preferences.all.toMap() }.getOrElse {
+            return RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
+        }
+        var report = RecoveryReport()
+        entries.forEach { (rawKey, rawOwner) ->
+            val family = parseDeletedFamilyJournalKey(rawKey)
+            if (family == null) {
+                report = report.record(RecoveryEvent.QUERY_FAILED)
+                return@forEach
+            }
+            val base = when (family.media) {
+                CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+            val rows = runCatching {
+                val names = family.knownOutputDisplayNames()
+                val paths = CAPTURE_SUBDIRS.joinToString(" OR ") {
+                    MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
+                }
+                val queryArgs = Bundle().apply {
+                    putString(
+                        ContentResolver.QUERY_ARG_SQL_SELECTION,
+                        "($paths) AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
+                            "${MediaStore.MediaColumns.DISPLAY_NAME} IN (" +
+                            names.joinToString(",") { "?" } + ")",
+                    )
+                    putStringArray(
+                        ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                        (CAPTURE_SUBDIRS.map { "DCIM/$it/%" } + context.packageName + names).toTypedArray(),
+                    )
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                }
+                context.contentResolver.query(
+                    base,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    queryArgs,
+                    null,
+                )?.use { cursor ->
+                    buildList<Uri> {
+                        while (cursor.moveToNext()) {
+                            add(ContentUris.withAppendedId(base, cursor.getLong(0)))
+                        }
+                    }
+                } ?: error("MediaProvider returned no cursor")
+            }
+            val ownedRows = rows.getOrElse {
+                report = report.record(RecoveryEvent.QUERY_FAILED)
+                return@forEach
+            }
+            var resolved = true
+            ownedRows.forEach { uri ->
+                report = report.record(RecoveryEvent.SCANNED)
+                if (delete(context, uri)) {
+                    report = report.record(RecoveryEvent.DELETED)
+                } else {
+                    resolved = false
+                    report = report.record(RecoveryEvent.DELETE_FAILED)
+                }
+            }
+            if (resolved && rawOwner != processJournalOwner) {
+                preferences.edit().remove(rawKey).commit()
+            }
         }
         return report
     }
@@ -595,6 +713,18 @@ object MediaStoreWriter {
     private fun clearPending(context: Context, uri: Uri) {
         context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
             .edit(commit = true) { remove(uri.toString()) }
+    }
+
+    private fun deletedFamilyJournalKey(family: CaptureFamilyKey): String =
+        "$DELETED_FAMILY_PREFIX${family.media.name}|${family.capturedAtEpochMillis}|${family.sequence}"
+
+    private fun parseDeletedFamilyJournalKey(raw: String): CaptureFamilyKey? {
+        val fields = raw.split('|')
+        if (fields.size != 4 || fields[0] != DELETED_FAMILY_PREFIX.removeSuffix("|")) return null
+        val media = runCatching { CaptureFamilyMedia.valueOf(fields[1]) }.getOrNull() ?: return null
+        val timestamp = fields[2].toLongOrNull() ?: return null
+        val sequence = fields[3].toLongOrNull() ?: return null
+        return runCatching { CaptureFamilyKey(media, timestamp, sequence) }.getOrNull()
     }
 
     private fun probePendingMedia(
@@ -825,6 +955,15 @@ internal data class RecoveryReport(
     )
 }
 
+private fun RecoveryReport.merge(other: RecoveryReport): RecoveryReport = RecoveryReport(
+    scanned = scanned + other.scanned,
+    adopted = adopted + other.adopted,
+    deleted = deleted + other.deleted,
+    retained = retained + other.retained,
+    errors = errors + other.errors,
+    failureClasses = failureClasses + other.failureClasses,
+)
+
 internal enum class RecoveryEvent {
     SCANNED,
     ADOPTED,
@@ -890,7 +1029,9 @@ internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
 internal fun orphanDisposition(
     journalState: PendingJournalState,
     probe: PendingProbe,
+    familyDeleted: Boolean = false,
 ): OrphanDisposition = when {
+    familyDeleted -> OrphanDisposition.DELETE
     journalState == PendingJournalState.DISCARD -> OrphanDisposition.DELETE
     journalState == PendingJournalState.COMPLETE -> OrphanDisposition.ADOPT
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT

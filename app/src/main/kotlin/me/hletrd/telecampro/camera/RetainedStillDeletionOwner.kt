@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 
 /** Result of routing a completed private still through deleted-capture ownership. */
@@ -34,6 +35,8 @@ internal class RetainedStillDeletionOwner<T>(
     private val maxTombstones: Int,
     private val discard: (T) -> PendingOutputDiscardResult,
     private val maxDiscardAttempts: Int = 3,
+    private val maxUnresolvedDiscards: Int = maxTombstones,
+    private val persistDeletionIntent: (CaptureFamilyKey) -> Boolean = { false },
     private val retryBackoff: (attempt: Int) -> Unit = {},
 ) {
     private enum class PublicationState { PUBLISHING, PUBLISHED_AWAITING_CALLBACK }
@@ -42,15 +45,26 @@ internal class RetainedStillDeletionOwner<T>(
 
     private val lock = Any()
     private val tombstones = LinkedHashSet<Int>()
+    private val familiesByCapture = LinkedHashMap<Int, CaptureFamilyKey>()
+    private val durableDeletedCaptures = LinkedHashSet<Int>()
     private val activePublications = LinkedHashMap<T, ActivePublication>()
     // An unresolved row stays strongly owned in-process and is retried on later owner activity and
-    // Engine release. Attempts are bounded; the collection is not silently trimmed because dropping
-    // an output here would permit exactly the deleted-media resurrection this owner prevents.
+    // Engine release. The map is hard-bounded; overflow remains protected by the durable family
+    // journal and closes new capture admission until tracked retries make room.
     private val unresolvedDiscards = LinkedHashMap<T, Int>()
+    private var deletionJournalUnavailable = false
 
     init {
         require(maxTombstones > 0)
         require(maxDiscardAttempts > 0)
+        require(maxUnresolvedDiscards > 0)
+    }
+
+    /** Registers the durable filename family before Camera2 can produce any sibling. */
+    fun registerCaptureFamily(captureId: Int, family: CaptureFamilyKey) = synchronized(lock) {
+        familiesByCapture.remove(captureId)
+        familiesByCapture[captureId] = family
+        trimRegisteredFamiliesLocked(captureId)
     }
 
     /**
@@ -59,25 +73,33 @@ internal class RetainedStillDeletionOwner<T>(
      * PUBLISHING outputs are not returned: their completion edge rechecks the tombstone and owns the
      * discard before it can emit a saved callback.
      */
-    fun markCaptureDeleted(captureId: Int): List<T> = synchronized(lock) {
-        tombstones.remove(captureId)
-        tombstones.add(captureId)
-        while (tombstones.size > maxTombstones) {
-            // A capture with active/unresolved outputs cannot lose its delete authority. Prefer an
-            // inactive tombstone for eviction; if all are active, keep temporary extra headroom.
-            val evictable = tombstones.firstOrNull { candidate ->
-                candidate != captureId &&
-                    activePublications.values.none { it.captureId == candidate } &&
-                    unresolvedDiscards.values.none { it == candidate }
-            } ?: break
-            tombstones.remove(evictable)
+    fun markCaptureDeleted(captureId: Int): List<T> {
+        val family = synchronized(lock) {
+            tombstones.remove(captureId)
+            tombstones.add(captureId)
+            familiesByCapture[captureId]
         }
-        activePublications.entries
-            .filter { (_, publication) ->
-                publication.captureId == captureId &&
-                    publication.state == PublicationState.PUBLISHED_AWAITING_CALLBACK
+        // Tombstone first so publication is blocked while the synchronous durable commit runs;
+        // return only after the family veto is recovery-visible.
+        val durable = family != null && runCatching { persistDeletionIntent(family) }.getOrDefault(false)
+        return synchronized(lock) {
+            if (durable) {
+                durableDeletedCaptures.add(captureId)
+            } else {
+                // A failed durability boundary cannot be papered over by evicting its in-memory
+                // owner. A missing family key is the same fail-closed condition. Close capture
+                // admission until a replacement process can re-establish a healthy journal rather
+                // than growing an unsafe tail.
+                deletionJournalUnavailable = true
             }
-            .map { it.key }
+            trimTombstonesLocked(captureId)
+            activePublications.entries
+                .filter { (_, publication) ->
+                    publication.captureId == captureId &&
+                        publication.state == PublicationState.PUBLISHED_AWAITING_CALLBACK
+                }
+                .map { it.key }
+        }
     }
 
     /**
@@ -135,7 +157,7 @@ internal class RetainedStillDeletionOwner<T>(
     /** Fast ownership transfer for a camera-thread/executor-rejection path; performs no I/O. */
     fun ownRetainedForAsyncDiscard(output: T, captureId: Int): Boolean = synchronized(lock) {
         if (captureId !in tombstones) return false
-        unresolvedDiscards[output] = captureId
+        rememberUnresolvedLocked(output, captureId)
         true
     }
 
@@ -162,13 +184,18 @@ internal class RetainedStillDeletionOwner<T>(
         val result = discardWithRetry(output)
         synchronized(lock) {
             if (result == PendingOutputDiscardResult.UNRESOLVED) {
-                unresolvedDiscards[output] = captureId
+                rememberUnresolvedLocked(output, captureId)
             } else {
                 unresolvedDiscards.remove(output)
                 activePublications.remove(output)
             }
         }
         return result
+    }
+
+    /** False is a bounded, fail-closed admission signal for the Engine shutter boundary. */
+    fun canAdmitCapture(): Boolean = synchronized(lock) {
+        !deletionJournalUnavailable && unresolvedDiscards.size < maxUnresolvedDiscards
     }
 
     /** One bounded retry pass, used at Engine release and available to recovery orchestration. */
@@ -199,5 +226,43 @@ internal class RetainedStillDeletionOwner<T>(
     internal fun tombstoneCount(): Int = synchronized(lock) { tombstones.size }
 
     internal fun unresolvedDiscardCount(): Int = synchronized(lock) { unresolvedDiscards.size }
+
+    private fun rememberUnresolvedLocked(output: T, captureId: Int) {
+        if (output in unresolvedDiscards || unresolvedDiscards.size < maxUnresolvedDiscards) {
+            unresolvedDiscards[output] = captureId
+        }
+        // At capacity the exact row is not added, but its durable family marker remains the launch
+        // veto. canAdmitCapture() closes the producer boundary until tracked retries make room.
+    }
+
+    private fun trimTombstonesLocked(currentCaptureId: Int) {
+        while (tombstones.size > maxTombstones) {
+            val evictable = tombstones.firstOrNull { candidate ->
+                candidate != currentCaptureId &&
+                    (candidate in durableDeletedCaptures ||
+                        activePublications.values.none { it.captureId == candidate } &&
+                        unresolvedDiscards.values.none { it == candidate })
+            } ?: break
+            tombstones.remove(evictable)
+            if (activePublications.values.none { it.captureId == evictable } &&
+                unresolvedDiscards.values.none { it == evictable }
+            ) {
+                familiesByCapture.remove(evictable)
+                durableDeletedCaptures.remove(evictable)
+            }
+        }
+    }
+
+    private fun trimRegisteredFamiliesLocked(currentCaptureId: Int) {
+        while (familiesByCapture.size > maxTombstones) {
+            val evictable = familiesByCapture.keys.firstOrNull { candidate ->
+                candidate != currentCaptureId && candidate !in tombstones &&
+                    activePublications.values.none { it.captureId == candidate } &&
+                    unresolvedDiscards.values.none { it == candidate }
+            } ?: break
+            familiesByCapture.remove(evictable)
+            durableDeletedCaptures.remove(evictable)
+        }
+    }
 
 }
