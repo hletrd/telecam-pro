@@ -314,13 +314,30 @@ class MediaDurabilityPolicyTest {
     }
 
     @Test
-    fun `failed marker plus failed publish is explicit and a later restart can adopt`() {
+    fun `failed marker gates publication and a later restart can structurally adopt`() {
         val marker = markCompletionWithRetry(maxAttempts = 3, commit = { false })
         assertFalse(marker.durable)
+        var publishCalled = false
+        assertEquals(
+            CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE,
+            publishCompletedOutput(marker.durable) {
+                publishCalled = true
+                true
+            },
+        )
+        assertFalse(publishCalled)
         val structuralProbe = probe(locatedHeif())
         assertEquals(
             OrphanDisposition.ADOPT,
             orphanDisposition(PendingJournalState.REGISTERED, structuralProbe),
+        )
+    }
+
+    @Test
+    fun `durable marker plus failed publish remains explicit and retryable`() {
+        assertEquals(
+            CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
+            publishCompletedOutput(markerDurable = true) { false },
         )
 
         val failedPublish = RecoveryReport()

@@ -969,17 +969,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   ancillary metadata.
 - **Pending MediaStore rows have durable write states.** Every insert commits a `REGISTERED` journal
   entry before bytes are written; a fully closed encoder/muxer output commits `COMPLETE` before
-  publication. Relaunch recovery adopts `COMPLETE` rows, conservatively validates JPEG/DNG/video
-  legacy or `REGISTERED` rows, deletes only proven-invalid unfinished output, and leaves
-  indeterminate rows pending. Unmarked HEIF is deliberately indeterminate: header dimensions do
-  not prove its payload closed. A transient publish failure therefore retains a finalized
-  photo/video for recovery instead of deleting it. Partial family deletion restores only a
+  publication. If every `COMPLETE` commit attempt fails, the closed row fails **closed**: it remains
+  `IS_PENDING=1`/`REGISTERED`, publication and destructive cleanup are both forbidden, and the UI
+  reports a recoverable retained take rather than a saved file or data-loss failure. Relaunch
+  recovery may then adopt JPEG/DNG/video/HEIF only after the format's structural probe proves it
+  complete. Recovery also adopts durable `COMPLETE` rows, deletes only proven-invalid unfinished
+  output, and leaves indeterminate rows pending. A transient publish failure likewise retains a
+  finalized photo/video for recovery instead of deleting it. Partial family deletion restores only a
   resolver-confirmed survivor into review with retry copy; an already-absent sibling is successful,
   and only an unresolvable survivor falls back to a Gallery retry message.
 - **DNG publication does not hold the camera callback.** `DngCreator.writeImage` and the durable
-  `COMPLETE` marker remain synchronous while the RAW `Image` is valid; `saveDng` returns a frozen
-  `PendingDngPublication`, and only `publishDng` (including resolver retry backoff and callbacks)
-  runs on `ioExecutor`. Queue rejection keeps the complete pending row for launch recovery.
+  `COMPLETE` marker attempt remain synchronous while the RAW `Image` is valid; `saveDng` returns a
+  frozen `PendingDngPublication` carrying whether that commit succeeded. Only `publishDng`
+  (including the durable gate, resolver retry backoff, and callbacks) runs on `ioExecutor`. Queue
+  rejection or marker exhaustion keeps the structurally complete pending row for launch recovery.
 - **A logged `CameraAccessException` may have NO app frame in it — read the stack before believing
   the app did something (2026-08-09).** Rapid Photo↔Video / front-rear churn logs
   `E CameraCaptureSession: CAMERA_ERROR (3) ... Function not implemented (-38)`, which reads like an

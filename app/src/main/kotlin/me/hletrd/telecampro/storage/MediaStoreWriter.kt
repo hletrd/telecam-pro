@@ -660,6 +660,36 @@ internal data class CompletionMarkResult(
     val attempts: Int,
 )
 
+/**
+ * Terminal provider disposition for bytes that have already been closed and structurally
+ * completed. Both retained outcomes deliberately leave the MediaStore row private: publishing is
+ * forbidden until COMPLETE is durable, while a provider publication outage must not destroy a
+ * valuable take that launch recovery can adopt.
+ */
+internal enum class CompletedOutputPublication {
+    PUBLISHED,
+    RETAINED_MARKER_UNAVAILABLE,
+    RETAINED_PUBLICATION_UNAVAILABLE,
+}
+
+/**
+ * The single durable-before-publication gate shared by still and video callers.
+ *
+ * A failed marker commit is not a save failure and is not permission to delete structurally
+ * complete bytes. It is a recoverable pending outcome, and [publish] is intentionally not invoked.
+ */
+internal fun publishCompletedOutput(
+    markerDurable: Boolean,
+    publish: () -> Boolean,
+): CompletedOutputPublication {
+    if (!markerDurable) return CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE
+    return if (publish()) {
+        CompletedOutputPublication.PUBLISHED
+    } else {
+        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE
+    }
+}
+
 /** Bounded durable-marker policy with injected seams for commit-failure tests. */
 internal fun markCompletionWithRetry(
     maxAttempts: Int,

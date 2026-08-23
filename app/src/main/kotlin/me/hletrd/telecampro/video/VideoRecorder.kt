@@ -22,7 +22,9 @@ import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.normalizeAudioGain
+import me.hletrd.telecampro.storage.CompletedOutputPublication
 import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.publishCompletedOutput
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Collections
@@ -50,10 +52,23 @@ import kotlin.math.sqrt
  */
 class VideoRecorder(private val context: Context) {
 
+    enum class StorageDisposition {
+        NOT_APPLICABLE,
+        PUBLISHED,
+        RETAINED_MARKER_UNAVAILABLE,
+        RETAINED_PUBLICATION_UNAVAILABLE,
+    }
+
     data class StopResult(
         val saved: Boolean,
         val error: Throwable? = null,
         val nativeGraphDisposition: NativeGraphDisposition = NativeGraphDisposition.RELEASED,
+        /** Distinguishes recoverable private bytes from both a saved publication and data loss. */
+        val storageDisposition: StorageDisposition = if (saved) {
+            StorageDisposition.PUBLISHED
+        } else {
+            StorageDisposition.NOT_APPLICABLE
+        },
     )
 
     internal data class NativeStopResult(
@@ -1477,15 +1492,30 @@ internal fun <T> completeFrozenRecordingStorage(
         hasUri = outputUri != null,
         finalizedValidation = validation,
     )
-    val saved = if (complete && outputUri != null) {
-        // COMPLETE precedes publish. A provider outage leaves a durable pending row for recovery.
-        effects.markComplete(outputUri)
-        effects.publish(outputUri)
+    val publication = if (complete && outputUri != null) {
+        // COMPLETE precedes publish. If its durable commit exhausts, fail closed: valid bytes stay
+        // private for structural launch recovery and neither publish nor delete is authorized.
+        publishCompletedOutput(
+            markerDurable = runCatching { effects.markComplete(outputUri) }.getOrDefault(false),
+            publish = { effects.publish(outputUri) },
+        )
     } else {
         if (outputUri != null) effects.delete(outputUri)
-        false
+        null
     }
-    return VideoRecorder.StopResult(saved = saved, error = failure)
+    val storageDisposition = when (publication) {
+        CompletedOutputPublication.PUBLISHED -> VideoRecorder.StorageDisposition.PUBLISHED
+        CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE ->
+            VideoRecorder.StorageDisposition.RETAINED_MARKER_UNAVAILABLE
+        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE ->
+            VideoRecorder.StorageDisposition.RETAINED_PUBLICATION_UNAVAILABLE
+        null -> VideoRecorder.StorageDisposition.NOT_APPLICABLE
+    }
+    return VideoRecorder.StopResult(
+        saved = publication == CompletedOutputPublication.PUBLISHED,
+        error = failure,
+        storageDisposition = storageDisposition,
+    )
 }
 
 internal class RecordingStorageTail(

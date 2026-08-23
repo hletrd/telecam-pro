@@ -4,6 +4,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import me.hletrd.telecampro.storage.OrphanDisposition
+import me.hletrd.telecampro.storage.PendingJournalState
+import me.hletrd.telecampro.storage.PendingProbe
+import me.hletrd.telecampro.storage.markCompletionWithRetry
+import me.hletrd.telecampro.storage.orphanDisposition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -138,6 +143,38 @@ class RecorderQuarantineAdmissionGateTest {
         assertTrue(result.saved)
         assertEquals(null, result.error)
         assertEquals(listOf("validate:clip", "complete:clip", "publish:clip"), events)
+    }
+
+    @Test
+    fun `exhausted video COMPLETE retains valid row without publish delete or saved verdict`() {
+        val events = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage("clip"),
+            RecordingStorageEffects(
+                validateVideoTrack = { events += "validate:$it"; true },
+                markComplete = {
+                    val marker = markCompletionWithRetry(
+                        maxAttempts = 3,
+                        commit = { events += "marker:$it"; false },
+                    )
+                    marker.durable
+                },
+                publish = { events += "publish:$it"; true },
+                delete = { events += "delete:$it" },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertEquals(null, result.error)
+        assertEquals(
+            VideoRecorder.StorageDisposition.RETAINED_MARKER_UNAVAILABLE,
+            result.storageDisposition,
+        )
+        assertEquals(listOf("marker:clip", "marker:clip", "marker:clip"), events)
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.REGISTERED, PendingProbe.VALID),
+        )
     }
 
     @Test

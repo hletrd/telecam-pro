@@ -24,7 +24,9 @@ import me.hletrd.telecampro.camera.CropBox
 import me.hletrd.telecampro.camera.centerCropBox
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CompletedOutputPublication
 import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.publishCompletedOutput
 
 /** Immutable request-time state consumed by every output belonging to one shutter press. */
 internal data class ShotSpec(
@@ -226,12 +228,13 @@ internal class StillCapturePipeline(
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
         if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status()); return }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
-        if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus(retainedSaveStatus("HEIF", completion.durable))
-            emitPublishRetained(u, spec.captureId)
-            return
-        }
-        emitMediaSaved(u, spec.captureId)
+        completeStillPublication(
+            kind = "HEIF",
+            output = u,
+            captureId = spec.captureId,
+            markerDurable = completion.durable,
+            effects = publicationEffects(),
+        )
     }
 
     /**
@@ -256,12 +259,13 @@ internal class StillCapturePipeline(
         // (best-effort — a failed EXIF write must never lose the image itself).
         runCatching { writeJpegExif(u, exifShot) }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
-        if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus(retainedSaveStatus("JPEG", completion.durable))
-            emitPublishRetained(u, spec.captureId)
-            return
-        }
-        emitMediaSaved(u, spec.captureId)
+        completeStillPublication(
+            kind = "JPEG",
+            output = u,
+            captureId = spec.captureId,
+            markerDurable = completion.durable,
+            effects = publicationEffects(),
+        )
     }
 
     /**
@@ -289,12 +293,13 @@ internal class StillCapturePipeline(
         // with EXIF missing still beats a deleted take.
         runCatching { writeJpegExif(u, exifShot, exifOrientationFor(spec.rotationDegrees)) }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
-        if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus(retainedSaveStatus("JPEG", completion.durable))
-            emitPublishRetained(u, spec.captureId)
-            return
-        }
-        emitMediaSaved(u, spec.captureId)
+        completeStillPublication(
+            kind = "JPEG",
+            output = u,
+            captureId = spec.captureId,
+            markerDurable = completion.durable,
+            effects = publicationEffects(),
+        )
     }
 
     /**
@@ -328,8 +333,8 @@ internal class StillCapturePipeline(
                 completionMarkerDurable = completion.durable,
             )
         } catch (t: Throwable) {
-            // A fully-written DNG is journalled COMPLETE and handed to the publication lane.
-            // Interrupted writes remain REGISTERED and are deleted.
+            // A fully-written DNG is handed to the publication lane with its marker outcome.
+            // Interrupted writes remain REGISTERED and are deleted; marker exhaustion is returned.
             if (!outputComplete) MediaStoreWriter.delete(context, uri)
             throw t
         }
@@ -337,13 +342,23 @@ internal class StillCapturePipeline(
 
     /** Publishes a completed DNG off the camera thread, including retry backoff and callbacks. */
     fun publishDng(pending: PendingDngPublication) {
-        if (!MediaStoreWriter.publish(context, pending.uri)) {
-            emitStatus(retainedSaveStatus("DNG", pending.completionMarkerDurable))
-            emitPublishRetained(pending.uri, pending.captureId)
-            return
-        }
-        emitRawSaved(pending.uri, pending.captureId)
+        completeStillPublication(
+            kind = "DNG",
+            output = pending.uri,
+            captureId = pending.captureId,
+            markerDurable = pending.completionMarkerDurable,
+            effects = publicationEffects(emitSaved = emitRawSaved),
+        )
     }
+
+    private fun publicationEffects(
+        emitSaved: (android.net.Uri, Int) -> Unit = emitMediaSaved,
+    ) = StillPublicationEffects(
+        publish = { MediaStoreWriter.publish(context, it) },
+        emitSaved = emitSaved,
+        emitRetained = emitPublishRetained,
+        emitStatus = emitStatus,
+    )
 
     private fun writeJpegExif(
         uri: android.net.Uri,
@@ -403,7 +418,45 @@ internal class StillCapturePipeline(
     private fun exifOrientationFor(degrees: Int): Int = RotationMath.exifOrientationFor(degrees)
 }
 
-/** Truthful retained-take status for a completed artifact whose MediaStore publish failed. */
+/** Injectable still-caller effects for the durable-before-publication contract. */
+internal data class StillPublicationEffects<T>(
+    val publish: (T) -> Boolean,
+    val emitSaved: (T, Int) -> Unit,
+    val emitRetained: (T, Int) -> Unit,
+    val emitStatus: (CameraStatus) -> Unit,
+)
+
+/**
+ * Completes the HEIF/JPEG/DNG caller contract without conflating retained bytes with publication.
+ * A non-durable COMPLETE marker bypasses [StillPublicationEffects.publish] entirely.
+ */
+internal fun <T> completeStillPublication(
+    kind: String,
+    output: T,
+    captureId: Int,
+    markerDurable: Boolean,
+    effects: StillPublicationEffects<T>,
+): CompletedOutputPublication {
+    val publication = publishCompletedOutput(markerDurable) { effects.publish(output) }
+    when (publication) {
+        CompletedOutputPublication.PUBLISHED -> effects.emitSaved(output, captureId)
+        CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE,
+        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
+        -> {
+            effects.emitStatus(
+                retainedSaveStatus(
+                    kind = kind,
+                    markerDurable = publication ==
+                        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
+                ),
+            )
+            effects.emitRetained(output, captureId)
+        }
+    }
+    return publication
+}
+
+/** Truthful retained-take status for either durable gate that left a completed artifact private. */
 internal fun retainedSaveStatus(kind: String, markerDurable: Boolean): CameraStatus =
     (if (markerDurable) CameraStatusMessage.OUTPUT_SAVED_PENDING
     else CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY)
