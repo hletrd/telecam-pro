@@ -523,6 +523,11 @@ class LocalizedSelectorTest(unittest.TestCase):
             "my", "shoot", "exposure", "focus", "lens", "video", "image", "assist", "setup"
         )
         pairs.extend(zip(selectors.SETTINGS_TABS, (f"settings_tab_{name}" for name in tab_names)))
+        page_resources = (
+            "section_my_menu",
+            *(f"settings_tab_{name}" for name in tab_names[1:]),
+        )
+        pairs.extend(zip(selectors.SETTINGS_PAGE_TITLES, page_resources))
         fn_resources = {
             "Focus": "settings_tab_focus",
             "Shutter": "label_shutter",

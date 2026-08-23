@@ -108,7 +108,7 @@ SETTINGS_TABS = (
 
 SETTINGS_PAGE_TITLES = (
     selector("page_my_menu", "My Menu", "내 메뉴"),
-    selector("page_shooting", "Shooting", "촬영"),
+    selector("page_shoot", "Shoot", "촬영"),
     selector("page_exposure", "Exposure", "노출"),
     selector("page_focus", "Focus", "초점"),
     selector("page_lens", "Lens", "렌즈"),
