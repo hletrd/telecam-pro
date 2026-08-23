@@ -65,8 +65,10 @@ shooting needs.
 
 **Reliability**
 - Settings persist across launches, with separate toggles for keeping your lens and TELE choice.
-- A capture followed immediately by an app kill still finalizes. A finished file whose MediaStore
-  publish fails is adopted and published at the next launch rather than discarded.
+- A capture killed in the measured roughly 2–3 second post-admission harness window still finalizes.
+  The recovery design also retains a finished file whose MediaStore publish fails and adopts it at
+  the next launch rather than discarding it; sub-second kill timing is not claimed by that device
+  evidence.
 - A microphone failure mid-recording degrades the clip to video-only instead of losing the take.
 
 ## What this app does not claim
@@ -128,6 +130,11 @@ checked against `gradle/verification-metadata.xml` in strict mode.
 `python3 tools/build_immutable_release.py :app:bundleRelease` produces the Play App Bundle from a
 private export of the clean committed source. Direct Gradle release entry points fail closed so a
 post-verification worktree edit cannot enter an artifact carrying the earlier commit provenance.
+The command prints a unique `app/build/immutable-release/<commit>-<nonce>` root; bundle, APK, and
+lint outputs are discovered under that root's `bundle/release/`, `apk/release/`, and `logs/`
+directories rather than the mutable `app/build/outputs` tree. Unsigned binary inspection likewise
+uses `python3 tools/build_immutable_release.py :app:packageRelease` and the printed root's
+`apk/release/*-unsigned.apk`.
 Signing is driven by a gitignored
 `keystore.properties` plus `TELECAMPRO_STORE_PASSWORD` / `TELECAMPRO_KEY_PASSWORD` in the
 environment — no keys live in git, and release bundling fails fast rather than emitting an unsigned

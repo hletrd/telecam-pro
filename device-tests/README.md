@@ -37,18 +37,25 @@ case, or a required verification reported as incomplete. `--allow-partial` is th
 an intentionally partial tier green; its report and attestation retain the skips and partial flag.
 
 **CLI report attestation contract:** every report directory also contains
-`run-attestation.json` and `run-attestation.sha256`. The JSON records the git revision, device
-identity, host and installed APK SHA-256 values, exact approval flags, captured pre-run and verified
-post-run state, and a path-sorted list of SHA-256 hashes for report artifacts. A restoration failure
-or pre/post state mismatch makes the CLI result non-green rather than producing only a warning. The
-SHA-256 sidecar protects the attestation bytes against unnoticed alteration; it is an integrity check,
-not a signature or proof of who produced the report.
+`run-attestation.json` and `run-attestation.sha256`. The JSON records the source identity proven from
+inside the APK, device identity, host and installed APK SHA-256 values, exact approval flags, captured
+pre-run and verified post-run state, and a path-sorted list of SHA-256 hashes for report artifacts. A
+restoration failure or pre/post state mismatch makes the CLI result non-green rather than producing
+only a warning. The SHA-256 sidecar protects the attestation bytes against unnoticed alteration; it
+is an integrity check, not a signature or proof of who produced the report.
 
 The runner inspects the exact host APK before device preflight. Android build tools provide its
 application ID, launcher activity, and debug-only `UiSnapshotActivity`; those exact components drive
 launch/foreground checks and are written to the attestation. The APK is hashed before and after
 manifest inspection so an artifact replacement cannot join identity from one file to bytes from
 another.
+
+Every debug APK also packages `assets/telecam-debug-provenance/source.manifest`. It contains the Git
+commit and a sorted SHA-256/size manifest of the main/debug app source trees and Gradle inputs that
+can change APK bytes. The runner recomputes that same identity from the checkout and refuses before
+ADB access when the member is missing or malformed, its commit is stale, or any clean or dirty source
+content differs. Dirty builds are supported, but their attestation names the exact content-manifest
+digest embedded in the exercised APK; a bare `dirty: true` claim is never used as provenance.
 
 The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and queries/pulls only
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
@@ -101,7 +108,7 @@ present; the smoke command with that flag is the intentional cold-start path.
 | full | `tap_af_hold_visible_and_reset` | tap-AF holds past reticle fade with visible reset, then restores prior AF mode |
 | full | `settings_sheet_tabs` | all 9 tabs select matching pages; 48 dp/on-screen; modal isolated; Back restores camera |
 | full | `function_menu_roundtrip` | visible Fn entry → enabled tiles → Back restores camera chrome |
-| full | `debug_snapshot_ui_contract` | destructive: HAL-free snapshot activity at 0/90/270° (+RTL held) proves Fn physical order/reach, sticky Gamma cycle, settings modal, MR tag, ruler isolation, Loupe truth |
+| full | `debug_snapshot_ui_contract` | destructive + settings: HAL-free, scenario-ready snapshot activity at 0/90/270° covers maximal OSD, direct Fn/settings and Fn editor, MR/ruler/Loupe, RAW/loading/error/delete review, permission/rationale, RTL and 2× font; temporarily applies an exact 320×300 dp compact-wide display override, asserts semantic bounds/action non-overlap, then restores prior size/density/orientation state in `finally` |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
 | full | `per_lens_still_geometry` | each rear preset (logical route) + front camera still == that accepted camera's dumpsys-advertised binned array; row↔file parity; 200MP stays dormant |
 | full | `tele_dng_parity` | TELE DNG is the advertised RAW16 plane (16-bit, SamplesPerPixel 1, CFA) and DNG+JPEG EXIF ISO/ExposureTime match a UI-set manual request (ISO 800, ~1/100 s) |

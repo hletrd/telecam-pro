@@ -192,6 +192,115 @@ for rel in (
 # the operator to upload a bundle its own superseded list forbids — caught mid-upload.
 submit = read("docs/play-console-submit.md")
 
+# The release board and operator sheet are independent prose authorities, so bind their current
+# state with one deliberately boring machine-readable marker. "Target" names source intent;
+# "artifact" names whether immutable upload bytes exist. Conflating those two is how the board
+# called v1.0.2 a candidate while the sheet correctly said there were no current bytes.
+version_name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+assert version_name_match, "versionName missing from app/build.gradle.kts"
+expected_release_target = f"v{version_name_match.group(1)}"
+
+
+def release_state(text: str) -> tuple[str, str] | None:
+    marker = re.search(
+        r"<!--\s*release-state:\s*target=([^\s]+)\s+artifact=([^\s]+)\s*-->",
+        text,
+    )
+    return marker.groups() if marker else None
+
+
+backlog = read("docs/BACKLOG.md")
+backlog_release_state = release_state(backlog)
+submit_release_state = release_state(submit)
+backlog_prose = re.sub(r"[^a-z0-9./=-]+", " ", backlog.casefold())
+submit_prose = re.sub(r"[^a-z0-9./=-]+", " ", submit.casefold())
+check(
+    backlog_release_state == submit_release_state == (expected_release_target, "none"),
+    "release authorities agree on target and no-current-artifact state",
+    f"build={expected_release_target}, backlog={backlog_release_state}, submit={submit_release_state}",
+)
+check(
+    "current source/release target" in backlog_prose
+    and "no current artifact candidate exists" in backlog_prose
+    and "source/release target" in submit_prose
+    and "no current artifact candidate exists" in submit_prose,
+    "active release prose distinguishes source target from artifact candidate",
+)
+
+# Direct Gradle release entry points intentionally fail closed: only the immutable-source wrapper
+# can compile/package release bytes. Historical evidence may retain its old commands/paths when the
+# containing heading explicitly says historical/superseded/archived. Active mentions of mutable
+# app/build output are permitted only when the same local paragraph explicitly rejects that path as
+# an identity; they must never promise it as the result of a current release command.
+HISTORICAL_HEADING = re.compile(r"historical|superseded|archived", re.I)
+
+
+def markdown_lines_with_history(text: str) -> list[tuple[str, bool]]:
+    active_headings: dict[int, str] = {}
+    result: list[tuple[str, bool]] = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        heading = None if in_fence else re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            level = len(heading.group(1))
+            active_headings = {
+                depth: value for depth, value in active_headings.items() if depth < level
+            }
+            active_headings[level] = heading.group(2)
+        historical = any(HISTORICAL_HEADING.search(value) for value in active_headings.values())
+        result.append((line, historical))
+    return result
+
+
+release_docs = (
+    "docs/play-store-listing.md",
+    "docs/play-console-submit.md",
+    "docs/BACKLOG.md",
+    "docs/TESTING.md",
+    "README.md",
+    "CLAUDE.md",
+)
+bare_release_gradle: list[str] = []
+stale_release_promises: list[str] = []
+for rel in release_docs:
+    lines = markdown_lines_with_history(read(rel))
+    for index, (line, historical) in enumerate(lines):
+        if historical:
+            continue
+        if re.search(
+            r"(?:^|[ `$])(?:\./)?gradlew[^\n]*(?:lint|assemble|bundle|package)Release",
+            line,
+        ):
+            bare_release_gradle.append(f"{rel}:{index + 1}")
+        if re.search(r"app/build/outputs/(?:apk|bundle|logs)/release", line):
+            context = " ".join(
+                item[0] for item in lines[max(0, index - 2):min(len(lines), index + 3)]
+            ).casefold()
+            if not any(
+                qualification in context
+                for qualification in (
+                    "mutable", "reject", "do not upload", "never upload", "not an immutable",
+                )
+            ):
+                stale_release_promises.append(f"{rel}:{index + 1}")
+check(
+    not bare_release_gradle,
+    "active docs use no bare Gradle release entry point",
+    f"{bare_release_gradle}",
+)
+check(
+    not stale_release_promises,
+    "active docs make no stale app/build release-output promise",
+    f"{stale_release_promises}",
+)
+for rel in ("docs/play-store-listing.md", "docs/play-console-submit.md", "docs/BACKLOG.md"):
+    check(
+        "tools/build_immutable_release.py" in read(rel),
+        f"{rel} routes active release builds through the immutable wrapper",
+    )
+
 # Only the do-not-upload bullets define "superseded". Reading every parenthesised short digest in the
 # file instead swept in ordinary prose — the device matrix names the CURRENT artifact that way — and
 # reported the live pin as superseded.
