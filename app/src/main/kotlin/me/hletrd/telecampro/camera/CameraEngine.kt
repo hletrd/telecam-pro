@@ -65,6 +65,12 @@ class CameraEngine(private val context: Context) {
     // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
     // behind a burst's full-resolution still encodes on ioExecutor (or vice versa).
     private val recorderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Pending-video MediaProvider allocation is PRE-native and has no cancellation signal. Keep it
+    // off the serial REC/native lane: timeout/Stop/release retire admission immediately while the
+    // finite daemon pool owns any provider call that returns late.
+    private val recordingPreNativeAttempt = java.util.concurrent.atomic.AtomicReference<
+        RecordingPreNativeAllocationAttempt<android.net.Uri>?
+    >(null)
     // Extractor/MediaStore tails own no native recorder resources. The lane is deliberately finite:
     // provider outages may occupy two workers plus a bounded backlog, after which the pending row is
     // the durable overflow owner for launch recovery. Admission never falls back inline/raw-thread.
@@ -3907,13 +3913,10 @@ class CameraEngine(private val context: Context) {
             paused = paused,
         )
 
-    // REC admission runs on [recorderExecutor], never the caller's (main) thread: the bounded
-    // standby-mic release wait (≤400 ms), the MediaStore pending insert (Binder IPC), and the
-    // MediaCodec/MediaMuxer/AudioRecord construction below cost ~100-700 ms — guaranteed dropped
-    // frames at every REC press when run synchronously on main. Only the in-flight gate stays
-    // synchronous. Stop-during-start ordering (latched, exactly-once, executed on the same serial
-    // executor the moment admission publishes — the documented "stoppable while starting" UI
-    // contract) is owned by the unit-tested [RecordingAdmissionLatch].
+    // REC admission runs off main. MediaStore row allocation has its own finite lane because a
+    // provider Binder call has no cancellation signal; only after that generation-owned result is
+    // claimed does the serial recorderExecutor perform mic handoff and native setup. The in-flight
+    // gate stays synchronous. Stop-during-start ordering is owned by [RecordingAdmissionLatch].
     private val recAdmission = RecordingAdmissionLatch()
 
     fun startRecording(recordAudio: Boolean, onResult: (Boolean) -> Unit) {
@@ -3935,10 +3938,10 @@ class CameraEngine(private val context: Context) {
         }
         val accepted = runCatching {
             recorderExecutor.execute {
-                val ok = runCatching {
-                    startRecordingBlocking(recordAudio, completeAttempt)
+                val pending = runCatching {
+                    beginRecordingAllocation(recordAudio, completeAttempt)
                 }.getOrDefault(false)
-                completeAttempt(ok)
+                if (!pending) completeAttempt(false)
             }
         }.isSuccess
         if (!accepted) {
@@ -3946,7 +3949,8 @@ class CameraEngine(private val context: Context) {
         }
     }
 
-    private fun startRecordingBlocking(
+    /** Returns true only after an async allocation attempt owns [completeAttempt]. */
+    private fun beginRecordingAllocation(
         recordAudio: Boolean,
         completeAttempt: (Boolean) -> Unit,
     ): Boolean {
@@ -3984,34 +3988,184 @@ class CameraEngine(private val context: Context) {
             )
             return false
         }
-        return try {
-            // The recorder owns the mic — stop the standby level tap first and wait (bounded) for
-            // release confirmation. The process lease prevents another Engine from overlapping REC.
+        val recordingCaptureId = captureSeq.incrementAndGet()
+        val familyKey = CaptureFamilyKey(
+            media = CaptureFamilyMedia.VIDEO,
+            capturedAtEpochMillis = System.currentTimeMillis(),
+            sequence = recordingCaptureId.toLong(),
+        )
+        val name = familyKey.displayName("mp4")
+        val scheduler = RecordingTeardownScheduler { delayMs, action ->
+            runCatching {
+                recorderWatchdog.schedule(
+                    action,
+                    delayMs,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }.getOrNull()?.let { future ->
+                RecordingTeardownCancellation { future.cancel(false) }
+            }
+        }
+        val deadlineRef = java.util.concurrent.atomic.AtomicReference<RecordingOperationDeadline?>()
+        lateinit var attempt: RecordingPreNativeAllocationAttempt<android.net.Uri>
+        attempt = RecordingPreNativeAllocationAttempt(
+            onRetired = {
+                deadlineRef.get()?.complete()
+                recordingPreNativeAttempt.compareAndSet(attempt, null)
+                UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
+                completeAttempt(false)
+            },
+            onLateValue = { uri ->
+                retirePendingRecordingRow(uri, recordingCaptureId, "stale-pre-native-allocation")
+            },
+        )
+        if (!recordingPreNativeAttempt.compareAndSet(null, attempt)) {
+            UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
+            return false
+        }
+        val allocationDeadline = RecordingOperationDeadline(
+            scheduler = scheduler,
+            timeoutMs = RECORDER_ALLOCATION_TIMEOUT_MS,
+            failure = { java.util.concurrent.TimeoutException("Pending video allocation timed out") },
+            onTimeout = { failure ->
+                if (attempt.retire()) {
+                    android.util.Log.e("CameraEngine", "REC allocation timed out", failure)
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
+            },
+        )
+        deadlineRef.set(allocationDeadline)
+        if (!allocationDeadline.arm()) return true
+        // Close the store-before-pause race: pause/release may have observed null immediately before
+        // this attempt was published. The post-publication recheck lets the same retire edge win.
+        if (paused || recAdmission.hasStopRequest() ||
+            currentAcceptedRecordingSession() !== acceptedSession
+        ) {
+            attempt.retire()
+            return true
+        }
+        val allocationTask: () -> Unit = allocationTask@{
+            val result = runCatching {
+                MediaStoreWriter.createPendingVideo(context, name, "video/mp4")
+            }
+            when (attempt.deliver(result)) {
+                RecordingPreNativeDelivery.READY -> {
+                    // The provider return and watchdog race independently. Only the deadline's
+                    // completion winner may schedule native setup; a timeout that already flipped
+                    // its state makes this allocated row stale even if onTimeout has not run yet.
+                    if (!allocationDeadline.complete()) {
+                        if (attempt.retire()) {
+                            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                        }
+                        return@allocationTask
+                    }
+                    val continuationAccepted = runCatching {
+                        recorderExecutor.execute {
+                            val uri = attempt.claim() ?: return@execute
+                            recordingPreNativeAttempt.compareAndSet(attempt, null)
+                            val ok = runCatching {
+                                continueRecordingAfterAllocation(
+                                    recordAudio = recordAudio,
+                                    acceptedSession = acceptedSession,
+                                    processAdmission = processAdmission,
+                                    encoderCandidates = encoderCandidates,
+                                    completeAttempt = completeAttempt,
+                                    uri = uri,
+                                    recordingCaptureId = recordingCaptureId,
+                                    name = name,
+                                )
+                            }.getOrElse { failure ->
+                                android.util.Log.w("CameraEngine", "REC admission threw", failure)
+                                // Owner state is unknown after an unexpected throw. Leave the
+                                // durably REGISTERED row private for structural recovery; deleting
+                                // here could race a native graph that crossed its creation edge.
+                                onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                                false
+                            }
+                            completeAttempt(ok)
+                        }
+                    }.isSuccess
+                    if (!continuationAccepted && attempt.retire()) {
+                        onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                    }
+                }
+                RecordingPreNativeDelivery.FAILED -> {
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
+                RecordingPreNativeDelivery.STALE -> Unit
+            }
+        }
+        val submission = runCatching { ProcessRecordingPreNativeAllocator.dispatch(allocationTask) }
+            .getOrElse { failure ->
+                if (attempt.retire()) {
+                    android.util.Log.e("CameraEngine", "REC allocation dispatch failed", failure)
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
+                return true
+            }
+        submission.cancellation?.let(attempt::attachCancellation)
+        when (submission.dispatch) {
+            RecordingPreNativeDispatch.ACCEPTED -> Unit
+            RecordingPreNativeDispatch.OVERFLOW,
+            RecordingPreNativeDispatch.SHUTDOWN,
+            -> {
+                if (attempt.retire()) onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+            }
+        }
+        return true
+    }
+
+    private fun continueRecordingAfterAllocation(
+        recordAudio: Boolean,
+        acceptedSession: AcceptedCameraSession,
+        processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+        encoderCandidates: List<EncoderSelection>,
+        completeAttempt: (Boolean) -> Unit,
+        uri: android.net.Uri,
+        recordingCaptureId: Int,
+        name: String,
+    ): Boolean = try {
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "superseded-before-mic")
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            false
+        } else if (currentAcceptedRecordingSession() !== acceptedSession) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "superseded-before-mic")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+            false
+        } else {
+            // Claim the microphone only after MediaProvider allocation returned. A provider wedge
+            // therefore cannot suppress the standby meter or retain its release latch.
             val audioClaim = standbyAudioController.beginRecording()
             if (!audioClaim.admitted) {
+                retirePendingRecordingRow(uri, recordingCaptureId, "mic-claim-refused")
                 false
             } else {
-                // Unexpected failures between mic claim and publication must release both claims.
                 try {
                     startRecordingClaimed(
-                        recordAudio,
-                        acceptedSession,
-                        audioClaim,
-                        processAdmission,
-                        encoderCandidates,
-                        completeAttempt,
+                        recordAudio = recordAudio,
+                        acceptedSession = acceptedSession,
+                        audioClaim = audioClaim,
+                        processAdmission = processAdmission,
+                        encoderCandidates = encoderCandidates,
+                        completeAttempt = completeAttempt,
+                        uri = uri,
+                        recordingCaptureId = recordingCaptureId,
+                        name = name,
                     )
                 } catch (t: Throwable) {
-                    android.util.Log.w("CameraEngine", "REC admission threw; releasing mic claim", t)
+                    android.util.Log.w("CameraEngine", "REC native admission threw", t)
                     abortRecordingStart()
+                    // Preserve the row for recovery: the throw may have occurred after a native
+                    // owner was created, so cleanup cannot infer that deleting is safe.
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                     false
                 }
             }
-        } finally {
-            // publishAdmission moves a successful setup to the active slot, so this is a no-op then.
-            UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
         }
+    } finally {
+        // publishAdmission moves a successful setup to the active slot, so this is a no-op then.
+        UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
     }
 
     /** The post-mic-claim half of REC admission; every return path releases or converts the claim. */
@@ -4022,43 +4176,39 @@ class CameraEngine(private val context: Context) {
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
         encoderCandidates: List<EncoderSelection>,
         completeAttempt: (Boolean) -> Unit,
+        uri: android.net.Uri,
+        recordingCaptureId: Int,
+        name: String,
     ): Boolean {
         val meterReleased = audioClaim.release?.let {
             runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
         } ?: true
         if (!meterReleased) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "mic-release-timeout")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.MICROPHONE_BUSY.status())
             return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "quarantined-after-mic-release")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         if (recorder != null) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "recorder-already-published")
             abortRecordingStart()
             return false
         }
         if (currentAcceptedRecordingSession() !== acceptedSession) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "session-superseded-before-native")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             return false
         }
         val ownedGl = glOwners.current()
-        val recordingCaptureId = captureSeq.incrementAndGet()
-        val familyKey = CaptureFamilyKey(
-            media = CaptureFamilyMedia.VIDEO,
-            capturedAtEpochMillis = System.currentTimeMillis(),
-            sequence = recordingCaptureId.toLong(),
-        )
-        val name = familyKey.displayName("mp4")
-        val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: run {
-            abortRecordingStart()
-            return false
-        }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
-            MediaStoreWriter.delete(context, uri)
+            retirePendingRecordingRow(uri, recordingCaptureId, "quarantined-before-native")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
@@ -4166,7 +4316,7 @@ class CameraEngine(private val context: Context) {
             )
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
-            MediaStoreWriter.delete(context, uri)
+            retirePendingRecordingRow(uri, recordingCaptureId, "quarantined-before-setup")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
@@ -4186,7 +4336,7 @@ class CameraEngine(private val context: Context) {
         if (!nativeSetupAdmitted) {
             setupDeadline.complete()
             if (!UnsafeRecorderQuarantine.isActive()) {
-                MediaStoreWriter.delete(context, uri)
+                retirePendingRecordingRow(uri, recordingCaptureId, "native-setup-refused")
                 abortRecordingStart()
                 onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             }
@@ -4203,8 +4353,9 @@ class CameraEngine(private val context: Context) {
                 return false
             }
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
-            // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
-            MediaStoreWriter.delete(context, uri)
+            // doesn't linger as a 0-byte orphan. Cleanup stays off the serial native lane; overflow
+            // leaves the durably REGISTERED row for launch recovery.
+            retirePendingRecordingRow(uri, recordingCaptureId, "native-setup-failed")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status()); return false
         }
@@ -4392,6 +4543,7 @@ class CameraEngine(private val context: Context) {
     }
 
     fun stopRecording() {
+        if (retirePreNativeRecordingAllocation()) return
         // Admission still queued/in flight on the recorder executor → the latch takes the stop
         // and the admission completion runs it there (exactly-once, ordered behind the start).
         if (recAdmission.requestStop()) return
@@ -4423,6 +4575,10 @@ class CameraEngine(private val context: Context) {
         // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
         ownedRecording.gl.setTransfer(transfer)
     }
+
+    /** Stop/timeout/lifecycle first-wins edge for provider work that cannot itself be interrupted. */
+    private fun retirePreNativeRecordingAllocation(): Boolean =
+        recordingPreNativeAttempt.getAndSet(null)?.retire() == true
 
     // True from stop/pause dispatching async native finalization until AudioRecord is released:
     // `recorder == null` alone says nothing about the mic, and the standby meter starting
@@ -4838,6 +4994,38 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Retires a durably REGISTERED row without putting provider work back on the REC/native lane.
+     * Rejection is safe: the private row remains in the journal for launch recovery's structural
+     * invalid-row cleanup.
+     */
+    private fun retirePendingRecordingRow(
+        uri: android.net.Uri,
+        captureId: Int,
+        reason: String,
+    ) {
+        val task = Runnable {
+            val deleted = MediaStoreWriter.delete(context, uri)
+            if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                android.util.Log.i(
+                    "CameraEngine",
+                    "RecordingAllocationRetired: captureId=$captureId reason=$reason deleted=$deleted",
+                )
+            }
+        }
+        when (dispatchRecordingStorageTask(task)) {
+            RecordingStorageDispatch.ACCEPTED -> Unit
+            RecordingStorageDispatch.OVERFLOW,
+            RecordingStorageDispatch.SHUTDOWN,
+            -> if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                android.util.Log.w(
+                    "CameraEngine",
+                    "RecordingAllocationRetired: captureId=$captureId reason=$reason retained=pending",
+                )
+            }
+        }
+    }
+
     private fun presentRecordingStorageResult(
         terminal: RecordingStorageTerminalResult<android.net.Uri>,
     ) {
@@ -4894,6 +5082,7 @@ class CameraEngine(private val context: Context) {
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
+        retirePreNativeRecordingAllocation()
         coldStartRetryGate.cancel()
         standbyAudioController.disable()
         invalidateCameraReady()
@@ -5179,6 +5368,7 @@ class CameraEngine(private val context: Context) {
         // this close (and the stop below owns it), or close wins and no later task can call gl.start.
         terminalAcquisitionGate.close()
         paused = true
+        retirePreNativeRecordingAllocation()
         started = false
         glInputPending = false
         coldStartRetryGate.cancel()
@@ -5466,6 +5656,7 @@ class CameraEngine(private val context: Context) {
         // dedicated camera-engine-release thread, never main (CameraViewModel.onCleared). It waits
         // for native classification only; MediaStore publication may continue independently.
         const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 14_000L
+        const val RECORDER_ALLOCATION_TIMEOUT_MS = 8_000L
         const val RECORDER_SETUP_TIMEOUT_MS = 8_000L
         const val RECORDER_FINALIZATION_TIMEOUT_MS = 8_000L
         const val RECORDER_DETACH_TIMEOUT_MS = 2_000L

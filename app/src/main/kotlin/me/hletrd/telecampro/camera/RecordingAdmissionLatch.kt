@@ -35,6 +35,10 @@ internal class RecordingAdmissionLatch {
         return true
     }
 
+    /** Advisory recheck for an async allocation owner published after Stop latched its request. */
+    @Synchronized
+    fun hasStopRequest(): Boolean = inFlight && stopRequested
+
     /**
      * Ends the admission (including executor-rejection abandonment via `succeeded = false`).
      * Returns true when a latched stop must run NOW — only for a successful admission; a failed

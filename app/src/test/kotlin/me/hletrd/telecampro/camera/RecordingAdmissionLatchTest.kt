@@ -58,7 +58,9 @@ class RecordingAdmissionLatchTest {
         val latch = RecordingAdmissionLatch()
         assertTrue(latch.tryBeginAdmission())
         assertTrue(latch.requestStop())
+        assertTrue(latch.hasStopRequest())
         assertTrue(latch.completeAdmission(succeeded = true))
+        assertFalse(latch.hasStopRequest())
     }
 
     @Test
