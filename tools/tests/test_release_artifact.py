@@ -617,33 +617,40 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             self.assertIn("HEAD changed during verification", failures)
 
     def test_ignored_packageable_source_is_rejected_initially_and_if_added_late(self) -> None:
-        for added_late in (False, True):
-            with self.subTest(added_late=added_late), tempfile.TemporaryDirectory() as temp_dir:
-                root = Path(temp_dir)
-                attestation, _, commit = self.fixture(root)
-                base = self.runner(commit)
-                ignored_calls = 0
+        package_inputs = (
+            "app/src/main/kotlin/example/release_password.secret",
+            "app/src/main/res/raw/release_secret.bin",
+            "app/src/release/AndroidManifest.xml.bak",
+        )
+        for relative in package_inputs:
+            for added_late in (False, True):
+                with (
+                    self.subTest(relative=relative, added_late=added_late),
+                    tempfile.TemporaryDirectory() as temp_dir,
+                ):
+                    root = Path(temp_dir)
+                    attestation, _, commit = self.fixture(root)
+                    base = self.runner(commit)
+                    ignored_calls = 0
 
-                def run(command, cwd):
-                    nonlocal ignored_calls
-                    if command[:3] == ["git", "ls-files", "-z"]:
-                        ignored_calls += 1
-                        present = not added_late or ignored_calls == 2
-                        output = (
-                            "app/src/main/res/raw/release_secret.bin\0" if present else ""
-                        )
-                        return subprocess.CompletedProcess(command, 0, output, "")
-                    return base(command, cwd)
+                    def run(command, cwd):
+                        nonlocal ignored_calls
+                        if command[:3] == ["git", "ls-files", "-z"]:
+                            ignored_calls += 1
+                            present = not added_late or ignored_calls == 2
+                            output = f"{relative}\0" if present else ""
+                            return subprocess.CompletedProcess(command, 0, output, "")
+                        return base(command, cwd)
 
-                failures = release.check_release_identity(root, attestation, run=run)
+                    failures = release.check_release_identity(root, attestation, run=run)
 
-                self.assertEqual(2, ignored_calls)
-                expected = (
-                    "ignored packageable source inputs changed during verification"
-                    if added_late
-                    else "release source roots contain ignored packageable inputs"
-                )
-                self.assertIn(expected, failures)
+                    self.assertEqual(2, ignored_calls)
+                    expected = (
+                        "ignored packageable source inputs changed during verification"
+                        if added_late
+                        else "release source roots contain ignored packageable inputs"
+                    )
+                    self.assertIn(expected, failures)
 
     def test_ignored_source_query_is_nul_safe_and_scoped_to_package_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
