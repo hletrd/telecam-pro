@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import pathlib
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -56,6 +58,74 @@ def require_clean_commit(root: pathlib.Path) -> tuple[str, str]:
     return commit, tree
 
 
+def tracked_entries(root: pathlib.Path) -> list[tuple[str, str]]:
+    """Return exact Git modes and paths; release inputs must be ordinary blob entries."""
+    raw = subprocess.run(
+        ["git", "ls-files", "--stage", "-z"],
+        cwd=root,
+        capture_output=True,
+        check=True,
+    ).stdout
+    entries: list[tuple[str, str]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise RuntimeError("Git returned a malformed tracked-source record")
+        mode = fields[0].decode("ascii")
+        relative = raw_path.decode("utf-8")
+        if mode not in {"100644", "100755"}:
+            raise RuntimeError(
+                f"release source is not a regular tracked file: {relative} (mode {mode})"
+            )
+        entries.append((mode, relative))
+    return entries
+
+
+def sha256_regular_beneath(root: pathlib.Path, relative: str) -> str:
+    """Hash one regular file through no-follow directory/file descriptors."""
+    parts = pathlib.PurePosixPath(relative).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError(f"release source path is unsafe: {relative!r}")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.open(root, directory_flags | no_follow)
+        descriptors.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags | no_follow, dir_fd=current)
+            descriptors.append(current)
+        file_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | no_follow,
+            dir_fd=current,
+        )
+        descriptors.append(file_fd)
+        attributes = os.fstat(file_fd)
+        if not stat.S_ISREG(attributes.st_mode):
+            raise RuntimeError(f"release source is not a regular file: {relative}")
+        digest = hashlib.sha256()
+        with os.fdopen(os.dup(file_fd), "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        final_attributes = os.fstat(file_fd)
+        identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+            raise RuntimeError(f"release source changed while it was hashed: {relative}")
+        return digest.hexdigest()
+    except OSError as error:
+        raise RuntimeError(f"could not safely read release source {relative}: {error}") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) -> dict[str, str]:
     subprocess.run(
         ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(destination)],
@@ -67,18 +137,10 @@ def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) ->
         cwd=destination,
         check=True,
     )
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=destination,
-        capture_output=True,
-        check=True,
-    ).stdout.split(b"\0")
+    tracked = tracked_entries(destination)
     return {
-        relative.decode("utf-8"): hashlib.sha256(
-            destination.joinpath(relative.decode("utf-8")).read_bytes()
-        ).hexdigest()
-        for relative in tracked
-        if relative
+        relative: sha256_regular_beneath(destination, relative)
+        for _, relative in tracked
     }
 
 
@@ -112,12 +174,15 @@ def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> None:
 
 
 def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
-    changed = [
-        relative
-        for relative, digest in expected.items()
-        if not (snapshot / relative).is_file()
-        or hashlib.sha256((snapshot / relative).read_bytes()).hexdigest() != digest
-    ]
+    changed: list[str] = []
+    for relative, digest in expected.items():
+        try:
+            actual = sha256_regular_beneath(snapshot, relative)
+        except RuntimeError:
+            changed.append(relative)
+            continue
+        if actual != digest:
+            changed.append(relative)
     if changed:
         raise RuntimeError("immutable release snapshot changed during build: " + ", ".join(changed))
     status = subprocess.run(

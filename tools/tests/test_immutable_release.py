@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -124,6 +125,75 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 "No issues found.\n",
             )
             self.assertFalse(output.joinpath("logs/unrelated.html").exists())
+
+    def test_tracked_relative_and_absolute_symlinks_are_rejected(self) -> None:
+        for absolute in (False, True):
+            with self.subTest(absolute=absolute), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir) / "fixture"
+                root.mkdir()
+                target = root / "outside.txt"
+                target.write_text("external bytes\n", encoding="utf-8")
+                link = root / "app/src/main/packageable.txt"
+                link.parent.mkdir(parents=True)
+                link.symlink_to(target if absolute else Path("../../../outside.txt"))
+                (root / ".gitignore").write_text("app/build/\n", encoding="utf-8")
+                (root / "gradlew").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                (root / "gradlew").chmod(0o755)
+                subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Snapshot Test"], cwd=root, check=True)
+                subprocess.run(["git", "config", "user.email", "snapshot@example.invalid"], cwd=root, check=True)
+                subprocess.run(["git", "add", "."], cwd=root, check=True)
+                subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+                with self.assertRaisesRegex(RuntimeError, "not a regular tracked file"):
+                    release.build_immutable_release(
+                        root,
+                        [":app:bundleRelease"],
+                        Path(temp_dir) / "output",
+                        run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                    )
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO fixture requires POSIX mkfifo")
+    def test_snapshot_special_file_swap_is_rejected_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+
+            def replace_with_fifo(_: Path, snapshot: Path) -> None:
+                tracked = snapshot / "app/src/main/tracked.txt"
+                tracked.unlink()
+                os.mkfifo(tracked)
+
+            with self.assertRaisesRegex(RuntimeError, "snapshot changed during build"):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    Path(temp_dir) / "output",
+                    run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                    after_snapshot=replace_with_fifo,
+                )
+
+    def test_snapshot_parent_symlink_swap_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+
+            def replace_parent(_: Path, snapshot: Path) -> None:
+                source = snapshot / "app/src"
+                retained = snapshot / "app/src-retained"
+                source.rename(retained)
+                source.symlink_to(retained, target_is_directory=True)
+
+            with self.assertRaisesRegex(RuntimeError, "snapshot changed during build"):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    Path(temp_dir) / "output",
+                    run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                    after_snapshot=replace_parent,
+                )
 
 
 if __name__ == "__main__":

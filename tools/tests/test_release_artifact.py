@@ -337,6 +337,79 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
 
             self.assertTrue(any("signer certificate" in item for item in failures))
 
+    def test_source_swap_after_early_and_late_tool_boundaries_fails_closed(self) -> None:
+        for trigger in (("keytool", "-printcert"), ("bundletool", "dump")):
+            with self.subTest(trigger=trigger), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, aab, commit = self.fixture(root)
+                base = self.runner(commit)
+                swapped = False
+                inspected_paths: list[Path] = []
+
+                def run(command, cwd):
+                    nonlocal swapped
+                    for argument in command:
+                        if str(argument).endswith(".aab") or str(argument).startswith("--bundle="):
+                            raw = str(argument).removeprefix("--bundle=")
+                            inspected_paths.append(Path(raw))
+                    if not swapped and command[0] == trigger[0] and trigger[1] in command:
+                        original_bytes = aab.read_bytes()
+                        aab.rename(aab.with_suffix(".retired"))
+                        aab.write_bytes(original_bytes + b"source-path-swap")
+                        swapped = True
+                    return base(command, cwd)
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(swapped)
+                self.assertTrue(
+                    any("source identity or digest changed" in item for item in failures),
+                    failures,
+                )
+                self.assertTrue(inspected_paths)
+                self.assertTrue(all(path != aab for path in inspected_paths))
+                self.assertEqual(1, len({path for path in inspected_paths if path.suffix == ".aab"}))
+
+    def test_artifact_symlink_and_special_file_inputs_fail_before_tools(self) -> None:
+        for absolute_target in (False, True):
+            with self.subTest(absolute_target=absolute_target), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, aab, commit = self.fixture(root)
+                target = root / "outside.aab"
+                target.write_bytes(aab.read_bytes())
+                aab.unlink()
+                aab.symlink_to(target if absolute_target else Path("../outside.aab"))
+
+                failures = release.check_release_identity(root, attestation, run=self.runner(commit))
+
+                self.assertTrue(any("no-follow regular file" in item for item in failures), failures)
+
+        if hasattr(os, "mkfifo"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, aab, commit = self.fixture(root)
+                aab.unlink()
+                os.mkfifo(aab)
+
+                failures = release.check_release_identity(root, attestation, run=self.runner(commit))
+
+                self.assertTrue(any("no-follow regular file" in item for item in failures), failures)
+
+    def test_artifact_parent_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, aab, commit = self.fixture(root)
+            original_releases = root / "original-releases"
+            external_releases = root / "external-releases"
+            (root / "releases").rename(original_releases)
+            external_releases.mkdir()
+            (external_releases / aab.name).write_bytes((original_releases / aab.name).read_bytes())
+            (root / "releases").symlink_to(external_releases, target_is_directory=True)
+
+            failures = release.check_release_identity(root, attestation, run=self.runner(commit))
+
+            self.assertTrue(any("no-follow regular file" in item for item in failures), failures)
+
 
 if __name__ == "__main__":
     unittest.main()

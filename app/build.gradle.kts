@@ -1,4 +1,7 @@
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Paths
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.Properties
 import org.gradle.api.DefaultTask
@@ -115,7 +118,58 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
             *protectedSourceRoots.get().toTypedArray(),
         )
 
+        fun requireRegularTrackedInputs() {
+            val records = gitBytes("ls-files", "--stage", "-z")
+                .toString(Charsets.UTF_8)
+                .split('\u0000')
+                .filter(String::isNotEmpty)
+            val root = repositoryDirectory.get().asFile.toPath()
+            records.forEach { record ->
+                val separator = record.indexOf('\t')
+                val metadata = if (separator >= 0) record.substring(0, separator) else ""
+                val relative = if (separator >= 0) record.substring(separator + 1) else ""
+                val fields = metadata.split(' ').filter(String::isNotEmpty)
+                if (fields.size != 3 || relative.isEmpty()) {
+                    throw GradleException("Git returned a malformed tracked release-input record")
+                }
+                val mode = fields[0]
+                if (mode != "100644" && mode != "100755") {
+                    throw GradleException(
+                        "Release input is not a regular tracked file: $relative (mode $mode)",
+                    )
+                }
+                var current = root
+                val parts = Paths.get(relative).normalize()
+                if (parts.isAbsolute || parts.any { it.toString() == ".." }) {
+                    throw GradleException("Tracked release-input path is unsafe: $relative")
+                }
+                parts.forEachIndexed { index, component ->
+                    current = current.resolve(component.toString())
+                    val attributes = try {
+                        Files.readAttributes(
+                            current,
+                            BasicFileAttributes::class.java,
+                            LinkOption.NOFOLLOW_LINKS,
+                        )
+                    } catch (error: Exception) {
+                        throw GradleException(
+                            "Could not inspect tracked release input without following links: $relative",
+                            error,
+                        )
+                    }
+                    val final = index == parts.nameCount - 1
+                    val valid = if (final) attributes.isRegularFile else attributes.isDirectory
+                    if (!valid || Files.isSymbolicLink(current)) {
+                        throw GradleException(
+                            "Release input is not a no-follow regular path: $relative",
+                        )
+                    }
+                }
+            }
+        }
+
         fun requireClean() {
+            requireRegularTrackedInputs()
             val changes = worktreeChanges()
             if (changes.isNotEmpty()) {
                 throw GradleException(

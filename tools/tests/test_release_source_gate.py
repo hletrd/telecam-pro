@@ -94,6 +94,18 @@ class ReleaseSourceGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn(expected_path, output)
 
+    def gate_fixture(self, root: Path, output: Path) -> subprocess.CompletedProcess[str]:
+        return run(
+            [
+                "./gradlew",
+                "--console=plain",
+                ":app:verifyCleanReleaseGitFixture",
+                f"-PreleaseGateFixtureRepo={root}",
+                f"-PreleaseGateFixtureOutput={output}",
+            ],
+            REPO_ROOT,
+        )
+
     def test_clean_dirty_and_hidden_release_inputs(self) -> None:
         clean = self.gate()
         self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
@@ -210,6 +222,52 @@ class ReleaseSourceGateTest(unittest.TestCase):
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("tools/build_immutable_release.py", output)
+
+    def test_gradle_guard_rejects_relative_and_absolute_tracked_symlinks(self) -> None:
+        for absolute in (False, True):
+            with self.subTest(absolute=absolute), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir) / "fixture"
+                (root / "app/src/main").mkdir(parents=True)
+                (root / "app/src/release").mkdir(parents=True)
+                target = root / "outside.txt"
+                target.write_text("external bytes\n", encoding="utf-8")
+                link = root / "app/src/main/packageable.txt"
+                link.symlink_to(target if absolute else Path("../../../outside.txt"))
+                subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=root, check=True)
+                subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=root, check=True)
+                subprocess.run(["git", "add", "."], cwd=root, check=True)
+                subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+                result = self.gate_fixture(root, Path(temp_dir) / "output")
+                combined = result.stdout + result.stderr
+
+                self.assertNotEqual(0, result.returncode, combined)
+                self.assertIn("not a regular tracked file", combined)
+                self.assertIn("app/src/main/packageable.txt", combined)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO fixture requires POSIX mkfifo")
+    def test_gradle_guard_rejects_special_file_at_tracked_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            tracked = root / "app/src/main/packageable.txt"
+            tracked.parent.mkdir(parents=True)
+            (root / "app/src/release").mkdir(parents=True)
+            tracked.write_text("indexed bytes\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+            tracked.unlink()
+            os.mkfifo(tracked)
+
+            result = self.gate_fixture(root, Path(temp_dir) / "output")
+            combined = result.stdout + result.stderr
+
+            self.assertNotEqual(0, result.returncode, combined)
+            self.assertIn("not a no-follow regular path", combined)
+            self.assertIn("app/src/main/packageable.txt", combined)
 
 
 if __name__ == "__main__":

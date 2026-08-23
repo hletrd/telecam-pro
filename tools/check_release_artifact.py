@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,6 +40,122 @@ class SourceVersion:
     application_id: str
     min_sdk: int
     target_sdk: int
+
+
+@dataclass(frozen=True)
+class RegularFileIdentity:
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+    sha256: str
+
+
+def _open_regular_beneath(root: pathlib.Path, relative: pathlib.PurePath) -> tuple[int, list[int]]:
+    parts = relative.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise OSError(f"unsafe artifact path: {relative}")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.open(root, directory_flags | no_follow)
+        descriptors.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags | no_follow, dir_fd=current)
+            descriptors.append(current)
+        file_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | no_follow,
+            dir_fd=current,
+        )
+        descriptors.append(file_fd)
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise OSError(f"artifact is not a regular file: {relative}")
+        return file_fd, descriptors
+    except BaseException:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def _close_descriptors(descriptors: Sequence[int]) -> None:
+    for descriptor in reversed(descriptors):
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
+def snapshot_regular_file(
+    root: pathlib.Path,
+    relative: pathlib.PurePath,
+    destination: pathlib.Path,
+) -> RegularFileIdentity:
+    """Copy one no-follow regular inode and hash the exact bytes copied."""
+    file_fd, descriptors = _open_regular_beneath(root, relative)
+    digest = hashlib.sha256()
+    try:
+        attributes = os.fstat(file_fd)
+        output_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            with os.fdopen(os.dup(file_fd), "rb") as source, os.fdopen(output_fd, "wb") as output:
+                output_fd = -1
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    output.write(chunk)
+        finally:
+            if output_fd >= 0:
+                os.close(output_fd)
+        final_attributes = os.fstat(file_fd)
+        identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+            raise OSError(f"artifact changed while its private snapshot was copied: {relative}")
+        return RegularFileIdentity(
+            device=attributes.st_dev,
+            inode=attributes.st_ino,
+            size=attributes.st_size,
+            modified_ns=attributes.st_mtime_ns,
+            changed_ns=attributes.st_ctime_ns,
+            sha256=digest.hexdigest(),
+        )
+    finally:
+        _close_descriptors(descriptors)
+
+
+def regular_file_identity(
+    root: pathlib.Path,
+    relative: pathlib.PurePath,
+) -> RegularFileIdentity:
+    file_fd, descriptors = _open_regular_beneath(root, relative)
+    digest = hashlib.sha256()
+    try:
+        attributes = os.fstat(file_fd)
+        with os.fdopen(os.dup(file_fd), "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        final_attributes = os.fstat(file_fd)
+        identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+            raise OSError(f"artifact changed while it was revalidated: {relative}")
+        return RegularFileIdentity(
+            device=attributes.st_dev,
+            inode=attributes.st_ino,
+            size=attributes.st_size,
+            modified_ns=attributes.st_mtime_ns,
+            changed_ns=attributes.st_ctime_ns,
+            sha256=digest.hexdigest(),
+        )
+    finally:
+        _close_descriptors(descriptors)
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -242,7 +360,8 @@ def check_release_identity(
             failures.append("attested version_name does not match app/build.gradle.kts")
 
     raw_aab_path = pathlib.Path(str(document["aab_path"]))
-    aab_path = (root / raw_aab_path).resolve() if not raw_aab_path.is_absolute() else raw_aab_path.resolve()
+    candidate_aab = root / raw_aab_path if not raw_aab_path.is_absolute() else raw_aab_path
+    aab_path = pathlib.Path(os.path.abspath(candidate_aab))
     try:
         relative_aab = aab_path.relative_to(root)
     except ValueError:
@@ -250,25 +369,33 @@ def check_release_identity(
         relative_aab = None
     if relative_aab is not None and relative_aab.parts[:3] == ("app", "build", "outputs"):
         failures.append("mutable app/build/outputs is not an immutable upload artifact location")
-    if not aab_path.is_file():
-        return failures + [f"AAB missing: {aab_path}"]
+    if relative_aab is None:
+        return failures
+
+    artifact_temp = tempfile.TemporaryDirectory(prefix="telecam-release-artifact-")
+    verified_aab_path = pathlib.Path(artifact_temp.name) / "verified.aab"
+    try:
+        source_identity = snapshot_regular_file(root, relative_aab, verified_aab_path)
+    except OSError as error:
+        artifact_temp.cleanup()
+        return failures + [f"AAB is not a readable no-follow regular file: {error}"]
 
     attested_aab_sha = normalize_sha256(str(document["aab_sha256"]))
-    actual_aab_sha = sha256_file(aab_path)
+    actual_aab_sha = source_identity.sha256
     if attested_aab_sha != actual_aab_sha:
         failures.append("AAB SHA-256 does not match attestation")
     if re.fullmatch(r"[0-9a-f]{40}", attested_commit):
         immutable_tokens = (attested_commit[:7], actual_aab_sha[:12])
         if any(token not in aab_path.name.casefold() for token in immutable_tokens):
             failures.append("AAB filename must contain the short commit and SHA-256 prefix")
-        packaged_commits = packaged_source_commits(aab_path)
+        packaged_commits = packaged_source_commits(verified_aab_path)
         if packaged_commits != {attested_commit}:
             failures.append(
                 "packaged AGP source revision does not uniquely match the attested commit"
             )
         tree_result = run(["git", "rev-parse", f"{attested_commit}^{{tree}}"], root)
         expected_tree = tree_result.stdout.strip() if tree_result.returncode == 0 else ""
-        source_provenance = packaged_source_provenance(aab_path)
+        source_provenance = packaged_source_provenance(verified_aab_path)
         if (
             not re.fullmatch(r"[0-9a-f]{40}", expected_tree)
             or source_provenance != (attested_commit, expected_tree)
@@ -281,7 +408,7 @@ def check_release_identity(
     if signer != EXPECTED_UPLOAD_CERT_SHA256:
         failures.append("attested signer is not the recorded Play upload certificate")
 
-    cert_result = run(["keytool", "-printcert", "-jarfile", str(aab_path)], root)
+    cert_result = run(["keytool", "-printcert", "-jarfile", str(verified_aab_path)], root)
     cert_output = cert_result.stdout + "\n" + cert_result.stderr
     actual_signers = {
         normalized
@@ -291,15 +418,15 @@ def check_release_identity(
     if cert_result.returncode != 0 or actual_signers != {signer}:
         failures.append("AAB signer certificate does not match attestation")
     else:
-        strict_failure = strict_jar_verification_failure(root, aab_path, run)
+        strict_failure = strict_jar_verification_failure(root, verified_aab_path, run)
         if strict_failure is not None:
             failures.append(strict_failure)
 
-    validate_result = run(["bundletool", "validate", f"--bundle={aab_path}"], root)
+    validate_result = run(["bundletool", "validate", f"--bundle={verified_aab_path}"], root)
     if validate_result.returncode != 0:
         failures.append("bundletool validation failed")
 
-    manifest_result = run(["bundletool", "dump", "manifest", f"--bundle={aab_path}"], root)
+    manifest_result = run(["bundletool", "dump", "manifest", f"--bundle={verified_aab_path}"], root)
     manifest = manifest_result.stdout
     packaged_application = re.search(r'<manifest[^>]+\bpackage="([^"]+)"', manifest)
     packaged_code = re.search(r'android:versionCode="(\d+)"', manifest)
@@ -330,6 +457,14 @@ def check_release_identity(
                 failures.append("packaged minSdk does not match source")
             if int(packaged_target_sdk.group(1)) != source_version.target_sdk:
                 failures.append("packaged targetSdk does not match source")
+    try:
+        final_source_identity = regular_file_identity(root, relative_aab)
+    except OSError as error:
+        failures.append(f"AAB source path changed or became unsafe during verification: {error}")
+    else:
+        if final_source_identity != source_identity:
+            failures.append("AAB source identity or digest changed during verification")
+    artifact_temp.cleanup()
     return failures
 
 
