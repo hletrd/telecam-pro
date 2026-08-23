@@ -16,9 +16,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LaunchMediaRecoveryCoordinatorTest {
+    private class TestDeadlineScheduler : LaunchMediaRecoveryDeadlineScheduler {
+        private class Entry(
+            val delayMs: Long,
+            val action: () -> Unit,
+        ) {
+            var canceled = false
+        }
+
+        private val entries = mutableListOf<Entry>()
+
+        override fun schedule(
+            delayMs: Long,
+            action: () -> Unit,
+        ): LaunchMediaRecoveryDeadlineCancellation = Entry(delayMs, action).let { entry ->
+            entries += entry
+            LaunchMediaRecoveryDeadlineCancellation { entry.canceled = true }
+        }
+
+        fun fire(index: Int = entries.lastIndex) {
+            entries[index].takeUnless { it.canceled }?.action?.invoke()
+        }
+
+        fun delayAt(index: Int = entries.lastIndex): Long = entries[index].delayMs
+        fun isCanceled(index: Int = entries.lastIndex): Boolean = entries[index].canceled
+        fun count(): Int = entries.size
+    }
+
+    private fun <T : Any> coordinator(
+        scheduler: TestDeadlineScheduler = TestDeadlineScheduler(),
+        dispatch: (Runnable) -> Boolean,
+    ) = LaunchMediaRecoveryCoordinator<T>(
+        dispatch = dispatch,
+        deadlineScheduler = scheduler,
+        deadlineMs = TEST_DEADLINE_MS,
+    )
+
     @Test
     fun `dispatcher rejection terminally fails and retires the sole admission`() {
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { false }
+        val coordinator = coordinator<Int> { false }
         val owner = Any()
         var terminal: Result<Int>? = null
 
@@ -32,7 +68,7 @@ class LaunchMediaRecoveryCoordinatorTest {
     @Test
     fun `dispatcher exception is the exact typed terminal failure`() {
         val failure = IllegalStateException("dispatcher unavailable")
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { throw failure }
+        val coordinator = coordinator<Int> { throw failure }
         var terminal: Result<Int>? = null
 
         coordinator.request(Any(), recover = { 1 }) { terminal = it }
@@ -43,9 +79,34 @@ class LaunchMediaRecoveryCoordinatorTest {
     }
 
     @Test
+    fun `unavailable deadline exhausts capacity before provider work is dispatched`() {
+        var dispatches = 0
+        val coordinator = LaunchMediaRecoveryCoordinator<Int>(
+            dispatch = {
+                dispatches += 1
+                true
+            },
+            deadlineScheduler = LaunchMediaRecoveryDeadlineScheduler { _, _ -> null },
+            deadlineMs = TEST_DEADLINE_MS,
+        )
+        val delivered = mutableListOf<Result<Int>>()
+
+        coordinator.request(Any(), recover = { 1 }) { delivered += it }
+        coordinator.request(Any(), recover = { 2 }) { delivered += it }
+
+        val failure = delivered.first().exceptionOrNull()
+        assertEquals(0, dispatches)
+        assertEquals(2, delivered.size)
+        assertTrue(failure is LaunchMediaRecoveryCapacityExhaustedException)
+        assertTrue(delivered.all { it.exceptionOrNull() === failure })
+        assertTrue(coordinator.isExhausted())
+        assertEquals(0, coordinator.subscriberCount())
+    }
+
+    @Test
     fun `blocked recovery stays single flight across engine replacement`() {
         val tasks = ArrayDeque<Runnable>()
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val coordinator = coordinator<Int> { task -> tasks.addLast(task); true }
         val delivered = mutableListOf<Int>()
         val oldOwners = List(64) { Any() }
         oldOwners.forEachIndexed { index, owner ->
@@ -69,7 +130,7 @@ class LaunchMediaRecoveryCoordinatorTest {
     @Test
     fun `request after completion starts one fresh recovery`() {
         val tasks = ArrayDeque<Runnable>()
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val coordinator = coordinator<Int> { task -> tasks.addLast(task); true }
         var recoveries = 0
 
         coordinator.request(Any(), recover = { ++recoveries }) {}
@@ -84,7 +145,7 @@ class LaunchMediaRecoveryCoordinatorTest {
     @Test
     fun `throwing recovery terminally fails live subscribers and permits a later request`() {
         val tasks = ArrayDeque<Runnable>()
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val coordinator = coordinator<Int> { task -> tasks.addLast(task); true }
         val failure = IllegalStateException("provider escaped")
         val firstOwner = Any()
         val secondOwner = Any()
@@ -121,7 +182,7 @@ class LaunchMediaRecoveryCoordinatorTest {
     @Test
     fun `cancellation remains authoritative after terminal callbacks are snapshotted`() {
         val tasks = ArrayDeque<Runnable>()
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val coordinator = coordinator<Int> { task -> tasks.addLast(task); true }
         val delivered = mutableListOf<String>()
         lateinit var laterSubscription: LaunchMediaRecoverySubscription
 
@@ -146,7 +207,7 @@ class LaunchMediaRecoveryCoordinatorTest {
     @Test
     fun `replacing one owner cancels its earlier subscription identity`() {
         val tasks = ArrayDeque<Runnable>()
-        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val coordinator = coordinator<Int> { task -> tasks.addLast(task); true }
         val owner = Any()
         val delivered = mutableListOf<String>()
 
@@ -158,6 +219,106 @@ class LaunchMediaRecoveryCoordinatorTest {
         tasks.removeFirst().run()
 
         assertEquals(listOf("new:41"), delivered)
+    }
+
+    @Test
+    fun `never-returning recovery deadline terminally fails every live engine subscriber`() {
+        val tasks = ArrayDeque<Runnable>()
+        val scheduler = TestDeadlineScheduler()
+        val coordinator = coordinator<Int>(scheduler) { task -> tasks.addLast(task); true }
+        val oldOwner = Any()
+        val replacementOwner = Any()
+        val delivered = mutableListOf<Pair<String, Throwable?>>()
+
+        val oldSubscription = coordinator.request(oldOwner, recover = { error("never returns") }) {
+            delivered += "old" to it.exceptionOrNull()
+        }
+        oldSubscription.cancel()
+        coordinator.request(replacementOwner, recover = { error("must stay single-flight") }) {
+            delivered += "replacement" to it.exceptionOrNull()
+        }
+
+        assertEquals(TEST_DEADLINE_MS, scheduler.delayAt())
+        assertEquals(1, tasks.size)
+        assertEquals(1, coordinator.subscriberCount())
+
+        scheduler.fire()
+
+        assertEquals(listOf("replacement"), delivered.map { it.first })
+        assertTrue(delivered.single().second is LaunchMediaRecoveryCapacityExhaustedException)
+        assertTrue(coordinator.isExhausted())
+        assertFalse(coordinator.isRunning())
+        assertEquals(0, coordinator.subscriberCount())
+    }
+
+    @Test
+    fun `deadline snapshot still honors cancellation from an earlier callback`() {
+        val tasks = ArrayDeque<Runnable>()
+        val scheduler = TestDeadlineScheduler()
+        val coordinator = coordinator<Int>(scheduler) { task -> tasks.addLast(task); true }
+        val delivered = mutableListOf<String>()
+        lateinit var laterSubscription: LaunchMediaRecoverySubscription
+
+        coordinator.request(Any(), recover = { error("never returns") }) {
+            delivered += "first"
+            laterSubscription.cancel()
+        }
+        laterSubscription = coordinator.request(
+            owner = Any(),
+            recover = { error("must stay single-flight") },
+        ) { delivered += "later" }
+
+        scheduler.fire()
+
+        assertEquals(listOf("first"), delivered)
+        assertEquals(0, coordinator.subscriberCount())
+        assertTrue(coordinator.isExhausted())
+    }
+
+    @Test
+    fun `late recovery return is inert after deadline exhaustion`() {
+        val tasks = ArrayDeque<Runnable>()
+        val scheduler = TestDeadlineScheduler()
+        val coordinator = coordinator<Int>(scheduler) { task -> tasks.addLast(task); true }
+        val delivered = mutableListOf<Result<Int>>()
+        var recoveries = 0
+
+        coordinator.request(Any(), recover = { ++recoveries }) { delivered += it }
+        scheduler.fire()
+        val terminalFailure = delivered.single().exceptionOrNull()
+
+        tasks.removeFirst().run()
+
+        assertEquals(1, recoveries)
+        assertEquals(1, delivered.size)
+        assertTrue(delivered.single().exceptionOrNull() === terminalFailure)
+        assertTrue(coordinator.isExhausted())
+    }
+
+    @Test
+    fun `later requests reuse terminal capacity failure without retention or replacement workers`() {
+        val tasks = ArrayDeque<Runnable>()
+        val scheduler = TestDeadlineScheduler()
+        val coordinator = coordinator<Int>(scheduler) { task -> tasks.addLast(task); true }
+        val delivered = mutableListOf<Result<Int>>()
+
+        coordinator.request(Any(), recover = { error("never returns") }) { delivered += it }
+        scheduler.fire()
+        val exhausted = delivered.single().exceptionOrNull()
+
+        repeat(64) {
+            coordinator.request(Any(), recover = { error("replacement worker forbidden") }) {
+                delivered += it
+            }
+        }
+
+        assertEquals(1, tasks.size)
+        assertEquals(1, scheduler.count())
+        assertEquals(65, delivered.size)
+        assertTrue(delivered.all { it.exceptionOrNull() === exhausted })
+        assertTrue(exhausted is LaunchMediaRecoveryCapacityExhaustedException)
+        assertEquals(0, coordinator.subscriberCount())
+        assertTrue(coordinator.isExhausted())
     }
 
     @Test
@@ -325,5 +486,9 @@ class LaunchMediaRecoveryCoordinatorTest {
         assertEquals(2, completion.report.scanned)
         assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
         assertEquals(setOf(RecoveryFailureClass.DELETE), completion.report.failureClasses)
+    }
+
+    private companion object {
+        const val TEST_DEADLINE_MS = 1_000L
     }
 }
