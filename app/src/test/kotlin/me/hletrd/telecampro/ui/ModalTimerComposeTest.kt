@@ -2,19 +2,15 @@ package me.hletrd.telecampro.ui
 
 import android.app.Application
 import android.os.Looper
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import android.view.View
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import java.time.Duration
+import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.After
@@ -55,33 +51,27 @@ class ModalTimerComposeTest {
 
     private fun idleFor(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
 
-    private fun showArmedTimer(modalLabel: String) {
-        // Camera readiness is orthogonal here: arm the real one-shot scheduler directly, then
-        // exercise the production Compose modal door that must acquire and cancel its ownership.
+    private fun armTimer() {
         CameraViewModel::class.java.getDeclaredMethod("startCountdown", Int::class.javaPrimitiveType)
             .apply { isAccessible = true }
             .invoke(vm, 3)
         assertEquals(3, vm.state.value.timerCountdownSec)
+    }
+
+    private fun showArmedCameraScreen() {
+        // Camera readiness is orthogonal: arm the real one-shot scheduler, then render the actual
+        // production CameraScreen. Only the native preview host is substituted; shipping chrome,
+        // semantics, modal state, and action wiring remain untouched.
+        armTimer()
         compose.setContent {
             TeleCamProTheme {
                 val state by vm.state.collectAsState()
-                Box(Modifier.fillMaxSize()) {
-                    SelfTimerCountdownOverlay(
-                        seconds = state.timerCountdownSec,
-                        accessibilityLabel = "Self-timer",
-                        accessibilityStateDescription = "3 seconds remaining",
-                        rotationDegrees = 0f,
-                        onCancel = vm::onCapturePhoto,
-                    )
-                    // Production Settings/Fn doors call this same ownership seam before making the
-                    // modal visible. Keeping the harness lightweight avoids creating a TextureView
-                    // and tests the ordering itself: the later sibling wins the touch, then must
-                    // synchronously retire the scheduler before it could fire behind the modal.
-                    Button(
-                        onClick = { vm.onCameraInputBlockedChange(true) },
-                        modifier = Modifier.align(Alignment.TopEnd),
-                    ) { Text(modalLabel) }
-                }
+                CameraScreen(
+                    state = state,
+                    actions = vm,
+                    previewViewFactory = { View(it) },
+                    windowRotationOverrideDeg = 0,
+                )
             }
         }
         compose.waitForIdle()
@@ -98,22 +88,33 @@ class ModalTimerComposeTest {
     }
 
     @Test
-    fun `Settings acquires modal ownership before a one-shot timer can fire`() {
-        showArmedTimer("Settings")
+    fun `direct modal ownership still cancels an armed one-shot timer`() {
+        armTimer()
 
-        compose.onNodeWithText("Settings").performClick()
-        compose.waitForIdle()
+        vm.onCameraInputBlockedChange(true)
 
         assertCancelledWithoutLateCapture()
     }
 
     @Test
-    fun `Fn acquires modal ownership before a one-shot timer can fire`() {
-        showArmedTimer("Fn")
+    fun `shipping Settings door cancels a one-shot timer before opening`() {
+        showArmedCameraScreen()
 
-        compose.onNodeWithText("Fn").performClick()
+        compose.onNodeWithContentDescription(app.getString(R.string.a11y_open_settings)).performClick()
         compose.waitForIdle()
 
+        compose.onNodeWithContentDescription(app.getString(R.string.a11y_close_settings)).assertExists()
+        assertCancelledWithoutLateCapture()
+    }
+
+    @Test
+    fun `shipping Fn door cancels a one-shot timer before opening`() {
+        showArmedCameraScreen()
+
+        compose.onNodeWithContentDescription(app.getString(R.string.a11y_open_function_menu)).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithContentDescription(app.getString(R.string.a11y_close_function_menu)).assertExists()
         assertCancelledWithoutLateCapture()
     }
 }

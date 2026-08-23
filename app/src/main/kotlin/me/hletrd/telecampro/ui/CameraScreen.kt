@@ -330,6 +330,13 @@ fun CameraScreen(
     state: CameraUiState,
     actions: CameraActions,
     modifier: Modifier = Modifier,
+    // Narrow host seam for production-composition tests. Shipping keeps the TextureView factory
+    // below; tests may substitute a plain View while exercising the real CameraScreen chrome and
+    // modal doors without starting a native preview surface.
+    previewViewFactory: ((android.content.Context) -> android.view.View)? = null,
+    // A plain ComposeRule context has no Display. Production reads the real window; the same narrow
+    // host seam lets production-composition tests pin the phone's inert ROTATION_0 contract.
+    windowRotationOverrideDeg: Int? = null,
 ) {
     val a11yCameraViewfinder = stringResource(R.string.a11y_camera_viewfinder)
     val a11yLoupeOverview = stringResource(R.string.a11y_loupe_overview)
@@ -423,12 +430,14 @@ fun CameraScreen(
     // so it is NOT recreated and only recomposition can pick the new value up.
     val windowConfiguration = LocalConfiguration.current
     val windowContext = LocalContext.current
-    val windowRotationDeg = remember(windowConfiguration) {
-        when (windowContext.display.rotation) {
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 0
+    val windowRotationDeg = remember(windowConfiguration, windowRotationOverrideDeg) {
+        windowRotationOverrideDeg ?: run {
+            when (windowContext.display.rotation) {
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
         }
     }
     // The GL preview draw needs the same term to keep the field upright in a rotated window. Sent
@@ -703,7 +712,7 @@ fun CameraScreen(
                             }
                         }
                     },
-                factory = { context ->
+                factory = previewViewFactory ?: { context ->
                     // TextureView (not SurfaceView): its content composites inside the view hierarchy, so
                     // the GL preview draws over the opaque Compose background and the Compose overlays
                     // (grid/reticle/chrome) layer on top of it. A SurfaceView's surface sits behind the
