@@ -1,5 +1,10 @@
 package me.hletrd.telecampro.ui
 
+import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.storage.RestoredCapture
+import me.hletrd.telecampro.storage.RestoredDeleteScope
+import me.hletrd.telecampro.storage.StoredMediaOutputKind
+
 internal enum class CaptureOutputKind {
     DISPLAYABLE,
     RAW,
@@ -25,6 +30,7 @@ internal data class PriorCaptureOutput<T>(
 internal data class CaptureDeletePlan<T>(
     val requestedOutput: T,
     val outputs: Set<T>,
+    val deleteScope: MediaDeleteScope,
     internal val captureId: Int?,
     internal val kindsByOutput: Map<T, CaptureOutputKind>,
     internal val preferredOutput: T?,
@@ -45,6 +51,7 @@ internal class CaptureOutputTracker<T>(
     private val outputsByCapture = LinkedHashMap<Int, LinkedHashSet<T>>()
     private val captureByOutput = HashMap<T, Int>()
     private val kindByOutput = HashMap<T, CaptureOutputKind>()
+    private val deleteScopeByCapture = HashMap<Int, MediaDeleteScope>()
     private val tombstones = LinkedHashSet<Int>()
     private var reviewCaptureId: Int? = null
     private var reviewOutput: T? = null
@@ -60,6 +67,7 @@ internal class CaptureOutputTracker<T>(
     fun seedPriorCapture(
         outputs: Collection<PriorCaptureOutput<T>>,
         preferredOutput: T,
+        deleteScope: MediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
     ): Boolean {
         if (PRIOR_PROCESS_CAPTURE_ID in tombstones) return false
         val distinct = LinkedHashMap<T, CaptureOutputKind>()
@@ -79,7 +87,9 @@ internal class CaptureOutputTracker<T>(
                 kindByOutput.remove(output)
             }
         }
+        deleteScopeByCapture.remove(PRIOR_PROCESS_CAPTURE_ID)
         outputsByCapture[PRIOR_PROCESS_CAPTURE_ID] = LinkedHashSet(accepted.keys)
+        deleteScopeByCapture[PRIOR_PROCESS_CAPTURE_ID] = deleteScope
         accepted.forEach { (output, kind) ->
             captureByOutput[output] = PRIOR_PROCESS_CAPTURE_ID
             kindByOutput[output] = kind
@@ -104,6 +114,7 @@ internal class CaptureOutputTracker<T>(
     ): CaptureOutputDecision {
         if (captureId in tombstones) return CaptureOutputDecision.DELETE
         outputsByCapture.getOrPut(captureId) { linkedSetOf() }.add(output)
+        deleteScopeByCapture.putIfAbsent(captureId, MediaDeleteScope.CAPTURE_FAMILY)
         captureByOutput[output] = captureId
         kindByOutput[output] = kind
         trimCaptures()
@@ -135,6 +146,12 @@ internal class CaptureOutputTracker<T>(
     /** Rechecks a REVIEW decision after it crosses from tracker ownership into UI state. */
     @Synchronized
     fun isCurrentReviewOutput(output: T): Boolean = reviewOutput == output
+
+    /** The destructive scope stored with [output]'s family; unknown outputs are always file-only. */
+    @Synchronized
+    fun deleteScopeFor(output: T): MediaDeleteScope = captureByOutput[output]
+        ?.let(deleteScopeByCapture::get)
+        ?: MediaDeleteScope.FILE_ONLY
 
     /**
      * Replaces the open-review pin with the exact family that owns [output]. A failed replacement
@@ -171,6 +188,7 @@ internal class CaptureOutputTracker<T>(
             ?: return CaptureDeletePlan(
                 requestedOutput = output,
                 outputs = setOf(output),
+                deleteScope = MediaDeleteScope.FILE_ONLY,
                 captureId = null,
                 kindsByOutput = emptyMap(),
                 preferredOutput = output,
@@ -180,16 +198,30 @@ internal class CaptureOutputTracker<T>(
             pinnedReviewCaptureId = null
             pinnedReviewOutput = null
         }
-        tombstones.remove(captureId)
-        tombstones.add(captureId)
-        while (tombstones.size > maxTombstones.coerceAtLeast(1)) {
-            tombstones.remove(tombstones.first())
+        val tracked = outputsByCapture.remove(captureId).orEmpty().toSet()
+        val deleteScope = deleteScopeByCapture.remove(captureId)
+            ?: MediaDeleteScope.CAPTURE_FAMILY
+        // A file-only restored row has no live callback family to suppress, and its unselected
+        // siblings deliberately remain on disk. Do not tombstone the synthetic prior-process id:
+        // doing so would prevent a later gallery refresh from surfacing one of those remaining files.
+        // Live and fully-owned family deletes retain the existing late-sibling tombstone contract.
+        val planCaptureId = captureId.takeIf { deleteScope == MediaDeleteScope.CAPTURE_FAMILY }
+        if (planCaptureId != null) {
+            tombstones.remove(captureId)
+            tombstones.add(captureId)
+            while (tombstones.size > maxTombstones.coerceAtLeast(1)) {
+                tombstones.remove(tombstones.first())
+            }
         }
-        val owned = outputsByCapture.remove(captureId).orEmpty().toSet() + output
-        val kinds = owned.mapNotNull { ownedOutput ->
+        val targets = if (deleteScope == MediaDeleteScope.FILE_ONLY) {
+            setOf(output)
+        } else {
+            tracked + output
+        }
+        val kinds = tracked.mapNotNull { ownedOutput ->
             kindByOutput[ownedOutput]?.let { ownedOutput to it }
         }.toMap()
-        owned.forEach { ownedOutput ->
+        tracked.forEach { ownedOutput ->
             captureByOutput.remove(ownedOutput)
             kindByOutput.remove(ownedOutput)
         }
@@ -200,8 +232,9 @@ internal class CaptureOutputTracker<T>(
         }
         return CaptureDeletePlan(
             requestedOutput = output,
-            outputs = owned,
-            captureId = captureId,
+            outputs = targets,
+            deleteScope = deleteScope,
+            captureId = planCaptureId,
             kindsByOutput = kinds,
             preferredOutput = preferredOutput,
         )
@@ -230,8 +263,14 @@ internal class CaptureOutputTracker<T>(
             // An external/aged-out file has file-only scope and no capture id to reconstruct. Give
             // it the prior-process slot so it remains reviewable and deletable without grouping.
             return if (seedPriorCapture(
-                    outputs = retained.map { PriorCaptureOutput(it, CaptureOutputKind.DISPLAYABLE) },
+                    outputs = retained.map {
+                        PriorCaptureOutput(
+                            it,
+                            plan.kindsByOutput[it] ?: CaptureOutputKind.DISPLAYABLE,
+                        )
+                    },
                     preferredOutput = plan.requestedOutput.takeIf { it in retained } ?: retained.first(),
+                    deleteScope = plan.deleteScope,
                 )
             ) {
                 reviewOutput
@@ -247,6 +286,7 @@ internal class CaptureOutputTracker<T>(
             }
         }
         outputsByCapture[captureId] = retained
+        deleteScopeByCapture[captureId] = plan.deleteScope
         retained.forEach { survivor ->
             captureByOutput[survivor] = captureId
             kindByOutput[survivor] = plan.kindsByOutput[survivor] ?: CaptureOutputKind.DISPLAYABLE
@@ -278,6 +318,7 @@ internal class CaptureOutputTracker<T>(
                 .filter { it != pinnedReviewCaptureId }
                 .minOrNull() ?: return
             val evicted = outputsByCapture.remove(oldestCaptureId).orEmpty()
+            deleteScopeByCapture.remove(oldestCaptureId)
             evicted.forEach { output ->
                 captureByOutput.remove(output)
                 kindByOutput.remove(output)
@@ -290,3 +331,30 @@ internal class CaptureOutputTracker<T>(
         const val PRIOR_PROCESS_CAPTURE_ID = Int.MIN_VALUE
     }
 }
+
+/**
+ * The one bridge from persisted MediaStore restore truth into tracker deletion ownership.
+ *
+ * Keeping the scope beside the seeded family makes `FILE_ONLY` an execution invariant rather than
+ * presentation copy: the tracker may retain sibling metadata for review preference, but its delete
+ * plan targets exactly the displayed URI. Fully-owned canonical families preserve whole-family
+ * planning.
+ */
+internal fun <T> CaptureOutputTracker<T>.seedRestoredCapture(
+    restored: RestoredCapture<T>,
+): Boolean = seedPriorCapture(
+    outputs = restored.outputs.map { output ->
+        PriorCaptureOutput(
+            output = output.output,
+            kind = when (output.kind) {
+                StoredMediaOutputKind.DISPLAYABLE -> CaptureOutputKind.DISPLAYABLE
+                StoredMediaOutputKind.RAW -> CaptureOutputKind.RAW
+            },
+        )
+    },
+    preferredOutput = restored.preferred.output,
+    deleteScope = when (restored.deleteScope) {
+        RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
+        RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
+    },
+)

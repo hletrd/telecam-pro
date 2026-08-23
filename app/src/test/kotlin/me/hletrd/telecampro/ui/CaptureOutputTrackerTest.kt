@@ -1,11 +1,91 @@
 package me.hletrd.telecampro.ui
 
+import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.RestoredDeleteScope
+import me.hletrd.telecampro.storage.StoredMediaCollection
+import me.hletrd.telecampro.storage.StoredMediaRow
+import me.hletrd.telecampro.storage.restoreLatestCapture
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CaptureOutputTrackerTest {
+    @Test
+    fun fileOnlyReducerScope_targetsExactlyDisplayedUriForUnownedAndMixedFamilies() {
+        listOf(
+            false to false, // reinstall cleared both owners
+            true to false, // a later sibling belongs to the current install
+        ).forEach { (processedOwned, rawOwned) ->
+            val restored = checkNotNull(restoredStillFamily(processedOwned, rawOwned))
+            assertEquals(RestoredDeleteScope.FILE_ONLY, restored.deleteScope)
+            val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+
+            assertTrue(tracker.seedRestoredCapture(restored))
+            assertTrue(tracker.pinForReview(restored.preferred.output))
+            val plan = tracker.beginDelete(restored.preferred.output)
+
+            assertEquals(MediaDeleteScope.FILE_ONLY, plan.deleteScope)
+            assertEquals(setOf(restored.preferred.output), plan.outputs)
+            assertEquals(
+                restored.preferred.output,
+                tracker.restoreDeleteSurvivors(plan, plan.outputs),
+            )
+            assertEquals(
+                MediaDeleteScope.FILE_ONLY,
+                tracker.deleteScopeFor(restored.preferred.output),
+            )
+        }
+    }
+
+    @Test
+    fun captureFamilyReducerScope_preservesWholeFamilyTargets() {
+        val restored = checkNotNull(restoredStillFamily(processedOwned = true, rawOwned = true))
+        assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored.deleteScope)
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+
+        assertTrue(tracker.seedRestoredCapture(restored))
+        val plan = tracker.beginDelete(restored.preferred.output)
+
+        assertEquals(MediaDeleteScope.CAPTURE_FAMILY, plan.deleteScope)
+        assertEquals(restored.outputs.mapTo(linkedSetOf()) { it.output }, plan.outputs)
+    }
+
+    @Test
+    fun failedFileOnlyRawDelete_restoresRawKindAndScope() {
+        val key = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_500_000L, 4L)
+        val restored = checkNotNull(
+            restoreLatestCapture(
+                listOf(
+                    StoredMediaRow(
+                        output = "photo.dng",
+                        collection = StoredMediaCollection.IMAGE,
+                        rowId = 52L,
+                        displayName = key.displayName("dng"),
+                        mimeType = "image/x-adobe-dng",
+                        dateTakenEpochMillis = key.capturedAtEpochMillis,
+                        dateAddedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+                        dateModifiedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+                        isPending = false,
+                        isOwned = false,
+                    ),
+                ),
+            ),
+        )
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        assertTrue(tracker.seedRestoredCapture(restored))
+
+        val firstPlan = tracker.beginDelete("photo.dng")
+        assertEquals("photo.dng", tracker.restoreDeleteSurvivors(firstPlan, setOf("photo.dng")))
+        val retryPlan = tracker.beginDelete("photo.dng")
+
+        assertEquals(MediaDeleteScope.FILE_ONLY, retryPlan.deleteScope)
+        assertEquals(setOf("photo.dng"), retryPlan.outputs)
+        assertEquals(CaptureOutputKind.RAW, retryPlan.kindsByOutput["photo.dng"])
+    }
+
     @Test
     fun isDeleted_reflectsTombstonesOnly() {
         // The publish-retained veto (verification S3) keys on this: a COMPLETE output whose
@@ -455,5 +535,43 @@ class CaptureOutputTrackerTest {
             tracker.record(11, "a11.heic", CaptureOutputKind.DISPLAYABLE),
         )
         assertTrue(tracker.isCurrentReviewOutput("a11.heic"))
+    }
+
+    private fun restoredStillFamily(
+        processedOwned: Boolean,
+        rawOwned: Boolean,
+    ) = CaptureFamilyKey(
+        media = CaptureFamilyMedia.STILL,
+        capturedAtEpochMillis = 1_700_000_500_000L,
+        sequence = 3L,
+    ).let { key ->
+        restoreLatestCapture(
+            listOf(
+                StoredMediaRow(
+                    output = "photo.heic",
+                    collection = StoredMediaCollection.IMAGE,
+                    rowId = 50L,
+                    displayName = key.displayName("heic"),
+                    mimeType = "image/heic",
+                    dateTakenEpochMillis = key.capturedAtEpochMillis,
+                    dateAddedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+                    dateModifiedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+                    isPending = false,
+                    isOwned = processedOwned,
+                ),
+                StoredMediaRow(
+                    output = "photo.dng",
+                    collection = StoredMediaCollection.IMAGE,
+                    rowId = 51L,
+                    displayName = key.displayName("dng"),
+                    mimeType = "image/x-adobe-dng",
+                    dateTakenEpochMillis = key.capturedAtEpochMillis,
+                    dateAddedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+                    dateModifiedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+                    isPending = false,
+                    isOwned = rawOwned,
+                ),
+            ),
+        )
     }
 }
