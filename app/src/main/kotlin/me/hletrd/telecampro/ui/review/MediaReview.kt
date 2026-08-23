@@ -90,6 +90,7 @@ import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.theme.CameraColors
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
@@ -786,8 +787,12 @@ fun MediaReviewOverlay(
     val reviewZoomDescription = stringResource(R.string.a11y_review_zoom, reviewScaleLabel(scale))
     var offset by remember { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember { mutableStateOf(false) }
+    val playbackRetirement = remember(uri) { AtomicReference<(() -> Unit)?>(null) }
     BackHandler(enabled = confirmDelete) { confirmDelete = false }
-    BackHandler(enabled = !confirmDelete, onBack = onClose)
+    BackHandler(enabled = !confirmDelete) {
+        playbackRetirement.getAndSet(null)?.invoke()
+        onClose()
+    }
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
     // In-review playback (videos): a TextureView + MediaPlayer — NOT VideoView, whose SurfaceView
@@ -975,15 +980,24 @@ fun MediaReviewOverlay(
                 // `playerRef` is shared across key(uri) swaps, while this handle is per clip. A
                 // single identity guard therefore owns BOTH the MediaPlayer and caller-created
                 // Surface, preventing clip A's late teardown from releasing clip B's generation.
-                val heldPlayback = remember { mutableStateOf<VideoPlaybackHandle?>(null) }
                 val setupOwner = remember { Any() }
                 val setupJob = remember { mutableStateOf<Job?>(null) }
                 val setupRequest = remember { AtomicReference<VideoPlaybackSetupRequest?>(null) }
-                fun releaseIfOwned(handle: VideoPlaybackHandle) {
-                    if (heldPlayback.value !== handle) return
-                    heldPlayback.value = null
-                    if (playerRef.value === handle.player) playerRef.value = null
-                    handle.release()
+                val playbackOwner = remember {
+                    ExactHandlePrepareOwner<VideoPlaybackHandle>(
+                        timeoutMs = REVIEW_WORK_TERMINAL_TIMEOUT_MS,
+                        schedule = { timeoutMs, onTimeout ->
+                            val job = playbackSetupScope.launch {
+                                delay(timeoutMs)
+                                onTimeout()
+                            }
+                            ReviewDeadlineRegistration { job.cancel() }
+                        },
+                        dispose = { handle ->
+                            if (playerRef.value === handle.player) playerRef.value = null
+                            handle.release()
+                        },
+                    )
                 }
                 fun retireSetup() {
                     setupJob.value?.cancel()
@@ -1012,7 +1026,6 @@ fun MediaReviewOverlay(
                             }
                         },
                     factory = { ctx ->
-                        var viewHandle: VideoPlaybackHandle? = null
                         android.view.TextureView(ctx).apply {
                             surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
                                 override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
@@ -1027,7 +1040,7 @@ fun MediaReviewOverlay(
                                         setTransform(m)
                                     }
 
-                                    viewHandle?.let(::releaseIfOwned)
+                                    playbackOwner.releaseCurrent()
                                     retireSetup()
                                     playbackUiState = VideoPlaybackUiState.PREPARING
                                     val playbackSurface = try {
@@ -1061,17 +1074,14 @@ fun MediaReviewOverlay(
                                                 is VideoPlaybackSetupResult.Ready -> {
                                                     val handle = result.handle
                                                     val mp = handle.player
-                                                    viewHandle = handle
-                                                    heldPlayback.value = handle
+                                                    playbackOwner.replace(handle)
                                                     playerRef.value = mp
 
-                                                    fun failPlayback() {
-                                                        if (heldPlayback.value !== handle) return
-                                                        if (viewHandle === handle) viewHandle = null
-                                                        releaseIfOwned(handle)
+                                                    fun failPlayback(messageRes: Int) {
+                                                        if (!playbackOwner.release(handle)) return
                                                         playbackUiState = VideoPlaybackUiState.PAUSED
                                                         replaceMediaState(
-                                                            ReviewMediaState.Error(R.string.review_error_play_video),
+                                                            ReviewMediaState.Error(messageRes),
                                                         )
                                                     }
 
@@ -1083,22 +1093,36 @@ fun MediaReviewOverlay(
                                                         // this TextureView generation.
                                                         mp.setOnPreparedListener { p ->
                                                             playbackSetupScope.launch prepared@{
-                                                                if (heldPlayback.value !== handle) {
+                                                                if (!playbackOwner.prepared(handle)) {
                                                                     return@prepared
                                                                 }
                                                                 runCatching { p.start() }
                                                                     .onSuccess {
                                                                         playbackUiState = VideoPlaybackUiState.PLAYING
                                                                     }
-                                                                    .onFailure { failPlayback() }
+                                                                    .onFailure {
+                                                                        failPlayback(R.string.review_error_play_video)
+                                                                    }
                                                             }
                                                         }
                                                         mp.setOnErrorListener { _, _, _ ->
-                                                            playbackSetupScope.launch { failPlayback() }
+                                                            playbackSetupScope.launch {
+                                                                failPlayback(R.string.review_error_play_video)
+                                                            }
                                                             true
                                                         }
+                                                        playbackOwner.arm(handle) {
+                                                            playbackUiState = VideoPlaybackUiState.PAUSED
+                                                            replaceMediaState(
+                                                                ReviewMediaState.Error(
+                                                                    R.string.review_error_timed_out,
+                                                                ),
+                                                            )
+                                                        }
                                                         mp.prepareAsync()
-                                                    }.onFailure { failPlayback() }
+                                                    }.onFailure {
+                                                        failPlayback(R.string.review_error_play_video)
+                                                    }
                                                 }
                                             }
                                         }
@@ -1130,10 +1154,7 @@ fun MediaReviewOverlay(
                                 override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
                                     playbackUiState = VideoPlaybackUiState.PREPARING
                                     retireSetup()
-                                    viewHandle?.let { handle ->
-                                        viewHandle = null
-                                        releaseIfOwned(handle)
-                                    }
+                                    playbackOwner.releaseCurrent()
                                     return true
                                 }
 
@@ -1142,10 +1163,15 @@ fun MediaReviewOverlay(
                         }
                     },
                 )
-                DisposableEffect(Unit) {
+                val retirePlayback: () -> Unit = {
+                    retireSetup()
+                    playbackOwner.releaseCurrent()
+                }
+                DisposableEffect(playbackOwner) {
+                    playbackRetirement.set(retirePlayback)
                     onDispose {
-                        retireSetup()
-                        heldPlayback.value?.let(::releaseIfOwned)
+                        playbackRetirement.compareAndSet(retirePlayback, null)
+                        retirePlayback()
                     }
                 }
             }
