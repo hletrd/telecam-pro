@@ -557,13 +557,10 @@ fun CameraScreen(
         //   - glyph counter-rotation: RotationMath.glyphRotationDegrees.
         //   - capture masks and encoder framing are UNCHANGED ON PURPOSE. Both derive from GRAVITY,
         //     not from window shape, so a clip records the same field however the window is turned.
-        // A wide window used to earn a different SHAPE of chrome — a leading menu column and a
-        // trailing capture rail, with both widths reserved out of the preview box. That is GONE
-        // (2026-08-05, owner decision): "placing shutter button regardless of screen orientation,
-        // and also gallery button and functional buttons. just rotate the texts and histogram /
-        // waveform view". Two homes for the shutter meant re-finding it after every turn. There is
-        // one arrangement now — bar along the top, capture cluster along the bottom — and only what
-        // must be READ rotates, via `overlayRotation`.
+        // Chrome has one full-width arrangement on every window: bar along the top, capture cluster
+        // along the bottom. Orientation moves no control; only what must be READ rotates through
+        // `overlayRotation` (2026-08-05 owner decision). The preview therefore reserves no operator
+        // side column and stays centered in the complete window width.
         //
         // It holds because handsets stay portrait-LOCKED (MainActivity.lockPortraitOnHandsets): a
         // turned handset window is ~420 dp tall and a top bar plus a bottom cluster would eat it
@@ -642,12 +639,8 @@ fun CameraScreen(
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                // TopCenter centres across the FULL width, but the frame's space is bounded by BOTH
-                // reserved columns — the menu column on the left and the capture rail on the right.
-                // Shifting by half the RAIL alone (what this did while only one column existed) left
-                // the frame 45 px too far left once the menu column arrived, so the menu glyphs sat
-                // straddling the image's edge, half on black and half on live pixels — the exact
-                // chrome-on-the-seam defect both columns exist to prevent.
+                // TopCenter centres the frame across the complete window width. The one-layout rule
+                // has no operator side columns to reserve or compensate for.
                 .offset { IntOffset(0, topOffsetPx) }
                 // Explicit width (not fillMaxWidth) so a height-bound window letterboxes on the
                 // SIDES; TopCenter then centres it horizontally. aspectRatio still derives the
@@ -980,12 +973,8 @@ fun CameraScreen(
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
                 .fillMaxWidth()
-                // Inset by BOTH reserved columns in the wide layout, and by 12 dp in portrait where
-                // there are none. Without this the readout began inside the menu column and ran
-                // across the live frame, so it was simultaneously interleaved with the menu glyphs
-                // and drawn over the image — the same seam violation the two columns exist to stop.
-                // The top inset drops too: 60 dp clears a horizontal button ROW, and in the wide
-                // layout the buttons are a column beside the frame, not above it.
+                // The same 12 dp edge inset applies in every window shape. The 60 dp top inset clears
+                // the single full-width horizontal button row; orientation never moves it to a side.
                 .padding(start = 12.dp, end = 12.dp, top = 60.dp)
                 // Same shift as the button row above: they are one piece of chrome, and the fixed
                 // 60 dp only clears the buttons while the buttons are in their default home.
@@ -1171,13 +1160,8 @@ fun CameraScreen(
             },
             glyphRotation = overlayRotation,
             modifier = Modifier
-                // In the WIDE layout the bar belongs to the RAIL's column, not to the window. Spanning
-                // the window put its SpaceBetween ends 1600 px apart on a 1920 px tablet: the leading
-                // group sat alone over the top-left of the FRAME while the trailing group sat on the
-                // rail — measured on a TB331FC as Grid at x=15 with its siblings at x>=1631. Drawing
-                // chrome over the frame is exactly what the rail layout exists to avoid, and its own
-                // comment says so. Constrained to the rail, the leading group's existing horizontal
-                // scroll absorbs the crowding it already handles in portrait.
+                // The bar belongs to the full window on every device. TopBarContainer keeps its
+                // scrolling leading group and fixed trailing group at the two window edges.
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(top = 8.dp)
@@ -1489,8 +1473,7 @@ internal fun Modifier.rotateLayout(degrees: Float): Modifier = this
  * The top bar's outer container: one Row across the window, SpaceBetween, so the leading (scrolling)
  * group and the fixed trailing group stay pinned to opposite ends.
  *
- * This was a Row-or-Column pair while a wide window earned a side rail. That layout is gone
- * (2026-08-05): orientation moves no control, so the bar has exactly one shape on every device.
+ * Orientation moves no control, so the bar has exactly this one full-width shape on every device.
  */
 @Composable
 private fun TopBarContainer(
