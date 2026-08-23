@@ -55,6 +55,7 @@ telecampro-upload-*
 IMG2*.heic
 IMG2*.jpg
 device-tests/reports/
+.tool-state/
 __pycache__/
 *.jks.*
 *.keystore.*

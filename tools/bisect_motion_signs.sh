@@ -17,9 +17,10 @@
 #
 # WHAT THIS SCRIPT DOES
 #
-# Flips MOTION_SIGNS_VERIFIED true in a scratch copy of the source (never in your
-# tree), builds, installs, launches, forces PHOTO mode, and tails the verdict. It
-# restores the flag on exit even if you Ctrl-C.
+# Copies the checkout to an isolated temporary build root, flips
+# MOTION_SIGNS_VERIFIED only there, builds, installs, launches, forces PHOTO mode,
+# and tails the verdict. The production checkout is never rewritten. The temporary
+# build root is removed on exit, including Ctrl-C and TERM paths.
 #
 # WHAT YOU DO
 #
@@ -52,31 +53,87 @@ set -uo pipefail
 
 SERIAL="${1:-100.125.100.120:5555}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/app/src/main/kotlin/me/hletrd/telecampro/gl/MotionInversion.kt"
+PRODUCTION_SRC="$ROOT/app/src/main/kotlin/me/hletrd/telecampro/gl/MotionInversion.kt"
 PKG=me.hletrd.telecampro.debug
+SCRATCH_PARENT=""
+PRODUCTION_SHA=""
 
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home}"
 export PATH="$JAVA_HOME/bin:$PATH:$HOME/Library/Android/sdk/platform-tools"
 
-restore() {
-  perl -pi -e 's/^internal const val MOTION_SIGNS_VERIFIED = true$/internal const val MOTION_SIGNS_VERIFIED = false/' "$SRC"
-  echo
-  echo "[restored] MOTION_SIGNS_VERIFIED = false — your tree is back to shipping state."
-  echo "           The installed DEBUG build still has it enabled; that is fine, it is debug-only."
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
 }
-trap restore EXIT INT TERM
 
-echo "[1/5] arming the gate (scratch edit, restored on exit)"
-perl -pi -e 's/^internal const val MOTION_SIGNS_VERIFIED = false$/internal const val MOTION_SIGNS_VERIFIED = true/' "$SRC"
-grep -q "MOTION_SIGNS_VERIFIED = true" "$SRC" || { echo "could not arm the gate — is the constant still named that?"; exit 1; }
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM
+  if [ -n "$PRODUCTION_SHA" ] && [ "$(sha256 "$PRODUCTION_SRC")" != "$PRODUCTION_SHA" ]; then
+    echo >&2
+    echo "ERROR: production MotionInversion.kt changed while the diagnostic ran." >&2
+    echo "The diagnostic never writes that path; inspect concurrent checkout activity." >&2
+    status=1
+  fi
+  if [ -n "$SCRATCH_PARENT" ] && [ -d "$SCRATCH_PARENT" ]; then
+    rm -rf -- "$SCRATCH_PARENT"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-echo "[2/5] building"
-( cd "$ROOT" && ./gradlew -q :app:assembleDebug ) || { echo "build failed"; exit 1; }
+PRODUCTION_SHA="$(sha256 "$PRODUCTION_SRC")"
+SCRATCH_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/telecam-motion-signs.XXXXXX")"
+SCRATCH_ROOT="$SCRATCH_PARENT/repo"
+mkdir -p "$SCRATCH_ROOT"
 
-echo "[3/5] installing on $SERIAL"
-adb -s "$SERIAL" install -r "$ROOT/app/build/outputs/apk/debug/app-debug.apk" >/dev/null || { echo "install failed — is the device connected? try tools/adb_fleet.sh"; exit 1; }
+echo "[1/6] copying checkout to isolated build root"
+if [ -n "${BISECT_MOTION_TEST_MODE:-}" ]; then
+  scratch_relative="${PRODUCTION_SRC#"$ROOT/"}"
+  mkdir -p "$SCRATCH_ROOT/$(dirname "$scratch_relative")"
+  cp "$PRODUCTION_SRC" "$SCRATCH_ROOT/$scratch_relative"
+else
+  rsync -a \
+    --exclude '/.git/' \
+    --exclude '/.gradle/' \
+    --exclude '/.kotlin/' \
+    --exclude '/.context/' \
+    --exclude '/.claude/' \
+    --exclude '/.tool-state/' \
+    --exclude '/device-tests/reports/' \
+    --exclude '/releases/' \
+    --exclude 'build/' \
+    "$ROOT/" "$SCRATCH_ROOT/"
+fi
 
-echo "[4/5] launching the DEBUG build (NOT the release one — they share an icon)"
+SCRATCH_SRC="$SCRATCH_ROOT/app/src/main/kotlin/me/hletrd/telecampro/gl/MotionInversion.kt"
+echo "[2/6] arming the gate only in $SCRATCH_ROOT"
+perl -pi -e 's/^internal const val MOTION_SIGNS_VERIFIED = false$/internal const val MOTION_SIGNS_VERIFIED = true/' "$SCRATCH_SRC"
+grep -q "MOTION_SIGNS_VERIFIED = true" "$SCRATCH_SRC" || { echo "could not arm scratch gate — is the constant still named that?"; exit 1; }
+test "$(sha256 "$PRODUCTION_SRC")" = "$PRODUCTION_SHA" || { echo "production source changed during scratch setup"; exit 1; }
+
+# Non-device contract probe used by tools/tests/test_tool_contracts.py. It exercises
+# the same setup and traps without building, installing, launching, or killing.
+case "${BISECT_MOTION_TEST_MODE:-}" in
+  success) exit 0 ;;
+  failure) exit 42 ;;
+  term) kill -TERM $$ ;;
+  "") ;;
+  *) echo "unknown BISECT_MOTION_TEST_MODE" >&2; exit 2 ;;
+esac
+
+echo "[3/6] building isolated checkout"
+( cd "$SCRATCH_ROOT" && ./gradlew -q :app:assembleDebug ) || { echo "build failed"; exit 1; }
+
+echo "[4/6] installing on $SERIAL"
+adb -s "$SERIAL" install -r "$SCRATCH_ROOT/app/build/outputs/apk/debug/app-debug.apk" >/dev/null || { echo "install failed — is the device connected? try tools/adb_fleet.sh"; exit 1; }
+
+echo "[5/6] launching the DEBUG build (NOT the release one — they share an icon)"
 adb -s "$SERIAL" shell am force-stop me.hletrd.telecampro    # release build has no detector
 adb -s "$SERIAL" shell am force-stop "$PKG"
 adb -s "$SERIAL" logcat -c
@@ -91,12 +148,12 @@ if [ "$mode" = "mode=VIDEO" ]; then
   echo "      app was in VIDEO (no readback there) — switching to PHOTO"
   b=$(adb -s "$SERIAL" shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; \
       adb -s "$SERIAL" shell cat /sdcard/ui.xml 2>/dev/null | tr '>' '\n' \
-      | grep -oE 'content-desc="Photo mode"[^\n]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' \
+      | grep -oE 'content-desc="(Photo mode|사진 모드)"[^\n]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' \
       | grep -oE '\[[0-9]+,[0-9]+\]' | head -2 | tr -d '[]' | tr '\n' ' ')
   set -- $b
   if [ $# -ge 4 ]; then adb -s "$SERIAL" shell input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 )); sleep 4; fi
 fi
 
-echo "[5/5] watching. Pan RIGHT, slowly, for 2-3 seconds. Ctrl-C when done."
+echo "[6/6] watching. Pan RIGHT, slowly, for 2-3 seconds. Ctrl-C when done."
 echo "-------------------------------------------------------------------"
 adb -s "$SERIAL" logcat -v time | grep -E --line-buffered "MotionInversion|FATAL EXCEPTION"

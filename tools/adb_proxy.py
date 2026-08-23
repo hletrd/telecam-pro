@@ -7,10 +7,11 @@ interface. The cause is local, not remote — two interfaces share the 172.30/17
 subnet and adb picks the wrong source. Pointing adb at 127.0.0.1 removes the
 choice; this process just shuttles bytes to the device.
 
-    python3 adb_proxy.py 172.30.50.112 5512:5555
+    python3 adb_proxy.py --owner-token telecam-manual 172.30.50.112 6112:5555
 
 Devices reached over Tailscale do not need this.
 """
+import argparse
 import socket
 import sys
 import threading
@@ -53,9 +54,18 @@ def serve(local_port, remote_host, remote_port):
         threading.Thread(target=pump, args=(upstream, client), daemon=True).start()
 
 
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--owner-token", required=True, help="opaque fleet ownership token")
+    parser.add_argument("host")
+    parser.add_argument("ports", nargs="+", metavar="LOCAL:REMOTE")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    host = sys.argv[1]
-    for spec in sys.argv[2:]:
+    args = parse_args(sys.argv[1:])
+    host = args.host
+    for spec in args.ports:
         lp, rp = (int(x) for x in spec.split(":"))
         threading.Thread(target=serve, args=(lp, host, rp), daemon=True).start()
     threading.Event().wait()
