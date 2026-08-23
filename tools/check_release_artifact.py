@@ -17,6 +17,8 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
@@ -31,6 +33,9 @@ ATTESTATION_SCHEMA = 1
 class SourceVersion:
     version_code: int
     version_name: str
+    application_id: str
+    min_sdk: int
+    target_sdk: int
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -49,9 +54,82 @@ def normalize_sha256(value: str) -> str | None:
 def parse_source_version(build_script: str) -> SourceVersion:
     code = re.findall(r"^\s*versionCode\s*=\s*(\d+)\s*$", build_script, re.MULTILINE)
     name = re.findall(r'^\s*versionName\s*=\s*"([^"]+)"\s*$', build_script, re.MULTILINE)
-    if len(code) != 1 or len(name) != 1:
-        raise ValueError(f"expected one versionCode/versionName, found {code!r}/{name!r}")
-    return SourceVersion(int(code[0]), name[0])
+    application_id = re.findall(
+        r'^\s*applicationId\s*=\s*"([^"]+)"\s*$', build_script, re.MULTILINE
+    )
+    min_sdk = re.findall(r"^\s*minSdk\s*=\s*(\d+)\s*$", build_script, re.MULTILINE)
+    target_sdk = re.findall(r"^\s*targetSdk\s*=\s*(\d+)\s*$", build_script, re.MULTILINE)
+    if any(len(values) != 1 for values in (code, name, application_id, min_sdk, target_sdk)):
+        raise ValueError(
+            "expected one version/application/sdk identity, found "
+            f"{code!r}/{name!r}/{application_id!r}/{min_sdk!r}/{target_sdk!r}"
+        )
+    return SourceVersion(
+        int(code[0]), name[0], application_id[0], int(min_sdk[0]), int(target_sdk[0])
+    )
+
+
+def packaged_source_commits(aab_path: pathlib.Path) -> set[str]:
+    """Read AGP's packaged VCS provenance without trusting a filename or operator sidecar."""
+    member = "base/root/META-INF/version-control-info.textproto"
+    try:
+        with zipfile.ZipFile(aab_path) as bundle:
+            if bundle.namelist().count(member) != 1:
+                return set()
+            info = bundle.getinfo(member)
+            if info.file_size > 16_384:
+                return set()
+            text = bundle.read(info).decode("utf-8")
+    except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
+        return set()
+    return {
+        revision.casefold()
+        for revision in re.findall(r'^\s*revision:\s*"([0-9A-Fa-f]{40})"\s*$', text, re.MULTILINE)
+    }
+
+
+def strict_jar_verification_failure(
+    root: pathlib.Path,
+    aab_path: pathlib.Path,
+    run: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]],
+) -> str | None:
+    """Trust the pinned public cert, then require strict signature coverage for every JAR entry."""
+    cert_result = run(
+        ["keytool", "-printcert", "-rfc", "-jarfile", str(aab_path)], root
+    )
+    pem_blocks = re.findall(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        cert_result.stdout + "\n" + cert_result.stderr,
+        re.DOTALL,
+    )
+    if cert_result.returncode != 0 or len(pem_blocks) != 1:
+        return "could not extract the unique AAB signer certificate"
+    with tempfile.TemporaryDirectory(prefix="telecam-release-check-") as temp_dir:
+        temp = pathlib.Path(temp_dir)
+        cert_path = temp / "upload.pem"
+        store_path = temp / "truststore.p12"
+        cert_path.write_text(pem_blocks[0] + "\n", encoding="ascii")
+        password = "public-cert-only"
+        imported = run(
+            [
+                "keytool", "-importcert", "-noprompt", "-storetype", "PKCS12",
+                "-alias", "upload", "-keystore", str(store_path), "-storepass", password,
+                "-file", str(cert_path),
+            ],
+            root,
+        )
+        if imported.returncode != 0:
+            return "could not create the temporary upload-certificate truststore"
+        verified = run(
+            [
+                "jarsigner", "-verify", "-strict", "-keystore", str(store_path),
+                "-storepass", password, str(aab_path), "upload",
+            ],
+            root,
+        )
+        if verified.returncode != 0:
+            return "strict jarsigner verification failed (unsigned or invalid entry/certificate)"
+    return None
 
 
 def parse_sidecar(text: str, expected_name: str) -> str | None:
@@ -157,17 +235,16 @@ def check_release_identity(
         immutable_tokens = (attested_commit[:7], actual_aab_sha[:12])
         if any(token not in aab_path.name.casefold() for token in immutable_tokens):
             failures.append("AAB filename must contain the short commit and SHA-256 prefix")
+        packaged_commits = packaged_source_commits(aab_path)
+        if packaged_commits != {attested_commit}:
+            failures.append(
+                "packaged AGP source revision does not uniquely match the attested commit"
+            )
 
     signer = normalize_sha256(str(document["signer_sha256"]))
     if signer != EXPECTED_UPLOAD_CERT_SHA256:
         failures.append("attested signer is not the recorded Play upload certificate")
 
-    # The Play upload key is intentionally self-signed, so jarsigner's `-strict` trust-chain policy
-    # returns nonzero even when the JAR signatures are cryptographically valid. Certificate
-    # authority is enforced below by exact SHA-256 fingerprint and signer cardinality.
-    jar_result = run(["jarsigner", "-verify", str(aab_path)], root)
-    if jar_result.returncode != 0:
-        failures.append("jarsigner verification failed")
     cert_result = run(["keytool", "-printcert", "-jarfile", str(aab_path)], root)
     cert_output = cert_result.stdout + "\n" + cert_result.stderr
     actual_signers = {
@@ -177,18 +254,46 @@ def check_release_identity(
     }
     if cert_result.returncode != 0 or actual_signers != {signer}:
         failures.append("AAB signer certificate does not match attestation")
+    else:
+        strict_failure = strict_jar_verification_failure(root, aab_path, run)
+        if strict_failure is not None:
+            failures.append(strict_failure)
+
+    validate_result = run(["bundletool", "validate", f"--bundle={aab_path}"], root)
+    if validate_result.returncode != 0:
+        failures.append("bundletool validation failed")
 
     manifest_result = run(["bundletool", "dump", "manifest", f"--bundle={aab_path}"], root)
     manifest = manifest_result.stdout
+    packaged_application = re.search(r'<manifest[^>]+\bpackage="([^"]+)"', manifest)
     packaged_code = re.search(r'android:versionCode="(\d+)"', manifest)
     packaged_name = re.search(r'android:versionName="([^"]+)"', manifest)
-    if manifest_result.returncode != 0 or packaged_code is None or packaged_name is None:
-        failures.append("bundletool could not prove packaged version identity")
+    packaged_min_sdk = re.search(r'android:minSdkVersion="(\d+)"', manifest)
+    packaged_target_sdk = re.search(r'android:targetSdkVersion="(\d+)"', manifest)
+    if manifest_result.returncode != 0 or any(
+        value is None for value in (
+            packaged_application, packaged_code, packaged_name,
+            packaged_min_sdk, packaged_target_sdk,
+        )
+    ):
+        failures.append("bundletool could not prove packaged application/version/SDK identity")
     else:
+        assert packaged_application is not None
+        assert packaged_code is not None
+        assert packaged_name is not None
+        assert packaged_min_sdk is not None
+        assert packaged_target_sdk is not None
         if int(packaged_code.group(1)) != document["version_code"]:
             failures.append("packaged versionCode does not match attestation")
         if packaged_name.group(1) != document["version_name"]:
             failures.append("packaged versionName does not match attestation")
+        if source_version is not None:
+            if packaged_application.group(1) != source_version.application_id:
+                failures.append("packaged applicationId does not match source")
+            if int(packaged_min_sdk.group(1)) != source_version.min_sdk:
+                failures.append("packaged minSdk does not match source")
+            if int(packaged_target_sdk.group(1)) != source_version.target_sdk:
+                failures.append("packaged targetSdk does not match source")
     return failures
 
 
