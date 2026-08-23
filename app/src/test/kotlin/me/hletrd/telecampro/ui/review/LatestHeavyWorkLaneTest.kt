@@ -19,6 +19,19 @@ import org.junit.Test
 
 class LatestHeavyWorkLaneTest {
     @Test
+    fun `serial production defaults execute and publish on Dispatchers IO`() = runBlocking {
+        val lane = LatestHeavyWorkLane<String, String>(
+            work = { "result-$it" },
+            dispose = {},
+        )
+
+        val completion = checkNotNull(lane.submit(Any(), "default"))
+        var published: String? = null
+        assertTrue(lane.claim(completion) { published = it })
+        assertEquals("result-default", published)
+    }
+
+    @Test
     fun `progressive production defaults execute and publish on the process owner`() = runBlocking {
         val lane = ProgressiveLatestWorkLane<String, String>(
             work = { "result-$it" },
