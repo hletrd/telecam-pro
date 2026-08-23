@@ -121,6 +121,17 @@ class RecordingControlTree:
             None,
         )
 
+    def find_selector(self, selector, locale: str):
+        return next(
+            (
+                SimpleNamespace(center=(100, 100))
+                for label in selector.labels_for(locale)
+                if (self.state == "recording" and label == "Stop recording")
+                or (self.state == "idle" and label == "Start recording")
+            ),
+            None,
+        )
+
 
 class StopRetryAdb:
     def __init__(self, *, state: str = "recording", drops: int = 1):
@@ -130,6 +141,9 @@ class StopRetryAdb:
 
     def pid(self) -> int:
         return 123
+
+    def locale_state(self) -> dict[str, str]:
+        return {"effective": "en-US"}
 
     def ui(self) -> RecordingControlTree:
         return RecordingControlTree(self.state)
@@ -626,7 +640,7 @@ class UiSemanticsTest(unittest.TestCase):
                 checkable=True,
                 checked=description == "Photo mode",
             )
-        add("No capture to review", (10, 650, 62, 702))
+        add("Find previous captures", (10, 650, 62, 702))
         add("Take photo", (142, 640, 218, 716))
         return f"<hierarchy>{''.join(nodes)}</hierarchy>"
 
@@ -661,6 +675,34 @@ class UiSemanticsTest(unittest.TestCase):
             UiTree(self.camera_layout_xml(split_fn_action=True)), metrics, detailed=True,
         )
         self.assertTrue(any("equal-bounds split semantics" in error for error in split))
+
+        duplicate_node = (
+            '<node text="" content-desc="Open settings" class="android.widget.Button" '
+            'checkable="false" checked="false" selected="false" enabled="true" '
+            'clickable="true" focusable="true" bounds="[300,0][348,48]" />'
+        )
+        duplicate = self.camera_layout_xml().replace(
+            "</hierarchy>", duplicate_node + "</hierarchy>"
+        )
+        duplicate_errors = cases.camera_chrome_layout_errors(UiTree(duplicate), metrics)
+        self.assertTrue(
+            any("Open settings: expected one node, got 2" in error for error in duplicate_errors)
+        )
+
+    def test_contextual_identity_rejects_the_opposite_language(self) -> None:
+        english_only = UiTree(
+            '<hierarchy><node text="" content-desc="Open settings" '
+            'class="android.widget.Button" checkable="false" checked="false" '
+            'selected="false" enabled="true" clickable="true" focusable="true" '
+            'bounds="[0,0][48,48]" /></hierarchy>'
+        )
+        adb = SimpleNamespace(
+            locale_state=lambda: {"effective": "ko-KR"},
+            ui=lambda: english_only,
+        )
+        ctx = SimpleNamespace(adb=adb)
+
+        self.assertIsNone(cases.find_identity(ctx, cases.OPEN_SETTINGS, english_only))
 
     @staticmethod
     def function_menu_xml(

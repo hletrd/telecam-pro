@@ -722,6 +722,13 @@ class UiTree:
             None,
         )
 
+    def find_all_selector(self, selector: Selector, locale: str) -> list[UiNode]:
+        labels = {label.casefold() for label in selector.labels_for(locale)}
+        return [
+            node for node in self.nodes
+            if node.desc.casefold() in labels or node.text.casefold() in labels
+        ]
+
     def find_selector_any(self, selector: Selector) -> UiNode | None:
         """Exact identity match for pure layout helpers whose caller already attested locale."""
         labels = {label.casefold() for label in selector.all_labels()}

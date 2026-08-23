@@ -184,7 +184,7 @@ def effective_locale(ctx: Context) -> str:
 def find_identity(ctx: Context, selector, tree=None):
     # The runner attests the effective locale once; read-only checks accept only exact labels from the
     # identity's EN/KO allow-list so cleanup can remain deterministic even in lightweight test fakes.
-    return (tree or ctx.adb.ui()).find_selector_any(selector)
+    return (tree or ctx.adb.ui()).find_selector(selector, effective_locale(ctx))
 
 
 def tap_identity(ctx: Context, selector):
@@ -1337,6 +1337,7 @@ def camera_chrome_layout_errors(
     *,
     detailed: bool | None = None,
     device_orientation: int | None = None,
+    locale: str = "en",
 ) -> list[str]:
     """Pixel-level contract for the fixed Sony/iPhone-familiar shooting controls."""
     errors: list[str] = []
@@ -1355,9 +1356,18 @@ def camera_chrome_layout_errors(
             return None
         return matches[0] if matches else None
 
+    def selector_one(label: str, selector, required: bool) -> UiNode | None:
+        matches = tree.find_all_selector(selector, locale)
+        expected = "one" if required else "at most one"
+        invalid = len(matches) != 1 if required else len(matches) > 1
+        if invalid:
+            errors.append(f"{label}: expected {expected} node, got {len(matches)}")
+            return None
+        return matches[0] if matches else None
+
     if detailed is None:
-        detailed = tree.find_selector_any(GRID) is not None
-    photo_mode = tree.find_selector_any(TAKE_PHOTO) is not None
+        detailed = bool(tree.find_all_selector(GRID, locale))
+    photo_mode = bool(tree.find_all_selector(TAKE_PHOTO, locale))
     optional_top_specs = [
         ("Flash", FLASH),
         ("Self timer", SELF_TIMER),
@@ -1367,31 +1377,31 @@ def camera_chrome_layout_errors(
     top = []
     for label, selector_identity in optional_top_specs:
         required = detailed and (label == "Grid" or photo_mode)
-        node = tree.find_selector_any(selector_identity)
-        if required and node is None:
-            errors.append(f"{label}: expected one node, got 0")
+        node = selector_one(label, selector_identity, required)
         top.append((label, node))
     top.extend([
-        ("Teleconverter", tree.find_selector_any(TELECONVERTER)),
-        (
-            "Shooting info",
-            one(
-                "Shooting info",
-                lambda node: node is tree.find_selector_any(SHOW_SHOOTING_INFO)
-                or node is tree.find_selector_any(HIDE_SHOOTING_INFO),
-            ),
-        ),
-        ("Open settings", tree.find_selector_any(OPEN_SETTINGS)),
+        ("Teleconverter", selector_one("Teleconverter", TELECONVERTER, False)),
+        ("Shooting info", one("Shooting info", lambda node: node in (
+            tree.find_all_selector(SHOW_SHOOTING_INFO, locale)
+            + tree.find_all_selector(HIDE_SHOOTING_INFO, locale)
+        ))),
+        ("Open settings", selector_one("Open settings", OPEN_SETTINGS, True)),
     ])
-    fn = tree.find_selector_any(OPEN_FUNCTION_MENU)
+    fn = selector_one("Open function menu", OPEN_FUNCTION_MENU, True)
     focal = [
-        (label, tree.find_selector_any(FOCAL_SELECTOR_BY_LABEL[label])) for label in FOCAL_PRESETS
+        (label, selector_one(label, FOCAL_SELECTOR_BY_LABEL[label], False)) for label in FOCAL_PRESETS
     ]
     modes = [
-        (label, tree.find_selector_any(CAPTURE_MODE_SELECTORS[label])) for label in CAPTURE_MODES
+        (label, selector_one(label, CAPTURE_MODE_SELECTORS[label], True)) for label in CAPTURE_MODES
     ]
-    shutter = tree.find_selector_any(TAKE_PHOTO) or tree.find_selector_any(START_RECORDING)
-    gallery = tree.find_selector_any(GALLERY)
+    shutter_matches = (
+        tree.find_all_selector(TAKE_PHOTO, locale)
+        + tree.find_all_selector(START_RECORDING, locale)
+    )
+    if len(shutter_matches) != 1:
+        errors.append(f"Shutter: expected one node, got {len(shutter_matches)}")
+    shutter = shutter_matches[0] if len(shutter_matches) == 1 else None
+    gallery = selector_one("Gallery", GALLERY, True)
 
     named_nodes = [*top, ("Open function menu", fn), *focal, *modes, ("Shutter", shutter), ("Gallery", gallery)]
     minimum_px = _minimum_touch_px(metrics)
@@ -1457,7 +1467,7 @@ def camera_chrome_layout_errors(
                 f"idle shutter is not centered: x={shutter.center[0]}, screen={metrics.width_px}"
             )
     if device_orientation is not None:
-        errors.extend(fn_entry_layout_errors(tree, metrics, device_orientation))
+        errors.extend(fn_entry_layout_errors(tree, metrics, device_orientation, locale))
     return errors
 
 
@@ -1535,11 +1545,11 @@ def fn_entry_layout_errors(
     tree,
     metrics: DisplayMetrics,
     device_orientation: int,
+    locale: str = "en",
 ) -> list[str]:
     """The direct Fn entry stays in the same physical bottom reach zone as its held tray."""
     errors: list[str] = []
-    entry_match = tree.find_selector_any(OPEN_FUNCTION_MENU)
-    entries = [entry_match] if entry_match is not None else []
+    entries = tree.find_all_selector(OPEN_FUNCTION_MENU, locale)
     if len(entries) != 1:
         return [f"Fn entry: expected one action node, got {len(entries)}"]
     entry = entries[0]
@@ -1572,18 +1582,20 @@ def fn_entry_layout_errors(
     return errors
 
 
-def settings_tab_nodes(tree) -> dict[str, list[UiNode]]:
+def settings_tab_nodes(tree, locale: str = "en") -> dict[str, list[UiNode]]:
     """Return each settings-tab action by its exact merged accessibility name."""
     return {
-        label: tree.find_all_selector_any(SETTINGS_TAB_BY_LABEL[label])
+        label: tree.find_all_selector(SETTINGS_TAB_BY_LABEL[label], locale)
         for label in SETTINGS_TABS
     }
 
 
-def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+def settings_modal_layout_errors(
+    tree, metrics: DisplayMetrics, locale: str = "en"
+) -> list[str]:
     """One close action and nine coherent named 48 dp tab targets."""
     errors: list[str] = []
-    close_nodes = tree.find_all_selector_any(CLOSE_SETTINGS)
+    close_nodes = tree.find_all_selector(CLOSE_SETTINGS, locale)
     if len(close_nodes) != 1:
         errors.append(f"Settings close: expected one explicit action node, got {len(close_nodes)}")
     else:
@@ -1601,7 +1613,7 @@ def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
             errors.append("Settings close: full-screen scrim must be touch-only")
 
     minimum_px = _minimum_touch_px(metrics)
-    tabs = settings_tab_nodes(tree)
+    tabs = settings_tab_nodes(tree, locale)
     for label, nodes in tabs.items():
         if len(nodes) != 1:
             errors.append(f"Settings tab {label}: expected one named node, got {len(nodes)}")
@@ -1638,10 +1650,11 @@ def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     return errors
 
 
-def adjustment_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+def adjustment_layout_errors(
+    tree, metrics: DisplayMetrics, locale: str = "en"
+) -> list[str]:
     """Compact manual ruler owns one coherent close action inside the lower control band."""
-    close_match = tree.find_selector_any(CLOSE_ADJUSTMENT)
-    close_nodes = [close_match] if close_match is not None else []
+    close_nodes = tree.find_all_selector(CLOSE_ADJUSTMENT, locale)
     if len(close_nodes) != 1:
         return [f"Adjustment close: expected one action node, got {len(close_nodes)}"]
     close = close_nodes[0]
@@ -1656,7 +1669,7 @@ def adjustment_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
         )
     if top < metrics.height_px // 2:
         errors.append(f"Adjustment close: escaped the lower control band {close.bounds}")
-    if tree.find_selector_any(CLOSE_FUNCTION_MENU) is not None:
+    if tree.find_selector(CLOSE_FUNCTION_MENU, locale) is not None:
         errors.append("Adjustment ruler and Fn modal are visible at the same time")
     return errors
 
@@ -1690,11 +1703,10 @@ def loupe_copy_errors(labels: set[str]) -> list[str]:
     return errors
 
 
-def loupe_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+def loupe_layout_errors(tree, metrics: DisplayMetrics, locale: str = "en") -> list[str]:
     """Keep the non-interactive same-stream overview inside preview and off direct controls."""
     errors = []
-    overview_match = tree.find_selector_any(LOUPE_OVERVIEW)
-    overviews = [overview_match] if overview_match is not None else []
+    overviews = tree.find_all_selector(LOUPE_OVERVIEW, locale)
     if len(overviews) != 1:
         return [f"Loupe overview: expected one region, got {len(overviews)}"]
     overview = overviews[0]
@@ -1735,13 +1747,17 @@ def function_menu_layout_errors(
     *,
     device_orientation: int | None = None,
     expected_physical_order: tuple[str, ...] | None = None,
+    locale: str = "en",
 ) -> list[str]:
     """Constrained-window and one-action-node contract for the production Fn tile grid."""
     errors: list[str] = []
     tiles_by_label = {
-        label: tree.find_selector_any(FN_SELECTOR_BY_LABEL[label]) for label in FN_TILE_LABELS
+        label: tree.find_all_selector(FN_SELECTOR_BY_LABEL[label], locale) for label in FN_TILE_LABELS
     }
-    tiles = [node for node in tiles_by_label.values() if node is not None]
+    for label, matches in tiles_by_label.items():
+        if len(matches) > 1:
+            errors.append(f"Fn {label}: expected at most one node, got {len(matches)}")
+    tiles = [matches[0] for matches in tiles_by_label.values() if len(matches) == 1]
     if not 1 <= len(tiles) <= 8:
         errors.append(f"Fn tiles: expected 1..8 nodes, got {len(tiles)}")
 
@@ -1762,8 +1778,7 @@ def function_menu_layout_errors(
             if _overlap_area(first, second) > 0:
                 errors.append(f"Fn tiles overlap: {first.desc} and {second.desc}")
 
-    close_match = tree.find_selector_any(CLOSE_FUNCTION_MENU)
-    close_nodes = [close_match] if close_match is not None else []
+    close_nodes = tree.find_all_selector(CLOSE_FUNCTION_MENU, locale)
     if len(close_nodes) != 1:
         errors.append(f"Fn close: expected one explicit action node, got {len(close_nodes)}")
     else:
@@ -1832,7 +1847,9 @@ def function_menu_layout_errors(
                 errors.append(f"Fn tray: held 4x2 check requires 8 tiles, got {len(tiles)}")
             else:
                 canonical_labels = {
-                    id(node): label for label, node in tiles_by_label.items() if node is not None
+                    id(matches[0]): label
+                    for label, matches in tiles_by_label.items()
+                    if len(matches) == 1
                 }
                 physical = [
                     (canonical_labels[id(tile)], *_physical_point(*tile.center, metrics, orientation))
@@ -1916,7 +1933,7 @@ def t_camera_chrome_layout(ctx: Context) -> None:
     if find_identity(ctx, STOP_RECORDING, tree):
         raise UnsafeState("layout contract cannot inspect an active recording")
     metrics = ctx.adb.display_metrics()
-    errors = camera_chrome_layout_errors(tree, metrics)
+    errors = camera_chrome_layout_errors(tree, metrics, locale=effective_locale(ctx))
     assert not errors, "camera chrome layout violations: " + "; ".join(errors)
     assert ctx.adb.preview_is_live(), "preview froze while inspecting camera chrome"
     ctx.adb.screenshot("camera_chrome_layout")
@@ -2332,14 +2349,15 @@ def t_settings(ctx: Context) -> None:
     opened = ctx.adb.ui()
     assert find_identity(ctx, CLOSE_SETTINGS, opened), "settings modal did not open"
     minimum_px = _minimum_touch_px(metrics)
-    modal_errors = settings_modal_layout_errors(opened, metrics)
+    locale = effective_locale(ctx)
+    modal_errors = settings_modal_layout_errors(opened, metrics, locale)
     assert not modal_errors, "settings modal layout violations: " + "; ".join(modal_errors)
     try:
         for tab, title in zip(SETTINGS_TABS, SETTINGS_TITLES, strict=True):
             tree = ctx.adb.ui()
-            current_errors = settings_modal_layout_errors(tree, metrics)
+            current_errors = settings_modal_layout_errors(tree, metrics, locale)
             assert not current_errors, "settings modal layout violations: " + "; ".join(current_errors)
-            tab_nodes = settings_tab_nodes(tree)
+            tab_nodes = settings_tab_nodes(tree, locale)
             invalid = {label: len(nodes) for label, nodes in tab_nodes.items() if len(nodes) != 1}
             assert not invalid, f"settings tab nodes are missing or duplicated: {invalid}"
             target = tab_nodes[tab][0]
@@ -2360,7 +2378,7 @@ def t_settings(ctx: Context) -> None:
                     tree = ctx.adb.ui()
                     selected = [
                         label for label in SETTINGS_TABS
-                        if any(node.selected for node in settings_tab_nodes(tree)[label])
+                        if any(node.selected for node in settings_tab_nodes(tree, locale)[label])
                     ]
                     if selected == [tab]:
                         break
@@ -2425,17 +2443,17 @@ def t_function_menu(ctx: Context) -> None:
     menu = ctx.adb.ui()
     assert find_identity(ctx, CLOSE_FUNCTION_MENU, menu), "Fn overlay did not expose its close control"
     metrics = ctx.adb.display_metrics()
-    layout_errors = function_menu_layout_errors(menu, metrics)
+    layout_errors = function_menu_layout_errors(menu, metrics, locale=effective_locale(ctx))
     assert not layout_errors, "Fn overlay layout violations: " + "; ".join(layout_errors)
     tiles = [
         node for label in FN_TILE_LABELS
-        if (node := menu.find_selector_any(FN_SELECTOR_BY_LABEL[label])) is not None and node.enabled
+        if (node := menu.find_selector(FN_SELECTOR_BY_LABEL[label], effective_locale(ctx))) is not None and node.enabled
     ]
     assert tiles, "Fn overlay exposed no enabled setting tile"
     quick_tiles = [
         node for node in tiles
         if not any(
-            node is menu.find_selector_any(FN_SELECTOR_BY_LABEL[label])
+            node is menu.find_selector(FN_SELECTOR_BY_LABEL[label], effective_locale(ctx))
             for label in FN_NUMERIC_TILE_LABELS
         ) and node.clickable and node.focusable
     ]
@@ -2468,6 +2486,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                 metrics,
                 detailed=False,
                 device_orientation=orientation,
+                locale=effective_locale(ctx),
             )
             assert not idle_errors, (
                 f"snapshot idle {orientation}° violations: " + "; ".join(idle_errors)
@@ -2487,6 +2506,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                 expected_physical_order=(
                     FN_DEFAULT_PHYSICAL_ORDER if orientation in (90, 270) else None
                 ),
+                locale=effective_locale(ctx),
             )
             assert not menu_errors, (
                 f"snapshot Fn {orientation}° violations: " + "; ".join(menu_errors)
@@ -2518,7 +2538,9 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             assert find_identity(ctx, OPEN_FUNCTION_MENU, restored), "Back did not dismiss snapshot Fn"
             tap_identity(ctx, OPEN_SETTINGS)
             settings = ctx.adb.ui(f"snapshot_settings_{orientation}")
-            settings_errors = settings_modal_layout_errors(settings, metrics)
+            settings_errors = settings_modal_layout_errors(
+                settings, metrics, locale=effective_locale(ctx)
+            )
             assert not settings_errors, (
                 f"snapshot Settings {orientation}° violations: " + "; ".join(settings_errors)
             )
@@ -2539,7 +2561,9 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             tap_identity(ctx, OPEN_FUNCTION_MENU)
             tap_identity(ctx, ISO)
             adjustment = ctx.adb.ui(f"snapshot_adjustment_{orientation}")
-            adjustment_errors = adjustment_layout_errors(adjustment, metrics)
+            adjustment_errors = adjustment_layout_errors(
+                adjustment, metrics, locale=effective_locale(ctx)
+            )
             assert not adjustment_errors, (
                 f"snapshot adjustment {orientation}° violations: " +
                 "; ".join(adjustment_errors)
@@ -2549,7 +2573,9 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
 
             launch_ui_snapshot(ctx, orientation=orientation, scenario="loupe")
             loupe = ctx.adb.ui(f"snapshot_loupe_{orientation}")
-            loupe_layout = loupe_layout_errors(loupe, metrics)
+            loupe_layout = loupe_layout_errors(
+                loupe, metrics, locale=effective_locale(ctx)
+            )
             assert not loupe_layout, "; ".join(loupe_layout)
             assert "OVERVIEW" in loupe.all_labels(), "visible overview omitted the OVERVIEW truth tag"
             assert find_identity(ctx, CLOSE_ADJUSTMENT, loupe) is None, (
@@ -2578,6 +2604,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     rtl_idle,
                     metrics,
                     orientation,
+                    locale=effective_locale(ctx),
                 )
                 assert not rtl_errors, (
                     f"snapshot RTL Fn entry {orientation}° violations: " +
@@ -2591,6 +2618,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     metrics,
                     device_orientation=orientation,
                     expected_physical_order=FN_DEFAULT_PHYSICAL_ORDER,
+                    locale=effective_locale(ctx),
                 )
                 assert not rtl_menu_errors, (
                     f"snapshot RTL Fn {orientation}° violations: " +
