@@ -552,6 +552,14 @@ class CameraController(context: Context) {
         if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
 
         val attempt = configAttempt
+        // The measured JPEG-blob failure belongs to PMA110's LOGICAL camera only. FRONT uses YUV on
+        // the first two rungs to feed pseudo-ZSL, but must retain its previously proven HAL-JPEG
+        // fallback when that optional session shape is rejected.
+        val mustUseYuvStill = resolveMustUseYuvStill(
+            logicalMultiCamera = caps.isLogicalMultiCamera,
+            frontRoute = caps.lensFacingFront,
+            logicalStillRequiresYuv = deviceProfile.logicalStillRequiresYuv,
+        )
         val plan = sessionAttemptPlan(
             attempt = attempt,
             wantHlg = tenBitHlg && caps.supportsHlg10(),
@@ -570,7 +578,7 @@ class CameraController(context: Context) {
             wantHiRes = hiResStill,
             tenBitVideoOnly = tenBitHlg && caps.supportsHlg10(),
             frontRoute = caps.lensFacingFront,
-            yuvStillRequired = deviceProfile.logicalStillRequiresYuv,
+            yuvStillRequired = mustUseYuvStill,
             rawStandaloneOnly = deviceProfile.rawRequiresStandalone,
         )
         val useHlg = plan.useHlg
@@ -605,7 +613,7 @@ class CameraController(context: Context) {
                 useYuv -> caps.largestYuvSize
                 else -> caps.largestJpegSize
             }
-            // The logical YUV reader feeds the pseudo-ZSL ring, which HOLDS ZSL_RING_DEPTH acquired
+            // The logical/front YUV reader feeds the pseudo-ZSL ring, which HOLDS ZSL_RING_DEPTH acquired
             // images while the repeating stream keeps producing — depth + one being-acquired + one
             // HAL margin. Standalone HAL-JPEG keeps the proven 2. The deep reader is ~5×19 MB of
             // gralloc at 4096×3072 and is ALWAYS ON in release, so [SessionAttemptPlan.useDeepZslReader]
@@ -2283,7 +2291,7 @@ internal data class SessionAttemptPlan(
     /**
      * Whether this attempt may allocate the DEEP (ZSL_RING_DEPTH + 2) still reader that the
      * pseudo-ZSL ring needs, versus the proven 2-image reader. Only meaningful where the reader is
-     * YUV (the logical photo route); standalone HAL-JPEG always takes 2.
+     * YUV (the logical/front photo routes); ordinary standalone HAL-JPEG always takes 2.
      *
      * Why this is a ladder rung and not left to the runtime fallback: `zslStreamingBroken` handles a
      * REFUSED REPEATING SUBMIT, which can only happen after configure already SUCCEEDED. A
@@ -2396,6 +2404,13 @@ internal fun cameraFailureIsPolicyBlock(failure: Throwable): Boolean =
                 failure.reason == android.hardware.camera2.CameraAccessException.CAMERA_DISABLED
             )
 
+/** Route-scopes the measured PMA110 JPEG-blob quirk; FRONT's YUV lane remains an optimization. */
+internal fun resolveMustUseYuvStill(
+    logicalMultiCamera: Boolean,
+    frontRoute: Boolean,
+    logicalStillRequiresYuv: Boolean,
+): Boolean = logicalMultiCamera && !frontRoute && logicalStillRequiresYuv
+
 internal fun sessionAttemptPlan(
     attempt: Int,
     wantHlg: Boolean,
@@ -2406,7 +2421,7 @@ internal fun sessionAttemptPlan(
     wantHiRes: Boolean = false,
     tenBitVideoOnly: Boolean = false,
     frontRoute: Boolean = false,
-    /** [DeviceProfile.logicalStillRequiresYuv] — true keeps the YUV lane on every rung. */
+    /** Route-resolved [DeviceProfile.logicalStillRequiresYuv] — true keeps YUV on every still rung. */
     yuvStillRequired: Boolean = true,
     /** [DeviceProfile.rawRequiresStandalone] — true keeps the PMA110 standalone-only RAW law. */
     rawStandaloneOnly: Boolean = true,

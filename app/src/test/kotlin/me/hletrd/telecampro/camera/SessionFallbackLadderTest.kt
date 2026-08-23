@@ -257,6 +257,88 @@ class SessionFallbackLadderTest {
     }
 
     @Test
+    fun `PMA logical YUV requirement never leaks onto the front route`() {
+        assertTrue(
+            resolveMustUseYuvStill(
+                logicalMultiCamera = true,
+                frontRoute = false,
+                logicalStillRequiresYuv = DeviceProfile.PMA110.logicalStillRequiresYuv,
+            ),
+        )
+        assertFalse(
+            resolveMustUseYuvStill(
+                logicalMultiCamera = false,
+                frontRoute = true,
+                logicalStillRequiresYuv = DeviceProfile.PMA110.logicalStillRequiresYuv,
+            ),
+        )
+        assertFalse(
+            resolveMustUseYuvStill(
+                logicalMultiCamera = true,
+                frontRoute = false,
+                logicalStillRequiresYuv = DeviceProfile.GENERIC.logicalStillRequiresYuv,
+            ),
+        )
+        assertFalse(
+            resolveMustUseYuvStill(
+                logicalMultiCamera = true,
+                frontRoute = true,
+                logicalStillRequiresYuv = DeviceProfile.PMA110.logicalStillRequiresYuv,
+            ),
+        )
+    }
+
+    @Test
+    fun `PMA logical fallback keeps YUV until preview-only`() {
+        val plans = (0..3).map { attempt ->
+            sessionAttemptPlan(
+                attempt = attempt,
+                wantHlg = false,
+                supportsRaw = true,
+                standalone = true,
+                logicalMultiCamera = true,
+                yuvStillRequired = resolveMustUseYuvStill(
+                    logicalMultiCamera = true,
+                    frontRoute = false,
+                    logicalStillRequiresYuv = DeviceProfile.PMA110.logicalStillRequiresYuv,
+                ),
+            )
+        }
+
+        assertTrue(plans[0].useJpeg && plans[0].useYuvStill && plans[0].useDeepZslReader)
+        assertTrue(plans[1].useJpeg && plans[1].useYuvStill && !plans[1].useDeepZslReader)
+        assertTrue(plans[2].useJpeg && plans[2].useYuvStill && !plans[2].useDeepZslReader)
+        assertFalse(plans[3].useJpeg)
+        assertFalse(plans.any { it.useJpeg && !it.useYuvStill })
+    }
+
+    @Test
+    fun `PMA and generic front fallback is deep YUV shallow YUV HAL JPEG preview-only`() {
+        listOf(DeviceProfile.PMA110, DeviceProfile.GENERIC).forEach { profile ->
+            val mustUseYuvStill = resolveMustUseYuvStill(
+                logicalMultiCamera = true,
+                frontRoute = true,
+                logicalStillRequiresYuv = profile.logicalStillRequiresYuv,
+            )
+            val plans = (0..3).map { attempt ->
+                sessionAttemptPlan(
+                    attempt = attempt,
+                    wantHlg = false,
+                    supportsRaw = false,
+                    standalone = true,
+                    frontRoute = true,
+                    yuvStillRequired = mustUseYuvStill,
+                )
+            }
+
+            assertTrue(plans[0].useJpeg && plans[0].useYuvStill && plans[0].useDeepZslReader)
+            assertTrue(plans[1].useJpeg && plans[1].useYuvStill && !plans[1].useDeepZslReader)
+            assertTrue(plans[2].useJpeg && !plans[2].useYuvStill && !plans[2].useDeepZslReader)
+            assertFalse(plans[3].useJpeg)
+        }
+    }
+
+    @Test
     fun `deep-ZSL degradation is monotonic from the full-plan rung onward`() {
         // Allocation pressure does not go away mid-ladder, so once the deep reader has been dropped
         // it must never be re-offered — including on the TELE table, whose attempt 3 re-runs the
