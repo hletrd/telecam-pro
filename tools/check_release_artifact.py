@@ -34,6 +34,7 @@ RELEASE_EVIDENCE_BOUNDARY = "sealed-export-frozen-outputs-v1"
 PROVENANCE_NAMESPACE = "base/assets/telecam-release-provenance/"
 PROVENANCE_MEMBER = PROVENANCE_NAMESPACE + "source.properties"
 SOURCE_VERSION_PATH = pathlib.PurePath("app/build.gradle.kts")
+PROTECTED_SOURCE_ROOTS = ("app/src/main", "app/src/release")
 
 
 @dataclass(frozen=True)
@@ -360,6 +361,26 @@ def default_run(command: Sequence[str], cwd: pathlib.Path) -> subprocess.Complet
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=120)
 
 
+def ignored_packageable_sources(
+    run: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]],
+    root: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    """Enumerate ignored untracked Android package inputs without newline ambiguity."""
+    return run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            *PROTECTED_SOURCE_ROOTS,
+        ],
+        root,
+    )
+
+
 def check_release_identity(
     root: pathlib.Path,
     attestation_path: pathlib.Path,
@@ -454,6 +475,12 @@ def check_release_identity(
         failures.append("could not snapshot exact working-tree status")
     elif initial_status:
         failures.append("working tree is not clean")
+    ignored_source_result = ignored_packageable_sources(run, root)
+    initial_ignored_sources = ignored_source_result.stdout
+    if ignored_source_result.returncode != 0:
+        failures.append("could not snapshot ignored packageable source inputs")
+    elif initial_ignored_sources:
+        failures.append("release source roots contain ignored packageable inputs")
     if source_version is not None:
         if document["version_code"] != source_version.version_code:
             failures.append("attested version_code does not match app/build.gradle.kts")
@@ -660,28 +687,6 @@ def check_release_identity(
                 failures.append("packaged minSdk does not match source")
             if int(packaged_target_sdk.group(1)) != source_version.target_sdk:
                 failures.append("packaged targetSdk does not match source")
-    # Repository identity is checked only after every artifact-inspection tool has returned.
-    # The no-follow file identities are then re-read after these final Git queries, leaving no
-    # external verifier between the final source/input snapshots and the success boundary.
-    final_head_result = run(["git", "rev-parse", "HEAD"], root)
-    final_head = (
-        final_head_result.stdout.strip().casefold()
-        if final_head_result.returncode == 0
-        else ""
-    )
-    if not re.fullmatch(r"[0-9a-f]{40}", final_head):
-        failures.append("could not revalidate current HEAD before verification completion")
-    elif final_head != head:
-        failures.append("HEAD changed during verification")
-    final_status_result = run(
-        ["git", "status", "--porcelain", "--untracked-files=all"], root
-    )
-    if final_status_result.returncode != 0:
-        failures.append(
-            "could not revalidate exact working-tree status before verification completion"
-        )
-    elif final_status_result.stdout != initial_status:
-        failures.append("working-tree status changed during verification")
     if source_version_identity is not None:
         try:
             final_source_version_identity = regular_file_identity(root, SOURCE_VERSION_PATH)
@@ -724,6 +729,35 @@ def check_release_identity(
         else:
             if final_identity != identity:
                 failures.append(f"{label} source identity or digest changed during verification")
+    # Every external verifier and every potentially long file digest is complete. These fast Git
+    # observations are the terminal repository boundary: ignored package inputs are source too,
+    # and HEAD is deliberately sampled last so a clean commit after status is still detected.
+    final_status_result = run(
+        ["git", "status", "--porcelain", "--untracked-files=all"], root
+    )
+    if final_status_result.returncode != 0:
+        failures.append(
+            "could not revalidate exact working-tree status before verification completion"
+        )
+    elif final_status_result.stdout != initial_status:
+        failures.append("working-tree status changed during verification")
+    final_ignored_source_result = ignored_packageable_sources(run, root)
+    if final_ignored_source_result.returncode != 0:
+        failures.append(
+            "could not revalidate ignored packageable source inputs before verification completion"
+        )
+    elif final_ignored_source_result.stdout != initial_ignored_sources:
+        failures.append("ignored packageable source inputs changed during verification")
+    final_head_result = run(["git", "rev-parse", "HEAD"], root)
+    final_head = (
+        final_head_result.stdout.strip().casefold()
+        if final_head_result.returncode == 0
+        else ""
+    )
+    if not re.fullmatch(r"[0-9a-f]{40}", final_head):
+        failures.append("could not revalidate current HEAD before verification completion")
+    elif final_head != head:
+        failures.append("HEAD changed during verification")
     artifact_temp.cleanup()
     return failures
 

@@ -143,6 +143,8 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 )
             if command[:2] == ["git", "status"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
+            if command[:3] == ["git", "ls-files", "-z"]:
+                return subprocess.CompletedProcess(command, 0, "", "")
             if command[0] == "jarsigner":
                 return subprocess.CompletedProcess(command, strict_returncode, "jar verified\n", "")
             if command[0] == "keytool":
@@ -589,6 +591,76 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
 
                 self.assertTrue(changed)
                 self.assertIn("working-tree status changed during verification", failures)
+
+    def test_clean_head_change_after_terminal_status_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, _, commit = self.fixture(root)
+            base = self.runner(commit)
+            current_head = commit
+            status_calls = 0
+
+            def run(command, cwd):
+                nonlocal current_head, status_calls
+                if command[:3] == ["git", "rev-parse", "HEAD"]:
+                    return subprocess.CompletedProcess(command, 0, current_head + "\n", "")
+                result = base(command, cwd)
+                if command[:2] == ["git", "status"]:
+                    status_calls += 1
+                    if status_calls == 2:
+                        current_head = "b" * 40
+                return result
+
+            failures = release.check_release_identity(root, attestation, run=run)
+
+            self.assertEqual(2, status_calls)
+            self.assertIn("HEAD changed during verification", failures)
+
+    def test_ignored_packageable_source_is_rejected_initially_and_if_added_late(self) -> None:
+        for added_late in (False, True):
+            with self.subTest(added_late=added_late), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                base = self.runner(commit)
+                ignored_calls = 0
+
+                def run(command, cwd):
+                    nonlocal ignored_calls
+                    if command[:3] == ["git", "ls-files", "-z"]:
+                        ignored_calls += 1
+                        present = not added_late or ignored_calls == 2
+                        output = (
+                            "app/src/main/res/raw/release_secret.bin\0" if present else ""
+                        )
+                        return subprocess.CompletedProcess(command, 0, output, "")
+                    return base(command, cwd)
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertEqual(2, ignored_calls)
+                expected = (
+                    "ignored packageable source inputs changed during verification"
+                    if added_late
+                    else "release source roots contain ignored packageable inputs"
+                )
+                self.assertIn(expected, failures)
+
+    def test_ignored_source_query_is_nul_safe_and_scoped_to_package_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".gitignore").write_text("*.secret\n", encoding="utf-8")
+            ignored = root / "app/src/main/res/raw/release.secret"
+            ignored.parent.mkdir(parents=True)
+            ignored.write_bytes(b"package input")
+            allowed = root / "releases/upload.secret"
+            allowed.parent.mkdir()
+            allowed.write_bytes(b"immutable output")
+
+            result = release.ignored_packageable_sources(release.default_run, root)
+
+            self.assertEqual(0, result.returncode)
+            self.assertEqual("app/src/main/res/raw/release.secret\0", result.stdout)
 
     def test_source_version_path_swap_at_early_and_late_tool_boundaries_fails_closed(self) -> None:
         for boundary in ("early", "late"):
