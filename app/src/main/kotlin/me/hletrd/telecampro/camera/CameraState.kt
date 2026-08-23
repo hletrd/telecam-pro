@@ -388,11 +388,11 @@ const val FINDER_MIN_BOTTOM_CLEARANCE = 0.088f
 const val PUNCH_IN_CROP = 0.6f
 
 /**
- * The engine-RESOLVED half of the finder gate (everything except the zoom floor): user toggle,
- * TELE mounted, and — in PHOTO — the 4:3 still aspect. In VIDEO the still aspect is not consulted
- * at all: it is semantically unrelated to the recorded framing, and keying the overlay off it is
- * what used to make the PIP appear/vanish mid-clip. 16:9 STILLS stay excluded because the
- * AspectMask pillarboxes would dim and misframe the corner box.
+ * The engine-resolved half of the finder gate: user toggle, plus either TELE mounted or unified
+ * zoom at [FINDER_MIN_ZOOM]. In PHOTO the 4:3 still aspect is also required. In VIDEO the still
+ * aspect is not consulted at all: it is semantically unrelated to recorded framing, and keying the
+ * overlay off it is what used to make the PIP appear/vanish mid-clip. 16:9 STILLS stay excluded
+ * because the AspectMask pillarboxes would dim and misframe the corner box.
  * ONE implementation for the engine (`pushTeleFinder`) and the Compose border — the same
  * hand-written condition used to live in three places and could silently drift.
  */

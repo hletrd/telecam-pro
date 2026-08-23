@@ -699,8 +699,8 @@ unit-tested; drawn as four scissored clears so the hint needs no shader, no VBO 
 and cannot perturb renderer state the preview and encoder share). Its size is the SAME
 `(1 - crop) / zoomComp` the main draw received, so it cannot claim a framing the view does not have
 — device-measured at 39.5% of the overview against the 40% `PUNCH_IN_CROP` implies. Its placement
-sign was device-bisected: the finder is reachable only in tele, where the afocal correction is 180°,
-so a centred loupe is unaffected and only an off-centre tap exposes an error.
+sign was device-bisected on the converter route, where the afocal correction is 180°, so a centred
+loupe is unaffected and only an off-centre tap exposes an error.
 Since the row is a sub-option of the loupe, the Assist toggle is DISABLED while the loupe is off
 (same shape as Zebra Level under Zebra) — ungated it reported "On" while provably drawing nothing,
 with its parent switch under a different section header. **Single-stream honesty**: the HAL's
@@ -709,12 +709,13 @@ the main view while GL zoom compensation (mid-gesture) or punch-in magnifies pas
 field. This is deliberately not labeled PIP or 1x; a true unzoomed/wide finder is a BACKLOG design
 item (second stream or HAL-zoom-cap split).
 Gating is ONE shared, unit-tested predicate (`teleFinderResolved`/`teleFinderVisible` in
-`CameraState.kt`): toggle && TELE && **photo mode** && 4:3, plus an ACTIVE punch-in loupe — the
-honest gate axis since cycle 4 (the old raw `FINDER_MIN_ZOOM` floor showed a corner box that
-duplicated the main view ~1:1 at steady zoom; the single stream means the PIP is only genuinely
-wider while the loupe magnifies past the delivered frame). Photo-only because it is a
-still-composition aid and 4:3 is the STILL aspect; 16:9's AspectMask would dim/misframe the
-corner box. GL applies the same axis at draw via its own punch-in state. The engine resolves the flag in one place (`pushTeleFinder` —
+`CameraState.kt`): toggle + ACTIVE punch-in + (TELE or unified zoom >=
+`FINDER_MIN_ZOOM = 3f`). Photo additionally requires 4:3 because 16:9's AspectMask would
+dim/misframe the corner box; Video ignores the unrelated still-aspect setting, which once made the
+overlay appear or vanish mid-clip. A mounted converter qualifies at any zoom. Without one, the 3x
+floor prevents a steady ordinary-zoom overview from duplicating the main view ~1:1; the single
+stream means the PIP is only genuinely wider while the loupe magnifies past the delivered frame.
+GL applies the same axis at draw via its own punch-in state. The engine resolves the flag in one place (`pushTeleFinder` —
 re-pushed synchronously on toggle/aspect/lens-TC/mode/session-config AND on `rollbackOptics` via
 `applyStabilization`, with self-contained pushes in `setVideoMode`/`setResolvedOptics`), stores it
 in `RendererConfig` for GL-generation replay, and geometry flows from ONE pure seam (`finderRect`)

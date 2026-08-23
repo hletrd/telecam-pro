@@ -504,6 +504,15 @@ check(
     and 'orElse("mutable-development-worktree")' in build_script,
     "device-evidence debug authority distinguishes immutable and developer source owners",
 )
+device_test_readme = read("device-tests/README.md")
+check(
+    "snapshots the exact scoped source whether the checkout is" in device_test_readme
+    and "clean or dirty" in device_test_readme
+    and "Evidence runs must pass the wrapper's printed immutable APK" in device_test_readme
+    and "requires clean committed source" not in device_test_readme
+    and "match `app/build/outputs/apk/debug/app-debug.apk`" not in device_test_readme,
+    "device harness requires the printed clean-or-dirty immutable debug artifact",
+)
 view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
 camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
 check(
@@ -582,6 +591,18 @@ check(
     and "SUPERSEDED — Loupe Overview" in backlog
     and "predates the later per-draw" in backlog,
     "Loupe Overview field criteria match the per-draw orientation authority",
+)
+camera_state = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt")
+finder_tests = read("app/src/test/kotlin/me/hletrd/telecampro/camera/TeleFinderVisibilityTest.kt")
+check(
+    "FINDER_MIN_ZOOM = 3f" in claude
+    and "Video deliberately ignores the unrelated still-aspect setting" in claude
+    and "FINDER_MIN_ZOOM = 3f" in architecture
+    and "Video ignores the unrelated still-aspect setting" in architecture
+    and "const val FINDER_MIN_ZOOM = 3f" in camera_state
+    and "past the zoom floor the finder is offered without a converter" in finder_tests
+    and "video shows the finder for ANY photo aspect" in finder_tests,
+    "Loupe Overview authorities preserve video and converterless 3x admission",
 )
 
 # ---- coverage residual authority must stay machine-checked, not copied into prose --------------

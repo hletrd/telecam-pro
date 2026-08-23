@@ -230,17 +230,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   mounted the box shows the raw, inverted field; the genuinely correct version is the second-stream
   wide finder on the BACKLOG, which comes off a lens the converter is not clamped to and is upright
   for real rather than by declining a rotation.
-- **Loupe Overview is HONEST about the single stream (2026-07-17; photo-only since cycle 2).**
+- **Loupe Overview is HONEST about the single stream (gate corrected 2026-07-29).**
   The Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the
-  FULL current camera frame in TELE **photo** + 4:3 while the PUNCH-IN LOUPE is active (photo-only:
-  it is a still-composition aid and 4:3 is the STILL aspect — keying a video overlay off a photo
-  setting made it appear/vanish mid-clip with no visible cause). It can NEVER show an unzoomed/wide
-  field: the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the overview is
-  only genuinely wider than the main view while the loupe (or transient GL zoom compensation)
-  magnifies past the delivered field — which is why cycle 4 replaced the old raw zoom floor
-  (`FINDER_MIN_ZOOM`, removed) with the loupe as the gate axis: at a steady zoom the overview duplicated
-  the main view ~1:1 and added nothing (a true wide finder is a BACKLOG design item — second stream
-  or HAL-zoom-cap split). GL
+  FULL current camera frame while the PUNCH-IN LOUPE is active at either TELE or unified zoom >= 3x.
+  Photo additionally requires 4:3; Video deliberately ignores the unrelated still-aspect setting,
+  which once made the overlay appear or vanish mid-clip. It can NEVER show an unzoomed/wide field:
+  the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the overview is only
+  genuinely wider than the main view while the loupe (or transient GL zoom compensation) magnifies
+  past the delivered field. `FINDER_MIN_ZOOM = 3f` keeps a converterless steady 1x/2x view from
+  duplicating the main frame ~1:1; a mounted converter qualifies at any zoom. A true wide finder is a
+  BACKLOG design item (second stream or HAL-zoom-cap split). GL
   scissor box and Compose border derive from ONE pure seam (`finderRect`; the
   padding-before-fillMaxWidth chain drew the border ~6% small), the border anchor is
   layout-direction-absolute (RTL), the gate is ONE shared unit-tested predicate

@@ -14,7 +14,7 @@ import org.junit.Test
 class TeleFinderVisibilityTest {
 
     @Test
-    fun `resolved only in enabled TELE photo 4-3`() {
+    fun `converter route resolves when enabled with photo requiring 4-3`() {
         for (enabled in booleanArrayOf(true, false))
             for (tc in booleanArrayOf(true, false))
                 for (video in booleanArrayOf(true, false))

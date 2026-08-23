@@ -75,8 +75,11 @@ explicitly refused. The manifest contains the Git
 commit and a sorted SHA-256/size manifest of the main/debug app source trees and Gradle inputs that
 can change APK bytes. The runner recomputes that same identity from the checkout and refuses before
 ADB access when the member is missing or malformed, its commit is stale, or any clean or dirty source
-content differs. The immutable wrapper requires clean committed source, and the attestation names
-the exact content-manifest digest embedded in the exercised APK rather than a bare provenance flag.
+content differs. The immutable wrapper snapshots the exact scoped source whether the checkout is
+clean or dirty, and the attestation names the exact content-manifest digest embedded in the exercised
+APK rather than a bare provenance flag. Evidence runs must pass the wrapper's printed immutable APK
+path with `--apk`; the ordinary mutable Gradle output is for development only and is intentionally
+refused here.
 
 The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and queries/pulls only
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
@@ -108,9 +111,9 @@ every declared identity in both languages and AST-scan state-changing cases so a
 `tap_ui`/`find` selector cannot quietly re-enter. Camera-standard abbreviations and numeric/profile
 tokens remain identical by design.
 
-The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk`
-whose SHA-256 does not match `app/build/outputs/apk/debug/app-debug.apk` (override the host
-path with `--apk`). Cases are independently gated when they may launch/force-stop the app
+The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk` whose
+SHA-256 does not match the immutable evidence APK supplied with `--apk`. Cases are independently
+gated when they may launch/force-stop the app
 (`--allow-destructive`), change persisted shooting settings (`--allow-settings`), or create
 photos/videos (`--allow-media-writes`). These flags are execution guards, not substitutes for
 obtaining operator approval. Launch is destructive-gated because app startup may reclaim proven-
