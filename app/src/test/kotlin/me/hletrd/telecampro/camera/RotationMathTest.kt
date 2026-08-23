@@ -21,6 +21,8 @@ class RotationMathTest {
             )
             assertEquals(0, RotationMath.videoOrientationHint(device, CameraRoute.EXTERNAL))
         }
+        assertEquals(270, RotationMath.videoOrientationHint(90, CameraRoute.BACK))
+        assertEquals(90, RotationMath.videoOrientationHint(90, CameraRoute.FRONT))
     }
 
     @Test

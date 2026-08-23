@@ -189,6 +189,27 @@ class RetainedStillDeletionOwnerTest {
     }
 
     @Test
+    fun `tombstoned publication with unresolved discard stays retry pending`() {
+        var publishCalled = false
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 2,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+        )
+        owner.markCaptureDeleted(56)
+
+        assertEquals(
+            DeletedStillPublication.DISCARD_RETRY_PENDING,
+            owner.publishIfLive("content://image/unresolved", captureId = 56) {
+                publishCalled = true
+                true
+            },
+        )
+        assertFalse(publishCalled)
+        assertEquals(1, owner.unresolvedDiscardCount())
+    }
+
+    @Test
     fun `discard exceptions stay unresolved while active publication and tombstone stay owned`() {
         var throws = true
         val owner = RetainedStillDeletionOwner<String>(

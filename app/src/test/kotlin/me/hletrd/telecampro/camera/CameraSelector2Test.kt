@@ -256,5 +256,14 @@ class CameraSelector2Test {
             currentRoute = CameraRoute.EXTERNAL,
         )
         assertFalse(busyOnly.topologyChanged)
+
+        val frontStillPresent = cameraRouteTopologyDecision(
+            previousIds = setOf("front"),
+            currentIds = setOf("front"),
+            inventory = CameraRouteInventory(back = false, front = true, external = false),
+            currentRoute = CameraRoute.FRONT,
+        )
+        assertFalse(frontStillPresent.topologyChanged)
+        assertEquals(CameraRoute.FRONT, frontStillPresent.targetRoute)
     }
 }

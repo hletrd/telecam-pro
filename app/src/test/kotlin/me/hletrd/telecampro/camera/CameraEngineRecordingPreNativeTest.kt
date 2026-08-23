@@ -85,6 +85,20 @@ class CameraEngineRecordingPreNativeTest {
     }
 
     @Test
+    fun `pre-native override defaults keep admission current and production timeout`() {
+        val overrides = RecordingPreNativeEngineOverrides(
+            allocatePendingVideo = { _, _ -> null },
+            dispatchAllocation = { RecordingPreNativeSubmission(RecordingPreNativeDispatch.OVERFLOW) },
+            scheduleDeadline = { _, _ -> null },
+            afterMicrophoneClaim = { _, _, _ -> false },
+            discardPendingOutput = { PendingOutputDiscardResult.RECOVERY_MARKED },
+        )
+
+        assertTrue(overrides.admissionCurrent())
+        assertEquals(8_000L, overrides.allocationTimeoutMs)
+    }
+
+    @Test
     fun `real start timeout retires provider with exactly one result and failure status`() {
         val providerEntered = CountDownLatch(1)
         val providerRelease = trackedRelease()
