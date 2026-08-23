@@ -2827,21 +2827,18 @@ private fun ShutterRow(
         // REC start, shifting the control ~31 dp at the moment the thumb is on it). The dot offsets
         // from the fixed shutter instead: 38 dp shutter half + 14 dp gap + 24 dp dot half = 76 dp.
         if (mode == CaptureMode.VIDEO && isRecording && !isRecordingStarting) {
-            // 76 dp is the geometric offset (38 shutter half + 14 gap + 24 dot half) and it is
-            // correct on any window wide enough to hold it: on a narrow one (a 320 dp phone bucket,
-            // or a freeform window) the dot's 48 dp touch box overlapped the 52 dp gallery thumb
-            // (2026-08-02 review). Clamp so the dot never crosses the thumb's right edge; below
-            // that width the two simply sit adjacent instead of on top of each other.
-            val halfWidth = rowWidth / 2
-            val thumbEdge = 12.dp + 52.dp + 8.dp // one inset + thumb + breathing room
-            val snapshotOffset = minOf(76.dp, (halfWidth - thumbEdge - 24.dp).coerceAtLeast(0.dp))
-            SnapshotButton(
-                onClick = onSnapshot,
-                enabled = stillCaptureAvailable,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .offset(x = -snapshotOffset),
-            )
+            // The row has already consumed its external 12 dp padding. Resolve against LOCAL width
+            // and refuse the secondary action when three non-overlapping targets cannot fit; moving
+            // the dot toward the shutter to clear Gallery produced a 10 dp shutter overlap at 320 dp.
+            snapshotOffsetForRow(rowWidth.value)?.let { snapshotOffsetDp ->
+                SnapshotButton(
+                    onClick = onSnapshot,
+                    enabled = stillCaptureAvailable,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .offset(x = -snapshotOffsetDp.dp),
+                )
+            }
         }
         ShutterButton(
             mode = mode,
@@ -2854,6 +2851,22 @@ private fun ShutterRow(
         )
     }
 }
+
+/** Pure local-row geometry for the optional 48 dp in-REC still target. */
+internal fun snapshotOffsetForRow(rowWidthDp: Float): Float? {
+    if (!rowWidthDp.isFinite() || rowWidthDp <= 0f) return null
+    val halfWidth = rowWidthDp / 2f
+    val minimumOffsetFromShutter = SHUTTER_TARGET_DP / 2f + SNAPSHOT_TARGET_DP / 2f
+    val maximumOffsetBeforeGallery = halfWidth - GALLERY_TARGET_DP - SNAPSHOT_TARGET_DP / 2f
+    if (maximumOffsetBeforeGallery < minimumOffsetFromShutter) return null
+    return SNAPSHOT_IDEAL_OFFSET_DP.coerceAtMost(maximumOffsetBeforeGallery)
+        .coerceAtLeast(minimumOffsetFromShutter)
+}
+
+private const val GALLERY_TARGET_DP = 52f
+private const val SNAPSHOT_TARGET_DP = 48f
+private const val SHUTTER_TARGET_DP = 76f
+private const val SNAPSHOT_IDEAL_OFFSET_DP = 76f
 
 /** Large circular shutter: white ring; PHOTO = solid white; VIDEO idle = red dot; recording = red square. */
 @Composable
