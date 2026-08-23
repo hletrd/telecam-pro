@@ -17,9 +17,11 @@ teleconverter** that clamps onto the phone's **3× / 70 mm periscope** lens (tur
 ~300 mm, ≈4.286× magnification).
 
 Two consequences of the afocal converter drive the whole design:
-1. **The image arrives rotated 180°** (afocal telescope, no erecting prism). Preview AND saved
-   results must be corrected. Vertical + horizontal flip = 180° rotation (parity-preserving, NOT a
-   mirror).
+1. **The image arrives rotated 180°** (afocal telescope, no erecting prism). The main viewfinder and
+   saved still/video results must be corrected. The same-stream
+   [Loupe Overview is the deliberate exception](docs/FIELD_CHECKS.md#loupe-overview-afocal-exception):
+   it omits the afocal term and may show the raw, inverted field. Vertical + horizontal flip = 180°
+   rotation (parity-preserving, NOT a mirror).
 2. **Exit light is ~collimated**, so the phone lens focuses **near infinity** → manual focus, with a
    nonlinear slider that gives resolution around ∞, is essential.
 

@@ -484,6 +484,24 @@ check(
     and "raw delivered" in readme,
     "README scopes afocal correction around the honest same-stream overview exception",
 )
+loupe_exception_anchor = "#loupe-overview-afocal-exception"
+unqualified_afocal_claim = re.compile(
+    r"\b(?:all\s+)?(?:the\s+)?(?:live\s+)?preview\b.{0,100}"
+    r"\b(?:saved|results?|outputs?)\b.{0,60}\bcorrect",
+    re.IGNORECASE | re.DOTALL,
+)
+check(
+    unqualified_afocal_claim.search(claude.split("## Non-negotiable constraints", 1)[0]) is None
+    and unqualified_afocal_claim.search(architecture.split("## Module Map", 1)[0]) is None
+    and re.search(r"main viewfinder and\s+saved still/video results must be corrected", claude)
+    and re.search(r"main viewfinder and\s+saved still/video results must be corrected", architecture)
+    and loupe_exception_anchor in claude
+    and loupe_exception_anchor in architecture
+    and 'id="loupe-overview-afocal-exception"' in read("docs/FIELD_CHECKS.md")
+    and "raw, inverted field" in claude
+    and "raw, inverted field" in architecture,
+    "top-level afocal authorities scope correction around the Loupe Overview exception",
+)
 
 # The overview once shared renderer rotation state with the main draw. It now owns an explicit
 # per-draw window-only override, which intentionally leaves the same converter-fed stream raw and
