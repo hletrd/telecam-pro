@@ -1121,7 +1121,10 @@ internal class RecorderQuarantineAdmissionGate {
      */
     fun runNativeIfSafe(block: () -> Unit): Boolean {
         val admitted = lock.withLock {
-            if (quarantined.get()) {
+            // A pending REC token can already be inside MediaCodec setup while its recorder has not
+            // yet reached the published Engine slot. General GL/Camera2 acquisition must wait for
+            // that setup to publish or retire; token-specific [runPendingNative] is its sole entry.
+            if (quarantined.get() || pendingToken != null) {
                 false
             } else {
                 nativeAcquisitions++
@@ -1224,6 +1227,8 @@ internal class RecorderQuarantineAdmissionGate {
     }
 
     fun isQuarantined(): Boolean = quarantined.get()
+
+    fun hasPendingRecorderSetup(): Boolean = lock.withLock { pendingToken != null }
 }
 
 internal object UnsafeRecorderQuarantine {
@@ -1248,6 +1253,8 @@ internal object UnsafeRecorderQuarantine {
 
     fun runPendingNativeSetup(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.runPendingNative(token, block)
+
+    fun hasPendingRecorderSetup(): Boolean = admissionGate.hasPendingRecorderSetup()
 
     fun publishAdmission(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean =
         admissionGate.publish(token, block)

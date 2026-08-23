@@ -216,6 +216,41 @@ class RecordingPreNativeAllocationTest {
     }
 
     @Test
+    fun `setup owner binds exact resource and release quarantine revokes later binding`() {
+        val owner = RecorderSetupFinalizationOwner<String>()
+        assertTrue(owner.bind("recorder-a"))
+
+        val quarantine = owner.quarantine()
+
+        assertTrue(quarantine.claimed)
+        assertEquals("recorder-a", quarantine.resource)
+        assertEquals(RecorderSetupFinalization.QUARANTINED, owner.current())
+        assertFalse(owner.bind("recorder-b"))
+        assertFalse(owner.release())
+        assertFalse(owner.quarantine().claimed)
+        assertEquals(
+            RecorderSetupFinalization.QUARANTINED,
+            owner.await(1, TimeUnit.MILLISECONDS),
+        )
+    }
+
+    @Test
+    fun `setup owner preserves interruption while returning pending classification`() {
+        val owner = RecorderSetupFinalizationOwner<String>()
+
+        Thread.currentThread().interrupt()
+        try {
+            assertEquals(
+                RecorderSetupFinalization.PENDING,
+                owner.await(1, TimeUnit.SECONDS),
+            )
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
     fun `dispatcher shutdown rejects without running or inlining provider work`() {
         val ran = AtomicBoolean(false)
         val dispatcher = RecordingPreNativeAllocationDispatcher(workerCount = 1, backlogCapacity = 1)

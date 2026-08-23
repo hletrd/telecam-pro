@@ -29,7 +29,11 @@ class UnsafeRecorderQuarantineTest {
             assertEquals(1, committed)
 
             var nativeRan = false
-            assertTrue(UnsafeRecorderQuarantine.runNativeAcquisition { nativeRan = true })
+            // General Camera2/GL acquisitions stay excluded while the recorder setup token is
+            // pending; only that exact token may enter its vendor-native setup section.
+            assertFalse(UnsafeRecorderQuarantine.runNativeAcquisition { nativeRan = true })
+            assertFalse(nativeRan)
+            assertTrue(UnsafeRecorderQuarantine.runPendingNativeSetup(token) { nativeRan = true })
             assertTrue(nativeRan)
 
             var published = false

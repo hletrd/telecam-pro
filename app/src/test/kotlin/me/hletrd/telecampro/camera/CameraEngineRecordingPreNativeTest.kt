@@ -408,6 +408,47 @@ class CameraEngineRecordingPreNativeTest {
         assertEquals(order[0].removePrefix("family:"), order[1].removePrefix("allocate:"))
     }
 
+    @Test
+    fun `release classifies claimed setup before replacement Engine admission`() {
+        val oldSetupEntered = CountDownLatch(1)
+        val releaseOldSetup = CountDownLatch(1)
+        val releaseReturned = CountDownLatch(1)
+        val replacementClaimed = CountDownLatch(1)
+        val old = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/claimed-old") },
+                dispatch = ::runInline,
+                setupReleaseTimeoutMs = 25L,
+                afterMic = { _, _, _ ->
+                    oldSetupEntered.countDown()
+                    releaseOldSetup.await()
+                    false
+                },
+            ),
+        )
+        old.startRecording(false) {}
+        assertTrue(oldSetupEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+
+        Thread {
+            old.release()
+            releaseReturned.countDown()
+        }.start()
+        assertTrue(releaseReturned.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        engines.remove(old)
+
+        val replacement = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/claimed-replacement") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> replacementClaimed.countDown(); false },
+            ),
+        )
+        replacement.startRecording(false) {}
+        assertTrue(replacementClaimed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+
+        releaseOldSetup.countDown()
+    }
+
     private fun engine(overrides: RecordingPreNativeEngineOverrides): CameraEngine =
         CameraEngine(app, overrides).also(engines::add)
 
@@ -418,6 +459,7 @@ class CameraEngineRecordingPreNativeTest {
         schedule: (Long, () -> Unit) -> RecordingTeardownCancellation? = { _, _ ->
             RecordingTeardownCancellation {}
         },
+        setupReleaseTimeoutMs: Long = 14_000L,
         afterMic: (Uri, Int, Boolean) -> Boolean,
         discard: (Uri) -> PendingOutputDiscardResult = {
             PendingOutputDiscardResult.RECOVERY_MARKED
@@ -428,6 +470,7 @@ class CameraEngineRecordingPreNativeTest {
         dispatchAllocation = dispatch,
         scheduleDeadline = schedule,
         allocationTimeoutMs = 1L,
+        setupReleaseTimeoutMs = setupReleaseTimeoutMs,
         afterMicrophoneClaim = afterMic,
         discardPendingOutput = discard,
     )

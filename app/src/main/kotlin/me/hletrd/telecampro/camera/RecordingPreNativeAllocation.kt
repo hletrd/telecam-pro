@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.FutureTask
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
@@ -96,6 +97,72 @@ internal enum class RecordingPreNativeDelivery {
     READY,
     FAILED,
     STALE,
+}
+
+internal enum class RecorderSetupFinalization { PENDING, RELEASED, QUARANTINED }
+
+internal data class RecorderSetupQuarantine<T>(
+    val claimed: Boolean,
+    val resource: T?,
+)
+
+/**
+ * Release-visible owner for the gap between allocation claim and recorder publication.
+ *
+ * The resource is bound before the first vendor-native setup call. Release can therefore either
+ * observe a completed transfer/cleanup or atomically revoke setup and retain the exact native owner.
+ */
+internal class RecorderSetupFinalizationOwner<T : Any> {
+    private val lock = Any()
+    private val terminal = CountDownLatch(1)
+    private var state = RecorderSetupFinalization.PENDING
+    private var resource: T? = null
+
+    fun bind(value: T): Boolean = synchronized(lock) {
+        if (state != RecorderSetupFinalization.PENDING || resource != null) return false
+        resource = value
+        true
+    }
+
+    fun release(): Boolean = classify(RecorderSetupFinalization.RELEASED)
+
+    fun quarantine(): RecorderSetupQuarantine<T> {
+        val result = synchronized(lock) {
+            if (state != RecorderSetupFinalization.PENDING) {
+                RecorderSetupQuarantine<T>(claimed = false, resource = null)
+            } else {
+                state = RecorderSetupFinalization.QUARANTINED
+                RecorderSetupQuarantine(claimed = true, resource = resource)
+            }
+        }
+        if (result.claimed) terminal.countDown()
+        return result
+    }
+
+    fun await(timeout: Long, unit: TimeUnit): RecorderSetupFinalization {
+        if (current() == RecorderSetupFinalization.PENDING) {
+            try {
+                terminal.await(timeout.coerceAtLeast(0L), unit)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        return current()
+    }
+
+    fun current(): RecorderSetupFinalization = synchronized(lock) { state }
+
+    private fun classify(candidate: RecorderSetupFinalization): Boolean {
+        require(candidate != RecorderSetupFinalization.PENDING)
+        val changed = synchronized(lock) {
+            if (state != RecorderSetupFinalization.PENDING) false else {
+                state = candidate
+                true
+            }
+        }
+        if (changed) terminal.countDown()
+        return changed
+    }
 }
 
 /**

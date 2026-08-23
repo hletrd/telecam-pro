@@ -493,6 +493,23 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
+    fun `pending recorder token excludes replacement general native acquisition`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val token = checkNotNull(gate.snapshot(Any()))
+        var replacementEntered = false
+
+        assertTrue(gate.hasPendingRecorderSetup())
+        assertFalse(gate.runNativeIfSafe { replacementEntered = true })
+        assertFalse(replacementEntered)
+        assertTrue(gate.runPendingNative(token) {})
+
+        gate.abandonPending(token)
+        assertFalse(gate.hasPendingRecorderSetup())
+        assertTrue(gate.runNativeIfSafe { replacementEntered = true })
+        assertTrue(replacementEntered)
+    }
+
+    @Test
     fun `stale token cannot enter pending native setup`() {
         val gate = RecorderQuarantineAdmissionGate()
         val current = checkNotNull(gate.snapshot(Any()))

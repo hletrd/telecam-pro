@@ -82,6 +82,31 @@ class CameraEngineTopologyIntegrationTest {
         assertEquals(52L, convergence.claim())
     }
 
+    @Test
+    fun `same-id availability retries a latest incomplete inventory after timer exhaustion`() {
+        assertTrue(
+            routeAvailabilityRefreshRequired(
+                inventoryResolved = false,
+                idsUnchanged = true,
+                identitiesUnchanged = true,
+            ),
+        )
+        assertFalse(
+            routeAvailabilityRefreshRequired(
+                inventoryResolved = true,
+                idsUnchanged = true,
+                identitiesUnchanged = true,
+            ),
+        )
+        assertTrue(
+            routeAvailabilityRefreshRequired(
+                inventoryResolved = true,
+                idsUnchanged = true,
+                identitiesUnchanged = false,
+            ),
+        )
+    }
+
     private fun engine(): CameraEngine = CameraEngine(app).also(engines::add)
 
     private fun Any.setPrivateField(name: String, value: Any?) {

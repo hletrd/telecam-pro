@@ -24,6 +24,13 @@ class TerminalAcquisitionGateTest {
         assertTrue(attempted.isEmpty())
         assertFalse(nativeAcquisitionAllowed(acquisitionOpen = true, recorderQuarantined = true))
         assertFalse(nativeAcquisitionAllowed(acquisitionOpen = false, recorderQuarantined = false))
+        assertFalse(
+            nativeAcquisitionAllowed(
+                acquisitionOpen = true,
+                recorderQuarantined = false,
+                recorderSetupPending = true,
+            ),
+        )
         assertTrue(nativeAcquisitionAllowed(acquisitionOpen = true, recorderQuarantined = false))
     }
 

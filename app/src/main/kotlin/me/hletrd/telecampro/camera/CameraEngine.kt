@@ -58,6 +58,7 @@ internal data class RecordingPreNativeEngineOverrides(
     val dispatchAllocation: ((() -> Unit) -> RecordingPreNativeSubmission),
     val scheduleDeadline: (delayMs: Long, action: () -> Unit) -> RecordingTeardownCancellation?,
     val allocationTimeoutMs: Long = 8_000L,
+    val setupReleaseTimeoutMs: Long = 14_000L,
     /** Test terminal after the REAL standby-mic claim; false exercises ordinary admission rollback. */
     val afterMicrophoneClaim: (uri: android.net.Uri, captureId: Int, recordAudio: Boolean) -> Boolean,
     val discardPendingOutput: (android.net.Uri) -> PendingOutputDiscardResult,
@@ -66,6 +67,13 @@ internal data class RecordingPreNativeEngineOverrides(
 /** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
 internal data class RecordingStorageEngineOverrides(
     val capacityOwner: RecordingStorageCapacityOwner,
+)
+
+private data class RecorderSetupOwner(
+    val terminal: RecorderSetupFinalizationOwner<VideoRecorder>,
+    val processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+    val topologyLease: Long,
+    val captureId: Int,
 )
 
 class CameraEngine internal constructor(
@@ -108,6 +116,8 @@ class CameraEngine internal constructor(
     private val recordingPreNativeAttempt = java.util.concurrent.atomic.AtomicReference<
         RecordingPreNativeAllocationAttempt<android.net.Uri>?
     >(null)
+    @Volatile
+    private var recorderSetupFinalizationOwner: RecorderSetupOwner? = null
     // Extractor/MediaStore tails own no native recorder resources. The lane is deliberately finite:
     // provider outages may occupy two workers plus a bounded backlog, after which the pending row is
     // the durable overflow owner for launch recovery. Admission never falls back inline/raw-thread.
@@ -940,6 +950,10 @@ class CameraEngine internal constructor(
         }
         if (!inventory.complete || ids == null) {
             cameraRouteInventory = inventory
+            // The latest snapshot is partial even if a previous generation completed. Leaving the
+            // old true value here makes a same-id availability callback skip the only recovery path
+            // after the timer retry budget is exhausted.
+            cameraRouteInventoryResolved = false
             runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
             scheduleRouteInventoryRetry()
             return
@@ -1026,7 +1040,12 @@ class CameraEngine internal constructor(
                 val ids = runCatching { manager.cameraIdList.toSet() }.getOrNull()
                 val identitiesUnchanged = cameraIdentityEpochs.toMap() == knownCameraIdentityEpochs
                 // Opening our own camera emits onCameraUnavailable without changing topology.
-                if (cameraRouteInventoryResolved && ids == knownCameraIds && identitiesUnchanged) return@execute
+                if (!routeAvailabilityRefreshRequired(
+                        inventoryResolved = cameraRouteInventoryResolved,
+                        idsUnchanged = ids == knownCameraIds,
+                        identitiesUnchanged = identitiesUnchanged,
+                    )
+                ) return@execute
                 resolveInitialCameraRouteAvailability(force = true)
             }
         }.onFailure { routeAvailabilityRefreshScheduled.set(false) }
@@ -4518,26 +4537,56 @@ class CameraEngine internal constructor(
                     }
                     val continuationAccepted = runCatching {
                         recorderExecutor.execute {
-                            val uri = attempt.claim() ?: return@execute
+                            // Publish the release-visible owner BEFORE claim makes the allocation
+                            // non-retirable. It stays reachable until setup either transfers to the
+                            // recorder slot, proves cleanup, or is quarantined.
+                            val setupOwner = RecorderSetupFinalizationOwner<VideoRecorder>()
+                            val setupContext = RecorderSetupOwner(
+                                terminal = setupOwner,
+                                processAdmission = processAdmission,
+                                topologyLease = topologyLease,
+                                captureId = recordingCaptureId,
+                            )
+                            val ownerInstalled = synchronized(recorderOwnershipLock) {
+                                if (recorderSetupFinalizationOwner != null) false else {
+                                    recorderSetupFinalizationOwner = setupContext
+                                    true
+                                }
+                            }
+                            if (!ownerInstalled) {
+                                attempt.retire()
+                                return@execute
+                            }
+                            val uri = attempt.claim()
+                            if (uri == null) {
+                                completeRecorderSetup(setupContext)
+                                return@execute
+                            }
                             recordingPreNativeAttempt.compareAndSet(attempt, null)
-                            val ok = runCatching {
-                                continueRecordingAfterAllocation(
-                                    recordAudio = recordAudio,
-                                    topologyLease = topologyLease,
-                                    admission = admission,
-                                    processAdmission = processAdmission,
-                                    completeAttempt = completeAttempt,
-                                    uri = uri,
-                                    recordingCaptureId = recordingCaptureId,
-                                    name = name,
-                                )
-                            }.getOrElse { failure ->
-                                android.util.Log.w("CameraEngine", "REC admission threw", failure)
-                                // Owner state is unknown after an unexpected throw. Leave the
-                                // durably REGISTERED row private for structural recovery; deleting
-                                // here could race a native graph that crossed its creation edge.
-                                onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
-                                false
+                            val ok = try {
+                                runCatching {
+                                    continueRecordingAfterAllocation(
+                                        recordAudio = recordAudio,
+                                        topologyLease = topologyLease,
+                                        admission = admission,
+                                        processAdmission = processAdmission,
+                                        completeAttempt = completeAttempt,
+                                        setupContext = setupContext,
+                                        uri = uri,
+                                        recordingCaptureId = recordingCaptureId,
+                                        name = name,
+                                    )
+                                }.getOrElse { failure ->
+                                    android.util.Log.w("CameraEngine", "REC admission threw", failure)
+                                    quarantineRecorderSetup(
+                                        setupContext,
+                                        failure,
+                                    )
+                                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                                    false
+                                }
+                            } finally {
+                                completeRecorderSetup(setupContext)
                             }
                             completeAttempt(ok)
                         }
@@ -4581,6 +4630,7 @@ class CameraEngine internal constructor(
         admission: RecordingAdmissionSnapshot,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
         completeAttempt: (Boolean) -> Unit,
+        setupContext: RecorderSetupOwner,
         uri: android.net.Uri,
         recordingCaptureId: Int,
         name: String,
@@ -4627,6 +4677,7 @@ class CameraEngine internal constructor(
                             acceptedSession = checkNotNull(admission.acceptedSession),
                             audioClaim = audioClaim,
                             processAdmission = processAdmission,
+                            setupContext = setupContext,
                             encoderCandidates = admission.encoderCandidates,
                             completeAttempt = completeAttempt,
                             uri = uri,
@@ -4637,8 +4688,7 @@ class CameraEngine internal constructor(
                 } catch (t: Throwable) {
                     android.util.Log.w("CameraEngine", "REC native admission threw", t)
                     abortRecordingStart()
-                    // Preserve the row for recovery: the throw may have occurred after a native
-                    // owner was created, so cleanup cannot infer that deleting is safe.
+                    quarantineRecorderSetup(setupContext, t)
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                     false
                 }
@@ -4656,6 +4706,7 @@ class CameraEngine internal constructor(
         acceptedSession: AcceptedCameraSession,
         audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+        setupContext: RecorderSetupOwner,
         encoderCandidates: List<EncoderSelection>,
         completeAttempt: (Boolean) -> Unit,
         uri: android.net.Uri,
@@ -4718,6 +4769,13 @@ class CameraEngine internal constructor(
             else -> ColorTransfer.SDR
         }
         val rec = VideoRecorder(context).also { it.processAdmissionToken = processAdmission }
+        // Bind before the first vendor-native setup call. A release timeout that wins from here on
+        // can retain this exact graph; if release already revoked setup, no native entry is allowed.
+        if (!setupContext.terminal.bind(rec)) {
+            retirePendingRecordingRow(uri, recordingCaptureId, "setup-revoked-before-native")
+            abortRecordingStart()
+            return false
+        }
         val setupScheduler = RecordingTeardownScheduler { delayMs, action ->
             runCatching {
                 recorderWatchdog.schedule(
@@ -4734,7 +4792,10 @@ class CameraEngine internal constructor(
             timeoutMs = RECORDER_SETUP_TIMEOUT_MS,
             failure = { java.util.concurrent.TimeoutException("Recorder native setup timed out") },
             onTimeout = { failure ->
-                enterUnsafeRecorderQuarantine(rec, recordingCaptureId, failure)
+                quarantineRecorderSetup(
+                    setupContext,
+                    failure,
+                )
                 completeAttempt(false)
             },
         )
@@ -4996,6 +5057,34 @@ class CameraEngine internal constructor(
             )
         }
         return true
+    }
+
+    private fun completeRecorderSetup(owner: RecorderSetupOwner) {
+        owner.terminal.release()
+        synchronized(recorderOwnershipLock) {
+            if (recorderSetupFinalizationOwner === owner) recorderSetupFinalizationOwner = null
+        }
+    }
+
+    private fun quarantineRecorderSetup(
+        owner: RecorderSetupOwner,
+        failure: Throwable,
+    ) {
+        val quarantine = owner.terminal.quarantine()
+        if (!quarantine.claimed) return
+        val rec = quarantine.resource
+        if (rec != null) {
+            enterUnsafeRecorderQuarantine(rec, owner.captureId, failure)
+        } else {
+            // Release won before a VideoRecorder was bound. Revocation is sufficient: bind() now
+            // fails atomically, so no vendor owner can appear after the pending process lease ends.
+            UnsafeRecorderQuarantine.abandonPendingAdmission(owner.processAdmission)
+            abortRecordingStart()
+            releaseRecordingAdmissionTopologyLease(owner.topologyLease)
+        }
+        synchronized(recorderOwnershipLock) {
+            if (recorderSetupFinalizationOwner === owner) recorderSetupFinalizationOwner = null
+        }
     }
 
     private fun abortRecordingStart() {
@@ -5400,6 +5489,7 @@ class CameraEngine internal constructor(
     private fun nativeAcquisitionMayProceed(): Boolean = nativeAcquisitionAllowed(
         acquisitionOpen = terminalAcquisitionGate.isOpen(),
         recorderQuarantined = UnsafeRecorderQuarantine.isActive(),
+        recorderSetupPending = UnsafeRecorderQuarantine.hasPendingRecorderSetup(),
     )
 
     private fun finishRecordingNative(
@@ -5921,6 +6011,21 @@ class CameraEngine internal constructor(
         ownedRecording?.let {
             detachAndFinalizeRecording(it.gl, it.recorder, it.uri, it.captureId)
         }
+        recorderSetupFinalizationOwner?.let { setup ->
+            val terminal = setup.terminal.await(
+                timeout = recordingPreNativeOverrides?.setupReleaseTimeoutMs
+                    ?: RECORDER_FINALIZE_RELEASE_TIMEOUT_MS,
+                unit = java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+            if (terminal == RecorderSetupFinalization.PENDING) {
+                quarantineRecorderSetup(
+                    setup,
+                    java.util.concurrent.TimeoutException(
+                        "Engine release outlived recorder native setup classification",
+                    ),
+                )
+            }
+        }
         recorderFinalizationOwner?.let { finalizing ->
             val nativeFinalization = nativeFinalizationAtEngineRelease(
                 classification = finalizing.nativeFinalization,
@@ -6236,7 +6341,15 @@ internal fun previewSurfaceLossRestartAllowed(
 internal fun nativeAcquisitionAllowed(
     acquisitionOpen: Boolean,
     recorderQuarantined: Boolean,
-): Boolean = acquisitionOpen && !recorderQuarantined
+    recorderSetupPending: Boolean = false,
+): Boolean = acquisitionOpen && !recorderQuarantined && !recorderSetupPending
+
+/** A partial latest inventory must remain eligible even when ids and identity epochs are unchanged. */
+internal fun routeAvailabilityRefreshRequired(
+    inventoryResolved: Boolean,
+    idsUnchanged: Boolean,
+    identitiesUnchanged: Boolean,
+): Boolean = !inventoryResolved || !idsUnchanged || !identitiesUnchanged
 
 /** Exact local half of process-linearized REC publication. */
 internal fun recordingCandidateMayPublish(
