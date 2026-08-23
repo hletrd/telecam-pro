@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +24,16 @@ sys.path.insert(0, str(DEVICE_TESTS))
 import run as runner  # noqa: E402
 from dtest.adb import MAIN_ACTIVITY, DisplayMetrics  # noqa: E402
 from dtest.contracts import ContractError  # noqa: E402
+
+
+def copy_harness_fixture(parent: Path) -> Path:
+    destination = parent / "device-tests"
+    shutil.copytree(
+        DEVICE_TESTS,
+        destination,
+        ignore=shutil.ignore_patterns("reports", "__pycache__", ".pytest_cache"),
+    )
+    return destination
 
 
 class RunAttestationTest(unittest.TestCase):
@@ -79,7 +91,7 @@ class RunAttestationTest(unittest.TestCase):
                 patch.object(runner, "inspect_apk_contract", return_value=apk_contract),
                 patch.object(runner, "require_apk_source_match", return_value=packaged_source),
                 patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
-                patch.object(runner, "harness_source_manifest", return_value=[]),
+                patch.object(runner, "_bootstrap_harness_source_manifest", return_value=[]),
                 patch.object(runner, "require_harness_identity_unchanged"),
                 patch.object(runner, "allocate_report_directory", side_effect=allocate),
                 patch.object(runner, "write_run_identity", side_effect=record_identity),
@@ -414,6 +426,302 @@ class RunAttestationTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "must not be a symlink: cases.py"):
                 runner._copy_harness_snapshot(source, root / "snapshot")
+
+    def test_outer_child_uses_checkout_paths_for_default_apk_reports_and_forwarded_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = copy_harness_fixture(root)
+            controlled_tmp = root / "tmp"
+            controlled_tmp.mkdir()
+            expected_apk = root / "app/build/outputs/apk/debug/app-debug.apk"
+            env = {
+                **os.environ,
+                "TMPDIR": str(controlled_tmp),
+                # Neither caller-controlled value may be accepted as child proof/source authority.
+                "TELECAM_HARNESS_SNAPSHOT": "0" * 64,
+                "TELECAM_HARNESS_SOURCE_ROOT": "/caller-spoofed-harness-root",
+            }
+
+            default_run = subprocess.run(
+                [sys.executable, str(source / "run.py"), "--serial", "no-device"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(2, default_run.returncode)
+            output = default_run.stdout + default_run.stderr
+            self.assertIn(str(expected_apk), output)
+            self.assertNotIn("caller-spoofed-harness-root", output)
+            self.assertNotIn("telecam-device-harness-", output)
+
+            forwarded = subprocess.run(
+                [
+                    sys.executable,
+                    str(source / "run.py"),
+                    "--serial",
+                    "no-device",
+                    "--definitely-forwarded-unknown-option",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(2, forwarded.returncode)
+            self.assertIn("--definitely-forwarded-unknown-option", forwarded.stderr)
+
+            self.assertEqual(expected_apk, runner.default_apk_path(source))
+            self.assertEqual(source / "reports", runner.reports_root_path(source))
+            self.assertEqual([], list(controlled_tmp.glob("telecam-device-harness-*")))
+
+    def test_real_child_rejects_parent_proof_digest_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            wrong_digest = "f" * 64
+            snapshot = root / f"harness-{wrong_digest}"
+            runner._copy_harness_snapshot(DEVICE_TESTS, snapshot)
+            proof = runner._HarnessChildProof(
+                digest=wrong_digest,
+                snapshot_root=snapshot.resolve(),
+                source_root=DEVICE_TESTS.resolve(),
+                nonce="a" * 32,
+            )
+            read_fd, write_fd = os.pipe()
+            try:
+                runner._write_all(write_fd, runner._child_proof_payload(proof))
+                os.close(write_fd)
+                write_fd = -1
+                env = {**os.environ, "TELECAM_HARNESS_SOURCE_ROOT": str(DEVICE_TESTS)}
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(snapshot / "run.py"),
+                        runner._HARNESS_CHILD_FD_OPTION,
+                        str(read_fd),
+                        "--serial",
+                        "no-device",
+                    ],
+                    env=env,
+                    pass_fds=(read_fd,),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            finally:
+                if write_fd >= 0:
+                    os.close(write_fd)
+                os.close(read_fd)
+            self.assertNotEqual(0, completed.returncode)
+            self.assertIn("harness snapshot digest mismatch", completed.stderr)
+
+    def test_outer_child_imports_snapshot_after_mutable_source_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = copy_harness_fixture(root)
+            controlled_tmp = root / "tmp"
+            controlled_tmp.mkdir()
+            child_result: list[subprocess.CompletedProcess[str]] = []
+
+            def mutate_then_run(command, **kwargs):
+                (source / "cases.py").write_text("this is invalid python !!!\n", encoding="utf-8")
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    **kwargs,
+                )
+                child_result.append(result)
+                return result
+
+            result = runner._run_from_immutable_harness_snapshot(
+                source_root=source,
+                argv=["--serial", "no-device"],
+                run_command=mutate_then_run,
+                temporary_parent=controlled_tmp,
+            )
+
+            self.assertEqual(2, result)
+            self.assertEqual(1, len(child_result))
+            output = child_result[0].stdout + child_result[0].stderr
+            self.assertIn(str(root / "app/build/outputs/apk/debug/app-debug.apk"), output)
+            self.assertNotIn("SyntaxError", output)
+            self.assertEqual([], list(controlled_tmp.glob("telecam-device-harness-*")))
+
+    def test_outer_snapshot_rejects_file_swap_to_symlink_at_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            original = source / "cases.py"
+            original.write_text("VALUE = 'source'\n", encoding="utf-8")
+            (source / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            outside = root / "outside.py"
+            outside.write_text("VALUE = 'outside'\n", encoding="utf-8")
+            temporary_parent = root / "tmp"
+            temporary_parent.mkdir()
+            real_open = os.open
+            swapped = False
+
+            def swap_file(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "cases.py" and dir_fd is not None and not swapped:
+                    swapped = True
+                    original.rename(source / "cases.saved")
+                    original.symlink_to(outside)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with patch.object(runner.os, "open", side_effect=swap_file):
+                with self.assertRaisesRegex(RuntimeError, "stable non-symlink file: cases.py"):
+                    runner._run_from_immutable_harness_snapshot(
+                        source_root=source,
+                        argv=[],
+                        temporary_parent=temporary_parent,
+                    )
+
+    def test_outer_snapshot_rejects_regular_file_replacement_before_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            original = source / "cases.py"
+            original.write_text("VALUE = 'source'\n", encoding="utf-8")
+            replacement = root / "replacement.py"
+            replacement.write_text("VALUE = 'replacement'\n", encoding="utf-8")
+            (source / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            temporary_parent = root / "tmp"
+            temporary_parent.mkdir()
+            real_open = os.open
+            swapped = False
+
+            def swap_file(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "cases.py" and dir_fd is not None and not swapped:
+                    swapped = True
+                    original.rename(source / "cases.saved")
+                    replacement.rename(original)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with patch.object(runner.os, "open", side_effect=swap_file):
+                with self.assertRaisesRegex(RuntimeError, "changed before open: cases.py"):
+                    runner._run_from_immutable_harness_snapshot(
+                        source_root=source,
+                        argv=[],
+                        temporary_parent=temporary_parent,
+                    )
+
+    def test_snapshot_rejects_file_replacement_during_descriptor_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            original = source / "cases.py"
+            original.write_text("VALUE = 'source'\n", encoding="utf-8")
+            replacement = root / "replacement.py"
+            replacement.write_text("VALUE = 'replacement'\n", encoding="utf-8")
+            real_read = os.read
+            swapped = False
+
+            def swap_after_read(fd, size):
+                nonlocal swapped
+                chunk = real_read(fd, size)
+                if chunk and not swapped:
+                    swapped = True
+                    original.rename(source / "cases.saved")
+                    replacement.rename(original)
+                return chunk
+
+            with patch.object(runner.os, "read", side_effect=swap_after_read):
+                with self.assertRaisesRegex(RuntimeError, "changed while reading: cases.py"):
+                    runner._copy_harness_snapshot(source, root / "snapshot")
+
+    def test_outer_snapshot_rejects_parent_directory_swap_to_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            package = source / "dtest"
+            package.mkdir()
+            (package / "module.py").write_text("VALUE = 'source'\n", encoding="utf-8")
+            (source / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "module.py").write_text("VALUE = 'outside'\n", encoding="utf-8")
+            temporary_parent = root / "tmp"
+            temporary_parent.mkdir()
+            real_open = os.open
+            swapped = False
+
+            def swap_parent(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "dtest" and dir_fd is not None and not swapped:
+                    swapped = True
+                    package.rename(source / "dtest.saved")
+                    package.symlink_to(outside, target_is_directory=True)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with patch.object(runner.os, "open", side_effect=swap_parent):
+                with self.assertRaisesRegex(RuntimeError, "stable non-symlink: dtest"):
+                    runner._run_from_immutable_harness_snapshot(
+                        source_root=source,
+                        argv=[],
+                        temporary_parent=temporary_parent,
+                    )
+
+    def test_snapshot_rejects_parent_replacement_during_child_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            package = source / "dtest"
+            package.mkdir()
+            (package / "module.py").write_text("VALUE = 'source'\n", encoding="utf-8")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "module.py").write_text("VALUE = 'outside'\n", encoding="utf-8")
+            real_read = os.read
+            swapped = False
+
+            def swap_parent_after_read(fd, size):
+                nonlocal swapped
+                chunk = real_read(fd, size)
+                if chunk and not swapped:
+                    swapped = True
+                    package.rename(source / "dtest.saved")
+                    package.symlink_to(outside, target_is_directory=True)
+                return chunk
+
+            with patch.object(runner.os, "read", side_effect=swap_parent_after_read):
+                with self.assertRaisesRegex(RuntimeError, "directory changed while reading: dtest"):
+                    runner._copy_harness_snapshot(source, root / "snapshot")
+
+    def test_snapshot_rejects_root_symlink_and_special_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            (source / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            link = root / "source-link"
+            link.symlink_to(source, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "non-symlink directory"):
+                runner._copy_harness_snapshot(link, root / "snapshot-link")
+
+            fifo = source / "input.pipe"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(RuntimeError, "must be a regular file: input.pipe"):
+                runner._copy_harness_snapshot(source, root / "snapshot-fifo")
+
+    def test_snapshot_read_budget_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            (source / "run.py").write_bytes(b"12345")
+            with patch.object(runner, "_MAX_HARNESS_FILE_BYTES", 4):
+                with self.assertRaisesRegex(RuntimeError, "exceeds 4 bytes: run.py"):
+                    runner._copy_harness_snapshot(source, root / "snapshot")
 
     def test_restoration_attests_display_geometry(self) -> None:
         before = {

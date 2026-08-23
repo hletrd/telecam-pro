@@ -72,13 +72,17 @@ The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and 
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
 
 `device-tests/` remains ignored because historical evidence is several gigabytes. Before importing
-any executable harness module, the CLI rejects symlinks and special files, copies every regular
-harness input outside `reports/`, `__pycache__/`, and `.pytest_cache/` into a private
-digest-qualified snapshot, and starts a child interpreter from that snapshot. Case registration and
-execution import only those copied bytes; the attestation names and rechecks the snapshot manifest.
-Source edits after the copy cannot change resident executable modules, and the private snapshot is
-removed when the child exits. A green attestation therefore names the exact immutable bytes that
-registered and executed its cases. Verify the source contracts with:
+any executable harness module, the CLI walks the source tree through pinned directory descriptors,
+opens each input with no-follow semantics, requires the same regular-file inode before/after a
+bounded descriptor read, and rejects symlinks, special files, and file/directory replacement races.
+It copies every accepted input outside `reports/`, `__pycache__/`, and `.pytest_cache/` into a
+private digest-qualified snapshot. A child can enter execution mode only with the parent-created
+one-shot pipe proof naming that private root; a preset environment variable cannot skip the copy.
+Case registration and execution import only the copied bytes, while repository artifacts (the
+default APK and report root) resolve from the separately attested source checkout. The attestation
+names and rechecks the snapshot manifest, and the parent removes the private tree when the child
+exits. A green attestation therefore names the exact immutable bytes that registered and executed
+its cases. Verify the source contracts with:
 
 ```bash
 python3 -m unittest discover -s device-tests/tests -v

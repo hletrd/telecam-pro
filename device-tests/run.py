@@ -38,94 +38,435 @@ SOURCE_HARNESS_ROOT = Path(
     os.environ.get("TELECAM_HARNESS_SOURCE_ROOT", str(HARNESS_ROOT))
 ).resolve()
 _HARNESS_GENERATED_PARTS = {"reports", "__pycache__", ".pytest_cache"}
-_HARNESS_SNAPSHOT_ENV = "TELECAM_HARNESS_SNAPSHOT"
+_LEGACY_HARNESS_SNAPSHOT_ENV = "TELECAM_HARNESS_SNAPSHOT"
+_HARNESS_CHILD_FD_OPTION = "--telecam-internal-harness-child-fd"
+_HARNESS_CHILD_PROOF_SCHEMA = 1
+_MAX_HARNESS_FILE_BYTES = 16 * 1024 * 1024
+_MAX_HARNESS_TOTAL_BYTES = 128 * 1024 * 1024
+_MAX_HARNESS_FILES = 4_096
+_MAX_CHILD_PROOF_BYTES = 4_096
+_READ_CHUNK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _HarnessChildProof:
+    digest: str
+    snapshot_root: Path
+    source_root: Path
+    nonce: str
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino, stat.S_IFMT(left.st_mode)) == (
+        right.st_dev,
+        right.st_ino,
+        stat.S_IFMT(right.st_mode),
+    )
+
+
+def _open_flags(*, directory: bool = False) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RuntimeError("this host cannot enforce no-follow harness reads")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    return flags
+
+
+def _entry_stat(parent_fd: int, name: str) -> os.stat_result:
+    return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+
+
+def _open_directory_no_follow(parent_fd: int | None, name: str, relative: Path) -> int:
+    try:
+        fd = os.open(name, _open_flags(directory=True), dir_fd=parent_fd)
+    except OSError as error:
+        raise RuntimeError(
+            f"harness source directory must be a stable non-symlink: {relative.as_posix()}"
+        ) from error
+    opened = os.fstat(fd)
+    if not stat.S_ISDIR(opened.st_mode):
+        os.close(fd)
+        raise RuntimeError(f"harness source must be a directory: {relative.as_posix()}")
+    return fd
+
+
+def _read_regular_file_no_follow(
+    parent_fd: int,
+    name: str,
+    relative: Path,
+    expected: os.stat_result,
+) -> bytes:
+    try:
+        fd = os.open(name, _open_flags(), dir_fd=parent_fd)
+    except OSError as error:
+        raise RuntimeError(
+            f"harness source must be a stable non-symlink file: {relative.as_posix()}"
+        ) from error
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"harness source must be a regular file: {relative.as_posix()}")
+        if not _same_file_identity(expected, before):
+            raise RuntimeError(f"harness source changed before open: {relative.as_posix()}")
+        if before.st_size < 0 or before.st_size > _MAX_HARNESS_FILE_BYTES:
+            raise RuntimeError(
+                f"harness source file exceeds {_MAX_HARNESS_FILE_BYTES} bytes: "
+                f"{relative.as_posix()}"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(_READ_CHUNK_BYTES, _MAX_HARNESS_FILE_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_HARNESS_FILE_BYTES:
+                raise RuntimeError(
+                    f"harness source file grew beyond {_MAX_HARNESS_FILE_BYTES} bytes: "
+                    f"{relative.as_posix()}"
+                )
+        after = os.fstat(fd)
+        current = _entry_stat(parent_fd, name)
+        if not _same_file_identity(before, after) or not _same_file_identity(after, current):
+            raise RuntimeError(f"harness source changed while reading: {relative.as_posix()}")
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+            or total != after.st_size
+        ):
+            raise RuntimeError(f"harness source changed while reading: {relative.as_posix()}")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _walk_harness_regular_files(
+    harness_root: Path,
+    expected_root_identity: os.stat_result | None = None,
+) -> list[tuple[Path, bytes]]:
+    """Read one descriptor-pinned regular-file tree without following any in-tree link."""
+    root_path = Path(os.path.abspath(harness_root))
+    try:
+        expected_root = os.stat(root_path, follow_symlinks=False)
+    except OSError as error:
+        raise RuntimeError(f"harness source root is unavailable: {root_path}") from error
+    if not stat.S_ISDIR(expected_root.st_mode):
+        raise RuntimeError(f"harness source root must be a non-symlink directory: {root_path}")
+    if expected_root_identity is not None and not _same_file_identity(
+        expected_root_identity,
+        expected_root,
+    ):
+        raise RuntimeError(f"harness source root changed before snapshot: {root_path}")
+    root_fd = _open_directory_no_follow(None, str(root_path), Path("."))
+    root_identity = os.fstat(root_fd)
+    if not _same_file_identity(expected_root, root_identity):
+        os.close(root_fd)
+        raise RuntimeError(f"harness source root changed before open: {root_path}")
+    files: list[tuple[Path, bytes]] = []
+    total_bytes = 0
+
+    def walk(directory_fd: int, relative_directory: Path) -> None:
+        nonlocal total_bytes
+        with os.scandir(directory_fd) as iterator:
+            names = sorted(entry.name for entry in iterator)
+        for name in names:
+            relative = relative_directory / name
+            if name in _HARNESS_GENERATED_PARTS:
+                continue
+            try:
+                observed = _entry_stat(directory_fd, name)
+            except OSError as error:
+                raise RuntimeError(
+                    f"harness source entry changed during enumeration: {relative.as_posix()}"
+                ) from error
+            if stat.S_ISLNK(observed.st_mode):
+                raise RuntimeError(f"harness source must not be a symlink: {relative.as_posix()}")
+            if stat.S_ISDIR(observed.st_mode):
+                child_fd = _open_directory_no_follow(directory_fd, name, relative)
+                opened = os.fstat(child_fd)
+                try:
+                    if not _same_file_identity(observed, opened):
+                        raise RuntimeError(
+                            f"harness source directory changed before open: {relative.as_posix()}"
+                        )
+                    walk(child_fd, relative)
+                    current = _entry_stat(directory_fd, name)
+                    if not _same_file_identity(opened, current):
+                        raise RuntimeError(
+                            f"harness source directory changed while reading: {relative.as_posix()}"
+                        )
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(observed.st_mode):
+                raise RuntimeError(f"harness source must be a regular file: {relative.as_posix()}")
+            payload = _read_regular_file_no_follow(directory_fd, name, relative, observed)
+            files.append((relative, payload))
+            total_bytes += len(payload)
+            if len(files) > _MAX_HARNESS_FILES or total_bytes > _MAX_HARNESS_TOTAL_BYTES:
+                raise RuntimeError("harness source tree exceeds its bounded snapshot budget")
+
+    try:
+        walk(root_fd, Path())
+        current_root = os.stat(root_path, follow_symlinks=False)
+        if not _same_file_identity(root_identity, current_root):
+            raise RuntimeError(f"harness source root changed while reading: {root_path}")
+    finally:
+        os.close(root_fd)
+    if not files:
+        raise RuntimeError(f"no harness sources found under {harness_root}")
+    return files
+
+
+def _canonical_non_symlink_directory(path: Path) -> tuple[Path, os.stat_result]:
+    requested = Path(os.path.abspath(path))
+    try:
+        observed = os.stat(requested, follow_symlinks=False)
+        resolved = requested.resolve(strict=True)
+        canonical = os.stat(resolved, follow_symlinks=False)
+    except OSError as error:
+        raise RuntimeError(f"harness source root is unavailable: {requested}") from error
+    if not stat.S_ISDIR(observed.st_mode) or not _same_file_identity(observed, canonical):
+        raise RuntimeError(f"harness source root must be a non-symlink directory: {requested}")
+    return resolved, canonical
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(fd, payload[offset:])
+        if written <= 0:
+            raise RuntimeError("short write while creating immutable harness snapshot")
+        offset += written
+
+
+def _write_snapshot_file(snapshot_fd: int, relative: Path, payload: bytes) -> None:
+    parts = relative.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError(f"unsafe harness snapshot path: {relative.as_posix()}")
+    directory_fd = os.dup(snapshot_fd)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            child_fd = _open_directory_no_follow(directory_fd, part, relative.parent)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | _open_flags()
+        )
+        output_fd = os.open(parts[-1], flags, 0o600, dir_fd=directory_fd)
+        try:
+            _write_all(output_fd, payload)
+        finally:
+            os.close(output_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _bootstrap_harness_source_manifest(harness_root: Path) -> list[dict[str, object]]:
     """Hash harness bytes before importing any executable harness module."""
-    entries: list[dict[str, object]] = []
-    for path in sorted(harness_root.rglob("*")):
-        relative = path.relative_to(harness_root)
-        if any(part in _HARNESS_GENERATED_PARTS for part in relative.parts):
-            continue
-        mode = path.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            raise RuntimeError(f"harness source must not be a symlink: {relative.as_posix()}")
-        if stat.S_ISDIR(mode):
-            continue
-        if not stat.S_ISREG(mode):
-            raise RuntimeError(f"harness source must be a regular file: {relative.as_posix()}")
-        payload = path.read_bytes()
-        entries.append(
-            {
-                "path": relative.as_posix(),
-                "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
-    if not entries:
-        raise RuntimeError(f"no harness sources found under {harness_root}")
-    return entries
+    return [
+        {
+            "path": relative.as_posix(),
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        for relative, payload in _walk_harness_regular_files(harness_root)
+    ]
 
 
-def _copy_harness_snapshot(source_root: Path, snapshot_root: Path) -> list[dict[str, object]]:
-    """Copy accepted regular inputs and return a manifest of the exact copied bytes."""
-    entries: list[dict[str, object]] = []
-    snapshot_root.mkdir(parents=True)
-    for source in sorted(source_root.rglob("*")):
-        relative = source.relative_to(source_root)
-        if any(part in _HARNESS_GENERATED_PARTS for part in relative.parts):
-            continue
-        mode = source.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            raise RuntimeError(f"harness source must not be a symlink: {relative.as_posix()}")
-        if stat.S_ISDIR(mode):
-            continue
-        if not stat.S_ISREG(mode):
-            raise RuntimeError(f"harness source must be a regular file: {relative.as_posix()}")
-        payload = source.read_bytes()
-        destination = snapshot_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(payload)
-        entries.append(
-            {
-                "path": relative.as_posix(),
-                "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
-    if not entries:
-        raise RuntimeError(f"no harness sources found under {source_root}")
-    return entries
-
-
-def _run_from_immutable_harness_snapshot() -> int:
-    """Execute the CLI from the exact private bytes recorded by its attestation."""
-    temporary_root = Path(tempfile.mkdtemp(prefix="telecam-device-harness-"))
-    staging_root = temporary_root / "staging"
+def _copy_harness_snapshot(
+    source_root: Path,
+    snapshot_root: Path,
+    *,
+    expected_source_identity: os.stat_result | None = None,
+) -> list[dict[str, object]]:
+    """Copy descriptor-pinned regular inputs and manifest the exact copied bytes."""
+    files = _walk_harness_regular_files(source_root, expected_source_identity)
+    snapshot_root.mkdir(mode=0o700, parents=True)
+    snapshot_fd = _open_directory_no_follow(None, str(snapshot_root), Path("."))
     try:
-        entries = _copy_harness_snapshot(HARNESS_ROOT, staging_root)
+        for relative, payload in files:
+            _write_snapshot_file(snapshot_fd, relative, payload)
+    finally:
+        os.close(snapshot_fd)
+    return [
+        {
+            "path": relative.as_posix(),
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        for relative, payload in files
+    ]
+
+
+def _child_proof_payload(proof: _HarnessChildProof) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema": _HARNESS_CHILD_PROOF_SCHEMA,
+                "digest": proof.digest,
+                "snapshot_root": str(proof.snapshot_root),
+                "source_root": str(proof.source_root),
+                "nonce": proof.nonce,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _read_child_proof(fd: int) -> _HarnessChildProof:
+    try:
+        descriptor = os.fstat(fd)
+        if not stat.S_ISFIFO(descriptor.st_mode):
+            raise RuntimeError("harness child proof must arrive through a one-shot pipe")
+        payload = bytearray()
+        while len(payload) <= _MAX_CHILD_PROOF_BYTES:
+            chunk = os.read(fd, min(1024, _MAX_CHILD_PROOF_BYTES + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _MAX_CHILD_PROOF_BYTES:
+            raise RuntimeError("harness child proof exceeds its bounded size")
+    finally:
+        os.close(fd)
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("harness child proof is malformed") from error
+    if not isinstance(document, dict) or set(document) != {
+        "schema", "digest", "snapshot_root", "source_root", "nonce"
+    }:
+        raise RuntimeError("harness child proof fields are not exact")
+    digest = str(document["digest"])
+    nonce = str(document["nonce"])
+    if document["schema"] != _HARNESS_CHILD_PROOF_SCHEMA:
+        raise RuntimeError("harness child proof schema is unsupported")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise RuntimeError("harness child proof digest is malformed")
+    if re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
+        raise RuntimeError("harness child proof nonce is malformed")
+    return _HarnessChildProof(
+        digest=digest,
+        snapshot_root=Path(str(document["snapshot_root"])).resolve(),
+        source_root=Path(str(document["source_root"])).resolve(),
+        nonce=nonce,
+    )
+
+
+def _consume_child_fd_argument(argv: list[str]) -> int | None:
+    positions = [index for index, value in enumerate(argv) if value == _HARNESS_CHILD_FD_OPTION]
+    if not positions:
+        return None
+    if len(positions) != 1:
+        raise RuntimeError("harness child proof option must appear exactly once")
+    index = positions[0]
+    if index + 1 >= len(argv):
+        raise RuntimeError("harness child proof descriptor is missing")
+    raw = argv[index + 1]
+    if re.fullmatch(r"[0-9]+", raw) is None:
+        raise RuntimeError("harness child proof descriptor is malformed")
+    del argv[index:index + 2]
+    return int(raw)
+
+
+def _validate_child_execution_root(proof: _HarnessChildProof) -> None:
+    if proof.snapshot_root != HARNESS_ROOT or proof.source_root != SOURCE_HARNESS_ROOT:
+        raise RuntimeError("harness child proof names the wrong execution/source root")
+    if proof.snapshot_root == proof.source_root:
+        raise RuntimeError("harness child execution root must differ from mutable source")
+    if proof.snapshot_root.name != f"harness-{proof.digest}":
+        raise RuntimeError("harness child execution root is not digest-qualified")
+    parent = proof.snapshot_root.parent
+    parent_stat = parent.stat()
+    if parent_stat.st_uid != os.geteuid() or stat.S_IMODE(parent_stat.st_mode) & 0o077:
+        raise RuntimeError("harness child execution root is not privately parent-owned")
+
+
+def _run_from_immutable_harness_snapshot(
+    *,
+    source_root: Path = HARNESS_ROOT,
+    argv: Sequence[str] | None = None,
+    run_command: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    temporary_parent: Path | None = None,
+) -> int:
+    """Execute the CLI from the exact private bytes recorded by its attestation."""
+    temporary_root = Path(
+        tempfile.mkdtemp(
+            prefix="telecam-device-harness-",
+            dir=str(temporary_parent) if temporary_parent is not None else None,
+        )
+    )
+    staging_root = temporary_root / "staging"
+    read_fd: int | None = None
+    write_fd: int | None = None
+    try:
+        source_root, source_identity = _canonical_non_symlink_directory(source_root)
+        entries = _copy_harness_snapshot(
+            source_root,
+            staging_root,
+            expected_source_identity=source_identity,
+        )
         canonical = "".join(
             f"{entry['sha256']}  {entry['bytes']}  {entry['path']}\n" for entry in entries
         ).encode()
         digest = hashlib.sha256(canonical).hexdigest()
         snapshot_root = temporary_root / f"harness-{digest}"
         staging_root.rename(snapshot_root)
+        proof = _HarnessChildProof(
+            digest=digest,
+            snapshot_root=snapshot_root.resolve(),
+            source_root=source_root,
+            nonce=secrets.token_hex(16),
+        )
+        read_fd, write_fd = os.pipe()
+        _write_all(write_fd, _child_proof_payload(proof))
+        os.close(write_fd)
+        write_fd = None
         environment = os.environ.copy()
-        environment[_HARNESS_SNAPSHOT_ENV] = digest
-        environment["TELECAM_HARNESS_SOURCE_ROOT"] = str(HARNESS_ROOT)
-        completed = subprocess.run(
-            [sys.executable, str(snapshot_root / "run.py"), *sys.argv[1:]],
+        environment.pop(_LEGACY_HARNESS_SNAPSHOT_ENV, None)
+        environment["TELECAM_HARNESS_SOURCE_ROOT"] = str(source_root)
+        forwarded = list(sys.argv[1:] if argv is None else argv)
+        completed = run_command(
+            [
+                sys.executable,
+                str(snapshot_root / "run.py"),
+                _HARNESS_CHILD_FD_OPTION,
+                str(read_fd),
+                *forwarded,
+            ],
             env=environment,
+            pass_fds=(read_fd,),
             check=False,
         )
         return completed.returncode
     finally:
+        if write_fd is not None:
+            os.close(write_fd)
+        if read_fd is not None:
+            os.close(read_fd)
         shutil.rmtree(temporary_root, ignore_errors=True)
 
 
-if __name__ == "__main__" and _HARNESS_SNAPSHOT_ENV not in os.environ:
-    raise SystemExit(_run_from_immutable_harness_snapshot())
+_CHILD_PROOF: _HarnessChildProof | None = None
+if __name__ == "__main__":
+    child_fd = _consume_child_fd_argument(sys.argv)
+    if child_fd is None:
+        raise SystemExit(_run_from_immutable_harness_snapshot())
+    _CHILD_PROOF = _read_child_proof(child_fd)
+    _validate_child_execution_root(_CHILD_PROOF)
 
 
 # This is intentionally evaluated before dtest/cases imports. A green run must verify these exact
@@ -137,13 +478,10 @@ _IMPORTED_MANIFEST_CANONICAL = "".join(
     for entry in IMPORTED_HARNESS_SOURCES
 ).encode()
 _IMPORTED_MANIFEST_DIGEST = hashlib.sha256(_IMPORTED_MANIFEST_CANONICAL).hexdigest()
-if (
-    _HARNESS_SNAPSHOT_ENV in os.environ
-    and os.environ[_HARNESS_SNAPSHOT_ENV] != _IMPORTED_MANIFEST_DIGEST
-):
+if _CHILD_PROOF is not None and _CHILD_PROOF.digest != _IMPORTED_MANIFEST_DIGEST:
     raise RuntimeError(
         "harness snapshot digest mismatch: "
-        f"expected={os.environ[_HARNESS_SNAPSHOT_ENV]} actual={_IMPORTED_MANIFEST_DIGEST}"
+        f"expected={_CHILD_PROOF.digest} actual={_IMPORTED_MANIFEST_DIGEST}"
     )
 
 sys.path.insert(0, str(HARNESS_ROOT))
@@ -153,7 +491,6 @@ from dtest.contracts import (  # noqa: E402
     ApkContract,
     ContractError,
     DebugSourceIdentity,
-    harness_source_manifest,
     inspect_apk_contract,
     production_capture_subdir,
     require_apk_source_match,
@@ -164,8 +501,18 @@ import cases  # noqa: E402, F401  — registers all test cases
 
 EXPECTED_MODEL = "PMA110"
 EXPECTED_API = 36
-DEFAULT_APK = Path(__file__).resolve().parent.parent / "app/build/outputs/apk/debug/app-debug.apk"
 REPO_ROOT = SOURCE_HARNESS_ROOT.parent
+
+
+def default_apk_path(source_harness_root: Path = SOURCE_HARNESS_ROOT) -> Path:
+    return source_harness_root.parent / "app/build/outputs/apk/debug/app-debug.apk"
+
+
+def reports_root_path(source_harness_root: Path = SOURCE_HARNESS_ROOT) -> Path:
+    return source_harness_root / "reports"
+
+
+DEFAULT_APK = default_apk_path()
 ATTESTATION_NAME = "run-attestation.json"
 ATTESTATION_SHA_NAME = "run-attestation.sha256"
 RESTORED_SETTINGS = ("font_scale", "accelerometer_rotation", "user_rotation")
@@ -198,7 +545,7 @@ def harness_execution_identity(
     *,
     manifest: Sequence[dict[str, object]] | None = None,
 ) -> HarnessExecutionIdentity:
-    rows = list(manifest) if manifest is not None else harness_source_manifest(harness_root)
+    rows = list(manifest) if manifest is not None else _bootstrap_harness_source_manifest(harness_root)
     frozen = tuple(
         (str(row["path"]), int(row["bytes"]), str(row["sha256"]))
         for row in rows
@@ -938,7 +1285,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    reports_root = SOURCE_HARNESS_ROOT / "reports"
+    reports_root = reports_root_path()
     try:
         allocation = allocate_report_directory(reports_root)
         write_run_identity(allocation, serial=args.serial)
