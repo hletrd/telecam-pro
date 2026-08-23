@@ -504,6 +504,21 @@ check(
     and 'orElse("mutable-development-worktree")' in build_script,
     "device-evidence debug authority distinguishes immutable and developer source owners",
 )
+device_verification_match = re.search(
+    r"\*\*Device verification:\*\*\s*```bash\n(.*?)\n```",
+    architecture,
+    re.S,
+)
+device_verification = device_verification_match.group(1) if device_verification_match else ""
+check(
+    bool(device_verification_match)
+    and "BUILD_RESULT=\"$(python3 tools/build_immutable_debug.py)\"" in device_verification
+    and "EVIDENCE_APK=\"${BUILD_RESULT##* apk=}\"" in device_verification
+    and 'dump badging "$EVIDENCE_APK"' in device_verification
+    and 'install -r "$EVIDENCE_APK"' in device_verification
+    and "app/build/outputs/apk/debug/app-debug.apk" not in device_verification,
+    "architecture device-evidence commands inspect and install the wrapper-printed immutable APK",
+)
 device_test_readme = read("device-tests/README.md")
 check(
     "snapshots the exact scoped source whether the checkout is" in device_test_readme

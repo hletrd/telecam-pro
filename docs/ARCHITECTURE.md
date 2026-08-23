@@ -1206,9 +1206,22 @@ nine tabs documented above. A host-only run reports device behavior as not run, 
 
 **Device verification:**
 ```bash
+# Capture the exact immutable path emitted by the wrapper; do not substitute the mutable
+# app/build/outputs developer APK.
+BUILD_RESULT="$(python3 tools/build_immutable_debug.py)"
+printf '%s\n' "$BUILD_RESULT"
+EVIDENCE_APK="${BUILD_RESULT##* apk=}"
+test -n "$EVIDENCE_APK" && test -f "$EVIDENCE_APK"
+
 export ANDROID_SERIAL=<current-authorized-session-serial>
-adb -s "$ANDROID_SERIAL" install -r app/build/outputs/apk/debug/app-debug.apk
-# Derive PACKAGE and ACTIVITY from the APK as documented in .claude/agents/qa-adversary.md.
+SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+test -n "$SDK_ROOT"
+AAPT="$SDK_ROOT/build-tools/36.0.0/aapt"
+PACKAGE="$("$AAPT" dump badging "$EVIDENCE_APK" | sed -n "s/package: name='\([^']*\)'.*/\1/p")"
+ACTIVITY="$("$AAPT" dump badging "$EVIDENCE_APK" | sed -n "s/launchable-activity: name='\([^']*\)'.*/\1/p")"
+test -n "$PACKAGE" && test -n "$ACTIVITY"
+
+adb -s "$ANDROID_SERIAL" install -r "$EVIDENCE_APK"
 adb -s "$ANDROID_SERIAL" shell am start -n "$PACKAGE/$ACTIVITY"
 ```
 
