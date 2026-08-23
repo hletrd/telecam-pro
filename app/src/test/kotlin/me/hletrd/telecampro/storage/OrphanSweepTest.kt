@@ -141,10 +141,10 @@ class OrphanSweepTest {
     }
 
     @Test
-    fun `discard journal rows are always deleted even when bytes are structurally valid`() {
+    fun `generic pages retain discard rows for the dedicated progressive delete stage`() {
         PendingProbe.entries.forEach { probe ->
             assertEquals(
-                OrphanDisposition.DELETE,
+                OrphanDisposition.KEEP_PENDING,
                 orphanDisposition(PendingJournalState.DISCARD, probe),
             )
         }
@@ -156,7 +156,13 @@ class OrphanSweepTest {
             PendingProbe.entries.forEach { probe ->
                 assertEquals(
                     "$journal/$probe",
-                    OrphanDisposition.DELETE,
+                    if (journal == PendingJournalState.DISCARD) {
+                        // Exact URI ownership stays with the progressive DISCARD stage even when a
+                        // family tombstone independently confirms that the capture was deleted.
+                        OrphanDisposition.KEEP_PENDING
+                    } else {
+                        OrphanDisposition.DELETE
+                    },
                     orphanDisposition(journal, probe, familyDeleted = true),
                 )
             }

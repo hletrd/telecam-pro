@@ -16,19 +16,20 @@ internal fun interface LaunchMediaRecoverySubscription {
 /**
  * Process-wide single-flight owner for launch recovery. Engine recreation replaces/cancels only its
  * subscriber; it can neither start another provider scan nor interrupt the scan already preserving
- * prior-process media. Completion is delivered once to every still-live Engine subscriber.
+ * prior-process media. A typed success/failure result is delivered once to every still-live Engine
+ * subscriber; an unexpected recovery exception therefore cannot silently erase the terminal edge.
  */
 internal class LaunchMediaRecoveryCoordinator<T : Any>(
     private val dispatch: (Runnable) -> Boolean,
 ) {
     private val lock = Any()
-    private val subscribers = IdentityHashMap<Any, (T) -> Unit>()
+    private val subscribers = IdentityHashMap<Any, (Result<T>) -> Unit>()
     private var running = false
 
     fun request(
         owner: Any,
         recover: () -> T,
-        onComplete: (T) -> Unit,
+        onComplete: (Result<T>) -> Unit,
     ): LaunchMediaRecoverySubscription {
         val start = synchronized(lock) {
             subscribers[owner] = onComplete
@@ -38,24 +39,29 @@ internal class LaunchMediaRecoveryCoordinator<T : Any>(
             }
         }
         if (start) {
-            val accepted = runCatching {
+            val dispatchFailure = runCatching {
                 dispatch(Runnable {
                     val result = runCatching(recover)
                     val completions = synchronized(lock) {
                         running = false
                         subscribers.values.toList().also { subscribers.clear() }
                     }
-                    result.onSuccess { recovered ->
-                        completions.forEach { completion -> runCatching { completion(recovered) } }
-                    }
+                    completions.forEach { completion -> runCatching { completion(result) } }
                 })
-            }.getOrDefault(false)
-            if (!accepted) {
-                synchronized(lock) {
+            }.fold(
+                onSuccess = { accepted ->
+                    if (accepted) null
+                    else IllegalStateException("process launch-recovery dispatcher rejected its sole task")
+                },
+                onFailure = { it },
+            )
+            if (dispatchFailure != null) {
+                val completions = synchronized(lock) {
                     running = false
-                    subscribers.remove(owner)
+                    subscribers.values.toList().also { subscribers.clear() }
                 }
-                error("process launch-recovery dispatcher rejected its sole task")
+                val result = Result.failure<T>(dispatchFailure)
+                completions.forEach { completion -> runCatching { completion(result) } }
             }
         }
         return LaunchMediaRecoverySubscription {
@@ -79,7 +85,7 @@ internal object ProcessLaunchMediaRecovery {
     fun request(
         owner: Any,
         recover: () -> MediaRecoveryCompletion,
-        onComplete: (MediaRecoveryCompletion) -> Unit,
+        onComplete: (Result<MediaRecoveryCompletion>) -> Unit,
     ): LaunchMediaRecoverySubscription = coordinator.request(owner, recover, onComplete)
 }
 

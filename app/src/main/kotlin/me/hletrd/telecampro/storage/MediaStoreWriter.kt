@@ -662,8 +662,8 @@ object MediaStoreWriter {
             )
         }
 
-        // The exact-URI DISCARD journal is its own terminal stage. Pending rows already had a chance
-        // to be removed by the bounded collection pages, while published rows are reachable only
+        // The exact-URI DISCARD journal is its own terminal stage. Generic collection pages count
+        // and advance past its pending rows without deleting them; published rows are reachable only
         // through these durable URI markers. A permanent failure receives the normal bounded retry
         // budget, then advances so one bad provider row cannot starve later markers forever.
         if (cursor.mediaComplete && !cursor.discardComplete) {
@@ -750,8 +750,12 @@ object MediaStoreWriter {
                         val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
                         val probeOutcome = when {
                             sizeBytes <= 0L -> PendingProbeOutcome(PendingProbe.INVALID)
+                            // The lexicographically paged DISCARD stage below is the only terminal
+                            // owner for an exact durable URI marker. This generic MediaStore page
+                            // still counts/advances past the row, but must not spend the whole launch
+                            // retry budget trying the same delete before that progress-capable stage.
                             journalState == PendingJournalState.DISCARD ->
-                                PendingProbeOutcome(PendingProbe.INVALID)
+                                PendingProbeOutcome(PendingProbe.INDETERMINATE)
                             journalState == PendingJournalState.COMPLETE -> PendingProbeOutcome(PendingProbe.VALID)
                             else -> probePendingMedia(
                                 context = context,
@@ -1384,8 +1388,11 @@ internal fun orphanDisposition(
     probe: PendingProbe,
     familyDeleted: Boolean = false,
 ): OrphanDisposition = when {
+    // Durable exact-URI DISCARD rows are retained by the generic Images/Video pages. The dedicated
+    // lexicographic DISCARD stage is their sole delete owner and can advance after bounded failure,
+    // so one wedged provider row cannot starve later media pages or later durable markers.
+    journalState == PendingJournalState.DISCARD -> OrphanDisposition.KEEP_PENDING
     familyDeleted -> OrphanDisposition.DELETE
-    journalState == PendingJournalState.DISCARD -> OrphanDisposition.DELETE
     journalState == PendingJournalState.COMPLETE -> OrphanDisposition.ADOPT
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
     probe == PendingProbe.INVALID -> OrphanDisposition.DELETE

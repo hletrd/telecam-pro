@@ -1064,9 +1064,10 @@ class CameraViewModel @JvmOverloads constructor(
         restoreSettingsIfEnabled()
         loadEncoderInventoryAsync()
         refreshProgramAppSide()
-        // Sweep prior-process pending rows first, then restore the newest published family. This
-        // includes a row adopted by recovery without ever letting provider probes delay Camera2
-        // startup. CaptureOutputTracker prevents a late launch result from displacing live output.
+        // Sweep prior-process pending rows first, then restore the newest published family after
+        // EITHER typed terminal outcome. Success includes rows just adopted by recovery; failure
+        // must not hide already-published media. CaptureOutputTracker prevents either late result
+        // from displacing live output, and provider probes never delay Camera2 startup.
         engine.cleanupOrphans {
             restoreLatestPublishedCapture()
         }

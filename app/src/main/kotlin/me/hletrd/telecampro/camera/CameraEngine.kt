@@ -6094,11 +6094,13 @@ class CameraEngine internal constructor(
     /**
      * Reconciles prior-process pending media: adopt COMPLETE/structurally proven rows, delete only
      * proven-incomplete rows, and retain indeterminate rows. Provider failures retry boundedly and
-     * finish with one typed completion; Images and Video remain independently failure-isolated.
+     * finish with one typed success/failure result; Images and Video remain independently
+     * failure-isolated. Unexpected exceptions are terminally reported instead of suppressing the
+     * ViewModel's safe latest-published-family query.
      * The process-wide recovery lane keeps provider work off camera startup and prevents Engine
      * replacement from multiplying a blocked Binder call.
      */
-    internal fun cleanupOrphans(onComplete: (MediaRecoveryCompletion) -> Unit = {}) {
+    internal fun cleanupOrphans(onComplete: (Result<MediaRecoveryCompletion>) -> Unit = {}) {
         launchRecoverySubscription?.cancel()
         val recoveryContext = context.applicationContext
         launchRecoverySubscription = ProcessLaunchMediaRecovery.request(
@@ -6114,22 +6116,29 @@ class CameraEngine internal constructor(
                     },
                 )
             },
-        ) { completion ->
-            val cumulativeReport = completion.report
-            val completedAttempts = completion.attempts
-            val finalDecision = completion.decision
-            if (BuildConfig.DEBUG || finalDecision == RecoveryRetryDecision.EXHAUSTED) {
-                val summary = "attempts=$completedAttempts scanned=${cumulativeReport.scanned} " +
-                    "adopted=${cumulativeReport.adopted} deleted=${cumulativeReport.deleted} " +
-                    "retained=${cumulativeReport.retained} errors=${cumulativeReport.errors} " +
-                    "failures=${cumulativeReport.failureClasses.sortedBy { it.name }.joinToString { it.name }}"
-                if (finalDecision == RecoveryRetryDecision.EXHAUSTED) {
-                    Log.w("MediaRecovery", "exhausted $summary")
-                } else {
-                    Log.d("MediaRecovery", "complete $summary")
+        ) { result ->
+            result.fold(
+                onSuccess = { completion ->
+                    val cumulativeReport = completion.report
+                    val completedAttempts = completion.attempts
+                    val finalDecision = completion.decision
+                    if (BuildConfig.DEBUG || finalDecision == RecoveryRetryDecision.EXHAUSTED) {
+                        val summary = "attempts=$completedAttempts scanned=${cumulativeReport.scanned} " +
+                            "adopted=${cumulativeReport.adopted} deleted=${cumulativeReport.deleted} " +
+                            "retained=${cumulativeReport.retained} errors=${cumulativeReport.errors} " +
+                            "failures=${cumulativeReport.failureClasses.sortedBy { it.name }.joinToString { it.name }}"
+                        if (finalDecision == RecoveryRetryDecision.EXHAUSTED) {
+                            Log.w("MediaRecovery", "exhausted $summary")
+                        } else {
+                            Log.d("MediaRecovery", "complete $summary")
+                        }
+                    }
+                },
+                onFailure = { failure ->
+                    Log.e("MediaRecovery", "launch recovery failed before typed completion", failure)
                 }
-            }
-            onComplete(completion)
+            )
+            onComplete(result)
         }
     }
 
