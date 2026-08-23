@@ -15,10 +15,9 @@ import org.junit.runner.RunWith
  * and how does that compare to its active array?
  *
  * Written because a Lenovo TB331FC (Android 15) saved a SQUARE 2448x2448 HEIF while its active
- * array is 3264x2448 — a 4:3 sensor. The still-size picker takes the largest advertised JPEG that
- * fits inside the active array, and 3264x2448 has MORE area than the square, so either the device
- * does not advertise the full-array JPEG at all (device truth, nothing to fix) or the picker is
- * choosing wrongly (our bug). Only the device can say which.
+ * array is 3264x2448 — a 4:3 sensor. Production therefore prefers the active-array aspect before
+ * comparing area; this probe calls that same pure selector so its verdict cannot revive the
+ * area-only bug it was created to diagnose.
  *
  * Never fails the build. Read with `adb logcat -s StillProbe`.
  */
@@ -44,14 +43,16 @@ class StillSizeProbeTest {
             Log.i(TAG, "camera $id facing=$facing activeArray=${array?.width()}x${array?.height()}")
             Log.i(TAG, "  JPEG (largest first): ${jpeg.take(8).joinToString { "${it.width}x${it.height}" }}")
             Log.i(TAG, "  YUV  (largest first): ${yuv.take(6).joinToString { "${it.width}x${it.height}" }}")
-            // Exactly the shipping rule, so a mismatch between this and the saved file is a real bug.
-            val picked = jpeg
-                .filter { array == null || (it.width <= array.width() && it.height <= array.height()) }
-                .maxByOrNull { it.width.toLong() * it.height }
+            // Exactly the shipping shape-first rule, shared rather than duplicated.
+            val picked = pickStillSize(
+                candidates = jpeg.map { it.width to it.height },
+                arrayW = array?.width() ?: 0,
+                arrayH = array?.height() ?: 0,
+            )
             val fourThree = jpeg.filter { it.height * 4 == it.width * 3 }
             Log.i(
                 TAG,
-                "  picked=${picked?.width}x${picked?.height}  " +
+                "  picked=${picked?.first}x${picked?.second}  " +
                     "any4:3JPEG=${fourThree.take(3).joinToString { "${it.width}x${it.height}" }.ifEmpty { "NONE" }}",
             )
         }

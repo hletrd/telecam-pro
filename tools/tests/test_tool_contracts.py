@@ -64,5 +64,24 @@ class FleetOwnershipTest(unittest.TestCase):
             os.kill(os.getpid(), 0)  # the unrelated test process is still alive
 
 
+class DeviceProbeParityTest(unittest.TestCase):
+    def test_still_probe_calls_the_shipping_shape_first_selector(self) -> None:
+        source = (
+            REPO_ROOT
+            / "app/src/androidTest/kotlin/me/hletrd/telecampro/camera/StillSizeProbeTest.kt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("val picked = pickStillSize(", source)
+
+    def test_encoder_probe_uses_the_exact_production_component_axis(self) -> None:
+        source = (
+            REPO_ROOT
+            / "app/src/androidTest/kotlin/me/hletrd/telecampro/video/EncoderProfileLevelProbeTest.kt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("EncoderCaps.load().candidatesFor", source)
+        self.assertIn("MediaCodecList.REGULAR_CODECS", source)
+        self.assertIn("MediaCodec.createByCodecName", source)
+        self.assertNotIn("createEncoderByType", source)
+
+
 if __name__ == "__main__":
     unittest.main()

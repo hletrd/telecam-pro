@@ -6,6 +6,8 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoCodec
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -53,15 +55,15 @@ class EncoderProfileLevelProbeTest {
     }
 
     /** Configure-only: no input surface, no start. That is the exact call that was failing. */
-    private fun tryConfigure(label: String, fmt: MediaFormat): Boolean {
+    private fun tryConfigure(codecName: String, label: String, fmt: MediaFormat): Boolean {
         var codec: MediaCodec? = null
         return try {
-            codec = MediaCodec.createEncoderByType(MIME)
+            codec = MediaCodec.createByCodecName(codecName)
             codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            Log.i(TAG, "PASS  $label")
+            Log.i(TAG, "PASS  component=$codecName  $label")
             true
         } catch (t: Throwable) {
-            Log.i(TAG, "FAIL  $label  -> ${t.javaClass.simpleName}: ${t.message}")
+            Log.i(TAG, "FAIL  component=$codecName  $label  -> ${t.javaClass.simpleName}: ${t.message}")
             false
         } finally {
             runCatching { codec?.release() }
@@ -70,11 +72,21 @@ class EncoderProfileLevelProbeTest {
 
     @Test
     fun probeWhichKeysTheEncoderAccepts() {
-        val list = MediaCodecList(MediaCodecList.ALL_CODECS)
-        val info = list.codecInfos.firstOrNull { it.isEncoder && it.supportedTypes.any { t -> t.equals(MIME, true) } }
-        if (info == null) {
+        val infoByName = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+            .associateBy { it.name }
+        val candidates = EncoderCaps.load().candidatesFor(VideoCodec.HEVC, ColorTransfer.SDR)
+        if (candidates.isEmpty()) {
             Log.i(TAG, "VERDICT: no HEVC encoder on this device; nothing to probe")
             return
+        }
+        // Production retains every exact admitted component and creates each by name. Probe the
+        // same hardware-first, registry-stable identity axis; type-selected creation can silently
+        // inspect a different component from the capability token under test.
+        for (selection in candidates) {
+        val info = infoByName[selection.codecName]
+        if (info == null) {
+            Log.i(TAG, "SKIP  component=${selection.codecName} disappeared after inventory")
+            continue
         }
         val caps = info.getCapabilitiesForType(MIME)
         Log.i(TAG, "encoder=${info.name} hardwareAccelerated=${info.isHardwareAccelerated}")
@@ -90,24 +102,24 @@ class EncoderProfileLevelProbeTest {
         Log.i(TAG, "Main10 SUPPORTED=${main10Levels.isNotEmpty()} (decides whether HLG/log transfers are honest here)")
 
         // 1. Exactly what the app ships today for SDR: profile pinned, level absent.
-        val a = tryConfigure("profile=Main, NO level, SDR color", sdrColor(base()).apply {
+        val a = tryConfigure(info.name, "profile=Main, NO level, SDR color", sdrColor(base()).apply {
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain)
         })
         // 2. Same minus the profile — isolates the profile key from the color keys.
-        val b = tryConfigure("NO profile, NO level, SDR color", sdrColor(base()))
+        val b = tryConfigure(info.name, "NO profile, NO level, SDR color", sdrColor(base()))
         // 3. Profile paired with the encoder's own highest advertised level for it.
         val c = if (mainLevels.isEmpty()) {
             Log.i(TAG, "SKIP  profile=Main + advertised level (encoder advertises no Main level)"); false
         } else {
-            tryConfigure("profile=Main + level=${mainLevels.max()}, SDR color", sdrColor(base()).apply {
+            tryConfigure(info.name, "profile=Main + level=${mainLevels.max()}, SDR color", sdrColor(base()).apply {
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain)
                 setInteger(MediaFormat.KEY_LEVEL, mainLevels.max())
             })
         }
         // 4. Bare format, no profile and no color keys — the floor case.
-        val d = tryConfigure("bare (no profile, no color keys)", base())
+        val d = tryConfigure(info.name, "bare (no profile, no color keys)", base())
         // 5. The 10-bit shape four of the five gamma options ask for.
-        val e = tryConfigure("profile=Main10, NO level, HLG color", base().apply {
+        val e = tryConfigure(info.name, "profile=Main10, NO level, HLG color", base().apply {
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
@@ -134,6 +146,7 @@ class EncoderProfileLevelProbeTest {
         Log.i(TAG, "SURFACE INPUT ADVERTISED=$surfaceSupported")
 
         fun shape(label: String, w: Int, h: Int, colorFormat: Int) = tryConfigure(
+            info.name,
             label,
             MediaFormat.createVideoFormat(MIME, w, h).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
@@ -158,5 +171,6 @@ class EncoderProfileLevelProbeTest {
         shape("square 720x720 SURFACE", 720, 720, surf)
         shape("landscape 1920x1080 SURFACE", 1920, 1080, surf)
         shape("portrait 1080x1920 SURFACE", 1080, 1920, surf)
+        }
     }
 }
