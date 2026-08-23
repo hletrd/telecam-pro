@@ -112,6 +112,7 @@ class UiSnapshotActivity : ComponentActivity() {
                                 actions = snapshotActions,
                             )
                             SnapshotStateProbe(
+                                scenario = request.scenario ?: UiSnapshotActivity.SCENARIO_DEFAULT,
                                 transfer = snapshotState.transfer,
                                 layoutDirection = layoutDirection,
                                 modifier = Modifier.align(AbsoluteAlignment.TopLeft),
@@ -237,6 +238,7 @@ private fun snapshotSettingsTab(scenario: String?): ProSheetTab? = when (scenari
 
 @Composable
 private fun SnapshotStateProbe(
+    scenario: String,
     transfer: ColorTransfer,
     layoutDirection: LayoutDirection,
     modifier: Modifier = Modifier,
@@ -245,9 +247,11 @@ private fun SnapshotStateProbe(
     // debug-only nodes let device acceptance prove exact state without weakening production tile
     // semantics or using OCR/pixel-change guesses.
     // Keep the tiny probes in a raw LTR coordinate space so neither node is laid out beyond the
-    // two-dp host when the production subtree itself is intentionally rendered RTL.
+    // three-dp host when the production subtree itself is intentionally rendered RTL. The ready
+    // marker is scenario-specific because review/permission/dialog fixtures deliberately expose no
+    // camera chrome for the device harness to wait on.
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-        Box(modifier = modifier.size(2.dp)) {
+        Box(modifier = modifier.size(3.dp)) {
             Spacer(
                 modifier = Modifier
                     .size(1.dp)
@@ -260,6 +264,12 @@ private fun SnapshotStateProbe(
                     .absoluteOffset(x = 1.dp)
                     .size(1.dp)
                     .semantics { contentDescription = "Snapshot layout $layoutDirection" },
+            )
+            Spacer(
+                modifier = Modifier
+                    .absoluteOffset(x = 2.dp)
+                    .size(1.dp)
+                    .semantics { contentDescription = "Snapshot ready $scenario" },
             )
         }
     }

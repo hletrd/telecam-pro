@@ -12,6 +12,7 @@ through three independent channels wherever possible: UI tree, logcat, and on-di
 from __future__ import annotations
 
 import re
+import shlex
 import struct
 import time
 import math
@@ -133,6 +134,16 @@ REC_SNAPSHOT_MAX_STILL_GAP_INTERVALS = 3
 
 
 @dataclass(frozen=True)
+class SnapshotDeviceState:
+    """Exact display overrides/settings restored after debug-only compact-window evidence."""
+
+    size_override: str | None
+    density_override: str | None
+    accelerometer_rotation: str | None
+    user_rotation: str | None
+
+
+@dataclass(frozen=True)
 class ModeThreeAEvidence:
     line: str
     controller_id: int
@@ -243,23 +254,86 @@ def launch_ui_snapshot(
         raise AdbError(
             "refusing snapshot activity launch without explicit destructive approval"
         )
+    if re.fullmatch(r"[a-z0-9_]+", scenario) is None:
+        raise AdbError(f"invalid snapshot scenario: {scenario!r}")
     ctx.adb.shell(
         f"am start -W --activity-reorder-to-front -n {ctx.adb.snapshot_activity} "
         f"--ei device_orientation {orientation} "
         f"--ez snapshot_rtl {str(rtl).lower()} "
         f"--ef snapshot_font_scale {font_scale} "
-        f"--es snapshot_scenario {scenario}"
+        f"--es snapshot_scenario {shlex.quote(scenario)}"
     )
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         tree = ctx.adb.ui()
-        locale = ctx.adb.locale_state()["effective"]
-        if tree.find_selector(OPEN_FUNCTION_MENU, locale) is not None:
+        if tree.find_desc_exact(f"Snapshot ready {scenario}") is not None:
             return tree
         time.sleep(0.25)
     raise AssertionError(
-        f"snapshot scenario {scenario!r} orientation={orientation} did not expose camera chrome"
+        f"snapshot scenario {scenario!r} orientation={orientation} did not publish readiness"
     )
+
+
+def _override_value(output: str, label: str) -> str | None:
+    match = re.search(rf"^Override {label}:\s*(\S+)\s*$", output, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _optional_setting(value: str) -> str | None:
+    normalized = value.strip()
+    return None if not normalized or normalized.casefold() == "null" else normalized
+
+
+def capture_snapshot_device_state(adb) -> SnapshotDeviceState:
+    """Capture every global display setting the compact fixture changes before changing any."""
+    return SnapshotDeviceState(
+        size_override=_override_value(adb.shell("wm size"), "size"),
+        density_override=_override_value(adb.shell("wm density"), "density"),
+        accelerometer_rotation=_optional_setting(
+            adb.shell("settings get system accelerometer_rotation")
+        ),
+        user_rotation=_optional_setting(adb.shell("settings get system user_rotation")),
+    )
+
+
+def apply_snapshot_compact_wide(adb) -> None:
+    """Create a deterministic 320x300 dp debug window without touching release configuration."""
+    adb.shell("settings put system accelerometer_rotation 0")
+    adb.shell("settings put system user_rotation 0")
+    adb.shell("wm size 640x600")
+    adb.shell("wm density 320")
+
+
+def _restore_setting(adb, key: str, value: str | None) -> None:
+    if value is None:
+        adb.shell(f"settings delete system {key}")
+    else:
+        adb.shell(f"settings put system {key} {shlex.quote(value)}")
+
+
+def restore_snapshot_device_state(adb, state: SnapshotDeviceState) -> None:
+    """Attempt every exact restoration even if one device command fails."""
+    failures: list[str] = []
+    operations = (
+        lambda: adb.shell(
+            f"wm density {state.density_override}"
+            if state.density_override else "wm density reset"
+        ),
+        lambda: adb.shell(
+            f"wm size {state.size_override}" if state.size_override else "wm size reset"
+        ),
+        lambda: _restore_setting(adb, "user_rotation", state.user_rotation),
+        lambda: _restore_setting(
+            adb, "accelerometer_rotation", state.accelerometer_rotation
+        ),
+    )
+    for operation in operations:
+        try:
+            operation()
+        except (AdbError, OSError, RuntimeError) as error:
+            failures.append(f"{type(error).__name__}: {error}")
+    if failures:
+        raise AdbError("snapshot display restoration failed: " + "; ".join(failures))
 
 
 def newest_mode_three_a(
@@ -1305,6 +1379,54 @@ def _overlap_area(first, second) -> int:
 
 def _minimum_touch_px(metrics: DisplayMetrics) -> int:
     return math.ceil(48 * metrics.density_dpi / 160) - 2  # tolerate pixel rounding only
+
+
+def snapshot_fixture_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+    """Generic fixture contract: visible semantics fit; sibling action targets do not collide."""
+    errors: list[str] = []
+    visible = [node for node in tree.nodes if node.desc or node.text]
+    for node in visible:
+        left, top, right, bottom = node.bounds
+        label = node.desc or node.text
+        if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+            errors.append(f"fixture {label!r}: out of screen bounds {node.bounds}")
+
+    actions = [
+        node for node in visible
+        if (node.clickable or node.focusable) and not node.desc.startswith("Snapshot ")
+    ]
+    minimum_px = _minimum_touch_px(metrics)
+    for node in actions:
+        left, top, right, bottom = node.bounds
+        if right - left < minimum_px or bottom - top < minimum_px:
+            errors.append(
+                f"fixture action {node.desc or node.text!r}: "
+                f"touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+            )
+
+    def contains(outer: UiNode, inner: UiNode) -> bool:
+        return (
+            outer.bounds != inner.bounds
+            and outer.bounds[0] <= inner.bounds[0]
+            and outer.bounds[1] <= inner.bounds[1]
+            and outer.bounds[2] >= inner.bounds[2]
+            and outer.bounds[3] >= inner.bounds[3]
+        )
+
+    for index, first in enumerate(actions):
+        for second in actions[index + 1:]:
+            # A parent can legitimately carry merged focus semantics around its child. What must
+            # never happen is two sibling action targets occupying the same touch pixels.
+            if (
+                not contains(first, second)
+                and not contains(second, first)
+                and _overlap_area(first, second) > 0
+            ):
+                errors.append(
+                    f"fixture actions overlap: {first.desc or first.text!r} and "
+                    f"{second.desc or second.text!r}"
+                )
+    return errors
 
 
 def _described_action_errors(tree, node: UiNode, label: str, role_suffix: str = "Button") -> list[str]:
@@ -2475,10 +2597,11 @@ def t_function_menu(ctx: Context) -> None:
     )
 
 
-@test("debug_snapshot_ui_contract", "full", destructive=True)
+@test("debug_snapshot_ui_contract", "full", destructive=True, mutates_settings=True)
 def t_debug_snapshot_ui_contract(ctx: Context) -> None:
-    """HAL-free portrait and held UI prove Fn, modal, MR, ruler, and Loupe contracts."""
+    """HAL-free scenario matrix proves high-risk UI bounds, actions, and held geometry."""
     metrics = ctx.adb.display_metrics()
+    device_state: SnapshotDeviceState | None = None
     try:
         for orientation in (0, 90, 270):
             launch_ui_snapshot(ctx, orientation=orientation)
@@ -2627,13 +2750,116 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     "; ".join(rtl_menu_errors)
                 )
                 ctx.adb.screenshot(f"snapshot_fn_rtl_{orientation}")
+
+        # Each surface below once timed out in launch_ui_snapshot because it intentionally has no
+        # camera chrome. The debug-only ready probe now lets the harness exercise the actual
+        # maximal OSD, direct modal, review, permission, and rationale fixtures.
+        locale = effective_locale(ctx)
+        scenario_matrix = (
+            ("maximal_osd", 0, False, 1.0),
+            ("maximal_osd", 90, True, 2.0),
+            ("fn", 0, False, 2.0),
+            ("settings", 0, False, 1.0),
+            ("settings_fn", 0, True, 2.0),
+            ("review_raw", 90, False, 1.0),
+            ("review_loading", 270, False, 2.0),
+            ("review_error", 90, True, 2.0),
+            ("review_delete", 0, False, 2.0),
+            ("permission", 0, True, 2.0),
+            ("permission_denied", 0, False, 2.0),
+            ("microphone_rationale", 0, True, 2.0),
+        )
+        for index, (scenario, orientation, rtl, font_scale) in enumerate(scenario_matrix):
+            launch_ui_snapshot(
+                ctx,
+                orientation=orientation,
+                scenario=scenario,
+                rtl=rtl,
+                font_scale=font_scale,
+            )
+            tree = ctx.adb.ui(
+                f"snapshot_{scenario}_{orientation}_{'rtl' if rtl else 'ltr'}_f{font_scale:g}"
+            )
+            assert tree.find_desc_exact(f"Snapshot ready {scenario}"), (
+                f"{scenario} published no matching readiness identity"
+            )
+            fixture_errors = snapshot_fixture_layout_errors(tree, metrics)
+            assert not fixture_errors, (
+                f"snapshot {scenario} structural violations: " + "; ".join(fixture_errors)
+            )
+            substantive = [
+                node for node in tree.nodes
+                if (node.desc or node.text) and not node.desc.startswith("Snapshot ")
+            ]
+            assert substantive, f"snapshot {scenario} rendered no substantive UI semantics"
+            if scenario == "fn":
+                fn_errors = function_menu_layout_errors(
+                    tree,
+                    metrics,
+                    device_orientation=orientation,
+                    locale=locale,
+                )
+                assert not fn_errors, f"snapshot direct Fn violations: {'; '.join(fn_errors)}"
+            elif scenario in {"settings", "settings_fn"}:
+                settings_errors = settings_modal_layout_errors(tree, metrics, locale=locale)
+                assert not settings_errors, (
+                    f"snapshot {scenario} settings violations: {'; '.join(settings_errors)}"
+                )
+            elif scenario == "maximal_osd":
+                chrome_errors = camera_chrome_layout_errors(
+                    tree,
+                    metrics,
+                    detailed=True,
+                    device_orientation=orientation,
+                    locale=locale,
+                )
+                assert not chrome_errors, (
+                    f"snapshot maximal OSD violations: {'; '.join(chrome_errors)}"
+                )
+            ctx.adb.screenshot(f"snapshot_matrix_{index:02d}_{scenario}")
+
+        # Compact/freeform risk shape: exactly 320x300 dp. Capture all prior global overrides first,
+        # then restore them in finally even when composition or a bounds assertion fails.
+        device_state = capture_snapshot_device_state(ctx.adb)
+        apply_snapshot_compact_wide(ctx.adb)
+        time.sleep(1)
+        compact_metrics = ctx.adb.display_metrics()
+        compact_width_dp = compact_metrics.width_px * 160 / compact_metrics.density_dpi
+        compact_height_dp = compact_metrics.height_px * 160 / compact_metrics.density_dpi
+        assert compact_metrics.width_px > compact_metrics.height_px, (
+            f"compact fixture is not wide: {compact_metrics}"
+        )
+        assert 300 <= compact_width_dp <= 340 and 280 <= compact_height_dp <= 320, (
+            f"compact fixture is not the 320x300dp risk class: "
+            f"{compact_width_dp:.1f}x{compact_height_dp:.1f}dp"
+        )
+        launch_ui_snapshot(
+            ctx,
+            orientation=90,
+            scenario="settings_fn",
+            rtl=True,
+            font_scale=2.0,
+        )
+        compact = ctx.adb.ui("snapshot_compact_wide_settings_fn_rtl_f2")
+        compact_errors = snapshot_fixture_layout_errors(compact, compact_metrics)
+        compact_errors.extend(settings_modal_layout_errors(compact, compact_metrics, locale=locale))
+        assert not compact_errors, (
+            "compact-wide Fn editor violations: " + "; ".join(compact_errors)
+        )
+        ctx.adb.screenshot("snapshot_compact_wide_settings_fn_rtl_f2")
     finally:
-        # The fixture never opens Camera2. Restore the suite's normal foreground camera surface.
-        ctx.adb.launch(wait_s=3)
+        try:
+            if device_state is not None:
+                restore_snapshot_device_state(ctx.adb, device_state)
+        finally:
+            # Relaunch even when one restore command failed; the outer run attestation will compare
+            # the resulting display/settings state and keep the suite non-green.
+            ctx.adb.launch(wait_s=3)
 
     ctx.note(
-        "HAL-free 0/90/270 snapshots: Fn physical order/reach + exact sticky Gamma, RTL held Fn, "
-        "one Settings close, single MR1 tag, isolated ISO ruler, and truthful Loupe Overview"
+        f"HAL-free fixture matrix in locale={locale}: legacy 0/90/270 Fn/MR/ruler/Loupe plus "
+        "maximal OSD, direct Fn/settings, RAW/loading/error/delete review, permission/rationale, "
+        "RTL + 2x font, and restored 320x300dp compact-wide bounds/non-overlap evidence"
     )
 
 

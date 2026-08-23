@@ -465,6 +465,147 @@ class HarnessRobustnessTest(unittest.TestCase):
             with self.assertRaisesRegex(AdbError, "destructive approval"):
                 cases.launch_ui_snapshot(ctx, orientation=0)
 
+    def test_launch_ui_snapshot_waits_for_exact_scenario_probe_not_camera_chrome(self) -> None:
+        class ScenarioAdb:
+            snapshot_activity = SNAPSHOT_ACTIVITY
+
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def shell(self, command: str, timeout: int = 60) -> str:
+                del timeout
+                self.commands.append(command)
+                return ""
+
+            def ui(self):
+                return UiTree(
+                    '<hierarchy><node text="" content-desc="Snapshot ready review_error" '
+                    'bounds="[0,0][1,1]" /></hierarchy>'
+                )
+
+        adb = ScenarioAdb()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ctx = framework.Context(adb=adb, evidence=Path(temp_dir), can_launch=True)
+            tree = cases.launch_ui_snapshot(
+                ctx,
+                orientation=90,
+                scenario="review_error",
+                rtl=True,
+                font_scale=2.0,
+            )
+
+        self.assertIsNotNone(tree.find_desc_exact("Snapshot ready review_error"))
+        self.assertIn("--es snapshot_scenario review_error", adb.commands[0])
+        self.assertNotIn("Open function menu", tree.all_labels())
+
+    def test_snapshot_display_state_capture_and_exact_restore(self) -> None:
+        class DisplayAdb:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def shell(self, command: str) -> str:
+                self.commands.append(command)
+                return {
+                    "wm size": "Physical size: 1440x3168\nOverride size: 900x700",
+                    "wm density": "Physical density: 560\nOverride density: 420",
+                    "settings get system accelerometer_rotation": "1",
+                    "settings get system user_rotation": "3",
+                }.get(command, "")
+
+        adb = DisplayAdb()
+        state = cases.capture_snapshot_device_state(adb)
+        self.assertEqual(
+            state,
+            cases.SnapshotDeviceState("900x700", "420", "1", "3"),
+        )
+        cases.apply_snapshot_compact_wide(adb)
+        cases.restore_snapshot_device_state(adb, state)
+        self.assertEqual(
+            adb.commands[-4:],
+            [
+                "wm density 420",
+                "wm size 900x700",
+                "settings put system user_rotation 3",
+                "settings put system accelerometer_rotation 1",
+            ],
+        )
+
+    def test_snapshot_display_state_resets_absent_overrides_and_settings(self) -> None:
+        class DisplayAdb:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def shell(self, command: str) -> str:
+                self.commands.append(command)
+                return ""
+
+        adb = DisplayAdb()
+        cases.restore_snapshot_device_state(
+            adb,
+            cases.SnapshotDeviceState(None, None, None, None),
+        )
+        self.assertEqual(
+            adb.commands,
+            [
+                "wm density reset",
+                "wm size reset",
+                "settings delete system user_rotation",
+                "settings delete system accelerometer_rotation",
+            ],
+        )
+
+    def test_snapshot_display_restore_attempts_every_operation_after_failure(self) -> None:
+        class DisplayAdb:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+
+            def shell(self, command: str) -> str:
+                self.commands.append(command)
+                if command == "wm density reset":
+                    raise AdbError("density restore refused")
+                return ""
+
+        adb = DisplayAdb()
+        with self.assertRaisesRegex(AdbError, "snapshot display restoration failed"):
+            cases.restore_snapshot_device_state(
+                adb,
+                cases.SnapshotDeviceState(None, None, None, None),
+            )
+        self.assertEqual(
+            adb.commands,
+            [
+                "wm density reset",
+                "wm size reset",
+                "settings delete system user_rotation",
+                "settings delete system accelerometer_rotation",
+            ],
+        )
+
+    def test_snapshot_fixture_layout_rejects_bounds_and_sibling_overlap(self) -> None:
+        good = UiTree(
+            '<hierarchy>'
+            '<node text="" content-desc="First" clickable="true" focusable="true" '
+            'bounds="[0,0][48,48]" />'
+            '<node text="" content-desc="Second" clickable="true" focusable="true" '
+            'bounds="[48,0][96,48]" />'
+            '</hierarchy>'
+        )
+        metrics = DisplayMetrics(100, 100, 160)
+        self.assertEqual(cases.snapshot_fixture_layout_errors(good, metrics), [])
+
+        bad = UiTree(
+            '<hierarchy>'
+            '<node text="" content-desc="First" clickable="true" focusable="true" '
+            'bounds="[0,0][48,48]" />'
+            '<node text="" content-desc="Second" clickable="true" focusable="true" '
+            'bounds="[40,0][88,48]" />'
+            '<node text="Clipped" content-desc="" bounds="[90,90][110,110]" />'
+            '</hierarchy>'
+        )
+        errors = cases.snapshot_fixture_layout_errors(bad, metrics)
+        self.assertTrue(any("actions overlap" in error for error in errors))
+        self.assertTrue(any("out of screen bounds" in error for error in errors))
+
     def test_jpeg_walker_skips_fill_bytes_and_lengthless_markers(self) -> None:
         jpeg = b"".join(
             (
