@@ -33,8 +33,8 @@ class MediaReviewOwnershipTest {
     val compose = createComposeRule()
 
     @Test
-    fun `blocked video provider setup leaves disposal responsive and only replacement publishes`() {
-        val executor = Executors.newSingleThreadExecutor()
+    fun `permanently blocked video provider leaves a worker for replacement publication`() {
+        val executor = Executors.newFixedThreadPool(2)
         val dispatcher = executor.asCoroutineDispatcher()
         try {
             val setupStarted = CountDownLatch(1)
@@ -42,17 +42,21 @@ class MediaReviewOwnershipTest {
             val setupThread = AtomicReference<Thread>()
             val released = Collections.synchronizedList(mutableListOf<String>())
             val published = Collections.synchronizedList(mutableListOf<String>())
+            val oldReleased = CountDownLatch(1)
             val lane = LatestReviewSetupLane<String, String>(
                 dispatcher = dispatcher,
                 work = { input ->
                     setupThread.set(Thread.currentThread())
                     if (input == "video-A") {
                         setupStarted.countDown()
-                        check(releaseSetup.await(2, TimeUnit.SECONDS))
+                        releaseSetup.await()
                     }
                     "player-$input"
                 },
-                release = released::add,
+                release = { result ->
+                    released += result
+                    if (result == "player-video-A") oldReleased.countDown()
+                },
             )
             val callerThread = Thread.currentThread()
             val oldOwner = Any()
@@ -72,17 +76,21 @@ class MediaReviewOwnershipTest {
                 var backHandled = false
                 backHandled = true
                 assertTrue(backHandled)
-                assertTrue(old.isActive)
 
                 val replacement = async(start = CoroutineStart.UNDISPATCHED) {
                     lane.run(replacementOwner, "video-B", published::add)
                 }
-                releaseSetup.countDown()
 
-                assertFalse(old.await())
+                // B must finish while the retired A call is still permanently blocked. Releasing A
+                // first would only prove serialization, the exact head-of-line bug this lane fixes.
                 assertTrue(replacement.await())
+                assertFalse(old.await())
+                assertTrue(published == listOf("player-video-B"))
+
+                releaseSetup.countDown()
             }
 
+            assertTrue(oldReleased.await(2, TimeUnit.SECONDS))
             assertTrue(released.contains("player-video-A"))
             assertTrue(published == listOf("player-video-B"))
         } finally {
