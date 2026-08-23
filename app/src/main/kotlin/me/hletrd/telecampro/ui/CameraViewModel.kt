@@ -18,6 +18,8 @@ import me.hletrd.telecampro.camera.BackOpticsRefusal
 import me.hletrd.telecampro.camera.CameraCaps
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
+import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CameraReadyPublicationGate
 import me.hletrd.telecampro.camera.CameraRouteInventory
@@ -641,9 +643,10 @@ class CameraViewModel @JvmOverloads constructor(
                 }
             }
         }
-        // Route inventory is resolved before the first Camera2 open. Mirror both availability and
-        // the Engine's selected initial facing in one fold so a front-only device never renders a
-        // dead rear route while its first session is already opening on FRONT.
+        // Route inventory is attempted before the first Camera2 open. A partial/failed
+        // classification may coexist with a safe current/default open, while the Engine's bounded
+        // independent retry later converges complete truth. Mirror each publication plus the exact
+        // active route in one fold; never infer EXTERNAL from the two-value facing axis.
         engine.onCameraRouteInventory = { routes, activeRoute ->
             _state.update { current ->
                 cameraRoutePublishedState(
@@ -1033,6 +1036,16 @@ class CameraViewModel @JvmOverloads constructor(
         engine.onRawSaved = { uri, captureId ->
             recordCaptureOutput(uri, captureId, CaptureOutputKind.RAW)
         }
+        engine.onCaptureFamilyRegistered = { captureId, familyKey, lateStillOutputs ->
+            captureOutputs.registerFamily(captureId, familyKey, lateStillOutputs)
+        }
+        engine.onStillCaptureAdmissionChanged = { available ->
+            _state.update {
+                if (it.stillCaptureAdmissionAvailable == available) it
+                else it.copy(stillCaptureAdmissionAvailable = available)
+            }
+        }
+        engine.onStillCaptureAdmissionChanged?.invoke(engine.stillOutputAdmissionAvailable())
         seedPhoneModel()
         restoreSettingsIfEnabled()
         loadEncoderInventoryAsync()
@@ -3290,18 +3303,39 @@ class CameraViewModel @JvmOverloads constructor(
         // Retained still completion belongs to the Engine's I/O lane and can outlive this ViewModel.
         // Publish the same tombstone there synchronously so a late private row takes the durable
         // DISCARD path without calling back into this UI owner or its soon-to-shut-down executor.
-        engine.markCaptureDeleted(deletePlan.captureId)
-        val outputs = deletePlan.outputs
-        // The open overlay can still hold the RAW URI after a processed sibling upgraded the
-        // thumbnail. Clear whichever sibling currently owns review, not only the tapped URI.
-        _state.update {
-            if (it.lastMediaUri in outputs) {
-                it.copy(lastMediaUri = null, lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY)
-            } else {
-                it
+        engine.markCaptureDeleted(
+            CaptureFamilyDeleteIntent(
+                familyKey = deletePlan.familyKey,
+                scope = deletePlan.deleteScope,
+                liveStillCaptureId = deletePlan.liveStillCaptureId,
+            ),
+        ) deleteReady@{ durability ->
+            if (durability == CaptureFamilyDeleteDurability.FAILED) {
+                val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, deletePlan.outputs)
+                mainHandler.post {
+                    if (restored != null && captureOutputs.isCurrentReviewOutput(restored)) {
+                        _state.update {
+                            it.copy(
+                                lastMediaUri = restored,
+                                lastMediaDeleteScope = deletePlan.deleteScope,
+                            )
+                        }
+                    }
+                    showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
+                }
+                return@deleteReady
             }
-        }
-        ioExecutor.execute {
+            val outputs = deletePlan.outputs
+            // The open overlay can still hold the RAW URI after a processed sibling upgraded the
+            // thumbnail. Clear only after whole-family intent is durably owned.
+            _state.update {
+                if (it.lastMediaUri in outputs) {
+                    it.copy(lastMediaUri = null, lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY)
+                } else {
+                    it
+                }
+            }
+            val accepted = runCatching { ioExecutor.execute {
             // BEFORE the known outputs go: sweep still-PENDING family siblings the tracker never
             // learned about (a publish-failed output keeps its bytes + a COMPLETE journal entry, and
             // launch recovery would ADOPT it later — resurrecting part of a deleted capture). Runs
@@ -3335,6 +3369,8 @@ class CameraViewModel @JvmOverloads constructor(
                     },
                 )
             }
+            } }.isSuccess
+            if (!accepted) mainHandler.post { showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE) }
         }
     }
 
@@ -3362,8 +3398,13 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun deleteLateCaptureOutput(uri: Uri) {
         ioExecutor.execute {
-            if (!MediaStoreWriter.delete(getApplication(), uri)) {
-                mainHandler.post { showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE) }
+            if (MediaStoreWriter.discardRejectedOutput(getApplication(), uri) ==
+                me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
+            ) {
+                mainHandler.post {
+                    _state.update { it.copy(stillCaptureAdmissionAvailable = false) }
+                    showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
+                }
             }
         }
     }

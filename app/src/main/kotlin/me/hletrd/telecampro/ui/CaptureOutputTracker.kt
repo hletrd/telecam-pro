@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.RestoredCapture
 import me.hletrd.telecampro.storage.RestoredDeleteScope
 import me.hletrd.telecampro.storage.StoredMediaOutputKind
@@ -34,6 +35,9 @@ internal data class CaptureDeletePlan<T>(
     val preservedOutputs: Set<T> = emptySet(),
     val deleteScope: MediaDeleteScope,
     internal val captureId: Int?,
+    internal val familyKey: CaptureFamilyKey? = null,
+    /** Only a live still family can have retained HEIF/JPEG/DNG callbacks after review deletion. */
+    internal val liveStillCaptureId: Int? = null,
     internal val kindsByOutput: Map<T, CaptureOutputKind>,
     internal val preferredOutput: T?,
 )
@@ -54,6 +58,8 @@ internal class CaptureOutputTracker<T>(
     private val captureByOutput = HashMap<T, Int>()
     private val kindByOutput = HashMap<T, CaptureOutputKind>()
     private val deleteScopeByCapture = HashMap<Int, MediaDeleteScope>()
+    private val familyByCapture = HashMap<Int, CaptureFamilyKey>()
+    private val liveStillFamilies = HashSet<Int>()
     private val tombstones = LinkedHashSet<Int>()
     private var reviewCaptureId: Int? = null
     private var reviewOutput: T? = null
@@ -70,6 +76,7 @@ internal class CaptureOutputTracker<T>(
         outputs: Collection<PriorCaptureOutput<T>>,
         preferredOutput: T,
         deleteScope: MediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
+        familyKey: CaptureFamilyKey? = null,
     ): Boolean {
         if (PRIOR_PROCESS_CAPTURE_ID in tombstones) return false
         val distinct = LinkedHashMap<T, CaptureOutputKind>()
@@ -90,8 +97,11 @@ internal class CaptureOutputTracker<T>(
             }
         }
         deleteScopeByCapture.remove(PRIOR_PROCESS_CAPTURE_ID)
+        familyByCapture.remove(PRIOR_PROCESS_CAPTURE_ID)
+        liveStillFamilies.remove(PRIOR_PROCESS_CAPTURE_ID)
         outputsByCapture[PRIOR_PROCESS_CAPTURE_ID] = LinkedHashSet(accepted.keys)
         deleteScopeByCapture[PRIOR_PROCESS_CAPTURE_ID] = deleteScope
+        familyKey?.let { familyByCapture[PRIOR_PROCESS_CAPTURE_ID] = it }
         accepted.forEach { (output, kind) ->
             captureByOutput[output] = PRIOR_PROCESS_CAPTURE_ID
             kindByOutput[output] = kind
@@ -105,6 +115,19 @@ internal class CaptureOutputTracker<T>(
             reviewKind = preferredKind
         }
         return reviewCaptureId == PRIOR_PROCESS_CAPTURE_ID && reviewOutput == preferredOutput
+    }
+
+    /** Registers canonical family truth before any asynchronous output callback can arrive. */
+    @Synchronized
+    fun registerFamily(
+        captureId: Int,
+        familyKey: CaptureFamilyKey,
+        canProduceLateStillOutputs: Boolean,
+    ) {
+        familyByCapture[captureId] = familyKey
+        if (canProduceLateStillOutputs) liveStillFamilies.add(captureId)
+        else liveStillFamilies.remove(captureId)
+        trimFamilyRegistrations()
     }
 
     /** Records [output] and returns its deletion/review ownership decision. */
@@ -193,6 +216,8 @@ internal class CaptureOutputTracker<T>(
                 preservedOutputs = emptySet(),
                 deleteScope = MediaDeleteScope.FILE_ONLY,
                 captureId = null,
+                familyKey = null,
+                liveStillCaptureId = null,
                 kindsByOutput = emptyMap(),
                 preferredOutput = output,
             )
@@ -204,6 +229,11 @@ internal class CaptureOutputTracker<T>(
         val tracked = outputsByCapture.remove(captureId).orEmpty().toSet()
         val deleteScope = deleteScopeByCapture.remove(captureId)
             ?: MediaDeleteScope.CAPTURE_FAMILY
+        val familyKey = familyByCapture.remove(captureId)
+        val liveStillCaptureId = captureId.takeIf {
+            deleteScope == MediaDeleteScope.CAPTURE_FAMILY && it in liveStillFamilies
+        }
+        liveStillFamilies.remove(captureId)
         // A file-only restored row has no live callback family to suppress, and its unselected
         // siblings deliberately remain on disk. Do not tombstone the synthetic prior-process id:
         // doing so would prevent a later gallery refresh from surfacing one of those remaining files.
@@ -244,6 +274,8 @@ internal class CaptureOutputTracker<T>(
             preservedOutputs = preserved,
             deleteScope = deleteScope,
             captureId = planCaptureId,
+            familyKey = familyKey,
+            liveStillCaptureId = liveStillCaptureId,
             kindsByOutput = kinds,
             preferredOutput = preferredOutput,
         )
@@ -288,6 +320,7 @@ internal class CaptureOutputTracker<T>(
                         }
                         ?: retained.first(),
                     deleteScope = plan.deleteScope,
+                    familyKey = plan.familyKey,
                 )
             ) {
                 reviewOutput
@@ -304,6 +337,8 @@ internal class CaptureOutputTracker<T>(
         }
         outputsByCapture[captureId] = retained
         deleteScopeByCapture[captureId] = plan.deleteScope
+        plan.familyKey?.let { familyByCapture[captureId] = it }
+        if (plan.liveStillCaptureId == captureId) liveStillFamilies.add(captureId)
         retained.forEach { survivor ->
             captureByOutput[survivor] = captureId
             kindByOutput[survivor] = plan.kindsByOutput[survivor] ?: CaptureOutputKind.DISPLAYABLE
@@ -336,10 +371,25 @@ internal class CaptureOutputTracker<T>(
                 .minOrNull() ?: return
             val evicted = outputsByCapture.remove(oldestCaptureId).orEmpty()
             deleteScopeByCapture.remove(oldestCaptureId)
+            familyByCapture.remove(oldestCaptureId)
+            liveStillFamilies.remove(oldestCaptureId)
             evicted.forEach { output ->
                 captureByOutput.remove(output)
                 kindByOutput.remove(output)
             }
+        }
+    }
+
+    @Synchronized
+    private fun trimFamilyRegistrations() {
+        val limit = maxCaptureHistory.coerceAtLeast(1)
+        while (familyByCapture.size > limit) {
+            val evictable = familyByCapture.keys
+                .asSequence()
+                .filter { it !in outputsByCapture && it != pinnedReviewCaptureId }
+                .minOrNull() ?: return
+            familyByCapture.remove(evictable)
+            liveStillFamilies.remove(evictable)
         }
     }
 
@@ -374,4 +424,5 @@ internal fun <T> CaptureOutputTracker<T>.seedRestoredCapture(
         RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
         RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
     },
+    familyKey = restored.familyKey,
 )

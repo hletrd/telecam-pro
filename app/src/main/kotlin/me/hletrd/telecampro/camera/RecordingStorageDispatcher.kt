@@ -13,6 +13,11 @@ internal enum class RecordingStorageDispatch {
     SHUTDOWN,
 }
 
+/** Provider-only continuation handed to the post-native storage owner. */
+internal fun interface RecordingStorageCompletion {
+    fun complete(): me.hletrd.telecampro.video.VideoRecorder.StopResult
+}
+
 /**
  * Per-Engine admission facade for process-owned post-native recording storage work.
  *
@@ -152,13 +157,23 @@ internal class RecordingStoragePresentationReducer<T> {
     fun publish(
         result: RecordingStorageTerminalResult<T>,
         present: (RecordingStorageTerminalResult<T>) -> Unit,
-    ): Boolean = synchronized(lock) {
-        if (result.captureId < newestCaptureId) {
-            false
-        } else {
-            newestCaptureId = result.captureId
-            present(result)
-            true
+    ): Boolean = publishWithAttempt(result, onAttempt = {}, present = present)
+
+    /** Test/diagnostic handshake immediately before attempting the serialized boundary. */
+    internal fun publishWithAttempt(
+        result: RecordingStorageTerminalResult<T>,
+        onAttempt: () -> Unit,
+        present: (RecordingStorageTerminalResult<T>) -> Unit,
+    ): Boolean {
+        onAttempt()
+        return synchronized(lock) {
+            if (result.captureId < newestCaptureId) {
+                false
+            } else {
+                newestCaptureId = result.captureId
+                present(result)
+                true
+            }
         }
     }
 

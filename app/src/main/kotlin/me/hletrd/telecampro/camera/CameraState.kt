@@ -2,6 +2,7 @@ package me.hletrd.telecampro.camera
 
 import android.util.Size
 import androidx.compose.runtime.Immutable
+import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.video.AudioRouteAvailability
 import me.hletrd.telecampro.video.AudioRouteStatus
 
@@ -52,6 +53,22 @@ internal fun backOpticsDoorRefusal(recording: Boolean, frontFacing: Boolean): Ba
 
 /** Truthful scope promised by the media-review delete confirmation. */
 enum class MediaDeleteScope { CAPTURE_FAMILY, FILE_ONLY }
+
+/**
+ * Exact family identity handed from review ownership to the Engine deletion boundary.
+ *
+ * [liveStillCaptureId] is deliberately narrower than a generic capture id: only a still admitted by
+ * this Engine can produce a late HEIF/JPEG/DNG callback that needs the retained-still tombstone.
+ * Restored families and video carry durable identity for MediaStore recovery without poisoning the
+ * still producer gate.
+ */
+internal data class CaptureFamilyDeleteIntent(
+    val familyKey: CaptureFamilyKey?,
+    val scope: MediaDeleteScope,
+    val liveStillCaptureId: Int? = null,
+)
+
+internal enum class CaptureFamilyDeleteDurability { NOT_REQUIRED, DURABLE, FAILED }
 
 /**
  * Video transfer function. HLG = HDR-viewable; the [isLog] members are flat, for grading (our GL
@@ -1430,6 +1447,8 @@ data class CameraUiState(
     val lastMediaUri: android.net.Uri? = null,
     // Canonical live/restored families can delete every known sibling; legacy filenames cannot.
     val lastMediaDeleteScope: MediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+    /** False only for a genuine fail-closed still-output ownership condition. */
+    val stillCaptureAdmissionAvailable: Boolean = true,
     val histogramData: HistogramData? = null,
     val waveformData: WaveformData? = null,
 ) {
@@ -1474,7 +1493,7 @@ data class CameraUiState(
     val punchInActive: Boolean
         get() = punchInResolved(punchIn, facing == CameraFacing.FRONT)
     val stillCaptureReady: Boolean
-        get() = cameraReady && photoSessionOutputs.hasStillTarget
+        get() = cameraReady && photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable
     val primaryShutterHealthy: Boolean
         get() = cameraReady && (mode == CaptureMode.VIDEO || photoSessionOutputs.hasStillTarget)
     val primaryShutterEnabled: Boolean

@@ -12,6 +12,21 @@ import org.junit.Test
 class CameraStateTest {
 
     @Test
+    fun `family delete intent defaults to no live still producer`() {
+        val family = me.hletrd.telecampro.storage.CaptureFamilyKey(
+            me.hletrd.telecampro.storage.CaptureFamilyMedia.VIDEO,
+            capturedAtEpochMillis = 1_700_000_000_000L,
+            sequence = 9L,
+        )
+
+        val intent = CaptureFamilyDeleteIntent(family, MediaDeleteScope.CAPTURE_FAMILY)
+
+        assertSame(family, intent.familyKey)
+        assertEquals(MediaDeleteScope.CAPTURE_FAMILY, intent.scope)
+        assertEquals(null, intent.liveStillCaptureId)
+    }
+
+    @Test
     fun `other phone uses the measured converter host focal when available`() {
         val inventory = LensInventory(
             available = setOf(LensChoice.MAIN, LensChoice.TELE3X),
@@ -87,6 +102,19 @@ class CameraStateTest {
 
         assertFalse(unavailable.stillCaptureReady)
         assertTrue(available.stillCaptureReady)
+    }
+
+    @Test
+    fun `fail closed output ownership disables a Ready photo shutter`() {
+        val blocked = CameraUiState(
+            mode = CaptureMode.PHOTO,
+            cameraReady = true,
+            photoSessionOutputs = PhotoSessionOutputs(processed = true),
+            stillCaptureAdmissionAvailable = false,
+        )
+
+        assertFalse(blocked.stillCaptureReady)
+        assertFalse(blocked.primaryShutterEnabled)
     }
 
     @Test

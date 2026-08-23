@@ -391,7 +391,7 @@ architecture = read("docs/ARCHITECTURE.md")
 required_owners = (
     "CameraStatus.kt", "DeviceProfile.kt", "FrontMirrorConvention.kt", "MotionInversion.kt",
     "EncoderSizeLadder.kt", "CameraScreenPolicy.kt", "LocalizedStatus.kt",
-    "RecordingStorageDispatcher.kt",
+    "RecordingPreNativeAllocation.kt", "RecordingStorageDispatcher.kt",
 )
 check(
     all(owner in architecture for owner in required_owners),
@@ -461,6 +461,28 @@ check(
     and "device-harness self-tests" in architecture
     and "device-tests/tests" in read("docs/TESTING.md"),
     "all host-gate authorities document the consolidated non-device suite",
+)
+view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
+camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
+check(
+    "process-wide finite" in claude
+    and "pre-native allocator" in claude
+    and "itself. Stop/pause/release/timeout retire the attempt" in claude
+    and "process-wide pre-native allocator" in architecture
+    and "It dispatches but never performs pending-row allocation" in architecture
+    and "Admission itself runs on the RECORDER EXECUTOR" not in claude
+    and "MediaStore pending insert" not in architecture
+    and "ProcessRecordingPreNativeAllocator.dispatch(allocationTask)" in camera_engine
+    and "recorderExecutor.execute" in camera_engine,
+    "recording authorities describe allocator then recorder ownership",
+)
+check(
+    "Attempts BACK/FRONT/EXTERNAL route inventory before first open" in architecture
+    and "bounded eventual convergence" in architecture
+    and "Route inventory is attempted before the first Camera2 open" in view_model
+    and "Resolves the complete BACK/FRONT/EXTERNAL route inventory before first open" not in architecture
+    and "scheduleRouteInventoryRetry()" in camera_engine,
+    "route authorities distinguish pre-open attempt from bounded convergence",
 )
 check(
     "Photo, TC off, RAW/DNG wanted" in architecture

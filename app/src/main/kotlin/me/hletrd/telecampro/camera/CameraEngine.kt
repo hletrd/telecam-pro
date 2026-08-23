@@ -63,9 +63,15 @@ internal data class RecordingPreNativeEngineOverrides(
     val discardPendingOutput: (android.net.Uri) -> PendingOutputDiscardResult,
 )
 
+/** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
+internal data class RecordingStorageEngineOverrides(
+    val capacityOwner: RecordingStorageCapacityOwner,
+)
+
 class CameraEngine internal constructor(
     private val context: Context,
     private val recordingPreNativeOverrides: RecordingPreNativeEngineOverrides? = null,
+    private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
 ) {
 
     private val manager = context.getSystemService(CameraManager::class.java)
@@ -105,7 +111,9 @@ class CameraEngine internal constructor(
     // Extractor/MediaStore tails own no native recorder resources. The lane is deliberately finite:
     // provider outages may occupy two workers plus a bounded backlog, after which the pending row is
     // the durable overflow owner for launch recovery. Admission never falls back inline/raw-thread.
-    private val recordingStorageDispatcher = RecordingStorageDispatcher(
+    private val recordingStorageDispatcher = recordingStorageOverrides?.let {
+        RecordingStorageDispatcher(it.capacityOwner)
+    } ?: RecordingStorageDispatcher(
         workerCount = RECORDING_STORAGE_WORKER_COUNT,
         backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
     )
@@ -779,7 +787,7 @@ class CameraEngine internal constructor(
      * inventory knows. Empty until the enumeration runs — [opticalBaseFor] answers 1× then, i.e.
      * leave the ratio alone, which is the pre-enumeration behaviour.
      */
-    @Volatile private var opticalPresets: Set<LensChoice> = emptySet()
+    @Volatile private var acceptedOpticalPresets: Set<LensChoice> = emptySet()
 
     /**
      * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.
@@ -809,9 +817,10 @@ class CameraEngine internal constructor(
             cachedCaps(logical, physical)?.zoomRatioRange?.let { it.lower to it.upper }
         }
         val inventory = lensInventoryOf(equivalents, range)
-        opticalPresets = inventory.optical
-        // opticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder resolves
-        // FINDER_MIN_ZOOM against unifiedZoomOf(..., optical = opticalPresets). Enumeration is
+        acceptedOpticalPresets = inventory.optical
+        // acceptedOpticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder
+        // resolves FINDER_MIN_ZOOM against unifiedZoomOf(..., optical = acceptedOpticalPresets).
+        // Enumeration is
         // deliberately queued AFTER the first route/open task (see the caller), so every push before
         // this line resolved the gate against the PRE-ENUMERATION default — and nothing re-resolved
         // it afterwards. On a launch restored to 3x or 10x that left the GL flag false while the
@@ -899,7 +908,10 @@ class CameraEngine internal constructor(
         idForFocalCache.clear()
         capsCache.clear()
         lensExifCache.clear()
-        opticalPresets = emptySet()
+        // Discovery truth may be stale, but accepted session optics stay authoritative until the
+        // topology action owns convergence. Clearing this during a REC lease made a standalone 3x
+        // zoom tick recompute the GL finder gate against the 1x pre-enumeration fallback while
+        // Compose still displayed the accepted rail — border/tag with no PIP.
         lensInventoryPublished = false
     }
 
@@ -932,6 +944,15 @@ class CameraEngine internal constructor(
             scheduleRouteInventoryRetry()
             return
         }
+        // A complete inventory has consumed every removal epoch in this snapshot. Keep epochs only
+        // for ids that still exist: a same-id A -> B replacement remains observable because the id
+        // is present, while a later return of a genuinely absent id is already a membership change.
+        // Conditional remove preserves a newer onCameraRemoved callback that raced this setup task.
+        val retainedIdentityEpochs = retainedCameraIdentityEpochs(ids, identityEpochs)
+        identityEpochs.forEach { (cameraId, epoch) ->
+            if (cameraId !in ids) cameraIdentityEpochs.remove(cameraId, epoch)
+        }
+        knownCameraIdentityEpochs = retainedIdentityEpochs
         routeInventoryRetryAttempts = 0
         routeInventoryRetryScheduled.set(false)
         val topology = cameraRouteTopologyDecision(
@@ -1175,6 +1196,10 @@ class CameraEngine internal constructor(
     // A DNG output with the same capture-sequence id as its HEIF/JPEG siblings. A RAW-only capture
     // may own the review metadata tile until a processed sibling upgrades it. Fired after publish.
     var onRawSaved: ((android.net.Uri, Int) -> Unit)? = null
+    /** Canonical family truth published before any output callback or video allocation can arrive. */
+    internal var onCaptureFamilyRegistered: ((Int, CaptureFamilyKey, Boolean) -> Unit)? = null
+    /** Projects the retained/rejected-output fail-closed gate into the visible shutter state. */
+    internal var onStillCaptureAdmissionChanged: ((Boolean) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -2950,7 +2975,7 @@ class CameraEngine internal constructor(
                 standaloneRoute = standaloneRouteWanted(
                     videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
                 ),
-                opticalPresets = opticalPresets,
+                opticalPresets = acceptedOpticalPresets,
                 currentLens = lensChoice,
                 currentTeleconverter = teleconverterMode,
                 currentControls = controls,
@@ -3669,7 +3694,8 @@ class CameraEngine internal constructor(
 
     /** Returns true only when this press was admitted to a real still target. */
     fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
-        if (!retainedStillDeletionOwner.canAdmitCapture()) {
+        if (!stillOutputAdmissionAvailable()) {
+            onStillCaptureAdmissionChanged?.invoke(false)
             onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
             return false
         }
@@ -3927,12 +3953,40 @@ class CameraEngine internal constructor(
      * Publishes a whole-family delete to the still lane before asynchronous provider deletion.
      * Null is a FILE_ONLY/unknown capture and has no live sibling callback family to suppress.
      */
-    fun markCaptureDeleted(captureId: Int?) {
-        val id = captureId ?: return
-        retainedStillDeletionOwner.markCaptureDeleted(id).forEach { output ->
-            dispatchDeletedStillDiscard(output, id)
+    internal fun markCaptureDeleted(
+        intent: CaptureFamilyDeleteIntent,
+        onComplete: (CaptureFamilyDeleteDurability) -> Unit = {},
+    ) {
+        if (intent.scope != MediaDeleteScope.CAPTURE_FAMILY || intent.familyKey == null) {
+            onComplete(CaptureFamilyDeleteDurability.NOT_REQUIRED)
+            return
+        }
+        val liveStillId = intent.liveStillCaptureId
+        val publications = liveStillId?.let(retainedStillDeletionOwner::markCaptureDeletedInMemory).orEmpty()
+        val task = Runnable {
+            val durable = MediaStoreWriter.markFamilyDeletedResult(context, intent.familyKey) ==
+                me.hletrd.telecampro.storage.FamilyDeletionMarkResult.DURABLE
+            if (liveStillId != null) {
+                retainedStillDeletionOwner.completeDeletionDurability(liveStillId, durable)
+            }
+            if (durable) {
+                publications.forEach { output -> dispatchDeletedStillDiscard(output, checkNotNull(liveStillId)) }
+            }
+            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            onComplete(
+                if (durable) CaptureFamilyDeleteDurability.DURABLE
+                else CaptureFamilyDeleteDurability.FAILED,
+            )
+        }
+        if (runCatching { ioExecutor.execute(task) }.isFailure) {
+            if (liveStillId != null) retainedStillDeletionOwner.completeDeletionDurability(liveStillId, false)
+            onStillCaptureAdmissionChanged?.invoke(false)
+            onComplete(CaptureFamilyDeleteDurability.FAILED)
         }
     }
+
+    internal fun stillOutputAdmissionAvailable(): Boolean =
+        retainedStillDeletionOwner.canAdmitCapture() && MediaStoreWriter.rejectedOutputAdmissionAvailable()
 
     /**
      * Transfers a completed row to the Engine's delete owner without depending on UI callbacks.
@@ -3967,6 +4021,9 @@ class CameraEngine internal constructor(
         },
         finishPublishedStill = retainedStillDeletionOwner::finishPublished,
         emitPublishRetained = { uri, id -> retainedStillDeletionOwner.handleRetained(uri, id) },
+        onRejectedOutputDisposition = {
+            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+        },
     )
     private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
 
@@ -4053,6 +4110,7 @@ class CameraEngine internal constructor(
         // Register before Camera2 sees the request, so review deletion can synchronously persist
         // the whole family without a MediaStore query even while output siblings are still late.
         retainedStillDeletionOwner.registerCaptureFamily(captureId, spec.familyKey)
+        onCaptureFamilyRegistered?.invoke(captureId, spec.familyKey, true)
         return spec
     }
 
@@ -4276,7 +4334,7 @@ class CameraEngine internal constructor(
     // REC admission runs off main. MediaStore row allocation has its own finite lane because a
     // provider Binder call has no cancellation signal; only after that generation-owned result is
     // claimed does the serial recorderExecutor perform mic handoff and native setup. The in-flight
-    // gate stays synchronous. Stop-during-start ordering is owned by [RecordingAdmissionLatch].
+        // gate stays synchronous. Stop-during-start ordering is owned by [RecordingAdmissionLatch].
     private val recAdmission = RecordingAdmissionLatch()
 
     fun startRecording(recordAudio: Boolean, onResult: (Boolean) -> Unit) {
@@ -4284,16 +4342,22 @@ class CameraEngine internal constructor(
         // Video-mode snapshot that accidentally started an interval run). This invalidates only the
         // active sequence; the selected TIMELAPSE drive mode remains available on return to Photo.
         stopTimelapse()
+        if (!MediaStoreWriter.rejectedOutputAdmissionAvailable()) {
+            onStillCaptureAdmissionChanged?.invoke(false)
+            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+            onResult(false)
+            return
+        }
         val topologyLease = routeTopologyConvergence.beginRecording()
         if (!recAdmission.tryBeginAdmission()) {
-            routeTopologyConvergence.finishRecording(topologyLease)
+            routeTopologyConvergence.finishAdmission(topologyLease)
             scheduleDeferredRouteTopologyConvergence()
             onResult(false)
             return
         }
         if (topologyLease == 0L || !activeRecordingTopologyLease.compareAndSet(0L, topologyLease)) {
             recAdmission.completeAdmission(succeeded = false)
-            routeTopologyConvergence.finishRecording(topologyLease)
+            routeTopologyConvergence.finishAdmission(topologyLease)
             scheduleDeferredRouteTopologyConvergence()
             onStatus?.invoke(CameraStatusMessage.RECORDING_ALREADY_ACTIVE.status())
             onResult(false)
@@ -4303,7 +4367,7 @@ class CameraEngine internal constructor(
         val completeAttempt: (Boolean) -> Unit = { succeeded ->
             if (attemptCompleted.compareAndSet(false, true)) {
                 val stopNow = recAdmission.completeAdmission(succeeded)
-                if (!succeeded) releaseRecordingTopologyLease(topologyLease)
+                if (!succeeded) releaseRecordingAdmissionTopologyLease(topologyLease)
                 onResult(succeeded)
                 if (stopNow) stopRecording()
             }
@@ -4311,7 +4375,7 @@ class CameraEngine internal constructor(
         val accepted = runCatching {
             recorderExecutor.execute {
                 val pending = runCatching {
-                    beginRecordingAllocation(recordAudio, completeAttempt)
+                    beginRecordingAllocation(recordAudio, topologyLease, completeAttempt)
                 }.getOrDefault(false)
                 if (!pending) completeAttempt(false)
             }
@@ -4324,6 +4388,7 @@ class CameraEngine internal constructor(
     /** Returns true only after an async allocation attempt owns [completeAttempt]. */
     private fun beginRecordingAllocation(
         recordAudio: Boolean,
+        topologyLease: Long,
         completeAttempt: (Boolean) -> Unit,
     ): Boolean {
         val admission = recordingPreNativeOverrides?.let { overrides ->
@@ -4379,6 +4444,7 @@ class CameraEngine internal constructor(
             capturedAtEpochMillis = System.currentTimeMillis(),
             sequence = recordingCaptureId.toLong(),
         )
+        onCaptureFamilyRegistered?.invoke(recordingCaptureId, familyKey, false)
         val name = familyKey.displayName("mp4")
         val scheduler = recordingPreNativeOverrides?.let { overrides ->
             RecordingTeardownScheduler(overrides.scheduleDeadline)
@@ -4457,6 +4523,7 @@ class CameraEngine internal constructor(
                             val ok = runCatching {
                                 continueRecordingAfterAllocation(
                                     recordAudio = recordAudio,
+                                    topologyLease = topologyLease,
                                     admission = admission,
                                     processAdmission = processAdmission,
                                     completeAttempt = completeAttempt,
@@ -4510,6 +4577,7 @@ class CameraEngine internal constructor(
 
     private fun continueRecordingAfterAllocation(
         recordAudio: Boolean,
+        topologyLease: Long,
         admission: RecordingAdmissionSnapshot,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
         completeAttempt: (Boolean) -> Unit,
@@ -4555,6 +4623,7 @@ class CameraEngine internal constructor(
                     } else {
                         startRecordingClaimed(
                             recordAudio = recordAudio,
+                            topologyLease = topologyLease,
                             acceptedSession = checkNotNull(admission.acceptedSession),
                             audioClaim = audioClaim,
                             processAdmission = processAdmission,
@@ -4583,6 +4652,7 @@ class CameraEngine internal constructor(
     /** The post-mic-claim half of REC admission; every return path releases or converts the claim. */
     private fun startRecordingClaimed(
         recordAudio: Boolean,
+        topologyLease: Long,
         acceptedSession: AcceptedCameraSession,
         audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
@@ -4789,7 +4859,7 @@ class CameraEngine internal constructor(
                             glOwnerCurrent = glOwners.owns(ownedGl),
                             sessionOwned = ownsAcceptedRecordingSession(acceptedSession),
                             recorderAbsent = recorder == null,
-                        )
+                        ) && routeTopologyConvergence.transferToRecorder(topologyLease)
                     ) {
                         recorder = rec
                         activeRecordingGl = ownedGl
@@ -5001,13 +5071,25 @@ class CameraEngine internal constructor(
     // steal the route from the finalizing clip).
     @Volatile private var recorderTeardownInFlight = false
 
+    /** Pre-publication failure may release admission; recorder ownership makes this a strict no-op. */
+    private fun releaseRecordingAdmissionTopologyLease(expected: Long) {
+        if (!routeTopologyConvergence.finishAdmission(expected)) return
+        if (activeRecordingTopologyLease.compareAndSet(expected, 0L)) {
+            scheduleDeferredRouteTopologyConvergence()
+        }
+    }
+
     /** Ends the REC topology lease exactly once, after native/container ownership is gone. */
     private fun releaseRecordingTopologyLease(expected: Long? = null) {
         while (true) {
             val current = activeRecordingTopologyLease.get()
             if (current == 0L || expected != null && current != expected) return
             if (activeRecordingTopologyLease.compareAndSet(current, 0L)) {
-                routeTopologyConvergence.finishRecording(current)
+                // Normal post-publication teardown owns RECORDER; unsafe native setup can quarantine
+                // before publication while admission still owns the same active lease.
+                if (!routeTopologyConvergence.finishRecording(current)) {
+                    routeTopologyConvergence.finishAdmission(current)
+                }
                 scheduleDeferredRouteTopologyConvergence()
                 return
             }
@@ -5364,11 +5446,11 @@ class CameraEngine internal constructor(
         return result
     }
 
-    private fun dispatchRecordingStorageTail(
-        storageTail: me.hletrd.telecampro.video.RecordingStorageTail,
+    internal fun dispatchRecordingStorageTail(
+        storageTail: RecordingStorageCompletion,
         uri: android.net.Uri?,
         captureId: Int,
-    ) {
+    ): RecordingStorageDispatch {
         val task = Runnable {
             val result = runCatching { storageTail.complete() }
                 .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
@@ -5381,6 +5463,7 @@ class CameraEngine internal constructor(
                 ),
                 error = result.error,
             )
+            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
             presentRecordingStorageResult(terminal)
             if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                 android.util.Log.i(
@@ -5391,7 +5474,8 @@ class CameraEngine internal constructor(
                 )
             }
         }
-        when (dispatchRecordingStorageTask(task)) {
+        val dispatch = dispatchRecordingStorageTask(task)
+        when (dispatch) {
             RecordingStorageDispatch.ACCEPTED -> Unit
             RecordingStorageDispatch.OVERFLOW -> {
                 // The finalized row stays pending; launch recovery is the durable overflow lane.
@@ -5421,6 +5505,7 @@ class CameraEngine internal constructor(
                 }
             }
         }
+        return dispatch
     }
 
     /**
@@ -5460,7 +5545,7 @@ class CameraEngine internal constructor(
     private fun presentRecordingStorageResult(
         terminal: RecordingStorageTerminalResult<android.net.Uri>,
     ) {
-        recordingStoragePresentation.publish(terminal) { current ->
+        recordingStoragePresentation.publish(terminal, present = { current ->
             when (current.disposition) {
                 RecordingStorageTerminalDisposition.SAVED -> {
                     current.outputUri?.let { onMediaSaved?.invoke(it, current.captureId) }
@@ -5473,7 +5558,7 @@ class CameraEngine internal constructor(
                     onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
                 }
             }
-        }
+        })
     }
 
     private fun dispatchRecordingStorageTask(task: Runnable): RecordingStorageDispatch =
@@ -5752,7 +5837,7 @@ class CameraEngine internal constructor(
                     standaloneRoute = standaloneRouteWanted(
                         videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
                     ),
-                    optical = opticalPresets,
+                    optical = acceptedOpticalPresets,
                 ),
             )
             // Suppressing an identical re-push is safe for GL generations too: RendererAssists
@@ -5799,6 +5884,8 @@ class CameraEngine internal constructor(
         onFocusDistance = null
         onMediaSaved = null
         onRawSaved = null
+        onCaptureFamilyRegistered = null
+        onStillCaptureAdmissionChanged = null
     }
 
     fun release() {

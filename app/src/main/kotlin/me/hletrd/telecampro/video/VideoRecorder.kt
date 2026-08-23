@@ -1523,11 +1523,11 @@ internal fun <T> completeFrozenRecordingStorage(
 internal class RecordingStorageTail(
     private val context: Context,
     private val frozen: FrozenRecordingStorage<Uri>,
-) {
+) : me.hletrd.telecampro.camera.RecordingStorageCompletion {
     private var completed: VideoRecorder.StopResult? = null
 
     @Synchronized
-    fun complete(): VideoRecorder.StopResult {
+    override fun complete(): VideoRecorder.StopResult {
         completed?.let { return it }
         return completeFrozenRecordingStorage(
             frozen,
@@ -1547,7 +1547,7 @@ internal class RecordingStorageTail(
                         }
                     }
                 },
-                delete = { MediaStoreWriter.delete(context, it) },
+                delete = { MediaStoreWriter.discardRejectedOutput(context, it) },
             ),
         ).also { completed = it }
     }

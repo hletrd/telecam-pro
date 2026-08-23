@@ -49,7 +49,16 @@ object MediaStoreWriter {
     private const val DELETED_FAMILY_PREFIX = "F1|"
     private const val COMPLETION_MARK_ATTEMPTS = 3
     private const val COMPLETION_MARK_BACKOFF_MS = 25L
+    internal const val MAX_DELETED_FAMILY_MARKERS = 64
+    internal const val MAX_REJECTED_OUTPUTS = 32
     private val processJournalOwner = UUID.randomUUID().toString()
+    private val familyJournalLock = Any()
+
+    private data class RejectedOutput(val context: Context, val uri: Uri)
+
+    private val rejectedOutputOwner = BoundedRejectedOutputOwner<RejectedOutput>(MAX_REJECTED_OUTPUTS) {
+        discardPendingOutput(it.context, it.uri)
+    }
 
     /**
      * Reconstructs the newest published capture THIS APP saved under its own folder.
@@ -329,24 +338,48 @@ object MediaStoreWriter {
      * process replacement. The process token lets launch recovery retain current-process markers:
      * an old Engine may still produce a sibling after a replacement Engine's recovery pass.
      */
-    internal fun markFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
-        markCompletionWithRetry(
+    internal fun markFamilyDeletedResult(
+        context: Context,
+        family: CaptureFamilyKey,
+    ): FamilyDeletionMarkResult = synchronized(familyJournalLock) {
+        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+        val key = deletedFamilyJournalKey(family)
+        if (preferences.contains(key)) return@synchronized FamilyDeletionMarkResult.DURABLE
+        val markerCount = runCatching { preferences.all.size }.getOrElse {
+            return@synchronized FamilyDeletionMarkResult.UNAVAILABLE
+        }
+        if (markerCount >= MAX_DELETED_FAMILY_MARKERS) {
+            return@synchronized FamilyDeletionMarkResult.CAPACITY_EXHAUSTED
+        }
+        val durable = markCompletionWithRetry(
             maxAttempts = COMPLETION_MARK_ATTEMPTS,
             commit = {
-                context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
-                    .edit()
-                    .putString(deletedFamilyJournalKey(family), processJournalOwner)
+                preferences.edit()
+                    .putString(key, processJournalOwner)
                     .commit()
             },
             backoff = { attempt ->
                 runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
             },
         ).durable
+        if (durable) FamilyDeletionMarkResult.DURABLE else FamilyDeletionMarkResult.UNAVAILABLE
+    }
+
+    internal fun markFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
+        markFamilyDeletedResult(context, family) == FamilyDeletionMarkResult.DURABLE
 
     /** Fast shared-preference read used by still publication and launch restoration. */
     internal fun isFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
         context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
             .contains(deletedFamilyJournalKey(family))
+
+    /** Durable reject/delete path for any output the app has already classified as failed. */
+    internal fun discardRejectedOutput(context: Context, uri: Uri): PendingOutputDiscardResult =
+        rejectedOutputOwner.discard(RejectedOutput(context.applicationContext, uri))
+
+    internal fun retryRejectedOutputs(): Int = rejectedOutputOwner.retryUnresolved()
+
+    internal fun rejectedOutputAdmissionAvailable(): Boolean = rejectedOutputOwner.canAdmit()
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
@@ -518,7 +551,8 @@ object MediaStoreWriter {
         // tombstone. Recover durable DISCARD entries by exact URI first, so published as well as
         // pending rows are deleted. Successful [delete] clears the journal; failures retain it for
         // the next bounded recovery attempt.
-        var report = cleanupDeletedFamilyJournal(context).merge(cleanupDiscardJournal(context))
+        retryRejectedOutputs()
+        var report = cleanupDeletedFamilyJournal(context, subDirs).merge(cleanupDiscardJournal(context))
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -604,13 +638,21 @@ object MediaStoreWriter {
      * still own an accepted save tail. A prior-process marker can be removed only after its exact,
      * bounded family query completed and every matching row was authoritatively deleted/absent.
      */
-    private fun cleanupDeletedFamilyJournal(context: Context): RecoveryReport {
+    private fun cleanupDeletedFamilyJournal(
+        context: Context,
+        subDirs: List<String>,
+    ): RecoveryReport {
         val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
-        val entries = runCatching { preferences.all.toMap() }.getOrElse {
+        val allEntries = runCatching { preferences.all.toSortedMap() }.getOrElse {
             return RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
         }
-        var report = RecoveryReport()
-        entries.forEach { (rawKey, rawOwner) ->
+        val batch = boundedDeletedFamilyBatch(allEntries, MAX_DELETED_FAMILY_MARKERS)
+        var report = if (batch.hasMore) {
+            RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
+        } else {
+            RecoveryReport()
+        }
+        batch.entries.forEach { (rawKey, rawOwner) ->
             val family = parseDeletedFamilyJournalKey(rawKey)
             if (family == null) {
                 report = report.record(RecoveryEvent.QUERY_FAILED)
@@ -621,21 +663,10 @@ object MediaStoreWriter {
                 CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
             }
             val rows = runCatching {
-                val names = family.knownOutputDisplayNames()
-                val paths = CAPTURE_SUBDIRS.joinToString(" OR ") {
-                    MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
-                }
+                val query = deletedFamilyQuery(family, subDirs, context.packageName)
                 val queryArgs = Bundle().apply {
-                    putString(
-                        ContentResolver.QUERY_ARG_SQL_SELECTION,
-                        "($paths) AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
-                            "${MediaStore.MediaColumns.DISPLAY_NAME} IN (" +
-                            names.joinToString(",") { "?" } + ")",
-                    )
-                    putStringArray(
-                        ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
-                        (CAPTURE_SUBDIRS.map { "DCIM/$it/%" } + context.packageName + names).toTypedArray(),
-                    )
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
                     putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
                 }
                 context.contentResolver.query(
@@ -830,6 +861,78 @@ object MediaStoreWriter {
         context.contentResolver.openFileDescriptor(uri, "r")
             ?: throw IOException("MediaProvider returned no file descriptor")
 
+}
+
+internal enum class FamilyDeletionMarkResult { DURABLE, CAPACITY_EXHAUSTED, UNAVAILABLE }
+
+internal data class DeletedFamilyQuery(val selection: String, val args: Array<String>)
+
+internal data class DeletedFamilyBatch<K, V>(
+    val entries: List<Map.Entry<K, V>>,
+    val hasMore: Boolean,
+)
+
+internal fun <K, V> boundedDeletedFamilyBatch(
+    entries: Map<K, V>,
+    limit: Int,
+): DeletedFamilyBatch<K, V> {
+    require(limit > 0)
+    return DeletedFamilyBatch(entries.entries.take(limit), entries.size > limit)
+}
+
+/** Exact bounded family query, extracted so placeholder order and path/owner anchors are testable. */
+internal fun deletedFamilyQuery(
+    family: CaptureFamilyKey,
+    subDirs: List<String>,
+    packageName: String,
+): DeletedFamilyQuery {
+    require(subDirs.isNotEmpty())
+    val names = family.knownOutputDisplayNames()
+    val paths = subDirs.joinToString(" OR ") {
+        MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
+    }
+    return DeletedFamilyQuery(
+        selection = "($paths) AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} IN (" +
+            names.joinToString(",") { "?" } + ")",
+        args = (subDirs.map { "DCIM/$it/%" } + packageName + names).toTypedArray(),
+    )
+}
+
+/** Finite process owner for discard attempts whose URI marker and provider delete both failed. */
+internal class BoundedRejectedOutputOwner<T>(
+    private val maxUnresolved: Int,
+    private val discardEffect: (T) -> PendingOutputDiscardResult,
+) {
+    private val lock = Any()
+    private val unresolved = LinkedHashSet<T>()
+
+    init {
+        require(maxUnresolved > 0)
+    }
+
+    fun discard(output: T): PendingOutputDiscardResult {
+        val result = runCatching { discardEffect(output) }
+            .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
+        synchronized(lock) {
+            if (result == PendingOutputDiscardResult.UNRESOLVED) {
+                if (output in unresolved || unresolved.size < maxUnresolved) unresolved.add(output)
+            } else {
+                unresolved.remove(output)
+            }
+        }
+        return result
+    }
+
+    fun retryUnresolved(): Int {
+        val pending = synchronized(lock) { unresolved.toList() }
+        pending.forEach(::discard)
+        return unresolvedCount()
+    }
+
+    fun canAdmit(): Boolean = synchronized(lock) { unresolved.size < maxUnresolved }
+
+    internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
 }
 
 internal data class PendingProbeOutcome(

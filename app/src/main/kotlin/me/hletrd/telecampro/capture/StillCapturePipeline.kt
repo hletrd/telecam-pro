@@ -127,7 +127,11 @@ internal class StillCapturePipeline(
     // pre-publication boundary receives this retained result, so a family tombstoned during the
     // provider call still takes DISCARD instead of becoming recoverable media.
     private val emitPublishRetained: (android.net.Uri, Int) -> RetainedStillDisposition,
+    private val onRejectedOutputDisposition: (PendingOutputDiscardResult) -> Unit,
 ) {
+
+    private fun discardRejectedOutput(uri: android.net.Uri): PendingOutputDiscardResult =
+        MediaStoreWriter.discardRejectedOutput(context, uri).also(onRejectedOutputDisposition)
 
     /**
      * ONE decode → center-crop to [ShotSpec.aspectRatio] (processed stills only; [saveDng]'s RAW
@@ -236,8 +240,12 @@ internal class StillCapturePipeline(
             MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
                 HeifCapture.writeHeif(pfd.fileDescriptor, rotated, quality, exifData); true
             } ?: false
-        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status()); return }
+        }.getOrElse { failure -> discardRejectedOutput(u); throw failure }
+        if (!wrote) {
+            discardRejectedOutput(u)
+            emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status())
+            return
+        }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         completeStillPublication(
             kind = "HEIF",
@@ -264,8 +272,12 @@ internal class StillCapturePipeline(
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
                 rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
             } ?: false
-        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
+        }.getOrElse { failure -> discardRejectedOutput(u); throw failure }
+        if (!wrote) {
+            discardRejectedOutput(u)
+            emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
+            return
+        }
         // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
         // (best-effort — a failed EXIF write must never lose the image itself).
         runCatching { writeJpegExif(u, exifShot) }
@@ -297,8 +309,12 @@ internal class StillCapturePipeline(
                 out.write(bytes)
                 true
             } ?: false
-        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
+        }.getOrElse { failure -> discardRejectedOutput(u); throw failure }
+        if (!wrote) {
+            discardRejectedOutput(u)
+            emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
+            return
+        }
         // Best-effort like the processed lane — a failed EXIF write must never lose the image. The
         // orientation tag is the one exception a viewer NEEDS for uprightness, but a passthrough
         // with EXIF missing still beats a deleted take.
@@ -347,7 +363,7 @@ internal class StillCapturePipeline(
         } catch (t: Throwable) {
             // A fully-written DNG is handed to the publication lane with its marker outcome.
             // Interrupted writes remain REGISTERED and are deleted; marker exhaustion is returned.
-            if (!outputComplete) MediaStoreWriter.delete(context, uri)
+            if (!outputComplete) discardRejectedOutput(uri)
             throw t
         }
     }

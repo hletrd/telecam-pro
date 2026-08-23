@@ -39,10 +39,10 @@ Two critical consequences of the afocal converter drive the entire design:
 | Package / File | Single Responsibility |
 |---|---|
 | **camera/** | |
-| `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Resolves the complete BACK/FRONT/EXTERNAL route inventory before first open, serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
+| `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Attempts BACK/FRONT/EXTERNAL route inventory before first open, independently retries incomplete classification to bounded eventual convergence, serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
 | `CameraController.kt` | Camera2 session lifecycle, capability-safe request building, and fallback plans across stream sets and session operation modes. Sets a mode only when its exact value is advertised and applies AE/AF regions independently only when each maximum region count is positive. Callback-driven, runs on a camera HandlerThread; framework callback admission is serialized against `quitSafely` so late `onClosed` work never posts to a dead OPPO queue. |
 | `CameraCallbackDispatchGate.kt` | Android-free close/admission gate ordering Camera2 executor posts before teardown, or rejecting them for the controller's inline late-callback cleanup after close begins. |
-| `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. Its pre-open route inventory covers BACK/FRONT/EXTERNAL; BACK remains preferred, front-only starts FRONT, and an external fallback opens plainly under GENERIC behavior. Front selection (`pickFront`/`pickFrontBest`) prefers a plain (non-logical) id and the largest active array on tie — never hardcoded. |
+| `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. Its pre-open route-inventory attempt covers BACK/FRONT/EXTERNAL; a failed/unknown characteristics read publishes partial truth and schedules bounded independent retry rather than blocking a safe current/default open. Once complete, BACK remains preferred, front-only starts FRONT, and an external fallback opens plainly under GENERIC behavior. Front selection (`pickFront`/`pickFrontBest`) prefers a plain (non-logical) id and the largest active array on tie — never hardcoded. |
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CameraStatus.kt` | Typed user-status identity, arguments, urgency/live-region policy, lifecycle, and duration. |
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only. `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
@@ -65,7 +65,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RecordingPreNativeAllocation.kt` | Process-wide finite lane for pending-video MediaProvider allocation: two daemon workers plus four queued attempts, per-attempt first-wins retirement, and cancellation of queued work. Stop/pause/release/timeout free REC admission immediately; a late row is cleanup/recovery-owned and cannot enter native setup. |
 | `RecordingStorageDispatcher.kt` | Process-lifetime bounded post-native storage owner: exactly two daemon workers plus eight FIFO backlog slots shared by every Engine generation. Each Engine holds only a closeable admission facade, so overflow or facade shutdown leaves the finalized pending row private for launch recovery while already accepted, callback-identity-bearing tails finish without interruption. |
 | `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
-| `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. A matching late output takes MediaStore's durable DISCARD path instead of calling a cleared ViewModel or being adopted on relaunch. |
+| `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. Only live still families enter this gate; video and restored families carry durable delete identity without claiming a late-still producer. The in-memory tombstone is synchronous, while family-journal durability runs on the ordered I/O lane. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
@@ -96,7 +96,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **storage/** | |
 | `CaptureFamily.kt` | Versioned, timestamped capture-family identity embedded in every new output filename. HEIF/JPEG/DNG siblings reuse one exact key; video owns a one-file family. Legacy names are deliberately not inferred by timestamp proximity. |
 | `LatestCaptureReducer.kt` | Android-free reducer for owned Images/Video rows. Selects the newest capture first, then a displayable sibling inside only that capture, and distinguishes proven capture-family deletion from legacy file-only deletion. |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal and the shared durable-before-publication gate. It retries COMPLETE markers boundedly; exhaustion leaves structurally complete bytes `IS_PENDING=1`, forbids publish/delete, and returns a distinct retained-marker-unavailable outcome. It creates/publishes pending DCIM/TeleCamPro rows and structurally probes JPEG/DNG/video/HEIF. HEIF proof requires bounded `meta` children, a matching `pitm`/`iloc` primary item, supported construction/reference fields, and explicit extents wholly inside `mdat`. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper with durable per-URI `REGISTERED`/`COMPLETE`/`DISCARD` ownership and a bounded family-delete journal. Rejected outputs always attempt typed DISCARD before deletion; double-failures stay in one finite process retry owner and close new output admission at capacity. Family markers are capped at 64, and each recovery attempt queries at most that bounded batch. COMPLETE exhaustion leaves structurally complete bytes private. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid or durably rejected/deleted rows, retains indeterminate/error rows, and reports bounded retry truth. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `MacroProximity.kt` | Focus-confidence proofs and their OSD wording: `AF_LIMIT` (AF failed/hunting near the advertised minimum focus distance) may say `TOO CLOSE` with a closer-lens suffix; `FRAME_DETAIL` may only say `SOFT` with no suffix — it proves the frame resolves no fine detail, never *why*. 700 ms hold; any refusal resets it. |
@@ -109,7 +109,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ModalFocus.kt` | Shared focus-containment and restoration policy for Fn, settings, adjustment, review, permission, and dialog modal surfaces. |
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
 | `LocalizedStatus.kt` / `LocalizedLabels.kt` / `controls/LocalizedControlLabels.kt` | Presentation-time English/Korean resource resolution for typed statuses and domain/control identities. |
-| `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, tombstones whole captures before deletion, and seeds a reconstructed prior-process family below every live capture id. One open-review family can be pinned outside ordinary bounded history until close/delete. |
+| `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids, canonical `CaptureFamilyKey`, media kind, delete scope, and every processed/RAW sibling. Family truth is registered before still callbacks or video allocation. It distinguishes live-still late producers from video/restored families, seeds canonical prior-process identity below live ids, and pins one open-review family outside ordinary history. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
 | `ShutterPolicy.kt` | Pure photo-shutter activation resolution: countdown cancellation has first refusal, self-timer vs immediate fire, and the video-snapshot exemption from the Photo self-timer. |
 | `ZoomGlideState.kt` | The Android-free half of the zoom-interaction lifecycle: coalesced `pendingRatio`, hardware-glide `easeTarget`, `interacting`, `flushScheduled`, plus `invalidateForRemap()` and the zoom-OUT `isLeadingEdgeToWide` decision. Every optics-scale remap door invalidates through the ViewModel's single `invalidateOpticsDerivedState()` owner (host-tested) — which also drops route-scoped focus evidence, since zoom glide and focus confidence share exactly one door set. |
@@ -238,7 +238,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, and serialized generation-owned mode/lens/session reconfiguration. Debug diagnostics are queued behind the initial route/open work. |
 | **ioExecutor** (single-thread) | CameraEngine / StillCapturePipeline | Deferred processed-still decoding, crop/rotation, shared HEIF/JPEG EXIF composition, encoding, processed publication, and retrying DNG publication after the live-Image write is complete. |
 | **media-recovery executor** (single-thread) | CameraEngine | Launch-only pending-row scans, structural probes, and bounded provider retry/backoff. Its typed completion gates the latest-family query, so recovery can adopt the review item without ever delaying Camera2 startup. |
-| **recording-finalization executor** (single-thread) | CameraEngine | Serial REC admission plus checked recorder drain/muxer/native-owner finalization. Engine release waits only for the current native classification, never for extractor or provider work. |
+| **recording-finalization executor** (single-thread) | CameraEngine | Serial accepted-session/process-token preflight, post-allocation mic/native setup, and checked recorder drain/muxer/native-owner finalization. It dispatches but never performs pending-row allocation; Engine release waits only for current native classification, never for pre/post-native provider work. |
 | **recording pre-native allocation** (process-wide two workers + four backlog slots) | CameraEngine / `ProcessRecordingPreNativeAllocator` | Pending MediaStore video-row insert/registration before native setup. Its deadline is armed before dispatch; Stop, pause, release, or timeout retire admission without interrupting the uncancellable Binder call. Late results can only enter bounded cleanup/recovery. |
 | **recording-storage dispatcher** (process-wide two workers + eight FIFO backlog slots) | `ProcessRecordingStorageOwner`; CameraEngine owns one admission facade | Frozen post-native extractor validation and MediaStore COMPLETE/publish/delete tails. Admission is non-blocking; overflow/facade shutdown leaves the finalized pending row private for launch recovery. A blocked provider call cannot occupy the REC/native lane, and Engine recreation cannot multiply active workers or queued tails. |
 | **recording-teardown watchdog** (scheduled daemon) | CameraEngine | Independent detach-recovery and hard-quarantine deadlines; exactly one strict-finalize or quarantine terminal owner wins and late callbacks are inert. |
@@ -336,16 +336,16 @@ Accessed from GL + audio/video threads:
   prefetched on `setupExecutor`, so callback resolution is cache-only and falls back to selected-route
   metadata without a CameraService lookup.
 - **Recording admission and failure**: VideoRecorder owns its video/audio threads and muxer lock; GL
-  writes frames to its exactly-once-owned codec input Surface. REC first reserves one process-wide
-  epoch lease, snapshots the accepted controller/session, and rechecks both after mic handoff,
-  pending-row creation, and codec setup. Recorder ownership is published through that same lease
-  atomically against camera failure and irreversible quarantine. Admission runs on the serial
-  **recorder executor**, never main (the
-  bounded mic-release wait, MediaStore pending insert, and codec/muxer/AudioRecord construction
-  cost ~100-700 ms); only the in-flight gate is synchronous, the UI publishes optimistic starting
-  state that an attempt-generation-owned main-thread callback resets on refusal, and a stop arriving mid-admission is latched
-  and executed on the same executor the moment the recorder publishes (never raced against an
-  unpublished owner). Publication precedes the asynchronous encoder handoff; EGL prepares a
+  writes frames to its exactly-once-owned codec input Surface. The caller synchronously reserves the
+  in-flight/topology owners and publishes optimistic Starting. The serial recorder executor snapshots
+  the accepted controller/session plus process token, then dispatches pending-row insert/registration
+  to the process-wide pre-native allocator under an already-armed deadline and yields; it does not
+  execute provider work. Stop/pause/release/timeout retire that generation immediately, while a late
+  provider return is cleanup/recovery-only. A claimed row re-enters the recorder executor for the
+  bounded standby-mic handoff and MediaCodec/MediaMuxer/AudioRecord construction, rechecking exact
+  session/process ownership at every edge. Recorder ownership is published atomically against camera
+  failure and irreversible quarantine. A stop arriving mid-admission is latched and consumed when the
+  attempt publishes or refuses, never raced against an unpublished owner. Publication precedes the asynchronous encoder handoff; EGL prepares a
   candidate surface privately, then installs its in-memory ownership through the process lease or
   destroys the revoked candidate. UI remains in a stoppable
   `isRecordingStarting` state until the first
@@ -971,7 +971,8 @@ does not query CameraService and copies the processed Image before resolving it.
 
 At shutter/record admission, every capture receives a monotonic engine id plus one versioned,
 millisecond-timestamped `CaptureFamilyKey`. Every HEIF/JPEG/DNG sibling reuses the same still-family
-key and filename stem; video owns one canonical MP4 family. Within the running process,
+key and filename stem; video owns one canonical MP4 family. The Engine publishes that identity to
+the tracker before Camera2 can return a still and before MediaStore video allocation begins. Within the running process,
 `CaptureOutputTracker` groups URIs by the monotonic id and orders review ownership by newest id first,
 then by displayability inside that capture. A newer DNG-only completion therefore owns a truthful RAW
 metadata placeholder instead of leaving an older thumbnail visible. A processed sibling from the same
@@ -998,8 +999,11 @@ not prove sibling identity and are never grouped by timestamp proximity: they re
 file-only delete scope. Opening review pins the frozen URI's exact family outside ordinary bounded
 history; if pinning fails, delete copy remains file-only. Closing releases the pin, while deletion
 consumes it with the family. Capture-family copy promises all known formats, while legacy copy promises
-only the displayed file. Delete tombstones a tracked capture before asynchronous MediaStore calls,
-attempts every known sibling, and immediately rejects a late sibling callback. If only some resolver
+only the displayed file. Whole-family deletion synchronously publishes only the in-memory tombstone;
+the ordered I/O lane must durably commit the bounded family marker before UI acknowledgement or
+provider deletion. Only a live still id enters the retained-late-sibling gate, so deleting video or
+restored media cannot poison still admission. Delete then attempts every known sibling and immediately
+rejects a late callback through durable DISCARD ownership. If only some resolver
 deletions succeed, `restoreDeleteSurvivors` reconstructs the surviving subset under the original
 capture id and restores its best review owner with explicit retry copy; only a survivor that cannot be
 restored falls back to a Gallery retry message. RAW remains metadata-only in review; no Bayer decoding
@@ -1034,8 +1038,10 @@ publish(context, uri)
 // Updates IS_PENDING = 0 (visible in gallery), then clears the journal entry
 delete(context, uri)
 // Removes an incomplete/proven-invalid entry, then clears confirmed deletion from the journal
+discardRejectedOutput(context, uri)
+// Durable DISCARD + delete for a rejected output; unresolved double-failures are process-bounded
 cleanupOrphanedPending(context)
-// → RecoveryReport; ADOPT valid, DELETE proven-invalid, RETAIN indeterminate/error; collections isolated
+// → RecoveryReport; family/discard batches are bounded, ADOPT valid, DELETE rejected/proven-invalid
 latestOwnCapture(context) → RestoredCapture
 // Bounded Images + Video scan, followed by an exact-family query when identity is proven
 ```

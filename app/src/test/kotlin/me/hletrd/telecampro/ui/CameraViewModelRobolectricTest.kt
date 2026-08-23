@@ -12,23 +12,31 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraReadyPublication
+import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
+import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.DeletedStillPublication
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.storage.ExtraSettings
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.video.CodecComponent
 import me.hletrd.telecampro.video.CodecInventory
 import me.hletrd.telecampro.video.buildCodecInventory
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -190,7 +198,26 @@ class CameraViewModelRobolectricTest {
         val (v, e) = createViewModel()
         val captureId = 909
         val output = Uri.parse("content://media/external/images/media/909")
-        e.markCaptureDeleted(captureId)
+        val deletionFinished = CountDownLatch(1)
+        val callerThread = Thread.currentThread()
+        val completionThread = AtomicReference<Thread>()
+        e.markCaptureDeleted(
+            CaptureFamilyDeleteIntent(
+                familyKey = CaptureFamilyKey(
+                    CaptureFamilyMedia.STILL,
+                    1_700_000_000_909L,
+                    captureId.toLong(),
+                ),
+                scope = MediaDeleteScope.CAPTURE_FAMILY,
+                liveStillCaptureId = captureId,
+            ),
+        ) {
+            completionThread.set(Thread.currentThread())
+            assertEquals(CaptureFamilyDeleteDurability.DURABLE, it)
+            deletionFinished.countDown()
+        }
+        assertTrue(deletionFinished.await(5, TimeUnit.SECONDS))
+        assertFalse("durable delete commit ran on the caller/UI thread", completionThread.get() === callerThread)
 
         clearViewModel(v)
         vm = null // lifecycle edge has run; the UI callback graph is now absent
@@ -210,6 +237,32 @@ class CameraViewModelRobolectricTest {
             result == DeletedStillPublication.DISCARD_DELETED_CAPTURE ||
                 result == DeletedStillPublication.DISCARD_RETRY_PENDING,
         )
+    }
+
+    @Test fun `video family deletion never claims or poisons the retained still gate`() {
+        val (_, e) = createViewModel()
+        val finished = CountDownLatch(1)
+        val availability = AtomicReference<Boolean>()
+        e.onStillCaptureAdmissionChanged = { availability.set(it) }
+
+        e.markCaptureDeleted(
+            CaptureFamilyDeleteIntent(
+                familyKey = CaptureFamilyKey(CaptureFamilyMedia.VIDEO, 1_700_000_001_000L, 1_000L),
+                scope = MediaDeleteScope.CAPTURE_FAMILY,
+                liveStillCaptureId = null,
+            ),
+        ) {
+            assertEquals(CaptureFamilyDeleteDurability.DURABLE, it)
+            finished.countDown()
+        }
+
+        assertTrue(finished.await(5, TimeUnit.SECONDS))
+        assertEquals(true, availability.get())
+        val ownerField = CameraEngine::class.java.getDeclaredField("retainedStillDeletionOwner")
+            .apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val owner = ownerField.get(e) as RetainedStillDeletionOwner<Uri>
+        assertTrue(owner.canAdmitCapture())
     }
 
     @Test fun `a persisted settings packet restores through the store during construction`() {

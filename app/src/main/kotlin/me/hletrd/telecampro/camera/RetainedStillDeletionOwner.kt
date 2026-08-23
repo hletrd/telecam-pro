@@ -74,32 +74,39 @@ internal class RetainedStillDeletionOwner<T>(
      * discard before it can emit a saved callback.
      */
     fun markCaptureDeleted(captureId: Int): List<T> {
-        val family = synchronized(lock) {
-            tombstones.remove(captureId)
-            tombstones.add(captureId)
-            familiesByCapture[captureId]
-        }
+        val family = synchronized(lock) { familiesByCapture[captureId] }
+        val publications = markCaptureDeletedInMemory(captureId)
         // Tombstone first so publication is blocked while the synchronous durable commit runs;
         // return only after the family veto is recovery-visible.
         val durable = family != null && runCatching { persistDeletionIntent(family) }.getOrDefault(false)
-        return synchronized(lock) {
-            if (durable) {
-                durableDeletedCaptures.add(captureId)
-            } else {
-                // A failed durability boundary cannot be papered over by evicting its in-memory
-                // owner. A missing family key is the same fail-closed condition. Close capture
-                // admission until a replacement process can re-establish a healthy journal rather
-                // than growing an unsafe tail.
-                deletionJournalUnavailable = true
+        completeDeletionDurability(captureId, durable)
+        return publications
+    }
+
+    /** Main-thread-safe half: publishes only in-memory ownership and performs no provider/disk I/O. */
+    fun markCaptureDeletedInMemory(captureId: Int): List<T> = synchronized(lock) {
+        tombstones.remove(captureId)
+        tombstones.add(captureId)
+        trimTombstonesLocked(captureId)
+        activePublications.entries
+            .filter { (_, publication) ->
+                publication.captureId == captureId &&
+                    publication.state == PublicationState.PUBLISHED_AWAITING_CALLBACK
             }
-            trimTombstonesLocked(captureId)
-            activePublications.entries
-                .filter { (_, publication) ->
-                    publication.captureId == captureId &&
-                        publication.state == PublicationState.PUBLISHED_AWAITING_CALLBACK
-                }
-                .map { it.key }
+            .map { it.key }
+    }
+
+    /** Ordered-I/O completion half for the durable family marker. */
+    fun completeDeletionDurability(captureId: Int, durable: Boolean) = synchronized(lock) {
+        if (captureId !in tombstones) return@synchronized
+        if (durable) {
+            durableDeletedCaptures.add(captureId)
+        } else {
+            // A failed durability boundary cannot be papered over by evicting its in-memory owner.
+            // Close still admission until process recovery rather than accepting an unowned tail.
+            deletionJournalUnavailable = true
         }
+        trimTombstonesLocked(captureId)
     }
 
     /**

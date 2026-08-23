@@ -342,6 +342,7 @@ class RecordingStorageDispatcherTest {
         val reducer = RecordingStoragePresentationReducer<String>()
         val aCallbackEntered = CountDownLatch(1)
         val releaseA = CountDownLatch(1)
+        val bAttemptedSerializedBoundary = CountDownLatch(1)
         val bPublished = CountDownLatch(1)
         val order = CopyOnWriteArrayList<Int>()
         val a = Thread {
@@ -352,17 +353,23 @@ class RecordingStorageDispatcherTest {
             }
         }
         val b = Thread {
-            reducer.publish(terminal(41, RecordingStorageTerminalDisposition.SAVED)) {
-                order += it.captureId
-                bPublished.countDown()
-            }
+            reducer.publishWithAttempt(
+                result = terminal(41, RecordingStorageTerminalDisposition.SAVED),
+                present = {
+                    order += it.captureId
+                    bPublished.countDown()
+                },
+                onAttempt = bAttemptedSerializedBoundary::countDown,
+            )
         }
 
         try {
             a.start()
             assertTrue(aCallbackEntered.await(5, TimeUnit.SECONDS))
             b.start()
-            assertFalse(bPublished.await(25, TimeUnit.MILLISECONDS))
+            // Positive handshake: B has reached the exact pre-lock boundary while A's callback
+            // still owns the reducer monitor. No scheduler-duration assumption is involved.
+            assertTrue(bAttemptedSerializedBoundary.await(5, TimeUnit.SECONDS))
             releaseA.countDown()
             assertTrue(bPublished.await(5, TimeUnit.SECONDS))
             a.join(5_000)

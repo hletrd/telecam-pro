@@ -14,6 +14,56 @@ import org.junit.Test
 
 class CaptureOutputTrackerTest {
     @Test
+    fun liveStillDelete_carriesCanonicalFamilyAndLateProducerIdentity() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_001L, 11L)
+        tracker.registerFamily(11, family, canProduceLateStillOutputs = true)
+        tracker.record(11, "shot.heic", CaptureOutputKind.DISPLAYABLE)
+
+        val plan = tracker.beginDelete("shot.heic")
+
+        assertEquals(family, plan.familyKey)
+        assertEquals(11, plan.captureId)
+        assertEquals(11, plan.liveStillCaptureId)
+    }
+
+    @Test
+    fun liveVideoDelete_carriesFamilyWithoutClaimingTheStillProducerGate() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        val family = CaptureFamilyKey(CaptureFamilyMedia.VIDEO, 1_700_000_000_002L, 12L)
+        tracker.registerFamily(12, family, canProduceLateStillOutputs = false)
+        tracker.record(12, "clip.mp4", CaptureOutputKind.DISPLAYABLE)
+
+        val plan = tracker.beginDelete("clip.mp4")
+
+        assertEquals(family, plan.familyKey)
+        assertEquals(12, plan.captureId)
+        assertEquals(null, plan.liveStillCaptureId)
+    }
+
+    @Test
+    fun familyRegistrationOverflow_evictsTheOldestUnpublishedIdentity() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 1)
+        val first = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_101L, 101L)
+        val second = CaptureFamilyKey(CaptureFamilyMedia.VIDEO, 1_700_000_000_102L, 102L)
+
+        // Neither family has an output yet, so the second registration must evict the oldest exact
+        // identity and its late-still flag while retaining the newest family for its future callback.
+        tracker.registerFamily(101, first, canProduceLateStillOutputs = true)
+        tracker.registerFamily(102, second, canProduceLateStillOutputs = false)
+
+        tracker.record(101, "old.heic", CaptureOutputKind.DISPLAYABLE)
+        val oldPlan = tracker.beginDelete("old.heic")
+        assertEquals(null, oldPlan.familyKey)
+        assertEquals(null, oldPlan.liveStillCaptureId)
+
+        tracker.record(102, "new.mp4", CaptureOutputKind.DISPLAYABLE)
+        val newPlan = tracker.beginDelete("new.mp4")
+        assertEquals(second, newPlan.familyKey)
+        assertEquals(null, newPlan.liveStillCaptureId)
+    }
+
+    @Test
     fun deletePlan_defaultHasNoPreservedSiblingSnapshot() {
         val plan = CaptureDeletePlan(
             requestedOutput = "external.jpg",
@@ -107,6 +157,8 @@ class CaptureOutputTrackerTest {
 
         assertEquals(MediaDeleteScope.CAPTURE_FAMILY, plan.deleteScope)
         assertEquals(restored.outputs.mapTo(linkedSetOf()) { it.output }, plan.outputs)
+        assertEquals(restored.familyKey, plan.familyKey)
+        assertEquals(null, plan.liveStillCaptureId)
     }
 
     @Test

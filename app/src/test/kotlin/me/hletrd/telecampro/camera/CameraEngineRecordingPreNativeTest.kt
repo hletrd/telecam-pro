@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -375,6 +376,36 @@ class CameraEngineRecordingPreNativeTest {
         assertTrue(discards.await(WAIT_SECONDS, TimeUnit.SECONDS))
         assertEquals(listOf(false, false), results.toList())
         assertEquals(2, micClaims.get())
+    }
+
+    @Test
+    fun `real video admission publishes canonical family before provider allocation`() {
+        val order = CopyOnWriteArrayList<String>()
+        val done = CountDownLatch(1)
+        val engine = engine(
+            overrides(
+                allocate = { name, _ ->
+                    order += "allocate:$name"
+                    null
+                },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+            ),
+        )
+        engine.onCaptureFamilyRegistered = { captureId, family, lateStill ->
+            assertEquals(captureId.toLong(), family.sequence)
+            assertEquals(CaptureFamilyMedia.VIDEO, family.media)
+            assertFalse(lateStill)
+            order += "family:${family.displayName("mp4")}"
+        }
+
+        engine.startRecording(recordAudio = false) { done.countDown() }
+
+        assertTrue(done.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertEquals(2, order.size)
+        assertTrue(order[0].startsWith("family:"))
+        assertTrue(order[1].startsWith("allocate:"))
+        assertEquals(order[0].removePrefix("family:"), order[1].removePrefix("allocate:"))
     }
 
     private fun engine(overrides: RecordingPreNativeEngineOverrides): CameraEngine =

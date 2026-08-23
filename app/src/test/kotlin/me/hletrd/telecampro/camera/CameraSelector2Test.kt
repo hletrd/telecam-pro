@@ -304,14 +304,62 @@ class CameraSelector2Test {
     }
 
     @Test
+    fun `complete inventory prunes departed epochs but retains same-id replacement proof`() {
+        val epochs = buildMap {
+            repeat(1_000) { index -> put("departed-$index", index.toLong()) }
+            put("usb-current", 2_001L)
+            put("rear", 2_002L)
+        }
+
+        val retained = retainedCameraIdentityEpochs(
+            currentIds = setOf("rear", "usb-current"),
+            identityEpochs = epochs,
+        )
+
+        assertEquals(mapOf("usb-current" to 2_001L, "rear" to 2_002L), retained)
+        assertEquals(
+            setOf("usb-current"),
+            changedCameraTopologyIds(
+                CameraTopologyStamp(setOf("rear", "usb-current"), mapOf("rear" to 2_002L)),
+                CameraTopologyStamp(setOf("rear", "usb-current"), retained),
+            ),
+        )
+    }
+
+    @Test
+    fun `later return of pruned id is still a membership change`() {
+        val afterRemoval = CameraTopologyStamp(
+            ids = setOf("rear"),
+            identityEpochs = retainedCameraIdentityEpochs(
+                currentIds = setOf("rear"),
+                identityEpochs = mapOf("rear" to 1L, "usb-gone" to 2L),
+            ),
+        )
+        val returned = CameraTopologyStamp(
+            ids = setOf("rear", "usb-gone"),
+            identityEpochs = afterRemoval.identityEpochs,
+        )
+
+        assertEquals(setOf("usb-gone"), changedCameraTopologyIds(afterRemoval, returned))
+    }
+
+    @Test
     fun `recording defers topology without consuming accepted readiness`() {
         val convergence = CameraRouteTopologyConvergence()
         var ready = true
         val starting = convergence.beginRecording()
+        assertEquals(RecordingTopologyLeaseStage.ADMISSION, convergence.leaseStage(starting))
 
         convergence.offer(1L) // harmless external attach while REC is Starting
         assertNull(convergence.claim())
         assertTrue(ready)
+
+        // Publication explicitly transfers the same lease into native teardown ownership. No edge
+        // after this point may use the admission-failure release path.
+        assertTrue(convergence.transferToRecorder(starting))
+        assertEquals(RecordingTopologyLeaseStage.RECORDER, convergence.leaseStage(starting))
+        assertFalse(convergence.finishAdmission(starting))
+        assertNull(convergence.claim())
 
         // The same lease spans Starting -> Recording -> native teardown. No intermediate edge may
         // claim the camera session or publish Not Ready.
@@ -320,7 +368,7 @@ class CameraSelector2Test {
         convergence.offer(3L) // another callback while teardown owns native resources
         assertNull(convergence.claim())
 
-        convergence.finishRecording(starting)
+        assertTrue(convergence.finishRecording(starting))
         assertEquals(3L, convergence.claim())
         ready = false // production begins exactly one optics transaction at this point
         assertFalse(ready)
@@ -334,10 +382,24 @@ class CameraSelector2Test {
         val rejected = convergence.beginRecording()
         convergence.offer(9L)
 
-        convergence.finishRecording(rejected)
+        assertTrue(convergence.transferToRecorder(active))
+        assertTrue(convergence.finishAdmission(rejected))
         assertNull(convergence.claim())
-        convergence.finishRecording(active)
+        assertTrue(convergence.finishRecording(active))
         assertEquals(9L, convergence.claim())
+    }
+
+    @Test
+    fun `lease transfer is one way and each terminal accepts only its owner`() {
+        val convergence = CameraRouteTopologyConvergence()
+        val lease = convergence.beginRecording()
+
+        assertFalse(convergence.finishRecording(lease))
+        assertTrue(convergence.transferToRecorder(lease))
+        assertFalse(convergence.transferToRecorder(lease))
+        assertFalse(convergence.finishAdmission(lease))
+        assertTrue(convergence.finishRecording(lease))
+        assertFalse(convergence.finishRecording(lease))
     }
 
     @Test
@@ -350,7 +412,7 @@ class CameraSelector2Test {
         assertFalse(convergence.hasClaimableAction())
         convergence.offer(12L)
         assertFalse(convergence.hasClaimableAction())
-        convergence.finishRecording(recording)
+        assertTrue(convergence.finishAdmission(recording))
         assertTrue(convergence.hasClaimableAction())
         assertEquals(12L, convergence.claim())
     }
@@ -360,6 +422,7 @@ class CameraSelector2Test {
         val convergence = CameraRouteTopologyConvergence()
         val recording = convergence.beginRecording()
         convergence.offer(4L)
+        assertTrue(convergence.transferToRecorder(recording))
 
         convergence.close()
         convergence.finishRecording(recording)

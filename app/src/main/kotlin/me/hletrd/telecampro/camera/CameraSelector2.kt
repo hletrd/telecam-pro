@@ -117,24 +117,61 @@ internal fun changedCameraTopologyIds(
 }
 
 /**
+ * Keeps only identity epochs that can still describe a currently enumerated camera handle.
+ *
+ * A removal epoch is needed until one complete inventory consumes it: it distinguishes an A -> B
+ * replacement that reuses the same id even when callback coalescing hides the intermediate absent
+ * set. Once a complete inventory proves the id absent, membership itself owns any later arrival and
+ * retaining the departed id forever only grows the process map under removable-camera churn.
+ */
+internal fun retainedCameraIdentityEpochs(
+    currentIds: Set<String>,
+    identityEpochs: Map<String, Long>,
+): Map<String, Long> = identityEpochs.filterKeys { it in currentIds }
+
+internal enum class RecordingTopologyLeaseStage {
+    ADMISSION,
+    RECORDER,
+}
+
+/**
  * Latest-wins topology convergence owner spanning REC admission, recording, and native teardown.
  * Inventory/cache work remains independent; only the camera optics action waits for all leases.
  */
 internal class CameraRouteTopologyConvergence {
     private var nextLease = 0L
-    private val recordingLeases = mutableSetOf<Long>()
+    private val recordingLeases = mutableMapOf<Long, RecordingTopologyLeaseStage>()
     private var pendingRevision = 0L
     private var closed = false
 
     @Synchronized
     fun beginRecording(): Long {
         if (closed) return 0L
-        return (++nextLease).also(recordingLeases::add)
+        return (++nextLease).also { recordingLeases[it] = RecordingTopologyLeaseStage.ADMISSION }
     }
 
+    /** Transfers the exact admission lease to the published recorder/native teardown owner. */
     @Synchronized
-    fun finishRecording(lease: Long) {
-        if (lease != 0L) recordingLeases.remove(lease)
+    fun transferToRecorder(lease: Long): Boolean {
+        if (closed || recordingLeases[lease] != RecordingTopologyLeaseStage.ADMISSION) return false
+        recordingLeases[lease] = RecordingTopologyLeaseStage.RECORDER
+        return true
+    }
+
+    /** Releases only a pre-publication admission owner; a recorder-owned lease is deliberately inert. */
+    @Synchronized
+    fun finishAdmission(lease: Long): Boolean {
+        if (lease == 0L || recordingLeases[lease] != RecordingTopologyLeaseStage.ADMISSION) return false
+        recordingLeases.remove(lease)
+        return true
+    }
+
+    /** Checked native finalization/quarantine is the sole terminal for a recorder-owned lease. */
+    @Synchronized
+    fun finishRecording(lease: Long): Boolean {
+        if (lease == 0L || recordingLeases[lease] != RecordingTopologyLeaseStage.RECORDER) return false
+        recordingLeases.remove(lease)
+        return true
     }
 
     @Synchronized
@@ -151,6 +188,9 @@ internal class CameraRouteTopologyConvergence {
 
     @Synchronized
     fun hasClaimableAction(): Boolean = !closed && recordingLeases.isEmpty() && pendingRevision != 0L
+
+    @Synchronized
+    internal fun leaseStage(lease: Long): RecordingTopologyLeaseStage? = recordingLeases[lease]
 
     @Synchronized
     fun close() {

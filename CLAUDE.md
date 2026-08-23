@@ -875,13 +875,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   snapshots the accepted Camera2 controller/session before mic handoff and atomically rechecks it at
   publication. Until attach succeeds the UI is stoppable/locked but shows no tally or timer. An owned
   Camera2 failure claims and ordered-finalizes the recorder before recovery; do not let camera errors
-  leave phantom REC/audio/UI state. Admission itself runs on the RECORDER EXECUTOR, never main (the
-  ≤400 ms mic-release wait + MediaStore insert + codec/muxer construction janked every REC press);
-  only the in-flight gate is synchronous, the UI publishes optimistic "starting" state that the
-  result callback resets on refusal, and a stop arriving mid-admission is LATCHED by
+  leave phantom REC/audio/UI state. Only the in-flight latch/topology reservation and optimistic
+  "starting" UI are synchronous on the caller. The recorder executor snapshots the accepted session
+  and process admission, then dispatches pending-row insert/registration to the process-wide finite
+  pre-native allocator (two workers + four backlog slots) under an already-armed deadline; it does
+  NOT perform that MediaStore insert itself. Stop/pause/release/timeout retire the attempt without
+  waiting for an uncancellable provider call, and a late row can only enter durable cleanup/recovery.
+  A successfully claimed row returns to the serial recorder executor for the ≤400 ms standby-mic
+  handoff and codec/muxer construction. A stop arriving anywhere mid-admission is LATCHED by
   `RecordingAdmissionLatch.requestStop()` and consumed exactly once by
-  `RecordingAdmissionLatch.completeAdmission()` on the same serial executor the moment the
-  recorder publishes — never raced against an unpublished owner.
+  `RecordingAdmissionLatch.completeAdmission()` when admission publishes or refuses — never raced
+  against an unpublished owner.
 - **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
   partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;
   Surface release precedes codec release and ownership clearing, and repeated cleanup is a no-op. If a

@@ -351,4 +351,23 @@ class RetainedStillDeletionOwnerTest {
             ),
         )
     }
+
+    @Test
+    fun `in-memory tombstone performs no persistence until ordered completion`() {
+        var persistenceCalls = 0
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_777L, 77L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { persistenceCalls++; true },
+        )
+        owner.registerCaptureFamily(77, family)
+
+        owner.markCaptureDeletedInMemory(77)
+
+        assertEquals(0, persistenceCalls)
+        assertFalse(owner.handleRetained("late.heic", 77) == RetainedStillDisposition.RETAIN_FOR_RECOVERY)
+        owner.completeDeletionDurability(77, durable = true)
+        assertTrue(owner.canAdmitCapture())
+    }
 }
