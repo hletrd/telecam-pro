@@ -909,9 +909,6 @@ class CameraEngine(private val context: Context) {
     // may own the review metadata tile until a processed sibling upgrades it. Fired after publish.
     var onRawSaved: ((android.net.Uri, Int) -> Unit)? = null
 
-    /** A COMPLETE still output retained pending after a failed publish — the tracker gets a veto. */
-    var onStillPublishRetained: ((android.net.Uri, Int) -> Unit)? = null
-
     // ---- Preview surface lifecycle ----
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
