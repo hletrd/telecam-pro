@@ -1,72 +1,111 @@
 import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.gradle.work.DisableCachingByDefault
 
-abstract class GenerateReleaseSourceProvenanceTask : DefaultTask() {
+@DisableCachingByDefault(because = "Release provenance must inspect the live Git worktree every invocation")
+abstract class VerifyCleanReleaseGitTask : DefaultTask() {
     @get:Internal
     abstract val repositoryDirectory: DirectoryProperty
+
+    @get:Input
+    abstract val protectedSourceRoots: ListProperty<String>
 
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
 
     @TaskAction
-    fun generate() {
-        fun gitValue(vararg arguments: String): String {
+    fun verifyAndGenerate() {
+        fun gitBytes(vararg arguments: String): ByteArray {
             val command = listOf("git", *arguments)
             val process = ProcessBuilder(command)
                 .directory(repositoryDirectory.get().asFile)
                 .redirectErrorStream(true)
                 .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val output = process.inputStream.use { it.readBytes() }
             if (process.waitFor() != 0) {
-                throw GradleException("${command.joinToString(" ")} failed: ${output.trim()}")
+                throw GradleException(
+                    "${command.joinToString(" ")} failed: ${output.toString(Charsets.UTF_8).trim()}",
+                )
             }
-            return output.trim()
+            return output
         }
-        val output = outputDirectory.file("telecam-source-provenance.properties").get().asFile
-        output.parentFile.mkdirs()
-        output.writeText(
-            "schema=1\n" +
-                "commit=${gitValue("rev-parse", "HEAD")}\n" +
-                "tree=${gitValue("rev-parse", "HEAD^{tree}")}\n",
-            Charsets.US_ASCII,
+
+        fun gitValue(vararg arguments: String): String =
+            gitBytes(*arguments).toString(Charsets.US_ASCII).trim()
+
+        fun displayNulRecords(raw: ByteArray): String = raw
+            .toString(Charsets.UTF_8)
+            .split('\u0000')
+            .filter(String::isNotEmpty)
+            .joinToString("\n")
+
+        fun worktreeChanges(): ByteArray = gitBytes(
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
         )
-    }
-}
 
-abstract class VerifyCleanReleaseGitTask : DefaultTask() {
-    @get:Internal
-    abstract val repositoryDirectory: DirectoryProperty
+        fun ignoredSourceInputs(): ByteArray = gitBytes(
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            *protectedSourceRoots.get().toTypedArray(),
+        )
 
-    @TaskAction
-    fun verify() {
-        fun gitValue(vararg arguments: String): String {
-            val command = listOf("git", *arguments)
-            val process = ProcessBuilder(command)
-                .directory(repositoryDirectory.get().asFile)
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            if (process.waitFor() != 0) {
-                throw GradleException("${command.joinToString(" ")} failed: ${output.trim()}")
+        fun requireClean() {
+            val changes = worktreeChanges()
+            if (changes.isNotEmpty()) {
+                throw GradleException(
+                    "Release source must be a clean immutable commit; worktree changes:\n" +
+                        displayNulRecords(changes),
+                )
             }
-            return output.trim()
+            val ignoredInputs = ignoredSourceInputs()
+            if (ignoredInputs.isNotEmpty()) {
+                throw GradleException(
+                    "Release source roots contain ignored packageable inputs:\n" +
+                        displayNulRecords(ignoredInputs),
+                )
+            }
         }
-        val status = gitValue("status", "--porcelain", "--untracked-files=all")
-        if (status.isNotEmpty()) {
-            throw GradleException(
-                "Release source must be a clean immutable commit; worktree changes:\n$status",
-            )
-        }
+
+        requireClean()
         val head = gitValue("rev-parse", "HEAD")
         val tree = gitValue("rev-parse", "HEAD^{tree}")
         if (!head.matches(Regex("[0-9a-f]{40}")) || !tree.matches(Regex("[0-9a-f]{40}"))) {
             throw GradleException("Git release identity is not canonical: head=$head tree=$tree")
         }
+        // Recheck both filesystem state and identity after capture. This catches a concurrent branch,
+        // index, or worktree mutation during the verification action instead of signing provenance
+        // for a state different from the one that was inspected.
+        requireClean()
+        val finalHead = gitValue("rev-parse", "HEAD")
+        val finalTree = gitValue("rev-parse", "HEAD^{tree}")
+        if (head != finalHead || tree != finalTree) {
+            throw GradleException(
+                "Git release identity changed during verification: " +
+                    "head=$head->$finalHead tree=$tree->$finalTree",
+            )
+        }
+
+        val output = outputDirectory.file("telecam-source-provenance.properties").get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(
+            "schema=1\ncommit=$head\ntree=$tree\n",
+            Charsets.US_ASCII,
+        )
     }
 }
 
@@ -105,19 +144,31 @@ val hasReleaseSigning =
         releaseStorePassword != null &&
         releaseKeyPassword != null
 
+val releaseSourceRoots = listOf("app/src/main", "app/src/release")
 val releaseSourceProvenanceDir = layout.buildDirectory.dir("generated/release-source-provenance")
 val verifyCleanReleaseGit = tasks.register<VerifyCleanReleaseGitTask>("verifyCleanReleaseGit") {
     group = "verification"
-    description = "Refuse release compilation unless the complete non-ignored worktree is clean."
+    description = "Verify release inputs and generate source provenance from one clean Git state."
     repositoryDirectory.set(rootProject.layout.projectDirectory)
-}
-val generateReleaseSourceProvenance = tasks.register<GenerateReleaseSourceProvenanceTask>(
-    "generateReleaseSourceProvenance",
-) {
-    dependsOn(verifyCleanReleaseGit)
-    repositoryDirectory.set(rootProject.layout.projectDirectory)
+    protectedSourceRoots.set(releaseSourceRoots)
     outputDirectory.set(releaseSourceProvenanceDir)
     outputs.upToDateWhen { false }
+}
+
+// Executable tools-suite seam. It exists only when the test supplies a disposable repository;
+// release tasks always depend on the fixed, non-overridable task above.
+providers.gradleProperty("releaseGateFixtureRepo").orNull?.let { fixtureRepository ->
+    tasks.register<VerifyCleanReleaseGitTask>("verifyCleanReleaseGitFixture") {
+        repositoryDirectory.set(file(fixtureRepository))
+        protectedSourceRoots.set(releaseSourceRoots)
+        outputDirectory.set(
+            file(
+                providers.gradleProperty("releaseGateFixtureOutput").orNull
+                    ?: error("releaseGateFixtureOutput is required with releaseGateFixtureRepo"),
+            ),
+        )
+        outputs.upToDateWhen { false }
+    }
 }
 
 android {
@@ -250,10 +301,17 @@ android {
 androidComponents {
     onVariants(selector().withBuildType("release")) { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(
-            generateReleaseSourceProvenance,
-            GenerateReleaseSourceProvenanceTask::outputDirectory,
+            verifyCleanReleaseGit,
+            VerifyCleanReleaseGitTask::outputDirectory,
         )
     }
+}
+
+// AGP makes every release compile/lint/resource/package entry point depend on preReleaseBuild.
+// Put the one live Git inspection there, before any release source can be read. The generated asset
+// dependency above remains as a second structural edge for provenance packaging itself.
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(verifyCleanReleaseGit)
 }
 
 kotlin {

@@ -83,17 +83,6 @@ class DeviceProbeParityTest(unittest.TestCase):
         self.assertNotIn("createEncoderByType", source)
 
 
-class ReleaseBuildProvenanceTest(unittest.TestCase):
-    def test_release_build_refuses_dirty_source_and_packages_commit_tree(self) -> None:
-        source = (REPO_ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('("verifyCleanReleaseGit")', source)
-        self.assertIn('"--porcelain", "--untracked-files=all"', source)
-        self.assertIn('"generateReleaseSourceProvenance"', source)
-        self.assertIn('"commit=${gitValue("rev-parse", "HEAD")}', source)
-        self.assertIn('"tree=${gitValue("rev-parse", "HEAD^{tree}")}', source)
-        self.assertIn("addGeneratedSourceDirectory", source)
-
-
 class ConsolidatedHostGateTest(unittest.TestCase):
     def test_gate_runs_every_non_device_quality_suite(self) -> None:
         source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
