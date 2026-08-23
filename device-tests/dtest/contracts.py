@@ -40,6 +40,9 @@ DEBUG_PROVENANCE_NAMESPACE = "assets/telecam-debug-provenance/"
 DEBUG_PROVENANCE_MEMBER = DEBUG_PROVENANCE_NAMESPACE + "source.manifest"
 IMMUTABLE_DEBUG_SOURCE_OWNER = "immutable-debug-worktree-v1"
 MUTABLE_DEBUG_SOURCE_OWNER = "mutable-development-worktree"
+CAPTURE_SUBDIR_SOURCE = (
+    "app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt"
+)
 _MAX_DEBUG_SOURCE_FILE_BYTES = 64 * 1024 * 1024
 _MAX_DEBUG_SOURCE_TOTAL_BYTES = 512 * 1024 * 1024
 _MAX_DEBUG_SOURCE_FILES = 16_384
@@ -82,6 +85,27 @@ class DebugSourceIdentity:
                 for entry in self.files
             ],
         }
+
+
+@dataclass(frozen=True)
+class ProvenDebugSourceContract:
+    source: DebugSourceIdentity
+    capture_subdir: str
+
+    @property
+    def identity(self) -> str:
+        return self.source.identity
+
+    @property
+    def commit(self) -> str:
+        return self.source.commit
+
+    @property
+    def dirty(self) -> bool:
+        return self.source.dirty
+
+    def as_attestation(self) -> dict[str, object]:
+        return self.source.as_attestation()
 
 
 def _canonical_source_entries(entries: Sequence[SourceManifestEntry]) -> bytes:
@@ -238,7 +262,9 @@ def _hash_debug_file(
     name: str,
     relative: Path,
     expected: os.stat_result,
-) -> SourceManifestEntry:
+    *,
+    capture_payload: bool = False,
+) -> tuple[SourceManifestEntry, bytes | None]:
     try:
         descriptor = os.open(name, _debug_open_flags(), dir_fd=parent_fd)
     except OSError as error:
@@ -256,6 +282,7 @@ def _hash_debug_file(
             )
         digest = hashlib.sha256()
         total = 0
+        captured = bytearray() if capture_payload else None
         while True:
             chunk = os.read(
                 descriptor,
@@ -264,6 +291,8 @@ def _hash_debug_file(
             if not chunk:
                 break
             digest.update(chunk)
+            if captured is not None:
+                captured.extend(chunk)
             total += len(chunk)
             if total > _MAX_DEBUG_SOURCE_FILE_BYTES:
                 raise ContractError(
@@ -286,7 +315,10 @@ def _hash_debug_file(
             or total != after.st_size
         ):
             raise ContractError(f"debug source input changed while reading: {relative.as_posix()}")
-        return SourceManifestEntry(relative.as_posix(), total, digest.hexdigest())
+        return (
+            SourceManifestEntry(relative.as_posix(), total, digest.hexdigest()),
+            bytes(captured) if captured is not None else None,
+        )
     finally:
         os.close(descriptor)
 
@@ -296,6 +328,8 @@ def _frozen_debug_source_entries(
     scopes: Sequence[str],
     *,
     expected_root_identity: os.stat_result | None = None,
+    capture_paths: set[str] | None = None,
+    captured_payloads: dict[str, bytes] | None = None,
 ) -> tuple[SourceManifestEntry, ...]:
     """Hash one exact bounded source set through pinned no-follow directory descriptors."""
     root = Path(os.path.abspath(repo_root))
@@ -321,7 +355,16 @@ def _frozen_debug_source_entries(
 
     def add_file(parent_fd: int, name: str, relative: Path, observed: os.stat_result) -> None:
         nonlocal total_bytes
-        entry = _hash_debug_file(parent_fd, name, relative, observed)
+        relative_text = relative.as_posix()
+        entry, payload = _hash_debug_file(
+            parent_fd,
+            name,
+            relative,
+            observed,
+            capture_payload=relative_text in (capture_paths or set()),
+        )
+        if payload is not None and captured_payloads is not None:
+            captured_payloads[relative_text] = payload
         if entry.path in entries:
             raise ContractError(f"debug source scopes overlap at: {entry.path}")
         entries[entry.path] = entry
@@ -513,11 +556,12 @@ def _committed_debug_source_entries(
     return tuple(sorted(entries, key=lambda entry: entry.path))
 
 
-def current_debug_source_identity(
+def _current_debug_source_snapshot(
     repo_root: Path,
     *,
-    scopes: Sequence[str] = DEBUG_SOURCE_SCOPES,
-) -> DebugSourceIdentity:
+    scopes: Sequence[str],
+    capture_paths: set[str] | None = None,
+) -> tuple[DebugSourceIdentity, dict[str, bytes]]:
     """Hash the current packageable debug inputs using the build task's canonical format."""
     root = Path(os.path.abspath(repo_root))
     try:
@@ -537,10 +581,13 @@ def current_debug_source_identity(
             )
         return result.stdout
 
+    captured_payloads: dict[str, bytes] = {}
     entries = _frozen_debug_source_entries(
         root,
         scopes,
         expected_root_identity=root_identity,
+        capture_paths=capture_paths,
+        captured_payloads=captured_payloads,
     )
     commit = git("rev-parse", "HEAD").decode("ascii").strip()
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
@@ -551,22 +598,63 @@ def current_debug_source_identity(
         raise ContractError(
             f"Git HEAD changed during debug source freeze: {commit} -> {final_commit}"
         )
-    return DebugSourceIdentity(
-        commit,
-        entries != committed_entries,
-        _source_content_sha256(entries),
-        entries,
+    return (
+        DebugSourceIdentity(
+            commit,
+            entries != committed_entries,
+            _source_content_sha256(entries),
+            entries,
+        ),
+        captured_payloads,
     )
 
 
-def require_apk_source_match(apk: Path, repo_root: Path) -> DebugSourceIdentity:
+def current_debug_source_identity(
+    repo_root: Path,
+    *,
+    scopes: Sequence[str] = DEBUG_SOURCE_SCOPES,
+) -> DebugSourceIdentity:
+    return _current_debug_source_snapshot(repo_root, scopes=scopes)[0]
+
+
+def _capture_subdir_from_frozen_source(payload: bytes) -> str:
+    try:
+        source = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ContractError("production CAPTURE_SUBDIR source is not UTF-8") from error
+    matches = re.findall(r'^\s*const val CAPTURE_SUBDIR\s*=\s*"([^"]+)"', source, re.MULTILINE)
+    if len(matches) != 1:
+        raise ContractError(f"expected one production CAPTURE_SUBDIR, found {matches}")
+    subdir = matches[0]
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", subdir) is None:
+        raise ContractError(f"production CAPTURE_SUBDIR is unsafe: {subdir!r}")
+    return subdir
+
+
+def current_debug_source_contract(repo_root: Path) -> ProvenDebugSourceContract:
+    source, captured = _current_debug_source_snapshot(
+        repo_root,
+        scopes=DEBUG_SOURCE_SCOPES,
+        capture_paths={CAPTURE_SUBDIR_SOURCE},
+    )
+    payload = captured.get(CAPTURE_SUBDIR_SOURCE)
+    if payload is None:
+        raise ContractError("production CAPTURE_SUBDIR source was absent from the frozen input set")
+    return ProvenDebugSourceContract(
+        source=source,
+        capture_subdir=_capture_subdir_from_frozen_source(payload),
+    )
+
+
+def require_apk_source_match(apk: Path, repo_root: Path) -> ProvenDebugSourceContract:
     """Fail unless current packageable inputs exactly match provenance inside ``apk``."""
     packaged = inspect_apk_source_identity(apk)
     if packaged.source_owner != IMMUTABLE_DEBUG_SOURCE_OWNER:
         raise ContractError(
             "debug APK is not evidence-grade: source_owner=" + packaged.source_owner
         )
-    current = current_debug_source_identity(repo_root)
+    current_contract = current_debug_source_contract(repo_root)
+    current = current_contract.source
     differences = []
     if packaged.commit != current.commit:
         differences.append(f"commit {packaged.commit} != {current.commit}")
@@ -578,7 +666,7 @@ def require_apk_source_match(apk: Path, repo_root: Path) -> DebugSourceIdentity:
         )
     if differences:
         raise ContractError("stale/mismatched debug APK source: " + "; ".join(differences))
-    return packaged
+    return ProvenDebugSourceContract(packaged, current_contract.capture_subdir)
 
 
 def _version_key(path: Path) -> tuple[int, ...]:
@@ -669,14 +757,8 @@ def inspect_apk_contract(
 
 
 def production_capture_subdir(repo_root: Path) -> str:
-    source = (
-        repo_root
-        / "app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt"
-    ).read_text(encoding="utf-8")
-    matches = re.findall(r'^\s*const val CAPTURE_SUBDIR\s*=\s*"([^"]+)"', source, re.MULTILINE)
-    if len(matches) != 1:
-        raise ContractError(f"expected one production CAPTURE_SUBDIR, found {matches}")
-    return matches[0]
+    """Compatibility helper backed by the same frozen source contract as device evidence."""
+    return current_debug_source_contract(repo_root).capture_subdir
 
 
 def harness_source_manifest(harness_root: Path) -> list[dict[str, object]]:

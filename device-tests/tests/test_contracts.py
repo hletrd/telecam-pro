@@ -23,7 +23,9 @@ from dtest import contracts  # noqa: E402
 from dtest.contracts import (  # noqa: E402
     ContractError,
     DebugSourceIdentity,
+    ProvenDebugSourceContract,
     SourceManifestEntry,
+    current_debug_source_contract,
     current_debug_source_identity,
     harness_source_manifest,
     inspect_apk_source_identity,
@@ -116,6 +118,10 @@ class SourceIdentityTest(unittest.TestCase):
                     render_debug_source_manifest(identity),
                 )
 
+    @staticmethod
+    def proven(identity: DebugSourceIdentity) -> ProvenDebugSourceContract:
+        return ProvenDebugSourceContract(identity, "TeleCamPro")
+
     def test_sorted_source_manifest_changes_after_one_byte_change(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -152,11 +158,16 @@ class SourceIdentityTest(unittest.TestCase):
             self.apk(apk, identity)
             self.assertEqual(parse_debug_source_manifest(render_debug_source_manifest(identity)), identity)
             self.assertEqual(inspect_apk_source_identity(apk), identity)
-            with patch.object(contracts, "current_debug_source_identity", return_value=identity):
+            with patch.object(
+                contracts,
+                "current_debug_source_contract",
+                return_value=self.proven(identity),
+            ):
                 proven = require_apk_source_match(apk, Path(temp_dir))
             self.assertEqual(proven.identity, identity.identity)
             self.assertIn(identity.content_sha256, proven.as_attestation()["identity"])
-            self.assertEqual(proven.source_owner, contracts.IMMUTABLE_DEBUG_SOURCE_OWNER)
+            self.assertEqual(proven.source.source_owner, contracts.IMMUTABLE_DEBUG_SOURCE_OWNER)
+            self.assertEqual(proven.capture_subdir, "TeleCamPro")
 
     def test_mutable_debug_manifest_is_not_evidence_grade(self) -> None:
         identity = self.identity()
@@ -170,7 +181,11 @@ class SourceIdentityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             apk = Path(temp_dir) / "debug.apk"
             self.apk(apk, mutable)
-            with patch.object(contracts, "current_debug_source_identity", return_value=identity):
+            with patch.object(
+                contracts,
+                "current_debug_source_contract",
+                return_value=self.proven(identity),
+            ):
                 with self.assertRaisesRegex(ContractError, "not evidence-grade"):
                     require_apk_source_match(apk, Path(temp_dir))
 
@@ -181,7 +196,9 @@ class SourceIdentityTest(unittest.TestCase):
             self.apk(apk, packaged)
             stale_current = self.identity(commit="b" * 40)
             with patch.object(
-                contracts, "current_debug_source_identity", return_value=stale_current
+                contracts,
+                "current_debug_source_contract",
+                return_value=self.proven(stale_current),
             ):
                 with self.assertRaisesRegex(ContractError, "stale/mismatched.*commit"):
                     require_apk_source_match(apk, Path(temp_dir))
@@ -190,7 +207,9 @@ class SourceIdentityTest(unittest.TestCase):
             self.apk(apk, dirty_packaged)
             dirty_current = self.identity(dirty=True, payload=b"dirty B\n")
             with patch.object(
-                contracts, "current_debug_source_identity", return_value=dirty_current
+                contracts,
+                "current_debug_source_contract",
+                return_value=self.proven(dirty_current),
             ):
                 with self.assertRaisesRegex(ContractError, "stale/mismatched.*content"):
                     require_apk_source_match(apk, Path(temp_dir))
@@ -399,9 +418,58 @@ class SourceIdentityTest(unittest.TestCase):
 
 class ProductionContractTest(unittest.TestCase):
     def test_harness_media_directory_matches_production_constant(self) -> None:
-        subdir = production_capture_subdir(REPO_ROOT)
+        contract = current_debug_source_contract(REPO_ROOT)
+        subdir = contract.capture_subdir
         self.assertEqual(subdir, "TeleCamPro")
         self.assertEqual(MEDIA_RELATIVE_PATH, f"DCIM/{subdir}/")
+        self.assertEqual(production_capture_subdir(REPO_ROOT), subdir)
+
+    def test_capture_subdir_is_owned_by_the_same_frozen_source_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for scope in contracts.DEBUG_SOURCE_SCOPES:
+                path = root / scope
+                if scope in {"app/src/main", "app/src/debug"}:
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(f"fixture {scope}\n", encoding="utf-8")
+            production = root / contracts.CAPTURE_SUBDIR_SOURCE
+            production.parent.mkdir(parents=True, exist_ok=True)
+            production.write_text(
+                'object MediaStoreWriter {\n    const val CAPTURE_SUBDIR = "FrozenA"\n}\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            frozen = current_debug_source_contract(root)
+            production.write_text(
+                'object MediaStoreWriter {\n    const val CAPTURE_SUBDIR = "LaterB"\n}\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(frozen.capture_subdir, "FrozenA")
+            self.assertEqual(frozen.source.commit, subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip())
+
+    def test_capture_subdir_contract_rejects_shell_or_path_syntax(self) -> None:
+        for value in ("../escape", "TeleCam Pro", "TeleCamPro;rm"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ContractError,
+                "CAPTURE_SUBDIR is unsafe",
+            ):
+                contracts._capture_subdir_from_frozen_source(
+                    f'const val CAPTURE_SUBDIR = "{value}"\n'.encode()
+                )
 
 
 class LocalizedSelectorTest(unittest.TestCase):

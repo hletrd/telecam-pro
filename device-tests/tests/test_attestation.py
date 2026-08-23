@@ -81,12 +81,13 @@ class RunAttestationTest(unittest.TestCase):
                 events.append("lock-acquire")
                 return HeldLock()
 
-            def device_run(*_args, **_kwargs) -> int:
+            def device_run(*run_args, **_kwargs) -> int:
+                self.assertEqual(run_args[7], "TeleCamPro")
                 events.append("device-run")
                 return 0
 
             apk_contract = SimpleNamespace(application_id=runner.APP_ID)
-            packaged_source = SimpleNamespace()
+            packaged_source = SimpleNamespace(capture_subdir="TeleCamPro")
             fake_snapshot = runner.ApkInspectionSnapshot(
                 runner.DEFAULT_APK,
                 runner.DEFAULT_APK,
@@ -103,7 +104,6 @@ class RunAttestationTest(unittest.TestCase):
                 ),
                 patch.object(runner, "inspect_apk_contract", return_value=apk_contract),
                 patch.object(runner, "require_apk_source_match", return_value=packaged_source),
-                patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
                 patch.object(runner, "_bootstrap_harness_source_manifest", return_value=[]),
                 patch.object(runner, "require_harness_identity_unchanged"),
                 patch.object(runner, "allocate_report_directory", side_effect=allocate),
@@ -826,12 +826,11 @@ class RunAttestationTest(unittest.TestCase):
 
                 def source_identity(path: Path, _repo: Path):
                     inspected.append(path)
-                    return SimpleNamespace()
+                    return SimpleNamespace(capture_subdir="TeleCamPro")
 
                 with (
                     patch.object(runner, "inspect_apk_contract", side_effect=inspect),
                     patch.object(runner, "require_apk_source_match", side_effect=source_identity),
-                    patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
                     patch.object(runner, "require_harness_identity_unchanged"),
                 ):
                     self.assertEqual(runner._run_snapshotted_cli(args, ["smoke"], snapshot), 2)

@@ -614,8 +614,8 @@ from dtest.contracts import (  # noqa: E402
     ApkContract,
     ContractError,
     DebugSourceIdentity,
+    ProvenDebugSourceContract,
     inspect_apk_contract,
-    production_capture_subdir,
     require_apk_source_match,
     source_manifest_sha256,
 )
@@ -1471,7 +1471,7 @@ def run_locked_device(
     source_apk: Path,
     expected_sha: str,
     apk_contract: ApkContract,
-    packaged_source: DebugSourceIdentity,
+    packaged_source: ProvenDebugSourceContract,
     production_subdir: str,
     harness_identity: HarnessExecutionIdentity,
     physical_identity: PhysicalDeviceIdentity,
@@ -1526,7 +1526,7 @@ def run_locked_device(
         return 2
 
     try:
-        workspace = frozen_workspace_identity(packaged_source)
+        workspace = frozen_workspace_identity(packaged_source.source)
         before_state = device_state(adb)
         build_fingerprint = adb.shell("getprop ro.build.fingerprint")
     except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
@@ -1688,7 +1688,7 @@ def _run_snapshotted_cli(
         )
         packaged_source = require_apk_source_match(expected_apk, REPO_ROOT)
         snapshot.verify("after ZIP/source inspection")
-        production_subdir = production_capture_subdir(REPO_ROOT)
+        production_subdir = packaged_source.capture_subdir
         require_harness_identity_unchanged(
             IMPORTED_HARNESS_IDENTITY,
             HARNESS_ROOT,
