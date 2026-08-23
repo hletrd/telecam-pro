@@ -86,6 +86,28 @@ def packaged_source_commits(aab_path: pathlib.Path) -> set[str]:
     return {revisions[0]} if len(revisions) == 1 else set()
 
 
+def packaged_source_provenance(aab_path: pathlib.Path) -> tuple[str, str] | None:
+    """Read the release-task-generated commit/tree identity covered by the AAB signature."""
+    member = "base/assets/telecam-source-provenance.properties"
+    try:
+        with zipfile.ZipFile(aab_path) as bundle:
+            if bundle.namelist().count(member) != 1:
+                return None
+            info = bundle.getinfo(member)
+            if info.file_size > 1024:
+                return None
+            lines = bundle.read(info).decode("ascii").splitlines()
+    except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
+        return None
+    if len(lines) != 3 or lines[0] != "schema=1":
+        return None
+    commit_match = re.fullmatch(r"commit=([0-9a-f]{40})", lines[1])
+    tree_match = re.fullmatch(r"tree=([0-9a-f]{40})", lines[2])
+    if commit_match is None or tree_match is None:
+        return None
+    return commit_match.group(1), tree_match.group(1)
+
+
 def strict_jar_verification_failure(
     root: pathlib.Path,
     aab_path: pathlib.Path,
@@ -237,6 +259,16 @@ def check_release_identity(
         if packaged_commits != {attested_commit}:
             failures.append(
                 "packaged AGP source revision does not uniquely match the attested commit"
+            )
+        tree_result = run(["git", "rev-parse", f"{attested_commit}^{{tree}}"], root)
+        expected_tree = tree_result.stdout.strip() if tree_result.returncode == 0 else ""
+        source_provenance = packaged_source_provenance(aab_path)
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", expected_tree)
+            or source_provenance != (attested_commit, expected_tree)
+        ):
+            failures.append(
+                "packaged clean-source commit/tree provenance does not match the attested commit"
             )
 
     signer = normalize_sha256(str(document["signer_sha256"]))

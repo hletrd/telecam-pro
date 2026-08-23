@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,8 @@ SPEC.loader.exec_module(release)
 
 
 class ReleaseArtifactIdentityTest(unittest.TestCase):
+    TREE = "c" * 40
+
     def fixture(self, root: Path) -> tuple[Path, Path, str]:
         commit = "a" * 40
         (root / "app").mkdir()
@@ -39,6 +42,10 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             bundle.writestr(
                 "base/root/META-INF/version-control-info.textproto",
                 f'repositories {{\n  system: GIT\n  revision: "{commit}"\n}}\n',
+            )
+            bundle.writestr(
+                "base/assets/telecam-source-provenance.properties",
+                f"schema=1\ncommit={commit}\ntree={self.TREE}\n",
             )
             bundle.writestr("base/manifest/AndroidManifest.xml", b"fixture")
         digest = release.sha256_file(provisional)
@@ -66,6 +73,22 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         )
         return attestation, aab, commit
 
+    def refresh_attestation(self, attestation: Path, aab: Path) -> Path:
+        document = json.loads(attestation.read_text())
+        digest = release.sha256_file(aab)
+        commit = document["git_commit"]
+        renamed = aab.with_name(
+            f"telecam-pro-1.0.2-{commit[:7]}-{digest[:12]}.aab"
+        )
+        aab.rename(renamed)
+        document["aab_path"] = str(renamed.relative_to(attestation.parent))
+        document["aab_sha256"] = digest
+        attestation.write_text(json.dumps(document, sort_keys=True) + "\n")
+        attestation.with_name(attestation.name + ".sha256").write_text(
+            f"{release.sha256_file(attestation)}  {attestation.name}\n"
+        )
+        return renamed
+
     @staticmethod
     def runner(
         commit: str,
@@ -77,6 +100,10 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             del cwd
             if command[:3] == ["git", "rev-parse", "HEAD"]:
                 return subprocess.CompletedProcess(command, 0, commit + "\n", "")
+            if command[:2] == ["git", "rev-parse"] and command[2].endswith("^{tree}"):
+                return subprocess.CompletedProcess(
+                    command, 0, ReleaseArtifactIdentityTest.TREE + "\n", ""
+                )
             if command[:2] == ["git", "status"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
             if command[0] == "jarsigner":
@@ -177,21 +204,29 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
 
             self.assertTrue(any("strict jarsigner" in item for item in failures))
 
-    @unittest.skipUnless(os.environ.get("JAVA_HOME"), "JAVA_HOME with JDK tools required")
     def test_real_appended_unsigned_entry_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             jar = root / "signed.aab"
             store = root / "signer.p12"
-            java_bin = Path(os.environ["JAVA_HOME"]) / "bin"
-            keytool = java_bin / "keytool"
-            jarsigner = java_bin / "jarsigner"
-            self.assertTrue(keytool.is_file() and jarsigner.is_file())
+            configured_home = os.environ.get("JAVA_HOME")
+            candidate_bins = [
+                Path(configured_home) / "bin" if configured_home else None,
+                Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home/bin"),
+            ]
+            java_bin = next(
+                (path for path in candidate_bins if path is not None and path.is_dir()),
+                None,
+            )
+            keytool = str(java_bin / "keytool") if java_bin else shutil.which("keytool")
+            jarsigner = str(java_bin / "jarsigner") if java_bin else shutil.which("jarsigner")
+            self.assertIsNotNone(keytool, "JDK 21 keytool is required for release-integrity tests")
+            self.assertIsNotNone(jarsigner, "JDK 21 jarsigner is required for release-integrity tests")
             with zipfile.ZipFile(jar, "w") as bundle:
                 bundle.writestr("base/manifest/AndroidManifest.xml", b"signed")
             subprocess.run(
                 [
-                    str(keytool), "-genkeypair", "-noprompt", "-alias", "upload",
+                    keytool, "-genkeypair", "-noprompt", "-alias", "upload",
                     "-keyalg", "RSA", "-storetype", "PKCS12", "-keystore", str(store),
                     "-storepass", "changeit", "-keypass", "changeit",
                     "-dname", "CN=Release Checker Test", "-validity", "2",
@@ -202,7 +237,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             )
             subprocess.run(
                 [
-                    str(jarsigner), "-keystore", str(store), "-storepass", "changeit",
+                    jarsigner, "-keystore", str(store), "-storepass", "changeit",
                     "-keypass", "changeit", str(jar), "upload",
                 ],
                 check=True,
@@ -230,6 +265,44 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             failures = release.check_release_identity(root, attestation, run=self.runner(commit))
 
             self.assertTrue(any("packaged AGP source revision" in item for item in failures))
+
+    def test_packaged_clean_source_tree_is_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, aab, commit = self.fixture(root)
+            with zipfile.ZipFile(aab, "a") as bundle:
+                bundle.writestr(
+                    "base/assets/telecam-source-provenance.properties",
+                    f"schema=1\ncommit={commit}\ntree={'d' * 40}\n",
+                )
+            self.refresh_attestation(attestation, aab)
+
+            failures = release.check_release_identity(
+                root, attestation, run=self.runner(commit)
+            )
+
+            self.assertTrue(any("clean-source commit/tree" in item for item in failures))
+
+    def test_missing_malformed_and_duplicate_source_provenance_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _, aab, commit = self.fixture(root)
+            self.assertEqual((commit, self.TREE), release.packaged_source_provenance(aab))
+
+            malformed = root / "malformed.aab"
+            with zipfile.ZipFile(malformed, "w") as bundle:
+                bundle.writestr(
+                    "base/assets/telecam-source-provenance.properties",
+                    f"schema=2\ncommit={commit}\ntree={self.TREE}\n",
+                )
+            self.assertIsNone(release.packaged_source_provenance(malformed))
+
+            with zipfile.ZipFile(aab, "a") as bundle:
+                bundle.writestr(
+                    "base/assets/telecam-source-provenance.properties",
+                    f"schema=1\ncommit={commit}\ntree={self.TREE}\n",
+                )
+            self.assertIsNone(release.packaged_source_provenance(aab))
 
     def test_additional_signer_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

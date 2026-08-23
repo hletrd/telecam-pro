@@ -1,5 +1,74 @@
 import java.util.Properties
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+
+abstract class GenerateReleaseSourceProvenanceTask : DefaultTask() {
+    @get:Internal
+    abstract val repositoryDirectory: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        fun gitValue(vararg arguments: String): String {
+            val command = listOf("git", *arguments)
+            val process = ProcessBuilder(command)
+                .directory(repositoryDirectory.get().asFile)
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            if (process.waitFor() != 0) {
+                throw GradleException("${command.joinToString(" ")} failed: ${output.trim()}")
+            }
+            return output.trim()
+        }
+        val output = outputDirectory.file("telecam-source-provenance.properties").get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(
+            "schema=1\n" +
+                "commit=${gitValue("rev-parse", "HEAD")}\n" +
+                "tree=${gitValue("rev-parse", "HEAD^{tree}")}\n",
+            Charsets.US_ASCII,
+        )
+    }
+}
+
+abstract class VerifyCleanReleaseGitTask : DefaultTask() {
+    @get:Internal
+    abstract val repositoryDirectory: DirectoryProperty
+
+    @TaskAction
+    fun verify() {
+        fun gitValue(vararg arguments: String): String {
+            val command = listOf("git", *arguments)
+            val process = ProcessBuilder(command)
+                .directory(repositoryDirectory.get().asFile)
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            if (process.waitFor() != 0) {
+                throw GradleException("${command.joinToString(" ")} failed: ${output.trim()}")
+            }
+            return output.trim()
+        }
+        val status = gitValue("status", "--porcelain", "--untracked-files=all")
+        if (status.isNotEmpty()) {
+            throw GradleException(
+                "Release source must be a clean immutable commit; worktree changes:\n$status",
+            )
+        }
+        val head = gitValue("rev-parse", "HEAD")
+        val tree = gitValue("rev-parse", "HEAD^{tree}")
+        if (!head.matches(Regex("[0-9a-f]{40}")) || !tree.matches(Regex("[0-9a-f]{40}"))) {
+            throw GradleException("Git release identity is not canonical: head=$head tree=$tree")
+        }
+    }
+}
 
 plugins {
     alias(libs.plugins.android.application)
@@ -35,6 +104,21 @@ val hasReleaseSigning =
         releaseKeyAlias != null &&
         releaseStorePassword != null &&
         releaseKeyPassword != null
+
+val releaseSourceProvenanceDir = layout.buildDirectory.dir("generated/release-source-provenance")
+val verifyCleanReleaseGit = tasks.register<VerifyCleanReleaseGitTask>("verifyCleanReleaseGit") {
+    group = "verification"
+    description = "Refuse release compilation unless the complete non-ignored worktree is clean."
+    repositoryDirectory.set(rootProject.layout.projectDirectory)
+}
+val generateReleaseSourceProvenance = tasks.register<GenerateReleaseSourceProvenanceTask>(
+    "generateReleaseSourceProvenance",
+) {
+    dependsOn(verifyCleanReleaseGit)
+    repositoryDirectory.set(rootProject.layout.projectDirectory)
+    outputDirectory.set(releaseSourceProvenanceDir)
+    outputs.upToDateWhen { false }
+}
 
 android {
     namespace = "me.hletrd.telecampro"
@@ -138,6 +222,7 @@ android {
         buildConfig = true
     }
 
+
     androidResources {
         // Generates res/xml/locales_config and wires android:localeConfig from the values-* folders
         // that actually exist. Without a localeConfig the platform does not treat the app as
@@ -159,6 +244,15 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            generateReleaseSourceProvenance,
+            GenerateReleaseSourceProvenanceTask::outputDirectory,
+        )
     }
 }
 
