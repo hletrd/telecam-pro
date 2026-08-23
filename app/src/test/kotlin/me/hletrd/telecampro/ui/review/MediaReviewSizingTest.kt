@@ -11,6 +11,62 @@ import org.junit.Test
 
 class MediaReviewSizingTest {
 
+    private data class HorizontalRect(val start: Float, val end: Float)
+
+    private fun bottomRects(windowWidthDp: Float, rtl: Boolean): Pair<HorizontalRect, HorizontalRect> {
+        val edge = 14f
+        val actionWidth = 48f
+        val metadataWidth = reviewBottomMetadataMaxWidthDp(windowWidthDp, actionVisible = true)
+        return if (rtl) {
+            HorizontalRect(windowWidthDp - edge - metadataWidth, windowWidthDp - edge) to
+                HorizontalRect(edge, edge + actionWidth)
+        } else {
+            HorizontalRect(edge, edge + metadataWidth) to
+                HorizontalRect(windowWidthDp - edge - actionWidth, windowWidthDp - edge)
+        }
+    }
+
+    @Test
+    fun `narrow review widths reserve exact metadata space for the action`() {
+        val expected = mapOf(
+            320f to 232f,
+            340f to 252f,
+            360f to 272f,
+            411f to 280f,
+        )
+        expected.forEach { (windowWidth, metadataWidth) ->
+            assertEquals(
+                "$windowWidth dp metadata width",
+                metadataWidth,
+                reviewBottomMetadataMaxWidthDp(windowWidth, actionVisible = true),
+                0f,
+            )
+        }
+
+        assertEquals(280f, reviewBottomMetadataMaxWidthDp(320f, actionVisible = false), 0f)
+        assertEquals(280f, reviewBottomMetadataMaxWidthDp(411f, actionVisible = false), 0f)
+    }
+
+    @Test
+    fun `metadata and action rectangles stay disjoint in LTR and RTL`() {
+        for (windowWidth in listOf(320f, 340f, 360f, 411f)) {
+            for (rtl in listOf(false, true)) {
+                val (metadata, action) = bottomRects(windowWidth, rtl)
+                val gap = if (rtl) metadata.start - action.end else action.start - metadata.end
+                assertTrue("$windowWidth dp rtl=$rtl gap=$gap", gap >= 12f)
+                assertTrue("metadata escaped window: $metadata", metadata.start >= 0f && metadata.end <= windowWidth)
+                assertTrue("action escaped window: $action", action.start >= 0f && action.end <= windowWidth)
+            }
+        }
+    }
+
+    @Test
+    fun `review bottom geometry fails closed for invalid widths`() {
+        assertEquals(0f, reviewBottomMetadataMaxWidthDp(Float.NaN, actionVisible = true), 0f)
+        assertEquals(0f, reviewBottomMetadataMaxWidthDp(0f, actionVisible = true), 0f)
+        assertEquals(0f, reviewBottomMetadataMaxWidthDp(40f, actionVisible = true), 0f)
+    }
+
     @Test
     fun `delete confirmation promises siblings only for a proven capture family`() {
         assertEquals(

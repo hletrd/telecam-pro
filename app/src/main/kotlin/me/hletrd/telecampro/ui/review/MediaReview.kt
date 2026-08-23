@@ -23,6 +23,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.aspectRatio
@@ -180,6 +181,28 @@ private sealed interface ReviewMediaState {
 }
 
 private const val REVIEW_PREVIEW_MAX_DIM = 3000
+
+private const val REVIEW_BOTTOM_EDGE_DP = 14f
+private const val REVIEW_BOTTOM_ACTION_DP = 48f
+private const val REVIEW_BOTTOM_GAP_DP = 12f
+private const val REVIEW_METADATA_MAX_WIDTH_DP = 280f
+
+/**
+ * Maximum width of the bottom-start metadata plate after reserving the bottom-end review action.
+ *
+ * The returned width is in logical Start/End geometry: Compose's existing BottomStart/BottomEnd
+ * anchors mirror it in RTL without a second coordinate policy. With no action, the established
+ * 280 dp wide-window cap is unchanged. Invalid or impossibly narrow inputs fail closed at zero.
+ */
+internal fun reviewBottomMetadataMaxWidthDp(
+    windowWidthDp: Float,
+    actionVisible: Boolean,
+): Float {
+    if (!windowWidthDp.isFinite() || windowWidthDp <= 0f) return 0f
+    val actionReserve = if (actionVisible) REVIEW_BOTTOM_ACTION_DP + REVIEW_BOTTOM_GAP_DP else 0f
+    return (windowWidthDp - 2f * REVIEW_BOTTOM_EDGE_DP - actionReserve)
+        .coerceIn(0f, REVIEW_METADATA_MAX_WIDTH_DP)
+}
 
 private fun loadVideoInfo(context: Context, uri: Uri): VideoInfo? = runCatching {
     if (context.contentResolver.getType(uri)?.startsWith("video/") != true) return@runCatching null
@@ -530,7 +553,7 @@ fun MediaReviewOverlay(
         return true
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(CameraColors.Background)
@@ -540,6 +563,11 @@ fun MediaReviewOverlay(
             },
         contentAlignment = Alignment.Center,
     ) {
+        val bottomActionVisible = videoInfo != null || mediaState is ReviewMediaState.Ready.Still
+        val metadataMaxWidth = reviewBottomMetadataMaxWidthDp(
+            windowWidthDp = maxWidth.value,
+            actionVisible = bottomActionVisible,
+        ).dp
         // Keep the raw media gesture surface as a sibling behind the explicit controls. A control
         // tap therefore cannot also bubble through this loop and toggle playback a second time.
         Box(
@@ -856,7 +884,11 @@ fun MediaReviewOverlay(
                     // contrast floor (05486cb) as the live HUD — at 0.55 the secondary EXIF line was
                     // ~1.78:1, effectively unreadable over any bright region of the frame.
                     .background(HudPlate)
-                    .widthIn(max = 280.dp)
+                    // Reserve the existing 48 dp bottom-end action plus a 12 dp gap only while that
+                    // action is visible. BottomStart/BottomEnd mirror together in RTL, so this one
+                    // logical width policy keeps both directions disjoint without moving either
+                    // anchor or changing the established 280 dp wide-window cap.
+                    .widthIn(max = metadataMaxWidth)
                     // The ONE HUD pill inset, 12/6 — this panel and the zoom-scale label below were
                     // the two review-screen plates the inset sweep left behind, on 9 dp and 5 dp of
                     // vertical padding respectively.
