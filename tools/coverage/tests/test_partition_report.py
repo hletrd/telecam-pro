@@ -73,40 +73,40 @@ class PartitionReportTest(unittest.TestCase):
             class_xml("pkg/Excluded", 0, 1),
         )
 
-    def test_descriptorless_method_rule_uses_its_canonical_key(self) -> None:
+    def test_method_rule_is_rejected_instead_of_subtracting_overlapping_lines(self) -> None:
         code, stdout, stderr = self.run_report(
             self.complete_report(),
             "pkg/Mixed#device\n",
             "pkg/Excluded\n",
         )
 
-        self.assertEqual(0, code, stderr)
-        self.assertIn("PARTITION A : 1/1", stdout)
-        self.assertIn("PARTITION B : 0/1", stdout)
-        self.assertEqual("", stderr)
-        self.assertEqual("pkg/Mixed#device", partition_report.method_rule_key(
-            "pkg/Mixed", "device", None,
-        ))
+        self.assertEqual(1, code)
+        self.assertEqual("", stdout)
+        self.assertIn("method-level coverage partition is mathematically invalid", stderr)
 
-    def test_descriptor_rule_uses_the_same_canonical_key_path(self) -> None:
-        code, _, stderr = self.run_report(
-            self.complete_report("(Landroid/content/Context;)V"),
-            "pkg/Mixed#device#Landroid/content/Context;\n",
+    def test_class_partition_uses_the_class_unique_line_union(self) -> None:
+        # Method counters deliberately exceed the class union, reproducing the Kotlin bridge/lambda
+        # overlap that previously printed 196 outcomes for a 190-line class.
+        overlapping = class_xml(
+            "pkg/Mixed",
+            14,
+            176,
+            method_xml("device", "()V", 20, 15),
+        )
+        code, stdout, stderr = self.run_report(
+            report_xml(overlapping, class_xml("pkg/Pure", 0, 1), class_xml("pkg/Excluded", 0, 1)),
+            "pkg/Mixed\n",
             "pkg/Excluded\n",
         )
 
         self.assertEqual(0, code, stderr)
-        self.assertEqual(
-            "pkg/Mixed#device#Landroid/content/Context;",
-            partition_report.method_rule_key(
-                "pkg/Mixed", "device", "Landroid/content/Context;",
-            ),
-        )
+        self.assertIn("PARTITION B : 176/190", stdout)
+        self.assertIn("OVERALL     : 178/192", stdout)
 
     def test_stale_exact_and_glob_rules_are_fatal(self) -> None:
         code, _, stderr = self.run_report(
             self.complete_report(),
-            "pkg/Mixed#device\npkg/Missing\npkg/Missing$*\n",
+            "pkg/Mixed\npkg/Missing\npkg/Missing$*\n",
             "pkg/Excluded\n",
         )
 

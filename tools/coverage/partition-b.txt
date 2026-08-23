@@ -1,12 +1,13 @@
 # Partition B — device-bound glue (methodology + honest-number contract: docs/TESTING.md).
 # Matched against JaCoCo class names in app/build/reports/coverage/test/debug/report.xml by
-# tools/coverage/partition_report.py. Syntax: class glob | Class#method | Class#method#descSubstr |
-# !Class (force-A exception). Every entry must match the current report or the analyzer fails.
+# tools/coverage/partition_report.py. Syntax: class glob | !Class (force-A exception). Every entry
+# must match the current report or the analyzer fails. Method rules are forbidden: JaCoCo method
+# LINE counters overlap and cannot be subtracted from a class's unique source-line union.
 # Every entry's justification is FRAMEWORK-BOUNDEDNESS on the host JVM
 # (android.jar throwing stubs) — never test difficulty. Class-level entries are wholly framework
 # glue (or Compose emission files whose remaining pure helpers are conservatively surrendered to B;
-# that direction can only understate Partition A). Method-level entries split mixed classes where
-# the pure core is host-tested but sibling methods take framework-typed receivers/params.
+# that direction can only understate Partition A). Mixed classes stay wholly in B until their
+# framework glue is extracted into a separate class-level owner.
 
 # ---- top-level: Activity/Application/Compose glue -------------------------------------------
 me/hletrd/telecampro/MainActivity
@@ -28,43 +29,12 @@ me/hletrd/telecampro/camera/VendorTagInspector$*
 # interface seam would convert it to A — deferred, tracked in docs/TESTING.md future work.
 me/hletrd/telecampro/camera/RendererAssists
 me/hletrd/telecampro/camera/AndroidStandbyAudioInput
-# Mixed classes — framework-typed methods only; the pure cores stay in A:
-me/hletrd/telecampro/camera/ManualControlsKt#applyManualControls
-me/hletrd/telecampro/camera/ManualControlsKt#applySensorValueControls
-me/hletrd/telecampro/camera/ManualControlsKt#applyFocus
-me/hletrd/telecampro/camera/ManualControlsKt#applyExposure
-me/hletrd/telecampro/camera/ManualControlsKt#applyWhiteBalance
-me/hletrd/telecampro/camera/ManualControlsKt#applyProcessing
-me/hletrd/telecampro/camera/ManualControlsKt#applyFlash
-me/hletrd/telecampro/camera/ManualControlsKt#applyZoom
-me/hletrd/telecampro/camera/ManualControlsKt#kelvinTintToRggbGains
-me/hletrd/telecampro/camera/ManualControlsKt#normalizedFor#camera/CameraCaps;
-# manualAeAdmitted: the projection overload is the tested pure core (A); the CameraCaps twin
-# delegates through controlCapabilities(), whose Range getters throw on the host stubs.
-me/hletrd/telecampro/camera/ManualControlsKt#manualAeAdmitted#camera/CameraCaps;
-# These CameraCaps overloads likewise delegate through framework Range/Size accessors; their
-# projection-based overloads remain in A and carry the host tests.
-me/hletrd/telecampro/camera/ManualControlsKt#seedExposureForRouteChange#camera/CameraCaps;
-me/hletrd/telecampro/camera/ManualControlsKt#boostFlipChangesFpsDecision#camera/CameraCaps;
-# Kotlin synthetic default-argument bridges of the B extensions above: exact-name method rules do
-# not match the compiler's `$default` suffix, yet each bridge shares the CaptureRequest.Builder
-# receiver (no host constructor) and delegates straight into builder.set, which throws on the
-# android.jar stubs — the same framework-boundedness as its target method.
-me/hletrd/telecampro/camera/ManualControlsKt#applyManualControls$default
-me/hletrd/telecampro/camera/ManualControlsKt#applyExposure$default
-me/hletrd/telecampro/camera/CaptureCapabilitiesKt#readLensExifMetadata
-me/hletrd/telecampro/camera/CaptureCapabilitiesKt#controlCapabilities
-me/hletrd/telecampro/camera/CaptureCapabilitiesKt#buildControlCapabilities
-me/hletrd/telecampro/camera/CaptureCapabilitiesKt#withUsableVideoFloor
-me/hletrd/telecampro/camera/VideoFrameRate$Companion#availableFor#Landroid/util/Size;
-me/hletrd/telecampro/camera/CameraSelector2#select
-me/hletrd/telecampro/camera/CameraSelector2#candidatesOf
-me/hletrd/telecampro/camera/CameraSelector2#logicalBackId
-me/hletrd/telecampro/camera/CameraSelector2#overrideIdForFocal
-me/hletrd/telecampro/camera/CameraSelector2#pickFront
-me/hletrd/telecampro/camera/CameraSelector2#frontCandidatesOf
-me/hletrd/telecampro/camera/CameraSelector2#equivFocalOf
-me/hletrd/telecampro/camera/StandbyAudioController#<init>#Landroid/content/Context;
+# Mixed owners conservatively surrendered whole-class to B; this can understate, never inflate A:
+me/hletrd/telecampro/camera/ManualControlsKt
+me/hletrd/telecampro/camera/CaptureCapabilitiesKt
+me/hletrd/telecampro/camera/VideoFrameRate$Companion
+me/hletrd/telecampro/camera/CameraSelector2
+me/hletrd/telecampro/camera/StandbyAudioController
 # Compiler-generated closure bodies OF that Context constructor, which JaCoCo attributes as
 # separate `_init_$lambda$N` methods: the onAvailable {} and Log.w onUnavailable defaults
 # (android.util.Log throws on host), Context.checkSelfPermission, the meter Thread launcher,
@@ -72,17 +42,7 @@ me/hletrd/telecampro/camera/StandbyAudioController#<init>#Landroid/content/Conte
 # Context is unconstructable on the host JVM (stub ctor throws), so none of these closures can
 # ever be created or invoked by a host test — the same framework-boundedness as the ctor entry.
 # ($lambda$0/$lambda$1 are the PRIMARY ctor's defaults and stay A: host tests execute them.)
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$2
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$3
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$4
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$5
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$6
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$6$0$0
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$7
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$7$0
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$8
-me/hletrd/telecampro/camera/StandbyAudioController#_init_$lambda$8$0$0
-me/hletrd/telecampro/camera/StandbyAudioControllerKt#createAndroidStandbyAudioInput
+me/hletrd/telecampro/camera/StandbyAudioControllerKt
 
 # ---- gl: EGL/GLES glue (pure seams live in *Kt facades, which stay A) -----------------------
 me/hletrd/telecampro/gl/EglCore
@@ -102,7 +62,7 @@ me/hletrd/telecampro/capture/PendingDngPublication
 
 # ---- storage: ContentResolver/MediaStore glue (decision fns in MediaStoreWriterKt stay A) ---
 me/hletrd/telecampro/storage/MediaStoreWriter
-me/hletrd/telecampro/storage/SettingsStore#<init>#Landroid/content/Context;
+me/hletrd/telecampro/storage/SettingsStore
 
 # ---- video: MediaCodec/MediaMuxer/AudioRecord glue ------------------------------------------
 !me/hletrd/telecampro/video/VideoRecorder$StopResult
@@ -112,14 +72,10 @@ me/hletrd/telecampro/video/VideoRecorder$*
 # be constructed or driven against android.jar's throwing host stubs; its generic attempt-order
 # state machine remains separately host-tested in VideoRecorderKt.
 me/hletrd/telecampro/video/MediaCodecAttemptOwner
-me/hletrd/telecampro/video/UnsafeRecorderQuarantine#retain
+me/hletrd/telecampro/video/UnsafeRecorderQuarantine
 me/hletrd/telecampro/video/ColorProfiles
 me/hletrd/telecampro/video/EncoderCaps
-me/hletrd/telecampro/video/AudioInputInspector#status
-me/hletrd/telecampro/video/AudioInputInspector#preferredDevice
-me/hletrd/telecampro/video/AudioInputInspector#routeStatus
-me/hletrd/telecampro/video/AudioInputInspector#inputDevices
-me/hletrd/telecampro/video/AudioInputInspector#matches
+me/hletrd/telecampro/video/AudioInputInspector
 
 # ---- stab: SensorManager glue (math seams in GyroEisKt stay A) ------------------------------
 me/hletrd/telecampro/stab/GyroEis

@@ -5,7 +5,7 @@ The 99.5% coverage goal is only honest with an explicit partition (docs/TESTING.
   Partition A "host-executable logic"  — everything NOT matched by partition-b.txt or
                                           partition-excluded.txt; drivable by app/src/test
                                           host-JVM unit tests. Target: >= 99.5% line.
-  Partition B "device-bound glue"      — classes/methods matched by partition-b.txt;
+  Partition B "device-bound glue"      — classes matched by partition-b.txt;
                                           Camera2/GL/MediaCodec/MediaStore/Activity/Compose-
                                           emission code exercised by device-tests/ and
                                           instrumented runs, not host unit tests.
@@ -15,15 +15,12 @@ The 99.5% coverage goal is only honest with an explicit partition (docs/TESTING.
 
 Pattern syntax (one per line, # comments):
   com/pkg/Class                whole class (fnmatch glob, * allowed)
-  com/pkg/Class#method         one method of the class, by exact bytecode name
-  com/pkg/Class#method#SUBSTR  ...only when the method descriptor contains SUBSTR (splits
-                               same-named overloads: framework-typed overload -> B)
   !com/pkg/Class               negation: force-A even if a later B glob matches (checked first)
 
-Method-level entries exist because a handful of classes mix pure logic with framework-typed
-glue in one JaCoCo class (e.g. ManualControlsKt: tested pure normalization + CaptureRequest.
-Builder extensions that cannot run on the host JVM). The split is by framework-boundedness
-only — "hard to test" is never a valid reason for a B entry.
+Method-level entries are forbidden. JaCoCo method LINE counters are not additive: compiler bridges,
+lambdas, and source methods can share a source line, while a class counter is the unique line union.
+Mixed classes are conservatively assigned wholly to B until framework glue is extracted; this can
+understate Partition A but can never inflate it.
 
 The analyzer always fails if an expected bucket has no lines or any configured rule matches
 nothing. Those checks protect the measurement basis even when no coverage threshold is supplied.
@@ -46,18 +43,11 @@ DEFAULT_PARTITION_B = TOOL_DIR / "partition-b.txt"
 DEFAULT_EXCLUDED = TOOL_DIR / "partition-excluded.txt"
 
 
-def method_rule_key(class_glob: str, method_name: str, descriptor: str | None) -> str:
-    """Return the canonical text form used by both parsing and match accounting."""
-    return f"{class_glob}#{method_name}" + (f"#{descriptor}" if descriptor is not None else "")
-
-
 class Patterns:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.force_a: list[str] = []
         self.classes: list[str] = []
-        # (class_glob, method_name, desc_substring_or_None)
-        self.methods: list[tuple[str, str, str | None]] = []
         self.used: set[str] = set()
         for raw in path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
@@ -66,8 +56,11 @@ class Patterns:
             if line.startswith("!"):
                 self.force_a.append(line[1:])
             elif "#" in line:
-                parts = line.split("#", 2)
-                self.methods.append((parts[0], parts[1], parts[2] if len(parts) > 2 else None))
+                print(
+                    f"method-level coverage partition is mathematically invalid: {line}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
             else:
                 self.classes.append(line)
 
@@ -80,21 +73,9 @@ class Patterns:
         self.used.update(matches)
         return bool(matches)
 
-    def matches_method(self, class_name: str, method_name: str, descriptor: str) -> bool:
-        matches = [
-            rule for rule in self.methods
-            if fnmatch.fnmatchcase(class_name, rule[0])
-            and method_name == rule[1]
-            and (rule[2] is None or rule[2] in descriptor)
-        ]
-        self.used.update(method_rule_key(*rule) for rule in matches)
-        return bool(matches)
-
     def unused(self) -> list[str]:
         out = [f"!{p}" for p in self.force_a if f"!{p}" not in self.used]
         out += [p for p in self.classes if p not in self.used]
-        out += [method_rule_key(*rule) for rule in self.methods
-                if method_rule_key(*rule) not in self.used]
         return out
 
 
@@ -155,16 +136,7 @@ def main(argv: list[str] | None = None) -> None:
                 b["m"] += cm
                 b["c"] += cc
                 continue
-            bm = bc = 0
-            for meth in cls.findall("method"):
-                mn, md = meth.get("name", ""), meth.get("desc", "")
-                if part_b.matches_method(name, mn, md):
-                    mm, mc = line_counter(meth)
-                    bm += mm
-                    bc += mc
-            b["m"] += bm
-            b["c"] += bc
-            am, ac = max(cm - bm, 0), max(cc - bc, 0)
+            am, ac = cm, cc
             a["m"] += am
             a["c"] += ac
             if am:
