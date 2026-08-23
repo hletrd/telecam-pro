@@ -449,6 +449,70 @@ def _frozen_debug_source_entries(
     return tuple(entries[path] for path in sorted(entries))
 
 
+def _committed_debug_source_entries(
+    repo_root: Path,
+    commit: str,
+    scopes: Sequence[str],
+) -> tuple[SourceManifestEntry, ...]:
+    """Materialize packageable inputs from one immutable commit object, without index/status state."""
+    tree = subprocess.run(
+        ["git", "ls-tree", "-rz", "--full-tree", commit, "--", *scopes],
+        cwd=repo_root,
+        capture_output=True,
+        timeout=30,
+    )
+    if tree.returncode != 0:
+        raise ContractError(
+            f"git ls-tree failed for debug source identity: {(tree.stderr or tree.stdout)[:300]!r}"
+        )
+    records: list[tuple[str, str]] = []
+    for record in tree.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or fields[1] != b"blob":
+            raise ContractError("Git returned a malformed committed debug-source entry")
+        mode = fields[0].decode("ascii")
+        if mode not in {"100644", "100755"}:
+            raise ContractError(
+                "committed debug source input is not a regular file: "
+                f"{raw_path.decode('utf-8', errors='replace')} (mode {mode})"
+            )
+        records.append((fields[2].decode("ascii"), raw_path.decode("utf-8")))
+    if len(records) > _MAX_DEBUG_SOURCE_FILES:
+        raise ContractError("committed debug source tree exceeds its file-count budget")
+
+    entries: list[SourceManifestEntry] = []
+    total_bytes = 0
+    for object_id, relative in records:
+        blob = subprocess.run(
+            ["git", "cat-file", "blob", object_id],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=30,
+        )
+        if blob.returncode != 0:
+            raise ContractError(
+                f"git cat-file failed for committed debug source {relative}: "
+                f"{(blob.stderr or blob.stdout)[:300]!r}"
+            )
+        payload = blob.stdout
+        if len(payload) > _MAX_DEBUG_SOURCE_FILE_BYTES:
+            raise ContractError(f"committed debug source input is too large: {relative}")
+        total_bytes += len(payload)
+        if total_bytes > _MAX_DEBUG_SOURCE_TOTAL_BYTES:
+            raise ContractError("committed debug source tree exceeds its byte budget")
+        entries.append(
+            SourceManifestEntry(
+                relative,
+                len(payload),
+                hashlib.sha256(payload).hexdigest(),
+            )
+        )
+    return tuple(sorted(entries, key=lambda entry: entry.path))
+
+
 def current_debug_source_identity(
     repo_root: Path,
     *,
@@ -460,12 +524,6 @@ def current_debug_source_identity(
         root_identity = os.stat(root, follow_symlinks=False)
     except OSError as error:
         raise ContractError(f"debug source root is unavailable: {root}") from error
-    entries = _frozen_debug_source_entries(
-        root,
-        scopes,
-        expected_root_identity=root_identity,
-    )
-
     def git(*arguments: str) -> bytes:
         result = subprocess.run(
             ["git", *arguments],
@@ -479,25 +537,23 @@ def current_debug_source_identity(
             )
         return result.stdout
 
-    commit = git("rev-parse", "HEAD").decode("ascii").strip()
-    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-        raise ContractError("current Git commit is not a full lowercase object id")
-    changed = git(
-        "status", "--porcelain=v1", "-z", "--untracked-files=all",
-        "--ignore-submodules=none", "--", *scopes,
-    )
-    ignored = git(
-        "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", *scopes,
-    )
-    if _frozen_debug_source_entries(
+    entries = _frozen_debug_source_entries(
         root,
         scopes,
         expected_root_identity=root_identity,
-    ) != entries:
-        raise ContractError("debug source identity changed while Git state was inspected")
+    )
+    commit = git("rev-parse", "HEAD").decode("ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ContractError("current Git commit is not a full lowercase object id")
+    committed_entries = _committed_debug_source_entries(root, commit, scopes)
+    final_commit = git("rev-parse", "HEAD").decode("ascii").strip()
+    if final_commit != commit:
+        raise ContractError(
+            f"Git HEAD changed during debug source freeze: {commit} -> {final_commit}"
+        )
     return DebugSourceIdentity(
         commit,
-        bool(changed or ignored),
+        entries != committed_entries,
         _source_content_sha256(entries),
         entries,
     )

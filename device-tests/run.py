@@ -1052,6 +1052,20 @@ def git_identity(repo_root: Path = REPO_ROOT) -> dict[str, object]:
     return {"head": head, "dirty": bool(status), "status": status}
 
 
+def frozen_workspace_identity(source: DebugSourceIdentity) -> dict[str, object]:
+    """Attestation projection of the same scoped checkout snapshot proven against the APK."""
+    return {
+        "head": source.commit,
+        "dirty": source.dirty,
+        "status": (
+            ["packageable debug inputs differ from the attested HEAD tree"]
+            if source.dirty
+            else []
+        ),
+        "identity_basis": "descriptor-frozen packageable inputs versus immutable HEAD tree",
+    }
+
+
 def device_state(adb: Adb) -> dict[str, object]:
     """Capture the foreground, display, and operator state that a run must restore."""
     metrics = adb.display_metrics()
@@ -1512,7 +1526,7 @@ def run_locked_device(
         return 2
 
     try:
-        workspace = git_identity()
+        workspace = frozen_workspace_identity(packaged_source)
         before_state = device_state(adb)
         build_fingerprint = adb.shell("getprop ro.build.fingerprint")
     except (OSError, subprocess.CalledProcessError, RuntimeError) as error:

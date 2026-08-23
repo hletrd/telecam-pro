@@ -24,7 +24,8 @@ sys.path.insert(0, str(DEVICE_TESTS))
 
 import run as runner  # noqa: E402
 from dtest.adb import MAIN_ACTIVITY, DisplayMetrics  # noqa: E402
-from dtest.contracts import ContractError  # noqa: E402
+from dtest import contracts  # noqa: E402
+from dtest.contracts import ContractError, DebugSourceIdentity, SourceManifestEntry  # noqa: E402
 
 
 def copy_harness_fixture(parent: Path) -> Path:
@@ -858,6 +859,25 @@ class RunAttestationTest(unittest.TestCase):
             run_command.call_args_list[1].args[0],
             ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         )
+
+    def test_frozen_workspace_identity_uses_the_apk_proven_source_contract(self) -> None:
+        source = DebugSourceIdentity(
+            commit="a" * 40,
+            dirty=True,
+            content_sha256="b" * 64,
+            files=(SourceManifestEntry("app/src/main/A.kt", 1, "c" * 64),),
+            source_owner=contracts.IMMUTABLE_DEBUG_SOURCE_OWNER,
+        )
+
+        workspace = runner.frozen_workspace_identity(source)
+
+        self.assertEqual(workspace["head"], source.commit)
+        self.assertTrue(workspace["dirty"])
+        self.assertEqual(
+            workspace["status"],
+            ["packageable debug inputs differ from the attested HEAD tree"],
+        )
+        self.assertIn("descriptor-frozen", workspace["identity_basis"])
 
     def test_device_state_records_display_foreground_and_restored_settings(self) -> None:
         class StateAdb:

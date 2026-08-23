@@ -335,6 +335,67 @@ class SourceIdentityTest(unittest.TestCase):
                 with self.assertRaisesRegex(ContractError, "member set changed"):
                     current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
 
+    def test_current_manifest_derives_dirty_truth_without_index_or_ignore_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "src/source.kt"
+            source.parent.mkdir()
+            source.write_text("committed\n", encoding="utf-8")
+            build = root / "build.gradle.kts"
+            build.write_text("plugins {}\n", encoding="utf-8")
+            (root / ".gitignore").write_text("src/*.tmp\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            # Stage B in the mutable index, then restore A in the compiler-owned worktree. Ignore an
+            # extra packageable file too. Neither mutable Git input is allowed to redefine the exact
+            # bytes Gradle sees versus the immutable HEAD tree.
+            source.write_text("index-only B\n", encoding="utf-8")
+            subprocess.run(["git", "add", "src/source.kt"], cwd=root, check=True)
+            source.write_text("committed\n", encoding="utf-8")
+            (root / "src/ignored.tmp").write_text("packageable\n", encoding="utf-8")
+
+            identity = current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+
+            self.assertTrue(identity.dirty)
+            self.assertIn("src/ignored.tmp", {entry.path for entry in identity.files})
+
+    def test_current_manifest_rejects_head_advance_during_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "src/source.kt"
+            source.parent.mkdir()
+            source.write_text("committed\n", encoding="utf-8")
+            (root / "build.gradle.kts").write_text("plugins {}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+            real_committed = contracts._committed_debug_source_entries
+            advanced = False
+
+            def advance_head(repo_root, commit, scopes):
+                nonlocal advanced
+                result = real_committed(repo_root, commit, scopes)
+                (root / "unscoped.txt").write_text("new commit\n", encoding="utf-8")
+                subprocess.run(["git", "add", "unscoped.txt"], cwd=root, check=True)
+                subprocess.run(["git", "commit", "-m", "advance"], cwd=root, check=True, capture_output=True)
+                advanced = True
+                return result
+
+            with patch.object(
+                contracts,
+                "_committed_debug_source_entries",
+                side_effect=advance_head,
+            ):
+                with self.assertRaisesRegex(ContractError, "Git HEAD changed"):
+                    current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+            self.assertTrue(advanced)
+
 
 class ProductionContractTest(unittest.TestCase):
     def test_harness_media_directory_matches_production_constant(self) -> None:
