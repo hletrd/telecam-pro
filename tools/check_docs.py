@@ -347,11 +347,11 @@ check(
     "active GitHub About record rejects the superseded TELE-only DNG claim",
 )
 
-# Direct Gradle release entry points intentionally fail closed: only the immutable-source wrapper
-# can compile/package release bytes. Historical evidence may retain its old commands/paths when the
-# containing heading explicitly says historical/superseded/archived. Active mentions of mutable
-# app/build output are permitted only when the same local paragraph explicitly rejects that path as
-# an identity; they must never promise it as the result of a current release command.
+# Direct Gradle release entry points are developer-only: only the immutable-source wrapper may
+# publish release evidence. Historical evidence may retain its old commands/paths when the containing
+# heading explicitly says historical/superseded/archived. Active mentions of mutable app/build output
+# are permitted only when the same local paragraph explicitly rejects that path as an identity; they
+# must never promise it as the result of a current release command.
 HISTORICAL_HEADING = re.compile(r"historical|superseded|archived", re.I)
 
 
@@ -509,10 +509,26 @@ for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
 # ---- current camera/architecture ownership must not revive retired seams ------------------------
 architecture = read("docs/ARCHITECTURE.md")
 
+# The as-built Module Map omitted two central concurrency owners while still naming every other
+# production Kotlin file. Treat filenames as the explicit inventory: grouped leaf rows remain fine,
+# but adding a production module without naming it in the map is now a checked documentation defect.
+module_map = architecture.split("## Module Map", 1)[1].split("\n---", 1)[0]
+production_modules = sorted((ROOT / "app/src/main/kotlin").rglob("*.kt"))
+missing_module_rows = [
+    path.relative_to(ROOT).as_posix()
+    for path in production_modules
+    if f"`{path.name}`" not in module_map
+]
+check(
+    not missing_module_rows,
+    "Architecture Module Map names every production Kotlin module",
+    str(missing_module_rows),
+)
+
 # Release signing has exactly one FILE input and three optional secret VALUE overrides. The file
-# path once had its own environment fallback, bypassing the immutable wrapper's descriptor owner.
-# Bind build logic, wrapper, example, and public/as-built documentation so that second resolver
-# cannot return under a renamed key or stale instruction.
+# path once had its own environment fallback, and then a caller-authored Gradle override. Both bypass
+# the wrapper's descriptor owner. Bind build logic, wrapper, example, and public/as-built
+# documentation so that neither resolver can return under a renamed key or stale instruction.
 release_wrapper = read("tools/build_immutable_release.py")
 keystore_example = read("keystore.properties.example")
 signing_environment_values = set(re.findall(r'"(TELECAMPRO_[A-Z_]+)"', gradle))
@@ -524,10 +540,17 @@ check(
     }
     and 'STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"' in release_wrapper
     and "environment.pop(STORE_FILE_ENVIRONMENT, None)" in release_wrapper
-    and "-P{IMMUTABLE_STORE_FILE_PROPERTY}=" in release_wrapper
+    and "-PimmutableRelease" not in release_wrapper
+    and "create_release_authority" not in release_wrapper
     and 'signingValue("storeFile", "TELECAMPRO_STORE_FILE")' not in gradle
-    and "val releaseStoreFile = immutableReleaseStoreFile" in gradle
-    and "immutableReleaseStoreFile ?: configuredReleaseStoreFile" not in gradle
+    and "val releaseStoreFile = configuredReleaseStoreFile" in gradle
+    and "evidence=external-wrapper-required" in gradle
+    and "Caller-supplied immutable release claims are unsupported" in gradle
+    and 'ATTESTATION_SCHEMA = 2' in read("tools/check_release_artifact.py")
+    and '"release_evidence_path"' in read("tools/check_release_artifact.py")
+    and "AAB is not the unique bundle output recorded by release evidence" in read(
+        "tools/check_release_artifact.py"
+    )
     and "storeFile` is REQUIRED" in keystore_example
     and "there is deliberately no" in keystore_example
     and "TELECAMPRO_STORE_FILE" in keystore_example
@@ -586,6 +609,9 @@ retained_discard_dispatcher = read(
 media_store_writer = read(
     "app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt",
 )
+pending_discard_journal = read(
+    "app/src/main/kotlin/me/hletrd/telecampro/storage/PendingDiscardJournal.kt",
+)
 media_review = read("app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt")
 review_lane = read(
     "app/src/main/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLane.kt",
@@ -596,14 +622,18 @@ check(
     and "process-lifetime finite provider lane (two daemon workers + eight backlog slots)" in architecture
     and "MAX_DISCARD_RECOVERY_ROWS = 64" in media_store_writer
     and "discardAfterKey" in media_store_writer
-    and "independent 64-entry lexicographic durable-DISCARD pages" in architecture
+    and "indexed 64-entry durable-DISCARD pages" in architecture
+    and '"$URI_COLUMN ASC"' in pending_discard_journal
+    and "queryLimit = batchLimit + 1" in pending_discard_journal
     and "LatestReviewSetupLane" in media_review
     and "REVIEW_PROCESS_WORKER_COUNT = 4" in review_lane
     and "REVIEW_LANE_WORKER_COUNT = 2" in review_lane
     and "REVIEW_WORK_TERMINAL_TIMEOUT_MS = 5_000L" in review_lane
     and "Submission.CapacityExhausted" in media_review
+    and "Submission.TimedOut" in media_review
+    and "RequestStage" in review_lane
     and "one shared four-daemon pool" in architecture
-    and "5 s caller-side deadline" in architecture
+    and "5 s started-call deadline retryable" in architecture
     and "player.setDataSource" in media_review
     and "after transfer to Compose it is GC-owned" in architecture,
     "architecture describes current retained-discard, paged recovery, and review-work ownership",
