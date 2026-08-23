@@ -25,6 +25,9 @@ glue in one JaCoCo class (e.g. ManualControlsKt: tested pure normalization + Cap
 Builder extensions that cannot run on the host JVM). The split is by framework-boundedness
 only — "hard to test" is never a valid reason for a B entry.
 
+The analyzer always fails if an expected bucket has no lines or any configured rule matches
+nothing. Those checks protect the measurement basis even when no coverage threshold is supplied.
+
 Usage:
   python3 tools/coverage/partition_report.py app/build/reports/coverage/test/debug/report.xml \
       [--fail-under-a 99.5] [--gaps N]
@@ -41,6 +44,11 @@ from pathlib import Path
 TOOL_DIR = Path(__file__).resolve().parent
 DEFAULT_PARTITION_B = TOOL_DIR / "partition-b.txt"
 DEFAULT_EXCLUDED = TOOL_DIR / "partition-excluded.txt"
+
+
+def method_rule_key(class_glob: str, method_name: str, descriptor: str | None) -> str:
+    """Return the canonical text form used by both parsing and match accounting."""
+    return f"{class_glob}#{method_name}" + (f"#{descriptor}" if descriptor is not None else "")
 
 
 class Patterns:
@@ -64,23 +72,29 @@ class Patterns:
                 self.classes.append(line)
 
     def matches_class(self, name: str) -> bool:
-        if any(fnmatch.fnmatchcase(name, p) for p in self.force_a):
+        force_a_matches = [p for p in self.force_a if fnmatch.fnmatchcase(name, p)]
+        if force_a_matches:
+            self.used.update(f"!{p}" for p in force_a_matches)
             return False
-        for p in self.classes:
-            if fnmatch.fnmatchcase(name, p):
-                self.used.add(p)
-                return True
-        return False
+        matches = [p for p in self.classes if fnmatch.fnmatchcase(name, p)]
+        self.used.update(matches)
+        return bool(matches)
 
-    def method_rules_for(self, name: str) -> list[tuple[str, str, str | None]]:
-        return [r for r in self.methods if fnmatch.fnmatchcase(name, r[0])]
+    def matches_method(self, class_name: str, method_name: str, descriptor: str) -> bool:
+        matches = [
+            rule for rule in self.methods
+            if fnmatch.fnmatchcase(class_name, rule[0])
+            and method_name == rule[1]
+            and (rule[2] is None or rule[2] in descriptor)
+        ]
+        self.used.update(method_rule_key(*rule) for rule in matches)
+        return bool(matches)
 
     def unused(self) -> list[str]:
-        # Globs are defensive by nature (X$* guards future inner classes) — only exact-name
-        # patterns and method rules participate in the rename-drift warning.
-        out = [p for p in self.classes if "*" not in p and p not in self.used]
-        out += [f"{c}#{m}" + (f"#{d}" if d else "")
-                for (c, m, d) in self.methods if f"{c}#{m}#{d}" not in self.used]
+        out = [f"!{p}" for p in self.force_a if f"!{p}" not in self.used]
+        out += [p for p in self.classes if p not in self.used]
+        out += [method_rule_key(*rule) for rule in self.methods
+                if method_rule_key(*rule) not in self.used]
         return out
 
 
@@ -106,7 +120,7 @@ def pct(covered: int, missed: int) -> float:
     return 100.0 * covered / total if total else 100.0
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("report", type=Path)
@@ -116,7 +130,7 @@ def main() -> None:
                     help="exit 1 if Partition A line coverage is below this percentage")
     ap.add_argument("--gaps", type=int, default=40,
                     help="how many worst Partition A classes to list (default 40)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     part_b = Patterns(args.partition)
     excluded = Patterns(args.excluded) if args.excluded.exists() else None
@@ -141,18 +155,13 @@ def main() -> None:
                 b["m"] += cm
                 b["c"] += cc
                 continue
-            rules = part_b.method_rules_for(name)
             bm = bc = 0
-            if rules:
-                for meth in cls.findall("method"):
-                    mn, md = meth.get("name", ""), meth.get("desc", "")
-                    for (cglob, rname, dsub) in rules:
-                        if mn == rname and (dsub is None or dsub in md):
-                            mm, mc = line_counter(meth)
-                            bm += mm
-                            bc += mc
-                            part_b.used.add(f"{cglob}#{rname}#{dsub}")
-                            break
+            for meth in cls.findall("method"):
+                mn, md = meth.get("name", ""), meth.get("desc", "")
+                if part_b.matches_method(name, mn, md):
+                    mm, mc = line_counter(meth)
+                    bm += mm
+                    bc += mc
             b["m"] += bm
             b["c"] += bc
             am, ac = max(cm - bm, 0), max(cc - bc, 0)
@@ -178,14 +187,25 @@ def main() -> None:
 
     stale = part_b.unused() + (excluded.unused() if excluded else [])
     if stale:
-        # A pattern matching nothing usually means a rename drifted past the partition files.
-        print("\nWARNING: partition patterns matching nothing in this report:")
+        print("\nFAIL: partition patterns matching nothing in this report:", file=sys.stderr)
         for p in stale:
-            print(f"  {p}")
+            print(f"  {p}", file=sys.stderr)
 
-    if args.fail_under_a is not None and pct(a["c"], a["m"]) < args.fail_under_a:
+    empty = [name for name, counts in (("Partition A", a), ("Partition B", b), ("Excluded", x))
+             if counts["c"] + counts["m"] == 0 and (name != "Excluded" or excluded is not None)]
+    if empty:
+        print(f"\nFAIL: expected non-empty coverage bucket(s): {', '.join(empty)}",
+              file=sys.stderr)
+
+    below_threshold = (
+        args.fail_under_a is not None
+        and pct(a["c"], a["m"]) < args.fail_under_a
+    )
+    if below_threshold:
         print(f"\nFAIL: Partition A {pct(a['c'], a['m']):.2f}% < {args.fail_under_a}%",
               file=sys.stderr)
+
+    if stale or empty or below_threshold:
         raise SystemExit(1)
 
 

@@ -1,12 +1,13 @@
 # Excluded from BOTH coverage partitions (reported by size in partition_report.py output so the
 # exclusion is never invisible). Rationale per entry — see docs/TESTING.md:
-#  - PreviewCameraActions: all-no-op CameraActions stub used only by the @Preview composable;
-#    "covering" 86 empty bodies would be coverage theater.
+#  - PreviewCameraActions/CameraScreenPreview: all-no-op CameraActions stub and debug-only
+#    @Preview emission; "covering" either would be coverage theater.
 #  - UiSnapshotActivity*/SnapshotRequest: debug-only screenshot-QA harness; exercised on-device by
 #    device-tests case debug_snapshot_ui_contract, never ships in release.
-me/hletrd/findx9tele/ui/PreviewCameraActions
-me/hletrd/findx9tele/ui/UiSnapshotActivity
-me/hletrd/findx9tele/ui/UiSnapshotActivity$*
-me/hletrd/findx9tele/ui/UiSnapshotActivityKt
-me/hletrd/findx9tele/ui/UiSnapshotActivityKt$*
-me/hletrd/findx9tele/ui/SnapshotRequest
+me/hletrd/telecampro/ui/PreviewCameraActions
+me/hletrd/telecampro/ui/CameraScreenPreviewKt
+me/hletrd/telecampro/ui/ComposableSingletons$CameraScreenPreviewKt
+me/hletrd/telecampro/ui/UiSnapshotActivity
+me/hletrd/telecampro/ui/UiSnapshotActivity$*
+me/hletrd/telecampro/ui/UiSnapshotActivityKt
+me/hletrd/telecampro/ui/SnapshotRequest
