@@ -287,7 +287,7 @@ object MediaStoreWriter {
      * of adopting and publishing media the user deleted. A successful delete clears the journal in
      * the ordinary [delete] path.
      */
-    internal fun discardPendingOutput(context: Context, uri: Uri): Boolean {
+    internal fun discardPendingOutput(context: Context, uri: Uri): PendingOutputDiscardResult {
         val marker = markCompletionWithRetry(
             maxAttempts = COMPLETION_MARK_ATTEMPTS,
             commit = {
@@ -301,9 +301,14 @@ object MediaStoreWriter {
             },
         )
         val deleted = delete(context, uri)
-        // A durable marker is a successful deferred discard even when the provider cannot delete
-        // now. False means both immediate deletion and the recovery veto failed.
-        return deleted || marker.durable
+        // Keep the three outcomes distinct. In particular, callers must not erase UNRESOLVED and
+        // claim terminal deletion: without either the row delete or a durable DISCARD marker, a
+        // structurally valid pending row is still eligible for launch adoption.
+        return when {
+            deleted -> PendingOutputDiscardResult.DELETED
+            marker.durable -> PendingOutputDiscardResult.RECOVERY_MARKED
+            else -> PendingOutputDiscardResult.UNRESOLVED
+        }
     }
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
@@ -472,7 +477,11 @@ object MediaStoreWriter {
         // Selection/args construction is pure and PINNED BY TEST (OrphanSweepTest). Each collection
         // is independently caught and reported, so a broken Images query cannot suppress Video.
         val (selection, args) = orphanSweepSelection(subDirs, context.packageName, processStartSecs)
-        var report = RecoveryReport()
+        // A deleted output can have crossed IS_PENDING=0 immediately before the Engine observed the
+        // tombstone. Recover durable DISCARD entries by exact URI first, so published as well as
+        // pending rows are deleted. Successful [delete] clears the journal; failures retain it for
+        // the next bounded recovery attempt.
+        var report = cleanupDiscardJournal(context)
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -541,6 +550,26 @@ object MediaStoreWriter {
                 }
             }
             if (collectionResult.isFailure) report = report.record(RecoveryEvent.QUERY_FAILED)
+        }
+        return report
+    }
+
+    private fun cleanupDiscardJournal(context: Context): RecoveryReport {
+        val entries = runCatching {
+            context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).all
+                .filterValues { it == PENDING_DISCARD }
+                .keys
+        }.getOrElse {
+            return RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
+        }
+        var report = RecoveryReport()
+        for (rawUri in entries) {
+            report = report.record(RecoveryEvent.SCANNED)
+            val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+            report = report.record(
+                if (uri != null && delete(context, uri)) RecoveryEvent.DELETED
+                else RecoveryEvent.DELETE_FAILED,
+            )
         }
         return report
     }
@@ -691,6 +720,18 @@ internal data class CompletionMarkResult(
     val durable: Boolean,
     val attempts: Int,
 )
+
+/** Durable ownership result for media the user has already deleted as part of a capture family. */
+internal enum class PendingOutputDiscardResult {
+    /** The exact MediaStore row is gone and its journal entry was cleared. */
+    DELETED,
+
+    /** Immediate delete failed, but DISCARD is durable and launch recovery owns the retry. */
+    RECOVERY_MARKED,
+
+    /** Neither deletion nor durable recovery ownership succeeded; an in-process retry is required. */
+    UNRESOLVED,
+}
 
 /**
  * Terminal provider disposition for bytes that have already been closed and structurally

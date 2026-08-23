@@ -16,17 +16,17 @@ import me.hletrd.telecampro.camera.CameraCaps
 import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.DeletedStillPublication
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.RetainedStillDisposition
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.TeleSelection
 import me.hletrd.telecampro.camera.CropBox
 import me.hletrd.telecampro.camera.centerCropBox
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.CaptureFamilyKey
-import me.hletrd.telecampro.storage.CompletedOutputPublication
 import me.hletrd.telecampro.storage.MediaStoreWriter
-import me.hletrd.telecampro.storage.publishCompletedOutput
 
 /** Immutable request-time state consumed by every output belonging to one shutter press. */
 internal data class ShotSpec(
@@ -110,12 +110,18 @@ internal class StillCapturePipeline(
     private val emitStatus: (CameraStatus) -> Unit,
     private val emitMediaSaved: (android.net.Uri, Int) -> Unit,
     private val emitRawSaved: (android.net.Uri, Int) -> Unit,
-    // A COMPLETE output whose MediaStore publish failed: retained for launch recovery, but the
-    // owner of the capture must get to VETO that retention — a sibling arriving AFTER the user
-    // whole-family deleted (the designed-for late RAW) would otherwise be ADOPTED next launch and
-    // resurrect part of a deleted capture (verification S3, 2026-07-30). The row's fate is the
-    // TRACKER's decision, so this only reports; it never deletes.
-    private val emitPublishRetained: (android.net.Uri, Int) -> Unit,
+    /** Engine-owned check/publish/recheck boundary; survives ViewModel callback detachment. */
+    private val publishStillOutput: (
+        android.net.Uri,
+        Int,
+        publish: () -> Boolean,
+    ) -> DeletedStillPublication,
+    /** Releases the successful-publication race owner only after the saved callback has returned. */
+    private val finishPublishedStill: (android.net.Uri, Int) -> Unit,
+    // A COMPLETE output whose MediaStore publish failed. The same Engine owner that guards the
+    // pre-publication boundary receives this retained result, so a family tombstoned during the
+    // provider call still takes DISCARD instead of becoming recoverable media.
+    private val emitPublishRetained: (android.net.Uri, Int) -> RetainedStillDisposition,
 ) {
 
     /**
@@ -354,7 +360,10 @@ internal class StillCapturePipeline(
     private fun publicationEffects(
         emitSaved: (android.net.Uri, Int) -> Unit = emitMediaSaved,
     ) = StillPublicationEffects(
-        publish = { MediaStoreWriter.publish(context, it) },
+        publishOwned = { output, captureId ->
+            publishStillOutput(output, captureId) { MediaStoreWriter.publish(context, output) }
+        },
+        finishPublished = finishPublishedStill,
         emitSaved = emitSaved,
         emitRetained = emitPublishRetained,
         emitStatus = emitStatus,
@@ -420,15 +429,25 @@ internal class StillCapturePipeline(
 
 /** Injectable still-caller effects for the durable-before-publication contract. */
 internal data class StillPublicationEffects<T>(
-    val publish: (T) -> Boolean,
+    val publishOwned: (T, Int) -> DeletedStillPublication,
+    val finishPublished: (T, Int) -> Unit,
     val emitSaved: (T, Int) -> Unit,
-    val emitRetained: (T, Int) -> Unit,
+    val emitRetained: (T, Int) -> RetainedStillDisposition,
     val emitStatus: (CameraStatus) -> Unit,
 )
 
+/** Complete still result including deleted-family ownership, distinct from video publication. */
+internal enum class StillOutputPublication {
+    PUBLISHED,
+    RETAINED_MARKER_UNAVAILABLE,
+    RETAINED_PUBLICATION_UNAVAILABLE,
+    DISCARDED_DELETED_CAPTURE,
+    DISCARD_RETRY_PENDING,
+}
+
 /**
  * Completes the HEIF/JPEG/DNG caller contract without conflating retained bytes with publication.
- * A non-durable COMPLETE marker bypasses [StillPublicationEffects.publish] entirely.
+ * A non-durable COMPLETE marker bypasses [StillPublicationEffects.publishOwned] entirely.
  */
 internal fun <T> completeStillPublication(
     kind: String,
@@ -436,24 +455,45 @@ internal fun <T> completeStillPublication(
     captureId: Int,
     markerDurable: Boolean,
     effects: StillPublicationEffects<T>,
-): CompletedOutputPublication {
-    val publication = publishCompletedOutput(markerDurable) { effects.publish(output) }
-    when (publication) {
-        CompletedOutputPublication.PUBLISHED -> effects.emitSaved(output, captureId)
-        CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE,
-        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
-        -> {
-            effects.emitStatus(
-                retainedSaveStatus(
-                    kind = kind,
-                    markerDurable = publication ==
-                        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
-                ),
+): StillOutputPublication {
+    if (!markerDurable) {
+        effects.emitStatus(retainedSaveStatus(kind, markerDurable = false))
+        return effects.emitRetained(output, captureId).toStillOutputPublication(
+            live = StillOutputPublication.RETAINED_MARKER_UNAVAILABLE,
+        )
+    }
+    return when (effects.publishOwned(output, captureId)) {
+        DeletedStillPublication.LIVE_PUBLISHED -> {
+            try {
+                effects.emitSaved(output, captureId)
+            } finally {
+                effects.finishPublished(output, captureId)
+            }
+            StillOutputPublication.PUBLISHED
+        }
+        DeletedStillPublication.LIVE_PUBLICATION_FAILED -> {
+            effects.emitStatus(retainedSaveStatus(kind, markerDurable = true))
+            effects.emitRetained(output, captureId).toStillOutputPublication(
+                live = StillOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
             )
-            effects.emitRetained(output, captureId)
+        }
+        DeletedStillPublication.DISCARD_DELETED_CAPTURE ->
+            StillOutputPublication.DISCARDED_DELETED_CAPTURE
+        DeletedStillPublication.DISCARD_RETRY_PENDING -> {
+            effects.emitStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+            StillOutputPublication.DISCARD_RETRY_PENDING
         }
     }
-    return publication
+}
+
+private fun RetainedStillDisposition.toStillOutputPublication(
+    live: StillOutputPublication,
+): StillOutputPublication = when (this) {
+    RetainedStillDisposition.RETAIN_FOR_RECOVERY -> live
+    RetainedStillDisposition.DISCARD_DELETED_CAPTURE ->
+        StillOutputPublication.DISCARDED_DELETED_CAPTURE
+    RetainedStillDisposition.DISCARD_RETRY_PENDING ->
+        StillOutputPublication.DISCARD_RETRY_PENDING
 }
 
 /** Truthful retained-take status for either durable gate that left a completed artifact private. */

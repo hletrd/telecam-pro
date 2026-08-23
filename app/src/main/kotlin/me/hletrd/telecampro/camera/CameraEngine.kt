@@ -3715,7 +3715,31 @@ class CameraEngine(private val context: Context) {
      * Null is a FILE_ONLY/unknown capture and has no live sibling callback family to suppress.
      */
     fun markCaptureDeleted(captureId: Int?) {
-        captureId?.let(retainedStillDeletionOwner::markCaptureDeleted)
+        val id = captureId ?: return
+        retainedStillDeletionOwner.markCaptureDeleted(id).forEach { output ->
+            dispatchDeletedStillDiscard(output, id)
+        }
+    }
+
+    /**
+     * Transfers a completed row to the Engine's delete owner without depending on UI callbacks.
+     * The fast ownership step performs no provider I/O, so it is safe on UI/camera threads. Normal
+     * execution uses the still lane; teardown rejection falls through to recovery, then finally runs
+     * inline so a completed DNG can never be silently dropped between two shutting-down executors.
+     */
+    private fun dispatchDeletedStillDiscard(uri: android.net.Uri, captureId: Int) {
+        if (!retainedStillDeletionOwner.ownRetainedForAsyncDiscard(uri, captureId)) return
+        val task = Runnable {
+            if (retainedStillDeletionOwner.discardDeleted(uri, captureId) ==
+                RetainedStillDisposition.DISCARD_RETRY_PENDING
+            ) {
+                onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+            }
+        }
+        val stillAccepted = runCatching { ioExecutor.execute(task) }.isSuccess
+        if (stillAccepted) return
+        val recoveryAccepted = runCatching { mediaRecoveryExecutor.execute(task) }.isSuccess
+        if (!recoveryAccepted) task.run()
     }
 
     // Save lanes live in the extracted StillCapturePipeline (ARCH4-3 step 1). UI-facing lambdas
@@ -3725,6 +3749,10 @@ class CameraEngine(private val context: Context) {
         emitStatus = { status -> onStatus?.invoke(status) },
         emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
         emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
+        publishStillOutput = { uri, id, publish ->
+            retainedStillDeletionOwner.publishIfLive(uri, id, publish)
+        },
+        finishPublishedStill = retainedStillDeletionOwner::finishPublished,
         emitPublishRetained = { uri, id -> retainedStillDeletionOwner.handleRetained(uri, id) },
     )
     private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
@@ -3953,7 +3981,11 @@ class CameraEngine(private val context: Context) {
                                 dngPublishQueued = queued.isSuccess
                                 queued.onFailure {
                                     // The bytes are structurally complete and remain pending for
-                                    // launch recovery (the marker result is frozen in [pending]).
+                                    // launch recovery (the marker result is frozen in [pending]). A
+                                    // deleted family still belongs to the Engine tombstone: route it
+                                    // through the recovery lane even though the ordinary DNG publish
+                                    // continuation could not enter the shutting-down still executor.
+                                    dispatchDeletedStillDiscard(pending.uri, pending.captureId)
                                     reportStatus(CameraStatusMessage.DNG_SAVE_DELAYED.status())
                                 }
                             }
@@ -5527,6 +5559,13 @@ class CameraEngine(private val context: Context) {
         ctrl?.close()
         stopGlOwner(glOwners.current())
         starting = false
+        val unresolvedDeletedStills = retainedStillDeletionOwner.retryUnresolvedDiscards()
+        if (unresolvedDeletedStills > 0) {
+            Log.e(
+                "CameraEngine",
+                "$unresolvedDeletedStills deleted still output(s) remain pending durable discard",
+            )
+        }
         setupExecutor.shutdown()
         ioExecutor.shutdown()
         mediaRecoveryExecutor.shutdown()
