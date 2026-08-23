@@ -92,6 +92,8 @@ class CameraEngine internal constructor(
     private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
 ) {
 
+    private val callbackSink = EngineCallbackSink()
+
     private val manager = context.getSystemService(CameraManager::class.java)
     private val processNativeOwner = Any()
     private val glOwners = AtomicOwnerSlot(
@@ -253,15 +255,23 @@ class CameraEngine internal constructor(
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
     // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
-    var onCameraReadyChange: ((CameraReadyPublication) -> Unit)? = null
+    var onCameraReadyChange: ((CameraReadyPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.CAMERA_READY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAMERA_READY, value)
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
-    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, CameraRoute, ManualControls, Long, String?, restoredPreTeleUnifiedZoom: Float, generation: Long) -> Unit)? = null
+    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, CameraRoute, ManualControls, Long, String?, restoredPreTeleUnifiedZoom: Float, generation: Long) -> Unit)?
+        get() = callbackSink.function10(EngineCallbackKey.OPTICS_ROLLBACK)
+        set(value) = callbackSink.install(EngineCallbackKey.OPTICS_ROLLBACK, value)
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
-    var onAfIndication: ((AfIndication) -> Unit)? = null
+    var onAfIndication: ((AfIndication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.AF_INDICATION)
+        set(value) = callbackSink.install(EngineCallbackKey.AF_INDICATION, value)
     // A tap point is owned by one exact accepted Camera2 session. Controller/session invalidation
     // publishes a newer false event so a delayed UI task can never leave a stale AF HOLD visible.
-    var onTapFocusChange: ((TapFocusPublication) -> Unit)? = null
+    var onTapFocusChange: ((TapFocusPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.TAP_FOCUS)
+        set(value) = callbackSink.install(EngineCallbackKey.TAP_FOCUS, value)
     private var tapFocusOwner: AcceptedCameraSession? = null
 
     /** Captures callback ordering while the caller still owns the engine monitor/state mutation. */
@@ -1173,34 +1183,52 @@ class CameraEngine internal constructor(
     @Volatile private var audioScene = AudioScene.STANDARD
     @Volatile private var audioInputPreference = AudioInputPreference.AUTO
     @Volatile private var aspectRatio = AspectRatio.W4_3
-    var onStatus: ((CameraStatus?) -> Unit)? = null
-    var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
+    var onStatus: ((CameraStatus?) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.STATUS)
+        set(value) = callbackSink.install(EngineCallbackKey.STATUS, value)
+    var onCapsReady: ((CameraCaps, generation: Long) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.CAPS_READY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAPS_READY, value)
     /** Device-static route truth plus the initial facing selected before first Camera2 open. */
-    var onCameraRouteInventory: ((CameraRouteInventory, CameraRoute) -> Unit)? = null
+    var onCameraRouteInventory: ((CameraRouteInventory, CameraRoute) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.CAMERA_ROUTES)
+        set(value) = callbackSink.install(EngineCallbackKey.CAMERA_ROUTES, value)
     // Device-static lens inventory (enumerated once, published once): which lens presets this
     // hardware can actually deliver. The rail rendered the PMA110 set unconditionally before.
-    var onLensInventory: ((LensInventory) -> Unit)? = null
+    var onLensInventory: ((LensInventory) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.LENS_INVENTORY)
+        set(value) = callbackSink.install(EngineCallbackKey.LENS_INVENTORY, value)
     // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
     // what the engine will actually encode instead of drifting from a hardcoded default.
-    var onVideoSizeChosen: ((Size, generation: Long?) -> Unit)? = null
+    var onVideoSizeChosen: ((Size, generation: Long?) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.VIDEO_SIZE)
+        set(value) = callbackSink.install(EngineCallbackKey.VIDEO_SIZE, value)
     /** Exact encoder raster accepted for the current REC attempt, including a configure fallback. */
-    var onEncoderSizeAccepted: ((Size) -> Unit)? = null
+    var onEncoderSizeAccepted: ((Size) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.ENCODER_SIZE)
+        set(value) = callbackSink.install(EngineCallbackKey.ENCODER_SIZE, value)
     // Displayed preview aspect (width/height AS SHOWN on the portrait screen — the ~90° sensor
     // orientation already swaps the stream's W/H). The UI sizes the TextureView to this so the
     // viewfinder letterboxes the FULL capture field instead of cover-cropping it: with a 16:9 stream
     // on this ~19.5:9 panel the old full-screen cover cut ~40% of the frame's width, and photo mode
     // additionally previewed a 16:9 field while capturing the full 4:3 sensor.
-    var onPreviewAspect: ((Float, generation: Long) -> Unit)? = null
+    var onPreviewAspect: ((Float, generation: Long) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.PREVIEW_ASPECT)
+        set(value) = callbackSink.install(EngineCallbackKey.PREVIEW_ASPECT, value)
     // Viewfinder analysis (histogram/waveform/frame-detail) computed off the GL thread; delivered
     // here so the ViewModel can hoist it into UI state. Each arg is null when its analysis is
     // disabled — the frame-detail arg is additionally null whenever no scope/AE readback ran at
     // all, because it deliberately rides that readback rather than triggering one.
     var onAnalysis: (
         (HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit
-    )? = null
+    )?
+        get() = callbackSink.function4(EngineCallbackKey.ANALYSIS)
+        set(value) = callbackSink.install(EngineCallbackKey.ANALYSIS, value)
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     /** Per-channel input levels (0..1), one entry per interleaved channel; empty = meter off. */
-    var onAudioLevel: ((FloatArray) -> Unit)? = null
+    var onAudioLevel: ((FloatArray) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.AUDIO_LEVEL)
+        set(value) = callbackSink.install(EngineCallbackKey.AUDIO_LEVEL, value)
 
     /**
      * True once the platform has refused to open the camera FOR THIS APP while the runtime
@@ -1208,7 +1236,9 @@ class CameraEngine internal constructor(
      * spent. Retrying cannot clear it — only the user can, in the app's settings page — so the UI
      * shows the permission gate rather than an interactive-looking black viewfinder.
      */
-    var onCameraPolicyBlocked: ((Boolean) -> Unit)? = null
+    var onCameraPolicyBlocked: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.CAMERA_POLICY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAMERA_POLICY, value)
 
     /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
     val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
@@ -1217,34 +1247,58 @@ class CameraEngine internal constructor(
     // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
     // thread flipped the run; the ViewModel folds it into state via thread-safe StateFlow update.
     // Consumer: the unattended-timelapse screen dim (perf review #10) and any future run OSD.
-    var onTimelapseRun: ((Boolean) -> Unit)? = null
+    var onTimelapseRun: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.TIMELAPSE)
+        set(value) = callbackSink.install(EngineCallbackKey.TIMELAPSE, value)
     // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
-    var onAudioRoute: ((AudioRouteStatus) -> Unit)? = null
+    var onAudioRoute: ((AudioRouteStatus) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.AUDIO_ROUTE)
+        set(value) = callbackSink.install(EngineCallbackKey.AUDIO_ROUTE, value)
     /** First successful standby PCM after enable/recovery; safe point to clear unavailable UI. */
-    internal var onStandbyAudioAvailable: (() -> Unit)? = null
+    internal var onStandbyAudioAvailable: (() -> Unit)?
+        get() = callbackSink.function0(EngineCallbackKey.STANDBY_AUDIO_AVAILABLE)
+        set(value) = callbackSink.install(EngineCallbackKey.STANDBY_AUDIO_AVAILABLE, value)
     /** Bounded standby setup/read budget exhausted while the visible meter is still requested. */
-    internal var onStandbyAudioUnavailable: ((StandbyAudioUnavailable) -> Unit)? = null
+    internal var onStandbyAudioUnavailable: ((StandbyAudioUnavailable) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.STANDBY_AUDIO_UNAVAILABLE)
+        set(value) = callbackSink.install(EngineCallbackKey.STANDBY_AUDIO_UNAVAILABLE, value)
     /** Unexpected async codec/muxer failure; the recorder has already entered ordered teardown. */
-    var onRecordingTerminated: ((Throwable) -> Unit)? = null
+    var onRecordingTerminated: ((Throwable) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.RECORDING_TERMINATED)
+        set(value) = callbackSink.install(EngineCallbackKey.RECORDING_TERMINATED, value)
     /** Encoder input is attached to EGL and the recorder is now genuinely rolling. */
-    var onRecordingStarted: (() -> Unit)? = null
+    var onRecordingStarted: (() -> Unit)?
+        get() = callbackSink.function0(EngineCallbackKey.RECORDING_STARTED)
+        set(value) = callbackSink.install(EngineCallbackKey.RECORDING_STARTED, value)
     // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
     // the camera thread, only on change; the ViewModel hoists it into UI state.
-    var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
+    var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.EXPOSURE_INFO)
+        set(value) = callbackSink.install(EngineCallbackKey.EXPOSURE_INFO, value)
     // Live lens focus distance (diopters) from the controller: the AF-resolved position shown on the
     // Focus chip and used to seed the manual slider when the user switches into MF (AF→MF handoff).
-    var onFocusDistance: ((Float) -> Unit)? = null
+    var onFocusDistance: ((Float) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.FOCUS_DISTANCE)
+        set(value) = callbackSink.install(EngineCallbackKey.FOCUS_DISTANCE, value)
     // The most recently saved displayable media (HEIF/JPEG/video) URI + its capture-sequence id, for
     // the gallery thumbnail + in-app review. Fired from the io thread after the file publishes. The
     // id groups every output of one shutter press so review-Delete can remove the whole shot.
-    var onMediaSaved: ((android.net.Uri, Int) -> Unit)? = null
+    var onMediaSaved: ((android.net.Uri, Int) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.MEDIA_SAVED)
+        set(value) = callbackSink.install(EngineCallbackKey.MEDIA_SAVED, value)
     // A DNG output with the same capture-sequence id as its HEIF/JPEG siblings. A RAW-only capture
     // may own the review metadata tile until a processed sibling upgrades it. Fired after publish.
-    var onRawSaved: ((android.net.Uri, Int) -> Unit)? = null
+    var onRawSaved: ((android.net.Uri, Int) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.RAW_SAVED)
+        set(value) = callbackSink.install(EngineCallbackKey.RAW_SAVED, value)
     /** Canonical family truth published before any output callback or video allocation can arrive. */
-    internal var onCaptureFamilyRegistered: ((Int, CaptureFamilyKey, Boolean) -> Unit)? = null
+    internal var onCaptureFamilyRegistered: ((Int, CaptureFamilyKey, Boolean) -> Unit)?
+        get() = callbackSink.function3(EngineCallbackKey.CAPTURE_FAMILY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAPTURE_FAMILY, value)
     /** Projects the retained/rejected-output fail-closed gate into the visible shutter state. */
-    internal var onStillCaptureAdmissionChanged: ((Boolean) -> Unit)? = null
+    internal var onStillCaptureAdmissionChanged: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.STILL_ADMISSION)
+        set(value) = callbackSink.install(EngineCallbackKey.STILL_ADMISSION, value)
 
     // ---- Preview surface lifecycle ----
 
@@ -6170,33 +6224,10 @@ class CameraEngine internal constructor(
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
     fun detachCallbacks() {
-        onCameraReadyChange = null
-        onOpticsRollback = null
-        onAfIndication = null
-        onTapFocusChange = null
-        onStatus = null
-        onCapsReady = null
-        onCameraRouteInventory = null
-        onLensInventory = null
-        onVideoSizeChosen = null
-        onEncoderSizeAccepted = null
-        onPreviewAspect = null
-        onAnalysis = null
-        onAudioLevel = null
-        onCameraPolicyBlocked = null
-        onTimelapseRun = null
-        onAudioRoute = null
-        onStandbyAudioAvailable = null
-        onStandbyAudioUnavailable = null
-        onRecordingStarted = null
-        onRecordingTerminated = null
-        onExposureInfo = null
-        onFocusDistance = null
-        onMediaSaved = null
-        onRawSaved = null
-        onCaptureFamilyRegistered = null
-        onStillCaptureAdmissionChanged = null
+        callbackSink.closeAndDrain()
     }
+
+    internal fun attachedCallbackCount(): Int = callbackSink.callbackCount()
 
     fun release() {
         // Terminal before state/executor teardown: either an in-flight acquisition completes before

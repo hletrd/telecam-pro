@@ -3415,15 +3415,17 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun deleteLateCaptureOutput(uri: Uri) {
-        ioExecutor.execute {
-            // This is not a newly rejected output: the durable whole-family marker already owns
-            // restart recovery, so it must not consume the process rejected-output headroom.
-            if (MediaStoreWriter.discardPendingOutput(getApplication(), uri) ==
-                me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
-            ) {
-                mainHandler.post {
-                    _state.update { it.copy(stillCaptureAdmissionAvailable = false) }
-                    showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
+        runCatching {
+            ioExecutor.execute {
+                // This is not a newly rejected output: the durable whole-family marker already owns
+                // restart recovery, so it must not consume the process rejected-output headroom.
+                if (MediaStoreWriter.discardPendingOutput(getApplication(), uri) ==
+                    me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
+                ) {
+                    mainHandler.post {
+                        _state.update { it.copy(stillCaptureAdmissionAvailable = false) }
+                        showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
+                    }
                 }
             }
         }

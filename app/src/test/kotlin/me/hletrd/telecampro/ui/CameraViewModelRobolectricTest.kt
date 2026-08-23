@@ -17,6 +17,7 @@ import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.DeletedStillPublication
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.EngineCallbackKey
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
@@ -97,11 +98,6 @@ class CameraViewModelRobolectricTest {
             .invoke(v)
     }
 
-    /** Automatically includes any future Engine callback field instead of maintaining a second list. */
-    private fun engineCallbackFields() = CameraEngine::class.java.declaredFields.filter { field ->
-        field.name.startsWith("on") && field.type.name.startsWith("kotlin.jvm.functions.Function")
-    }
-
     @After fun tearDown() {
         // Detaches engine callbacks and hands the (never-started) engine to its release thread.
         // onCleared is protected (androidx contract) — reflection is the lifecycle-honest teardown
@@ -179,19 +175,24 @@ class CameraViewModelRobolectricTest {
 
     @Test fun `onCleared detaches every current Engine callback field`() {
         val (v, e) = createViewModel()
-        val callbacks = engineCallbackFields()
-        assertTrue(callbacks.isNotEmpty())
-        callbacks.forEach { field ->
-            field.isAccessible = true
-            assertNotNull("callback must be wired before teardown: ${field.name}", field.get(e))
-        }
+        assertEquals(EngineCallbackKey.entries.size, e.attachedCallbackCount())
 
         clearViewModel(v)
         vm = null // tearDown must not invoke the lifecycle edge twice
 
-        callbacks.forEach { field ->
-            assertNull("callback survived teardown: ${field.name}", field.get(e))
-        }
+        assertEquals(0, e.attachedCallbackCount())
+    }
+
+    @Test fun `callback fetched before onCleared cannot publish after teardown`() {
+        val (v, e) = createViewModel()
+        val saved = e.onMediaSaved
+        assertNotNull(saved)
+
+        clearViewModel(v)
+        vm = null
+        saved!!.invoke(Uri.parse("content://media/external/images/media/404"), 404)
+
+        assertNull(v.state.value.lastMediaUri)
     }
 
     @Test fun `deleted still publication remains Engine-owned after ViewModel detach`() {
