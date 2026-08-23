@@ -399,19 +399,31 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     // Battery % + free storage for the OSD info pill, Sony-style. Slow tick — these move slowly.
-    // The reads run on the shared io executor (PERF4-9): StatFs is filesystem I/O that can block
-    // on a busy volume — exactly when a concurrent capture save is hammering it — and it sat on
-    // the MAIN thread; the result posts back into state.
+    // The reads stay on the shared serial I/O lane so restore/delete ordering does not change, but
+    // [LifecycleInfoRefresh] admits only one submitted sample plus one coalesced intent. A blocked
+    // provider task can therefore delay telemetry without letting ten-second ticks or lifecycle
+    // churn build an unbounded queue in front of later user work.
+    private val infoRefresh: LifecycleInfoRefresh<LifecycleInfoSample> by lazy(LazyThreadSafetyMode.NONE) {
+        LifecycleInfoRefresh(
+            submit = { task -> runCatching { ioExecutor.execute(task) }.isSuccess },
+            sample = { LifecycleInfoSample(readBatteryPct(), readFreeBytes()) },
+            deliver = { generation, sample ->
+                mainHandler.post {
+                    // Completion admission and main-thread publication are two different races:
+                    // Stop may land after the worker finishes but before this post executes.
+                    if (lifecycleStarted && infoRefresh.isActive(generation)) {
+                        _state.update {
+                            it.copy(batteryPct = sample.batteryPct, freeBytes = sample.freeBytes)
+                        }
+                    }
+                }
+            },
+        )
+    }
     private val infoTicker = object : Runnable {
         override fun run() {
             if (!lifecycleStarted) return
-            ioExecutor.execute {
-                val battery = readBatteryPct()
-                val free = readFreeBytes()
-                mainHandler.post {
-                    if (lifecycleStarted) _state.update { it.copy(batteryPct = battery, freeBytes = free) }
-                }
-            }
+            infoRefresh.request()
             mainHandler.postDelayed(this, 10_000)
         }
     }
@@ -3519,6 +3531,7 @@ class CameraViewModel @JvmOverloads constructor(
     fun onStart() {
         if (lifecycleStarted) return
         lifecycleStarted = true
+        infoRefresh.start()
         engine.resume()
         refreshStandbyAudioMeter()
         // Re-arm the OSD tickers paused in onStop (level only if its overlay is enabled).
@@ -3532,6 +3545,9 @@ class CameraViewModel @JvmOverloads constructor(
     fun onStop() {
         if (!lifecycleStarted) return
         lifecycleStarted = false
+        // Invalidates both a worker result and a result already posted to main. A later start owns a
+        // fresh generation and, if the old worker is still blocked, exactly one pending refresh.
+        infoRefresh.stop()
         recordingAttemptGeneration++
         customWbSampleGeneration++
         cancelCountdown()
@@ -3569,6 +3585,7 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onCleared() {
         cleared = true
+        infoRefresh.stop()
         recordingAttemptGeneration++
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
@@ -3636,6 +3653,114 @@ internal fun recordingAttemptOwnsGeneration(
     isRecording: Boolean,
     isRecordingStarting: Boolean,
 ): Boolean = currentGeneration == expectedGeneration && isRecording && isRecordingStarting
+
+internal data class LifecycleInfoSample(
+    val batteryPct: Int,
+    val freeBytes: Long,
+)
+
+internal data class LifecycleInfoRefreshSnapshot(
+    val activeGeneration: Long?,
+    val inFlightRequests: Int,
+    val pendingRequests: Int,
+)
+
+/**
+ * Bounded owner for the lifecycle OSD's slow battery/storage sample.
+ *
+ * [submit] deliberately targets the ViewModel's existing serial I/O executor: capture restore and
+ * delete operations keep their established FIFO order. This owner changes only telemetry
+ * cardinality. While one sample is submitted/running, every later tick collapses into one pending
+ * request for the latest active lifecycle generation. Stop invalidates publication and clears an
+ * old pending intent; a subsequent Start may install one new-generation pending request behind the
+ * still-running old sample.
+ */
+internal class LifecycleInfoRefresh<T : Any>(
+    private val submit: (Runnable) -> Boolean,
+    private val sample: () -> T,
+    private val deliver: (generation: Long, T) -> Unit,
+) {
+    private data class Request(val generation: Long)
+    private data class Completion(val publish: Boolean, val next: Request?)
+
+    private val lock = Any()
+    private var generation = 0L
+    private var activeGeneration: Long? = null
+    private var inFlightGeneration: Long? = null
+    private var pendingGeneration: Long? = null
+
+    /** Opens a fresh publication generation; the caller separately requests its immediate sample. */
+    fun start(): Long = synchronized(lock) {
+        generation += 1
+        activeGeneration = generation
+        generation
+    }
+
+    /** Invalidates accepted/posted results and any intent that has not reached the executor. */
+    fun stop() = synchronized(lock) {
+        generation += 1
+        activeGeneration = null
+        pendingGeneration = null
+    }
+
+    fun request() {
+        val request = synchronized(lock) {
+            val active = activeGeneration ?: return
+            if (inFlightGeneration == null) {
+                inFlightGeneration = active
+                Request(active)
+            } else {
+                pendingGeneration = active
+                null
+            }
+        }
+        request?.let(::dispatch)
+    }
+
+    /** Rechecked by the main-thread delivery because Stop may race a worker-to-main post. */
+    fun isActive(expectedGeneration: Long): Boolean = synchronized(lock) {
+        activeGeneration == expectedGeneration
+    }
+
+    internal fun snapshot(): LifecycleInfoRefreshSnapshot = synchronized(lock) {
+        LifecycleInfoRefreshSnapshot(
+            activeGeneration = activeGeneration,
+            inFlightRequests = if (inFlightGeneration == null) 0 else 1,
+            pendingRequests = if (pendingGeneration == null) 0 else 1,
+        )
+    }
+
+    private fun dispatch(request: Request) {
+        val accepted = runCatching {
+            submit(
+                Runnable {
+                    val value = runCatching(sample).getOrNull()
+                    val completion = finish(request, publishCandidate = value != null)
+                    try {
+                        if (completion.publish && value != null) deliver(request.generation, value)
+                    } finally {
+                        // Enqueue only after this worker has classified itself. On the shared
+                        // single-thread executor, user work accepted while it ran remains ahead of
+                        // this coalesced tail.
+                        completion.next?.let(::dispatch)
+                    }
+                },
+            )
+        }.getOrDefault(false)
+        if (!accepted) {
+            finish(request, publishCandidate = false).next?.let(::dispatch)
+        }
+    }
+
+    private fun finish(request: Request, publishCandidate: Boolean): Completion = synchronized(lock) {
+        if (inFlightGeneration != request.generation) return@synchronized Completion(false, null)
+        val publish = publishCandidate && activeGeneration == request.generation
+        val nextGeneration = pendingGeneration?.takeIf { it == activeGeneration }
+        pendingGeneration = null
+        inFlightGeneration = nextGeneration
+        Completion(publish, nextGeneration?.let(::Request))
+    }
+}
 
 internal fun focusModeChangeClearsTapPoint(
     current: FocusMode,
