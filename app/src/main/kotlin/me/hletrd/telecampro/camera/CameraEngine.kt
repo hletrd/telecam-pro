@@ -6016,12 +6016,17 @@ class CameraEngine internal constructor(
         // from a camera-id table or a hardcoded phone name (see camera/DeviceExifLabels.kt): the id
         // map this replaced defaulted every unrecognised rear lens to "tele" and stamped one
         // phone's marketing focal band onto whatever handset was actually shooting.
-        val modelLabel = exifLensModel(
+        val modelLabel = exifLensModelForRoute(
+            route = spec.route,
             manufacturer = android.os.Build.MANUFACTURER,
             model = android.os.Build.MODEL,
             equivMm = lensEquiv,
             apertureF = lensF,
-            frontFacing = spec.frontFacing,
+        )
+        val deviceIdentity = exifIdentityForRoute(
+            route = spec.route,
+            manufacturer = android.os.Build.MANUFACTURER,
+            model = android.os.Build.MODEL,
         )
         return ExifShot(
             iso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0,
@@ -6054,8 +6059,8 @@ class CameraEngine internal constructor(
             manualExposure = c.exposureMode == ExposureMode.MANUAL,
             manualWb = c.wbMode != WbMode.AUTO,
             lensModel = modelLabel,
-            deviceMake = exifMake(android.os.Build.MANUFACTURER),
-            deviceModel = exifModel(android.os.Build.MODEL),
+            deviceMake = deviceIdentity.make,
+            deviceModel = deviceIdentity.model,
             takenAtMs = spec.takenAtMs,
         )
     }

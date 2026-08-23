@@ -81,4 +81,40 @@ class DeviceExifLabelsTest {
             exifLensModel(null, null, equivMm = 23f, apertureF = 1.63f, frontFacing = false),
         )
     }
+
+    @Test
+    fun `external route omits host identity but keeps advertised optics`() {
+        assertEquals(
+            ExifRouteIdentity(make = null, model = null),
+            exifIdentityForRoute(CameraRoute.EXTERNAL, "OPPO", "PMA110"),
+        )
+        assertEquals(
+            "wide camera 23mm f/1.6",
+            exifLensModelForRoute(
+                CameraRoute.EXTERNAL,
+                manufacturer = "OPPO",
+                model = "PMA110",
+                equivMm = 23f,
+                apertureF = 1.63f,
+            ),
+        )
+    }
+
+    @Test
+    fun `built in routes preserve host identity and route-specific lens name`() {
+        assertEquals(
+            ExifRouteIdentity(make = "OPPO", model = "PMA110"),
+            exifIdentityForRoute(CameraRoute.BACK, "OPPO", "PMA110"),
+        )
+        assertEquals(
+            "OPPO PMA110 front camera 21mm f/2.2",
+            exifLensModelForRoute(
+                CameraRoute.FRONT,
+                manufacturer = "OPPO",
+                model = "PMA110",
+                equivMm = 21f,
+                apertureF = 2.2f,
+            ),
+        )
+    }
 }

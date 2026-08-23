@@ -29,6 +29,22 @@ internal fun exifMake(manufacturer: String?): String? =
 internal fun exifModel(model: String?): String? =
     model?.trim()?.takeIf { it.isNotEmpty() }
 
+/** Host identity is truthful only for a camera built into that host. */
+internal data class ExifRouteIdentity(
+    val make: String?,
+    val model: String?,
+)
+
+internal fun exifIdentityForRoute(
+    route: CameraRoute,
+    manufacturer: String?,
+    model: String?,
+): ExifRouteIdentity = if (route == CameraRoute.EXTERNAL) {
+    ExifRouteIdentity(make = null, model = null)
+} else {
+    ExifRouteIdentity(make = exifMake(manufacturer), model = exifModel(model))
+}
+
 /**
  * "OPPO PMA110" — the device half of the lens description. Avoids repeating the manufacturer when
  * the model already carries it (Google reports "Pixel 8 Pro" for a "Google" make; OPPO reports the
@@ -93,3 +109,18 @@ internal fun exifLensModel(
         .filter { it.isNotEmpty() }
         .joinToString(" ")
 }
+
+/** Lens description with host identity omitted for removable/external cameras. */
+internal fun exifLensModelForRoute(
+    route: CameraRoute,
+    manufacturer: String?,
+    model: String?,
+    equivMm: Float,
+    apertureF: Float,
+): String = exifLensModel(
+    manufacturer = manufacturer.takeUnless { route == CameraRoute.EXTERNAL },
+    model = model.takeUnless { route == CameraRoute.EXTERNAL },
+    equivMm = equivMm,
+    apertureF = apertureF,
+    frontFacing = route == CameraRoute.FRONT,
+)
