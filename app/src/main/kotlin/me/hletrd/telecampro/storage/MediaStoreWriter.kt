@@ -49,7 +49,6 @@ object MediaStoreWriter {
     private const val PENDING_JOURNAL = "pending_media_journal"
     private const val PENDING_REGISTERED = "registered"
     private const val PENDING_COMPLETE = "complete"
-    private const val PENDING_DISCARD = "discard"
     private const val DELETED_FAMILY_JOURNAL = "deleted_capture_family_journal"
     private const val DELETED_FAMILY_PREFIX = "F1|"
     private const val COMPLETION_MARK_ATTEMPTS = 3
@@ -330,10 +329,7 @@ object MediaStoreWriter {
         val marker = markCompletionWithRetry(
             maxAttempts = COMPLETION_MARK_ATTEMPTS,
             commit = {
-                context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
-                    .edit()
-                    .putString(uri.toString(), PENDING_DISCARD)
-                    .commit()
+                PendingDiscardJournal(context).mark(uri.toString())
             },
             backoff = { attempt ->
                 runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
@@ -504,8 +500,11 @@ object MediaStoreWriter {
             mediaRowExists(context, uri)
         }
         val disposition = mediaDeleteDisposition(deleteCount, rowExistsAfter)
-        if (disposition != MediaDeleteDisposition.FAILED) clearPending(context, uri)
-        return disposition != MediaDeleteDisposition.FAILED
+        if (disposition == MediaDeleteDisposition.FAILED) return false
+        // The delete is terminal only after its exact durable retry marker is gone. If SQLite is
+        // temporarily unavailable, report failure so launch recovery retries the now-absent URI
+        // and gets another chance to retire the marker.
+        return clearPending(context, uri)
     }
 
     /** Null means the provider could not answer; false is an authoritative already-absent row. */
@@ -881,10 +880,7 @@ object MediaStoreWriter {
         batchLimit: Int,
     ): DiscardJournalRecoveryBatch {
         val page = runCatching {
-            context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).all
-                .filterValues { it == PENDING_DISCARD }
-                .keys
-                .let { discardJournalPage(it, afterKey, batchLimit) }
+            PendingDiscardJournal(context).page(afterKey, batchLimit)
         }.getOrElse {
             return DiscardJournalRecoveryBatch(
                 report = RecoveryReport().record(RecoveryEvent.QUERY_FAILED),
@@ -914,17 +910,23 @@ object MediaStoreWriter {
         return null
     }
 
-    private fun pendingJournalState(context: Context, uri: Uri): PendingJournalState =
-        when (context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).getString(uri.toString(), null)) {
+    private fun pendingJournalState(context: Context, uri: Uri): PendingJournalState {
+        if (PendingDiscardJournal(context).contains(uri.toString())) {
+            return PendingJournalState.DISCARD
+        }
+        return when (context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).getString(uri.toString(), null)) {
             PENDING_COMPLETE -> PendingJournalState.COMPLETE
-            PENDING_DISCARD -> PendingJournalState.DISCARD
+            PendingDiscardJournal.LEGACY_DISCARD_VALUE -> PendingJournalState.DISCARD
             PENDING_REGISTERED -> PendingJournalState.REGISTERED
             else -> PendingJournalState.UNKNOWN
         }
+    }
 
-    private fun clearPending(context: Context, uri: Uri) {
+    private fun clearPending(context: Context, uri: Uri): Boolean {
+        val discardRemoved = PendingDiscardJournal(context).remove(uri.toString())
         context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
             .edit(commit = true) { remove(uri.toString()) }
+        return discardRemoved
     }
 
     private fun deletedFamilyJournalKey(family: CaptureFamilyKey): String =
@@ -1250,6 +1252,7 @@ internal data class DiscardJournalPage(
     val keys: List<String>,
     val nextAfterKey: String?,
     val hasMore: Boolean,
+    val rowsRead: Int,
 )
 
 internal data class DiscardJournalRecoveryBatch(
@@ -1257,26 +1260,6 @@ internal data class DiscardJournalRecoveryBatch(
     val nextAfterKey: String?,
     val hasMore: Boolean,
 )
-
-/** Stable lexicographic page over durable exact-URI keys; one extra key proves continuation. */
-internal fun discardJournalPage(
-    keys: Collection<String>,
-    afterKey: String?,
-    batchLimit: Int,
-): DiscardJournalPage {
-    require(batchLimit > 0)
-    val candidates = keys.asSequence()
-        .filter { afterKey == null || it > afterKey }
-        .sorted()
-        .take(batchLimit + 1)
-        .toList()
-    val pageKeys = candidates.take(batchLimit)
-    return DiscardJournalPage(
-        keys = pageKeys,
-        nextAfterKey = pageKeys.lastOrNull() ?: afterKey,
-        hasMore = candidates.size > batchLimit,
-    )
-}
 
 internal data class RecoveryReport(
     val scanned: Int = 0,
