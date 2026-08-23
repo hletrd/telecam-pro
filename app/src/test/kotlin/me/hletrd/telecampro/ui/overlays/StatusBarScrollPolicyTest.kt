@@ -5,6 +5,7 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.FocusConfidenceSource
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.VideoCodec
@@ -71,5 +72,18 @@ class StatusBarScrollPolicyTest {
             statusBarPriorityResetKey(hlg, "70 mm", compact = false),
             statusBarPriorityResetKey(hlg.copy(gammaAssist = true), "70 mm", compact = false),
         )
+    }
+
+    @Test
+    fun `photo drive identity carries timelapse interval`() {
+        val photo = CameraUiState(
+            mode = CaptureMode.PHOTO,
+            driveMode = DriveMode.TIMELAPSE,
+            intervalSec = 17,
+        )
+
+        val drive = statusBarPriorityResetKey(photo, "70 mm", compact = false).driveTag
+        assertEquals(DriveMode.TIMELAPSE, drive?.mode)
+        assertEquals(17, drive?.intervalSec)
     }
 }

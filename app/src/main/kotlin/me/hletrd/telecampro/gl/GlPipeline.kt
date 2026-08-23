@@ -1944,12 +1944,16 @@ internal fun PreviewOutputSignal.readyAfterSwap(realCameraFrame: Boolean): Boole
  * Single-in-flight gate owned by one immutable analysis generation. Retirement is synchronous;
  * work that lost the race cannot publish, and its release can only mutate this owner's guard.
  */
-internal class AnalysisGenerationOwner {
+internal class AnalysisGenerationOwner(
+    /** Deterministic interleaving seam for the otherwise nanosecond-wide retire/acquire race. */
+    private val afterBusyAcquired: (() -> Unit)? = null,
+) {
     private val retired = AtomicBoolean(false)
     private val busy = AtomicBoolean(false)
 
     fun tryAcquire(): Boolean {
         if (retired.get() || !busy.compareAndSet(false, true)) return false
+        afterBusyAcquired?.invoke()
         if (!retired.get()) return true
         busy.compareAndSet(true, false)
         return false

@@ -14,6 +14,26 @@ import org.junit.Test
 class StillPublicationDurabilityTest {
 
     @Test
+    fun `durable COMPLETE and successful publish emits one saved callback`() {
+        val events = mutableListOf<String>()
+        val publication = completeStillPublication(
+            kind = "HEIF",
+            output = "heif-row",
+            captureId = 4,
+            markerDurable = true,
+            effects = StillPublicationEffects(
+                publish = { events += "publish:$it"; true },
+                emitSaved = { output, id -> events += "saved:$output:$id" },
+                emitRetained = { _, _ -> events += "retained" },
+                emitStatus = { events += "status" },
+            ),
+        )
+
+        assertEquals(CompletedOutputPublication.PUBLISHED, publication)
+        assertEquals(listOf("publish:heif-row", "saved:heif-row:4"), events)
+    }
+
+    @Test
     fun `exhausted COMPLETE retains HEIF JPEG and DNG without publish or saved callbacks`() {
         listOf("HEIF", "JPEG", "DNG").forEach { kind ->
             val events = mutableListOf<String>()

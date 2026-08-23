@@ -54,4 +54,14 @@ class AnalysisGenerationOwnerTest {
             assertFalse(owner.tryAcquire())
         }
     }
+
+    @Test
+    fun `retire after busy claim makes acquisition fail and releases the guard`() {
+        lateinit var owner: AnalysisGenerationOwner
+        owner = AnalysisGenerationOwner(afterBusyAcquired = { owner.retire() })
+
+        assertFalse(owner.tryAcquire())
+        assertFalse(owner.mayPublish())
+        assertFalse(owner.isBusy())
+    }
 }
