@@ -1,6 +1,9 @@
 package me.hletrd.telecampro.camera
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 
 internal enum class RecordingTeardownTerminal { FINALIZE, QUARANTINE }
 
@@ -14,6 +17,67 @@ internal fun interface RecordingTeardownScheduler {
 }
 
 internal enum class RecordingOperationState { NEW, ACTIVE, COMPLETED, TIMED_OUT }
+
+internal enum class RecorderNativeFinalization { PENDING, RELEASED, QUARANTINED }
+
+/**
+ * First-wins classification of the recorder's native graph, independent from the later storage tail.
+ *
+ * RELEASED means every native owner was checked closed and replacement process admission is safe.
+ * QUARANTINED means at least one native owner remains uncertain and is retained process-long. The
+ * task that publishes/deletes the MediaStore row may continue after either classification.
+ */
+internal class RecorderNativeFinalizationGate {
+    private val state = AtomicReference(RecorderNativeFinalization.PENDING)
+    private val classified = CountDownLatch(1)
+
+    fun classify(candidate: RecorderNativeFinalization): Boolean {
+        require(candidate != RecorderNativeFinalization.PENDING)
+        if (!state.compareAndSet(RecorderNativeFinalization.PENDING, candidate)) return false
+        classified.countDown()
+        return true
+    }
+
+    fun current(): RecorderNativeFinalization = state.get()
+
+    fun await(timeout: Long, unit: TimeUnit): RecorderNativeFinalization {
+        if (state.get() == RecorderNativeFinalization.PENDING) {
+            try {
+                classified.await(timeout.coerceAtLeast(0L), unit)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        return state.get()
+    }
+}
+
+/** Native release owns publication only when both the deadline and first-wins classification agree. */
+internal fun completeRecorderNativeRelease(
+    deadlineComplete: () -> Boolean,
+    classification: RecorderNativeFinalizationGate,
+    releaseProcessAdmission: () -> Unit,
+): Boolean {
+    if (!deadlineComplete()) return false
+    if (!classification.classify(RecorderNativeFinalization.RELEASED)) return false
+    releaseProcessAdmission()
+    return true
+}
+
+/**
+ * Engine release waits only for native classification. A still-pending graph is synchronously
+ * claimed for quarantine; an already RELEASED graph is never reclassified because storage is slow.
+ */
+internal fun nativeFinalizationAtEngineRelease(
+    classification: RecorderNativeFinalizationGate,
+    timeout: Long,
+    unit: TimeUnit,
+): RecorderNativeFinalization {
+    val observed = classification.await(timeout, unit)
+    if (observed != RecorderNativeFinalization.PENDING) return observed
+    classification.classify(RecorderNativeFinalization.QUARANTINED)
+    return classification.current()
+}
 
 /** One hard deadline for a native operation whose late completion must become inert. */
 internal class RecordingOperationDeadline(

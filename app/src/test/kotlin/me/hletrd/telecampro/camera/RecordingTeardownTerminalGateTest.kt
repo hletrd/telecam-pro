@@ -7,14 +7,148 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecordingTeardownTerminalGateTest {
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `pending is not a terminal native classification`() {
+        RecorderNativeFinalizationGate().classify(RecorderNativeFinalization.PENDING)
+    }
+
+    @Test
+    fun `interrupted native-classification wait preserves interruption and remains pending`() {
+        val classification = RecorderNativeFinalizationGate()
+        val observed = java.util.concurrent.atomic.AtomicReference<RecorderNativeFinalization>()
+        val interrupted = AtomicBoolean(false)
+        val worker = Thread {
+            Thread.currentThread().interrupt()
+            observed.set(classification.await(1, TimeUnit.SECONDS))
+            interrupted.set(Thread.currentThread().isInterrupted)
+        }
+
+        worker.start()
+        worker.join(5_000)
+
+        assertFalse(worker.isAlive)
+        assertEquals(RecorderNativeFinalization.PENDING, observed.get())
+        assertTrue(interrupted.get())
+    }
+
+    @Test
+    fun `native finalization is first-wins across release and quarantine`() {
+        repeat(100) {
+            val classification = RecorderNativeFinalizationGate()
+            val start = CountDownLatch(1)
+            val releaseWon = AtomicBoolean(false)
+            val quarantineWon = AtomicBoolean(false)
+            val releaseThread = Thread {
+                start.await()
+                releaseWon.set(classification.classify(RecorderNativeFinalization.RELEASED))
+            }
+            val quarantineThread = Thread {
+                start.await()
+                quarantineWon.set(classification.classify(RecorderNativeFinalization.QUARANTINED))
+            }
+
+            releaseThread.start()
+            quarantineThread.start()
+            start.countDown()
+            releaseThread.join(5_000)
+            quarantineThread.join(5_000)
+
+            assertTrue(releaseWon.get() xor quarantineWon.get())
+            assertEquals(
+                if (releaseWon.get()) {
+                    RecorderNativeFinalization.RELEASED
+                } else {
+                    RecorderNativeFinalization.QUARANTINED
+                },
+                classification.current(),
+            )
+            assertEquals(classification.current(), classification.await(0, TimeUnit.MILLISECONDS))
+        }
+    }
+
+    @Test
+    fun `blocked storage tail cannot quarantine released native graph and admission is free`() {
+        val processAdmission = RecorderQuarantineAdmissionGate()
+        val active = checkNotNull(processAdmission.snapshot(Any()))
+        assertTrue(processAdmission.publish(active) { true })
+        val classification = RecorderNativeFinalizationGate()
+        val storageTailStillBlocked = CountDownLatch(1)
+
+        assertTrue(
+            completeRecorderNativeRelease(
+                deadlineComplete = { true },
+                classification = classification,
+                releaseProcessAdmission = { processAdmission.finish(active) },
+            ),
+        )
+
+        // Engine release observes native truth only; the independent task/storage latch is still
+        // blocked and must have no power to turn RELEASED into process quarantine.
+        assertEquals(1L, storageTailStillBlocked.count)
+        assertEquals(
+            RecorderNativeFinalization.RELEASED,
+            nativeFinalizationAtEngineRelease(classification, 0, TimeUnit.MILLISECONDS),
+        )
+        assertNotNull(processAdmission.snapshot(Any()))
+    }
+
+    @Test
+    fun `unresolved native graph is quarantined and late release cannot free admission`() {
+        val processAdmission = RecorderQuarantineAdmissionGate()
+        val active = checkNotNull(processAdmission.snapshot(Any()))
+        assertTrue(processAdmission.publish(active) { true })
+        val classification = RecorderNativeFinalizationGate()
+        var admissionReleased = false
+
+        assertEquals(
+            RecorderNativeFinalization.QUARANTINED,
+            nativeFinalizationAtEngineRelease(classification, 0, TimeUnit.MILLISECONDS),
+        )
+        processAdmission.close()
+        assertFalse(
+            completeRecorderNativeRelease(
+                deadlineComplete = { false },
+                classification = classification,
+                releaseProcessAdmission = {
+                    admissionReleased = true
+                    processAdmission.finish(active)
+                },
+            ),
+        )
+
+        assertFalse(admissionReleased)
+        assertEquals(RecorderNativeFinalization.QUARANTINED, classification.current())
+        assertNull(processAdmission.snapshot(Any()))
+    }
+
+    @Test
+    fun `release callback refuses a classification already owned by quarantine`() {
+        val classification = RecorderNativeFinalizationGate()
+        assertTrue(classification.classify(RecorderNativeFinalization.QUARANTINED))
+        var admissionReleased = false
+
+        assertFalse(
+            completeRecorderNativeRelease(
+                deadlineComplete = { true },
+                classification = classification,
+                releaseProcessAdmission = { admissionReleased = true },
+            ),
+        )
+
+        assertFalse(admissionReleased)
+        assertEquals(RecorderNativeFinalization.QUARANTINED, classification.current())
+    }
 
     @Test
     fun `operation timeout makes late completion inert`() {

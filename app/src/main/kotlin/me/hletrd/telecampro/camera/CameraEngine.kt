@@ -333,7 +333,8 @@ class CameraEngine(private val context: Context) {
     private data class RecorderFinalizationOwner(
         val recorder: VideoRecorder,
         val captureId: Int,
-        val completed: java.util.concurrent.CountDownLatch,
+        val nativeFinalization: RecorderNativeFinalizationGate,
+        val taskCompleted: java.util.concurrent.CountDownLatch,
     )
 
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
@@ -4444,17 +4445,21 @@ class CameraEngine(private val context: Context) {
         captureId: Int,
     ) {
         recorderTeardownInFlight = true
-        val completed = java.util.concurrent.CountDownLatch(1)
-        val finalizationOwner = RecorderFinalizationOwner(rec, captureId, completed)
+        val finalizationOwner = RecorderFinalizationOwner(
+            recorder = rec,
+            captureId = captureId,
+            nativeFinalization = RecorderNativeFinalizationGate(),
+            taskCompleted = java.util.concurrent.CountDownLatch(1),
+        )
         recorderFinalizationOwner = finalizationOwner
 
-        fun completeFinalizationOwner() {
+        fun completeFinalizationTask() {
             synchronized(recorderOwnershipLock) {
                 if (recorderFinalizationOwner === finalizationOwner) {
                     recorderFinalizationOwner = null
                 }
             }
-            completed.countDown()
+            finalizationOwner.taskCompleted.countDown()
         }
 
         fun dispatchTask(task: Runnable, fallbackName: String) {
@@ -4505,45 +4510,59 @@ class CameraEngine(private val context: Context) {
                                 )
                             },
                             onTimeout = { timeout ->
-                                try {
+                                if (finalizationOwner.nativeFinalization.classify(
+                                        RecorderNativeFinalization.QUARANTINED,
+                                    )
+                                ) {
                                     enterUnsafeRecorderQuarantine(rec, captureId, timeout)
-                                } finally {
-                                    completeFinalizationOwner()
                                 }
                             },
                         )
                         if (finalizationDeadline.arm()) {
                             val task = Runnable {
-                                var releaseAdmission = false
                                 try {
-                                    releaseAdmission = finishRecording(
+                                    finishRecording(
                                         rec,
                                         uri,
                                         captureId,
-                                        acceptResult = finalizationDeadline::complete,
-                                    ).nativeGraphDisposition == NativeGraphDisposition.RELEASED &&
-                                        finalizationDeadline.current() ==
-                                        RecordingOperationState.COMPLETED
+                                        acceptNativeRelease = {
+                                            completeRecorderNativeRelease(
+                                                deadlineComplete = finalizationDeadline::complete,
+                                                classification = finalizationOwner.nativeFinalization,
+                                                releaseProcessAdmission = {
+                                                    UnsafeRecorderQuarantine.finishAdmission(
+                                                        rec.processAdmissionToken,
+                                                    )
+                                                },
+                                            )
+                                        },
+                                    )
                                 } finally {
-                                    if (releaseAdmission) {
-                                        UnsafeRecorderQuarantine.finishAdmission(rec.processAdmissionToken)
-                                    }
-                                    completeFinalizationOwner()
+                                    completeFinalizationTask()
                                 }
                             }
                             dispatchTask(task, "record-finalize-fallback")
+                        } else {
+                            // No task was submitted when the watchdog could not arm. Quarantine was
+                            // classified synchronously by onTimeout, so task ownership is complete.
+                            completeFinalizationTask()
                         }
                     }
 
                     RecordingTeardownTerminal.QUARANTINE -> try {
-                        enterUnsafeRecorderQuarantine(
-                            rec = rec,
-                            captureId = captureId,
-                            failure = failure
-                                ?: IllegalStateException("Recording graph release was not proven"),
-                        )
+                        if (finalizationOwner.nativeFinalization.classify(
+                                RecorderNativeFinalization.QUARANTINED,
+                            )
+                        ) {
+                            enterUnsafeRecorderQuarantine(
+                                rec = rec,
+                                captureId = captureId,
+                                failure = failure
+                                    ?: IllegalStateException("Recording graph release was not proven"),
+                            )
+                        }
                     } finally {
-                        completeFinalizationOwner()
+                        completeFinalizationTask()
                     }
                 }
             },
@@ -4686,7 +4705,7 @@ class CameraEngine(private val context: Context) {
         rec: VideoRecorder,
         uri: android.net.Uri?,
         captureId: Int,
-        acceptResult: () -> Boolean = { true },
+        acceptNativeRelease: () -> Boolean = { true },
     ): VideoRecorder.StopResult {
         var terminalResult: VideoRecorder.StopResult? = null
         var resultOwned = false
@@ -4694,7 +4713,7 @@ class CameraEngine(private val context: Context) {
         try {
             val result = runCatching {
                 rec.stop {
-                    acceptResult().also { nativeReleaseOwned = it }
+                    acceptNativeRelease().also { nativeReleaseOwned = it }
                 }
             }
                 .getOrElse {
@@ -5066,7 +5085,8 @@ class CameraEngine(private val context: Context) {
         stopTimelapse()
         standbyAudioController.disable()
         // Preserve the same GL-detach-before-codec-release order during ViewModel teardown. Await
-        // the exactly-once finalization latch before dropping GL/executor ownership; pause() usually
+        // first-wins NATIVE classification before dropping GL/executor ownership; the independent
+        // task latch may remain open while durable MediaStore work continues. pause() usually
         // started this already, while the direct branch covers unusual unbalanced lifecycle exits.
         val ownedRecording = synchronized(recorderOwnershipLock) {
             recorder?.let { rec ->
@@ -5085,13 +5105,12 @@ class CameraEngine(private val context: Context) {
             detachAndFinalizeRecording(it.gl, it.recorder, it.uri, it.captureId)
         }
         recorderFinalizationOwner?.let { finalizing ->
-            val completedInTime = runCatching {
-                finalizing.completed.await(
-                    RECORDER_FINALIZE_RELEASE_TIMEOUT_MS,
-                    java.util.concurrent.TimeUnit.MILLISECONDS,
-                )
-            }.getOrDefault(false)
-            if (!completedInTime) {
+            val nativeFinalization = nativeFinalizationAtEngineRelease(
+                classification = finalizing.nativeFinalization,
+                timeout = RECORDER_FINALIZE_RELEASE_TIMEOUT_MS,
+                unit = java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+            if (nativeFinalization == RecorderNativeFinalization.QUARANTINED) {
                 // release() is the old Engine's last authority boundary. It may not return and let a
                 // replacement graph start while this recorder is still neither released nor retained.
                 enterUnsafeRecorderQuarantine(
@@ -5342,7 +5361,8 @@ class CameraEngine(private val context: Context) {
         const val MAX_PREVIEW_RECOVERY_ATTEMPTS = 3
         const val PREVIEW_RECOVERY_DELAY_MS = 200L
         // Covers the detach hard deadline plus native-finalization deadline. release() runs on the
-        // dedicated camera-engine-release thread, never main (CameraViewModel.onCleared).
+        // dedicated camera-engine-release thread, never main (CameraViewModel.onCleared). It waits
+        // for native classification only; MediaStore publication may continue independently.
         const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 14_000L
         const val RECORDER_SETUP_TIMEOUT_MS = 8_000L
         const val RECORDER_FINALIZATION_TIMEOUT_MS = 8_000L
