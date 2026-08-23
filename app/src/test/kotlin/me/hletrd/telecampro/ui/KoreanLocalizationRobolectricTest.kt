@@ -63,6 +63,7 @@ class KoreanLocalizationRobolectricTest {
             R.string.settings_tab_shoot,
             R.string.section_recording_format,
             R.string.status_camera_unavailable_reopen,
+            R.string.status_video_save_delayed,
             R.string.focus_confidence_too_close,
             R.string.a11y_start_recording,
             R.string.review_error_open_image,

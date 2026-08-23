@@ -58,6 +58,7 @@ class StatusUrgencyTest {
         listOf(
             CameraStatusMessage.DNG_SAVE_DELAYED,
             CameraStatusMessage.OUTPUT_SAVED_PENDING,
+            CameraStatusMessage.VIDEO_SAVE_DELAYED,
         ).forEach {
             val status = it.status()
             assertEquals(CameraStatusSeverity.WARNING, status.severity)

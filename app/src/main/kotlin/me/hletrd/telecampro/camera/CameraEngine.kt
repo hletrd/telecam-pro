@@ -65,11 +65,15 @@ class CameraEngine(private val context: Context) {
     // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
     // behind a burst's full-resolution still encodes on ioExecutor (or vice versa).
     private val recorderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-    // Extractor/MediaStore tails own no native recorder resources. Use independent workers so one
-    // stalled provider call cannot block REC admission, native finalization, or another clip's tail.
-    private val recordingStorageExecutor = java.util.concurrent.Executors.newCachedThreadPool { task ->
-        Thread(task, "recording-storage").apply { isDaemon = true }
-    }
+    // Extractor/MediaStore tails own no native recorder resources. The lane is deliberately finite:
+    // provider outages may occupy two workers plus a bounded backlog, after which the pending row is
+    // the durable overflow owner for launch recovery. Admission never falls back inline/raw-thread.
+    private val recordingStorageDispatcher = RecordingStorageDispatcher(
+        workerCount = RECORDING_STORAGE_WORKER_COUNT,
+        backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
+    )
+    private val recordingStoragePresentation =
+        RecordingStoragePresentationReducer<android.net.Uri>()
     // Independent of GL/setup/recorder lanes: an accepted task on any of those lanes may itself be
     // the wedge we are timing out. This daemon owns only bounded teardown deadlines.
     private val recorderWatchdog = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
@@ -3660,6 +3664,10 @@ class CameraEngine(private val context: Context) {
     private fun shotSpec(shotControls: ManualControls, hiRes: Boolean, optics: ShotOptics): ShotSpec {
         val requestedAtMs = System.currentTimeMillis()
         val captureId = captureSeq.incrementAndGet()
+        // A newer still (including an in-REC snapshot) also owns current capture presentation. Its
+        // tracker result already outranks an older video by this same id; advance the storage-status
+        // gate now so that video's late tail cannot make review and status disagree.
+        recordingStoragePresentation.observeCapture(captureId)
         // Device orientation stays LIVE per shot (gravity, not an optics axis) — frames of one
         // burst share the chain's route but may straddle a physical re-hold like any two shots.
         val rotation = optics.caps?.let {
@@ -3815,8 +3823,9 @@ class CameraEngine(private val context: Context) {
 
                     if (formats.dngRaw) {
                         if (raw != null) {
-                            // DngCreator needs the live Image, so write + COMPLETE marking remain on
-                            // this camera callback. Only retrying publication crosses to ioExecutor.
+                            // DngCreator needs the live Image, so write + the bounded COMPLETE
+                            // marker attempt remain on this camera callback. Only the durability-
+                            // gated publication crosses to ioExecutor.
                             val write = runCatching {
                                 stillPipeline.saveDng(raw, rawChars, result, spec)
                             }
@@ -3837,7 +3846,8 @@ class CameraEngine(private val context: Context) {
                                 }
                                 dngPublishQueued = queued.isSuccess
                                 queued.onFailure {
-                                    // The bytes are COMPLETE and remain pending for launch recovery.
+                                    // The bytes are structurally complete and remain pending for
+                                    // launch recovery (the marker result is frozen in [pending]).
                                     reportStatus(CameraStatusMessage.DNG_SAVE_DELAYED.status())
                                 }
                             }
@@ -4236,6 +4246,10 @@ class CameraEngine(private val context: Context) {
             )
             return false
         }
+        // Advance terminal-presentation ownership only after the recorder itself is admitted. A
+        // late tail from an older clip may still finish/recover, but it cannot replace this take's
+        // review or transient save verdict while this take is active.
+        recordingStoragePresentation.observeCapture(recordingCaptureId)
         ownedGl.setTransfer(glTransfer)
         fun ownsEncoderAttach(): Boolean {
             val acquisitionOpen = terminalAcquisitionGate.isOpen()
@@ -4751,7 +4765,14 @@ class CameraEngine(private val context: Context) {
         }
         val storageTail = result.storageTail
         if (storageTail == null) {
-            onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
+            presentRecordingStorageResult(
+                RecordingStorageTerminalResult(
+                    captureId = captureId,
+                    outputUri = uri,
+                    disposition = RecordingStorageTerminalDisposition.FAILED,
+                    error = result.error,
+                ),
+            )
             return result
         }
         dispatchRecordingStorageTail(storageTail, uri, captureId)
@@ -4766,30 +4787,78 @@ class CameraEngine(private val context: Context) {
         val task = Runnable {
             val result = runCatching { storageTail.complete() }
                 .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
-            if (result.saved && uri != null) {
-                // Capture identity stays frozen with this tail even if a newer REC is already live.
-                onMediaSaved?.invoke(uri, captureId)
-                onStatus?.invoke(CameraStatusMessage.VIDEO_SAVED.status())
-            } else {
-                onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
-            }
+            val terminal = RecordingStorageTerminalResult(
+                captureId = captureId,
+                outputUri = uri,
+                disposition = recordingStorageTerminalDisposition(
+                    storageDisposition = result.storageDisposition,
+                    hasUri = uri != null,
+                ),
+                error = result.error,
+            )
+            presentRecordingStorageResult(terminal)
             if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                 android.util.Log.i(
                     "CameraEngine",
                     "RecordingStored: captureId=$captureId saved=${result.saved} " +
+                        "storage=${result.storageDisposition} " +
                         "error=${result.error?.javaClass?.simpleName ?: "none"}",
                 )
             }
         }
-        dispatchRecordingStorageTask(task)
-    }
-
-    private fun dispatchRecordingStorageTask(task: Runnable) {
-        if (runCatching { recordingStorageExecutor.execute(task) }.isFailure) {
-            runCatching { Thread(task, "recording-storage-fallback").apply { isDaemon = true }.start() }
-                .onFailure { task.run() }
+        when (dispatchRecordingStorageTask(task)) {
+            RecordingStorageDispatch.ACCEPTED -> Unit
+            RecordingStorageDispatch.OVERFLOW -> {
+                // The finalized row stays pending; launch recovery is the durable overflow lane.
+                // This is delayed/recoverable, not evidence that the clip failed.
+                presentRecordingStorageResult(
+                    RecordingStorageTerminalResult(
+                        captureId = captureId,
+                        outputUri = uri,
+                        disposition = RecordingStorageTerminalDisposition.RETAINED_PENDING,
+                    ),
+                )
+                if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                    android.util.Log.w(
+                        "CameraEngine",
+                        "RecordingStored: captureId=$captureId retained=pending reason=storage-overflow",
+                    )
+                }
+            }
+            RecordingStorageDispatch.SHUTDOWN -> {
+                // release() detached callbacks before closing this dispatcher. Retain the row for
+                // next-launch recovery without resurrecting UI from a terminal Engine.
+                if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                    android.util.Log.w(
+                        "CameraEngine",
+                        "RecordingStored: captureId=$captureId retained=pending reason=engine-shutdown",
+                    )
+                }
+            }
         }
     }
+
+    private fun presentRecordingStorageResult(
+        terminal: RecordingStorageTerminalResult<android.net.Uri>,
+    ) {
+        recordingStoragePresentation.publish(terminal) { current ->
+            when (current.disposition) {
+                RecordingStorageTerminalDisposition.SAVED -> {
+                    current.outputUri?.let { onMediaSaved?.invoke(it, current.captureId) }
+                    onStatus?.invoke(CameraStatusMessage.VIDEO_SAVED.status())
+                }
+                RecordingStorageTerminalDisposition.RETAINED_PENDING -> {
+                    onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_DELAYED.status())
+                }
+                RecordingStorageTerminalDisposition.FAILED -> {
+                    onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
+                }
+            }
+        }
+    }
+
+    private fun dispatchRecordingStorageTask(task: Runnable): RecordingStorageDispatch =
+        recordingStorageDispatcher.dispatch(task)
 
     /** Fail closed without releasing any owner that may still be executing in native code. */
     private fun enterUnsafeRecorderQuarantine(
@@ -5167,7 +5236,7 @@ class CameraEngine(private val context: Context) {
         ioExecutor.shutdown()
         mediaRecoveryExecutor.shutdown()
         recorderExecutor.shutdown()
-        recordingStorageExecutor.shutdown()
+        recordingStorageDispatcher.shutdown()
         recorderWatchdog.shutdown()
         timelapseScheduler.shutdown()
     }

@@ -54,6 +54,7 @@ internal fun CameraStatusMessage.stringResourceId(): Int = when (this) {
     CameraStatusMessage.MICROPHONE_BUSY -> R.string.status_microphone_busy
     CameraStatusMessage.UNSAFE_RECORDER_RESTART -> R.string.status_unsafe_recorder_restart
     CameraStatusMessage.VIDEO_SAVED -> R.string.status_video_saved
+    CameraStatusMessage.VIDEO_SAVE_DELAYED -> R.string.status_video_save_delayed
     CameraStatusMessage.VIDEO_SAVE_FAILED -> R.string.status_video_save_failed
     CameraStatusMessage.RECORDING_WITHOUT_AUDIO -> R.string.status_recording_without_audio
     CameraStatusMessage.MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO -> R.string.status_microphone_denied_recording_without_audio

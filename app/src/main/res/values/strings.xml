@@ -198,6 +198,7 @@
     <string name="status_microphone_busy">Microphone busy. Try again.</string>
     <string name="status_unsafe_recorder_restart">Recording failed. Force stop and reopen the app.</string>
     <string name="status_video_saved">Video saved</string>
+    <string name="status_video_save_delayed">Video save delayed. Will retry.</string>
     <string name="status_video_save_failed">Video save failed</string>
     <string name="status_recording_without_audio">Recording without audio</string>
     <string name="status_microphone_denied_recording_without_audio">Microphone denied — recording without audio</string>
