@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import threading
+import textwrap
 import unittest
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +30,10 @@ class RunAttestationTest(unittest.TestCase):
             directory = Path(temp_dir) / "run"
             directory.mkdir()
             allocation = runner.ReportAllocation("20260823-120000-aaaaaaaaaaaa", directory)
+            physical_identity = runner.PhysicalDeviceIdentity(
+                canonical_key="ro.serialno-sha256:" + "a" * 64,
+                source="ro.serialno",
+            )
             events: list[str] = []
 
             class HeldLock:
@@ -42,12 +48,22 @@ class RunAttestationTest(unittest.TestCase):
                 events.append("allocate")
                 return allocation
 
-            def record_identity(_allocation: runner.ReportAllocation, *, serial: str) -> None:
+            def record_identity(
+                _allocation: runner.ReportAllocation,
+                *,
+                serial: str,
+                physical_identity: runner.PhysicalDeviceIdentity | None = None,
+            ) -> None:
                 self.assertEqual(serial, "serial-a")
-                events.append("identity")
+                events.append("identity" if physical_identity is None else "physical-identity")
 
-            def acquire(_root: Path, serial: str, run_id: str) -> HeldLock:
-                self.assertEqual((serial, run_id), ("serial-a", allocation.run_id))
+            def acquire(
+                _root: Path,
+                serial: str,
+                identity: runner.PhysicalDeviceIdentity,
+                run_id: str,
+            ) -> HeldLock:
+                self.assertEqual((serial, identity, run_id), ("serial-a", physical_identity, allocation.run_id))
                 events.append("lock-acquire")
                 return HeldLock()
 
@@ -64,8 +80,15 @@ class RunAttestationTest(unittest.TestCase):
                 patch.object(runner, "require_apk_source_match", return_value=packaged_source),
                 patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
                 patch.object(runner, "harness_source_manifest", return_value=[]),
+                patch.object(runner, "require_harness_identity_unchanged"),
                 patch.object(runner, "allocate_report_directory", side_effect=allocate),
                 patch.object(runner, "write_run_identity", side_effect=record_identity),
+                patch.object(
+                    runner,
+                    "probe_physical_device_identity",
+                    return_value=physical_identity,
+                ),
+                patch.object(runner, "host_global_device_lock_root", return_value=Path("/host-locks")),
                 patch.object(runner.DeviceRunLock, "acquire", side_effect=acquire),
                 patch.object(runner, "run_locked_device", side_effect=device_run),
             ):
@@ -76,6 +99,7 @@ class RunAttestationTest(unittest.TestCase):
                 [
                     "allocate",
                     "identity",
+                    "physical-identity",
                     "lock-acquire",
                     "lock-enter",
                     "device-run",
@@ -127,20 +151,70 @@ class RunAttestationTest(unittest.TestCase):
                     max_attempts=2,
                 )
 
-    def test_device_lock_serializes_same_serial_but_not_different_serials(self) -> None:
+    def test_device_lock_serializes_physical_identity_across_aliases_and_report_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            reports = Path(temp_dir) / "reports"
-            first = runner.DeviceRunLock.acquire(reports, "serial-a", "run-a")
-            other = runner.DeviceRunLock.acquire(reports, "serial-b", "run-b")
+            lock_root = Path(temp_dir) / "host-global-locks"
+            report_a = runner.allocate_report_directory(
+                Path(temp_dir) / "checkout-a/reports",
+                timestamp="20260823-120000",
+                token_factory=lambda: "a" * 12,
+            )
+            report_b = runner.allocate_report_directory(
+                Path(temp_dir) / "checkout-b/reports",
+                timestamp="20260823-120000",
+                token_factory=lambda: "b" * 12,
+            )
+            same_device = runner.canonical_physical_device_identity(
+                {"ro.serialno": "PMA110-PHYSICAL"}
+            )
+            other_device = runner.canonical_physical_device_identity(
+                {"ro.serialno": "PMA110-OTHER"}
+            )
+            first = runner.DeviceRunLock.acquire(
+                lock_root,
+                "192.0.2.10:37777",
+                same_device,
+                report_a.run_id,
+            )
+            other = runner.DeviceRunLock.acquire(
+                lock_root,
+                "192.0.2.11:38888",
+                other_device,
+                "run-other-device",
+            )
             try:
-                with self.assertRaisesRegex(runner.DeviceRunLockError, "run-a"):
-                    runner.DeviceRunLock.acquire(reports, "serial-a", "run-a2")
+                with self.assertRaisesRegex(runner.DeviceRunLockError, report_a.run_id):
+                    runner.DeviceRunLock.acquire(
+                        lock_root,
+                        "127.0.0.1:5599",
+                        same_device,
+                        report_b.run_id,
+                    )
             finally:
                 other.release()
                 first.release()
 
-            replacement = runner.DeviceRunLock.acquire(reports, "serial-a", "run-a3")
+            replacement = runner.DeviceRunLock.acquire(
+                lock_root,
+                "127.0.0.1:5599",
+                same_device,
+                "replacement",
+            )
             replacement.release()
+
+    def test_physical_identity_uses_boot_serial_fallback_and_refuses_user_scoped_id(self) -> None:
+        boot = runner.canonical_physical_device_identity(
+            {"ro.serialno": "unknown", "ro.boot.serialno": "BOOT-PHYSICAL"}
+        )
+        self.assertEqual("ro.boot.serialno", boot.source)
+        framework = runner.canonical_physical_device_identity(
+            {"ro.serialno": "BOOT-PHYSICAL"}
+        )
+        self.assertEqual(framework.canonical_key, boot.canonical_key)
+        with self.assertRaisesRegex(runner.PhysicalDeviceIdentityError, "no stable physical"):
+            runner.canonical_physical_device_identity(
+                {"ro.serialno": "", "ro.boot.serialno": "", "android_id": "0123456789abcdef"}
+            )
 
     def test_device_lock_context_releases_after_failure_and_records_lock_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -150,25 +224,43 @@ class RunAttestationTest(unittest.TestCase):
                 timestamp="20260823-120000",
                 token_factory=lambda: "d" * 12,
             )
-            runner.write_run_identity(allocation, serial="serial-a")
-            identity = json.loads(
+            identity = runner.canonical_physical_device_identity(
+                {"ro.serialno": "PMA110-PHYSICAL"}
+            )
+            runner.write_run_identity(
+                allocation,
+                serial="serial-a",
+                physical_identity=identity,
+            )
+            recorded_identity = json.loads(
                 (allocation.directory / "run-identity.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(identity["run_id"], allocation.run_id)
-            self.assertEqual(identity["serial"], "serial-a")
+            self.assertEqual(recorded_identity["run_id"], allocation.run_id)
+            self.assertEqual(recorded_identity["connection_alias"], "serial-a")
+            self.assertEqual(recorded_identity["physical_device_key"], identity.canonical_key)
             with self.assertRaisesRegex(RuntimeError, "simulated run failure"):
-                with runner.DeviceRunLock.acquire(reports, "serial-a", allocation.run_id):
+                with runner.DeviceRunLock.acquire(
+                    reports / ".locks",
+                    "serial-a",
+                    identity,
+                    allocation.run_id,
+                ):
                     raise RuntimeError("simulated run failure")
 
-            replacement = runner.DeviceRunLock.acquire(reports, "serial-a", "replacement")
+            replacement = runner.DeviceRunLock.acquire(
+                reports / ".locks", "serial-a", identity, "replacement"
+            )
             try:
                 with self.assertRaises(runner.DeviceRunLockError) as refused:
-                    runner.DeviceRunLock.acquire(reports, "serial-a", "refused")
+                    runner.DeviceRunLock.acquire(
+                        reports / ".locks", "alias-b", identity, "refused"
+                    )
                 runner.write_run_failure(
                     allocation,
                     serial="serial-a",
                     phase="device-lock",
                     error=str(refused.exception),
+                    physical_identity=identity,
                 )
             finally:
                 replacement.release()
@@ -177,9 +269,99 @@ class RunAttestationTest(unittest.TestCase):
                 (allocation.directory / "run-failure.json").read_text(encoding="utf-8")
             )
             self.assertEqual(failure["run_id"], allocation.run_id)
-            self.assertEqual(failure["serial"], "serial-a")
+            self.assertEqual(failure["connection_alias"], "serial-a")
+            self.assertEqual(failure["physical_device_key"], identity.canonical_key)
             self.assertEqual(failure["phase"], "device-lock")
             self.assertIn("replacement", failure["error"])
+
+    def test_physical_identity_probe_is_alias_independent_and_never_attests_raw_id(self) -> None:
+        responses = {
+            ("direct", "get-state"): "device\n",
+            ("proxy", "get-state"): "device\n",
+            ("direct", "shell getprop ro.serialno"): "RAW-PHYSICAL-SERIAL\n",
+            ("proxy", "shell getprop ro.serialno"): "RAW-PHYSICAL-SERIAL\n",
+            ("direct", "shell getprop ro.boot.serialno"): "boot-value\n",
+            ("proxy", "shell getprop ro.boot.serialno"): "boot-value\n",
+            ("direct", "shell settings get secure android_id"): "0123456789abcdef\n",
+            ("proxy", "shell settings get secure android_id"): "0123456789abcdef\n",
+        }
+
+        def run_command(command, **_kwargs):
+            serial = command[2]
+            operation = " ".join(command[3:])
+            return SimpleNamespace(returncode=0, stdout=responses[(serial, operation)], stderr="")
+
+        direct = runner.probe_physical_device_identity("direct", run_command=run_command)
+        proxy = runner.probe_physical_device_identity("proxy", run_command=run_command)
+
+        self.assertEqual(direct, proxy)
+        self.assertEqual("ro.serialno", direct.source)
+        self.assertNotIn("RAW-PHYSICAL-SERIAL", direct.canonical_key)
+
+    def test_paused_subprocess_rejects_harness_drift_before_and_after_execution(self) -> None:
+        program = textwrap.dedent(
+            f"""
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, {str(DEVICE_TESTS)!r})
+            import run as runner
+            root = Path(sys.argv[1])
+            expected = runner.harness_execution_identity(root)
+            print("CAPTURED", flush=True)
+            sys.stdin.readline()
+            try:
+                runner.require_harness_identity_unchanged(expected, root, phase="before case dispatch")
+            except runner.ContractError:
+                print("PRE_DRIFT", flush=True)
+                raise SystemExit(2)
+            print("PRE_OK", flush=True)
+            sys.stdin.readline()
+            try:
+                runner.require_harness_identity_unchanged(expected, root, phase="after case execution")
+            except runner.ContractError:
+                print("POST_DRIFT", flush=True)
+                raise SystemExit(2)
+            print("POST_OK", flush=True)
+            """
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "cases.py"
+            source.write_text("version = 1\n", encoding="utf-8")
+
+            before = subprocess.Popen(
+                [sys.executable, "-c", program, str(root)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual("CAPTURED", before.stdout.readline().strip())
+            source.write_text("version = 2\n", encoding="utf-8")
+            before.stdin.write("continue\n")
+            before.stdin.flush()
+            self.assertEqual("PRE_DRIFT", before.stdout.readline().strip())
+            self.assertEqual(2, before.wait(timeout=10))
+            before.stdin.close()
+            before.stdout.close()
+
+            source.write_text("version = 3\n", encoding="utf-8")
+            after = subprocess.Popen(
+                [sys.executable, "-c", program, str(root)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual("CAPTURED", after.stdout.readline().strip())
+            after.stdin.write("pre\n")
+            after.stdin.flush()
+            self.assertEqual("PRE_OK", after.stdout.readline().strip())
+            source.write_text("version = 4\n", encoding="utf-8")
+            after.stdin.write("post\n")
+            after.stdin.flush()
+            self.assertEqual("POST_DRIFT", after.stdout.readline().strip())
+            self.assertEqual(2, after.wait(timeout=10))
+            after.stdin.close()
+            after.stdout.close()
 
     def test_restoration_attests_display_geometry(self) -> None:
         before = {
@@ -357,7 +539,7 @@ class RunAttestationTest(unittest.TestCase):
             )
 
             rendered = report.read_text(encoding="utf-8")
-            self.assertIn("restoration: **FAIL**", rendered)
+            self.assertIn("evidence verification: **FAIL**", rendered)
             self.assertIn("final CLI exit code: `2`", rendered)
             self.assertIn(runner.ATTESTATION_NAME, rendered)
             self.assertIn("APK source identity", rendered)
