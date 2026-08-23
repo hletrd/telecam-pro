@@ -587,7 +587,7 @@ def build_immutable_release(
     root = root.resolve()
     output_root = output_root.resolve()
     evidence_namespace = (root / "app/build/immutable-release").resolve()
-    if output_root == evidence_namespace or evidence_namespace not in output_root.parents:
+    if output_root.parent != evidence_namespace:
         raise RuntimeError(
             "immutable release output must be one unique child of "
             f"{evidence_namespace}"

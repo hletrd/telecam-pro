@@ -56,6 +56,46 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                     run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                 )
 
+    def test_output_accepts_one_non_empty_direct_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            output = root / "app/build/immutable-release/test-output"
+
+            def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"artifact")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            release.build_immutable_release(
+                root,
+                [":app:bundleRelease"],
+                output,
+                run=package,
+            )
+
+            self.assertTrue(output.joinpath("bundle/release/app-release.aab").is_file())
+            self.assertTrue(output.joinpath(release.RELEASE_EVIDENCE_NAME).is_file())
+
+    def test_output_rejects_grandchild_of_immutable_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            output = root / "app/build/immutable-release/nested/test-output"
+
+            with self.assertRaisesRegex(RuntimeError, "must be one unique child"):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    output,
+                    run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                )
+
+            self.assertFalse(output.exists())
+
     def test_post_identity_worktree_mutation_cannot_reach_packaging(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "fixture"
