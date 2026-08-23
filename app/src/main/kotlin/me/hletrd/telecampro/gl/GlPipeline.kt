@@ -90,6 +90,10 @@ class GlPipeline(
     private val renderer = FlipRenderer()
 
     private var surfaceTexture: SurfaceTexture? = null
+    // SurfaceTexture itself posts one Handler message per producer notification. Keep those
+    // callbacks cheap and collapse their expensive preview/encoder/analysis work to the newest
+    // real frame. Zoom self-redraw remains a separate preview-only path.
+    private var frameNotifications: FrameNotificationCoalescer? = null
 
     @Volatile
     var inputSurface: Surface? = null
@@ -435,9 +439,16 @@ class GlPipeline(
                 val texId = renderer.init()
                 val st = SurfaceTexture(texId)
                 st.setDefaultBufferSize(cameraW, cameraH)
-                // The listener already runs on the GL handler thread; call drawFrame() directly
-                // instead of re-posting a fresh Runnable every frame.
-                st.setOnFrameAvailableListener({ drawFrame() }, handler)
+                val ownedHandler = checkNotNull(handler)
+                val notifications = FrameNotificationCoalescer(
+                    post = ownedHandler::post,
+                    drawLatestFrame = { drawFrame(updateTex = true) },
+                )
+                frameNotifications = notifications
+                // The framework listener message does only atomic bookkeeping. Its one named draw
+                // Runnable lands behind any already-queued notifications, so a burst catches up by
+                // latching/drawing the newest frame once instead of redrawing every stale callback.
+                st.setOnFrameAvailableListener({ notifications.onFrameAvailable() }, ownedHandler)
                 surfaceTexture = st
                 val input = Surface(st)
                 inputSurface = input
@@ -1685,6 +1696,9 @@ class GlPipeline(
                 else -> EGL14.EGL_NO_SURFACE
             }
             if (current != EGL14.EGL_NO_SURFACE) runCatching { core.makeCurrent(current) }
+            frameNotifications?.cancel()
+            frameNotifications = null
+            runCatching { surfaceTexture?.setOnFrameAvailableListener(null) }
             runCatching { surfaceTexture?.release() }
             runCatching { inputSurface?.release() }
             runCatching {
@@ -1716,6 +1730,9 @@ class GlPipeline(
                 )
             }
         } else {
+            frameNotifications?.cancel()
+            frameNotifications = null
+            runCatching { surfaceTexture?.setOnFrameAvailableListener(null) }
             runCatching { surfaceTexture?.release() }
             runCatching { inputSurface?.release() }
         }
