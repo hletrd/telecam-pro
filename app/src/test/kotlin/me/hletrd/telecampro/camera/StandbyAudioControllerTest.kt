@@ -441,6 +441,59 @@ class StandbyAudioControllerTest {
     }
 
     @Test
+    fun `failed async stop dispatch falls back to worker and preserves interruption`() {
+        val dispatchEntered = CountDownLatch(1)
+        val releaseDispatch = CountDownLatch(1)
+        val workerEntered = CountDownLatch(1)
+        val workerDone = CountDownLatch(1)
+        val input = Any()
+        val events = mutableListOf<String>()
+        val owner = StandbyInputTerminationOwner(
+            generationId = 73L,
+            stopDispatcher = StandbyStopDispatcher {
+                dispatchEntered.countDown()
+                releaseDispatch.await(2, TimeUnit.SECONDS)
+                error("injected dispatcher rejection")
+            },
+            stop = { value: Any -> events += if (value === input) "stop" else "wrong-stop" },
+        )
+
+        assertEquals(73L, owner.generationId)
+        assertTrue(owner.bind(input))
+        assertTrue(owner.beginStart(input))
+        owner.finishStart(input, succeeded = true)
+
+        val requestThread = Thread(owner::requestStop, "standby-stop-request")
+        requestThread.start()
+        assertTrue(dispatchEntered.await(2, TimeUnit.SECONDS))
+
+        val worker = Thread(
+            {
+                workerEntered.countDown()
+                owner.finishAndRelease(input) { value ->
+                    events += if (value === input) "release" else "wrong-release"
+                }
+                events += if (Thread.currentThread().isInterrupted) "interrupted" else "not-interrupted"
+                workerDone.countDown()
+            },
+            "standby-stop-fallback",
+        )
+        worker.start()
+        assertTrue(workerEntered.await(2, TimeUnit.SECONDS))
+        worker.interrupt()
+        releaseDispatch.countDown()
+
+        requestThread.join(2_000)
+        assertTrue(workerDone.await(2, TimeUnit.SECONDS))
+        assertEquals(listOf("stop", "release", "interrupted"), events)
+
+        // Terminal ownership is idempotent and rejects a replacement binding.
+        owner.finishAndRelease(input) { events += "duplicate-release" }
+        assertFalse(owner.bind(Any()))
+        assertEquals(listOf("stop", "release", "interrupted"), events)
+    }
+
+    @Test
     fun `first PCM reports recovery exactly once`() {
         var keepReading = true
         val input = object : StandbyAudioInput {

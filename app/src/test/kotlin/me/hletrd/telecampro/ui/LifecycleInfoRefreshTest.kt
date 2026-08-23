@@ -25,6 +25,36 @@ class LifecycleInfoRefreshTest {
     }
 
     @Test
+    fun `sample carries the exact battery and storage values`() {
+        val sample = LifecycleInfoSample(batteryPct = 73, freeBytes = 8_589_934_592L)
+
+        assertEquals(73, sample.batteryPct)
+        assertEquals(8_589_934_592L, sample.freeBytes)
+    }
+
+    @Test
+    fun `executor refusal retires the request without sampling or delivery`() {
+        var samples = 0
+        val delivered = mutableListOf<Int>()
+        val refresh = LifecycleInfoRefresh(
+            submit = { false },
+            sample = { ++samples },
+            deliver = { _, value -> delivered += value },
+        )
+
+        val generation = refresh.start()
+        refresh.request()
+
+        assertTrue(refresh.isActive(generation))
+        assertEquals(0, samples)
+        assertTrue(delivered.isEmpty())
+        assertEquals(
+            LifecycleInfoRefreshSnapshot(generation, inFlightRequests = 0, pendingRequests = 0),
+            refresh.snapshot(),
+        )
+    }
+
+    @Test
     fun `blocked worker owns one submitted sample and one coalesced lifecycle intent`() {
         val worker = QueuedWorker()
         val delivered = mutableListOf<Pair<Long, Int>>()
