@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import subprocess
 import tempfile
@@ -13,6 +14,16 @@ MOTION_SOURCE = (
     REPO_ROOT
     / "app/src/main/kotlin/me/hletrd/telecampro/gl/MotionInversion.kt"
 )
+
+
+def load_verify_host():
+    source = REPO_ROOT / "tools/verify_host.py"
+    spec = importlib.util.spec_from_file_location("telecam_verify_host", source)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load tools/verify_host.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class MotionBisectionIsolationTest(unittest.TestCase):
@@ -102,6 +113,31 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         ):
             self.assertIn(required, source)
         self.assertIn('"JAVA_HOME": str(home)', source)
+
+    def test_diff_gate_rejects_staged_and_unstaged_whitespace_errors(self) -> None:
+        command = load_verify_host().repository_diff_check_command()
+        self.assertEqual(command, ["git", "diff", "--check", "HEAD", "--"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            tracked = root / "tracked.txt"
+            tracked.write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            tracked.write_text("staged trailing space \n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            staged = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(staged.returncode, 0, staged.stdout + staged.stderr)
+            self.assertIn("trailing whitespace", staged.stdout + staged.stderr)
+
+            subprocess.run(["git", "restore", "--staged", "tracked.txt"], cwd=root, check=True)
+            unstaged = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(unstaged.returncode, 0, unstaged.stdout + unstaged.stderr)
+            self.assertIn("trailing whitespace", unstaged.stdout + unstaged.stderr)
 
 
 if __name__ == "__main__":

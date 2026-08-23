@@ -35,6 +35,11 @@ def run(command: list[str], env: dict[str, str]) -> None:
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
 
+def repository_diff_check_command() -> list[str]:
+    """Check the complete HEAD patch, including index and unstaged worktree changes."""
+    return ["git", "diff", "--check", "HEAD", "--"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -64,7 +69,7 @@ def main() -> int:
         run([sys.executable, "-m", "unittest", "discover", "-s", suite, "-v"], env)
     run([sys.executable, "tools/check_docs.py"], env)
     run([sys.executable, "-m", "compileall", "-q", "device-tests", "tools"], env)
-    run(["git", "diff", "--check"], env)
+    run(repository_diff_check_command(), env)
     if args.release:
         run(
             [
