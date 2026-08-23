@@ -118,6 +118,14 @@ class CameraEngine internal constructor(
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // RAW-only SINGLE shots own no processed-snapshot lease, so their completed DNG publication
+    // tails use finite process-wide capacity instead of entering this Engine's unbounded io queue.
+    // Mixed-output shots remain bounded by [singleProcessedSnapshotBudget], while BURST/AEB/
+    // timelapse retain their existing save-completion chaining on [ioExecutor].
+    private val stillPublicationDispatcher = StillPublicationDispatcher(
+        workerCount = STILL_PUBLICATION_WORKER_COUNT,
+        backlogCapacity = STILL_PUBLICATION_BACKLOG_CAPACITY,
+    )
     // Deleted-family veto lives with the still lane, not the UI callback graph. A retained output
     // can complete after ViewModel.onCleared; its durable discard must remain owned by this Engine.
     private val retainedStillDeletionOwner = RetainedStillDeletionOwner<android.net.Uri>(
@@ -3857,7 +3865,8 @@ class CameraEngine internal constructor(
                 onStatus?.invoke(CameraStatusMessage.RAW_UNAVAILABLE.status())
         }
         val ctrl = accepted.controller
-        when (captureDriveMode(driveMode, singleShot)) {
+        val effectiveDrive = captureDriveMode(driveMode, singleShot)
+        when (effectiveDrive) {
             DriveMode.SINGLE -> {
                 val snapshotLease = if (effFormats.wantsProcessedStill) {
                     singleProcessedSnapshotBudget.tryAcquire()
@@ -3875,6 +3884,7 @@ class CameraEngine internal constructor(
                         hiRes = accepted.outputs.hiRes,
                         optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
+                        processOwnedDngTail = usesProcessStillPublicationTail(effectiveDrive, effFormats),
                     )
                 }.getOrElse { failure ->
                     snapshotLease?.release()
@@ -4304,9 +4314,13 @@ class CameraEngine internal constructor(
         // dispatch-time snapshot, never re-read the live volatiles.
         optics: ShotOptics,
         retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
+        // Only RAW-only SINGLE bypasses both the processed budget and sequence-drive chaining.
+        // Its publication tail therefore needs the process-wide finite owner.
+        processOwnedDngTail: Boolean = false,
         onDone: (() -> Unit)? = null,
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
+        require(!processOwnedDngTail || formats.dngRaw && !formats.wantsProcessedStill)
         val requestSpec = shotSpec(shotControls, hiRes, optics)
         val expectedOutputExtensions = buildList {
             if (formats.heif) add("heic")
@@ -4425,24 +4439,55 @@ class CameraEngine internal constructor(
                             }
                             val pending = write.getOrNull()
                             if (pending != null) {
-                                val queued = runCatching {
-                                    ioExecutor.execute {
-                                        try {
-                                            stillPipeline.publishDng(pending)
-                                        } finally {
-                                            finishDng()
+                                if (processOwnedDngTail) {
+                                    val disposition = stillPublicationDispatcher.dispatchRecoverable(
+                                        publication = { stillPipeline.publishDng(pending) },
+                                        onRejected = {
+                                            // The row is structurally complete and remains private.
+                                            // A tombstoned family transfers to durable discard;
+                                            // otherwise launch recovery publishes it later.
+                                            dispatchDeletedStillDiscard(pending.uri, pending.captureId)
+                                            reportStatus(
+                                                if (pending.completionMarkerDurable) {
+                                                    CameraStatusMessage.DNG_SAVE_DELAYED.status()
+                                                } else {
+                                                    CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(
+                                                        CameraStatusArgument.Text("DNG"),
+                                                    )
+                                                },
+                                            )
+                                        },
+                                        onTerminal = finishDng,
+                                    )
+                                    dngPublishQueued = disposition == StillPublicationDispatch.ACCEPTED
+                                } else {
+                                    val queued = runCatching {
+                                        ioExecutor.execute {
+                                            try {
+                                                stillPipeline.publishDng(pending)
+                                            } finally {
+                                                finishDng()
+                                            }
                                         }
                                     }
-                                }
-                                dngPublishQueued = queued.isSuccess
-                                queued.onFailure {
-                                    // The bytes are structurally complete and remain pending for
-                                    // launch recovery (the marker result is frozen in [pending]). A
-                                    // deleted family still belongs to the Engine tombstone: route it
-                                    // through the recovery lane even though the ordinary DNG publish
-                                    // continuation could not enter the shutting-down still executor.
-                                    dispatchDeletedStillDiscard(pending.uri, pending.captureId)
-                                    reportStatus(CameraStatusMessage.DNG_SAVE_DELAYED.status())
+                                    dngPublishQueued = queued.isSuccess
+                                    queued.onFailure {
+                                        // The bytes are structurally complete and remain pending for
+                                        // launch recovery (the marker result is frozen in [pending]). A
+                                        // deleted family still belongs to the Engine tombstone: route it
+                                        // through the recovery lane even though the ordinary DNG publish
+                                        // continuation could not enter the shutting-down still executor.
+                                        dispatchDeletedStillDiscard(pending.uri, pending.captureId)
+                                        reportStatus(
+                                            if (pending.completionMarkerDurable) {
+                                                CameraStatusMessage.DNG_SAVE_DELAYED.status()
+                                            } else {
+                                                CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(
+                                                    CameraStatusArgument.Text("DNG"),
+                                                )
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         } else {
@@ -6342,6 +6387,7 @@ class CameraEngine internal constructor(
         activeRecordingTopologyLease.set(0L)
         setupExecutor.shutdown()
         ioExecutor.shutdown()
+        stillPublicationDispatcher.shutdown()
         retainedStillDiscardDispatcher.shutdown()
         recorderExecutor.shutdown()
         recordingStorageDispatcher.shutdown()
