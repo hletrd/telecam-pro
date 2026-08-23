@@ -2253,20 +2253,23 @@ class FrameworkSafetyTest(unittest.TestCase):
     def run_suite(
         self,
         *,
+        tiers: list[str] | None = None,
         allow_destructive: bool = False,
         allow_settings: bool = False,
         allow_media_writes: bool = False,
+        allow_partial: bool = False,
         name_filter: str | None = None,
     ) -> int:
         with tempfile.TemporaryDirectory() as temp_dir:
             return framework.run(
                 FakeAdb(),
-                ["smoke"],
+                tiers or ["smoke"],
                 name_filter,
                 Path(temp_dir),
                 allow_destructive=allow_destructive,
                 allow_settings=allow_settings,
                 allow_media_writes=allow_media_writes,
+                allow_partial=allow_partial,
             )
 
     def test_destructive_case_is_not_invoked_without_guard(self) -> None:
@@ -2330,6 +2333,18 @@ class FrameworkSafetyTest(unittest.TestCase):
             raise framework.Incomplete("required evidence missing")
 
         self.assertEqual(self.run_suite(), 2)
+
+    def test_approval_skip_is_non_green_with_a_pass_unless_partial_is_explicit(self) -> None:
+        @framework.test("pass", "full")
+        def passing(_ctx) -> None:
+            pass
+
+        @framework.test("guarded", "full", writes_media=True)
+        def guarded(_ctx) -> None:
+            raise AssertionError("approval gate must skip execution")
+
+        self.assertEqual(self.run_suite(tiers=["full"]), 2)
+        self.assertEqual(self.run_suite(tiers=["full"], allow_partial=True), 0)
 
     def test_failed_recording_case_cannot_feed_a_later_force_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

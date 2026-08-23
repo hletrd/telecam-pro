@@ -93,6 +93,7 @@ def run(
     allow_destructive: bool = False,
     allow_settings: bool = False,
     allow_media_writes: bool = False,
+    allow_partial: bool = False,
 ) -> int:
     cases = [c for c in _REGISTRY if c.tier in tiers and (not name_filter or name_filter in c.name)]
     if not cases:
@@ -120,8 +121,13 @@ def run(
             missing_approvals.append("--allow-media-writes")
         if missing_approvals:
             detail = "requires explicit approval: " + ", ".join(missing_approvals)
-            results.append(Result(case, "skip", detail, time.time() - t0))
-            print(f"  SKIP: {detail}")
+            # Foreground smoke intentionally mixes a destructive cold-launch case with read-only
+            # checks, so its missing launch approval remains an ordinary skip. Full/reliability
+            # tiers promise complete feature evidence and are non-green unless partial mode is
+            # explicitly attested.
+            status = "skip" if allow_partial or case.tier == "smoke" else "incomplete"
+            results.append(Result(case, status, detail, time.time() - t0))
+            print(f"  {status.upper()}: {detail}")
             continue
         abort_suite = False
         try:

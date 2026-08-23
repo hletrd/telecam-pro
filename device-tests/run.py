@@ -213,6 +213,8 @@ def main() -> int:
                     help="allow cases that change persisted shooting settings; requires explicit approval")
     ap.add_argument("--allow-media-writes", action="store_true",
                     help="allow cases that create photos or videos; requires explicit approval")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="permit approval-gated skips and attest an intentionally partial tier")
     args = ap.parse_args()
 
     tiers = args.tier or ["smoke"]
@@ -315,6 +317,7 @@ def main() -> int:
         allow_destructive=args.allow_destructive,
         allow_settings=args.allow_settings,
         allow_media_writes=args.allow_media_writes,
+        allow_partial=args.allow_partial,
     )
     state_error = None
     try:
@@ -344,6 +347,7 @@ def main() -> int:
             "tiers": tiers,
             "filter": args.filter,
             "apk": str(expected_apk),
+            "evidence_mode": "partial" if args.allow_partial else "complete-required",
             "approvals": {
                 "destructive": args.allow_destructive,
                 "settings": args.allow_settings,

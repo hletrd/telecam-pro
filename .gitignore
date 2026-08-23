@@ -67,7 +67,10 @@ __pycache__/
 /docs/plans/
 /docs/reviews/
 /docs/superpowers/
-/device-tests/
+# Device-harness source is versioned; only generated evidence and caches stay local.
+/device-tests/reports/
+/device-tests/**/__pycache__/
+/device-tests/**/.pytest_cache/
 
 # Signed release artifacts kept locally so a `gradle clean` cannot destroy the exact bytes
 # that were device-verified. Binaries never enter git history — Play distributes them.

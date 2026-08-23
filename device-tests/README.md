@@ -15,8 +15,8 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 ```bash
 # device over wireless ADB (loopback proxy fine); deploy the debug APK first
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke          # app already foreground
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # app already foreground; stateful cases skip
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # approval-gated cases skip
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # non-green until required approvals are supplied
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # non-green until required approvals are supplied
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture # substring filter
 
 # Supply only the effects that the operator explicitly approved:
@@ -25,12 +25,16 @@ python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings --allow-media-writes
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability \
   --allow-destructive --allow-settings --allow-media-writes
+
+# Deliberately collect a partial report; skips and the partial flag remain attested.
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-partial
 ```
 
 Reports (markdown + JUnit XML + pulled evidence files) land in `device-tests/reports/<ts>/`
 (gitignored). Exit code 0 requires at least one pass and no failures, 1 means fail/error,
-and 2 means preflight failure, no matching cases, all-skipped, or a required verification
-reported as incomplete.
+and 2 means preflight failure, no matching cases, all-skipped, missing approvals for any selected
+case, or a required verification reported as incomplete. `--allow-partial` is the only way to make
+an intentionally partial tier green; its report and attestation retain the skips and partial flag.
 
 **CLI report attestation contract:** every report directory also contains
 `run-attestation.json` and `run-attestation.sha256`. The JSON records the git revision, device
