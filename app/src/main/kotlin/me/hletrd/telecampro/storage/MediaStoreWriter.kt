@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import java.io.FileInputStream
 import java.io.IOException
 import java.io.OutputStream
@@ -902,7 +903,7 @@ object MediaStoreWriter {
                 }
             }
             if (resolved && rawOwner != processJournalOwner) {
-                preferences.edit().remove(rawKey).commit()
+                preferences.edit(commit = true) { remove(rawKey) }
             }
         }
         return report
@@ -926,7 +927,7 @@ object MediaStoreWriter {
         var report = RecoveryReport()
         for (rawUri in page.keys) {
             report = report.record(RecoveryEvent.SCANNED)
-            val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+            val uri = runCatching { rawUri.toUri() }.getOrNull()
             report = report.record(
                 if (uri != null && delete(context, uri)) RecoveryEvent.DELETED
                 else RecoveryEvent.DELETE_FAILED,
