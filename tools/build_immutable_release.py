@@ -8,7 +8,6 @@ import hashlib
 import os
 import pathlib
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
@@ -16,11 +15,24 @@ import tempfile
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
+_TOOLS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from immutable_outputs import FrozenOutputSet
+
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
 AfterSnapshot = Callable[[pathlib.Path, pathlib.Path], None]
+AfterOutputsFrozen = Callable[[pathlib.Path], None]
 
 BUILD_OUTPUT_DIRECTORIES = (".gradle", ".kotlin", "build", "app/build")
+RELEASE_OUTPUT_PREFIXES = (
+    "apk/release/",
+    "bundle/release/",
+    "mapping/release/",
+    "sdk-dependencies/release/",
+)
+RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
 
 
 class _SealedPath(NamedTuple):
@@ -196,6 +208,72 @@ def sha256_regular_beneath(root: pathlib.Path, relative: str) -> str:
                 pass
 
 
+def read_regular_beneath(root: pathlib.Path, relative: str) -> tuple[bytes, int]:
+    """Read one stable no-follow local input without exposing its content in errors."""
+    parts = pathlib.PurePosixPath(relative).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError(f"release local-input path is unsafe: {relative!r}")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.open(root, directory_flags | no_follow)
+        descriptors.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags | no_follow, dir_fd=current)
+            descriptors.append(current)
+        file_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | no_follow,
+            dir_fd=current,
+        )
+        descriptors.append(file_fd)
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"release local input is not a regular file: {relative}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(file_fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(file_fd)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in fields):
+            raise RuntimeError(f"release local input changed while it was copied: {relative}")
+        payload = b"".join(chunks)
+        if len(payload) != after.st_size:
+            raise RuntimeError(f"release local input read was incomplete: {relative}")
+        return payload, stat.S_IMODE(after.st_mode)
+    except OSError as error:
+        raise RuntimeError(f"could not safely read release local input {relative}: {error}") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def write_regular_exclusive(path: pathlib.Path, payload: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+        mode & 0o777,
+    )
+    try:
+        view = memoryview(payload)
+        written = 0
+        while written < len(view):
+            count = os.write(descriptor, view[written:])
+            if count <= 0:
+                raise RuntimeError(f"could not copy release local input: {path.name}")
+            written += count
+    finally:
+        os.close(descriptor)
+
+
 def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) -> dict[str, str]:
     subprocess.run(
         ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(destination)],
@@ -285,33 +363,46 @@ def seal_release_snapshot(
     return ReleaseSnapshotSeal(entries)
 
 
-def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> None:
-    """Copy only machine/signing configuration; application inputs stay Git-exported."""
+def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> tuple[str, ...]:
+    """Descriptor-copy local inputs and return every private path that must join the seal."""
+    copied: list[str] = []
+    frozen_properties: dict[str, bytes] = {}
     for name in ("local.properties", "keystore.properties"):
         source = root / name
-        if source.is_file():
-            shutil.copy2(source, snapshot / name)
-    signing_properties = root / "keystore.properties"
-    if signing_properties.is_file():
+        if os.path.lexists(source):
+            payload, mode = read_regular_beneath(root, name)
+            write_regular_exclusive(snapshot / name, payload, mode)
+            copied.append(name)
+            frozen_properties[name] = payload
+    signing_payload = frozen_properties.get("keystore.properties")
+    if signing_payload is not None:
+        try:
+            signing_text = signing_payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RuntimeError("release signing properties are not UTF-8") from error
         store_file = next(
             (
                 line.partition("=")[2].strip()
-                for line in signing_properties.read_text(encoding="utf-8").splitlines()
+                for line in signing_text.splitlines()
                 if line.partition("=")[0].strip() == "storeFile"
             ),
             "",
         )
         configured_store = pathlib.Path(store_file)
-        if store_file and not configured_store.is_absolute():
-            source_store = (root / configured_store).resolve()
-            try:
-                relative_store = source_store.relative_to(root)
-            except ValueError as error:
-                raise RuntimeError("relative release keystore escapes the repository") from error
-            if source_store.is_file():
-                destination_store = snapshot / relative_store
-                destination_store.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_store, destination_store)
+        if store_file:
+            if configured_store.is_absolute():
+                raise RuntimeError("absolute release keystore paths are outside the immutable owner")
+            normalized_store = pathlib.PurePosixPath(os.path.normpath(store_file))
+            if not normalized_store.parts or any(
+                part in {"", ".", ".."} for part in normalized_store.parts
+            ):
+                raise RuntimeError("relative release keystore escapes the repository")
+            relative_store = pathlib.Path(*normalized_store.parts)
+            relative_text = relative_store.as_posix()
+            payload, mode = read_regular_beneath(root, relative_text)
+            write_regular_exclusive(snapshot / relative_store, payload, mode)
+            copied.append(relative_text)
+    return tuple(copied)
 
 
 def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
@@ -355,18 +446,19 @@ def build_immutable_release(
     *,
     run: Run = run_checked,
     after_snapshot: AfterSnapshot | None = None,
+    after_outputs_frozen: AfterOutputsFrozen | None = None,
 ) -> tuple[str, str]:
     root = root.resolve()
     output_root = output_root.resolve()
     commit, tree = require_clean_commit(root)
-    if output_root.exists():
+    if os.path.lexists(output_root):
         raise RuntimeError(f"refusing to overwrite immutable release output: {output_root}")
 
     with tempfile.TemporaryDirectory(prefix="telecam-release-source-") as temp_dir:
         snapshot = pathlib.Path(temp_dir) / "source"
         expected = export_commit(root, snapshot, commit)
-        copy_local_build_inputs(root, snapshot)
-        seal = seal_release_snapshot(snapshot, tuple(expected))
+        local_inputs = copy_local_build_inputs(root, snapshot)
+        seal = seal_release_snapshot(snapshot, (*expected, *local_inputs))
         try:
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
@@ -382,18 +474,57 @@ def build_immutable_release(
             seal.verify()
             verify_export(snapshot, expected)
 
+            frozen_sets: list[tuple[FrozenOutputSet, pathlib.PurePosixPath]] = []
             built_outputs = snapshot / "app/build/outputs"
-            lint_reports = sorted((snapshot / "app/build/reports").glob("lint-results-*"))
-            if built_outputs.is_dir():
+            reports = snapshot / "app/build/reports"
+            try:
+                if os.path.lexists(built_outputs):
+                    frozen_sets.append((
+                        FrozenOutputSet.capture_tree(
+                            built_outputs,
+                            allow_file=lambda relative: (
+                                relative.as_posix() in RELEASE_OUTPUT_FILES or
+                                relative.as_posix().startswith(RELEASE_OUTPUT_PREFIXES)
+                            ),
+                            label="immutable release",
+                        ),
+                        pathlib.PurePosixPath(),
+                    ))
+                if os.path.lexists(reports):
+                    frozen_sets.append((
+                        FrozenOutputSet.capture_tree(
+                            reports,
+                            allow_file=lambda relative: (
+                                len(relative.parts) == 1 and
+                                relative.name.startswith("lint-results-release.")
+                            ),
+                            label="immutable release report",
+                        ),
+                        pathlib.PurePosixPath("logs"),
+                    ))
+                if not frozen_sets:
+                    raise RuntimeError("release build produced no allowlisted outputs")
+                if after_outputs_frozen is not None:
+                    after_outputs_frozen(snapshot)
                 output_root.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(built_outputs, output_root)
-            if lint_reports:
-                output_root.mkdir(parents=True, exist_ok=True)
-                logs = output_root / "logs"
-                logs.mkdir(exist_ok=True)
-                for report in lint_reports:
-                    if report.is_file():
-                        shutil.copy2(report, logs / report.name)
+                with tempfile.TemporaryDirectory(
+                    prefix=f".{output_root.name}-staging-",
+                    dir=output_root.parent,
+                ) as staging_text:
+                    staging = pathlib.Path(staging_text)
+                    for frozen, prefix in frozen_sets:
+                        frozen.export_into(staging.joinpath(*prefix.parts))
+                    for frozen, _ in frozen_sets:
+                        frozen.verify()
+                    seal.verify()
+                    if os.path.lexists(output_root):
+                        raise RuntimeError(
+                            f"refusing to overwrite immutable release output: {output_root}"
+                        )
+                    os.rename(staging, output_root)
+            finally:
+                for frozen, _ in frozen_sets:
+                    frozen.close()
         finally:
             seal.release()
     return commit, tree

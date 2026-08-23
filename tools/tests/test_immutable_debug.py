@@ -146,6 +146,63 @@ class ImmutableDebugBuildTest(unittest.TestCase):
                 self.assertTrue(ordinary_write_refused)
             self.assertFalse(output.exists())
 
+    def test_permanent_generated_apk_mutation_blocks_atomic_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            initialize_fixture(root)
+            output = Path(temp_dir) / "output"
+
+            def compile_snapshot(command, cwd):
+                apk = cwd / "app/build/outputs/apk/debug/app-debug.apk"
+                apk.parent.mkdir(parents=True)
+                apk.write_bytes(b"apk-A")
+                return subprocess.CompletedProcess(command, 0)
+
+            def mutate_output(snapshot: Path) -> None:
+                apk = snapshot / "app/build/outputs/apk/debug/app-debug.apk"
+                apk.chmod(0o600)
+                apk.write_bytes(b"apk-B")
+
+            with self.assertRaisesRegex(RuntimeError, "generated-output owner changed"):
+                builder.build_immutable_debug(
+                    root,
+                    output,
+                    run=compile_snapshot,
+                    after_outputs_frozen=mutate_output,
+                )
+            self.assertFalse(output.exists())
+
+    def test_transient_generated_apk_mutation_blocks_atomic_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            initialize_fixture(root)
+            output = Path(temp_dir) / "output"
+
+            def compile_snapshot(command, cwd):
+                apk = cwd / "app/build/outputs/apk/debug/app-debug.apk"
+                apk.parent.mkdir(parents=True)
+                apk.write_bytes(b"apk-A")
+                return subprocess.CompletedProcess(command, 0)
+
+            def mutate_output(snapshot: Path) -> None:
+                apk = snapshot / "app/build/outputs/apk/debug/app-debug.apk"
+                sealed_mode = apk.stat().st_mode & 0o777
+                apk.chmod(sealed_mode | 0o200)
+                apk.write_bytes(b"apk-B")
+                apk.write_bytes(b"apk-A")
+                apk.chmod(sealed_mode)
+
+            with self.assertRaisesRegex(RuntimeError, "generated-output owner changed"):
+                builder.build_immutable_debug(
+                    root,
+                    output,
+                    run=compile_snapshot,
+                    after_outputs_frozen=mutate_output,
+                )
+            self.assertFalse(output.exists())
+
     def test_gradle_generator_packages_the_evidence_owner_marker(self) -> None:
         environment = {**os.environ}
         java_home = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")

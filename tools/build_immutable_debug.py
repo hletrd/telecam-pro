@@ -8,13 +8,17 @@ import hashlib
 import os
 import pathlib
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
+
+_TOOLS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from immutable_outputs import FrozenOutputSet
 
 
 IMMUTABLE_DEBUG_SOURCE_OWNER = "immutable-debug-worktree-v1"
@@ -34,6 +38,7 @@ BUILD_OUTPUT_DIRECTORIES = (".gradle", ".kotlin", "build", "app/build")
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
 AfterSnapshot = Callable[[pathlib.Path, pathlib.Path], None]
+AfterOutputsFrozen = Callable[[pathlib.Path], None]
 
 
 class _SealedPath(NamedTuple):
@@ -334,10 +339,11 @@ def build_immutable_debug(
     *,
     run: Run = run_checked,
     after_snapshot: AfterSnapshot | None = None,
+    after_outputs_frozen: AfterOutputsFrozen | None = None,
 ) -> tuple[str, pathlib.Path]:
     root = root.resolve()
     output_root = output_root.resolve()
-    if output_root.exists():
+    if os.path.lexists(output_root):
         raise RuntimeError(f"refusing to overwrite immutable debug output: {output_root}")
     with tempfile.TemporaryDirectory(prefix="telecam-debug-source-") as temp_dir:
         snapshot = pathlib.Path(temp_dir) / "source"
@@ -359,12 +365,37 @@ def build_immutable_debug(
             seal.verify()
             if _scope_digest(snapshot) != expected_digest:
                 raise RuntimeError("immutable debug source owner changed during compilation")
-            built_apk = snapshot / "app/build/outputs/apk/debug/app-debug.apk"
-            if not built_apk.is_file():
-                raise RuntimeError("debug build did not produce app-debug.apk")
-            destination = output_root / "apk/debug/app-debug.apk"
-            destination.parent.mkdir(parents=True)
-            shutil.copy2(built_apk, destination)
+            built_outputs = snapshot / "app/build/outputs/apk/debug"
+            frozen_outputs = FrozenOutputSet.capture_tree(
+                built_outputs,
+                allow_file=lambda relative: relative.as_posix() in {
+                    "app-debug.apk",
+                    "output-metadata.json",
+                },
+                label="immutable debug",
+            )
+            try:
+                if not any(entry.relative.as_posix() == "app-debug.apk" for entry in frozen_outputs.entries):
+                    raise RuntimeError("debug build did not produce app-debug.apk")
+                if after_outputs_frozen is not None:
+                    after_outputs_frozen(snapshot)
+                output_root.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(
+                    prefix=f".{output_root.name}-staging-",
+                    dir=output_root.parent,
+                ) as staging_text:
+                    staging = pathlib.Path(staging_text)
+                    frozen_outputs.export_into(staging / "apk/debug")
+                    frozen_outputs.verify()
+                    seal.verify()
+                    if os.path.lexists(output_root):
+                        raise RuntimeError(
+                            f"refusing to overwrite immutable debug output: {output_root}"
+                        )
+                    os.rename(staging, output_root)
+                destination = output_root / "apk/debug/app-debug.apk"
+            finally:
+                frozen_outputs.close()
         finally:
             seal.release()
     return commit, destination
