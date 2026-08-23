@@ -67,7 +67,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RecordingPreNativeAllocation.kt` | Process-wide finite lane for pending-video MediaProvider allocation: two daemon workers plus four queued attempts, per-attempt first-wins retirement, and cancellation of queued work. Stop/pause/release/timeout free REC admission immediately; a late row is cleanup/recovery-owned and cannot enter native setup. |
 | `RecordingStorageDispatcher.kt` | Process-lifetime bounded post-native storage owner: exactly two daemon workers plus eight FIFO backlog slots shared by every Engine generation. Each Engine holds only a closeable admission facade, so overflow or facade shutdown leaves the finalized pending row private for launch recovery while already accepted, callback-identity-bearing tails finish without interruption. |
 | `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
-| `LaunchMediaRecoveryCoordinator.kt` | Process-wide single-flight launch recovery. Engine generations hold cancellable identity-keyed subscribers rather than workers. Recovery runs one bounded family/rejected-output preflight, independent 64-row `_ID`-ordered Images and Video pages, then independent 64-entry lexicographic durable-DISCARD pages. A failed DISCARD page exhausts its bounded retry budget, retains its durable markers, and advances so one bad row cannot starve later deletes. |
+| `LaunchMediaRecoveryCoordinator.kt` | Process-wide single-flight launch recovery. Engine generations hold cancellable identity-keyed subscribers rather than workers. Recovery runs one bounded family/rejected-output preflight, independent 64-row `_ID`-ordered Images and Video pages, then independent 64-entry lexicographic durable-DISCARD pages. Generic pages retain exact durable DISCARD rows so only the progressive stage deletes them; a failed DISCARD page exhausts its bounded retry budget, retains its markers, and advances. Every live subscriber receives one typed success/failure terminal result. |
 | `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. Only live still families enter this gate; video and restored families carry durable delete identity without claiming a late-still producer. The in-memory tombstone is synchronous, while family-journal durability runs on the ordered I/O lane. |
 | `RetainedStillDiscardDispatcher.kt` | Per-Engine closeable admission facade over one process-lifetime finite provider lane (two daemon workers + eight backlog slots) for retained deleted-still rows. Accepted tasks keep their exact old-Engine deletion identity; overflow/shutdown never run ContentResolver inline, and the durable family tombstone leaves refused work owned by launch recovery. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
@@ -242,7 +242,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and invokes the synchronous DNG byte write while the RAW Image is valid. |
 | **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, and serialized generation-owned mode/lens/session reconfiguration. Debug diagnostics are queued behind the initial route/open work. |
 | **ioExecutor** (single-thread) | CameraEngine / StillCapturePipeline | Deferred processed-still decoding, crop/rotation, shared HEIF/JPEG EXIF composition, encoding, processed publication, and retrying DNG publication after the live-Image write is complete. |
-| **media-recovery executor** (one process-wide daemon) | `ProcessLaunchMediaRecovery`; Engines own cancellable subscribers | Single-flight launch-only recovery with bounded retry/backoff: one family/rejected-output preflight, independent 64-row monotonic Images and Video pages, then independent 64-entry lexicographic durable-DISCARD pages. An exhausted DISCARD page retains its markers and advances; Engine recreation cannot multiply a blocked provider worker. Typed completion gates the latest-family query without delaying Camera2 startup. |
+| **media-recovery executor** (one process-wide daemon) | `ProcessLaunchMediaRecovery`; Engines own cancellable subscribers | Single-flight launch-only recovery with bounded retry/backoff: one family/rejected-output preflight, independent 64-row monotonic Images and Video pages that retain durable DISCARD-owned rows, then the sole terminal-delete owner in independent 64-entry lexicographic DISCARD pages. An exhausted DISCARD page retains its markers and advances; Engine recreation cannot multiply a blocked provider worker. One typed success/failure terminal result always gates the non-destructive latest-family query without delaying Camera2 startup. |
 | **retained-still discard dispatcher** (process-wide two workers + eight backlog slots) | `ProcessRetainedStillDiscardOwner`; CameraEngine owns one closeable admission facade | Provider retirement/discard for completed late stills after a deleted capture. Accepted old-Engine work finishes under its exact deletion owner. Overflow or facade shutdown performs no inline provider work; the durable family tombstone remains the launch-recovery continuation. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Serial accepted-session/process-token preflight, post-allocation mic/native setup, and checked recorder drain/muxer/native-owner finalization. It dispatches but never performs pending-row allocation; Engine release waits only for current native classification, never for pre/post-native provider work. |
 | **recording pre-native allocation** (process-wide two workers + four backlog slots) | CameraEngine / `ProcessRecordingPreNativeAllocator` | Pending MediaStore video-row insert/registration before native setup. Its deadline is armed before dispatch; Stop, pause, release, or timeout retire admission without interrupting the uncancellable Binder call. Late results can only enter bounded cleanup/recovery. |
@@ -644,6 +644,15 @@ or the visible lens choice (`CameraEngine.resolveNonTeleId`):
 across a mode flip (mirrored into UI state by `onModeChange`); while FRONT that remap is identity
 (`remapModeOptics(frontFacing)` — front zoom is lens-local in both modes and the retained rear
 band must survive the trip).
+
+TELE and FRONT transitions also cross this boundary through shared pure policies. Engine and
+ViewModel both consume `resolveTeleZoomTransition`, whose pre-TELE snapshot is canonical unified
+framing and whose exit converts through the target non-TELE route plus the physical optical
+inventory. FRONT likewise stores canonical unified rear framing rather than a raw ratio tagged as
+Photo/Video; `rearReturnZoom` converts it when returning, so a mode change while FRONT — including
+Video ↔ Photo+DNG — cannot reinterpret a main-relative preset as standalone digital zoom. A
+crop-only 3× band therefore remains local 3× on its physical 1× lens, while PMA110's optical 3×
+home remains local 1×.
 
 **Zoom application pipeline** (why it's smooth): pinch/dial events are COALESCED in the ViewModel
 (leading apply + 16 ms trailing flush of the newest value, ~60 Hz — per-event application recomposed the
@@ -1067,8 +1076,9 @@ out-of-range required metadata is invalid. A `COMPLETE` journal record always au
 `REGISTERED` rows are adopted only when structurally valid, deleted only when definitively invalid,
 and otherwise retained with an explicit report. One process-wide recovery lane runs a bounded
 family/rejected-output preflight once, advances Images and Video independently through 64-row
-pending-only pages, then advances the durable DISCARD journal through independent 64-entry
-lexicographic pages. Provider failures retry boundedly. Exhausting one DISCARD page retains its
+pending-only pages while retaining exact durable DISCARD-owned rows, then gives terminal deletion
+to the durable DISCARD journal through independent 64-entry lexicographic pages. Provider failures
+retry boundedly. Exhausting one DISCARD page retains its
 markers and advances so a permanently bad URI cannot starve later deletion markers; the terminal
 report preserves every exhausted failure class. Replacement Engines coalesce as subscribers rather
 than starting more workers. Completion then queries the latest published family, preserving partial
@@ -1199,7 +1209,12 @@ marker as non-evidence-grade instead of trying to prove a post-hash mutable comp
 Release compilation, resources, shrinking, and packaging run inside a private checkout of the exact
 clean HEAD recorded in `telecam-release-provenance/source.properties`. The generated asset namespace
 is exact, and the upload checker rejects any extra member. Direct Gradle release entry points fail
-closed; debug tasks continue to consume the ordinary development tree.
+closed; debug tasks continue to consume the ordinary development tree. Release signing has the same
+single-owner boundary: `keystore.properties` must name one normalized repository-relative
+`storeFile`; the wrapper parses Java Properties syntax, no-follow copies that exact regular file,
+seals both inputs and passes the resolved private path to Gradle. `TELECAMPRO_STORE_FILE` is cleared
+and is not a supported override. Environment values remain valid only for the alias/password fields,
+which cannot redirect Gradle to another file.
 
 **Focused Android test subset:** `app/src/test/` is the JVM/Robolectric/Compose source of truth. Run
 `./gradlew :app:testDebugUnitTest` while iterating on that surface, then run the authoritative

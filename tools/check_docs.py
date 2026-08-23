@@ -509,6 +509,34 @@ for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
 # ---- current camera/architecture ownership must not revive retired seams ------------------------
 architecture = read("docs/ARCHITECTURE.md")
 
+# Release signing has exactly one FILE input and three optional secret VALUE overrides. The file
+# path once had its own environment fallback, bypassing the immutable wrapper's descriptor owner.
+# Bind build logic, wrapper, example, and public/as-built documentation so that second resolver
+# cannot return under a renamed key or stale instruction.
+release_wrapper = read("tools/build_immutable_release.py")
+keystore_example = read("keystore.properties.example")
+signing_environment_values = set(re.findall(r'"(TELECAMPRO_[A-Z_]+)"', gradle))
+check(
+    signing_environment_values == {
+        "TELECAMPRO_KEY_ALIAS",
+        "TELECAMPRO_STORE_PASSWORD",
+        "TELECAMPRO_KEY_PASSWORD",
+    }
+    and 'STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"' in release_wrapper
+    and "environment.pop(STORE_FILE_ENVIRONMENT, None)" in release_wrapper
+    and "-P{IMMUTABLE_STORE_FILE_PROPERTY}=" in release_wrapper
+    and 'signingValue("storeFile", "TELECAMPRO_STORE_FILE")' not in gradle
+    and "val releaseStoreFile = immutableReleaseStoreFile" in gradle
+    and "immutableReleaseStoreFile ?: configuredReleaseStoreFile" not in gradle
+    and "storeFile` is REQUIRED" in keystore_example
+    and "there is deliberately no" in keystore_example
+    and "TELECAMPRO_STORE_FILE" in keystore_example
+    and "ambient\n`TELECAMPRO_STORE_FILE` cannot override it" in readme
+    and "`TELECAMPRO_STORE_FILE` is cleared" in architecture,
+    "release signing distinguishes the one frozen file path from secret environment values",
+    f"Gradle signing environment values={sorted(signing_environment_values)}",
+)
+
 
 def markdown_heading_anchor(heading: str) -> str:
     """Match the repository's GitHub-style anchors for its current ASCII-heavy H2 headings."""
@@ -769,6 +797,8 @@ check(
 # comments adjacent to the live full-width layout must never instruct future edits to reserve rail
 # columns or constrain the top bar to a side rail.
 camera_screen = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt")
+camera_screen_policy = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt")
+manual_dials = read("app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ManualDials.kt")
 stale_operator_rail_guidance = (
     "bounded by BOTH reserved columns",
     "Inset by BOTH reserved columns",
@@ -783,6 +813,21 @@ check(
     and "landscapeOperator" not in camera_screen
     and "TopBarScope" not in camera_screen,
     "CameraScreen keeps one full-width top-bar layout and no deleted operator-rail guidance",
+)
+stale_handset_rotation_guidance = (
+    "Since the activity stopped locking orientation",
+    "sideways phone already gets a rotated LAYOUT",
+    "window now turns with the device",
+)
+check(
+    not any(
+        phrase in camera_screen or phrase in camera_screen_policy or phrase in manual_dials
+        for phrase in stale_handset_rotation_guidance
+    )
+    and "Handsets remain portrait-locked" in camera_screen_policy
+    and "Handsets remain portrait-locked" in camera_screen
+    and "handsets remain portrait-locked" in manual_dials,
+    "active UI guidance keeps handsets portrait-locked and limits window rotation to large screens",
 )
 view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
 camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
