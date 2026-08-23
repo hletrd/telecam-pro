@@ -1110,24 +1110,72 @@ def attested_exit_code(case_exit_code: int, errors: list[str]) -> int:
     return case_exit_code if case_exit_code != 0 else (2 if errors else 0)
 
 
+class ReportRootOwner:
+    """One no-follow report directory inode retained through finalization and rollback."""
+
+    def __init__(self, path: Path, descriptor: int, identity: os.stat_result):
+        self.path = path
+        self.descriptor = descriptor
+        self.identity = identity
+        self._closed = False
+
+    @classmethod
+    def open(cls, report_dir: Path) -> "ReportRootOwner":
+        path = Path(os.path.abspath(report_dir))
+        expected = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(expected.st_mode):
+            raise ContractError(f"report root must be a non-symlink directory: {path}")
+        descriptor = _open_directory_no_follow(None, str(path), Path("."))
+        identity = os.fstat(descriptor)
+        if not _same_file_identity(expected, identity):
+            os.close(descriptor)
+            raise ContractError("report root changed before ownership")
+        return cls(path, descriptor, identity)
+
+    def verify_path(self, phase: str) -> None:
+        try:
+            current = os.stat(self.path, follow_symlinks=False)
+        except OSError as error:
+            raise ContractError(f"report root changed {phase}: {error}") from error
+        if not _same_file_identity(self.identity, current):
+            raise ContractError(f"report root changed {phase}")
+
+    def duplicate(self) -> int:
+        if self._closed:
+            raise ContractError("report root owner is closed")
+        return os.dup(self.descriptor)
+
+    def close(self) -> None:
+        if not self._closed:
+            os.close(self.descriptor)
+            self._closed = True
+
+    def __enter__(self) -> "ReportRootOwner":
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.close()
+
+
 def artifact_manifest(
     report_dir: Path,
     *,
     allow_attestation_outputs: bool = False,
+    root_owner: ReportRootOwner | None = None,
+    allowed_reserved_outputs: frozenset[str] | None = None,
 ) -> list[dict[str, object]]:
     """Freeze one exact no-follow regular-file identity for the completed report tree."""
-    root_path = Path(os.path.abspath(report_dir))
-    try:
-        expected_root = os.stat(root_path, follow_symlinks=False)
-    except OSError as error:
-        raise ContractError(f"report root is unavailable: {root_path}: {error}") from error
-    if not stat.S_ISDIR(expected_root.st_mode):
-        raise ContractError(f"report root must be a non-symlink directory: {root_path}")
-    root_fd = _open_directory_no_follow(None, str(root_path), Path("."))
+    owned_here = root_owner is None
+    owner = root_owner or ReportRootOwner.open(report_dir)
+    root_fd = owner.duplicate()
     root_identity = os.fstat(root_fd)
-    if not _same_file_identity(expected_root, root_identity):
-        os.close(root_fd)
-        raise ContractError("report root changed before evidence freeze")
+    allowed_outputs = allowed_reserved_outputs
+    if allowed_outputs is None:
+        allowed_outputs = (
+            frozenset({ATTESTATION_NAME, ATTESTATION_SHA_NAME})
+            if allow_attestation_outputs
+            else frozenset()
+        )
     artifacts: list[dict[str, object]] = []
 
     def hash_file(parent_fd: int, name: str, relative: Path, expected: os.stat_result) -> None:
@@ -1172,7 +1220,7 @@ def artifact_manifest(
         for name in initial_names:
             relative = relative_directory / name
             if relative_directory == Path() and name in {ATTESTATION_NAME, ATTESTATION_SHA_NAME}:
-                if allow_attestation_outputs:
+                if name in allowed_outputs:
                     continue
                 raise ContractError(f"reserved attestation output already exists: {name}")
             try:
@@ -1212,11 +1260,13 @@ def artifact_manifest(
 
     try:
         walk(root_fd, Path())
-        final_root = os.stat(root_path, follow_symlinks=False)
-        if not _same_file_identity(root_identity, final_root):
-            raise ContractError("report root changed during evidence freeze")
+        if not _same_file_identity(root_identity, os.fstat(root_fd)):
+            raise ContractError("report root descriptor changed during evidence freeze")
+        owner.verify_path("during evidence freeze")
     finally:
         os.close(root_fd)
+        if owned_here:
+            owner.close()
     return sorted(artifacts, key=lambda item: str(item["path"]))
 
 
@@ -1246,41 +1296,89 @@ def append_attestation_summary(
         output.write("\n".join(lines) + "\n")
 
 
-def _write_report_output_exclusive(report_dir: Path, name: str, payload: bytes) -> Path:
-    root_fd = _open_directory_no_follow(None, str(Path(os.path.abspath(report_dir))), Path("."))
+@dataclass
+class ReservedReportOutput:
+    name: str
+    descriptor: int
+    identity: os.stat_result
+    payload: bytes
+
+    def verify(self, root: ReportRootOwner, phase: str) -> None:
+        opened = os.fstat(self.descriptor)
+        try:
+            current = os.stat(self.name, dir_fd=root.descriptor, follow_symlinks=False)
+        except OSError as error:
+            raise ContractError(f"reserved output changed {phase}: {self.name}: {error}") from error
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not _same_file_identity(self.identity, opened)
+            or not _same_file_identity(opened, current)
+            or opened.st_size != len(self.payload)
+            or opened.st_mtime_ns != self.identity.st_mtime_ns
+            or opened.st_ctime_ns != self.identity.st_ctime_ns
+        ):
+            raise ContractError(f"reserved output changed {phase}: {self.name}")
+        os.lseek(self.descriptor, 0, os.SEEK_SET)
+        observed = bytearray()
+        while len(observed) < len(self.payload):
+            chunk = os.read(self.descriptor, len(self.payload) - len(observed))
+            if not chunk:
+                break
+            observed.extend(chunk)
+        if bytes(observed) != self.payload or os.read(self.descriptor, 1):
+            raise ContractError(f"reserved output content changed {phase}: {self.name}")
+
+    def close(self) -> None:
+        if self.descriptor >= 0:
+            os.close(self.descriptor)
+            self.descriptor = -1
+
+
+def _write_report_output_exclusive(
+    root: ReportRootOwner,
+    name: str,
+    payload: bytes,
+) -> ReservedReportOutput:
     try:
         fd = os.open(
             name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | _open_flags(),
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | _open_flags(),
             0o600,
-            dir_fd=root_fd,
+            dir_fd=root.descriptor,
         )
         try:
             _write_all(fd, payload)
             os.fsync(fd)
-        finally:
+            identity = os.fstat(fd)
+        except BaseException:
             os.close(fd)
+            raise
     except FileExistsError as error:
         raise ContractError(f"refusing to overwrite reserved attestation output: {name}") from error
-    finally:
-        os.close(root_fd)
-    return report_dir / name
+    return ReservedReportOutput(name, fd, identity, payload)
 
 
-def _rollback_attestation_outputs(report_dir: Path, names: Sequence[str]) -> list[str]:
-    """Remove only outputs created by this failed finalization attempt."""
+def _rollback_attestation_outputs(
+    root: ReportRootOwner,
+    outputs: Sequence[ReservedReportOutput],
+) -> list[str]:
+    """Unlink every root-level name for only the exact output inodes this attempt created."""
     errors: list[str] = []
-    root_fd = _open_directory_no_follow(None, str(Path(os.path.abspath(report_dir))), Path("."))
-    try:
-        for name in reversed(tuple(names)):
-            try:
-                os.unlink(name, dir_fd=root_fd)
-            except FileNotFoundError:
-                continue
-            except OSError as error:
-                errors.append(f"{name}: {error}")
-    finally:
-        os.close(root_fd)
+    for output in reversed(tuple(outputs)):
+        try:
+            with os.scandir(root.descriptor) as iterator:
+                aliases = [
+                    entry.name
+                    for entry in iterator
+                    if _same_file_identity(entry.stat(follow_symlinks=False), output.identity)
+                ]
+            for name in aliases:
+                os.unlink(name, dir_fd=root.descriptor)
+            remaining = os.fstat(output.descriptor).st_nlink
+            if remaining != 0:
+                errors.append(f"{output.name}: exact output inode still has {remaining} link(s)")
+        except OSError as error:
+            errors.append(f"{output.name}: {error}")
     return errors
 
 
@@ -1291,44 +1389,65 @@ def write_attestation(
     expected_artifacts: list[dict[str, object]] | None = None,
 ) -> tuple[Path, Path]:
     """Write the attestation pair only around one stable, exact report artifact set."""
-    expected = expected_artifacts if expected_artifacts is not None else artifact_manifest(report_dir)
-    if artifact_manifest(report_dir) != expected:
-        raise ContractError("report artifact set changed before attestation write")
     payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
     checksum = hashlib.sha256(payload).hexdigest()
     sidecar_payload = f"{checksum}  {ATTESTATION_NAME}\n".encode()
-    created: list[str] = []
-    try:
-        attestation = _write_report_output_exclusive(report_dir, ATTESTATION_NAME, payload)
-        created.append(ATTESTATION_NAME)
-        sidecar = _write_report_output_exclusive(
-            report_dir,
-            ATTESTATION_SHA_NAME,
-            sidecar_payload,
-        )
-        created.append(ATTESTATION_SHA_NAME)
-        # Temporarily open the exact controlled outputs out of the frozen set, then prove every
-        # original artifact is still present and unchanged and no third member appeared.
-        attestation_bytes = attestation.read_bytes()
-        sidecar_bytes = sidecar.read_bytes()
-        if attestation_bytes != payload or sidecar_bytes != sidecar_payload:
-            raise ContractError("attestation outputs changed immediately after controlled write")
-        if _digest_regular_absolute_no_follow(attestation) != (len(payload), checksum):
-            raise ContractError("attestation JSON changed after controlled write")
-        sidecar_digest = hashlib.sha256(sidecar_bytes).hexdigest()
-        if _digest_regular_absolute_no_follow(sidecar) != (len(sidecar_bytes), sidecar_digest):
-            raise ContractError("attestation sidecar changed after controlled write")
-        if artifact_manifest(report_dir, allow_attestation_outputs=True) != expected:
-            raise ContractError("report artifact set changed during attestation write")
-        return attestation, sidecar
-    except BaseException as error:
-        rollback_errors = _rollback_attestation_outputs(report_dir, created)
-        if rollback_errors:
-            raise ContractError(
-                "attestation finalization failed and reserved-output rollback was incomplete: "
-                + "; ".join(rollback_errors)
-            ) from error
-        raise
+    created: list[ReservedReportOutput] = []
+    with ReportRootOwner.open(report_dir) as root:
+        try:
+            expected = (
+                expected_artifacts
+                if expected_artifacts is not None
+                else artifact_manifest(report_dir, root_owner=root)
+            )
+            if artifact_manifest(report_dir, root_owner=root) != expected:
+                raise ContractError("report artifact set changed before attestation write")
+
+            # JSON is provisional and not independently consumable as a green terminal record. The
+            # checksum sidecar is written only after the exact evidence set and JSON inode are proven.
+            attestation_output = _write_report_output_exclusive(
+                root,
+                ATTESTATION_NAME,
+                payload,
+            )
+            created.append(attestation_output)
+            attestation_output.verify(root, "after JSON write")
+            if artifact_manifest(
+                report_dir,
+                root_owner=root,
+                allowed_reserved_outputs=frozenset({ATTESTATION_NAME}),
+            ) != expected:
+                raise ContractError("report artifact set changed before sidecar commit")
+
+            sidecar_output = _write_report_output_exclusive(
+                root,
+                ATTESTATION_SHA_NAME,
+                sidecar_payload,
+            )
+            created.append(sidecar_output)
+            attestation_output.verify(root, "after sidecar write")
+            sidecar_output.verify(root, "after sidecar write")
+            if artifact_manifest(
+                report_dir,
+                root_owner=root,
+                allowed_reserved_outputs=frozenset(
+                    {ATTESTATION_NAME, ATTESTATION_SHA_NAME}
+                ),
+            ) != expected:
+                raise ContractError("report artifact set changed during attestation write")
+            root.verify_path("before attestation publication")
+            return report_dir / ATTESTATION_NAME, report_dir / ATTESTATION_SHA_NAME
+        except BaseException as error:
+            rollback_errors = _rollback_attestation_outputs(root, created)
+            if rollback_errors:
+                raise ContractError(
+                    "attestation finalization failed and exact-output rollback was incomplete: "
+                    + "; ".join(rollback_errors)
+                ) from error
+            raise
+        finally:
+            for output in created:
+                output.close()
 
 
 def run_locked_device(

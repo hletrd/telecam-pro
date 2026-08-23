@@ -1100,19 +1100,16 @@ class RunAttestationTest(unittest.TestCase):
             real_manifest = runner.artifact_manifest
             manifest_calls = 0
 
-            def race_after_sidecar(report_dir: Path, *, allow_attestation_outputs: bool = False):
+            def race_after_sidecar(report_dir: Path, **kwargs):
                 nonlocal manifest_calls
                 manifest_calls += 1
-                if manifest_calls == 2:
-                    # The second call is the final report-set proof, after both reserved outputs
-                    # have been written and individually digested.
+                if manifest_calls == 3:
+                    # The third call is the final report-set proof. The second proves the JSON before
+                    # the checksum sidecar is created as the terminal success marker.
                     self.assertTrue((root / runner.ATTESTATION_NAME).is_file())
                     self.assertTrue((root / runner.ATTESTATION_SHA_NAME).is_file())
                     (root / "late-evidence.bin").write_bytes(b"late")
-                return real_manifest(
-                    report_dir,
-                    allow_attestation_outputs=allow_attestation_outputs,
-                )
+                return real_manifest(report_dir, **kwargs)
 
             with patch.object(runner, "artifact_manifest", side_effect=race_after_sidecar):
                 with self.assertRaisesRegex(ContractError, "changed during attestation"):
@@ -1125,6 +1122,66 @@ class RunAttestationTest(unittest.TestCase):
             self.assertFalse((root / runner.ATTESTATION_NAME).exists())
             self.assertFalse((root / runner.ATTESTATION_SHA_NAME).exists())
             self.assertEqual((root / "late-evidence.bin").read_bytes(), b"late")
+
+    def test_report_root_relocation_rolls_back_pair_from_moved_original(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent = Path(temp_dir)
+            root = parent / "report"
+            root.mkdir()
+            (root / "report.md").write_text("report\n", encoding="utf-8")
+            frozen = runner.artifact_manifest(root)
+            real_manifest = runner.artifact_manifest
+            calls = 0
+            moved = parent / "moved-report"
+
+            def relocate_after_sidecar(report_dir: Path, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 3:
+                    root.rename(moved)
+                    root.mkdir()
+                return real_manifest(report_dir, **kwargs)
+
+            with patch.object(runner, "artifact_manifest", side_effect=relocate_after_sidecar):
+                with self.assertRaisesRegex(ContractError, "report root changed"):
+                    runner.write_attestation(
+                        root,
+                        {"schema_version": 1, "artifacts": frozen},
+                        expected_artifacts=frozen,
+                    )
+
+            self.assertFalse((moved / runner.ATTESTATION_NAME).exists())
+            self.assertFalse((moved / runner.ATTESTATION_SHA_NAME).exists())
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_reserved_leaf_replacement_cannot_preserve_a_valid_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "report.md").write_text("report\n", encoding="utf-8")
+            frozen = runner.artifact_manifest(root)
+            real_manifest = runner.artifact_manifest
+            calls = 0
+
+            def replace_json_after_sidecar(report_dir: Path, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 3:
+                    attestation = root / runner.ATTESTATION_NAME
+                    attestation.rename(root / "moved-attestation.json")
+                    attestation.write_text("replacement\n", encoding="utf-8")
+                return real_manifest(report_dir, **kwargs)
+
+            with patch.object(runner, "artifact_manifest", side_effect=replace_json_after_sidecar):
+                with self.assertRaisesRegex(ContractError, "changed during attestation"):
+                    runner.write_attestation(
+                        root,
+                        {"schema_version": 1, "artifacts": frozen},
+                        expected_artifacts=frozen,
+                    )
+
+            self.assertEqual((root / runner.ATTESTATION_NAME).read_text(), "replacement\n")
+            self.assertFalse((root / "moved-attestation.json").exists())
+            self.assertFalse((root / runner.ATTESTATION_SHA_NAME).exists())
 
     def test_attestation_refuses_reserved_existing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
