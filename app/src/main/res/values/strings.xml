@@ -138,7 +138,10 @@
     <string name="a11y_state_off">Off</string>
     <string name="a11y_show_shooting_info">Show shooting info</string>
     <string name="a11y_hide_shooting_info">Hide shooting info</string>
-    <string name="a11y_no_capture_to_review">No capture to review</string>
+    <string name="a11y_no_capture_to_review">Find previous captures</string>
+    <string name="caption_converter_host_3x">Uses the 3× lens</string>
+    <string name="caption_converter_host_measured">Uses the %1$s lens</string>
+    <string name="caption_converter_host_main">Uses the main lens</string>
     <string name="a11y_review_last_raw">Review last RAW capture</string>
     <string name="a11y_review_last_video">Review last video</string>
     <string name="a11y_review_last_photo">Review last photo</string>

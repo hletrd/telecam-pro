@@ -1116,16 +1116,22 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // Names the lens the converter will ACTUALLY clamp onto: the app resolves that by closest
     // 35 mm-equivalent, which is the 3× periscope only where one exists (enumerated, not assumed —
     // a single-camera device would otherwise be told it uses a lens it does not have).
-    Captioned(
-        if (rearRoute) {
-            teleconverterHostCaption(
-                state.lensInventory.teleHostEquivMm,
-                LensChoice.TELE3X in state.lensInventory.optical,
+    val hostCaption = if (rearRoute) {
+        when (val caption = teleconverterHostCaption(
+            state.lensInventory.teleHostEquivMm,
+            LensChoice.TELE3X in state.lensInventory.optical,
+        )) {
+            TeleconverterHostCaption.ThreeTimes -> stringResource(R.string.caption_converter_host_3x)
+            is TeleconverterHostCaption.Measured -> stringResource(
+                R.string.caption_converter_host_measured,
+                caption.focalLabel,
             )
-        } else {
-            null
-        },
-    ) {
+            TeleconverterHostCaption.Main -> stringResource(R.string.caption_converter_host_main)
+        }
+    } else {
+        null
+    }
+    Captioned(hostCaption) {
         ToggleRow(
             label = stringResource(R.string.label_teleconverter),
             checked = state.teleconverterMode,

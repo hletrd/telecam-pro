@@ -492,7 +492,11 @@ private fun FnDialChip(
                 // chip while a sighted user reads it in the pill.
                 accessibleName = labelContext.localizedLabel(slot),
                 value = focusDistance,
-                accessibleState = focusDialStateDescription(controls.focusMode, focusDistance),
+                accessibleState = focusDialStateDescription(
+                    controls.focusMode,
+                    focusDistance,
+                    labelContext.localizedLabel(controls.focusMode),
+                ),
                 active = openDial == DialType.FOCUS,
                 enabled = policyEnabled && quickManualDialEnabled(DialType.FOCUS, availability),
                 onClick = { onSelect(DialType.FOCUS) },

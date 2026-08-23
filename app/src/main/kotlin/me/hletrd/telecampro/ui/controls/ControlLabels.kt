@@ -97,8 +97,11 @@ internal fun focusModeLabel(mode: FocusMode): String = when (mode) {
  * vocabulary of every camera body this app is modelled on, and inventing a second spoken wording
  * would put the sighted and TalkBack readings of the same pill out of step.
  */
-internal fun focusDialStateDescription(mode: FocusMode, distance: String): String =
-    "${focusModeLabel(mode)}, $distance"
+internal fun focusDialStateDescription(
+    mode: FocusMode,
+    distance: String,
+    localizedModeLabel: String = focusModeLabel(mode),
+): String = "$localizedModeLabel, $distance"
 
 internal fun antibandingLabel(mode: Antibanding): String = when (mode) {
     Antibanding.AUTO -> "Auto"
@@ -267,10 +270,19 @@ internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
  * resolved onto, say, a 50 mm lens that is neither (verification 2026-08-02). When the host is not
  * the 3x lens, name it by its measured focal instead of guessing which preset it belongs to.
  */
-internal fun teleconverterHostCaption(hostEquivMm: Float, teleIsOptical: Boolean): String = when {
-    teleIsOptical -> "Uses the 3\u00d7 lens"
-    hostEquivMm > 0f -> "Uses the ${formatFocalMm(hostEquivMm)} lens"
-    else -> "Uses the main lens"
+internal sealed interface TeleconverterHostCaption {
+    data object ThreeTimes : TeleconverterHostCaption
+    data class Measured(val focalLabel: String) : TeleconverterHostCaption
+    data object Main : TeleconverterHostCaption
+}
+
+internal fun teleconverterHostCaption(
+    hostEquivMm: Float,
+    teleIsOptical: Boolean,
+): TeleconverterHostCaption = when {
+    teleIsOptical -> TeleconverterHostCaption.ThreeTimes
+    hostEquivMm > 0f -> TeleconverterHostCaption.Measured(formatFocalMm(hostEquivMm))
+    else -> TeleconverterHostCaption.Main
 }
 
 internal fun driveModeLabel(mode: DriveMode): String = when (mode) {

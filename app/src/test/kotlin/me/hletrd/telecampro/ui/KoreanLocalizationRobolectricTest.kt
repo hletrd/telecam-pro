@@ -86,6 +86,18 @@ class KoreanLocalizationRobolectricTest {
         assertEquals("3초 남음", ko.resources.getQuantityString(R.plurals.a11y_seconds_remaining, 3, 3))
         assertEquals("42장 촬영 가능", ko.resources.getQuantityString(R.plurals.a11y_shots_remaining, 42, 42))
         assertEquals("배터리 72퍼센트", ko.resources.getQuantityString(R.plurals.a11y_battery_percent, 72, 72))
+        assertEquals(
+            "MR2: 비어 있음",
+            CameraStatusMessage.MEMORY_SLOT_EMPTY
+                .status(CameraStatusArgument.Text("MR2"))
+                .resolve(ko),
+        )
+        assertEquals(
+            "MR2 불러오기 완료",
+            CameraStatusMessage.MEMORY_SLOT_LOADED
+                .status(CameraStatusArgument.Text("MR2"))
+                .resolve(ko),
+        )
     }
 
     @Test

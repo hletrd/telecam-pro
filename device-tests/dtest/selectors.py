@@ -76,14 +76,14 @@ GRID = selector("grid", "Grid", "그리드")
 GALLERY = selector(
     "gallery",
     (
-        "No capture to review",
+        "Find previous captures",
         "Review last RAW capture",
         "Review last video",
         "Review last photo",
         "Review last capture",
     ),
     (
-        "볼 사진이나 동영상 없음",
+        "이전 촬영 찾기",
         "마지막 RAW 촬영 보기",
         "마지막 동영상 보기",
         "마지막 사진 보기",

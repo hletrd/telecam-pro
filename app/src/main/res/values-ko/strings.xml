@@ -129,7 +129,10 @@
     <string name="a11y_state_off">꺼짐</string>
     <string name="a11y_show_shooting_info">촬영 정보 표시</string>
     <string name="a11y_hide_shooting_info">촬영 정보 숨기기</string>
-    <string name="a11y_no_capture_to_review">볼 사진이나 동영상 없음</string>
+    <string name="a11y_no_capture_to_review">이전 촬영 찾기</string>
+    <string name="caption_converter_host_3x">3× 렌즈를 사용합니다</string>
+    <string name="caption_converter_host_measured">%1$s 렌즈를 사용합니다</string>
+    <string name="caption_converter_host_main">메인 렌즈를 사용합니다</string>
     <string name="a11y_review_last_raw">마지막 RAW 촬영 보기</string>
     <string name="a11y_review_last_video">마지막 동영상 보기</string>
     <string name="a11y_review_last_photo">마지막 사진 보기</string>
@@ -197,8 +200,8 @@
     <string name="status_custom_wb_set">커스텀 WB를 설정했습니다</string>
     <string name="status_audio_input_using_default">%1$s. 기본 입력을 사용합니다</string>
     <string name="status_memory_slot_saved">%1$s에 저장했습니다</string>
-    <string name="status_memory_slot_empty">%1$s이 비어 있습니다</string>
-    <string name="status_memory_slot_loaded">%1$s을 불러왔습니다</string>
+    <string name="status_memory_slot_empty">%1$s: 비어 있음</string>
+    <string name="status_memory_slot_loaded">%1$s 불러오기 완료</string>
     <string name="status_deleted">삭제했습니다</string>
     <string name="status_some_files_not_deleted_retry_capture">일부 파일을 삭제하지 못했습니다. 촬영 결과를 열고 다시 시도하세요.</string>
     <string name="status_some_files_not_deleted_retry_gallery">일부 파일을 삭제하지 못했습니다. 갤러리에서 다시 시도하세요.</string>

@@ -382,7 +382,9 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
                 contentDescription = galleryDesc
                 role = Role.Button
             }
-            .clickable(enabled = uri != null, onClick = onClick),
+            // Null is an actionable restore state: the caller requests contextual visual-media
+            // access and re-runs the previous-install capture query.
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         val t = content.bitmap

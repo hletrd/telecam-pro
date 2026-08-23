@@ -46,9 +46,18 @@ class ControlLabelBranchTest {
 
     @Test
     fun `teleconverter host caption distinguishes optical measured and unknown hosts`() {
-        assertEquals("Uses the 3× lens", teleconverterHostCaption(70f, teleIsOptical = true))
-        assertEquals("Uses the 50 mm lens", teleconverterHostCaption(50f, teleIsOptical = false))
-        assertEquals("Uses the main lens", teleconverterHostCaption(0f, teleIsOptical = false))
+        assertEquals(
+            TeleconverterHostCaption.ThreeTimes,
+            teleconverterHostCaption(70f, teleIsOptical = true),
+        )
+        assertEquals(
+            TeleconverterHostCaption.Measured("50 mm"),
+            teleconverterHostCaption(50f, teleIsOptical = false),
+        )
+        assertEquals(
+            TeleconverterHostCaption.Main,
+            teleconverterHostCaption(0f, teleIsOptical = false),
+        )
     }
 
     @Test

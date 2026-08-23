@@ -9,11 +9,13 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import java.lang.reflect.Proxy
 import java.util.Locale
@@ -23,6 +25,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.MemoryPresetPresentation
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PhotoFormats
@@ -30,9 +33,11 @@ import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.ui.controls.ProSheet
 import me.hletrd.telecampro.ui.controls.ProSheetTab
+import me.hletrd.telecampro.ui.controls.focusDialStateDescription
 import me.hletrd.telecampro.ui.controls.PhotoFormatToggles
 import me.hletrd.telecampro.ui.controls.SpeedAngleToggle
 import me.hletrd.telecampro.ui.overlays.FocusResultLiveRegion
+import me.hletrd.telecampro.ui.review.GalleryThumb
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Rule
 import org.junit.Assert.assertTrue
@@ -60,6 +65,47 @@ class BilingualPresentationComposeTest {
         CameraActions::class.java.classLoader,
         arrayOf(CameraActions::class.java),
     ) { _, method, _ -> if (method.returnType == java.lang.Boolean.TYPE) false else null } as CameraActions
+
+    @Test
+    fun `empty gallery is an enabled Korean restore action`() {
+        var requests = 0
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides localizedContext("ko")) {
+                TeleCamProTheme {
+                    GalleryThumb(uri = null, onClick = { requests++ })
+                }
+            }
+        }
+
+        compose.onNodeWithContentDescription("이전 촬영 찾기")
+            .assertIsEnabled()
+            .performClick()
+        assertEquals(1, requests)
+    }
+
+    @Test
+    fun `Korean Lens caption and Macro focus state stay localized`() {
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides localizedContext("ko")) {
+                TeleCamProTheme {
+                    androidx.compose.foundation.layout.Column {
+                        ProSheet(
+                            CameraUiState(),
+                            actions,
+                            onDismiss = {},
+                            initialTab = ProSheetTab.LENS,
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithText("3× 렌즈를 사용합니다").fetchSemanticsNode()
+        assertEquals(
+            "매크로, ∞",
+            focusDialStateDescription(FocusMode.MACRO, "∞", "매크로"),
+        )
+    }
 
     @Test
     fun `Korean MR rows derive generated prose at composition while custom names survive`() {
