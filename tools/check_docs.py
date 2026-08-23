@@ -47,6 +47,14 @@ def fenced(text: str, heading: str) -> str:
     return m.group(1)
 
 
+def language_fenced(text: str, heading: str, language: str) -> str:
+    """The first language-tagged fence after a heading."""
+    start = text.index(heading)
+    m = re.search(rf"```{re.escape(language)}\n(.*?)\n```", text[start:], re.S)
+    assert m, f"no {language!r} fenced block under {heading!r}"
+    return m.group(1)
+
+
 # ---- store copy: Play's hard limits, and the wrapping trap -------------------------------------
 listing = read("docs/play-store-listing.md")
 
@@ -536,11 +544,32 @@ required_owners = (
     "CameraStatus.kt", "DeviceProfile.kt", "FrontMirrorConvention.kt", "MotionInversion.kt",
     "EncoderSizeLadder.kt", "CameraScreenPolicy.kt", "LocalizedStatus.kt",
     "RecordingPreNativeAllocation.kt", "RecordingStorageDispatcher.kt",
+    "LaunchMediaRecoveryCoordinator.kt", "RetainedStillDiscardDispatcher.kt",
+    "LatestHeavyWorkLane.kt", "MediaReview.kt",
 )
 check(
     all(owner in architecture for owner in required_owners),
     "architecture maps every current review-critical owner",
     f"missing {[owner for owner in required_owners if owner not in architecture]}",
+)
+retained_discard_dispatcher = read(
+    "app/src/main/kotlin/me/hletrd/telecampro/camera/RetainedStillDiscardDispatcher.kt",
+)
+media_store_writer = read(
+    "app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt",
+)
+media_review = read("app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt")
+check(
+    "RETAINED_STILL_DISCARD_WORKER_COUNT = 2" in retained_discard_dispatcher
+    and "RETAINED_STILL_DISCARD_BACKLOG_CAPACITY = 8" in retained_discard_dispatcher
+    and "process-lifetime finite provider lane (two daemon workers + eight backlog slots)" in architecture
+    and "MAX_DISCARD_RECOVERY_ROWS = 64" in media_store_writer
+    and "discardAfterKey" in media_store_writer
+    and "independent 64-entry lexicographic durable-DISCARD pages" in architecture
+    and "LatestReviewSetupLane" in media_review
+    and "player.setDataSource" in media_review
+    and "after transfer to Compose it is GC-owned" in architecture,
+    "architecture describes current retained-discard, paged recovery, and review-work ownership",
 )
 retired_claims = (
     "Absorbed the former `FrontMirrorConvention.kt`",
@@ -632,13 +661,128 @@ check(
     "architecture device-evidence commands inspect and install the wrapper-printed immutable APK",
 )
 device_test_readme = read("device-tests/README.md")
+field_checks = read("docs/FIELD_CHECKS.md")
+device_runner = read("device-tests/run.py")
+qa_runbook_path = ROOT / ".claude/agents/qa-adversary.md"
+# The runbook is intentionally local/ignored. Validate it whenever this checkout provides it, but
+# keep the tracked documentation gate runnable from a clean public clone where `.claude/` is absent.
+qa_runbook = qa_runbook_path.read_text(encoding="utf-8") if qa_runbook_path.is_file() else None
+claude_build_loop = language_fenced(claude, "## Build / deploy / verify loop", "bash")
+field_install_block = language_fenced(
+    field_checks,
+    "Install the exact immutable debug build first",
+    "bash",
+)
+qa_evidence_block = (
+    language_fenced(qa_runbook, "When device work is allowed", "bash")
+    if qa_runbook is not None
+    else ""
+)
+runner_usage = device_runner.split("Usage:", 1)[1].split("Requires:", 1)[0]
+runner_usage_commands = [
+    line.strip() for line in runner_usage.splitlines() if line.strip().startswith("python3 ")
+]
 check(
-    "snapshots the exact scoped source whether the checkout is" in device_test_readme
+    all(
+        "BUILD_RESULT=\"$(python3 tools/build_immutable_debug.py)\"" in block
+        and "EVIDENCE_APK=\"${BUILD_RESULT##* apk=}\"" in block
+        and "app/build/outputs/apk/debug/app-debug.apk" not in block
+        for block in (claude_build_loop, field_install_block)
+    )
+    and 'install -r "$EVIDENCE_APK"' in claude_build_loop
+    and 'install -r -t "$EVIDENCE_APK"' in field_install_block
+    and (
+        qa_runbook is None
+        or (
+            "BUILD_RESULT=\"$(python3 tools/build_immutable_debug.py)\"" in qa_evidence_block
+            and "EVIDENCE_APK=\"${BUILD_RESULT##* apk=}\"" in qa_evidence_block
+            and 'dump badging "$EVIDENCE_APK"' in qa_evidence_block
+            and 'install -r "$EVIDENCE_APK"' in qa_runbook
+            and "app/build/outputs/apk/debug/app-debug.apk" not in qa_runbook
+        )
+    )
+    and len(runner_usage_commands) == 3
+    and all('--apk "$EVIDENCE_APK"' in command for command in runner_usage_commands)
+    and "tools/build_immutable_debug.py" in device_runner.split("Reports land", 1)[0]
+    and re.search(r'ap\.add_argument\(\s*"--apk".*?required=True', device_runner, re.S)
+    and "default=DEFAULT_APK" not in device_runner
+    and "def default_apk_path" not in device_runner
+    and "evidence_install_command(source_apk)" in device_runner
+    and "app/build/outputs/apk/debug/app-debug.apk" not in device_runner
+    and "For local development only" in read("README.md"),
+    "all active device-evidence authorities and runner diagnostics require the immutable debug APK",
+)
+check(
+    "BUILD_RESULT=\"$(python3 tools/build_immutable_debug.py)\"" in device_test_readme
+    and "EVIDENCE_APK=\"${BUILD_RESULT##* apk=}\"" in device_test_readme
+    and "snapshots the exact scoped source whether the checkout is" in device_test_readme
     and "clean or dirty" in device_test_readme
     and "Evidence runs must pass the wrapper's printed immutable APK" in device_test_readme
+    and "default APK" not in device_test_readme
     and "requires clean committed source" not in device_test_readme
     and "match `app/build/outputs/apk/debug/app-debug.apk`" not in device_test_readme,
     "device harness requires the printed clean-or-dirty immutable debug artifact",
+)
+
+# Exact UI names come from resources, not from a second hand-maintained spelling in prose. The
+# screenshot validity manifest already treats the superseded pair as blocking; current architecture
+# UX policy, QA runbook, and device selectors must therefore use the same resource-backed names.
+architecture_ui_layout = architecture.split("**UI layout (ProSheet.kt):**", 1)[1].split(
+    "**Quick Fn controls (ManualDials.kt):**",
+    1,
+)[0]
+ux_policy_path = ROOT / "docs/UX_POLICY.md"
+# Like the local QA runbook, UX_POLICY is intentionally ignored as internal working context. Enforce
+# it when present without making a clean public checkout depend on an untracked file.
+ux_policy = ux_policy_path.read_text(encoding="utf-8") if ux_policy_path.is_file() else None
+device_selectors = read("device-tests/dtest/selectors.py")
+shoot_label = default_strings.get("settings_tab_shoot")
+still_quality_label = default_strings.get("label_still_quality")
+check(
+    shoot_label == "Shoot"
+    and still_quality_label == "Still Quality"
+    and f"2. **{shoot_label}**" in architecture_ui_layout
+    and still_quality_label in architecture_ui_layout
+    and "**Shooting**" not in architecture_ui_layout
+    and "JPEG quality" not in architecture_ui_layout
+    and "Shooting-tab" not in architecture
+    and (
+        ux_policy is None
+        or (
+            f"`{shoot_label}`/My Menu" in ux_policy
+            and "Shooting/My Menu" not in ux_policy
+        )
+    )
+    and (
+        qa_runbook is None
+        or (
+            f"My, {shoot_label}, Exposure, Focus, Lens, Video" in qa_runbook
+            and "My, Shooting, Exposure" not in qa_runbook
+        )
+    )
+    and f'selector("page_shoot", "{shoot_label}", "촬영")' in device_selectors
+    and 'selector("page_shooting", "Shooting"' not in device_selectors,
+    "all active UI authorities and device selectors use resource-backed Shoot and Still Quality labels",
+)
+
+# The wide operator rail was deliberately removed. Historical prose may explain that decision, but
+# comments adjacent to the live full-width layout must never instruct future edits to reserve rail
+# columns or constrain the top bar to a side rail.
+camera_screen = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt")
+stale_operator_rail_guidance = (
+    "bounded by BOTH reserved columns",
+    "Inset by BOTH reserved columns",
+    "same seam violation the two columns exist to stop",
+    "bar belongs to the RAIL's column",
+    "Constrained to the rail",
+)
+check(
+    not any(phrase in camera_screen for phrase in stale_operator_rail_guidance)
+    and "private fun TopBarContainer" in camera_screen
+    and "modifier.fillMaxWidth().padding(horizontal = 12.dp)" in camera_screen
+    and "landscapeOperator" not in camera_screen
+    and "TopBarScope" not in camera_screen,
+    "CameraScreen keeps one full-width top-bar layout and no deleted operator-rail guidance",
 )
 view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
 camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
