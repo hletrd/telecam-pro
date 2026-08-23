@@ -111,7 +111,10 @@ class OrphanSweepTest {
             PendingProbe.entries.forEach { probe ->
                 assertEquals(
                     "$journal/$probe",
-                    if (journal == PendingJournalState.DISCARD) {
+                    if (
+                        journal == PendingJournalState.DISCARD ||
+                        journal == PendingJournalState.UNAVAILABLE
+                    ) {
                         // Exact URI ownership stays with the progressive DISCARD stage even when a
                         // family tombstone independently confirms that the capture was deleted.
                         OrphanDisposition.KEEP_PENDING

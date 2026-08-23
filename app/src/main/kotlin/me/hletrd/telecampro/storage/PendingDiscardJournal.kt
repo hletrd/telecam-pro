@@ -36,15 +36,27 @@ internal class PendingDiscardJournal(
                 }
             }
             // A failed cleanup is harmless: SQLite is already the durable authority, and a later
-            // legacy migration removes the duplicate preference key idempotently.
+            // journal page removes the duplicate preference key idempotently.
             runCatching { removeLegacyEntries(setOf(uri)) }
             true
         }.getOrDefault(false)
     }
 
-    fun contains(uri: String): Boolean = synchronized(databaseLock) {
-        runCatching {
-            withReadableDatabase { database ->
+    /** A database failure is not evidence that an exact delete owner is absent. */
+    fun lookup(uri: String): DiscardJournalLookup = synchronized(databaseLock) {
+        lookupLocked(uri)
+    }
+
+    /**
+     * Serializes a decision with [mark] so a caller can perform its terminal provider transition
+     * only while exact SQLite DISCARD authority is authoritatively absent.
+     */
+    fun <T> withLookupAuthority(uri: String, block: (DiscardJournalLookup) -> T): T =
+        synchronized(databaseLock) { block(lookupLocked(uri)) }
+
+    private fun lookupLocked(uri: String): DiscardJournalLookup = runCatching {
+        withReadableDatabase { database ->
+            if (
                 database.query(
                     DISCARD_TABLE,
                     arrayOf(URI_COLUMN),
@@ -55,9 +67,13 @@ internal class PendingDiscardJournal(
                     null,
                     "1",
                 ).use { it.moveToFirst() }
+            ) {
+                DiscardJournalLookup.PRESENT
+            } else {
+                DiscardJournalLookup.ABSENT
             }
-        }.getOrDefault(false)
-    }
+        }
+    }.getOrDefault(DiscardJournalLookup.UNAVAILABLE)
 
     /** Returns true only when this exact marker is authoritatively absent afterwards. */
     fun remove(uri: String): Boolean = synchronized(databaseLock) {
@@ -84,7 +100,7 @@ internal class PendingDiscardJournal(
      */
     fun page(afterKey: String?, batchLimit: Int): DiscardJournalPage = synchronized(databaseLock) {
         require(batchLimit > 0)
-        check(migrateLegacyDiscardMarkers()) { "Legacy discard migration unavailable" }
+        migrateLegacyDiscardMarkers()
         withReadableDatabase { database ->
             val queryLimit = batchLimit + 1
             val candidates = buildList(queryLimit) {
@@ -102,6 +118,10 @@ internal class PendingDiscardJournal(
                 }
             }
             val keys = candidates.take(batchLimit)
+            // Import completion is already durable. Preference cleanup is deliberately a separate,
+            // bounded, idempotent operation: a failed commit is retried when this page is visited
+            // on a later launch, without ever re-enumerating or re-importing the full legacy set.
+            runCatching { removeLegacyEntries(keys.toSet()) }
             DiscardJournalPage(
                 keys = keys,
                 nextAfterKey = keys.lastOrNull() ?: afterKey,
@@ -112,56 +132,37 @@ internal class PendingDiscardJournal(
     }
 
     /**
-     * Imports every legacy preference DISCARD in one database transaction. Preference keys are
-     * removed only after that transaction commits. If the process dies between those operations,
-     * the next pass repeats INSERT OR IGNORE and then retries cleanup, so ownership is never lost.
+     * Imports every legacy preference DISCARD and records import completion in one transaction.
+     * Preference cleanup happens separately in bounded [page] chunks after that commit, so a
+     * cleanup outage cannot repeat the whole import on every page.
      */
-    private fun migrateLegacyDiscardMarkers(): Boolean {
-        val migrationComplete = runCatching {
-            withReadableDatabase { database -> migrationComplete(database) }
-        }.getOrDefault(false)
-        if (migrationComplete) return true
+    private fun migrateLegacyDiscardMarkers() {
+        if (withReadableDatabase { database -> migrationComplete(database) }) return
 
-        val legacyKeys = runCatching {
-            legacyPreferences.all
-                .filterValues { it == LEGACY_DISCARD_VALUE }
-                .keys
-                .toSet()
-        }.getOrElse { return false }
+        val legacyKeys = legacyPreferences.all
+            .filterValues { it == LEGACY_DISCARD_VALUE }
+            .keys
+            .toSet()
 
-        val imported = runCatching {
-            withWritableDatabase { database ->
-                database.beginTransaction()
-                try {
-                    legacyKeys.forEach { uri ->
-                        database.execSQL(
-                            "INSERT OR IGNORE INTO $DISCARD_TABLE ($URI_COLUMN) VALUES (?)",
-                            arrayOf(uri),
-                        )
-                    }
-                    database.setTransactionSuccessful()
-                } finally {
-                    database.endTransaction()
-                }
-            }
-        }.isSuccess
-        if (!imported) return false
-
-        // Cleanup failure deliberately does not hide the now-durable rows from recovery. Leaving
-        // the completion bit unset makes the next page retry this idempotent handoff.
-        val cleaned = runCatching { removeLegacyEntries(legacyKeys) }.getOrDefault(false)
-        if (cleaned) {
-            runCatching {
-                withWritableDatabase { database ->
+        withWritableDatabase { database ->
+            database.beginTransaction()
+            try {
+                legacyKeys.forEach { uri ->
                     database.execSQL(
-                        "INSERT OR REPLACE INTO $METADATA_TABLE ($METADATA_KEY_COLUMN, " +
-                            "$METADATA_VALUE_COLUMN) VALUES (?, ?)",
-                        arrayOf(LEGACY_MIGRATION_KEY, MIGRATION_COMPLETE_VALUE),
+                        "INSERT OR IGNORE INTO $DISCARD_TABLE ($URI_COLUMN) VALUES (?)",
+                        arrayOf(uri),
                     )
                 }
+                database.execSQL(
+                    "INSERT OR REPLACE INTO $METADATA_TABLE ($METADATA_KEY_COLUMN, " +
+                        "$METADATA_VALUE_COLUMN) VALUES (?, ?)",
+                    arrayOf(LEGACY_MIGRATION_KEY, MIGRATION_COMPLETE_VALUE),
+                )
+                database.setTransactionSuccessful()
+            } finally {
+                database.endTransaction()
             }
         }
-        return true
     }
 
     private fun migrationComplete(database: SQLiteDatabase): Boolean = database.query(
@@ -220,3 +221,5 @@ internal class PendingDiscardJournal(
         private val databaseLock = Any()
     }
 }
+
+internal enum class DiscardJournalLookup { PRESENT, ABSENT, UNAVAILABLE }

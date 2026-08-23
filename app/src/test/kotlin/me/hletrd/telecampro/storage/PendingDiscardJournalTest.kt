@@ -3,11 +3,16 @@ package me.hletrd.telecampro.storage
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
+import java.io.File
 import java.util.UUID
+import me.hletrd.telecampro.camera.executeLaunchMediaRecovery
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -79,10 +84,10 @@ class PendingDiscardJournalTest {
         assertEquals("content://bulk/00063", first.keys.last())
         assertEquals("registered", preferences.getString("content://registered", null))
         assertEquals("complete", preferences.getString("content://complete", null))
-        assertEquals(
-            2,
-            preferences.all.size,
-        )
+        assertFalse(preferences.contains("content://bulk/00000"))
+        assertFalse(preferences.contains("content://bulk/00063"))
+        assertTrue(preferences.contains("content://bulk/00064"))
+        assertEquals(9_938, preferences.all.size)
     }
 
     @Test
@@ -99,7 +104,7 @@ class PendingDiscardJournalTest {
         )
 
         assertEquals(listOf(uri), interrupted.page(afterKey = null, batchLimit = 8).keys)
-        assertTrue(interrupted.contains(uri))
+        assertEquals(DiscardJournalLookup.PRESENT, interrupted.lookup(uri))
         assertEquals("discard", preferences.getString(uri, null))
 
         val relaunched = PendingDiscardJournal(
@@ -108,8 +113,53 @@ class PendingDiscardJournalTest {
             legacyPreferences = preferences,
         )
         assertEquals(listOf(uri), relaunched.page(afterKey = null, batchLimit = 8).keys)
-        assertTrue(relaunched.contains(uri))
+        assertEquals(DiscardJournalLookup.PRESENT, relaunched.lookup(uri))
         assertFalse(preferences.contains(uri))
+    }
+
+    @Test
+    fun `persistent cleanup failure never reimports the legacy set across pages`() {
+        val suffix = UUID.randomUUID().toString()
+        val preferences = context.getSharedPreferences("legacy-$suffix", Context.MODE_PRIVATE)
+        val editor = preferences.edit()
+        repeat(130) { index ->
+            editor.putString("content://legacy/${index.toString().padStart(3, '0')}", "discard")
+        }
+        assertTrue(editor.commit())
+        val cleanupSizes = mutableListOf<Int>()
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = "discard-$suffix.db",
+            legacyPreferences = preferences,
+            removeLegacyEntries = { keys ->
+                cleanupSizes += keys.size
+                false
+            },
+        )
+
+        val first = journal.page(afterKey = null, batchLimit = 64)
+        val lateLegacyKey = "content://legacy/999"
+        assertTrue(preferences.edit().putString(lateLegacyKey, "discard").commit())
+        val second = journal.page(afterKey = first.nextAfterKey, batchLimit = 64)
+        val third = journal.page(afterKey = second.nextAfterKey, batchLimit = 64)
+
+        assertEquals(listOf(64, 64, 2), cleanupSizes)
+        assertTrue(listOf(first, second, third).all { it.rowsRead <= 65 })
+        assertFalse((first.keys + second.keys + third.keys).contains(lateLegacyKey))
+        assertEquals(131, preferences.all.size)
+
+        val retry = PendingDiscardJournal(
+            context = context,
+            databaseName = "discard-$suffix.db",
+            legacyPreferences = preferences,
+        )
+        var afterKey: String? = null
+        do {
+            val page = retry.page(afterKey = afterKey, batchLimit = 64)
+            assertTrue(page.rowsRead <= 65)
+            afterKey = page.nextAfterKey
+        } while (page.hasMore)
+        assertEquals(setOf(lateLegacyKey), preferences.all.keys)
     }
 
     @Test
@@ -123,11 +173,17 @@ class PendingDiscardJournalTest {
             PendingOutputDiscardResult.RECOVERY_MARKED,
             MediaStoreWriter.discardPendingOutput(context, uri),
         )
-        assertTrue(PendingDiscardJournal(context).contains(uri.toString()))
+        assertEquals(
+            DiscardJournalLookup.PRESENT,
+            PendingDiscardJournal(context).lookup(uri.toString()),
+        )
 
         provider.allowDelete = true
         assertTrue(MediaStoreWriter.delete(context, uri))
-        assertFalse(PendingDiscardJournal(context).contains(uri.toString()))
+        assertEquals(
+            DiscardJournalLookup.ABSENT,
+            PendingDiscardJournal(context).lookup(uri.toString()),
+        )
     }
 
     @Test
@@ -147,7 +203,104 @@ class PendingDiscardJournalTest {
             ),
         )
 
-        assertFalse(journal.contains("content://upgrade/marker"))
+        assertEquals(
+            DiscardJournalLookup.UNAVAILABLE,
+            journal.lookup("content://upgrade/marker"),
+        )
+    }
+
+    @Test
+    fun `unavailable sqlite discard authority blocks valid row adoption until retry exhausts`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-recovery-$suffix"
+        val imageBase = Uri.parse("content://$authority/images")
+        val videoBase = Uri.parse("content://$authority/videos")
+        val rowUri = Uri.withAppendedPath(imageBase, "1")
+        val jpeg = File.createTempFile("valid-pending-", ".jpg", context.cacheDir).apply {
+            writeBytes(
+                byteArrayOf(
+                    0xff.toByte(),
+                    0xd8.toByte(),
+                    0x01,
+                    0x02,
+                    0xff.toByte(),
+                    0xd9.toByte(),
+                ),
+            )
+        }
+        val provider = PendingJpegProvider(imageBase, jpeg)
+        provider.attachInfo(context, ProviderInfo().apply { this.authority = authority })
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val targets = listOf(
+            OrphanRecoveryTarget(imageBase, OrphanRecoveryCollection.IMAGES),
+            OrphanRecoveryTarget(videoBase, OrphanRecoveryCollection.VIDEO),
+        )
+        val databaseName = "discard-recovery-$suffix.db"
+        val legacyPreferences = context.getSharedPreferences(
+            "legacy-recovery-$suffix",
+            Context.MODE_PRIVATE,
+        )
+        val healthyJournal = PendingDiscardJournal(
+            context = context,
+            databaseName = databaseName,
+            legacyPreferences = legacyPreferences,
+        )
+        assertTrue(healthyJournal.mark(rowUri.toString()))
+        assertEquals(DiscardJournalLookup.PRESENT, healthyJournal.lookup(rowUri.toString()))
+
+        // Prove the fixture itself takes the structural JPEG adoption path when its authority is
+        // readable and absent; the faulted journal below is the only changed input.
+        val controlBatch = MediaStoreWriter.cleanupOrphanedPendingBatch(
+            context = context,
+            cursor = OrphanRecoveryCursor(preflightComplete = true),
+            discardJournal = PendingDiscardJournal(
+                context = context,
+                databaseName = "discard-control-$suffix.db",
+                legacyPreferences = context.getSharedPreferences(
+                    "legacy-control-$suffix",
+                    Context.MODE_PRIVATE,
+                ),
+            ),
+            targets = targets,
+        )
+        assertEquals(
+            "${controlBatch.report}; open=${provider.openCalls}; update=${provider.updateCalls}",
+            1,
+            controlBatch.report.adopted,
+        )
+        assertEquals(1, provider.openCalls)
+        assertEquals(1, provider.updateCalls)
+        provider.resetCounters()
+
+        val unavailableJournal = PendingDiscardJournal(
+            context = context,
+            databaseName = databaseName,
+            databaseVersion = 2,
+            legacyPreferences = legacyPreferences,
+        )
+        assertFalse(MediaStoreWriter.publish(context, rowUri, healthyJournal))
+        assertFalse(MediaStoreWriter.publish(context, rowUri, unavailableJournal))
+        assertEquals(0, provider.updateCalls)
+
+        val completion = executeLaunchMediaRecovery(maxFailureAttempts = 2) { cursor ->
+            MediaStoreWriter.cleanupOrphanedPendingBatch(
+                context = context,
+                cursor = cursor,
+                discardJournal = unavailableJournal,
+                targets = targets,
+            )
+        }
+
+        assertEquals(0, provider.updateCalls)
+        assertEquals(0, provider.openCalls)
+        assertEquals(0, completion.report.adopted)
+        assertEquals(2, completion.report.retained)
+        assertEquals(setOf(RecoveryFailureClass.QUERY), completion.report.failureClasses)
+        assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
+        assertEquals(
+            DiscardJournalLookup.UNAVAILABLE,
+            unavailableJournal.lookup(rowUri.toString()),
+        )
     }
 
     private fun newJournal(): PendingDiscardJournal {
@@ -191,5 +344,65 @@ class PendingDiscardJournalTest {
             selection: String?,
             selectionArgs: Array<out String>?,
         ): Int = 0
+    }
+
+    private class PendingJpegProvider(
+        private val imageBase: Uri,
+        private val jpeg: File,
+    ) : ContentProvider() {
+        var updateCalls = 0
+        var openCalls = 0
+
+        fun resetCounters() {
+            updateCalls = 0
+            openCalls = 0
+        }
+
+        override fun onCreate(): Boolean = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): Cursor {
+            val columns = projection ?: arrayOf(MediaStore.MediaColumns._ID)
+            return MatrixCursor(columns).apply {
+                if (uri == imageBase) {
+                    addRow(Array<Any?>(columns.size) { index ->
+                        when (columns[index]) {
+                            MediaStore.MediaColumns._ID -> 1L
+                            MediaStore.MediaColumns.IS_PENDING -> 1
+                            MediaStore.MediaColumns.MIME_TYPE -> "image/jpeg"
+                            MediaStore.MediaColumns.SIZE -> jpeg.length()
+                            MediaStore.MediaColumns.DISPLAY_NAME -> "IMG_LEGACY_VALID.jpg"
+                            else -> null
+                        }
+                    })
+                }
+            }
+        }
+
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            openCalls += 1
+            return ParcelFileDescriptor.open(jpeg, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ): Int {
+            updateCalls += 1
+            return 1
+        }
+
+        override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+
+        override fun getType(uri: Uri): String? = "image/jpeg"
+
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     }
 }

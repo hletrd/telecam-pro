@@ -467,20 +467,42 @@ object MediaStoreWriter {
      * persistent failure still returns false; launch recovery returns an observable report and
      * retries complete or structurally proven rows instead of silently deleting them.
      */
-    fun publish(context: Context, uri: Uri): Boolean {
+    fun publish(context: Context, uri: Uri): Boolean =
+        publish(context, uri, PendingDiscardJournal(context))
+
+    internal fun publish(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal,
+    ): Boolean = discardJournal.withLookupAuthority(uri.toString()) { lookup ->
+        if (lookup != DiscardJournalLookup.ABSENT) return@withLookupAuthority false
+        val preferenceState = pendingPreferenceState(context, uri)
+        if (
+            preferenceState == PendingJournalState.DISCARD ||
+            preferenceState == PendingJournalState.UNAVAILABLE
+        ) {
+            return@withLookupAuthority false
+        }
+
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
         repeat(PUBLISH_ATTEMPTS) { attempt ->
-            val published = runCatching { context.contentResolver.update(uri, values, null, null) > 0 }
-                .getOrDefault(false)
+            val published = runCatching {
+                context.contentResolver.update(uri, values, null, null) > 0
+            }.getOrDefault(false)
             if (published) {
-                clearPending(context, uri)
-                return true
+                // SQLite was proven absent while holding the journal's process lock. Remove only
+                // the older preference; publication cannot erase a concurrent exact DISCARD owner.
+                runCatching {
+                    context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+                        .edit(commit = true) { remove(uri.toString()) }
+                }
+                return@withLookupAuthority true
             }
             if (attempt < PUBLISH_ATTEMPTS - 1) {
                 runCatching { Thread.sleep(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1)) }
             }
         }
-        return false
+        false
     }
 
     private const val PUBLISH_ATTEMPTS = 3
@@ -608,12 +630,18 @@ object MediaStoreWriter {
         context: Context,
         subDirs: List<String> = CAPTURE_SUBDIRS,
     ): RecoveryReport {
+        val discardJournal = PendingDiscardJournal(context)
         var cursor = OrphanRecoveryCursor()
         var cumulative = RecoveryReport()
         var progressedFailures = emptySet<RecoveryFailureClass>()
         var hasMore: Boolean
         do {
-            val batch = cleanupOrphanedPendingBatch(context, cursor, subDirs = subDirs)
+            val batch = cleanupOrphanedPendingBatch(
+                context,
+                cursor,
+                subDirs = subDirs,
+                discardJournal = discardJournal,
+            )
             cumulative = cumulative.foldRecoveryAttempt(batch.report)
             if (batch.report.retryRequired) {
                 if (!batch.continueAfterFailureExhaustion) return cumulative
@@ -634,8 +662,11 @@ object MediaStoreWriter {
         cursor: OrphanRecoveryCursor = OrphanRecoveryCursor(),
         batchLimit: Int = MAX_ORPHAN_RECOVERY_ROWS_PER_COLLECTION,
         subDirs: List<String> = CAPTURE_SUBDIRS,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+        targets: List<OrphanRecoveryTarget> = defaultOrphanRecoveryTargets(),
     ): OrphanRecoveryBatch {
         require(batchLimit > 0)
+        require(targets.isNotEmpty())
         // Only sweep entries created BEFORE this process: the launch-time sweep runs on the setup
         // executor while an immediate first capture creates its own pending entry on ioExecutor —
         // without the age gate the sweep could delete that in-flight write (two-executor race on
@@ -670,6 +701,7 @@ object MediaStoreWriter {
                 context = context,
                 afterKey = cursor.discardAfterKey,
                 batchLimit = MAX_DISCARD_RECOVERY_ROWS,
+                discardJournal = discardJournal,
             )
             return OrphanRecoveryBatch(
                 report = batch.report,
@@ -684,15 +716,9 @@ object MediaStoreWriter {
 
         var report = RecoveryReport()
         var nextCursor = cursor
-        for (base in listOf(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-        )) {
-            val collection = if (base == MediaStore.Images.Media.EXTERNAL_CONTENT_URI) {
-                OrphanRecoveryCollection.IMAGES
-            } else {
-                OrphanRecoveryCollection.VIDEO
-            }
+        for (target in targets) {
+            val base = target.base
+            val collection = target.collection
             val afterId = cursor.afterId(collection)
             if (afterId == OrphanRecoveryCursor.COLLECTION_COMPLETE) continue
             var nextAfterId = afterId
@@ -741,7 +767,15 @@ object MediaStoreWriter {
                         processed += 1
                         report = report.record(RecoveryEvent.SCANNED)
                         val uri = ContentUris.withAppendedId(base, rowId)
-                        val journalState = pendingJournalState(context, uri)
+                        val journalState = pendingJournalState(context, uri, discardJournal)
+                        if (journalState == PendingJournalState.UNAVAILABLE) {
+                            // SQLite failure is not absence. Do not probe, adopt, delete, or publish
+                            // while exact delete authority is unknowable; retry this same cursor.
+                            report = report
+                                .record(RecoveryEvent.QUERY_FAILED)
+                                .record(RecoveryEvent.RETAINED)
+                            continue
+                        }
                         val familyDeleted = CaptureFamilyKey.parse(cursor.getString(nameCol))
                             ?.familyKey
                             ?.let { isFamilyDeleted(context, it) }
@@ -760,7 +794,7 @@ object MediaStoreWriter {
                                 context = context,
                                 uri = uri,
                                 mimeType = cursor.getString(mimeCol).orEmpty(),
-                                isVideoCollection = base == MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                                isVideoCollection = collection == OrphanRecoveryCollection.VIDEO,
                                 sizeBytes = sizeBytes,
                             )
                         }
@@ -770,7 +804,7 @@ object MediaStoreWriter {
                         when (orphanDisposition(journalState, probeOutcome.probe, familyDeleted)) {
                             OrphanDisposition.ADOPT -> {
                                 report = report.record(
-                                    if (publish(context, uri)) RecoveryEvent.ADOPTED
+                                    if (publish(context, uri, discardJournal)) RecoveryEvent.ADOPTED
                                     else RecoveryEvent.PUBLISH_FAILED,
                                 )
                             }
@@ -878,9 +912,10 @@ object MediaStoreWriter {
         context: Context,
         afterKey: String?,
         batchLimit: Int,
+        discardJournal: PendingDiscardJournal,
     ): DiscardJournalRecoveryBatch {
         val page = runCatching {
-            PendingDiscardJournal(context).page(afterKey, batchLimit)
+            discardJournal.page(afterKey, batchLimit)
         }.getOrElse {
             return DiscardJournalRecoveryBatch(
                 report = RecoveryReport().record(RecoveryEvent.QUERY_FAILED),
@@ -910,17 +945,28 @@ object MediaStoreWriter {
         return null
     }
 
-    private fun pendingJournalState(context: Context, uri: Uri): PendingJournalState {
-        if (PendingDiscardJournal(context).contains(uri.toString())) {
-            return PendingJournalState.DISCARD
-        }
-        return when (context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).getString(uri.toString(), null)) {
-            PENDING_COMPLETE -> PendingJournalState.COMPLETE
-            PendingDiscardJournal.LEGACY_DISCARD_VALUE -> PendingJournalState.DISCARD
-            PENDING_REGISTERED -> PendingJournalState.REGISTERED
-            else -> PendingJournalState.UNKNOWN
-        }
+    private fun pendingJournalState(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal,
+    ): PendingJournalState = when (discardJournal.lookup(uri.toString())) {
+        DiscardJournalLookup.PRESENT -> PendingJournalState.DISCARD
+        DiscardJournalLookup.UNAVAILABLE -> PendingJournalState.UNAVAILABLE
+        DiscardJournalLookup.ABSENT -> pendingPreferenceState(context, uri)
     }
+
+    private fun pendingPreferenceState(context: Context, uri: Uri): PendingJournalState =
+        runCatching {
+            when (
+                context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+                    .getString(uri.toString(), null)
+            ) {
+                PENDING_COMPLETE -> PendingJournalState.COMPLETE
+                PendingDiscardJournal.LEGACY_DISCARD_VALUE -> PendingJournalState.DISCARD
+                PENDING_REGISTERED -> PendingJournalState.REGISTERED
+                else -> PendingJournalState.UNKNOWN
+            }
+        }.getOrDefault(PendingJournalState.UNAVAILABLE)
 
     private fun clearPending(context: Context, uri: Uri): Boolean {
         val discardRemoved = PendingDiscardJournal(context).remove(uri.toString())
@@ -1215,6 +1261,16 @@ internal enum class RecoveryFailureClass { QUERY, PROBE, PUBLISH, DELETE }
 /** Monotonic per-collection page cursor for one process-owned launch recovery. */
 internal enum class OrphanRecoveryCollection { IMAGES, VIDEO }
 
+internal data class OrphanRecoveryTarget(
+    val base: Uri,
+    val collection: OrphanRecoveryCollection,
+)
+
+private fun defaultOrphanRecoveryTargets(): List<OrphanRecoveryTarget> = listOf(
+    OrphanRecoveryTarget(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, OrphanRecoveryCollection.IMAGES),
+    OrphanRecoveryTarget(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, OrphanRecoveryCollection.VIDEO),
+)
+
 internal data class OrphanRecoveryCursor(
     val preflightComplete: Boolean = false,
     val imagesAfterId: Long = 0L,
@@ -1359,7 +1415,7 @@ internal fun pendingMediaProbeKind(
     else -> PendingMediaProbeKind.KEEP_PENDING
 }
 
-internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE, DISCARD }
+internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE, DISCARD, UNAVAILABLE }
 
 internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
 
@@ -1375,6 +1431,7 @@ internal fun orphanDisposition(
     // lexicographic DISCARD stage is their sole delete owner and can advance after bounded failure,
     // so one wedged provider row cannot starve later media pages or later durable markers.
     journalState == PendingJournalState.DISCARD -> OrphanDisposition.KEEP_PENDING
+    journalState == PendingJournalState.UNAVAILABLE -> OrphanDisposition.KEEP_PENDING
     familyDeleted -> OrphanDisposition.DELETE
     journalState == PendingJournalState.COMPLETE -> OrphanDisposition.ADOPT
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
