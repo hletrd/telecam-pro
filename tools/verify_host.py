@@ -68,7 +68,8 @@ def main() -> int:
     if args.release:
         run(
             [
-                "./gradlew",
+                sys.executable,
+                "tools/build_immutable_release.py",
                 ":app:lintRelease",
                 ":app:assembleRelease",
                 ":app:bundleRelease",

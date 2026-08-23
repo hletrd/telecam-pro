@@ -69,17 +69,24 @@ class ReleaseSourceGateTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.temp.cleanup()
 
-    def gate(self) -> subprocess.CompletedProcess[str]:
-        return run(
-            [
-                "./gradlew",
-                "--console=plain",
-                ":app:verifyCleanReleaseGitFixture",
-                f"-PreleaseGateFixtureRepo={self.root}",
-                f"-PreleaseGateFixtureOutput={self.output}",
-            ],
-            REPO_ROOT,
-        )
+    def gate(
+        self,
+        *,
+        commit: str | None = None,
+        tree: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        command = [
+            "./gradlew",
+            "--console=plain",
+            ":app:verifyCleanReleaseGitFixture",
+            f"-PreleaseGateFixtureRepo={self.root}",
+            f"-PreleaseGateFixtureOutput={self.output}",
+        ]
+        if commit is not None:
+            command.append(f"-PimmutableReleaseCommit={commit}")
+        if tree is not None:
+            command.append(f"-PimmutableReleaseTree={tree}")
+        return run(command, REPO_ROOT)
 
     def assert_gate_fails(self, expected_path: str) -> None:
         result = self.gate()
@@ -97,9 +104,21 @@ class ReleaseSourceGateTest(unittest.TestCase):
             ["git", "rev-parse", "HEAD^{tree}"], cwd=self.root, check=True, capture_output=True, text=True
         ).stdout.strip()
         self.assertEqual(
-            (self.output / "telecam-source-provenance.properties").read_text(encoding="ascii"),
+            (self.output / "telecam-release-provenance/source.properties").read_text(encoding="ascii"),
             f"schema=1\ncommit={head}\ntree={tree}\n",
         )
+        supplied = self.gate(commit=head, tree=tree)
+        self.assertEqual(supplied.returncode, 0, supplied.stdout + supplied.stderr)
+        spoofed = self.gate(commit="f" * 40, tree=tree)
+        self.assertNotEqual(spoofed.returncode, 0, spoofed.stdout + spoofed.stderr)
+        self.assertIn("does not match its supplied identity", spoofed.stdout + spoofed.stderr)
+
+        stale = self.output / "ignored-stale-sibling.properties"
+        stale.write_text("must never be packaged\n", encoding="utf-8")
+        self.assert_gate_fails("Generated release provenance namespace is not exact")
+        stale.unlink()
+        recovered = self.gate()
+        self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
 
         tracked = self.root / "app/src/main/tracked.txt"
         tracked.write_text("dirty\n", encoding="utf-8")
@@ -182,6 +201,15 @@ class ReleaseSourceGateTest(unittest.TestCase):
         )
         self.assertEqual(debug.returncode, 0, debug.stdout + debug.stderr)
         self.assertNotIn(":app:verifyCleanReleaseGit", debug.stdout)
+
+    def test_direct_release_gate_requires_immutable_snapshot(self) -> None:
+        result = run(
+            ["./gradlew", "--console=plain", ":app:verifyCleanReleaseGit"],
+            REPO_ROOT,
+        )
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("tools/build_immutable_release.py", output)
 
 
 if __name__ == "__main__":

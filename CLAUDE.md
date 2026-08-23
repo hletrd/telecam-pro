@@ -81,7 +81,8 @@ python3 tools/verify_host.py
 
 # Play-release gate (requires clean committed source + local signing credentials)
 python3 tools/verify_host.py --release
-./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease
+# Direct Gradle release entry points fail closed: the tool exports and builds exact committed bytes.
+python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # device is over wireless ADB — IP/port change between sessions, ask the user for the current one
 adb connect <device-ip>:<port>

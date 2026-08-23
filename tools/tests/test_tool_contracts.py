@@ -98,6 +98,7 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             ":app:lintRelease",
             ":app:assembleRelease",
             ":app:bundleRelease",
+            "tools/build_immutable_release.py",
         ):
             self.assertIn(required, source)
         self.assertIn('"JAVA_HOME": str(home)', source)

@@ -1,15 +1,17 @@
+import java.nio.file.Files
 import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
 import org.gradle.work.DisableCachingByDefault
 
-@DisableCachingByDefault(because = "Release provenance must inspect the live Git worktree every invocation")
+@DisableCachingByDefault(because = "Release provenance must inspect the exact Git checkout every invocation")
 abstract class VerifyCleanReleaseGitTask : DefaultTask() {
     @get:Internal
     abstract val repositoryDirectory: DirectoryProperty
@@ -17,11 +19,55 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
     @get:Input
     abstract val protectedSourceRoots: ListProperty<String>
 
+    @get:Input
+    @get:Optional
+    abstract val immutableCommit: org.gradle.api.provider.Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val immutableTree: org.gradle.api.provider.Property<String>
+
+    @get:Input
+    abstract val requireImmutableSnapshot: org.gradle.api.provider.Property<Boolean>
+
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
 
     @TaskAction
     fun verifyAndGenerate() {
+        val provenanceNamespace = "telecam-release-provenance"
+        val provenanceName = "source.properties"
+        val outputRoot = outputDirectory.get().asFile
+        val namespaceDirectory = outputRoot.resolve(provenanceNamespace)
+        val output = namespaceDirectory.resolve(provenanceName)
+
+        fun requireExactOutputNamespace(allowMissingProvenance: Boolean) {
+            if (!outputRoot.exists()) return
+            val members = outputRoot.walkTopDown()
+                .filter { it != outputRoot }
+                .map { it.relativeTo(outputRoot).invariantSeparatorsPath }
+                .toSet()
+            val expected = setOf(provenanceNamespace, "$provenanceNamespace/$provenanceName")
+            val unexpected = members - expected
+            if (unexpected.isNotEmpty() || (!allowMissingProvenance && members != expected)) {
+                throw GradleException(
+                    "Generated release provenance namespace is not exact: " +
+                        "expected=$expected actual=$members",
+                )
+            }
+            if (
+                namespaceDirectory.exists() &&
+                (!namespaceDirectory.isDirectory || Files.isSymbolicLink(namespaceDirectory.toPath()))
+            ) {
+                throw GradleException(
+                    "Release provenance namespace is not a regular directory: $namespaceDirectory",
+                )
+            }
+            if (output.exists() && (!output.isFile || Files.isSymbolicLink(output.toPath()))) {
+                throw GradleException("Release provenance member is not a regular file: $output")
+            }
+        }
+
         fun gitBytes(vararg arguments: String): ByteArray {
             val command = listOf("git", *arguments)
             val process = ProcessBuilder(command)
@@ -81,9 +127,38 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
             }
         }
 
-        requireClean()
-        val head = gitValue("rev-parse", "HEAD")
-        val tree = gitValue("rev-parse", "HEAD^{tree}")
+        val suppliedHead = immutableCommit.orNull
+        val suppliedTree = immutableTree.orNull
+        if (requireImmutableSnapshot.get() && (suppliedHead == null || suppliedTree == null)) {
+            throw GradleException(
+                "Release tasks must run from tools/build_immutable_release.py so compilation and " +
+                    "packaging consume the exact exported Git commit.",
+            )
+        }
+        if ((suppliedHead == null) != (suppliedTree == null)) {
+            throw GradleException("Both immutableReleaseCommit and immutableReleaseTree are required")
+        }
+        requireExactOutputNamespace(allowMissingProvenance = true)
+
+        val head: String
+        val tree: String
+        if (suppliedHead != null && suppliedTree != null) {
+            requireClean()
+            val snapshotHead = gitValue("rev-parse", "HEAD")
+            val snapshotTree = gitValue("rev-parse", "HEAD^{tree}")
+            if (suppliedHead != snapshotHead || suppliedTree != snapshotTree) {
+                throw GradleException(
+                    "Exported release source does not match its supplied identity: " +
+                        "head=$snapshotHead/$suppliedHead tree=$snapshotTree/$suppliedTree",
+                )
+            }
+            head = suppliedHead
+            tree = suppliedTree
+        } else {
+            requireClean()
+            head = gitValue("rev-parse", "HEAD")
+            tree = gitValue("rev-parse", "HEAD^{tree}")
+        }
         if (!head.matches(Regex("[0-9a-f]{40}")) || !tree.matches(Regex("[0-9a-f]{40}"))) {
             throw GradleException("Git release identity is not canonical: head=$head tree=$tree")
         }
@@ -100,12 +175,12 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
             )
         }
 
-        val output = outputDirectory.file("telecam-source-provenance.properties").get().asFile
         output.parentFile.mkdirs()
         output.writeText(
             "schema=1\ncommit=$head\ntree=$tree\n",
             Charsets.US_ASCII,
         )
+        requireExactOutputNamespace(allowMissingProvenance = false)
     }
 }
 
@@ -146,11 +221,16 @@ val hasReleaseSigning =
 
 val releaseSourceRoots = listOf("app/src/main", "app/src/release")
 val releaseSourceProvenanceDir = layout.buildDirectory.dir("generated/release-source-provenance")
+val immutableReleaseCommit = providers.gradleProperty("immutableReleaseCommit")
+val immutableReleaseTree = providers.gradleProperty("immutableReleaseTree")
 val verifyCleanReleaseGit = tasks.register<VerifyCleanReleaseGitTask>("verifyCleanReleaseGit") {
     group = "verification"
     description = "Verify release inputs and generate source provenance from one clean Git state."
     repositoryDirectory.set(rootProject.layout.projectDirectory)
     protectedSourceRoots.set(releaseSourceRoots)
+    immutableCommit.set(immutableReleaseCommit)
+    immutableTree.set(immutableReleaseTree)
+    requireImmutableSnapshot.set(true)
     outputDirectory.set(releaseSourceProvenanceDir)
     outputs.upToDateWhen { false }
 }
@@ -161,6 +241,9 @@ providers.gradleProperty("releaseGateFixtureRepo").orNull?.let { fixtureReposito
     tasks.register<VerifyCleanReleaseGitTask>("verifyCleanReleaseGitFixture") {
         repositoryDirectory.set(file(fixtureRepository))
         protectedSourceRoots.set(releaseSourceRoots)
+        immutableCommit.set(immutableReleaseCommit)
+        immutableTree.set(immutableReleaseTree)
+        requireImmutableSnapshot.set(false)
         outputDirectory.set(
             file(
                 providers.gradleProperty("releaseGateFixtureOutput").orNull

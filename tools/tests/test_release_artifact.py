@@ -45,7 +45,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 f'repositories {{\n  system: GIT\n  revision: "{commit}"\n}}\n',
             )
             bundle.writestr(
-                "base/assets/telecam-source-provenance.properties",
+                release.PROVENANCE_MEMBER,
                 f"schema=1\ncommit={commit}\ntree={self.TREE}\n",
             )
             bundle.writestr("base/manifest/AndroidManifest.xml", b"fixture")
@@ -280,7 +280,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             attestation, aab, commit = self.fixture(root)
             with zipfile.ZipFile(aab, "a") as bundle:
                 bundle.writestr(
-                    "base/assets/telecam-source-provenance.properties",
+                    release.PROVENANCE_MEMBER,
                     f"schema=1\ncommit={commit}\ntree={'d' * 40}\n",
                 )
             self.refresh_attestation(attestation, aab)
@@ -300,16 +300,28 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             malformed = root / "malformed.aab"
             with zipfile.ZipFile(malformed, "w") as bundle:
                 bundle.writestr(
-                    "base/assets/telecam-source-provenance.properties",
+                    release.PROVENANCE_MEMBER,
                     f"schema=2\ncommit={commit}\ntree={self.TREE}\n",
                 )
             self.assertIsNone(release.packaged_source_provenance(malformed))
 
             with zipfile.ZipFile(aab, "a") as bundle:
                 bundle.writestr(
-                    "base/assets/telecam-source-provenance.properties",
+                    release.PROVENANCE_MEMBER,
                     f"schema=1\ncommit={commit}\ntree={self.TREE}\n",
                 )
+            self.assertIsNone(release.packaged_source_provenance(aab))
+
+    def test_unexpected_provenance_namespace_member_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _, aab, _ = self.fixture(root)
+            with zipfile.ZipFile(aab, "a") as bundle:
+                bundle.writestr(
+                    release.PROVENANCE_NAMESPACE + "stale.properties",
+                    "stale=true\n",
+                )
+
             self.assertIsNone(release.packaged_source_provenance(aab))
 
     def test_additional_signer_fails_closed(self) -> None:

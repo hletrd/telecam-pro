@@ -27,6 +27,8 @@ EXPECTED_UPLOAD_CERT_SHA256 = (
     "9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584"
 )
 ATTESTATION_SCHEMA = 1
+PROVENANCE_NAMESPACE = "base/assets/telecam-release-provenance/"
+PROVENANCE_MEMBER = PROVENANCE_NAMESPACE + "source.properties"
 
 
 @dataclass(frozen=True)
@@ -88,12 +90,16 @@ def packaged_source_commits(aab_path: pathlib.Path) -> set[str]:
 
 def packaged_source_provenance(aab_path: pathlib.Path) -> tuple[str, str] | None:
     """Read the release-task-generated commit/tree identity covered by the AAB signature."""
-    member = "base/assets/telecam-source-provenance.properties"
     try:
         with zipfile.ZipFile(aab_path) as bundle:
-            if bundle.namelist().count(member) != 1:
+            namespace_members = [
+                name
+                for name in bundle.namelist()
+                if name.startswith(PROVENANCE_NAMESPACE) and not name.endswith("/")
+            ]
+            if namespace_members != [PROVENANCE_MEMBER]:
                 return None
-            info = bundle.getinfo(member)
+            info = bundle.getinfo(PROVENANCE_MEMBER)
             if info.file_size > 1024:
                 return None
             lines = bundle.read(info).decode("ascii").splitlines()

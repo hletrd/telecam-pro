@@ -125,7 +125,10 @@ checked against `gradle/verification-metadata.xml` in strict mode.
 
 ### Release builds
 
-`./gradlew bundleRelease` produces the Play App Bundle. Signing is driven by a gitignored
+`python3 tools/build_immutable_release.py :app:bundleRelease` produces the Play App Bundle from a
+private export of the clean committed source. Direct Gradle release entry points fail closed so a
+post-verification worktree edit cannot enter an artifact carrying the earlier commit provenance.
+Signing is driven by a gitignored
 `keystore.properties` plus `TELECAMPRO_STORE_PASSWORD` / `TELECAMPRO_KEY_PASSWORD` in the
 environment — no keys live in git, and release bundling fails fast rather than emitting an unsigned
 artifact. Release builds are R8-minified.
