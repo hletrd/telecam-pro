@@ -68,7 +68,30 @@ object MediaStoreWriter {
             RECORDING_STORAGE_WORKER_COUNT + RECORDING_STORAGE_BACKLOG_CAPACITY +
             1
     private val processJournalOwner = UUID.randomUUID().toString()
-    private val familyJournalLock = Any()
+    private val familyJournalMetadataLock = Any()
+    private val familyAuthorityRegistryLock = Any()
+    private val familyAuthorities = mutableMapOf<String, FamilyJournalAuthority>()
+
+    private class FamilyJournalAuthority(
+        val monitor: Any = Any(),
+        var users: Int = 0,
+    )
+
+    private inline fun <T> withFamilyJournalAuthority(key: String, block: () -> T): T {
+        val authority = synchronized(familyAuthorityRegistryLock) {
+            familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also { it.users += 1 }
+        }
+        return try {
+            synchronized(authority.monitor, block)
+        } finally {
+            synchronized(familyAuthorityRegistryLock) {
+                authority.users -= 1
+                if (authority.users == 0 && familyAuthorities[key] === authority) {
+                    familyAuthorities.remove(key)
+                }
+            }
+        }
+    }
 
     private data class RejectedOutput(val context: Context, val uri: Uri)
 
@@ -358,28 +381,32 @@ object MediaStoreWriter {
     internal fun markFamilyDeletedResult(
         context: Context,
         family: CaptureFamilyKey,
-    ): FamilyDeletionMarkResult = synchronized(familyJournalLock) {
+    ): FamilyDeletionMarkResult = withFamilyJournalAuthority(deletedFamilyJournalKey(family)) {
         val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
         val key = deletedFamilyJournalKey(family)
-        if (preferences.contains(key)) return@synchronized FamilyDeletionMarkResult.DURABLE
-        val markerCount = runCatching { preferences.all.size }.getOrElse {
-            return@synchronized FamilyDeletionMarkResult.UNAVAILABLE
-        }
-        if (markerCount >= MAX_DELETED_FAMILY_MARKERS) {
-            return@synchronized FamilyDeletionMarkResult.CAPACITY_EXHAUSTED
-        }
-        val durable = markCompletionWithRetry(
-            maxAttempts = COMPLETION_MARK_ATTEMPTS,
-            commit = {
+        repeat(COMPLETION_MARK_ATTEMPTS) { attempt ->
+            val durable = synchronized(familyJournalMetadataLock) {
+                if (preferences.contains(key)) {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
+                }
+                val markerCount = runCatching { preferences.all.size }.getOrElse {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.UNAVAILABLE
+                }
+                if (markerCount >= MAX_DELETED_FAMILY_MARKERS) {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.CAPACITY_EXHAUSTED
+                }
                 preferences.edit()
                     .putString(key, processJournalOwner)
                     .commit()
-            },
-            backoff = { attempt ->
-                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
-            },
-        ).durable
-        if (durable) FamilyDeletionMarkResult.DURABLE else FamilyDeletionMarkResult.UNAVAILABLE
+            }
+            if (durable) return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
+            if (attempt + 1 < COMPLETION_MARK_ATTEMPTS) {
+                // Preference I/O is serialized for capacity, but retry delay never owns global
+                // metadata authority and cannot stall another family's durable mark.
+                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * (attempt + 1)) }
+            }
+        }
+        FamilyDeletionMarkResult.UNAVAILABLE
     }
 
     internal fun markFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
@@ -394,18 +421,32 @@ object MediaStoreWriter {
         family: CaptureFamilyKey,
         producersTerminal: Boolean,
         exactFamilyAbsent: () -> Boolean?,
-    ): FamilyDeletionRetirementResult = synchronized(familyJournalLock) {
-        if (!producersTerminal) return@synchronized FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
-        if (runCatching(exactFamilyAbsent).getOrNull() != true) {
-            return@synchronized FamilyDeletionRetirementResult.RETAINED
-        }
-        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+    ): FamilyDeletionRetirementResult {
+        if (!producersTerminal) return FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
         val key = deletedFamilyJournalKey(family)
-        if (!preferences.contains(key)) return@synchronized FamilyDeletionRetirementResult.ALREADY_ABSENT
-        if (preferences.edit().remove(key).commit()) {
-            FamilyDeletionRetirementResult.RETIRED
-        } else {
-            FamilyDeletionRetirementResult.RETAINED
+        return withFamilyJournalAuthority(key) {
+            val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+            val markerPresent = synchronized(familyJournalMetadataLock) { preferences.contains(key) }
+            if (!markerPresent) {
+                return@withFamilyJournalAuthority FamilyDeletionRetirementResult.ALREADY_ABSENT
+            }
+
+            // The exact-family authority prevents a same-family re-mark from being erased, while
+            // unrelated families remain free to commit their own deletion markers during provider
+            // I/O. Never place this unbounded Binder query under the global metadata monitor.
+            if (runCatching(exactFamilyAbsent).getOrNull() != true) {
+                return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
+            }
+
+            synchronized(familyJournalMetadataLock) {
+                if (!preferences.contains(key)) {
+                    FamilyDeletionRetirementResult.ALREADY_ABSENT
+                } else if (preferences.edit().remove(key).commit()) {
+                    FamilyDeletionRetirementResult.RETIRED
+                } else {
+                    FamilyDeletionRetirementResult.RETAINED
+                }
+            }
         }
     }
 

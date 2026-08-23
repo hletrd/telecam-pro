@@ -3,8 +3,13 @@ package me.hletrd.telecampro.storage
 import android.content.Context
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Before
@@ -129,6 +134,83 @@ class DeletedFamilyJournalTest {
             MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { null },
         )
         assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
+    }
+
+    @Test
+    fun `blocked retirement for one family does not block durable mark for another`() {
+        val blockedFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_021_000_000L, 21L)
+        val independentFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_022_000_000L, 22L)
+        assertTrue(MediaStoreWriter.markFamilyDeleted(context, blockedFamily))
+        val queryEntered = CountDownLatch(1)
+        val allowQuery = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val retirement = executor.submit<FamilyDeletionRetirementResult> {
+                MediaStoreWriter.retireFamilyDeletionMarker(context, blockedFamily, true) {
+                    queryEntered.countDown()
+                    assertTrue(allowQuery.await(2, TimeUnit.SECONDS))
+                    true
+                }
+            }
+            assertTrue(queryEntered.await(2, TimeUnit.SECONDS))
+
+            val independentMark = executor.submit<FamilyDeletionMarkResult> {
+                MediaStoreWriter.markFamilyDeletedResult(context, independentFamily)
+            }
+            assertEquals(
+                FamilyDeletionMarkResult.DURABLE,
+                independentMark.get(2, TimeUnit.SECONDS),
+            )
+            assertTrue(MediaStoreWriter.isFamilyDeleted(context, independentFamily))
+            assertFalse(retirement.isDone)
+
+            allowQuery.countDown()
+            assertEquals(
+                FamilyDeletionRetirementResult.RETIRED,
+                retirement.get(2, TimeUnit.SECONDS),
+            )
+        } finally {
+            allowQuery.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `same family remark waits for retirement and preserves newer delete intent`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_023_000_000L, 23L)
+        assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))
+        val queryEntered = CountDownLatch(1)
+        val allowQuery = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val retirement = executor.submit<FamilyDeletionRetirementResult> {
+                MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) {
+                    queryEntered.countDown()
+                    assertTrue(allowQuery.await(2, TimeUnit.SECONDS))
+                    true
+                }
+            }
+            assertTrue(queryEntered.await(2, TimeUnit.SECONDS))
+            val remark = executor.submit<FamilyDeletionMarkResult> {
+                MediaStoreWriter.markFamilyDeletedResult(context, family)
+            }
+            assertThrows(TimeoutException::class.java) {
+                remark.get(100, TimeUnit.MILLISECONDS)
+            }
+
+            allowQuery.countDown()
+            assertEquals(
+                FamilyDeletionRetirementResult.RETIRED,
+                retirement.get(2, TimeUnit.SECONDS),
+            )
+            assertEquals(FamilyDeletionMarkResult.DURABLE, remark.get(2, TimeUnit.SECONDS))
+            assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
+        } finally {
+            allowQuery.countDown()
+            executor.shutdownNow()
+        }
     }
 
     @Test
