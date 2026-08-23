@@ -5,7 +5,10 @@ import hashlib
 import json
 import sys
 import tempfile
+import threading
 import unittest
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +23,164 @@ from dtest.contracts import ContractError  # noqa: E402
 
 
 class RunAttestationTest(unittest.TestCase):
+    def test_main_acquires_serial_lock_before_device_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir) / "run"
+            directory.mkdir()
+            allocation = runner.ReportAllocation("20260823-120000-aaaaaaaaaaaa", directory)
+            events: list[str] = []
+
+            class HeldLock:
+                def __enter__(self):
+                    events.append("lock-enter")
+                    return self
+
+                def __exit__(self, _type, _value, _traceback):
+                    events.append("lock-release")
+
+            def allocate(_root: Path) -> runner.ReportAllocation:
+                events.append("allocate")
+                return allocation
+
+            def record_identity(_allocation: runner.ReportAllocation, *, serial: str) -> None:
+                self.assertEqual(serial, "serial-a")
+                events.append("identity")
+
+            def acquire(_root: Path, serial: str, run_id: str) -> HeldLock:
+                self.assertEqual((serial, run_id), ("serial-a", allocation.run_id))
+                events.append("lock-acquire")
+                return HeldLock()
+
+            def device_run(*_args, **_kwargs) -> int:
+                events.append("device-run")
+                return 0
+
+            apk_contract = SimpleNamespace(application_id=runner.APP_ID)
+            packaged_source = SimpleNamespace()
+            with (
+                patch.object(sys, "argv", ["run.py", "--serial", "serial-a"]),
+                patch.object(runner, "sha256_file", return_value="a" * 64),
+                patch.object(runner, "inspect_apk_contract", return_value=apk_contract),
+                patch.object(runner, "require_apk_source_match", return_value=packaged_source),
+                patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
+                patch.object(runner, "harness_source_manifest", return_value=[]),
+                patch.object(runner, "allocate_report_directory", side_effect=allocate),
+                patch.object(runner, "write_run_identity", side_effect=record_identity),
+                patch.object(runner.DeviceRunLock, "acquire", side_effect=acquire),
+                patch.object(runner, "run_locked_device", side_effect=device_run),
+            ):
+                self.assertEqual(runner.main(), 0)
+
+            self.assertEqual(
+                events,
+                [
+                    "allocate",
+                    "identity",
+                    "lock-acquire",
+                    "lock-enter",
+                    "device-run",
+                    "lock-release",
+                ],
+            )
+
+    def test_frozen_clock_concurrent_report_allocations_are_unique_and_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports = Path(temp_dir) / "reports"
+            tokens = deque(["a" * 12, "a" * 12, "b" * 12, "c" * 12])
+            token_lock = threading.Lock()
+            start = threading.Barrier(2)
+
+            def allocate() -> runner.ReportAllocation:
+                start.wait(timeout=2)
+
+                def next_token() -> str:
+                    with token_lock:
+                        return tokens.popleft()
+
+                return runner.allocate_report_directory(
+                    reports,
+                    timestamp="20260823-120000",
+                    token_factory=next_token,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(allocate), executor.submit(allocate)]
+                allocations = [future.result() for future in futures]
+
+            self.assertEqual(
+                {allocation.run_id for allocation in allocations},
+                {"20260823-120000-aaaaaaaaaaaa", "20260823-120000-bbbbbbbbbbbb"},
+            )
+            self.assertTrue(all(allocation.directory.is_dir() for allocation in allocations))
+
+    def test_report_allocation_exhaustion_names_every_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports = Path(temp_dir) / "reports"
+            existing = reports / "20260823-120000-aaaaaaaaaaaa"
+            existing.mkdir(parents=True)
+
+            with self.assertRaisesRegex(ContractError, "2 atomic attempts.*aaaaaaaaaaaa"):
+                runner.allocate_report_directory(
+                    reports,
+                    timestamp="20260823-120000",
+                    token_factory=lambda: "a" * 12,
+                    max_attempts=2,
+                )
+
+    def test_device_lock_serializes_same_serial_but_not_different_serials(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports = Path(temp_dir) / "reports"
+            first = runner.DeviceRunLock.acquire(reports, "serial-a", "run-a")
+            other = runner.DeviceRunLock.acquire(reports, "serial-b", "run-b")
+            try:
+                with self.assertRaisesRegex(runner.DeviceRunLockError, "run-a"):
+                    runner.DeviceRunLock.acquire(reports, "serial-a", "run-a2")
+            finally:
+                other.release()
+                first.release()
+
+            replacement = runner.DeviceRunLock.acquire(reports, "serial-a", "run-a3")
+            replacement.release()
+
+    def test_device_lock_context_releases_after_failure_and_records_lock_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reports = Path(temp_dir) / "reports"
+            allocation = runner.allocate_report_directory(
+                reports,
+                timestamp="20260823-120000",
+                token_factory=lambda: "d" * 12,
+            )
+            runner.write_run_identity(allocation, serial="serial-a")
+            identity = json.loads(
+                (allocation.directory / "run-identity.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(identity["run_id"], allocation.run_id)
+            self.assertEqual(identity["serial"], "serial-a")
+            with self.assertRaisesRegex(RuntimeError, "simulated run failure"):
+                with runner.DeviceRunLock.acquire(reports, "serial-a", allocation.run_id):
+                    raise RuntimeError("simulated run failure")
+
+            replacement = runner.DeviceRunLock.acquire(reports, "serial-a", "replacement")
+            try:
+                with self.assertRaises(runner.DeviceRunLockError) as refused:
+                    runner.DeviceRunLock.acquire(reports, "serial-a", "refused")
+                runner.write_run_failure(
+                    allocation,
+                    serial="serial-a",
+                    phase="device-lock",
+                    error=str(refused.exception),
+                )
+            finally:
+                replacement.release()
+
+            failure = json.loads(
+                (allocation.directory / "run-failure.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(failure["run_id"], allocation.run_id)
+            self.assertEqual(failure["serial"], "serial-a")
+            self.assertEqual(failure["phase"], "device-lock")
+            self.assertIn("replacement", failure["error"])
+
     def test_restoration_attests_display_geometry(self) -> None:
         before = {
             "foreground_component": MAIN_ACTIVITY,

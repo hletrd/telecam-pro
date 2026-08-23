@@ -8,27 +8,34 @@ Usage:
 
 Requires: adb on PATH with the PMA110 connected (wireless-debugging loopback proxy is
 fine). ffprobe is required for a green video result; structural fallback is non-green.
-Reports land in device-tests/reports/<timestamp>/ (gitignored).
+Reports land in device-tests/reports/<UTC timestamp>-<run token>/ (gitignored).
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import hashlib
 import json
+import os
 import re
+import secrets
 import shlex
 import subprocess
 import sys
-import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dtest.adb import APP_ID, MAIN_ACTIVITY, Adb  # noqa: E402
 from dtest.contracts import (  # noqa: E402
+    ApkContract,
     ContractError,
+    DebugSourceIdentity,
     harness_source_manifest,
     inspect_apk_contract,
     production_capture_subdir,
@@ -45,6 +52,187 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ATTESTATION_NAME = "run-attestation.json"
 ATTESTATION_SHA_NAME = "run-attestation.sha256"
 RESTORED_SETTINGS = ("font_scale", "accelerometer_rotation", "user_rotation")
+REPORT_ALLOCATION_ATTEMPTS = 16
+
+
+@dataclass(frozen=True)
+class ReportAllocation:
+    run_id: str
+    directory: Path
+
+
+def allocate_report_directory(
+    reports_root: Path,
+    *,
+    timestamp: str | None = None,
+    token_factory: Callable[[], str] = lambda: secrets.token_hex(6),
+    max_attempts: int = REPORT_ALLOCATION_ATTEMPTS,
+) -> ReportAllocation:
+    """Atomically reserve one report directory; never share an existing run's evidence tree."""
+    if max_attempts <= 0:
+        raise ContractError("report allocation requires at least one attempt")
+    stamp = timestamp or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    if re.fullmatch(r"[0-9]{8}-[0-9]{6}", stamp) is None:
+        raise ContractError(f"report timestamp is malformed: {stamp!r}")
+    try:
+        reports_root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ContractError(f"could not create reports root {reports_root}: {error}") from error
+
+    collisions: list[str] = []
+    for _ in range(max_attempts):
+        token = token_factory().strip().lower()
+        if re.fullmatch(r"[0-9a-f]{12}", token) is None:
+            raise ContractError(f"report allocation token is malformed: {token!r}")
+        run_id = f"{stamp}-{token}"
+        directory = reports_root / run_id
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            collisions.append(run_id)
+            continue
+        except OSError as error:
+            raise ContractError(f"could not allocate report directory {directory}: {error}") from error
+        return ReportAllocation(run_id=run_id, directory=directory)
+    raise ContractError(
+        "could not allocate a unique report directory after "
+        f"{max_attempts} atomic attempts; collisions={collisions}",
+    )
+
+
+class DeviceRunLockError(ContractError):
+    pass
+
+
+class DeviceRunLock:
+    """Process lock for one adb serial. The stable lock inode is deliberately never unlinked."""
+
+    def __init__(self, handle, path: Path, serial: str, run_id: str):
+        self._handle = handle
+        self.path = path
+        self.serial = serial
+        self.run_id = run_id
+        self._released = False
+
+    @classmethod
+    def acquire(cls, reports_root: Path, serial: str, run_id: str) -> DeviceRunLock:
+        lock_root = reports_root / ".locks"
+        try:
+            lock_root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise DeviceRunLockError(f"could not create device lock directory: {error}") from error
+        serial_key = hashlib.sha256(serial.encode("utf-8")).hexdigest()
+        path = lock_root / f"{serial_key}.lock"
+        try:
+            handle = path.open("a+", encoding="utf-8")
+        except OSError as error:
+            raise DeviceRunLockError(f"could not open device lock {path}: {error}") from error
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                handle.close()
+                raise DeviceRunLockError(
+                    f"could not acquire device {serial!r} lock {path}: {error}",
+                ) from error
+            try:
+                handle.seek(0)
+                holder = handle.read().strip() or "holder metadata unavailable"
+            finally:
+                handle.close()
+            raise DeviceRunLockError(
+                f"device {serial!r} is already owned by another harness run: {holder}",
+            ) from error
+
+        try:
+            handle.seek(0)
+            handle.truncate()
+            json.dump(
+                {
+                    "pid": os.getpid(),
+                    "run_id": run_id,
+                    "serial": serial,
+                    "acquired_at_utc": utc_now(),
+                },
+                handle,
+                sort_keys=True,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        except OSError as error:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+            raise DeviceRunLockError(f"could not record device lock ownership: {error}") from error
+        return cls(handle, path, serial, run_id)
+
+    def release(self) -> None:
+        if self._released:
+            return
+        try:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        except OSError as error:
+            raise DeviceRunLockError(
+                f"could not release device {self.serial!r} lock for run {self.run_id}: {error}",
+            ) from error
+        finally:
+            self._handle.close()
+            self._released = True
+
+    def __enter__(self) -> DeviceRunLock:
+        return self
+
+    def __exit__(self, _type, _value, _traceback) -> None:
+        self.release()
+
+
+def write_run_identity(allocation: ReportAllocation, *, serial: str) -> None:
+    """Record the allocated run before lock acquisition or any ADB interaction can fail."""
+    payload = {
+        "schema_version": 1,
+        "run_id": allocation.run_id,
+        "serial": serial,
+        "allocated_at_utc": utc_now(),
+    }
+    try:
+        (allocation.directory / "run-identity.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise ContractError(
+            f"could not record run identity under {allocation.directory}: {error}",
+        ) from error
+
+
+def write_run_failure(
+    allocation: ReportAllocation,
+    *,
+    serial: str,
+    phase: str,
+    error: str,
+) -> None:
+    """Persist a non-green preflight/ownership failure in the uniquely owned report directory."""
+    payload = {
+        "schema_version": 1,
+        "run_id": allocation.run_id,
+        "serial": serial,
+        "phase": phase,
+        "error": error,
+        "recorded_at_utc": utc_now(),
+    }
+    try:
+        (allocation.directory / "run-failure.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as write_error:
+        print(
+            f"also could not record run failure under {allocation.directory}: {write_error}",
+            file=sys.stderr,
+        )
 
 
 def sha256_file(path: Path) -> str:
@@ -218,48 +406,19 @@ def write_attestation(report_dir: Path, document: dict[str, object]) -> tuple[Pa
     return attestation, sidecar
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--serial", required=True, help="adb serial, e.g. 127.0.0.1:5599")
-    ap.add_argument("--tier", action="append", choices=[*TIERS, "all"], default=None,
-                    help="tier(s) to run; repeatable; default smoke")
-    ap.add_argument("-k", dest="filter", default=None, help="substring filter on case names")
-    ap.add_argument("--apk", type=Path, default=DEFAULT_APK,
-                    help="exact host debug APK that must match the installed base.apk")
-    ap.add_argument("--allow-destructive", action="store_true",
-                    help="allow cases that force-stop the app; requires explicit operator approval")
-    ap.add_argument("--allow-settings", action="store_true",
-                    help="allow cases that change persisted shooting settings; requires explicit approval")
-    ap.add_argument("--allow-media-writes", action="store_true",
-                    help="allow cases that create photos or videos; requires explicit approval")
-    ap.add_argument("--allow-partial", action="store_true",
-                    help="permit approval-gated skips and attest an intentionally partial tier")
-    args = ap.parse_args()
-
-    tiers = args.tier or ["smoke"]
-    if "all" in tiers:
-        tiers = list(TIERS)
-
-    expected_apk = args.apk.resolve()
-    try:
-        expected_sha = sha256_file(expected_apk)
-        apk_contract = inspect_apk_contract(expected_apk)
-        packaged_source = require_apk_source_match(expected_apk, REPO_ROOT)
-        if sha256_file(expected_apk) != expected_sha:
-            raise ContractError("APK changed while its manifest contract was being inspected")
-        production_subdir = production_capture_subdir(REPO_ROOT)
-        harness_sources = harness_source_manifest(Path(__file__).resolve().parent)
-    except (ContractError, OSError) as error:
-        print(f"could not establish APK/harness contract: {error}", file=sys.stderr)
-        return 2
-    if apk_contract.application_id != APP_ID:
-        print(
-            f"refusing non-debug APK identity {apk_contract.application_id!r}; expected {APP_ID!r}",
-            file=sys.stderr,
-        )
-        return 2
-    media_relative_path = f"DCIM/{production_subdir}/"
-
+def run_locked_device(
+    args: argparse.Namespace,
+    tiers: list[str],
+    expected_apk: Path,
+    expected_sha: str,
+    apk_contract: ApkContract,
+    packaged_source: DebugSourceIdentity,
+    production_subdir: str,
+    harness_sources: list[dict[str, object]],
+    allocation: ReportAllocation,
+) -> int:
+    """Run every ADB operation while the caller owns this serial's process lock."""
+    report_dir = allocation.directory
     # Preflight: device reachable and the debug app installed. The adb client can hang on a
     # half-dead TCP transport, so even this first probe is deadline-bounded.
     try:
@@ -278,7 +437,7 @@ def main() -> int:
               f"hint: adb connect {args.serial}", file=sys.stderr)
         return 2
 
-    report_dir = Path(__file__).parent / "reports" / time.strftime("%Y%m%d-%H%M%S")
+    media_relative_path = f"DCIM/{production_subdir}/"
     adb = Adb(
         args.serial,
         report_dir / "evidence",
@@ -355,6 +514,7 @@ def main() -> int:
     )
     document: dict[str, object] = {
         "schema_version": 3,
+        "run_id": allocation.run_id,
         "started_at_utc": started_at,
         "completed_at_utc": utc_now(),
         "invocation": {
@@ -408,12 +568,89 @@ def main() -> int:
     except OSError as error:
         print(f"could not write run attestation: {error}", file=sys.stderr)
         return 2
+    print(f"Run ID: {allocation.run_id}")
     print(f"Attestation: {attestation}")
     print(f"Attestation SHA-256: {sidecar}")
     print(f"APK source identity: {packaged_source.identity}")
     if restore_errors:
         print("Restoration attestation failed: " + "; ".join(restore_errors), file=sys.stderr)
     return final_exit_code
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--serial", required=True, help="adb serial, e.g. 127.0.0.1:5599")
+    ap.add_argument("--tier", action="append", choices=[*TIERS, "all"], default=None,
+                    help="tier(s) to run; repeatable; default smoke")
+    ap.add_argument("-k", dest="filter", default=None, help="substring filter on case names")
+    ap.add_argument("--apk", type=Path, default=DEFAULT_APK,
+                    help="exact host debug APK that must match the installed base.apk")
+    ap.add_argument("--allow-destructive", action="store_true",
+                    help="allow cases that force-stop the app; requires explicit operator approval")
+    ap.add_argument("--allow-settings", action="store_true",
+                    help="allow cases that change persisted shooting settings; requires explicit approval")
+    ap.add_argument("--allow-media-writes", action="store_true",
+                    help="allow cases that create photos or videos; requires explicit approval")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="permit approval-gated skips and attest an intentionally partial tier")
+    args = ap.parse_args()
+
+    tiers = args.tier or ["smoke"]
+    if "all" in tiers:
+        tiers = list(TIERS)
+
+    expected_apk = args.apk.resolve()
+    try:
+        expected_sha = sha256_file(expected_apk)
+        apk_contract = inspect_apk_contract(expected_apk)
+        packaged_source = require_apk_source_match(expected_apk, REPO_ROOT)
+        if sha256_file(expected_apk) != expected_sha:
+            raise ContractError("APK changed while its manifest contract was being inspected")
+        production_subdir = production_capture_subdir(REPO_ROOT)
+        harness_sources = harness_source_manifest(Path(__file__).resolve().parent)
+    except (ContractError, OSError) as error:
+        print(f"could not establish APK/harness contract: {error}", file=sys.stderr)
+        return 2
+    if apk_contract.application_id != APP_ID:
+        print(
+            f"refusing non-debug APK identity {apk_contract.application_id!r}; expected {APP_ID!r}",
+            file=sys.stderr,
+        )
+        return 2
+    reports_root = Path(__file__).parent / "reports"
+    try:
+        allocation = allocate_report_directory(reports_root)
+        write_run_identity(allocation, serial=args.serial)
+    except ContractError as error:
+        print(f"could not allocate/record device-test report: {error}", file=sys.stderr)
+        return 2
+
+    try:
+        with DeviceRunLock.acquire(reports_root, args.serial, allocation.run_id):
+            return run_locked_device(
+                args,
+                tiers,
+                expected_apk,
+                expected_sha,
+                apk_contract,
+                packaged_source,
+                production_subdir,
+                harness_sources,
+                allocation,
+            )
+    except DeviceRunLockError as error:
+        write_run_failure(
+            allocation,
+            serial=args.serial,
+            phase="device-lock",
+            error=str(error),
+        )
+        print(
+            f"device-test ownership failed for run {allocation.run_id}: {error}\n"
+            f"failure report: {allocation.directory / 'run-failure.json'}",
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":

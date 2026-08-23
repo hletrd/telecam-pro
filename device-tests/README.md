@@ -30,15 +30,20 @@ python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability \
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-partial
 ```
 
-Reports (markdown + JUnit XML + pulled evidence files) land in `device-tests/reports/<ts>/`
-(gitignored). Exit code 0 requires at least one pass and no failures, 1 means fail/error,
+Reports (markdown + JUnit XML + pulled evidence files) land in
+`device-tests/reports/<UTC timestamp>-<run token>/` (gitignored). The runner atomically reserves
+that directory, writes `run-identity.json`, and records the same run ID in the final attestation.
+Mutating harness ownership is process-locked per ADB serial before the first device probe; a second
+run against the same serial exits non-green with `run-failure.json`, while different serials remain
+independent. Exit code 0 requires at least one pass and no failures, 1 means fail/error,
 and 2 means preflight failure, no matching cases, all-skipped, missing approvals for any selected
 case, or a required verification reported as incomplete. `--allow-partial` is the only way to make
 an intentionally partial tier green; its report and attestation retain the skips and partial flag.
 
-**CLI report attestation contract:** every report directory also contains
+**CLI report attestation contract:** every completed report directory also contains
 `run-attestation.json` and `run-attestation.sha256`. The JSON records the source identity proven from
-inside the APK, device identity, host and installed APK SHA-256 values, exact approval flags, captured
+inside the APK, unique run ID, device identity, host and installed APK SHA-256 values, exact approval
+flags, captured
 pre-run and verified post-run state, and a path-sorted list of SHA-256 hashes for report artifacts. A
 restoration failure or pre/post state mismatch makes the CLI result non-green rather than producing
 only a warning. The SHA-256 sidecar protects the attestation bytes against unnoticed alteration; it
