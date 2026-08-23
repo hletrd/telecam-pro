@@ -1,119 +1,106 @@
-# Aggregate deep review — cycle 20
+# Aggregate deep review — cycle 21
 
 Date: 2026-08-24
-Reviewed HEAD: `0d1005dad5dfec6eb705e8a5070486d80be72775`
+Reviewed HEAD: `b405dd9dbeb1497fd364d50683036de1b591b24c`
 
 ## Review provenance
 
-Four fresh concurrent review agents covered every required specialist perspective and the
-repository's registered QA adversary. The environment's agent-slot limit was explicit, so closely
-related roles were grouped without dropping any required perspective:
+Three fresh concurrent review agents covered every required specialist perspective and the
+repository's registered QA adversary. The environment exposed only three child-agent slots, so
+closely related roles were grouped without dropping a required perspective:
 
-- `code-reviewer-architect-critic.md` plus `document-specialist-designer.md`
-- `perf-tracer-debugger.md`
-- `security-reviewer.md`
-- `verifier-test-engineer-qa-adversary.md`
+- `code-reviewer.md`, `critic.md`, `verifier.md`, and `tracer.md`
+- `perf-reviewer.md`, `architect.md`, `test-engineer.md`, and `qa-adversary.md`
+- `security-reviewer.md`, `debugger.md`, `document-specialist.md`, and `designer.md`
 
-The reviewers inventoried the complete current production Kotlin, host and instrumented tests,
-build/release tools, device harnesses, resources, and active documentation. Historical reviews and
-completed plans were treated only as leads. The QA lane passed
-`:app:assembleDebug :app:testDebugUnitTest`, documentation checks passed 110/110, and device gates
-were blocked by the no-deploy directive and absence of a current authorized serial. There were no
-agent failures.
+The reviewers inventoried current production Kotlin, host and instrumented tests, build/release
+tools, device harnesses, resources, and active documentation. Historical reviews and completed plans
+were treated only as leads. The host debug gate passed with 1,814 tests and zero failures, the
+focused release suite passed 23/23, and documentation checks passed 110/110. A few overlapping
+focused Gradle invocations collided in the shared generated test-results directory, but the later
+whole debug gate completed successfully. Native-device checks were not run because deployment is
+disabled and no current `ANDROID_SERIAL` was supplied. There were no agent failures.
 
 ## Deduplicated findings
 
-### AGG20-01 — a blocked publication holds global DISCARD authority for every media URI
+### AGG21-01 — a blocked family-retirement query prevents unrelated delete intent from becoming durable
 
 - **Severity / confidence:** High / High
-- **Classification:** Confirmed correctness, durability, and process-liveness defect
-- **Cross-agent agreement:** code-reviewer, architect, critic, document-specialist, performance,
-  tracer, and debugger
-- **Evidence:** `PendingDiscardJournal.kt:25-56,80-104,222` protects every `mark`, `lookup`,
-  `remove`, `page`, and `withLookupAuthority` call with one process-wide `databaseLock`.
-  `MediaStoreWriter.publish` holds that monitor across as many as three synchronous
-  `ContentResolver.update` Binder calls and retry sleeps (`MediaStoreWriter.kt:474-505`). The same
-  monitor is needed to commit a rejected/deleted output's exact DISCARD marker
-  (`MediaStoreWriter.kt:329-339`), and `BoundedRejectedOutputOwner` records in-memory retry ownership
-  only after that marker attempt returns (`MediaStoreWriter.kt:1139-1168`).
-- **Failure:** if publication of URI A never returns from MediaProvider, URI B cannot durably record
-  that deletion/rejection won. Process death can then leave B without durable or in-memory discard
-  authority, allowing a structurally valid pending row to be adopted on relaunch. Without process
-  death, otherwise independent still, recording-storage, retained-discard, and launch-recovery lanes
-  all freeze behind A.
-- **Required fix:** keep the global journal monitor around SQLite work only; serialize publication
-  against `mark`/`remove` by exact URI or fixed URI stripe, never across unrelated URIs. Provider I/O
-  and sleeps must run outside the global monitor. Add deterministic same-URI ordering tests and a
-  two-URI barrier test proving B can durably mark/page while A's provider call remains blocked, then
-  document the actual short-lock ownership protocol.
+- **Classification:** Confirmed correctness, privacy, and process-liveness defect
+- **Cross-agent agreement:** code-reviewer, critic, verifier, and tracer
+- **Evidence:** `MediaStoreWriter.kt:71,358-439` uses one process-global `familyJournalLock` for
+  every family mark and retirement. `retireFamilyDeletionMarker` invokes `exactFamilyAbsent` while
+  holding that lock, and the production callback performs a synchronous, deadline-free
+  `ContentResolver.query`. `DeletedFamilyJournalTest.kt:84-131` checks serial truth but not blocked-A
+  versus mark-B progress.
+- **Failure:** if old Engine A blocks inside its provider absence query, current Engine B cannot
+  commit the durable tombstone for a different deleted family. Process death then loses B's
+  in-memory veto, allowing a valid late private sibling to be adopted and resurrected on launch.
+- **Required fix:** keep global preference/capacity work short, run provider work outside it, and
+  serialize/revalidate retirement by exact family and marker version. Add deterministic unrelated-
+  family progress plus same-family mark-versus-retire ordering tests and document the ownership
+  protocol.
 
-### AGG20-02 — RAW-only single shots bypass the still-tail budget and queue without a bound
+### AGG21-02 — upload verification ignores packageable source hidden by `.gitignore`
 
 - **Severity / confidence:** Medium / High
-- **Classification:** Confirmed resource-retention and liveness defect
-- **Source:** performance, tracer, and debugger
-- **Evidence:** each Engine owns an unbounded single-thread `ioExecutor`
-  (`CameraEngine.kt:117-120`). SINGLE-shot admission acquires `ProcessedSnapshotBudget` only when
-  the selection wants a processed still (`CameraEngine.kt:3860-3883`), while RAW-only is a supported
-  normalized selection. Every completed DNG synchronously writes bytes and its durable COMPLETE
-  marker, then unconditionally submits the publication continuation to that executor
-  (`CameraEngine.kt:4414-4446`). CameraController closes the RAW `Image` and clears the reusable
-  pending slot (`CameraController.kt:2094-2138`), so another RAW-only SINGLE shot can enqueue even
-  while the first publication is stuck. Existing output-admission checks cover rejected outputs,
-  not complete DNG publication tails.
-- **Failure:** if MediaProvider accepts insert/write but the first `IS_PENDING=0` update blocks,
-  shots B, C, and later shots keep writing complete DNG rows and enqueueing capture-family terminal
-  closures behind A. Queue cardinality, retained completion ownership, and pending rows grow without
-  a bound, and Engine recreation can create another unbounded queue while the old worker remains
-  wedged.
-- **Required fix:** put DNG publication behind a finite process-wide still-tail owner or a unified
-  processed/RAW publication budget. Because DNG bytes and COMPLETE truth are durable before enqueue,
-  saturation should terminally release live family ownership, report delayed save, and leave the row
-  for launch recovery rather than deleting data. Test active+queued saturation, overflow recovery,
-  repeated Engine replacement, and a hard queue-cardinality bound.
+- **Classification:** Confirmed release-integrity defect
+- **Source:** security-reviewer and document-specialist
+- **Evidence:** `check_release_artifact.py:449-456,663-684` defines repository cleanliness with
+  `git status --porcelain --untracked-files=all`, which omits ignored files. `.gitignore:34-38`
+  contains broad secret-safety patterns, and `git check-ignore` confirms ignored Kotlin/resource
+  paths under `app/src/main`; Android packages those roots. `app/build.gradle.kts:102-110,162-177,
+  407-427` already rejects ignored packageable inputs during release builds, so the upload checker
+  implements a weaker source-identity contract.
+- **Failure:** an ignored Kotlin, resource, or manifest input added after the immutable cut can
+  change live effective source while HEAD and porcelain status remain clean, yet the checker can
+  print `upload-ready` for the older AAB.
+- **Required fix:** perform NUL-safe ignored-file enumeration for protected packageable source roots
+  at both initial and terminal repository boundaries, preferably through one shared authority with
+  the Gradle gate. Add real-Git tests for ignored Kotlin, resource, and manifest inputs introduced
+  initially and during verification.
 
-### AGG20-03 — upload-ready verification does not remain bound to final repository state
+### AGG21-03 — substantial identity hashing follows the checker's last repository observation
 
 - **Severity / confidence:** Medium / High
 - **Classification:** Confirmed release-integrity race
-- **Source:** security-reviewer
-- **Evidence:** `check_release_artifact.py:428-451` reads HEAD, worktree cleanliness, and mutable
-  `app/build.gradle.kts` once before certificate, JAR-signature, bundle, manifest, provenance, and
-  receipt checks. Its final boundary revalidates the AAB, release evidence, attestation, and checksum
-  sidecar (`:653-683`) but never rechecks HEAD, status, or build-script identity. A focused fixture
-  trace confirmed one HEAD call and one status call. This contradicts the operator contract that any
-  source change invalidates the result (`docs/play-console-submit.md:694-700`).
-- **Failure:** an ordinary concurrent signed commit or working-tree edit can land during external
-  tool validation, after which the checker prints `upload-ready` for artifact A while the repository
-  already represents source B. A security or data-loss fix can therefore be absent from the binary
-  under a fresh success verdict.
-- **Required fix:** snapshot the complete initial repository owner and revalidate it after every
-  external tool call, immediately before success: rerun HEAD and exact porcelain status checks and
-  require equality; no-follow snapshot and finally revalidate `app/build.gradle.kts`, or remove it as
-  a second authority by deriving version truth from attested source. Add clean-commit, dirty-tree,
-  path-swap, and in-place mutation regressions at early and late verification boundaries.
+- **Cross-agent agreement:** every non-designer review perspective
+- **Evidence:** `check_release_artifact.py:663-684` performs the second HEAD/status observation, then
+  lines 685-726 re-read and hash the source-version file, private/source AAB, evidence, attestation,
+  and sidecar without another Git observation. Multiple reviewers reproduced a clean HEAD change
+  immediately after the second status call with the existing valid fixture; the checker returned
+  `failures=[]`. Existing late-boundary tests mutate before this interval.
+- **Failure:** a normal clean commit can land during final AAB/input hashing and the checker still
+  returns `upload-ready` for the previous live branch state, contradicting the operator contract
+  that any source change invalidates the result.
+- **Required fix:** complete all long artifact/input identity work before the final HEAD, exact
+  status, and ignored-source observations, leaving no external or long-running operation afterward.
+  Add exact regressions for clean HEAD, dirty status, and ignored-source mutations during the current
+  final identity scan. Document the verdict around the immutable attested snapshot if literal
+  atomic-at-return live-repository ownership cannot be guaranteed without coordination.
 
-### AGG20-04 — the automatic ISO ruler announces English-only state in Korean
+### AGG21-04 — legacy preference cleanup holds the global discard-journal database monitor
 
-- **Severity / confidence:** Low-Medium / High
-- **Classification:** Confirmed accessibility and localization defect
-- **Source:** verifier, test-engineer, and QA-adversary
-- **Evidence:** `ManualDials.kt:1135-1158` builds the adjustable ISO ruler value as the hard-coded
-  string `Auto ISO ${controls.iso}` and forwards it to `RulerSlider`, which publishes the string
-  verbatim as `stateDescription` (`ManualDials.kt:1281-1300,1363-1369`). The adjacent visible
-  readout and shutter ruler already use localized `a11y_auto_value` resources
-  (`values/strings.xml:396`, `values-ko/strings.xml:379`). No production Compose test opens the real
-  ISO ruler under a Korean configuration.
-- **Failure:** with Korean selected and Program or Shutter priority driving ISO, TalkBack announces
-  the focused adjustable node as `Auto ISO 9100` even though the adjacent node says
-  `자동 ISO 9100`, switching languages inside one control.
-- **Required fix:** derive the ISO slider state through `R.string.a11y_auto_value`, preserving the
-  normal `ISO N` branch, and add real `ManualDialCluster` Compose assertions for Korean auto ISO,
-  English auto ISO, and non-auto ISO.
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed process-liveness and ownership-isolation defect
+- **Cross-agent agreement:** performance, architect, test-engineer, QA adversary, debugger, and
+  document-specialist
+- **Evidence:** `PendingDiscardJournal.kt:110-141` holds process-global `databaseLock` across
+  `removeLegacyEntries(keys.toSet())`; the production callback at lines 14-20 uses synchronous
+  SharedPreferences `commit = true`. Every exact-URI `mark`, `lookup`, and `remove` also needs this
+  monitor. This contradicts `docs/ARCHITECTURE.md:107`, which says the SQLite monitor covers database
+  work only. Current tests cover immediate cleanup failure and blocked provider I/O, not a cleanup
+  callback that never returns.
+- **Failure:** stalled legacy preference storage during launch recovery freezes unrelated media
+  publication and durable DISCARD authority despite the exact-URI design, and can exhaust the
+  recovery watchdog even though the indexed SQLite page already completed.
+- **Required fix:** freeze the page and cleanup keys under the database lock, release it, then run
+  best-effort bounded preference cleanup. Add a deterministic blocking-cleanup test proving
+  unrelated mark, lookup, remove, and publication lookup progress while cleanup remains blocked.
 
 ## Accounting
 
 - New review findings: **4**
 - Deduplicated root causes: **4**
 - Agent failures: **0**
-- Deferred findings: **0** (all findings are scheduled for cycle-20 implementation)
+- Deferred findings: **0** (all findings require implementation this cycle)
