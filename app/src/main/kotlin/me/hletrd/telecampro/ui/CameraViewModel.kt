@@ -1016,16 +1016,6 @@ class CameraViewModel @JvmOverloads constructor(
         engine.onRawSaved = { uri, captureId ->
             recordCaptureOutput(uri, captureId, CaptureOutputKind.RAW)
         }
-        // A publish-failed output is deliberately RETAINED for launch recovery — unless its
-        // family is already tombstoned (deleted). Then retention would resurrect part of a deleted
-        // capture on the next launch (the late-RAW timeline: family deleted before the DNG's
-        // pending row even existed, so the C3 delete-time sweep could not have seen it). Only the
-        // tombstoned case deletes; a live capture keeps its recovery row (verification S3).
-        engine.onStillPublishRetained = { uri, captureId ->
-            if (captureOutputs.isDeleted(captureId)) {
-                ioExecutor.execute { MediaStoreWriter.delete(getApplication(), uri) }
-            }
-        }
         seedPhoneModel()
         restoreSettingsIfEnabled()
         loadEncoderInventoryAsync()
@@ -3261,6 +3251,10 @@ class CameraViewModel @JvmOverloads constructor(
         // Freeze ownership and tombstone the id BEFORE the Binder calls. Any slower HEIF/JPEG/DNG
         // callback for the shot is then rejected and deleted instead of replacing the thumbnail.
         val deletePlan = captureOutputs.beginDelete(uri)
+        // Retained still completion belongs to the Engine's I/O lane and can outlive this ViewModel.
+        // Publish the same tombstone there synchronously so a late private row takes the durable
+        // DISCARD path without calling back into this UI owner or its soon-to-shut-down executor.
+        engine.markCaptureDeleted(deletePlan.captureId)
         val outputs = deletePlan.outputs
         // The open overlay can still hold the RAW URI after a processed sibling upgraded the
         // thumbnail. Clear whichever sibling currently owns review, not only the tapped URI.

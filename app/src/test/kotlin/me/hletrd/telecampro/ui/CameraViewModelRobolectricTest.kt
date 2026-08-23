@@ -72,16 +72,29 @@ class CameraViewModelRobolectricTest {
 
     private fun idleFor(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
 
+    private fun armCountdown(v: CameraViewModel, seconds: Int = 3) {
+        CameraViewModel::class.java.getDeclaredMethod("startCountdown", Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+            .invoke(v, seconds)
+    }
+
+    private fun clearViewModel(v: CameraViewModel) {
+        CameraViewModel::class.java.getDeclaredMethod("onCleared")
+            .apply { isAccessible = true }
+            .invoke(v)
+    }
+
+    /** Automatically includes any future Engine callback field instead of maintaining a second list. */
+    private fun engineCallbackFields() = CameraEngine::class.java.declaredFields.filter { field ->
+        field.name.startsWith("on") && field.type.name.startsWith("kotlin.jvm.functions.Function")
+    }
+
     @After fun tearDown() {
         // Detaches engine callbacks and hands the (never-started) engine to its release thread.
         // onCleared is protected (androidx contract) — reflection is the lifecycle-honest teardown
         // without dragging a ViewModelProvider/Store harness into every test.
         runCatching {
-            vm?.let { v ->
-                CameraViewModel::class.java.getDeclaredMethod("onCleared")
-                    .apply { isAccessible = true }
-                    .invoke(v)
-            }
+            vm?.let(::clearViewModel)
         }
     }
 
@@ -132,6 +145,26 @@ class CameraViewModelRobolectricTest {
         assertNotNull(e.onFocusDistance)
         assertNotNull(e.onMediaSaved)
         assertNotNull(e.onRawSaved)
+        assertNotNull(e.onLensInventory)
+        assertNotNull(e.onCameraPolicyBlocked)
+        assertNotNull(e.onTimelapseRun)
+    }
+
+    @Test fun `onCleared detaches every current Engine callback field`() {
+        val (v, e) = createViewModel()
+        val callbacks = engineCallbackFields()
+        assertTrue(callbacks.isNotEmpty())
+        callbacks.forEach { field ->
+            field.isAccessible = true
+            assertNotNull("callback must be wired before teardown: ${field.name}", field.get(e))
+        }
+
+        clearViewModel(v)
+        vm = null // tearDown must not invoke the lifecycle edge twice
+
+        callbacks.forEach { field ->
+            assertNull("callback survived teardown: ${field.name}", field.get(e))
+        }
     }
 
     @Test fun `a persisted settings packet restores through the store during construction`() {

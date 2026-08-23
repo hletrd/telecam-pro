@@ -43,6 +43,7 @@ object MediaStoreWriter {
     private const val PENDING_JOURNAL = "pending_media_journal"
     private const val PENDING_REGISTERED = "registered"
     private const val PENDING_COMPLETE = "complete"
+    private const val PENDING_DISCARD = "discard"
     private const val COMPLETION_MARK_ATTEMPTS = 3
     private const val COMPLETION_MARK_BACKOFF_MS = 25L
 
@@ -277,6 +278,34 @@ object MediaStoreWriter {
             },
         )
 
+    /**
+     * Durably vetoes recovery of a completed private row that belongs to a deleted capture.
+     *
+     * The immediate delete remains best-effort: a provider outage can reject it even though the
+     * user's family-delete intent already won. Persisting DISCARD first makes that outage safe — a
+     * later launch deletes the row regardless of its valid bytes or earlier COMPLETE marker instead
+     * of adopting and publishing media the user deleted. A successful delete clears the journal in
+     * the ordinary [delete] path.
+     */
+    internal fun discardPendingOutput(context: Context, uri: Uri): Boolean {
+        val marker = markCompletionWithRetry(
+            maxAttempts = COMPLETION_MARK_ATTEMPTS,
+            commit = {
+                context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(uri.toString(), PENDING_DISCARD)
+                    .commit()
+            },
+            backoff = { attempt ->
+                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
+            },
+        )
+        val deleted = delete(context, uri)
+        // A durable marker is a successful deferred discard even when the provider cannot delete
+        // now. False means both immediate deletion and the recovery veto failed.
+        return deleted || marker.durable
+    }
+
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
 
@@ -479,6 +508,8 @@ object MediaStoreWriter {
                         val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
                         val probeOutcome = when {
                             sizeBytes <= 0L -> PendingProbeOutcome(PendingProbe.INVALID)
+                            journalState == PendingJournalState.DISCARD ->
+                                PendingProbeOutcome(PendingProbe.INVALID)
                             journalState == PendingJournalState.COMPLETE -> PendingProbeOutcome(PendingProbe.VALID)
                             else -> probePendingMedia(
                                 context = context,
@@ -527,6 +558,7 @@ object MediaStoreWriter {
     private fun pendingJournalState(context: Context, uri: Uri): PendingJournalState =
         when (context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).getString(uri.toString(), null)) {
             PENDING_COMPLETE -> PendingJournalState.COMPLETE
+            PENDING_DISCARD -> PendingJournalState.DISCARD
             PENDING_REGISTERED -> PendingJournalState.REGISTERED
             else -> PendingJournalState.UNKNOWN
         }
@@ -807,7 +839,7 @@ internal fun pendingMediaProbeKind(
     else -> PendingMediaProbeKind.KEEP_PENDING
 }
 
-internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE }
+internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE, DISCARD }
 
 internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
 
@@ -818,6 +850,7 @@ internal fun orphanDisposition(
     journalState: PendingJournalState,
     probe: PendingProbe,
 ): OrphanDisposition = when {
+    journalState == PendingJournalState.DISCARD -> OrphanDisposition.DELETE
     journalState == PendingJournalState.COMPLETE -> OrphanDisposition.ADOPT
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
     probe == PendingProbe.INVALID -> OrphanDisposition.DELETE

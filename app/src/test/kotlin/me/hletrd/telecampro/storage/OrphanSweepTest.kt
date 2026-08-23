@@ -72,6 +72,16 @@ class OrphanSweepTest {
     }
 
     @Test
+    fun `discard journal rows are always deleted even when bytes are structurally valid`() {
+        PendingProbe.entries.forEach { probe ->
+            assertEquals(
+                OrphanDisposition.DELETE,
+                orphanDisposition(PendingJournalState.DISCARD, probe),
+            )
+        }
+    }
+
+    @Test
     fun `valid legacy or registered rows are adopted`() {
         assertEquals(
             OrphanDisposition.ADOPT,

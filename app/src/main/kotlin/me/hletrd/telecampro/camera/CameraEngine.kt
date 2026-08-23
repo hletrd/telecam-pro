@@ -57,6 +57,12 @@ class CameraEngine(private val context: Context) {
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Deleted-family veto lives with the still lane, not the UI callback graph. A retained output
+    // can complete after ViewModel.onCleared; its durable discard must remain owned by this Engine.
+    private val retainedStillDeletionOwner = RetainedStillDeletionOwner<android.net.Uri>(
+        maxTombstones = MAX_RETAINED_STILL_DELETE_TOMBSTONES,
+        discard = { uri -> MediaStoreWriter.discardPendingOutput(context, uri) },
+    )
     // Launch MediaStore reconciliation may perform several provider scans/probes and bounded
     // backoffs. Keep it independent from camera setup so recovery can never delay first preview.
     private val mediaRecoveryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
@@ -3618,14 +3624,22 @@ class CameraEngine(private val context: Context) {
     }
 
 
-    // Save lanes live in the extracted StillCapturePipeline (ARCH4-3 step 1); the lambdas read
-    // the live listener fields at invoke time so late wiring behaves exactly as before.
+    /**
+     * Publishes a whole-family delete to the still lane before asynchronous provider deletion.
+     * Null is a FILE_ONLY/unknown capture and has no live sibling callback family to suppress.
+     */
+    fun markCaptureDeleted(captureId: Int?) {
+        captureId?.let(retainedStillDeletionOwner::markCaptureDeleted)
+    }
+
+    // Save lanes live in the extracted StillCapturePipeline (ARCH4-3 step 1). UI-facing lambdas
+    // read live listener fields; retained-output deletion deliberately bypasses that detachable graph.
     private val stillPipeline = StillCapturePipeline(
         context,
         emitStatus = { status -> onStatus?.invoke(status) },
         emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
         emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
-        emitPublishRetained = { uri, id -> onStillPublishRetained?.invoke(uri, id) },
+        emitPublishRetained = { uri, id -> retainedStillDeletionOwner.handleRetained(uri, id) },
     )
     private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
 
@@ -5352,6 +5366,8 @@ class CameraEngine(private val context: Context) {
         onPreviewAspect = null
         onAnalysis = null
         onAudioLevel = null
+        onCameraPolicyBlocked = null
+        onTimelapseRun = null
         onAudioRoute = null
         onStandbyAudioAvailable = null
         onStandbyAudioUnavailable = null
@@ -5632,6 +5648,10 @@ class CameraEngine(private val context: Context) {
     }
 
     private companion object {
+        // Matches the UI's bounded late-sibling model with extra headroom for still saves that outlive
+        // rapid review deletion. Once a retained URI is routed here, its DISCARD marker is durable.
+        private const val MAX_RETAINED_STILL_DELETE_TOMBSTONES = 32
+
         // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
         // took over the gesture exposure trade; it was unreferenced and its comment still asserted
         // a policy nothing enforced.)
