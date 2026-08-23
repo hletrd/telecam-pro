@@ -397,12 +397,18 @@
     <plurals name="a11y_shots_remaining">
         <item quantity="other">%1$d장 촬영 가능</item>
     </plurals>
+    <plurals name="a11y_saturated_shots_remaining">
+        <item quantity="other">%1$d장 이상 촬영 가능</item>
+    </plurals>
     <plurals name="a11y_battery_percent"><item quantity="other">배터리 %1$d퍼센트</item></plurals>
     <plurals name="a11y_hours_remaining"><item quantity="other">%1$d시간 남음</item></plurals>
+    <plurals name="a11y_saturated_hours_remaining"><item quantity="other">%1$d시간 이상 남음</item></plurals>
     <plurals name="a11y_hours_unit"><item quantity="other">%1$d시간</item></plurals>
     <plurals name="a11y_minutes_remaining"><item quantity="other">%1$d분 남음</item></plurals>
+    <plurals name="a11y_saturated_minutes_remaining"><item quantity="other">%1$d분 이상 남음</item></plurals>
+    <plurals name="a11y_minutes_unit"><item quantity="other">%1$d분</item></plurals>
     <string name="a11y_hours_minutes_join">%1$s %2$s</string>
-    <string name="a11y_over_remaining">%1$s 이상</string>
+    <string name="a11y_saturated_hours_minutes_remaining">%1$s %2$s 이상 남음</string>
     <string name="a11y_status_join">%1$s, %2$s</string>
     <string name="osd_stabilization_standard">표준 보정</string>
     <string name="osd_stabilization_steady">강력 보정</string>

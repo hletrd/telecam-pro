@@ -416,12 +416,19 @@
         <item quantity="one">%1$d shot remaining</item>
         <item quantity="other">%1$d shots remaining</item>
     </plurals>
+    <plurals name="a11y_saturated_shots_remaining">
+        <item quantity="one">Over %1$d shot remaining</item>
+        <item quantity="other">Over %1$d shots remaining</item>
+    </plurals>
     <plurals name="a11y_battery_percent"><item quantity="one">Battery %1$d percent</item><item quantity="other">Battery %1$d percent</item></plurals>
     <plurals name="a11y_hours_remaining"><item quantity="one">%1$d hour remaining</item><item quantity="other">%1$d hours remaining</item></plurals>
+    <plurals name="a11y_saturated_hours_remaining"><item quantity="one">Over %1$d hour remaining</item><item quantity="other">Over %1$d hours remaining</item></plurals>
     <plurals name="a11y_hours_unit"><item quantity="one">%1$d hour</item><item quantity="other">%1$d hours</item></plurals>
     <plurals name="a11y_minutes_remaining"><item quantity="one">%1$d minute remaining</item><item quantity="other">%1$d minutes remaining</item></plurals>
+    <plurals name="a11y_saturated_minutes_remaining"><item quantity="one">Over %1$d minute remaining</item><item quantity="other">Over %1$d minutes remaining</item></plurals>
+    <plurals name="a11y_minutes_unit"><item quantity="one">%1$d minute</item><item quantity="other">%1$d minutes</item></plurals>
     <string name="a11y_hours_minutes_join">%1$s %2$s</string>
-    <string name="a11y_over_remaining">Over %1$s</string>
+    <string name="a11y_saturated_hours_minutes_remaining">Over %1$s %2$s remaining</string>
     <string name="a11y_status_join">%1$s, %2$s</string>
     <string name="osd_stabilization_standard">STAB STD</string>
     <string name="osd_stabilization_steady">STEADY</string>

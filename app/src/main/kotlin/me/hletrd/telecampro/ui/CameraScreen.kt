@@ -220,36 +220,62 @@ private fun osdClearanceTop(): Dp {
 }
 
 @Composable
-private fun localizedTimerCountdownDescription(seconds: Int): String =
+internal fun localizedTimerCountdownDescription(seconds: Int): String =
     pluralStringResource(R.plurals.a11y_seconds_remaining, seconds, seconds)
 
 @Composable
-private fun localizedStatusInfoDescription(batteryPct: Int, remaining: String?, video: Boolean): String {
+private fun localizedRemainingCapacityDescription(capacity: RemainingCapacity): String = when (capacity) {
+    is RemainingCapacity.Shots -> if (capacity.saturated) {
+        pluralStringResource(
+            R.plurals.a11y_saturated_shots_remaining,
+            capacity.count,
+            capacity.count,
+        )
+    } else {
+        pluralStringResource(R.plurals.a11y_shots_remaining, capacity.count, capacity.count)
+    }
+    is RemainingCapacity.Duration -> when {
+        capacity.saturated && capacity.hours > 0 && capacity.minutes > 0 -> stringResource(
+            R.string.a11y_saturated_hours_minutes_remaining,
+            pluralStringResource(R.plurals.a11y_hours_unit, capacity.hours, capacity.hours),
+            pluralStringResource(R.plurals.a11y_minutes_unit, capacity.minutes, capacity.minutes),
+        )
+        capacity.saturated && capacity.hours > 0 -> pluralStringResource(
+            R.plurals.a11y_saturated_hours_remaining,
+            capacity.hours,
+            capacity.hours,
+        )
+        capacity.saturated -> pluralStringResource(
+            R.plurals.a11y_saturated_minutes_remaining,
+            capacity.minutes,
+            capacity.minutes,
+        )
+        capacity.hours > 0 && capacity.minutes > 0 -> stringResource(
+            R.string.a11y_hours_minutes_join,
+            pluralStringResource(R.plurals.a11y_hours_unit, capacity.hours, capacity.hours),
+            pluralStringResource(R.plurals.a11y_minutes_remaining, capacity.minutes, capacity.minutes),
+        )
+        capacity.hours > 0 -> pluralStringResource(
+            R.plurals.a11y_hours_remaining,
+            capacity.hours,
+            capacity.hours,
+        )
+        else -> pluralStringResource(
+            R.plurals.a11y_minutes_remaining,
+            capacity.minutes,
+            capacity.minutes,
+        )
+    }
+}
+
+/** The one production formatter used by the status pill and bilingual semantics tests. */
+@Composable
+internal fun localizedStatusInfoDescription(batteryPct: Int, remaining: String?, video: Boolean): String {
     val battery = batteryPct.takeIf { it >= 0 }?.let {
         pluralStringResource(R.plurals.a11y_battery_percent, it, it)
     }
-    val media = remaining?.let { token ->
-        val over = token.endsWith("+")
-        val body = token.removeSuffix("+")
-        val description = if (video) {
-            val hourMark = body.indexOf('h')
-            val hours = if (hourMark < 0) 0 else body.substring(0, hourMark).toIntOrNull() ?: return@let null
-            val minuteText = (if (hourMark < 0) body else body.substring(hourMark + 1)).removeSuffix("m")
-            val minutes = if (minuteText.isEmpty()) 0 else minuteText.toIntOrNull() ?: return@let null
-            when {
-                hours > 0 && minutes > 0 -> stringResource(
-                    R.string.a11y_hours_minutes_join,
-                    pluralStringResource(R.plurals.a11y_hours_unit, hours, hours),
-                    pluralStringResource(R.plurals.a11y_minutes_remaining, minutes, minutes),
-                )
-                hours > 0 -> pluralStringResource(R.plurals.a11y_hours_remaining, hours, hours)
-                else -> pluralStringResource(R.plurals.a11y_minutes_remaining, minutes, minutes)
-            }
-        } else {
-            val shots = body.toIntOrNull() ?: return@let null
-            pluralStringResource(R.plurals.a11y_shots_remaining, shots, shots)
-        }
-        if (over) stringResource(R.string.a11y_over_remaining, description) else description
+    val media = parseRemainingCapacity(remaining, video)?.let {
+        localizedRemainingCapacityDescription(it)
     }
     return when {
         battery != null && media != null -> stringResource(R.string.a11y_status_join, battery, media)

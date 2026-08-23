@@ -27,7 +27,7 @@ import kotlin.math.sin
 /**
  * Non-composable policy helpers for [CameraScreen], hoisted (behavior-locked, verbatim) out of
  * CameraScreen.kt so the pure decision logic lives apart from Compose emission: status urgency and
- * display duration, the spoken forms of the self-timer countdown and the status pill,
+ * display duration, the locale-neutral remaining-capacity parser used by the status pill,
  * rotated-layout bounds math, the Fn overlay's orientation-aware layout/copy
  * policy, exposure-meter visibility/needle math, preview letterbox placement, focal-rail and
  * mode-carousel accessibility state, and the glyph-rotation unwrap. Everything here is plain
@@ -71,56 +71,59 @@ internal fun windowFollowsDevice(smallestScreenWidthDp: Int): Boolean = smallest
  * exhausted-retry terminal status) replaces it.
  */
 
-/**
- * The self-timer countdown, spoken. Its node is a 1 Hz `LiveRegionMode.Polite` region, so TalkBack
- * reads this unprompted on EVERY tick — including the last one, where the interpolated plural said
- * "1 seconds remaining". Hoisted because a string built inline inside a semantics block is reachable
- * from no host test at all; both the countdown overlay and the shutter button read it from here so
- * the two can never disagree about the same second.
- */
-internal fun timerCountdownDescription(sec: Int): String =
-    if (sec == 1) "1 second remaining" else "$sec seconds remaining"
+/** Locale-neutral meaning of the status pill's compact remaining-media token. */
+internal sealed interface RemainingCapacity {
+    val saturated: Boolean
 
-/**
- * The battery + remaining-media pill, spoken as ONE readout. The drawn copy is deliberately
- * telegraphic for a finder — "72%", then "45m" / "9h30m" / a bare shot count — but read aloud "45m"
- * is a distance and "1234" names nothing at all. This spells the same two facts out in words while
- * the pill keeps its short glyphs; [remaining] is the exact token the pill draws, so there is one
- * source of truth for the number and only its wording differs.
- */
-internal fun statusInfoDescription(batteryPct: Int, remaining: String?, video: Boolean): String {
-    val parts = mutableListOf<String>()
-    if (batteryPct >= 0) parts += "Battery $batteryPct percent"
-    remaining?.let { token -> remainingMediaDescription(token, video)?.let { parts += it } }
-    return parts.joinToString(", ")
+    data class Shots(
+        val count: Int,
+        override val saturated: Boolean,
+    ) : RemainingCapacity
+
+    data class Duration(
+        val hours: Int,
+        val minutes: Int,
+        override val saturated: Boolean,
+    ) : RemainingCapacity
 }
 
-/** "1 shot" / "2 shots" — a spoken plural must follow the count, unlike the drawn digits. */
-private fun countedUnit(value: Long, singular: String): String =
-    if (value == 1L) "$value $singular" else "$value ${singular}s"
-
 /**
- * Words for the pill's remaining-media token. Both branches saturate with a trailing "+" ("9h+",
- * "9999+"), which reads as "Over ..." rather than a plus sign. An unparsable token yields null so a
- * future format change degrades to the battery fact alone instead of speaking punctuation.
+ * Parses the exact compact token drawn by the status pill without choosing any sentence order.
+ *
+ * Photo tokens are a shot count (`1234`, `9999+`). Video tokens are minutes (`45m`), hours with an
+ * optional minute remainder (`9h`, `9h30m`), and the same forms with a saturation suffix. Returning
+ * null is deliberate: an unknown future token must drop only the media phrase rather than make
+ * TalkBack announce raw punctuation. Complete prose belongs to the locale resources consumed by
+ * `localizedStatusInfoDescription` in CameraScreen.kt.
  */
-private fun remainingMediaDescription(token: String, video: Boolean): String? {
-    val over = token.endsWith("+")
-    val body = token.removeSuffix("+")
-    val spoken = if (video) {
-        val hourMark = body.indexOf('h')
-        val hours = if (hourMark < 0) 0L else body.substring(0, hourMark).toLongOrNull() ?: return null
-        val minuteText = (if (hourMark < 0) body else body.substring(hourMark + 1)).removeSuffix("m")
-        val minutes = if (minuteText.isEmpty()) 0L else minuteText.toLongOrNull() ?: return null
-        when {
-            hours > 0 && minutes > 0 -> "${countedUnit(hours, "hour")} ${countedUnit(minutes, "minute")}"
-            hours > 0 -> countedUnit(hours, "hour")
-            else -> countedUnit(minutes, "minute")
+internal fun parseRemainingCapacity(token: String?, video: Boolean): RemainingCapacity? {
+    if (token.isNullOrEmpty()) return null
+    val saturated = token.endsWith('+')
+    val body = if (saturated) token.dropLast(1) else token
+    if (body.isEmpty() || body.endsWith('+')) return null
+    if (!video) {
+        val count = body.toIntOrNull()?.takeIf { it >= 0 } ?: return null
+        return RemainingCapacity.Shots(count, saturated)
+    }
+
+    val hours: Int
+    val minutes: Int
+    val hourMark = body.indexOf('h')
+    if (hourMark >= 0) {
+        if (body.indexOf('h', hourMark + 1) >= 0) return null
+        hours = body.substring(0, hourMark).toIntOrNull()?.takeIf { it >= 0 } ?: return null
+        val minuteText = body.substring(hourMark + 1)
+        minutes = when {
+            minuteText.isEmpty() -> 0
+            !minuteText.endsWith('m') -> return null
+            else -> minuteText.dropLast(1).toIntOrNull()?.takeIf { it >= 0 } ?: return null
         }
     } else {
-        countedUnit(body.toLongOrNull() ?: return null, "shot")
+        if (!body.endsWith('m')) return null
+        hours = 0
+        minutes = body.dropLast(1).toIntOrNull()?.takeIf { it >= 0 } ?: return null
     }
-    return if (over) "Over $spoken remaining" else "$spoken remaining"
+    return RemainingCapacity.Duration(hours, minutes, saturated)
 }
 
 internal data class RotatedLayoutBounds(val widthPx: Int, val heightPx: Int)

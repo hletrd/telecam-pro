@@ -2,11 +2,17 @@ package me.hletrd.telecampro.ui
 
 import android.content.Context
 import android.content.res.Configuration
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
@@ -15,7 +21,9 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.platform.testTag
 import androidx.test.core.app.ApplicationProvider
 import java.lang.reflect.Proxy
 import java.util.Locale
@@ -65,6 +73,12 @@ class BilingualPresentationComposeTest {
         CameraActions::class.java.classLoader,
         arrayOf(CameraActions::class.java),
     ) { _, method, _ -> if (method.returnType == java.lang.Boolean.TYPE) false else null } as CameraActions
+
+    private fun assertDescription(tag: String, expected: String) {
+        compose.onNodeWithTag(tag).assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.ContentDescription, listOf(expected)),
+        )
+    }
 
     @Test
     fun `empty gallery is an enabled Korean restore action`() {
@@ -196,5 +210,95 @@ class BilingualPresentationComposeTest {
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "선택됨"))
         compose.onNodeWithContentDescription("셔터 각도")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "선택되지 않음"))
+    }
+
+    @Test
+    fun `English production status formatter owns complete capacity and countdown semantics`() {
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides localizedContext("en")) {
+                Column {
+                    val countdown = localizedTimerCountdownDescription(1)
+                    Box(
+                        Modifier.testTag("countdown").clearAndSetSemantics {
+                            contentDescription = "Self-timer"
+                            stateDescription = countdown
+                        },
+                    )
+                    listOf(
+                        "shots" to localizedStatusInfoDescription(72, "1234", video = false),
+                        "shots-saturated" to localizedStatusInfoDescription(5, "9999+", video = false),
+                        "minutes" to localizedStatusInfoDescription(72, "45m", video = true),
+                        "minutes-saturated" to localizedStatusInfoDescription(72, "45m+", video = true),
+                        "duration" to localizedStatusInfoDescription(72, "9h30m", video = true),
+                        "hours-saturated" to localizedStatusInfoDescription(72, "9h+", video = true),
+                        "duration-saturated" to localizedStatusInfoDescription(72, "9h30m+", video = true),
+                        "media-only" to localizedStatusInfoDescription(-1, "42", video = false),
+                        "malformed" to localizedStatusInfoDescription(42, "??", video = true),
+                        "battery-only" to localizedStatusInfoDescription(42, null, video = false),
+                    ).forEach { (tag, description) ->
+                        Box(Modifier.testTag(tag).clearAndSetSemantics { contentDescription = description })
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("countdown").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "1 second remaining"),
+        )
+        assertDescription("shots", "Battery 72 percent, 1234 shots remaining")
+        assertDescription("shots-saturated", "Battery 5 percent, Over 9999 shots remaining")
+        assertDescription("minutes", "Battery 72 percent, 45 minutes remaining")
+        assertDescription("minutes-saturated", "Battery 72 percent, Over 45 minutes remaining")
+        assertDescription("duration", "Battery 72 percent, 9 hours 30 minutes remaining")
+        assertDescription("hours-saturated", "Battery 72 percent, Over 9 hours remaining")
+        assertDescription("duration-saturated", "Battery 72 percent, Over 9 hours 30 minutes remaining")
+        assertDescription("media-only", "42 shots remaining")
+        assertDescription("malformed", "Battery 42 percent")
+        assertDescription("battery-only", "Battery 42 percent")
+    }
+
+    @Test
+    fun `Korean production status formatter owns natural saturation and countdown semantics`() {
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides localizedContext("ko")) {
+                Column {
+                    val countdown = localizedTimerCountdownDescription(1)
+                    Box(
+                        Modifier.testTag("countdown-ko").clearAndSetSemantics {
+                            contentDescription = "셀프타이머"
+                            stateDescription = countdown
+                        },
+                    )
+                    listOf(
+                        "shots-ko" to localizedStatusInfoDescription(72, "1234", video = false),
+                        "shots-saturated-ko" to localizedStatusInfoDescription(5, "9999+", video = false),
+                        "minutes-ko" to localizedStatusInfoDescription(72, "45m", video = true),
+                        "minutes-saturated-ko" to localizedStatusInfoDescription(72, "45m+", video = true),
+                        "duration-ko" to localizedStatusInfoDescription(72, "9h30m", video = true),
+                        "hours-saturated-ko" to localizedStatusInfoDescription(72, "9h+", video = true),
+                        "duration-saturated-ko" to localizedStatusInfoDescription(72, "9h30m+", video = true),
+                        "media-only-ko" to localizedStatusInfoDescription(-1, "42", video = false),
+                        "malformed-ko" to localizedStatusInfoDescription(42, "??", video = true),
+                        "battery-only-ko" to localizedStatusInfoDescription(42, null, video = false),
+                    ).forEach { (tag, description) ->
+                        Box(Modifier.testTag(tag).clearAndSetSemantics { contentDescription = description })
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("countdown-ko").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "1초 남음"),
+        )
+        assertDescription("shots-ko", "배터리 72퍼센트, 1234장 촬영 가능")
+        assertDescription("shots-saturated-ko", "배터리 5퍼센트, 9999장 이상 촬영 가능")
+        assertDescription("minutes-ko", "배터리 72퍼센트, 45분 남음")
+        assertDescription("minutes-saturated-ko", "배터리 72퍼센트, 45분 이상 남음")
+        assertDescription("duration-ko", "배터리 72퍼센트, 9시간 30분 남음")
+        assertDescription("hours-saturated-ko", "배터리 72퍼센트, 9시간 이상 남음")
+        assertDescription("duration-saturated-ko", "배터리 72퍼센트, 9시간 30분 이상 남음")
+        assertDescription("media-only-ko", "42장 촬영 가능")
+        assertDescription("malformed-ko", "배터리 42퍼센트")
+        assertDescription("battery-only-ko", "배터리 42퍼센트")
     }
 }
