@@ -284,6 +284,36 @@ internal fun localizedStatusInfoDescription(batteryPct: Int, remaining: String?,
     }
 }
 
+/** Full-screen touch cancellation with semantics bounded to the visible centered countdown text. */
+@Composable
+internal fun SelfTimerCountdownOverlay(
+    seconds: Int,
+    accessibilityLabel: String,
+    accessibilityStateDescription: String,
+    rotationDegrees: Float,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val currentOnCancel by rememberUpdatedState(onCancel)
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            // Touch-anywhere cancellation remains, but this full-screen surface is deliberately
+            // absent from the accessibility action tree. The shutter is the one semantic command.
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { currentOnCancel() })
+            },
+    ) {
+        TimerCountdown(
+            seconds = seconds,
+            accessibilityLabel = accessibilityLabel,
+            accessibilityStateDescription = accessibilityStateDescription,
+            modifier = Modifier.fillMaxSize(),
+            rotationDegrees = rotationDegrees,
+        )
+    }
+}
+
 /**
  * Root camera UI, styled after Sony Alpha / Xperia Pro operation: a clear viewfinder at rest, compact
  * status readouts, and a bottom cluster of manual "Fn" dials + mode switch + shutter. Everything else
@@ -303,7 +333,6 @@ fun CameraScreen(
     val a11ySelfTimer = stringResource(R.string.a11y_self_timer)
     val a11yFocusAtCenter = stringResource(R.string.a11y_focus_at_center)
     val a11yResetFocusPoint = stringResource(R.string.a11y_reset_focus_point)
-    val a11yCancelSelfTimer = stringResource(R.string.a11y_cancel_self_timer)
     var sheetVisible by remember { mutableStateOf(false) }
     // Start preview-first. DISP adds the detailed OSD and inline dials for deliberate setup; compact
     // mode still preserves active/critical state and opens one requested ruler at a time.
@@ -1054,37 +1083,14 @@ fun CameraScreen(
             val countdownDescription = localizedTimerCountdownDescription(state.timerCountdownSec)
             // The 120 sp digit is the largest orientation-sensitive glyph on screen — a sideways
             // "6" reads ambiguously in a landscape self-timer, so it counter-rotates too.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .focusable()
-                    .clearAndSetSemantics {
-                        // "Self-timer": one feature, one spelling across every spoken string.
-                        contentDescription = a11ySelfTimer
-                        stateDescription = countdownDescription
-                        // POLITE, not Assertive: the stateDescription changes at 1 Hz, so Assertive
-                        // made a 10 s timer interrupt TalkBack ten times. The sibling ticking readout
-                        // already takes the opposite line for the same reason (RecordingIndicator:
-                        // "elapsed telemetry must not be re-announced every second").
-                        liveRegion = LiveRegionMode.Polite
-                        role = Role.Button
-                        onClick {
-                            currentActions.value.onCapturePhoto()
-                            true
-                        }
-                    }
-                    .clickable(
-                        onClickLabel = a11yCancelSelfTimer,
-                        role = Role.Button,
-                        onClick = { currentActions.value.onCapturePhoto() },
-                    ),
-            ) {
-                TimerCountdown(
-                    seconds = state.timerCountdownSec,
-                    modifier = Modifier.fillMaxSize(),
-                    rotationDegrees = overlayRotation,
-                )
-            }
+            SelfTimerCountdownOverlay(
+                seconds = state.timerCountdownSec,
+                // "Self-timer": one feature, one spelling across every spoken string.
+                accessibilityLabel = a11ySelfTimer,
+                accessibilityStateDescription = countdownDescription,
+                rotationDegrees = overlayRotation,
+                onCancel = { currentActions.value.onCapturePhoto() },
+            )
         }
 
         state.status?.let { status ->
@@ -2896,7 +2902,7 @@ private const val SNAPSHOT_IDEAL_OFFSET_DP = 76f
 
 /** Large circular shutter: white ring; PHOTO = solid white; VIDEO idle = red dot; recording = red square. */
 @Composable
-private fun ShutterButton(
+internal fun ShutterButton(
     mode: CaptureMode,
     isRecording: Boolean,
     timerCountdownSec: Int,

@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -911,10 +912,18 @@ internal fun waveformAlphaBucket(value: Int, maxVal: Int, alphaBuckets: Int): In
 /**
  * Big centered self-timer countdown number, shown while a shutter delay is counting down.
  * [rotationDegrees] counter-rotates the digit so it stays upright in a landscape hold (wired by the
- * sole call site from the device orientation); the 0f default is the screen-fixed identity.
+ * sole call site from the device orientation); the 0f default is the screen-fixed identity. The
+ * centered text owns the polite countdown semantics so accessibility bounds follow the visible
+ * readout instead of covering the whole touch-to-cancel surface around it.
  */
 @Composable
-fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees: Float = 0f) {
+fun TimerCountdown(
+    seconds: Int,
+    accessibilityLabel: String,
+    accessibilityStateDescription: String,
+    modifier: Modifier = Modifier,
+    rotationDegrees: Float = 0f,
+) {
     if (seconds <= 0) return
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
@@ -930,7 +939,13 @@ fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees:
                 lineHeight = 126.sp,
                 letterSpacing = (-2.7).sp,
             ),
-            modifier = Modifier.rotate(rotationDegrees),
+            modifier = Modifier
+                .rotate(rotationDegrees)
+                .clearAndSetSemantics {
+                    contentDescription = accessibilityLabel
+                    stateDescription = accessibilityStateDescription
+                    liveRegion = LiveRegionMode.Polite
+                },
         )
     }
 }
