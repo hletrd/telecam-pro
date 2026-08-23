@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.ui.review
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.compose.foundation.Image
@@ -25,12 +26,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class MediaReviewOwnershipTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun `process review context canonicalizes an activity to its application owner`() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        try {
+            val activity = controller.get()
+
+            assertSame(activity.applicationContext, processReviewContext(activity))
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
 
     @Test
     fun `permanently blocked video provider leaves a worker for replacement publication`() {
@@ -83,8 +97,8 @@ class MediaReviewOwnershipTest {
 
                 // B must finish while the retired A call is still permanently blocked. Releasing A
                 // first would only prove serialization, the exact head-of-line bug this lane fixes.
-                assertTrue(replacement.await())
-                assertFalse(old.await())
+                assertSame(LatestReviewSetupLane.Outcome.PUBLISHED, replacement.await())
+                assertSame(LatestReviewSetupLane.Outcome.RETIRED, old.await())
                 assertTrue(published == listOf("player-video-B"))
 
                 releaseSetup.countDown()

@@ -25,7 +25,8 @@ class LatestHeavyWorkLaneTest {
             dispose = {},
         )
 
-        val completion = checkNotNull(lane.submit(Any(), "default"))
+        val completion = (lane.submit(Any(), "default") as
+            ProgressiveLatestWorkLane.Submission.Completed).completion
         var published: String? = null
         assertTrue(lane.claim(completion) { published = it })
         assertEquals("result-default", published)
@@ -91,8 +92,14 @@ class LatestHeavyWorkLaneTest {
             )
 
             runBlocking {
-                assertNull(lane.submit(Any(), "null"))
-                assertNull(lane.submit(Any(), "throw"))
+                assertEquals(
+                    ProgressiveLatestWorkLane.Submission.Retired,
+                    lane.submit(Any(), "null"),
+                )
+                assertEquals(
+                    ProgressiveLatestWorkLane.Submission.Retired,
+                    lane.submit(Any(), "throw"),
+                )
             }
         } finally {
             dispatcher.close()
@@ -150,12 +157,14 @@ class LatestHeavyWorkLaneTest {
             val owner = Any()
 
             runBlocking {
-                val old = checkNotNull(lane.submit(owner, "old"))
+                val old = (lane.submit(owner, "old") as
+                    ProgressiveLatestWorkLane.Submission.Completed).completion
                 lane.invalidate(Any())
                 val newestDeferred = async(start = CoroutineStart.UNDISPATCHED) {
                     lane.submit(Any(), "new")
                 }
-                val newest = checkNotNull(newestDeferred.await())
+                val newest = (newestDeferred.await() as
+                    ProgressiveLatestWorkLane.Submission.Completed).completion
 
                 assertFalse(lane.claim(old) {})
                 assertTrue(lane.claim(newest) {})
@@ -214,17 +223,18 @@ class LatestHeavyWorkLaneTest {
                 val d = async(start = CoroutineStart.UNDISPATCHED) { lane.submit(Any(), "D") }
 
                 // C occupied the one conflated pending slot and was retired by D without running.
-                assertNull(c.await())
+                assertEquals(ProgressiveLatestWorkLane.Submission.Retired, c.await())
                 assertFalse(executed.contains("C"))
 
                 // Free only B's worker. A remains permanently blocked while newest D progresses.
                 releaseB.countDown()
-                assertNull(b.await())
-                val newest = checkNotNull(d.await())
+                assertEquals(ProgressiveLatestWorkLane.Submission.Retired, b.await())
+                val newest = (d.await() as
+                    ProgressiveLatestWorkLane.Submission.Completed).completion
                 var published: String? = null
                 assertTrue(lane.claim(newest) { published = it })
                 assertEquals("result-D", published)
-                assertNull(a.await())
+                assertEquals(ProgressiveLatestWorkLane.Submission.Retired, a.await())
 
                 releaseA.countDown()
             }
@@ -235,6 +245,86 @@ class LatestHeavyWorkLaneTest {
         } finally {
             releaseA.countDown()
             releaseB.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `fully blocked progressive lane terminally reports capacity without releasing workers`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val release = CountDownLatch(1)
+        try {
+            val started = CountDownLatch(2)
+            val lane = ProgressiveLatestWorkLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                terminalTimeoutMs = 100,
+                work = {
+                    started.countDown()
+                    release.await()
+                    it
+                },
+                dispose = {},
+            )
+
+            runBlocking {
+                val a = async(start = CoroutineStart.UNDISPATCHED) { lane.submit(Any(), "A") }
+                val b = async(start = CoroutineStart.UNDISPATCHED) { lane.submit(Any(), "B") }
+                assertTrue(started.await(2, TimeUnit.SECONDS))
+                val newest = lane.submit(Any(), "C")
+
+                assertEquals(ProgressiveLatestWorkLane.Submission.CapacityExhausted, newest)
+                assertEquals(ProgressiveLatestWorkLane.Submission.Retired, a.await())
+                assertEquals(ProgressiveLatestWorkLane.Submission.Retired, b.await())
+            }
+        } finally {
+            release.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `shared four-thread pool gives a healthy lane a bounded exhaustion terminal`() {
+        val executor = Executors.newFixedThreadPool(4)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val release = CountDownLatch(1)
+        try {
+            val started = CountDownLatch(4)
+            fun lane() = ProgressiveLatestWorkLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                terminalTimeoutMs = 100,
+                work = {
+                    started.countDown()
+                    release.await()
+                    it
+                },
+                dispose = {},
+            )
+            val first = lane()
+            val second = lane()
+            val healthy = lane()
+
+            runBlocking {
+                val blocked = listOf(
+                    async(start = CoroutineStart.UNDISPATCHED) { first.submit(Any(), "A") },
+                    async(start = CoroutineStart.UNDISPATCHED) { first.submit(Any(), "B") },
+                    async(start = CoroutineStart.UNDISPATCHED) { second.submit(Any(), "C") },
+                    async(start = CoroutineStart.UNDISPATCHED) { second.submit(Any(), "D") },
+                )
+                assertTrue(started.await(2, TimeUnit.SECONDS))
+
+                assertEquals(
+                    ProgressiveLatestWorkLane.Submission.CapacityExhausted,
+                    healthy.submit(Any(), "healthy"),
+                )
+                blocked.forEach { it.cancel() }
+            }
+        } finally {
+            release.countDown()
             dispatcher.close()
             executor.shutdownNow()
         }

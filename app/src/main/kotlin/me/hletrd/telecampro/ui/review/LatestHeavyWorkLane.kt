@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
@@ -117,9 +118,16 @@ internal class LatestHeavyWorkLane<I, R : Any>(
 internal class ProgressiveLatestWorkLane<I, R : Any>(
     dispatcher: CoroutineDispatcher = processReviewDispatcher,
     workerCount: Int = REVIEW_LANE_WORKER_COUNT,
+    private val terminalTimeoutMs: Long = REVIEW_WORK_TERMINAL_TIMEOUT_MS,
     private val work: (I) -> R?,
     private val dispose: (R) -> Unit,
 ) {
+    internal sealed interface Submission<out C> {
+        data class Completed<C>(val completion: C) : Submission<C>
+        data object Retired : Submission<Nothing>
+        data object CapacityExhausted : Submission<Nothing>
+    }
+
     internal inner class Request internal constructor(
         val owner: Any,
         private val input: I,
@@ -128,11 +136,12 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
         val retired = AtomicBoolean(false)
         private val produced = AtomicReference<Completion?>(null)
 
-        fun retire() {
-            if (!retired.compareAndSet(false, true)) return
+        fun retire(): Boolean {
+            if (!retired.compareAndSet(false, true)) return false
             latest.compareAndSet(this, null)
             produced.get()?.discard()
             result.complete(null)
+            return true
         }
 
         fun execute() {
@@ -181,6 +190,7 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
 
     init {
         require(workerCount >= 2) { "blocking latest-work lanes require at least two workers" }
+        require(terminalTimeoutMs > 0L) { "blocking latest-work timeout must be positive" }
         repeat(workerCount) {
             scope.launch {
                 while (true) requests.receive().execute()
@@ -188,12 +198,23 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
         }
     }
 
-    suspend fun submit(owner: Any, input: I): Completion? {
+    suspend fun submit(owner: Any, input: I): Submission<Completion> {
         val request = Request(owner, input)
         latest.getAndSet(request)?.retire()
         if (requests.trySend(request).isFailure) request.retire()
         return try {
-            request.result.await()
+            val awaited = withTimeoutOrNull(terminalTimeoutMs) {
+                request.result.await()
+            }
+            if (awaited != null) {
+                Submission.Completed(awaited)
+            } else if (request.result.isCompleted) {
+                Submission.Retired
+            } else if (request.retire()) {
+                Submission.CapacityExhausted
+            } else {
+                request.result.await()?.let { Submission.Completed(it) } ?: Submission.Retired
+            }
         } catch (cancelled: CancellationException) {
             request.retire()
             throw cancelled
@@ -226,6 +247,7 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
 
 internal const val REVIEW_PROCESS_WORKER_COUNT = 4
 internal const val REVIEW_LANE_WORKER_COUNT = 2
+internal const val REVIEW_WORK_TERMINAL_TIMEOUT_MS = 5_000L
 
 /** One daemon pool shared by every blocking review-media lane for the process lifetime. */
 private val processReviewDispatcher: CoroutineDispatcher by lazy {

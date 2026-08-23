@@ -66,4 +66,22 @@ class ReviewCriticalStatusRotationTest {
         compose.onNodeWithText("RAW").assertIsDisplayed()
         compose.onNodeWithText("DNG").assertIsDisplayed()
     }
+
+    @Test
+    @Config(qualifiers = "ko-rKR-w320dp-h340dp-xxhdpi")
+    fun `capacity exhaustion renders assertive Korean restart guidance`() {
+        compose.setContent {
+            TeleCamProTheme {
+                ReviewCriticalStatus(
+                    state = ReviewCriticalUiState.RestartRequired,
+                    overlayRotation = 90f,
+                    onRetry = {},
+                    modifier = Modifier.size(320.dp, 340.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithText("미디어를 확인할 수 없습니다. 앱을 다시 열어 주세요.")
+            .assertIsDisplayed()
+    }
 }

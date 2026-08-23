@@ -180,35 +180,52 @@ private class VideoPlaybackHandle(
  * Latest-wins setup boundary for provider/native work that cannot observe coroutine cancellation.
  *
  * A caller can invalidate its owner synchronously from Back/disposal while [work] is blocked. The
- * worker may return later, but [LatestHeavyWorkLane] then releases its unpublished result instead of
+ * worker may return later, but [ProgressiveLatestWorkLane] then releases its unpublished result instead of
  * letting a retired TextureView generation reach Compose. A replacement owner's request remains
  * untouched by invalidating the old owner.
  */
 internal class LatestReviewSetupLane<I, R : Any>(
     dispatcher: CoroutineDispatcher? = null,
     workerCount: Int = REVIEW_LANE_WORKER_COUNT,
+    terminalTimeoutMs: Long = REVIEW_WORK_TERMINAL_TIMEOUT_MS,
     work: (I) -> R?,
     release: (R) -> Unit,
 ) {
+    internal enum class Outcome { PUBLISHED, RETIRED, CAPACITY_EXHAUSTED }
+
     private val lane = if (dispatcher == null) {
-        ProgressiveLatestWorkLane(workerCount = workerCount, work = work, dispose = release)
+        ProgressiveLatestWorkLane(
+            workerCount = workerCount,
+            terminalTimeoutMs = terminalTimeoutMs,
+            work = work,
+            dispose = release,
+        )
     } else {
-        ProgressiveLatestWorkLane(dispatcher, workerCount, work, release)
+        ProgressiveLatestWorkLane(dispatcher, workerCount, terminalTimeoutMs, work, release)
     }
 
-    suspend fun run(owner: Any, input: I, publish: (R) -> Unit): Boolean {
-        val completion = lane.submit(owner, input) ?: return false
-        return lane.claim(completion, publish)
-    }
+    suspend fun run(owner: Any, input: I, publish: (R) -> Unit): Outcome =
+        when (val submission = lane.submit(owner, input)) {
+            is ProgressiveLatestWorkLane.Submission.Completed -> {
+                if (lane.claim(submission.completion, publish)) Outcome.PUBLISHED else Outcome.RETIRED
+            }
+            ProgressiveLatestWorkLane.Submission.Retired -> Outcome.RETIRED
+            ProgressiveLatestWorkLane.Submission.CapacityExhausted -> Outcome.CAPACITY_EXHAUSTED
+        }
 
     fun invalidate(owner: Any) = lane.invalidate(owner)
 }
 
+/** Process-owned requests must never retain an Activity/window graph on a blocked worker. */
+internal fun processReviewContext(context: Context): Context = context.applicationContext
+
 private class VideoPlaybackSetupRequest(
-    val context: Context,
+    context: Context,
     val uri: Uri,
     surface: Surface,
 ) {
+    val context: Context = processReviewContext(context)
+
     private val surfaceOwner = AtomicReference(surface)
 
     /** Transfers the exact Surface to a successfully configured playback handle. */
@@ -257,6 +274,7 @@ private val videoPlaybackSetupLane =
 
 private sealed interface ReviewMediaState {
     data object Loading : ReviewMediaState
+    data object RestartRequired : ReviewMediaState
     sealed interface Ready : ReviewMediaState {
         data class Still(val bitmap: ReviewBitmap) : Ready
         data class Video(val info: VideoInfo) : Ready
@@ -287,25 +305,27 @@ internal class ReviewBitmap(private val source: Bitmap) {
     }
 }
 
-private data class ReviewBitmapRequest(
-    val context: Context,
+private class ReviewBitmapRequest(
+    context: Context,
     val uri: Uri,
     val maxDim: Int,
-)
+) {
+    val context: Context = processReviewContext(context)
+}
 
 private sealed interface ReviewBitmapLoad {
     data class Ready(val bitmap: ReviewBitmap) : ReviewBitmapLoad
     data object Failed : ReviewBitmapLoad
 }
 
-/** One process-wide heavy decode; canceled/replaced overlays cannot multiply ARGB allocations. */
-private val reviewBitmapDecodeLane = LatestHeavyWorkLane<ReviewBitmapRequest, ReviewBitmapLoad>(
+/** Two finite workers bound unpublished 3000px ARGB results while one poisoned decoder is retired. */
+private val reviewBitmapDecodeLane = LatestReviewSetupLane<ReviewBitmapRequest, ReviewBitmapLoad>(
     work = { request ->
         decodeReviewBitmap(request.context, request.uri, request.maxDim)
             ?.let { ReviewBitmapLoad.Ready(ReviewBitmap(it)) }
             ?: ReviewBitmapLoad.Failed
     },
-    dispose = { result -> if (result is ReviewBitmapLoad.Ready) result.bitmap.dispose() },
+    release = { result -> if (result is ReviewBitmapLoad.Ready) result.bitmap.dispose() },
 )
 
 private fun ReviewMediaState.dispose() {
@@ -318,6 +338,7 @@ private fun ReviewMediaState.transferToComposition(): ReviewMediaState = also {
 
 internal sealed interface ReviewCriticalUiState {
     data object Loading : ReviewCriticalUiState
+    data object RestartRequired : ReviewCriticalUiState
     data object Raw : ReviewCriticalUiState
     data class Error(@StringRes val messageRes: Int) : ReviewCriticalUiState
 }
@@ -440,7 +461,9 @@ private data class ReviewMetadata(
     val exifLine: String?,
 )
 
-private data class ReviewDescriptorRequest(val context: Context, val uri: Uri)
+private class ReviewDescriptorRequest(context: Context, val uri: Uri) {
+    val context: Context = processReviewContext(context)
+}
 
 private data class ReviewDescriptor(
     val kind: ReviewMediaKind,
@@ -518,11 +541,17 @@ private suspend fun loadReviewMedia(
     decodeOwner: Any,
 ): LoadedReview? {
     var descriptor: ReviewDescriptor? = null
-    val descriptorLoaded = reviewDescriptorLane.run(
+    val descriptorOutcome = reviewDescriptorLane.run(
         descriptorOwner,
         ReviewDescriptorRequest(context, uri),
     ) { descriptor = it }
-    if (!descriptorLoaded) return null
+    when (descriptorOutcome) {
+        LatestReviewSetupLane.Outcome.RETIRED -> return null
+        LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED -> {
+            return LoadedReview(ReviewMediaState.RestartRequired, null)
+        }
+        LatestReviewSetupLane.Outcome.PUBLISHED -> Unit
+    }
     val loaded = checkNotNull(descriptor)
     val state = when (loaded.kind) {
         ReviewMediaKind.RAW -> ReviewMediaState.Ready.Raw
@@ -531,18 +560,23 @@ private suspend fun loadReviewMedia(
             ?: ReviewMediaState.Error(R.string.review_error_open_video)
         ReviewMediaKind.STILL -> {
             // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
-            val completion = reviewBitmapDecodeLane.submit(
+            var decoded: ReviewMediaState? = null
+            val bitmapOutcome = reviewBitmapDecodeLane.run(
                 decodeOwner,
                 ReviewBitmapRequest(context, uri, REVIEW_PREVIEW_MAX_DIM),
-            ) ?: return null
-            var decoded: ReviewMediaState? = null
-            reviewBitmapDecodeLane.claim(completion) { result ->
+            ) { result ->
                 decoded = when (result) {
                     is ReviewBitmapLoad.Ready -> ReviewMediaState.Ready.Still(result.bitmap)
                     ReviewBitmapLoad.Failed -> ReviewMediaState.Error(R.string.review_error_open_image)
                 }
             }
-            decoded ?: return null
+            when (bitmapOutcome) {
+                LatestReviewSetupLane.Outcome.RETIRED -> return null
+                LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED -> {
+                    ReviewMediaState.RestartRequired
+                }
+                LatestReviewSetupLane.Outcome.PUBLISHED -> decoded ?: return null
+            }
         }
     }
     return LoadedReview(state, loaded.metadata)
@@ -984,7 +1018,7 @@ fun MediaReviewOverlay(
                                     // main; Back/disposal invalidates immediately and a late result
                                     // releases its player + Surface without publishing.
                                     setupJob.value = playbackSetupScope.launch {
-                                        videoPlaybackSetupLane.run(
+                                        val outcome = videoPlaybackSetupLane.run(
                                             owner = setupOwner,
                                             input = request,
                                         ) { result ->
@@ -1038,6 +1072,13 @@ fun MediaReviewOverlay(
                                                     }.onFailure { failPlayback() }
                                                 }
                                             }
+                                        }
+                                        if (outcome == LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED) {
+                                            setupJob.value = null
+                                            setupRequest.compareAndSet(request, null)
+                                            request.releaseSurface()
+                                            playing = false
+                                            replaceMediaState(ReviewMediaState.RestartRequired)
                                         }
                                     }
                                 }
@@ -1118,6 +1159,7 @@ fun MediaReviewOverlay(
         } else {
             val criticalState = when (val current = mediaState) {
                 ReviewMediaState.Loading -> ReviewCriticalUiState.Loading
+                ReviewMediaState.RestartRequired -> ReviewCriticalUiState.RestartRequired
                 is ReviewMediaState.Error -> ReviewCriticalUiState.Error(current.messageRes)
                 ReviewMediaState.Ready.Raw -> ReviewCriticalUiState.Raw
                 is ReviewMediaState.Ready -> null
@@ -1414,6 +1456,15 @@ internal fun ReviewCriticalStatus(
                 modifier = Modifier
                     .rotateLayout(overlayRotation)
                     .semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            ReviewCriticalUiState.RestartRequired -> Text(
+                stringResource(R.string.review_error_restart_required),
+                color = CameraColors.TextPrimary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .padding(horizontal = 32.dp)
+                    .rotateLayout(overlayRotation)
+                    .semantics { liveRegion = LiveRegionMode.Assertive },
             )
             is ReviewCriticalUiState.Error -> Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
