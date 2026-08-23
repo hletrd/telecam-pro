@@ -178,6 +178,23 @@ tasks.withType<Test>().configureEach {
     }
 }
 
+// The ordinary Android test/lint tasks can stay green while the repository's explicit
+// host-executable coverage partition falls below its 99.5% contract. Keep the threshold as a named
+// Gradle quality gate and attach it to `check`, so CI and release workflows cannot accidentally run
+// only the raw JaCoCo task and omit the partition semantics.
+val verifyPartitionACoverage = tasks.register<Exec>("verifyPartitionACoverage") {
+    dependsOn("createDebugUnitTestCoverageReport")
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "python3",
+        "tools/coverage/partition_report.py",
+        "app/build/reports/coverage/test/debug/report.xml",
+        "--fail-under-a",
+        "99.5",
+    )
+}
+tasks.named("check").configure { dependsOn(verifyPartitionACoverage) }
+
 // --- Robolectric android-all under dependency verification -------------------------------------
 // At first test run Robolectric's own MavenArtifactFetcher (NOT Gradle: it ignores Gradle repos,
 // caches, and verification-metadata.xml) downloads the ~40 MB pre-instrumented framework jar for

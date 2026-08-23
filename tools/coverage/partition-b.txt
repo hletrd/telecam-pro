@@ -108,6 +108,10 @@ me/hletrd/telecampro/storage/SettingsStore#<init>#Landroid/content/Context;
 !me/hletrd/telecampro/video/VideoRecorder$StopResult
 me/hletrd/telecampro/video/VideoRecorder
 me/hletrd/telecampro/video/VideoRecorder$*
+# Top-level setup owner directly retains framework MediaCodec + Surface instances. Neither type can
+# be constructed or driven against android.jar's throwing host stubs; its generic attempt-order
+# state machine remains separately host-tested in VideoRecorderKt.
+me/hletrd/telecampro/video/MediaCodecAttemptOwner
 me/hletrd/telecampro/video/UnsafeRecorderQuarantine#retain
 me/hletrd/telecampro/video/ColorProfiles
 me/hletrd/telecampro/video/EncoderCaps
