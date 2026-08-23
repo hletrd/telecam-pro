@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.camera
 
 import java.util.IdentityHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.Executors
 import me.hletrd.telecampro.storage.OrphanRecoveryBatch
 import me.hletrd.telecampro.storage.OrphanRecoveryCursor
@@ -22,8 +24,24 @@ internal fun interface LaunchMediaRecoverySubscription {
 internal class LaunchMediaRecoveryCoordinator<T : Any>(
     private val dispatch: (Runnable) -> Boolean,
 ) {
+    private class Subscriber<T : Any>(
+        val order: Long,
+        val onComplete: (Result<T>) -> Unit,
+    ) {
+        private val live = AtomicBoolean(true)
+
+        fun cancel() {
+            live.set(false)
+        }
+
+        fun deliver(result: Result<T>) {
+            if (live.compareAndSet(true, false)) runCatching { onComplete(result) }
+        }
+    }
+
     private val lock = Any()
-    private val subscribers = IdentityHashMap<Any, (Result<T>) -> Unit>()
+    private val subscribers = IdentityHashMap<Any, Subscriber<T>>()
+    private val subscriberSequence = AtomicLong()
     private var running = false
 
     fun request(
@@ -31,8 +49,9 @@ internal class LaunchMediaRecoveryCoordinator<T : Any>(
         recover: () -> T,
         onComplete: (Result<T>) -> Unit,
     ): LaunchMediaRecoverySubscription {
+        val subscriber = Subscriber(subscriberSequence.incrementAndGet(), onComplete)
         val start = synchronized(lock) {
-            subscribers[owner] = onComplete
+            subscribers.put(owner, subscriber)?.cancel()
             if (running) false else {
                 running = true
                 true
@@ -44,9 +63,9 @@ internal class LaunchMediaRecoveryCoordinator<T : Any>(
                     val result = runCatching(recover)
                     val completions = synchronized(lock) {
                         running = false
-                        subscribers.values.toList().also { subscribers.clear() }
+                        subscribers.values.sortedBy { it.order }.also { subscribers.clear() }
                     }
-                    completions.forEach { completion -> runCatching { completion(result) } }
+                    completions.forEach { it.deliver(result) }
                 })
             }.fold(
                 onSuccess = { accepted ->
@@ -58,14 +77,17 @@ internal class LaunchMediaRecoveryCoordinator<T : Any>(
             if (dispatchFailure != null) {
                 val completions = synchronized(lock) {
                     running = false
-                    subscribers.values.toList().also { subscribers.clear() }
+                    subscribers.values.sortedBy { it.order }.also { subscribers.clear() }
                 }
                 val result = Result.failure<T>(dispatchFailure)
-                completions.forEach { completion -> runCatching { completion(result) } }
+                completions.forEach { it.deliver(result) }
             }
         }
         return LaunchMediaRecoverySubscription {
-            synchronized(lock) { subscribers.remove(owner) }
+            subscriber.cancel()
+            synchronized(lock) {
+                if (subscribers[owner] === subscriber) subscribers.remove(owner)
+            }
         }
     }
 

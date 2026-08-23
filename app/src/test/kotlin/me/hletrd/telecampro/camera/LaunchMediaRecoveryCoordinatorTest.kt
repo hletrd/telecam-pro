@@ -119,6 +119,48 @@ class LaunchMediaRecoveryCoordinatorTest {
     }
 
     @Test
+    fun `cancellation remains authoritative after terminal callbacks are snapshotted`() {
+        val tasks = ArrayDeque<Runnable>()
+        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val delivered = mutableListOf<String>()
+        lateinit var laterSubscription: LaunchMediaRecoverySubscription
+
+        coordinator.request(Any(), recover = { 37 }) { result ->
+            delivered += "first:${result.getOrThrow()}"
+            // Terminal delivery already copied and cleared the subscriber set before invoking this
+            // callback. Cancellation must still retire the later copied subscription token.
+            laterSubscription.cancel()
+        }
+        laterSubscription = coordinator.request(
+            owner = Any(),
+            recover = { error("single flight must use the first recovery") },
+        ) { result -> delivered += "later:${result.getOrThrow()}" }
+
+        tasks.removeFirst().run()
+
+        assertEquals(listOf("first:37"), delivered)
+        assertFalse(coordinator.isRunning())
+        assertEquals(0, coordinator.subscriberCount())
+    }
+
+    @Test
+    fun `replacing one owner cancels its earlier subscription identity`() {
+        val tasks = ArrayDeque<Runnable>()
+        val coordinator = LaunchMediaRecoveryCoordinator<Int> { task -> tasks.addLast(task); true }
+        val owner = Any()
+        val delivered = mutableListOf<String>()
+
+        coordinator.request(owner, recover = { 41 }) { delivered += "old:${it.getOrThrow()}" }
+        coordinator.request(owner, recover = { error("single flight must use the first recovery") }) {
+            delivered += "new:${it.getOrThrow()}"
+        }
+
+        tasks.removeFirst().run()
+
+        assertEquals(listOf("new:41"), delivered)
+    }
+
+    @Test
     fun `large pending set advances through bounded pages without failure budget`() {
         val pageSize = 64
         val totalRows = 10_000
