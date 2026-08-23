@@ -11,11 +11,13 @@
 4. [Threading Model](#threading-model)
 5. [180° Flip + Rotation Pipeline](#180-flip--rotation-pipeline)
 6. [Camera Selection & HAL Workarounds](#camera-selection--hal-workarounds)
-7. [Stabilization and Orientation](#stabilization-and-orientation)
-8. [Color & Video Pipeline](#color--video-pipeline)
-9. [Capture & Storage](#capture--storage)
-10. [Pro Controls Surface](#pro-controls-surface)
-11. [Build & Toolchain](#build--toolchain)
+7. [Zoom & the Hybrid Camera Routes (2026-07-14)](#zoom--the-hybrid-camera-routes-2026-07-14)
+8. [Stabilization and Orientation](#stabilization-and-orientation)
+9. [Color & Video Pipeline](#color--video-pipeline)
+10. [Capture & Storage](#capture--storage)
+11. [Pro Controls Surface](#pro-controls-surface)
+12. [Build & Toolchain](#build--toolchain)
+13. [See Also](#see-also)
 
 ---
 
@@ -1016,8 +1018,9 @@ data class AspectRatio(val w: Int, val h: Int) {
     W4_3(4, 3),      // Full sensor (no crop, default, the no-crop sentinel)
     W16_9(16, 9)     // Center crop of 4:3 to 16:9 landscape
 }
-// CameraEngine.centerCrop(bitmap, w, h)
-// Computes largest w:h rect centered in the bitmap, crops it out.
+// centerCropBox(srcW, srcH, w, h)
+// Computes the largest centered w:h source rectangle. StillCapturePipeline applies that rectangle
+// and capture rotation together in one Bitmap.createBitmap call, avoiding a second full-size bitmap.
 ```
 
 The sensor is 4:3-native; `W4_3` is full readout, and `W16_9` is its center crop. 
@@ -1164,6 +1167,7 @@ See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup
 **Build:**
 ```bash
 python3 tools/verify_host.py
+python3 tools/build_immutable_debug.py
 python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 ```
 
@@ -1171,6 +1175,13 @@ python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :
 JVM/Robolectric/Compose tests, lint, exact coverage contract, release/tool tests, coverage-tool
 tests, device-harness self-tests, documentation contracts, Python compilation, and diff checks.
 Individual Gradle tasks are focused developer subsets, not a repository-wide green result.
+
+Device evidence must use the APK printed by `tools/build_immutable_debug.py`. The wrapper freezes
+the current clean or dirty debug APK inputs into one private worktree, then both compilation and the
+embedded `telecam-debug-provenance/source.manifest` consume that owner. Its manifest carries
+`source_owner=immutable-debug-worktree-v1`. Ordinary `assembleDebug` remains the fast developer
+build and carries `source_owner=mutable-development-worktree`; the device harness rejects that
+marker as non-evidence-grade instead of trying to prove a post-hash mutable compile.
 
 Release compilation, resources, shrinking, and packaging run inside a private checkout of the exact
 clean HEAD recorded in `telecam-release-provenance/source.properties`. The generated asset namespace

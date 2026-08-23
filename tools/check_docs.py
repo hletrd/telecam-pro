@@ -388,6 +388,38 @@ for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
 
 # ---- current camera/architecture ownership must not revive retired seams ------------------------
 architecture = read("docs/ARCHITECTURE.md")
+
+
+def markdown_heading_anchor(heading: str) -> str:
+    """Match the repository's GitHub-style anchors for its current ASCII-heavy H2 headings."""
+    without_markup = re.sub(r"[^\w\s-]", "", heading.casefold())
+    return "#" + re.sub(r"\s", "-", without_markup)
+
+
+toc_match = re.search(r"\*\*Table of Contents\*\*\n(.*?)\n---", architecture, re.S)
+toc_anchors = re.findall(r"\]\((#[^)]+)\)", toc_match.group(1) if toc_match else "")
+h2_headings = re.findall(r"^## (.+)$", architecture, re.MULTILINE)
+expected_h2_anchors = [markdown_heading_anchor(heading) for heading in h2_headings]
+check(
+    bool(toc_match)
+    and toc_anchors == expected_h2_anchors
+    and len(toc_anchors) == len(set(toc_anchors)),
+    "architecture TOC covers every H2 exactly and in order",
+    f"toc={toc_anchors} h2={expected_h2_anchors}",
+)
+still_pipeline = read(
+    "app/src/main/kotlin/me/hletrd/telecampro/capture/StillCapturePipeline.kt",
+)
+crop_geometry = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
+check(
+    "CameraEngine.centerCrop" not in architecture
+    and "centerCropBox(srcW, srcH, w, h)" in architecture
+    and "StillCapturePipeline applies that rectangle" in architecture
+    and "internal fun centerCropBox(" in crop_geometry
+    and "centerCropBox(d.width, d.height, ar.w, ar.h)" in still_pipeline
+    and "Bitmap.createBitmap(d, x, y, cropW, cropH, m, true)" in still_pipeline,
+    "architecture names the current crop geometry and one-pass pipeline owners",
+)
 required_owners = (
     "CameraStatus.kt", "DeviceProfile.kt", "FrontMirrorConvention.kt", "MotionInversion.kt",
     "EncoderSizeLadder.kt", "CameraScreenPolicy.kt", "LocalizedStatus.kt",
@@ -461,6 +493,16 @@ check(
     and "device-harness self-tests" in architecture
     and "device-tests/tests" in read("docs/TESTING.md"),
     "all host-gate authorities document the consolidated non-device suite",
+)
+check(
+    "python3 tools/build_immutable_debug.py" in architecture
+    and "source_owner=immutable-debug-worktree-v1" in architecture
+    and "source_owner=mutable-development-worktree" in architecture
+    and "IMMUTABLE_DEBUG_SOURCE_OWNER = \"immutable-debug-worktree-v1\"" in read(
+        "tools/build_immutable_debug.py"
+    )
+    and 'orElse("mutable-development-worktree")' in build_script,
+    "device-evidence debug authority distinguishes immutable and developer source owners",
 )
 view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
 camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
