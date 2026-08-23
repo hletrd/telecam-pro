@@ -12,6 +12,11 @@ import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 import me.hletrd.telecampro.camera.executeLaunchMediaRecovery
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -187,6 +192,133 @@ class PendingDiscardJournalTest {
     }
 
     @Test
+    fun `publication that owns an exact uri completes before a waiting discard mark`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-publish-first-$suffix"
+        val provider = BlockingUpdateProvider()
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val uri = Uri.parse("content://$authority/rows/1")
+        val journal = newJournal()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val published = executor.submit<Boolean> {
+                MediaStoreWriter.publish(context, uri, journal)
+            }
+            assertTrue(provider.updateEntered.await(2, TimeUnit.SECONDS))
+            val markStarted = CountDownLatch(1)
+            val marked = executor.submit<Boolean> {
+                markStarted.countDown()
+                journal.mark(uri.toString())
+            }
+            assertTrue(markStarted.await(2, TimeUnit.SECONDS))
+            assertThrows(TimeoutException::class.java) {
+                marked.get(100, TimeUnit.MILLISECONDS)
+            }
+
+            provider.allowUpdate.countDown()
+
+            assertTrue(published.get(2, TimeUnit.SECONDS))
+            assertTrue(marked.get(2, TimeUnit.SECONDS))
+            assertEquals(DiscardJournalLookup.PRESENT, journal.lookup(uri.toString()))
+            assertEquals(1, provider.updateCalls.get())
+        } finally {
+            provider.allowUpdate.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `discard mark that owns an exact uri blocks publication before provider io`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-mark-first-$suffix"
+        val provider = BlockingUpdateProvider()
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val uri = Uri.parse("content://$authority/rows/1")
+        val markerCommitted = CountDownLatch(1)
+        val finishMarker = CountDownLatch(1)
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = "discard-$suffix.db",
+            legacyPreferences = context.getSharedPreferences(
+                "legacy-$suffix",
+                Context.MODE_PRIVATE,
+            ),
+            removeLegacyEntries = {
+                markerCommitted.countDown()
+                assertTrue(finishMarker.await(2, TimeUnit.SECONDS))
+            },
+        )
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val marked = executor.submit<Boolean> { journal.mark(uri.toString()) }
+            assertTrue(markerCommitted.await(2, TimeUnit.SECONDS))
+            val publishStarted = CountDownLatch(1)
+            val published = executor.submit<Boolean> {
+                publishStarted.countDown()
+                MediaStoreWriter.publish(context, uri, journal)
+            }
+            assertTrue(publishStarted.await(2, TimeUnit.SECONDS))
+            assertThrows(TimeoutException::class.java) {
+                published.get(100, TimeUnit.MILLISECONDS)
+            }
+            assertEquals(0, provider.updateCalls.get())
+
+            finishMarker.countDown()
+
+            assertTrue(marked.get(2, TimeUnit.SECONDS))
+            assertFalse(published.get(2, TimeUnit.SECONDS))
+            assertEquals(DiscardJournalLookup.PRESENT, journal.lookup(uri.toString()))
+            assertEquals(0, provider.updateCalls.get())
+        } finally {
+            finishMarker.countDown()
+            provider.allowUpdate.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `blocked publication for one uri does not block journal progress for another`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-two-uri-$suffix"
+        val provider = BlockingUpdateProvider()
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val blockedUri = Uri.parse("content://$authority/rows/a")
+        val independentUri = Uri.parse("content://$authority/rows/b").toString()
+        val journal = newJournal()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val blockedPublication = executor.submit<Boolean> {
+                MediaStoreWriter.publish(context, blockedUri, journal)
+            }
+            assertTrue(provider.updateEntered.await(2, TimeUnit.SECONDS))
+
+            val independentProgress = executor.submit<Boolean> {
+                if (!journal.mark(independentUri)) return@submit false
+                if (journal.lookup(independentUri) != DiscardJournalLookup.PRESENT) {
+                    return@submit false
+                }
+                if (!journal.page(afterKey = null, batchLimit = 8).keys.contains(independentUri)) {
+                    return@submit false
+                }
+                if (!journal.remove(independentUri)) return@submit false
+                journal.lookup(independentUri) == DiscardJournalLookup.ABSENT
+            }
+
+            assertTrue(independentProgress.get(2, TimeUnit.SECONDS))
+            assertFalse(blockedPublication.isDone)
+
+            provider.allowUpdate.countDown()
+            assertTrue(blockedPublication.get(2, TimeUnit.SECONDS))
+        } finally {
+            provider.allowUpdate.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `unsupported database upgrade fails closed`() {
         val suffix = UUID.randomUUID().toString()
         val databaseName = "discard-upgrade-$suffix.db"
@@ -344,6 +476,40 @@ class PendingDiscardJournalTest {
             selection: String?,
             selectionArgs: Array<out String>?,
         ): Int = 0
+    }
+
+    private class BlockingUpdateProvider : ContentProvider() {
+        val updateEntered = CountDownLatch(1)
+        val allowUpdate = CountDownLatch(1)
+        val updateCalls = AtomicInteger()
+
+        override fun onCreate(): Boolean = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): Cursor = MatrixCursor(arrayOf("_id"))
+
+        override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ): Int {
+            updateCalls.incrementAndGet()
+            updateEntered.countDown()
+            check(allowUpdate.await(2, TimeUnit.SECONDS)) { "timed out waiting to release update" }
+            return 1
+        }
     }
 
     private class PendingJpegProvider(

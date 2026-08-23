@@ -22,18 +22,20 @@ internal class PendingDiscardJournal(
     private val applicationContext = context.applicationContext
 
     /** Commits the SQLite marker before removing any older preference value for this URI. */
-    fun mark(uri: String): Boolean = synchronized(databaseLock) {
+    fun mark(uri: String): Boolean = withUriAuthority(uri) {
         runCatching {
-            withWritableDatabase { database ->
-                database.beginTransaction()
-                try {
-                    database.execSQL(
-                        "INSERT OR IGNORE INTO $DISCARD_TABLE ($URI_COLUMN) VALUES (?)",
-                        arrayOf(uri),
-                    )
-                    database.setTransactionSuccessful()
-                } finally {
-                    database.endTransaction()
+            synchronized(databaseLock) {
+                withWritableDatabase { database ->
+                    database.beginTransaction()
+                    try {
+                        database.execSQL(
+                            "INSERT OR IGNORE INTO $DISCARD_TABLE ($URI_COLUMN) VALUES (?)",
+                            arrayOf(uri),
+                        )
+                        database.setTransactionSuccessful()
+                    } finally {
+                        database.endTransaction()
+                    }
                 }
             }
             // A failed cleanup is harmless: SQLite is already the durable authority, and a later
@@ -44,16 +46,20 @@ internal class PendingDiscardJournal(
     }
 
     /** A database failure is not evidence that an exact delete owner is absent. */
-    fun lookup(uri: String): DiscardJournalLookup = synchronized(databaseLock) {
-        lookupLocked(uri)
+    fun lookup(uri: String): DiscardJournalLookup = withUriAuthority(uri) {
+        synchronized(databaseLock) { lookupLocked(uri) }
     }
 
     /**
-     * Serializes a decision with [mark] so a caller can perform its terminal provider transition
-     * only while exact SQLite DISCARD authority is authoritatively absent.
+     * Serializes a decision with [mark] and [remove] for this exact URI. The database monitor is
+     * released before [block] runs, so provider calls and retry sleeps cannot stall journal work
+     * for unrelated URIs.
      */
     fun <T> withLookupAuthority(uri: String, block: (DiscardJournalLookup) -> T): T =
-        synchronized(databaseLock) { block(lookupLocked(uri)) }
+        withUriAuthority(uri) {
+            val lookup = synchronized(databaseLock) { lookupLocked(uri) }
+            block(lookup)
+        }
 
     private fun lookupLocked(uri: String): DiscardJournalLookup = runCatching {
         withReadableDatabase { database ->
@@ -77,20 +83,22 @@ internal class PendingDiscardJournal(
     }.getOrDefault(DiscardJournalLookup.UNAVAILABLE)
 
     /** Returns true only when this exact marker is authoritatively absent afterwards. */
-    fun remove(uri: String): Boolean = synchronized(databaseLock) {
+    fun remove(uri: String): Boolean = withUriAuthority(uri) {
         runCatching {
-            withWritableDatabase { database ->
-                database.delete(DISCARD_TABLE, "$URI_COLUMN = ?", arrayOf(uri))
-                database.query(
-                    DISCARD_TABLE,
-                    arrayOf(URI_COLUMN),
-                    "$URI_COLUMN = ?",
-                    arrayOf(uri),
-                    null,
-                    null,
-                    null,
-                    "1",
-                ).use { !it.moveToFirst() }
+            synchronized(databaseLock) {
+                withWritableDatabase { database ->
+                    database.delete(DISCARD_TABLE, "$URI_COLUMN = ?", arrayOf(uri))
+                    database.query(
+                        DISCARD_TABLE,
+                        arrayOf(URI_COLUMN),
+                        "$URI_COLUMN = ?",
+                        arrayOf(uri),
+                        null,
+                        null,
+                        null,
+                        "1",
+                    ).use { !it.moveToFirst() }
+                }
             }
         }.getOrDefault(false)
     }
@@ -220,6 +228,29 @@ internal class PendingDiscardJournal(
         private const val LEGACY_MIGRATION_KEY = "legacy_preferences_migrated"
         private const val MIGRATION_COMPLETE_VALUE = "1"
         private val databaseLock = Any()
+        private val uriAuthorityRegistryLock = Any()
+        private val uriAuthorities = mutableMapOf<String, UriAuthority>()
+
+        private class UriAuthority(
+            val monitor: Any = Any(),
+            var users: Int = 0,
+        )
+
+        private inline fun <T> withUriAuthority(uri: String, block: () -> T): T {
+            val authority = synchronized(uriAuthorityRegistryLock) {
+                uriAuthorities.getOrPut(uri, ::UriAuthority).also { it.users += 1 }
+            }
+            return try {
+                synchronized(authority.monitor, block)
+            } finally {
+                synchronized(uriAuthorityRegistryLock) {
+                    authority.users -= 1
+                    if (authority.users == 0 && uriAuthorities[uri] === authority) {
+                        uriAuthorities.remove(uri)
+                    }
+                }
+            }
+        }
     }
 }
 

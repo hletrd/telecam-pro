@@ -491,8 +491,8 @@ object MediaStoreWriter {
                 context.contentResolver.update(uri, values, null, null) > 0
             }.getOrDefault(false)
             if (published) {
-                // SQLite was proven absent while holding the journal's process lock. Remove only
-                // the older preference; publication cannot erase a concurrent exact DISCARD owner.
+                // SQLite was proven absent while holding this URI's process authority. Remove only
+                // the older preference; a later exact DISCARD owner remains independently durable.
                 runCatching {
                     context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
                         .edit(commit = true) { remove(uri.toString()) }
