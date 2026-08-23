@@ -1,3 +1,133 @@
+# Aggregated review — cycle 12
+
+Date: 2026-08-23
+Reviewed HEAD: `0ab3593`
+Inputs: all 12 current root review reports. Every required specialist plus the repository's
+`qa-adversary` inventoried the complete tracked review surface and performed a final missed-issue
+sweep. Historical findings were excluded unless still present on current HEAD.
+
+## Aggregated findings
+
+### AGG12-01 — REC native setup is invisible after allocation claim and before publication
+
+- **Severity / confidence:** High / High; confirmed ownership gap, device symptom not remeasured.
+- **Agreement:** code-reviewer, architect, critic.
+- **Evidence:** `RecordingPreNativeAllocation.kt:161-188`; `CameraEngine.kt:4519-4523,
+  4652-4874,5030-5046,5600-5636,5891-5970`; `VideoRecorder.kt:1112-1166`.
+- **Failure/fix:** pause/release can return while vendor setup runs and a replacement Engine can
+  acquire Camera2/GL. Install a release-visible setup owner before claim, bind the exact recorder,
+  and await terminal release or quarantine; add a blocked-setup/release/replacement test.
+
+### AGG12-02 — incomplete topology refresh retains a stale resolved flag
+
+- **Severity / confidence:** Medium / High; confirmed. **Agreement:** code-reviewer, architect, critic.
+- **Evidence:** `CameraEngine.kt:855-870,919-945,964-972,1002-1031`.
+- **Failure/fix:** after retry exhaustion, a recovered same-id callback is ignored. Publish every
+  incomplete snapshot with `resolved=false`; cover complete -> incomplete/exhaustion -> recovery.
+
+### AGG12-03 — successful same-process family deletes hit a 64-delete cliff
+
+- **Severity / confidence:** Medium / High; confirmed. **Agreement:** perf-reviewer, tracer, debugger.
+- **Evidence:** `MediaStoreWriter.kt:48-55,341-365,634-703`; `CameraEngine.kt:3956-3984`;
+  `RetainedStillDeletionOwner.kt:99-108`; `DeletedFamilyJournalTest.kt:59-81`.
+- **Failure/fix:** resolved markers never retire, so delete 65 closes still admission. Retire only
+  after producer terminality and authoritative family absence; prove >64 healthy cycles.
+
+### AGG12-04 — rejected-output overflow forgets an already-admitted sibling
+
+- **Severity / confidence:** High / High; confirmed. **Agreement:** perf-reviewer, tracer, debugger.
+- **Evidence:** `MediaStoreWriter.kt:53-61,309-330,376-382,902-935`;
+  `StillCapturePipeline.kt:133-135,228-379`; `VideoRecorder.kt:1546-1552`.
+- **Failure/fix:** an overflow URI has neither retry nor durable DISCARD and can be adopted after
+  restart. Reserve family capacity or durably transfer every overflow identity; test recreation.
+
+### AGG12-05 — harness internal child authority is caller-forgeable
+
+- **Severity / confidence:** High / High; confirmed. **Agreement:** tracer, debugger.
+- **Evidence:** `device-tests/run.py:36-48,314-397,463-485,543-578`;
+  `device-tests/tests/test_attestation.py:480-518`.
+- **Failure/fix:** caller-created proof/FIFO/private tree can authorize a mutable child. Bind child
+  mode to non-self-issued outer authority and reject a correct-digest forged direct child.
+
+### AGG12-06 — debug provenance can describe bytes different from those compiled
+
+- **Severity / confidence:** High / High; confirmed provenance TOCTOU.
+- **Evidence:** `app/build.gradle.kts:246-365,449-453`; `device-tests/dtest/contracts.py:244-259`.
+- **Failure/fix:** A can be hashed, B compiled, and A restored before harness comparison. Make debug
+  compilation and provenance consume one immutable input owner; add a barrier integration test.
+
+### AGG12-07 — device preflight repeatedly opens a mutable APK path
+
+- **Severity / confidence:** Medium / High; confirmed attestation TOCTOU.
+- **Evidence:** `device-tests/run.py:1266-1272`; `device-tests/dtest/contracts.py:156-176,322-343`.
+- **Failure/fix:** A -> B -> A can join A's hash/source with B's aapt facts. Snapshot one no-follow
+  regular APK inode and run every inspector on the private copy; test boundary swaps.
+
+### AGG12-08 — final report attestation silently omits or races evidence
+
+- **Severity / confidence:** Medium / High; confirmed. **Agreement:** security, verifier, test engineer.
+- **Evidence:** `device-tests/run.py:990-1007,1121-1232`; `test_attestation.py:861-886`.
+- **Failure/fix:** symlink/special/missing required evidence can be omitted while PASS remains. Freeze
+  the case-owned artifact set, descriptor-walk regular files, reject mismatch, and test swaps/FIFOs.
+
+### AGG12-09 — authoritative host gate misses staged-only whitespace defects
+
+- **Severity / confidence:** Medium / High; confirmed. **Agreement:** verifier, test engineer.
+- **Evidence:** `tools/verify_host.py:53-67`; `tools/tests/test_tool_contracts.py:86-104`.
+- **Failure/fix:** bare `git diff --check` ignores index-versus-HEAD. Check the complete HEAD patch
+  and add temporary-repository behavioral tests for staged and unstaged failures.
+
+### AGG12-10 — owner-cleared rows can spoof first-party last-capture ownership
+
+- **Severity / confidence:** Medium / High; confirmed local cross-app spoofing risk.
+- **Evidence:** `LatestCaptureReducer.kt:101-157,179-208,275-327`; `MediaStoreWriter.kt:164-230`.
+- **Disposition:** repository policy records the owner's decision to surface previous-install
+  owner-cleared captures (`docs/BACKLOG.md:213-216`). Preserve severity in an explicit deferral until
+  the owner reverses that choice or Android exposes authenticated historical provenance.
+
+### AGG12-11 — fail-closed output admission leaves a fully bright disabled shutter
+
+- **Severity / confidence:** Medium / High; confirmed. **Agreement:** designer, qa-adversary.
+- **Evidence:** `CameraState.kt:1493-1507`; `CameraScreen.kt:1280-1293,2965-3030`.
+- **Fix:** include output admission in photo shutter presentation while preserving Timer Cancel and
+  REC Stop; add real composition semantics/alpha coverage.
+
+### AGG12-12 — viewfinder exposes successful focus actions when they are no-ops
+
+- **Severity / confidence:** Medium / High; confirmed. **Agreement:** designer, qa-adversary.
+- **Evidence:** `CameraScreen.kt:646-658,1056-1064`; `CameraEngine.kt:2321-2344,6421-6438`;
+  `ManualControls.kt:93-100`; `CameraState.kt:1402-1407`.
+- **Fix:** derive actions from the real admission predicate and held-state truth; cover capable,
+  not-ready, Manual, unsupported, held, and unheld states in Compose tests.
+
+### AGG12-13 — architecture names a removed aspect-ratio implementation
+
+- **Severity / confidence:** Low / High; confirmed.
+- **Evidence:** `docs/ARCHITECTURE.md:1011-1023`; `CameraEngine.kt:6711-6736`;
+  `StillCapturePipeline.kt:172-190`.
+- **Fix:** document `centerCropBox` plus one-pass pipeline application and pin both source owners.
+
+### AGG12-14 — architecture TOC omits the zoom-routing section
+
+- **Severity / confidence:** Low / High; confirmed. **Evidence:** `docs/ARCHITECTURE.md:7-18,623+`.
+- **Fix:** add the missing TOC entry, renumber later entries, and validate TOC/H2 completeness.
+
+## Agent failures
+
+None. The seven-thread cap required grouping named perspectives across five parallel workers, but
+all required and repository-registered roles returned separate provenance reports.
+
+## Disposition requirement
+
+AGG12-01, AGG12-04 through AGG12-06, and AGG12-08 are native-ownership, correctness, or
+evidence-integrity findings and are not deferrable. AGG12-10 must retain Medium/High severity in a
+plan-directory deferral quoting the explicit owner decision and a reopening criterion. Every other
+finding has a bounded implementation and must be scheduled this cycle.
+
+---
+
+## Archived cycle 11 aggregate — provenance only; do not aggregate below as cycle 12
+
 # Aggregate review — cycle 11
 
 Reviewed revision: `4d1dbdac31288a138741aee7c391652a7e0edba5` (`main`, 2026-08-23)
