@@ -536,6 +536,119 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 self.assertTrue(all(path != aab for path in inspected_paths))
                 self.assertEqual(1, len({path for path in inspected_paths if path.suffix == ".aab"}))
 
+    @staticmethod
+    def is_external_boundary(command: list[str], boundary: str) -> bool:
+        if boundary == "early":
+            return command[:2] == ["keytool", "-printcert"] and "-rfc" not in command
+        return command[:2] == ["bundletool", "dump"]
+
+    def test_clean_head_change_at_early_and_late_tool_boundaries_fails_closed(self) -> None:
+        for boundary in ("early", "late"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                base = self.runner(commit)
+                current_head = commit
+                changed = False
+
+                def run(command, cwd):
+                    nonlocal current_head, changed
+                    if command[:3] == ["git", "rev-parse", "HEAD"]:
+                        return subprocess.CompletedProcess(command, 0, current_head + "\n", "")
+                    result = base(command, cwd)
+                    if not changed and self.is_external_boundary(command, boundary):
+                        current_head = "b" * 40
+                        changed = True
+                    return result
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(changed)
+                self.assertIn("HEAD changed during verification", failures)
+
+    def test_dirty_tree_change_at_early_and_late_tool_boundaries_fails_closed(self) -> None:
+        for boundary in ("early", "late"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                base = self.runner(commit)
+                current_status = ""
+                changed = False
+
+                def run(command, cwd):
+                    nonlocal current_status, changed
+                    if command[:2] == ["git", "status"]:
+                        return subprocess.CompletedProcess(command, 0, current_status, "")
+                    result = base(command, cwd)
+                    if not changed and self.is_external_boundary(command, boundary):
+                        current_status = " M app/build.gradle.kts\n"
+                        changed = True
+                    return result
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(changed)
+                self.assertIn("working-tree status changed during verification", failures)
+
+    def test_source_version_path_swap_at_early_and_late_tool_boundaries_fails_closed(self) -> None:
+        for boundary in ("early", "late"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                source = root / release.SOURCE_VERSION_PATH
+                base = self.runner(commit)
+                changed = False
+
+                def run(command, cwd):
+                    nonlocal changed
+                    result = base(command, cwd)
+                    if not changed and self.is_external_boundary(command, boundary):
+                        original = source.read_bytes()
+                        source.rename(source.with_name(source.name + ".retired"))
+                        source.write_bytes(original)
+                        changed = True
+                    return result
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(changed)
+                self.assertIn(
+                    "source-version input identity or digest changed during verification",
+                    failures,
+                )
+
+    def test_source_version_in_place_a_b_a_at_tool_boundaries_fails_closed(self) -> None:
+        for boundary in ("early", "late"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                source = root / release.SOURCE_VERSION_PATH
+                base = self.runner(commit)
+                changed = False
+
+                def run(command, cwd):
+                    nonlocal changed
+                    result = base(command, cwd)
+                    if not changed and self.is_external_boundary(command, boundary):
+                        original = source.read_bytes()
+                        original_mtime_ns = source.stat().st_mtime_ns
+                        source.write_bytes(b"B" * len(original))
+                        source.write_bytes(original)
+                        os.utime(
+                            source,
+                            ns=(original_mtime_ns + 1_000_000, original_mtime_ns + 1_000_000),
+                        )
+                        changed = True
+                    return result
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(changed)
+                self.assertIn(
+                    "source-version input identity or digest changed during verification",
+                    failures,
+                )
+
     def test_private_aab_copy_rejects_permanent_and_transient_mutation(self) -> None:
         for restore in (False, True):
             with self.subTest(restore=restore), tempfile.TemporaryDirectory() as temp_dir:

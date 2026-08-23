@@ -33,6 +33,7 @@ RELEASE_EVIDENCE_NAME = "release-evidence.json"
 RELEASE_EVIDENCE_BOUNDARY = "sealed-export-frozen-outputs-v1"
 PROVENANCE_NAMESPACE = "base/assets/telecam-release-provenance/"
 PROVENANCE_MEMBER = PROVENANCE_NAMESPACE + "source.properties"
+SOURCE_VERSION_PATH = pathlib.PurePath("app/build.gradle.kts")
 
 
 @dataclass(frozen=True)
@@ -425,8 +426,20 @@ def check_release_identity(
     if document["status"] != "upload-ready":
         failures.append("attestation status is not upload-ready")
 
+    try:
+        source_version_identity, source_version_bytes = snapshot_regular_bytes(
+            root, SOURCE_VERSION_PATH
+        )
+        source_version = parse_source_version(source_version_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        failures.append(f"could not safely read source version: {error}")
+        source_version_identity = None
+        source_version = None
+
     head_result = run(["git", "rev-parse", "HEAD"], root)
     head = head_result.stdout.strip().casefold() if head_result.returncode == 0 else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        failures.append("could not snapshot current HEAD")
     attested_commit = str(document["git_commit"]).casefold()
     if not re.fullmatch(r"[0-9a-f]{40}", attested_commit):
         failures.append("attested git_commit is not a full 40-character commit")
@@ -436,14 +449,11 @@ def check_release_identity(
     status_result = run(
         ["git", "status", "--porcelain", "--untracked-files=all"], root
     )
-    if status_result.returncode != 0 or status_result.stdout.strip():
+    initial_status = status_result.stdout
+    if status_result.returncode != 0:
+        failures.append("could not snapshot exact working-tree status")
+    elif initial_status:
         failures.append("working tree is not clean")
-
-    try:
-        source_version = parse_source_version((root / "app/build.gradle.kts").read_text())
-    except (OSError, ValueError) as error:
-        failures.append(f"could not read source version: {error}")
-        source_version = None
     if source_version is not None:
         if document["version_code"] != source_version.version_code:
             failures.append("attested version_code does not match app/build.gradle.kts")
@@ -650,6 +660,41 @@ def check_release_identity(
                 failures.append("packaged minSdk does not match source")
             if int(packaged_target_sdk.group(1)) != source_version.target_sdk:
                 failures.append("packaged targetSdk does not match source")
+    # Repository identity is checked only after every artifact-inspection tool has returned.
+    # The no-follow file identities are then re-read after these final Git queries, leaving no
+    # external verifier between the final source/input snapshots and the success boundary.
+    final_head_result = run(["git", "rev-parse", "HEAD"], root)
+    final_head = (
+        final_head_result.stdout.strip().casefold()
+        if final_head_result.returncode == 0
+        else ""
+    )
+    if not re.fullmatch(r"[0-9a-f]{40}", final_head):
+        failures.append("could not revalidate current HEAD before verification completion")
+    elif final_head != head:
+        failures.append("HEAD changed during verification")
+    final_status_result = run(
+        ["git", "status", "--porcelain", "--untracked-files=all"], root
+    )
+    if final_status_result.returncode != 0:
+        failures.append(
+            "could not revalidate exact working-tree status before verification completion"
+        )
+    elif final_status_result.stdout != initial_status:
+        failures.append("working-tree status changed during verification")
+    if source_version_identity is not None:
+        try:
+            final_source_version_identity = regular_file_identity(root, SOURCE_VERSION_PATH)
+        except OSError as error:
+            failures.append(
+                "source-version input changed or became unsafe during verification: "
+                f"{error}"
+            )
+        else:
+            if final_source_version_identity != source_version_identity:
+                failures.append(
+                    "source-version input identity or digest changed during verification"
+                )
     if not private_artifact_current("before verification completion"):
         artifact_temp.cleanup()
         return failures
