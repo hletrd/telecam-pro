@@ -15,6 +15,7 @@ internal class PendingDiscardJournal(
         LEGACY_PREFERENCES_NAME,
         Context.MODE_PRIVATE,
     ),
+    private val readLegacyEntries: () -> Map<String, *> = { legacyPreferences.all },
     private val removeLegacyEntries: (Set<String>) -> Unit = { keys ->
         legacyPreferences.edit(commit = true) { keys.forEach(::remove) }
     },
@@ -109,8 +110,20 @@ internal class PendingDiscardJournal(
      */
     fun page(afterKey: String?, batchLimit: Int): DiscardJournalPage {
         require(batchLimit > 0)
+        // SharedPreferences.all may wait for filesystem-backed state to load. First prove whether a
+        // snapshot is needed under the short database monitor, then perform that potentially
+        // blocking read without owning unrelated exact-URI database work. A concurrent first page
+        // may take the same harmless snapshot; migration rechecks its durable completion row below.
+        val legacyKeys = if (legacyMigrationPending()) {
+            readLegacyEntries()
+                .filterValues { it == LEGACY_DISCARD_VALUE }
+                .keys
+                .toSet()
+        } else {
+            emptySet()
+        }
         val page = synchronized(databaseLock) {
-            migrateLegacyDiscardMarkers()
+            migrateLegacyDiscardMarkers(legacyKeys)
             withReadableDatabase { database ->
                 val queryLimit = batchLimit + 1
                 val candidates = buildList(queryLimit) {
@@ -148,13 +161,12 @@ internal class PendingDiscardJournal(
      * Preference cleanup happens separately in bounded [page] chunks after that commit, so a
      * cleanup outage cannot repeat the whole import on every page.
      */
-    private fun migrateLegacyDiscardMarkers() {
-        if (withReadableDatabase { database -> migrationComplete(database) }) return
+    private fun legacyMigrationPending(): Boolean = synchronized(databaseLock) {
+        withReadableDatabase { database -> !migrationComplete(database) }
+    }
 
-        val legacyKeys = legacyPreferences.all
-            .filterValues { it == LEGACY_DISCARD_VALUE }
-            .keys
-            .toSet()
+    private fun migrateLegacyDiscardMarkers(legacyKeys: Set<String>) {
+        if (withReadableDatabase { database -> migrationComplete(database) }) return
 
         withWritableDatabase { database ->
             database.beginTransaction()
