@@ -38,7 +38,7 @@ def copy_harness_fixture(parent: Path) -> Path:
 
 
 class RunAttestationTest(unittest.TestCase):
-    def test_main_acquires_serial_lock_before_device_runner(self) -> None:
+    def test_authorized_child_acquires_serial_lock_before_device_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir) / "run"
             directory.mkdir()
@@ -115,7 +115,7 @@ class RunAttestationTest(unittest.TestCase):
                 patch.object(runner.DeviceRunLock, "acquire", side_effect=acquire),
                 patch.object(runner, "run_locked_device", side_effect=device_run),
             ):
-                self.assertEqual(runner.main(), 0)
+                self.assertEqual(runner._run_authorized_child_cli(), 0)
 
             self.assertEqual(
                 events,
@@ -129,6 +129,32 @@ class RunAttestationTest(unittest.TestCase):
                     "lock-release",
                 ],
             )
+
+    def test_imported_main_refuses_before_apk_or_device_preflight(self) -> None:
+        script = textwrap.dedent(
+            """
+            import run
+
+            def forbidden(*_args, **_kwargs):
+                raise AssertionError("APK/device preflight must not run")
+
+            run.apk_inspection_snapshot = forbidden
+            run.probe_physical_device_identity = forbidden
+            raise SystemExit(run.main())
+            """
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=DEVICE_TESTS.parent,
+            env={**os.environ, "PYTHONPATH": str(DEVICE_TESTS)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertIn("without inherited private-snapshot authority", completed.stderr)
+        self.assertNotIn("APK/device preflight must not run", completed.stderr)
 
     def test_frozen_clock_concurrent_report_allocations_are_unique_and_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1049,6 +1075,40 @@ class RunAttestationTest(unittest.TestCase):
                     {"schema_version": 1, "artifacts": frozen},
                     expected_artifacts=frozen,
                 )
+
+    def test_post_sidecar_report_race_rolls_back_the_attestation_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "report.md").write_text("report\n", encoding="utf-8")
+            frozen = runner.artifact_manifest(root)
+            real_manifest = runner.artifact_manifest
+            manifest_calls = 0
+
+            def race_after_sidecar(report_dir: Path, *, allow_attestation_outputs: bool = False):
+                nonlocal manifest_calls
+                manifest_calls += 1
+                if manifest_calls == 2:
+                    # The second call is the final report-set proof, after both reserved outputs
+                    # have been written and individually digested.
+                    self.assertTrue((root / runner.ATTESTATION_NAME).is_file())
+                    self.assertTrue((root / runner.ATTESTATION_SHA_NAME).is_file())
+                    (root / "late-evidence.bin").write_bytes(b"late")
+                return real_manifest(
+                    report_dir,
+                    allow_attestation_outputs=allow_attestation_outputs,
+                )
+
+            with patch.object(runner, "artifact_manifest", side_effect=race_after_sidecar):
+                with self.assertRaisesRegex(ContractError, "changed during attestation"):
+                    runner.write_attestation(
+                        root,
+                        {"schema_version": 1, "artifacts": frozen},
+                        expected_artifacts=frozen,
+                    )
+
+            self.assertFalse((root / runner.ATTESTATION_NAME).exists())
+            self.assertFalse((root / runner.ATTESTATION_SHA_NAME).exists())
+            self.assertEqual((root / "late-evidence.bin").read_bytes(), b"late")
 
     def test_attestation_refuses_reserved_existing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

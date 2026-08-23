@@ -1198,6 +1198,23 @@ def _write_report_output_exclusive(report_dir: Path, name: str, payload: bytes) 
     return report_dir / name
 
 
+def _rollback_attestation_outputs(report_dir: Path, names: Sequence[str]) -> list[str]:
+    """Remove only outputs created by this failed finalization attempt."""
+    errors: list[str] = []
+    root_fd = _open_directory_no_follow(None, str(Path(os.path.abspath(report_dir))), Path("."))
+    try:
+        for name in reversed(tuple(names)):
+            try:
+                os.unlink(name, dir_fd=root_fd)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                errors.append(f"{name}: {error}")
+    finally:
+        os.close(root_fd)
+    return errors
+
+
 def write_attestation(
     report_dir: Path,
     document: dict[str, object],
@@ -1208,29 +1225,41 @@ def write_attestation(
     expected = expected_artifacts if expected_artifacts is not None else artifact_manifest(report_dir)
     if artifact_manifest(report_dir) != expected:
         raise ContractError("report artifact set changed before attestation write")
-    attestation = report_dir / ATTESTATION_NAME
     payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
-    attestation = _write_report_output_exclusive(report_dir, ATTESTATION_NAME, payload)
     checksum = hashlib.sha256(payload).hexdigest()
-    sidecar = _write_report_output_exclusive(
-        report_dir,
-        ATTESTATION_SHA_NAME,
-        f"{checksum}  {ATTESTATION_NAME}\n".encode(),
-    )
-    # Temporarily open the exact controlled outputs out of the frozen set, then prove every original
-    # artifact is still present and unchanged and no third member appeared.
-    attestation_bytes = attestation.read_bytes()
-    sidecar_bytes = sidecar.read_bytes()
-    if attestation_bytes != payload or sidecar_bytes != f"{checksum}  {ATTESTATION_NAME}\n".encode():
-        raise ContractError("attestation outputs changed immediately after controlled write")
-    if _digest_regular_absolute_no_follow(attestation) != (len(payload), checksum):
-        raise ContractError("attestation JSON changed after controlled write")
-    sidecar_digest = hashlib.sha256(sidecar_bytes).hexdigest()
-    if _digest_regular_absolute_no_follow(sidecar) != (len(sidecar_bytes), sidecar_digest):
-        raise ContractError("attestation sidecar changed after controlled write")
-    if artifact_manifest(report_dir, allow_attestation_outputs=True) != expected:
-        raise ContractError("report artifact set changed during attestation write")
-    return attestation, sidecar
+    sidecar_payload = f"{checksum}  {ATTESTATION_NAME}\n".encode()
+    created: list[str] = []
+    try:
+        attestation = _write_report_output_exclusive(report_dir, ATTESTATION_NAME, payload)
+        created.append(ATTESTATION_NAME)
+        sidecar = _write_report_output_exclusive(
+            report_dir,
+            ATTESTATION_SHA_NAME,
+            sidecar_payload,
+        )
+        created.append(ATTESTATION_SHA_NAME)
+        # Temporarily open the exact controlled outputs out of the frozen set, then prove every
+        # original artifact is still present and unchanged and no third member appeared.
+        attestation_bytes = attestation.read_bytes()
+        sidecar_bytes = sidecar.read_bytes()
+        if attestation_bytes != payload or sidecar_bytes != sidecar_payload:
+            raise ContractError("attestation outputs changed immediately after controlled write")
+        if _digest_regular_absolute_no_follow(attestation) != (len(payload), checksum):
+            raise ContractError("attestation JSON changed after controlled write")
+        sidecar_digest = hashlib.sha256(sidecar_bytes).hexdigest()
+        if _digest_regular_absolute_no_follow(sidecar) != (len(sidecar_bytes), sidecar_digest):
+            raise ContractError("attestation sidecar changed after controlled write")
+        if artifact_manifest(report_dir, allow_attestation_outputs=True) != expected:
+            raise ContractError("report artifact set changed during attestation write")
+        return attestation, sidecar
+    except BaseException as error:
+        rollback_errors = _rollback_attestation_outputs(report_dir, created)
+        if rollback_errors:
+            raise ContractError(
+                "attestation finalization failed and reserved-output rollback was incomplete: "
+                + "; ".join(rollback_errors)
+            ) from error
+        raise
 
 
 def run_locked_device(
@@ -1548,7 +1577,8 @@ def _run_snapshotted_cli(
         return 2
 
 
-def main() -> int:
+def _run_authorized_child_cli() -> int:
+    """Parse and execute one already-authorized immutable-snapshot child invocation."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--serial", required=True, help="adb serial, e.g. 127.0.0.1:5599")
     ap.add_argument("--tier", action="append", choices=[*TIERS, "all"], default=None,
@@ -1577,6 +1607,18 @@ def main() -> int:
     except (ContractError, OSError) as error:
         print(f"could not establish APK snapshot: {error}", file=sys.stderr)
         return 2
+
+
+def main() -> int:
+    """Refuse imported/live execution; only the inherited snapshot child may run cases."""
+    if _CHILD_PROOF is None:
+        print(
+            "refusing device harness execution without inherited private-snapshot authority; "
+            "invoke device-tests/run.py as a script",
+            file=sys.stderr,
+        )
+        return 2
+    return _run_authorized_child_cli()
 
 
 if __name__ == "__main__":
