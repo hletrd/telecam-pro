@@ -40,6 +40,10 @@ DEBUG_PROVENANCE_NAMESPACE = "assets/telecam-debug-provenance/"
 DEBUG_PROVENANCE_MEMBER = DEBUG_PROVENANCE_NAMESPACE + "source.manifest"
 IMMUTABLE_DEBUG_SOURCE_OWNER = "immutable-debug-worktree-v1"
 MUTABLE_DEBUG_SOURCE_OWNER = "mutable-development-worktree"
+_MAX_DEBUG_SOURCE_FILE_BYTES = 64 * 1024 * 1024
+_MAX_DEBUG_SOURCE_TOTAL_BYTES = 512 * 1024 * 1024
+_MAX_DEBUG_SOURCE_FILES = 16_384
+_DEBUG_READ_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -193,39 +197,274 @@ def inspect_apk_source_identity(apk: Path) -> DebugSourceIdentity:
         raise ContractError(f"could not read debug APK source provenance: {error}") from error
 
 
+def _debug_open_flags(*, directory: bool = False) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ContractError("this host cannot enforce no-follow debug-source reads")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | no_follow
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    return flags
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino, stat.S_IFMT(left.st_mode)) == (
+        right.st_dev,
+        right.st_ino,
+        stat.S_IFMT(right.st_mode),
+    )
+
+
+def _debug_entry_stat(parent_fd: int, name: str) -> os.stat_result:
+    return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+
+
+def _open_debug_directory(parent_fd: int | None, name: str, relative: Path) -> int:
+    try:
+        descriptor = os.open(name, _debug_open_flags(directory=True), dir_fd=parent_fd)
+    except OSError as error:
+        raise ContractError(
+            f"debug source directory must be stable and non-symlink: {relative.as_posix()}"
+        ) from error
+    opened = os.fstat(descriptor)
+    if not stat.S_ISDIR(opened.st_mode):
+        os.close(descriptor)
+        raise ContractError(f"debug source must be a directory: {relative.as_posix()}")
+    return descriptor
+
+
+def _hash_debug_file(
+    parent_fd: int,
+    name: str,
+    relative: Path,
+    expected: os.stat_result,
+) -> SourceManifestEntry:
+    try:
+        descriptor = os.open(name, _debug_open_flags(), dir_fd=parent_fd)
+    except OSError as error:
+        raise ContractError(
+            f"debug source input must be a stable non-symlink file: {relative.as_posix()}"
+        ) from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or not _same_file_identity(expected, before):
+            raise ContractError(f"debug source input changed before open: {relative.as_posix()}")
+        if before.st_size < 0 or before.st_size > _MAX_DEBUG_SOURCE_FILE_BYTES:
+            raise ContractError(
+                f"debug source input exceeds {_MAX_DEBUG_SOURCE_FILE_BYTES} bytes: "
+                f"{relative.as_posix()}"
+            )
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(_DEBUG_READ_CHUNK_BYTES, _MAX_DEBUG_SOURCE_FILE_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+            if total > _MAX_DEBUG_SOURCE_FILE_BYTES:
+                raise ContractError(
+                    f"debug source input grew beyond {_MAX_DEBUG_SOURCE_FILE_BYTES} bytes: "
+                    f"{relative.as_posix()}"
+                )
+        after = os.fstat(descriptor)
+        try:
+            current = _debug_entry_stat(parent_fd, name)
+        except OSError as error:
+            raise ContractError(
+                f"debug source input disappeared while reading: {relative.as_posix()}"
+            ) from error
+        if (
+            not _same_file_identity(before, after)
+            or not _same_file_identity(after, current)
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+            or total != after.st_size
+        ):
+            raise ContractError(f"debug source input changed while reading: {relative.as_posix()}")
+        return SourceManifestEntry(relative.as_posix(), total, digest.hexdigest())
+    finally:
+        os.close(descriptor)
+
+
+def _frozen_debug_source_entries(
+    repo_root: Path,
+    scopes: Sequence[str],
+    *,
+    expected_root_identity: os.stat_result | None = None,
+) -> tuple[SourceManifestEntry, ...]:
+    """Hash one exact bounded source set through pinned no-follow directory descriptors."""
+    root = Path(os.path.abspath(repo_root))
+    try:
+        expected_root = os.stat(root, follow_symlinks=False)
+    except OSError as error:
+        raise ContractError(f"debug source root is unavailable: {root}") from error
+    if not stat.S_ISDIR(expected_root.st_mode):
+        raise ContractError(f"debug source root must be a non-symlink directory: {root}")
+    if expected_root_identity is not None and not _same_file_identity(
+        expected_root_identity,
+        expected_root,
+    ):
+        raise ContractError(f"debug source root changed before identity freeze: {root}")
+    root_fd = _open_debug_directory(None, str(root), Path("."))
+    root_identity = os.fstat(root_fd)
+    if not _same_file_identity(expected_root, root_identity):
+        os.close(root_fd)
+        raise ContractError(f"debug source root changed before open: {root}")
+
+    entries: dict[str, SourceManifestEntry] = {}
+    total_bytes = 0
+
+    def add_file(parent_fd: int, name: str, relative: Path, observed: os.stat_result) -> None:
+        nonlocal total_bytes
+        entry = _hash_debug_file(parent_fd, name, relative, observed)
+        if entry.path in entries:
+            raise ContractError(f"debug source scopes overlap at: {entry.path}")
+        entries[entry.path] = entry
+        total_bytes += entry.bytes
+        if len(entries) > _MAX_DEBUG_SOURCE_FILES or total_bytes > _MAX_DEBUG_SOURCE_TOTAL_BYTES:
+            raise ContractError("debug source tree exceeds its bounded identity budget")
+
+    def walk(directory_fd: int, relative_directory: Path) -> None:
+        with os.scandir(directory_fd) as iterator:
+            initial_names = sorted(entry.name for entry in iterator)
+        for name in initial_names:
+            relative = relative_directory / name
+            try:
+                observed = _debug_entry_stat(directory_fd, name)
+            except OSError as error:
+                raise ContractError(
+                    f"debug source member disappeared during enumeration: {relative.as_posix()}"
+                ) from error
+            if stat.S_ISLNK(observed.st_mode):
+                raise ContractError(f"debug source input must not be a symlink: {relative.as_posix()}")
+            if stat.S_ISDIR(observed.st_mode):
+                child_fd = _open_debug_directory(directory_fd, name, relative)
+                opened = os.fstat(child_fd)
+                try:
+                    if not _same_file_identity(observed, opened):
+                        raise ContractError(
+                            f"debug source directory changed before open: {relative.as_posix()}"
+                        )
+                    walk(child_fd, relative)
+                    current = _debug_entry_stat(directory_fd, name)
+                    if not _same_file_identity(opened, current):
+                        raise ContractError(
+                            f"debug source directory changed while reading: {relative.as_posix()}"
+                        )
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(observed.st_mode):
+                raise ContractError(f"debug source input must be a regular file: {relative.as_posix()}")
+            add_file(directory_fd, name, relative, observed)
+        with os.scandir(directory_fd) as iterator:
+            final_names = sorted(entry.name for entry in iterator)
+        if final_names != initial_names:
+            raise ContractError(
+                "debug source member set changed while reading under "
+                f"{relative_directory.as_posix() or '.'}"
+            )
+
+    try:
+        for scope in scopes:
+            scoped = Path(scope)
+            if (
+                scoped.is_absolute()
+                or "\\" in scope
+                or not scoped.parts
+                or any(part in {"", ".", ".."} for part in scoped.parts)
+            ):
+                raise ContractError(f"debug source scope is unsafe: {scope!r}")
+            directory_fds = [os.dup(root_fd)]
+            try:
+                for index, part in enumerate(scoped.parts[:-1]):
+                    parent_fd = directory_fds[-1]
+                    relative = Path(*scoped.parts[: index + 1])
+                    observed = _debug_entry_stat(parent_fd, part)
+                    if not stat.S_ISDIR(observed.st_mode):
+                        raise ContractError(
+                            f"debug source scope parent is not a directory: {relative.as_posix()}"
+                        )
+                    child_fd = _open_debug_directory(parent_fd, part, relative)
+                    opened = os.fstat(child_fd)
+                    if not _same_file_identity(observed, opened):
+                        os.close(child_fd)
+                        raise ContractError(
+                            f"debug source scope parent changed before open: {relative.as_posix()}"
+                        )
+                    directory_fds.append(child_fd)
+                parent_fd = directory_fds[-1]
+                leaf = scoped.parts[-1]
+                try:
+                    observed = _debug_entry_stat(parent_fd, leaf)
+                except OSError as error:
+                    raise ContractError(f"debug source scope is missing: {scope}") from error
+                if stat.S_ISLNK(observed.st_mode):
+                    raise ContractError(f"debug source scope must not be a symlink: {scope}")
+                if stat.S_ISDIR(observed.st_mode):
+                    child_fd = _open_debug_directory(parent_fd, leaf, scoped)
+                    opened = os.fstat(child_fd)
+                    try:
+                        if not _same_file_identity(observed, opened):
+                            raise ContractError(
+                                f"debug source scope changed before open: {scope}"
+                            )
+                        walk(child_fd, scoped)
+                        current = _debug_entry_stat(parent_fd, leaf)
+                        if not _same_file_identity(opened, current):
+                            raise ContractError(
+                                f"debug source scope changed while reading: {scope}"
+                            )
+                    finally:
+                        os.close(child_fd)
+                elif stat.S_ISREG(observed.st_mode):
+                    add_file(parent_fd, leaf, scoped, observed)
+                else:
+                    raise ContractError(f"debug source scope must be a regular file or directory: {scope}")
+                for index in range(len(directory_fds) - 1, 0, -1):
+                    parent = directory_fds[index - 1]
+                    opened = os.fstat(directory_fds[index])
+                    component = scoped.parts[index - 1]
+                    current = _debug_entry_stat(parent, component)
+                    if not _same_file_identity(opened, current):
+                        relative = Path(*scoped.parts[:index])
+                        raise ContractError(
+                            f"debug source scope parent changed while reading: {relative.as_posix()}"
+                        )
+            finally:
+                for descriptor in reversed(directory_fds):
+                    os.close(descriptor)
+        final_root = os.stat(root, follow_symlinks=False)
+        if not _same_file_identity(root_identity, final_root):
+            raise ContractError("debug source root changed while reading")
+    finally:
+        os.close(root_fd)
+    if not entries:
+        raise ContractError("no current debug source inputs were found")
+    return tuple(entries[path] for path in sorted(entries))
+
+
 def current_debug_source_identity(
     repo_root: Path,
     *,
     scopes: Sequence[str] = DEBUG_SOURCE_SCOPES,
 ) -> DebugSourceIdentity:
     """Hash the current packageable debug inputs using the build task's canonical format."""
-    root = repo_root.resolve()
-    files: dict[str, Path] = {}
-    for scope in scopes:
-        scoped = root / scope
-        if scoped.is_symlink():
-            raise ContractError(f"debug source scope must not be a symlink: {scope}")
-        if scoped.is_dir():
-            candidates = scoped.rglob("*")
-        elif scoped.is_file():
-            candidates = (scoped,)
-        else:
-            raise ContractError(f"debug source scope is missing: {scope}")
-        for candidate in candidates:
-            if candidate.is_symlink():
-                raise ContractError(
-                    f"debug source input must not be a symlink: {candidate.relative_to(root)}"
-                )
-            if not candidate.is_file():
-                continue
-            relative = candidate.relative_to(root).as_posix()
-            files[relative] = candidate
-    entries = tuple(
-        SourceManifestEntry(path, file.stat().st_size, hashlib.sha256(file.read_bytes()).hexdigest())
-        for path, file in sorted(files.items())
+    root = Path(os.path.abspath(repo_root))
+    try:
+        root_identity = os.stat(root, follow_symlinks=False)
+    except OSError as error:
+        raise ContractError(f"debug source root is unavailable: {root}") from error
+    entries = _frozen_debug_source_entries(
+        root,
+        scopes,
+        expected_root_identity=root_identity,
     )
-    if not entries:
-        raise ContractError("no current debug source inputs were found")
 
     def git(*arguments: str) -> bytes:
         result = subprocess.run(
@@ -250,6 +489,12 @@ def current_debug_source_identity(
     ignored = git(
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", *scopes,
     )
+    if _frozen_debug_source_entries(
+        root,
+        scopes,
+        expected_root_identity=root_identity,
+    ) != entries:
+        raise ContractError("debug source identity changed while Git state was inspected")
     return DebugSourceIdentity(
         commit,
         bool(changed or ignored),

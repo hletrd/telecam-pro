@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -240,6 +241,99 @@ class SourceIdentityTest(unittest.TestCase):
             self.assertTrue(dirty_two.dirty)
             self.assertNotEqual(clean.content_sha256, dirty_one.content_sha256)
             self.assertNotEqual(dirty_one.content_sha256, dirty_two.content_sha256)
+
+    def test_current_manifest_rejects_leaf_and_parent_swaps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "src/source.kt"
+            source.parent.mkdir()
+            source.write_text("source-A\n", encoding="utf-8")
+            replacement = root / "replacement.kt"
+            replacement.write_text("source-B\n", encoding="utf-8")
+            build = root / "build.gradle.kts"
+            build.write_text("plugins {}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            real_read = os.read
+            swapped = False
+
+            def swap_leaf(fd, size):
+                nonlocal swapped
+                chunk = real_read(fd, size)
+                if chunk and not swapped:
+                    swapped = True
+                    source.rename(root / "src/saved.kt")
+                    replacement.rename(source)
+                return chunk
+
+            with patch.object(contracts.os, "read", side_effect=swap_leaf):
+                with self.assertRaisesRegex(ContractError, "changed while reading"):
+                    current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "source.kt").write_text("source-A\n", encoding="utf-8")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "source.kt").write_text("outside\n", encoding="utf-8")
+            build = root / "build.gradle.kts"
+            build.write_text("plugins {}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "src", "build.gradle.kts"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            real_read = os.read
+            swapped = False
+
+            def swap_parent(fd, size):
+                nonlocal swapped
+                chunk = real_read(fd, size)
+                if chunk and not swapped:
+                    swapped = True
+                    source_dir.rename(root / "saved-src")
+                    source_dir.symlink_to(outside, target_is_directory=True)
+                return chunk
+
+            with patch.object(contracts.os, "read", side_effect=swap_parent):
+                with self.assertRaisesRegex(ContractError, "scope changed while reading"):
+                    current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
+
+    def test_current_manifest_rejects_member_addition_during_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "source.kt").write_text("source-A\n", encoding="utf-8")
+            build = root / "build.gradle.kts"
+            build.write_text("plugins {}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
+
+            real_read = os.read
+            added = False
+
+            def add_member(fd, size):
+                nonlocal added
+                chunk = real_read(fd, size)
+                if chunk and not added:
+                    added = True
+                    (source_dir / "added.kt").write_text("added\n", encoding="utf-8")
+                return chunk
+
+            with patch.object(contracts.os, "read", side_effect=add_member):
+                with self.assertRaisesRegex(ContractError, "member set changed"):
+                    current_debug_source_identity(root, scopes=("src", "build.gradle.kts"))
 
 
 class ProductionContractTest(unittest.TestCase):
