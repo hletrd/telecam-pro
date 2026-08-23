@@ -125,11 +125,13 @@ class CameraEngine internal constructor(
         discard = { uri -> MediaStoreWriter.discardPendingOutput(context, uri) },
         persistDeletionIntent = { family -> MediaStoreWriter.markFamilyDeleted(context, family) },
     )
-    // A deleted still whose normal I/O lane rejects during teardown gets one independent fallback;
-    // launch scans themselves are process-wide through ProcessLaunchMediaRecovery below.
-    private val retainedStillRecoveryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
-        Thread(task, "retained-still-recovery").apply { isDaemon = true }
-    }
+    // Deleted-still provider work is process-finite across Engine replacement. A rejected task stays
+    // owned by the durable capture-family tombstone for launch recovery; it never runs inline on a
+    // camera, UI, or teardown thread.
+    private val retainedStillDiscardDispatcher = RetainedStillDiscardDispatcher(
+        workerCount = RETAINED_STILL_DISCARD_WORKER_COUNT,
+        backlogCapacity = RETAINED_STILL_DISCARD_BACKLOG_CAPACITY,
+    )
     private val launchRecoveryOwner = Any()
     @Volatile private var launchRecoverySubscription: LaunchMediaRecoverySubscription? = null
     // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
@@ -4159,8 +4161,8 @@ class CameraEngine internal constructor(
     /**
      * Transfers a completed row to the Engine's delete owner without depending on UI callbacks.
      * The fast ownership step performs no provider I/O, so it is safe on UI/camera threads. Normal
-     * execution uses the still lane; teardown rejection falls through to recovery, then finally runs
-     * inline so a completed DNG can never be silently dropped between two shutting-down executors.
+     * Provider work uses one process-lifetime finite lane. Overflow or stale-facade shutdown never
+     * runs inline: the already-durable family tombstone remains the launch-recovery owner.
      */
     private fun dispatchDeletedStillDiscard(uri: android.net.Uri, captureId: Int) {
         if (!retainedStillDeletionOwner.ownRetainedForAsyncDiscard(uri, captureId)) return
@@ -4171,10 +4173,11 @@ class CameraEngine internal constructor(
                 onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
             }
         }
-        val stillAccepted = runCatching { ioExecutor.execute(task) }.isSuccess
-        if (stillAccepted) return
-        val recoveryAccepted = runCatching { retainedStillRecoveryExecutor.execute(task) }.isSuccess
-        if (!recoveryAccepted) task.run()
+        if (retainedStillDiscardDispatcher.dispatch(task) != RetainedStillDiscardDispatch.ACCEPTED) {
+            // The exact URI remains in the old Engine's bounded unresolved owner until release, and
+            // the durable family journal vetoes adoption process-wide after that owner disappears.
+            onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+        }
     }
 
     // Save lanes live in the extracted StillCapturePipeline (ARCH4-3 step 1). UI-facing lambdas
@@ -6310,7 +6313,10 @@ class CameraEngine internal constructor(
         ctrl?.close()
         stopGlOwner(glOwners.current())
         starting = false
-        val unresolvedDeletedStills = retainedStillDeletionOwner.retryUnresolvedDiscards()
+        // Never perform ContentResolver work on this release thread. Accepted discard work remains
+        // process-owned; refused work remains protected by its durable family tombstone and will be
+        // retried by the bounded launch-recovery stages.
+        val unresolvedDeletedStills = retainedStillDeletionOwner.unresolvedDiscardCount()
         if (unresolvedDeletedStills > 0) {
             Log.e(
                 "CameraEngine",
@@ -6327,7 +6333,7 @@ class CameraEngine internal constructor(
         activeRecordingTopologyLease.set(0L)
         setupExecutor.shutdown()
         ioExecutor.shutdown()
-        retainedStillRecoveryExecutor.shutdown()
+        retainedStillDiscardDispatcher.shutdown()
         recorderExecutor.shutdown()
         recordingStorageDispatcher.shutdown()
         recorderWatchdog.shutdown()

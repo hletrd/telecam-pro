@@ -2,6 +2,7 @@ package me.hletrd.telecampro.storage
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,7 +35,7 @@ class OrphanSweepTest {
 
     @Test
     fun `page cursor advances each collection independently`() {
-        val start = OrphanRecoveryCursor()
+        val start = OrphanRecoveryCursor(preflightComplete = true)
         val images = start.withAfterId(OrphanRecoveryCollection.IMAGES, 64L)
         val both = images.withAfterId(OrphanRecoveryCollection.VIDEO, 31L)
 
@@ -42,6 +43,50 @@ class OrphanSweepTest {
         assertEquals(0L, start.videoAfterId)
         assertEquals(64L, both.afterId(OrphanRecoveryCollection.IMAGES))
         assertEquals(31L, both.afterId(OrphanRecoveryCollection.VIDEO))
+    }
+
+    @Test
+    fun `discard journal cursor is stable bounded and independent of media cursors`() {
+        val keys = listOf(
+            "content://row/05",
+            "content://row/01",
+            "content://row/04",
+            "content://row/02",
+        )
+        val first = discardJournalPage(keys, afterKey = null, batchLimit = 2)
+        val second = discardJournalPage(keys, afterKey = first.nextAfterKey, batchLimit = 2)
+
+        assertEquals(listOf("content://row/01", "content://row/02"), first.keys)
+        assertEquals("content://row/02", first.nextAfterKey)
+        assertTrue(first.hasMore)
+        assertEquals(listOf("content://row/04", "content://row/05"), second.keys)
+        assertEquals("content://row/05", second.nextAfterKey)
+        assertFalse(second.hasMore)
+
+        val cursor = OrphanRecoveryCursor(
+            preflightComplete = true,
+            imagesAfterId = 99L,
+            videoAfterId = 42L,
+            discardAfterKey = first.nextAfterKey,
+        )
+        assertEquals(99L, cursor.imagesAfterId)
+        assertEquals(42L, cursor.videoAfterId)
+        assertEquals("content://row/02", cursor.discardAfterKey)
+        assertFalse(cursor.mediaComplete)
+        assertTrue(
+            cursor.copy(
+                imagesAfterId = OrphanRecoveryCursor.COLLECTION_COMPLETE,
+                videoAfterId = OrphanRecoveryCursor.COLLECTION_COMPLETE,
+            ).mediaComplete,
+        )
+
+        val empty = discardJournalPage(keys, afterKey = "content://row/99", batchLimit = 2)
+        assertTrue(empty.keys.isEmpty())
+        assertEquals("content://row/99", empty.nextAfterKey)
+        assertFalse(empty.hasMore)
+        assertThrows(IllegalArgumentException::class.java) {
+            discardJournalPage(keys, afterKey = null, batchLimit = 0)
+        }
     }
 
     @Test

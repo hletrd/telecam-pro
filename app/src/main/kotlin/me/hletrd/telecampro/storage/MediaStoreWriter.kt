@@ -44,6 +44,7 @@ object MediaStoreWriter {
 
     private const val MAX_RESTORE_ROWS_PER_COLLECTION = 64
     internal const val MAX_ORPHAN_RECOVERY_ROWS_PER_COLLECTION = 64
+    internal const val MAX_DISCARD_RECOVERY_ROWS = 64
     private const val MAX_FAMILY_ROWS = 8
     private const val PENDING_JOURNAL = "pending_media_journal"
     private const val PENDING_REGISTERED = "registered"
@@ -610,15 +611,23 @@ object MediaStoreWriter {
     ): RecoveryReport {
         var cursor = OrphanRecoveryCursor()
         var cumulative = RecoveryReport()
+        var progressedFailures = emptySet<RecoveryFailureClass>()
         var hasMore: Boolean
         do {
             val batch = cleanupOrphanedPendingBatch(context, cursor, subDirs = subDirs)
             cumulative = cumulative.foldRecoveryAttempt(batch.report)
-            if (batch.report.retryRequired) return cumulative
+            if (batch.report.retryRequired) {
+                if (!batch.continueAfterFailureExhaustion) return cumulative
+                progressedFailures += batch.report.failureClasses
+            }
             cursor = batch.nextCursor
             hasMore = batch.hasMore
         } while (hasMore)
-        return cumulative
+        return if (progressedFailures.isEmpty()) {
+            cumulative
+        } else {
+            cumulative.copy(failureClasses = progressedFailures)
+        }
     }
 
     internal fun cleanupOrphanedPendingBatch(
@@ -640,14 +649,42 @@ object MediaStoreWriter {
         // Selection/args construction is pure and PINNED BY TEST (OrphanSweepTest). Each collection
         // is independently caught and reported, so a broken Images query cannot suppress Video.
         val (selection, args) = orphanSweepSelection(subDirs, context.packageName, processStartSecs)
-        // A deleted output can have crossed IS_PENDING=0 immediately before the Engine observed the
-        // tombstone. Recover durable DISCARD entries by exact URI first, so published as well as
-        // pending rows are deleted. Successful [delete] clears the journal; failures retain it for
-        // the next bounded recovery attempt.
-        retryRejectedOutputs()
-        var report = cleanupDeletedFamilyJournal(context, subDirs).merge(cleanupDiscardJournal(context))
+        // Process-local rejected rows and durable family tombstones are one bounded preflight, not
+        // work repeated for every Images/Video page. A failure retries this exact stage before any
+        // media cursor advances.
+        if (!cursor.preflightComplete) {
+            retryRejectedOutputs()
+            val report = cleanupDeletedFamilyJournal(context, subDirs)
+            return OrphanRecoveryBatch(
+                report = report,
+                nextCursor = cursor.copy(preflightComplete = true),
+                hasMore = true,
+            )
+        }
+
+        // The exact-URI DISCARD journal is its own terminal stage. Pending rows already had a chance
+        // to be removed by the bounded collection pages, while published rows are reachable only
+        // through these durable URI markers. A permanent failure receives the normal bounded retry
+        // budget, then advances so one bad provider row cannot starve later markers forever.
+        if (cursor.mediaComplete && !cursor.discardComplete) {
+            val batch = cleanupDiscardJournalBatch(
+                context = context,
+                afterKey = cursor.discardAfterKey,
+                batchLimit = MAX_DISCARD_RECOVERY_ROWS,
+            )
+            return OrphanRecoveryBatch(
+                report = batch.report,
+                nextCursor = cursor.copy(
+                    discardAfterKey = batch.nextAfterKey,
+                    discardComplete = !batch.hasMore,
+                ),
+                hasMore = batch.hasMore,
+                continueAfterFailureExhaustion = true,
+            )
+        }
+
+        var report = RecoveryReport()
         var nextCursor = cursor
-        var hasMore = false
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -752,10 +789,14 @@ object MediaStoreWriter {
                     collection,
                     if (collectionHasMore) nextAfterId else OrphanRecoveryCursor.COLLECTION_COMPLETE,
                 )
-                hasMore = hasMore || collectionHasMore
             }
         }
-        return OrphanRecoveryBatch(report, nextCursor, hasMore)
+        return OrphanRecoveryBatch(
+            report = report,
+            nextCursor = nextCursor,
+            // Even an empty media scan must enter the independent DISCARD stage once.
+            hasMore = !nextCursor.mediaComplete || !nextCursor.discardComplete,
+        )
     }
 
     /**
@@ -830,16 +871,25 @@ object MediaStoreWriter {
         return report
     }
 
-    private fun cleanupDiscardJournal(context: Context): RecoveryReport {
-        val entries = runCatching {
+    private fun cleanupDiscardJournalBatch(
+        context: Context,
+        afterKey: String?,
+        batchLimit: Int,
+    ): DiscardJournalRecoveryBatch {
+        val page = runCatching {
             context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).all
                 .filterValues { it == PENDING_DISCARD }
                 .keys
+                .let { discardJournalPage(it, afterKey, batchLimit) }
         }.getOrElse {
-            return RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
+            return DiscardJournalRecoveryBatch(
+                report = RecoveryReport().record(RecoveryEvent.QUERY_FAILED),
+                nextAfterKey = afterKey,
+                hasMore = false,
+            )
         }
         var report = RecoveryReport()
-        for (rawUri in entries) {
+        for (rawUri in page.keys) {
             report = report.record(RecoveryEvent.SCANNED)
             val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
             report = report.record(
@@ -847,7 +897,7 @@ object MediaStoreWriter {
                 else RecoveryEvent.DELETE_FAILED,
             )
         }
-        return report
+        return DiscardJournalRecoveryBatch(report, page.nextAfterKey, page.hasMore)
     }
 
     private fun registerPending(context: Context, uri: Uri): Uri? {
@@ -1160,8 +1210,11 @@ internal enum class RecoveryFailureClass { QUERY, PROBE, PUBLISH, DELETE }
 internal enum class OrphanRecoveryCollection { IMAGES, VIDEO }
 
 internal data class OrphanRecoveryCursor(
+    val preflightComplete: Boolean = false,
     val imagesAfterId: Long = 0L,
     val videoAfterId: Long = 0L,
+    val discardAfterKey: String? = null,
+    val discardComplete: Boolean = false,
 ) {
     fun afterId(collection: OrphanRecoveryCollection): Long = when (collection) {
         OrphanRecoveryCollection.IMAGES -> imagesAfterId
@@ -1173,6 +1226,9 @@ internal data class OrphanRecoveryCursor(
         OrphanRecoveryCollection.VIDEO -> copy(videoAfterId = value)
     }
 
+    val mediaComplete: Boolean
+        get() = imagesAfterId == COLLECTION_COMPLETE && videoAfterId == COLLECTION_COMPLETE
+
     companion object {
         const val COLLECTION_COMPLETE = Long.MAX_VALUE
     }
@@ -1182,7 +1238,41 @@ internal data class OrphanRecoveryBatch(
     val report: RecoveryReport,
     val nextCursor: OrphanRecoveryCursor,
     val hasMore: Boolean,
+    /** A durable per-entry failure may advance only after the ordinary retry budget is exhausted. */
+    val continueAfterFailureExhaustion: Boolean = false,
 )
+
+internal data class DiscardJournalPage(
+    val keys: List<String>,
+    val nextAfterKey: String?,
+    val hasMore: Boolean,
+)
+
+internal data class DiscardJournalRecoveryBatch(
+    val report: RecoveryReport,
+    val nextAfterKey: String?,
+    val hasMore: Boolean,
+)
+
+/** Stable lexicographic page over durable exact-URI keys; one extra key proves continuation. */
+internal fun discardJournalPage(
+    keys: Collection<String>,
+    afterKey: String?,
+    batchLimit: Int,
+): DiscardJournalPage {
+    require(batchLimit > 0)
+    val candidates = keys.asSequence()
+        .filter { afterKey == null || it > afterKey }
+        .sorted()
+        .take(batchLimit + 1)
+        .toList()
+    val pageKeys = candidates.take(batchLimit)
+    return DiscardJournalPage(
+        keys = pageKeys,
+        nextAfterKey = pageKeys.lastOrNull() ?: afterKey,
+        hasMore = candidates.size > batchLimit,
+    )
+}
 
 internal data class RecoveryReport(
     val scanned: Int = 0,

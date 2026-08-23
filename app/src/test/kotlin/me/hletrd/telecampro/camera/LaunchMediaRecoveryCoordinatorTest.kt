@@ -4,6 +4,7 @@ import me.hletrd.telecampro.storage.OrphanRecoveryBatch
 import me.hletrd.telecampro.storage.OrphanRecoveryCursor
 import me.hletrd.telecampro.storage.RecoveryReport
 import me.hletrd.telecampro.storage.RecoveryEvent
+import me.hletrd.telecampro.storage.RecoveryFailureClass
 import me.hletrd.telecampro.storage.RecoveryRetryDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -102,5 +103,61 @@ class LaunchMediaRecoveryCoordinatorTest {
         assertEquals(3, completion.attempts)
         assertEquals(List(3) { OrphanRecoveryCursor() }, cursors)
         assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
+    }
+
+    @Test
+    fun `failed discard page exhausts locally then advances to later durable entries`() {
+        val cursors = mutableListOf<String?>()
+        var laterPageRan = false
+        val completion = executeLaunchMediaRecovery(maxFailureAttempts = 3) { cursor ->
+            cursors += cursor.discardAfterKey
+            if (cursor.discardAfterKey == null) {
+                OrphanRecoveryBatch(
+                    report = RecoveryReport(scanned = 64).record(RecoveryEvent.DELETE_FAILED),
+                    nextCursor = cursor.copy(discardAfterKey = "content://row/064"),
+                    hasMore = true,
+                    continueAfterFailureExhaustion = true,
+                )
+            } else {
+                laterPageRan = true
+                OrphanRecoveryBatch(
+                    report = RecoveryReport(scanned = 12, deleted = 12),
+                    nextCursor = cursor.copy(
+                        discardAfterKey = "content://row/076",
+                        discardComplete = true,
+                    ),
+                    hasMore = false,
+                    continueAfterFailureExhaustion = true,
+                )
+            }
+        }
+
+        assertEquals(listOf(null, null, null, "content://row/064"), cursors)
+        assertTrue(laterPageRan)
+        assertEquals(4, completion.attempts)
+        assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
+        assertTrue(RecoveryFailureClass.DELETE in completion.report.failureClasses)
+        assertEquals(204, completion.report.scanned)
+        assertEquals(12, completion.report.deleted)
+    }
+
+    @Test
+    fun `terminal failed discard page reports exhausted after its bounded retry budget`() {
+        val completion = executeLaunchMediaRecovery(maxFailureAttempts = 2) { cursor ->
+            OrphanRecoveryBatch(
+                report = RecoveryReport(scanned = 1).record(RecoveryEvent.DELETE_FAILED),
+                nextCursor = cursor.copy(
+                    discardAfterKey = "content://row/only",
+                    discardComplete = true,
+                ),
+                hasMore = false,
+                continueAfterFailureExhaustion = true,
+            )
+        }
+
+        assertEquals(2, completion.attempts)
+        assertEquals(2, completion.report.scanned)
+        assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
+        assertEquals(setOf(RecoveryFailureClass.DELETE), completion.report.failureClasses)
     }
 }
