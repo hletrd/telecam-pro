@@ -130,6 +130,26 @@ class PendingDiscardJournalTest {
         assertFalse(PendingDiscardJournal(context).contains(uri.toString()))
     }
 
+    @Test
+    fun `unsupported database upgrade fails closed`() {
+        val suffix = UUID.randomUUID().toString()
+        val databaseName = "discard-upgrade-$suffix.db"
+        context.openOrCreateDatabase(databaseName, Context.MODE_PRIVATE, null).use { database ->
+            database.version = 1
+        }
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = databaseName,
+            databaseVersion = 2,
+            legacyPreferences = context.getSharedPreferences(
+                "legacy-upgrade-$suffix",
+                Context.MODE_PRIVATE,
+            ),
+        )
+
+        assertFalse(journal.contains("content://upgrade/marker"))
+    }
+
     private fun newJournal(): PendingDiscardJournal {
         val suffix = UUID.randomUUID().toString()
         return PendingDiscardJournal(

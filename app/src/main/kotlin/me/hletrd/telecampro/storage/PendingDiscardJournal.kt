@@ -9,6 +9,7 @@ import android.database.sqlite.SQLiteOpenHelper
 internal class PendingDiscardJournal(
     context: Context,
     private val databaseName: String = DATABASE_NAME,
+    private val databaseVersion: Int = DATABASE_VERSION,
     private val legacyPreferences: SharedPreferences = context.getSharedPreferences(
         LEGACY_PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -177,13 +178,17 @@ internal class PendingDiscardJournal(
     }
 
     private inline fun <T> withReadableDatabase(block: (SQLiteDatabase) -> T): T =
-        Helper(applicationContext, databaseName).use { helper -> block(helper.readableDatabase) }
+        Helper(applicationContext, databaseName, databaseVersion).use { helper ->
+            block(helper.readableDatabase)
+        }
 
     private inline fun <T> withWritableDatabase(block: (SQLiteDatabase) -> T): T =
-        Helper(applicationContext, databaseName).use { helper -> block(helper.writableDatabase) }
+        Helper(applicationContext, databaseName, databaseVersion).use { helper ->
+            block(helper.writableDatabase)
+        }
 
-    private class Helper(context: Context, name: String) :
-        SQLiteOpenHelper(context, name, null, DATABASE_VERSION) {
+    private class Helper(context: Context, name: String, version: Int) :
+        SQLiteOpenHelper(context, name, null, version) {
         override fun onCreate(database: SQLiteDatabase) {
             database.execSQL(
                 "CREATE TABLE $DISCARD_TABLE ($URI_COLUMN TEXT NOT NULL PRIMARY KEY)",
@@ -195,7 +200,9 @@ internal class PendingDiscardJournal(
             )
         }
 
-        override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            error("Unsupported pending-discard schema upgrade $oldVersion->$newVersion")
+        }
     }
 
     companion object {

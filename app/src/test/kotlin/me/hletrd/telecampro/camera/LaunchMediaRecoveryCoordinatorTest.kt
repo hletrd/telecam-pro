@@ -104,6 +104,50 @@ class LaunchMediaRecoveryCoordinatorTest {
     }
 
     @Test
+    fun `deadline firing before its cancellation installs retires that handle`() {
+        var canceled = false
+        var dispatches = 0
+        val coordinator = LaunchMediaRecoveryCoordinator<Int>(
+            dispatch = {
+                dispatches += 1
+                true
+            },
+            deadlineScheduler = LaunchMediaRecoveryDeadlineScheduler { _, action ->
+                action()
+                LaunchMediaRecoveryDeadlineCancellation { canceled = true }
+            },
+            deadlineMs = TEST_DEADLINE_MS,
+        )
+        var terminal: Result<Int>? = null
+
+        coordinator.request(Any(), recover = { 1 }) { terminal = it }
+
+        assertTrue(canceled)
+        assertEquals(0, dispatches)
+        assertTrue(terminal?.exceptionOrNull() is LaunchMediaRecoveryCapacityExhaustedException)
+        assertTrue(coordinator.isExhausted())
+    }
+
+    @Test
+    fun `dispatch failure after deadline exhaustion and repeated watchdog are inert`() {
+        val scheduler = TestDeadlineScheduler()
+        val coordinator = coordinator<Int>(scheduler) {
+            scheduler.fire()
+            false
+        }
+        val delivered = mutableListOf<Result<Int>>()
+
+        coordinator.request(Any(), recover = { 1 }) { delivered += it }
+        val exhausted = delivered.single().exceptionOrNull()
+        scheduler.fire()
+
+        assertEquals(1, delivered.size)
+        assertTrue(exhausted is LaunchMediaRecoveryCapacityExhaustedException)
+        assertTrue(coordinator.isExhausted())
+        assertFalse(coordinator.isRunning())
+    }
+
+    @Test
     fun `blocked recovery stays single flight across engine replacement`() {
         val tasks = ArrayDeque<Runnable>()
         val coordinator = coordinator<Int> { task -> tasks.addLast(task); true }
