@@ -47,6 +47,8 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             tracked = self.fixture(root)
             output = Path(temp_dir) / "immutable-output"
             observed: dict[str, str] = {}
+            expected_commit = release.git_value(root, "rev-parse", "HEAD")
+            expected_tree = release.git_value(root, "rev-parse", "HEAD^{tree}")
 
             def mutate_after_snapshot(live_root: Path, snapshot: Path) -> None:
                 self.assertEqual(snapshot.joinpath("app/src/main/tracked.txt").read_text(), "committed bytes\n")
@@ -56,6 +58,23 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 observed["command"] = " ".join(command)
+                authority_path = next(
+                    Path(argument.split("=", 1)[1])
+                    for argument in command
+                    if argument.startswith("-PimmutableReleaseAuthorityPath=")
+                )
+                authority_nonce = next(
+                    argument.split("=", 1)[1]
+                    for argument in command
+                    if argument.startswith("-PimmutableReleaseAuthorityNonce=")
+                )
+                self.assertTrue(authority_path.is_file())
+                self.assertEqual(0o600, authority_path.stat().st_mode & 0o777)
+                self.assertEqual(64, len(authority_nonce))
+                authority = authority_path.read_text(encoding="ascii")
+                self.assertIn(f"nonce={authority_nonce}\n", authority)
+                self.assertIn(f"commit={expected_commit}\n", authority)
+                self.assertIn(f"tree={expected_tree}\n", authority)
                 artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
                 artifact.parent.mkdir(parents=True)
                 artifact.write_bytes(snapshot.joinpath("app/src/main/tracked.txt").read_bytes())
@@ -83,6 +102,8 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             )
             self.assertIn(f"-PimmutableReleaseCommit={commit}", observed["command"])
             self.assertIn(f"-PimmutableReleaseTree={tree}", observed["command"])
+            self.assertIn("-PimmutableReleaseAuthorityPath=", observed["command"])
+            self.assertIn("-PimmutableReleaseAuthorityNonce=", observed["command"])
 
     def test_snapshot_mutation_blocks_output_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -2,7 +2,9 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFilePermission
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
@@ -34,6 +36,15 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
     @get:Input
     @get:Optional
     abstract val immutableTree: org.gradle.api.provider.Property<String>
+
+    @get:Internal
+    abstract val immutableAuthorityPath: org.gradle.api.provider.Property<String>
+
+    @get:Internal
+    abstract val immutableAuthorityNonce: org.gradle.api.provider.Property<String>
+
+    @get:Internal
+    abstract val immutableStoreFile: org.gradle.api.provider.Property<String>
 
     @get:Input
     abstract val requireImmutableSnapshot: org.gradle.api.provider.Property<Boolean>
@@ -186,6 +197,111 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
             }
         }
 
+        fun sha256NoFollow(path: java.nio.file.Path): String {
+            val attributes = Files.readAttributes(
+                path,
+                BasicFileAttributes::class.java,
+                LinkOption.NOFOLLOW_LINKS,
+            )
+            if (!attributes.isRegularFile || Files.isSymbolicLink(path)) {
+                throw GradleException("Immutable release authority references an unsafe file owner")
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
+
+        fun requireAndConsumePrivateAuthority(head: String, tree: String) {
+            val rawPath = immutableAuthorityPath.orNull
+                ?: throw GradleException(
+                    "Release tasks require the immutable wrapper's private single-use authority",
+                )
+            val suppliedNonce = immutableAuthorityNonce.orNull
+                ?: throw GradleException(
+                    "Release tasks require the immutable wrapper's private authority nonce",
+                )
+            if (!suppliedNonce.matches(Regex("[0-9a-f]{64}"))) {
+                throw GradleException("Immutable release authority nonce is not canonical")
+            }
+            val authorityPath = Paths.get(rawPath)
+            val repositoryPath = repositoryDirectory.get().asFile.toPath().toRealPath()
+            if (!authorityPath.isAbsolute || authorityPath.normalize().startsWith(repositoryPath)) {
+                throw GradleException("Immutable release authority must live outside project inputs")
+            }
+            val attributes = try {
+                Files.readAttributes(
+                    authorityPath,
+                    BasicFileAttributes::class.java,
+                    LinkOption.NOFOLLOW_LINKS,
+                )
+            } catch (error: Exception) {
+                throw GradleException("Immutable release authority is unavailable", error)
+            }
+            if (!attributes.isRegularFile || Files.isSymbolicLink(authorityPath)) {
+                throw GradleException("Immutable release authority is not a no-follow regular file")
+            }
+            runCatching { Files.getPosixFilePermissions(authorityPath) }.getOrNull()?.let { permissions ->
+                val forbidden = permissions - setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                )
+                if (forbidden.isNotEmpty() || PosixFilePermission.OWNER_READ !in permissions) {
+                    throw GradleException("Immutable release authority permissions are not private")
+                }
+            }
+            val authority = Properties().apply {
+                Files.newInputStream(authorityPath, LinkOption.NOFOLLOW_LINKS).use { load(it) }
+            }
+            // Consume before any source/signing verification so this record cannot authorize a
+            // second release task invocation even when a later check fails.
+            try {
+                Files.delete(authorityPath)
+            } catch (error: Exception) {
+                throw GradleException("Immutable release authority could not be consumed", error)
+            }
+            val expectedKeys = setOf(
+                "schema", "nonce", "root", "commit", "tree", "storeFile", "storeSha256",
+            )
+            if (authority.stringPropertyNames() != expectedKeys || authority.getProperty("schema") != "1") {
+                throw GradleException("Immutable release authority schema is not exact")
+            }
+            fun decoded(name: String): String = try {
+                Base64.getUrlDecoder().decode(authority.getProperty(name)).toString(Charsets.UTF_8)
+            } catch (error: Exception) {
+                throw GradleException("Immutable release authority contains invalid $name", error)
+            }
+            val authorityRoot = Paths.get(decoded("root")).toRealPath()
+            val storeFile = decoded("storeFile")
+            val expectedStoreFile = immutableStoreFile.orNull.orEmpty()
+            if (
+                authority.getProperty("nonce") != suppliedNonce ||
+                authorityRoot != repositoryPath ||
+                authority.getProperty("commit") != head ||
+                authority.getProperty("tree") != tree ||
+                storeFile != expectedStoreFile
+            ) {
+                throw GradleException("Immutable release authority does not match this invocation")
+            }
+            val expectedStoreDigest = authority.getProperty("storeSha256")
+            if (storeFile.isEmpty()) {
+                if (expectedStoreDigest.isNotEmpty()) {
+                    throw GradleException("Immutable release authority has an unexpected signing digest")
+                }
+            } else {
+                val storePath = repositoryPath.resolve(storeFile).normalize()
+                if (!storePath.startsWith(repositoryPath) || sha256NoFollow(storePath) != expectedStoreDigest) {
+                    throw GradleException("Immutable release signing owner does not match its authority")
+                }
+            }
+        }
+
         val suppliedHead = immutableCommit.orNull
         val suppliedTree = immutableTree.orNull
         if (requireImmutableSnapshot.get() && (suppliedHead == null || suppliedTree == null)) {
@@ -196,6 +312,9 @@ abstract class VerifyCleanReleaseGitTask : DefaultTask() {
         }
         if ((suppliedHead == null) != (suppliedTree == null)) {
             throw GradleException("Both immutableReleaseCommit and immutableReleaseTree are required")
+        }
+        if (requireImmutableSnapshot.get() && suppliedHead != null && suppliedTree != null) {
+            requireAndConsumePrivateAuthority(suppliedHead, suppliedTree)
         }
         requireExactOutputNamespace(allowMissingProvenance = true)
 
@@ -443,6 +562,8 @@ val releaseSourceRoots = listOf("app/src/main", "app/src/release")
 val releaseSourceProvenanceDir = layout.buildDirectory.dir("generated/release-source-provenance")
 val immutableReleaseCommit = providers.gradleProperty("immutableReleaseCommit")
 val immutableReleaseTree = providers.gradleProperty("immutableReleaseTree")
+val immutableReleaseAuthorityPath = providers.gradleProperty("immutableReleaseAuthorityPath")
+val immutableReleaseAuthorityNonce = providers.gradleProperty("immutableReleaseAuthorityNonce")
 val verifyCleanReleaseGit = tasks.register<VerifyCleanReleaseGitTask>("verifyCleanReleaseGit") {
     group = "verification"
     description = "Verify release inputs and generate source provenance from one clean Git state."
@@ -450,6 +571,9 @@ val verifyCleanReleaseGit = tasks.register<VerifyCleanReleaseGitTask>("verifyCle
     protectedSourceRoots.set(releaseSourceRoots)
     immutableCommit.set(immutableReleaseCommit)
     immutableTree.set(immutableReleaseTree)
+    immutableAuthorityPath.set(immutableReleaseAuthorityPath)
+    immutableAuthorityNonce.set(immutableReleaseAuthorityNonce)
+    immutableStoreFile.set(immutableReleaseStoreFile)
     requireImmutableSnapshot.set(true)
     outputDirectory.set(releaseSourceProvenanceDir)
     outputs.upToDateWhen { false }

@@ -223,6 +223,36 @@ class ReleaseSourceGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("tools/build_immutable_release.py", output)
 
+    def test_direct_release_gate_rejects_forgeable_public_identity_properties(self) -> None:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        result = run(
+            [
+                "./gradlew",
+                "--console=plain",
+                ":app:verifyCleanReleaseGit",
+                f"-PimmutableReleaseCommit={head}",
+                f"-PimmutableReleaseTree={tree}",
+                "-PimmutableReleaseStoreFile=telecampro-upload.jks",
+            ],
+            REPO_ROOT,
+        )
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("private single-use authority", output)
+
     def test_gradle_guard_rejects_relative_and_absolute_tracked_symlinks(self) -> None:
         for absolute in (False, True):
             with self.subTest(absolute=absolute), tempfile.TemporaryDirectory() as temp_dir:

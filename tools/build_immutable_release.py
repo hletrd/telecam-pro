@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import os
 import pathlib
@@ -37,6 +38,8 @@ RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
 RELEASE_REPORT_PREFIXES = ("resources_config_map_file/release/",)
 STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"
 IMMUTABLE_STORE_FILE_PROPERTY = "immutableReleaseStoreFile"
+IMMUTABLE_AUTHORITY_PATH_PROPERTY = "immutableReleaseAuthorityPath"
+IMMUTABLE_AUTHORITY_NONCE_PROPERTY = "immutableReleaseAuthorityNonce"
 
 
 class _SealedPath(NamedTuple):
@@ -109,6 +112,48 @@ class ReleaseSnapshotSeal:
                 os.chmod(entry.path, entry.original_mode, follow_symlinks=False)
             except OSError:
                 pass
+
+
+def _authority_text(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def create_release_authority(
+    path: pathlib.Path,
+    snapshot: pathlib.Path,
+    commit: str,
+    tree: str,
+    store_file: str | None,
+) -> str:
+    """Create one private, single-invocation authorization record outside project inputs."""
+    nonce = secrets.token_hex(32)
+    store_digest = (
+        sha256_regular_beneath(snapshot, store_file)
+        if store_file is not None
+        else ""
+    )
+    payload = (
+        "schema=1\n"
+        f"nonce={nonce}\n"
+        f"root={_authority_text(str(snapshot.resolve()))}\n"
+        f"commit={commit}\n"
+        f"tree={tree}\n"
+        f"storeFile={_authority_text(store_file or '')}\n"
+        f"storeSha256={store_digest}\n"
+    ).encode("ascii")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        view = memoryview(payload)
+        written = 0
+        while written < len(view):
+            count = os.write(descriptor, view[written:])
+            if count <= 0:
+                raise RuntimeError("could not write immutable release authority")
+            written += count
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return nonce
 
 
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -569,11 +614,21 @@ def build_immutable_release(
         try:
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
+            authority_path = pathlib.Path(temp_dir) / "release-authority.properties"
+            authority_nonce = create_release_authority(
+                authority_path,
+                snapshot,
+                commit,
+                tree,
+                local_inputs.store_file,
+            )
             command = [
                 "./gradlew",
                 *tasks,
                 f"-PimmutableReleaseCommit={commit}",
                 f"-PimmutableReleaseTree={tree}",
+                f"-P{IMMUTABLE_AUTHORITY_PATH_PROPERTY}={authority_path}",
+                f"-P{IMMUTABLE_AUTHORITY_NONCE_PROPERTY}={authority_nonce}",
             ]
             if local_inputs.store_file is not None:
                 command.append(

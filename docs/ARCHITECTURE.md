@@ -1209,12 +1209,16 @@ marker as non-evidence-grade instead of trying to prove a post-hash mutable comp
 Release compilation, resources, shrinking, and packaging run inside a private checkout of the exact
 clean HEAD recorded in `telecam-release-provenance/source.properties`. The generated asset namespace
 is exact, and the upload checker rejects any extra member. Direct Gradle release entry points fail
-closed; debug tasks continue to consume the ordinary development tree. Release signing has the same
-single-owner boundary: `keystore.properties` must name one normalized repository-relative
-`storeFile`; the wrapper parses Java Properties syntax, no-follow copies that exact regular file,
-seals both inputs and passes the resolved private path to Gradle. `TELECAMPRO_STORE_FILE` is cleared
-and is not a supported override. Environment values remain valid only for the alias/password fields,
-which cannot redirect Gradle to another file.
+closed: commit/tree/store-file properties are provenance rather than authorization, and the wrapper
+adds one private 0600, outside-project, random-nonce authority record binding the private checkout and
+sealed signing digest. The Gradle gate validates and deletes that record before inspecting source, so
+the same invocation cannot be replayed and copying the public `-P` identities into a direct command
+cannot authorize compilation. Debug tasks continue to consume the ordinary development tree.
+Release signing has the same single-owner boundary: `keystore.properties` must name one normalized
+repository-relative `storeFile`; the wrapper parses Java Properties syntax, no-follow copies that
+exact regular file, seals both inputs and binds its digest into the single-use authority.
+`TELECAMPRO_STORE_FILE` is cleared and is not a supported override. Environment values remain valid
+only for alias/password fields, which cannot redirect Gradle to another file.
 
 **Focused Android test subset:** `app/src/test/` is the JVM/Robolectric/Compose source of truth. Run
 `./gradlew :app:testDebugUnitTest` while iterating on that surface, then run the authoritative

@@ -132,7 +132,9 @@ checked against `gradle/verification-metadata.xml` in strict mode.
 ### Release builds
 
 `python3 tools/build_immutable_release.py :app:bundleRelease` produces the Play App Bundle from a
-private export of the clean committed source. Direct Gradle release entry points fail closed so a
+private export of the clean committed source. Direct Gradle release entry points fail closed: public
+commit/tree/store-file properties do not authorize a build without the wrapper's private single-use
+invocation record, so a
 post-verification worktree edit cannot enter an artifact carrying the earlier commit provenance.
 The command prints a unique `app/build/immutable-release/<commit>-<nonce>` root; bundle, APK, and
 lint outputs are discovered under that root's `bundle/release/`, `apk/release/`, and `logs/`
