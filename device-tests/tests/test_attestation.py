@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import hashlib
 import json
 import os
@@ -85,9 +86,19 @@ class RunAttestationTest(unittest.TestCase):
 
             apk_contract = SimpleNamespace(application_id=runner.APP_ID)
             packaged_source = SimpleNamespace()
+            fake_snapshot = runner.ApkInspectionSnapshot(
+                runner.DEFAULT_APK,
+                runner.DEFAULT_APK,
+                "a" * 64,
+            )
             with (
                 patch.object(sys, "argv", ["run.py", "--serial", "serial-a"]),
                 patch.object(runner, "sha256_file", return_value="a" * 64),
+                patch.object(
+                    runner,
+                    "apk_inspection_snapshot",
+                    return_value=contextlib.nullcontext(fake_snapshot),
+                ),
                 patch.object(runner, "inspect_apk_contract", return_value=apk_contract),
                 patch.object(runner, "require_apk_source_match", return_value=packaged_source),
                 patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
@@ -477,45 +488,33 @@ class RunAttestationTest(unittest.TestCase):
             self.assertEqual(source / "reports", runner.reports_root_path(source))
             self.assertEqual([], list(controlled_tmp.glob("telecam-device-harness-*")))
 
-    def test_real_child_rejects_parent_proof_digest_mismatch(self) -> None:
+    def test_correct_digest_forged_direct_child_is_refused_before_imports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            wrong_digest = "f" * 64
-            snapshot = root / f"harness-{wrong_digest}"
-            runner._copy_harness_snapshot(DEVICE_TESTS, snapshot)
-            proof = runner._HarnessChildProof(
-                digest=wrong_digest,
-                snapshot_root=snapshot.resolve(),
-                source_root=DEVICE_TESTS.resolve(),
-                nonce="a" * 32,
+            staging = root / "staging"
+            entries = runner._copy_harness_snapshot(DEVICE_TESTS, staging)
+            canonical = "".join(
+                f"{entry['sha256']}  {entry['bytes']}  {entry['path']}\n" for entry in entries
+            ).encode()
+            digest = hashlib.sha256(canonical).hexdigest()
+            snapshot = root / f"harness-{digest}"
+            staging.rename(snapshot)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(snapshot / "run.py"),
+                    runner._FORBIDDEN_SERIALIZED_CHILD_OPTION,
+                    digest,
+                    "--serial",
+                    "no-device",
+                ],
+                env={**os.environ, "TELECAM_HARNESS_SOURCE_ROOT": str(DEVICE_TESTS)},
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
-            read_fd, write_fd = os.pipe()
-            try:
-                runner._write_all(write_fd, runner._child_proof_payload(proof))
-                os.close(write_fd)
-                write_fd = -1
-                env = {**os.environ, "TELECAM_HARNESS_SOURCE_ROOT": str(DEVICE_TESTS)}
-                completed = subprocess.run(
-                    [
-                        sys.executable,
-                        str(snapshot / "run.py"),
-                        runner._HARNESS_CHILD_FD_OPTION,
-                        str(read_fd),
-                        "--serial",
-                        "no-device",
-                    ],
-                    env=env,
-                    pass_fds=(read_fd,),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            finally:
-                if write_fd >= 0:
-                    os.close(write_fd)
-                os.close(read_fd)
             self.assertNotEqual(0, completed.returncode)
-            self.assertIn("harness snapshot digest mismatch", completed.stderr)
+            self.assertIn("only inherited fork authority is accepted", completed.stderr)
 
     def test_outer_child_imports_snapshot_after_mutable_source_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -523,31 +522,17 @@ class RunAttestationTest(unittest.TestCase):
             source = copy_harness_fixture(root)
             controlled_tmp = root / "tmp"
             controlled_tmp.mkdir()
-            child_result: list[subprocess.CompletedProcess[str]] = []
-
-            def mutate_then_run(command, **kwargs):
+            def mutate_before_child(_snapshot: Path) -> None:
                 (source / "cases.py").write_text("this is invalid python !!!\n", encoding="utf-8")
-                result = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    **kwargs,
-                )
-                child_result.append(result)
-                return result
 
             result = runner._run_from_immutable_harness_snapshot(
                 source_root=source,
                 argv=["--serial", "no-device"],
-                run_command=mutate_then_run,
+                before_child=mutate_before_child,
                 temporary_parent=controlled_tmp,
             )
 
             self.assertEqual(2, result)
-            self.assertEqual(1, len(child_result))
-            output = child_result[0].stdout + child_result[0].stderr
-            self.assertIn(str(root / "app/build/outputs/apk/debug/app-debug.apk"), output)
-            self.assertNotIn("SyntaxError", output)
             self.assertEqual([], list(controlled_tmp.glob("telecam-device-harness-*")))
 
     def test_outer_snapshot_rejects_file_swap_to_symlink_at_open(self) -> None:
@@ -749,6 +734,66 @@ class RunAttestationTest(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "missing or malformed"):
             runner.require_installed_apk_match(expected, "not-a-digest /base.apk\n")
 
+    def test_apk_inspection_uses_one_private_regular_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "app-debug.apk"
+            source.write_bytes(b"apk-A")
+            with runner.apk_inspection_snapshot(source) as snapshot:
+                self.assertEqual(snapshot.source_path, source)
+                self.assertNotEqual(snapshot.private_path, source)
+                self.assertEqual(snapshot.private_path.read_bytes(), b"apk-A")
+                self.assertEqual(snapshot.sha256, hashlib.sha256(b"apk-A").hexdigest())
+                self.assertEqual(snapshot.private_path.stat().st_mode & 0o777, 0o600)
+                source.write_bytes(b"apk-B")
+                self.assertEqual(snapshot.private_path.read_bytes(), b"apk-A")
+
+    def test_apk_snapshot_rejects_symlink_and_special_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "target.apk"
+            target.write_bytes(b"apk")
+            link = root / "link.apk"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(ContractError, "no-follow regular"):
+                with runner.apk_inspection_snapshot(link):
+                    pass
+            fifo = root / "artifact.pipe"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(ContractError, "no-follow regular"):
+                with runner.apk_inspection_snapshot(fifo):
+                    pass
+
+    def test_apk_snapshot_is_inspector_authority_across_source_swap_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "app-debug.apk"
+            source.write_bytes(b"apk-A")
+            inspected: list[Path] = []
+            args = SimpleNamespace(serial="none")
+            with runner.apk_inspection_snapshot(source) as snapshot:
+                source.rename(root / "saved.apk")
+                source.write_bytes(b"apk-B")
+                source.unlink()
+                (root / "saved.apk").rename(source)
+
+                def inspect(path: Path):
+                    inspected.append(path)
+                    return SimpleNamespace(application_id="wrong.package")
+
+                def source_identity(path: Path, _repo: Path):
+                    inspected.append(path)
+                    return SimpleNamespace()
+
+                with (
+                    patch.object(runner, "inspect_apk_contract", side_effect=inspect),
+                    patch.object(runner, "require_apk_source_match", side_effect=source_identity),
+                    patch.object(runner, "production_capture_subdir", return_value="TeleCamPro"),
+                    patch.object(runner, "require_harness_identity_unchanged"),
+                ):
+                    self.assertEqual(runner._run_snapshotted_cli(args, ["smoke"], snapshot), 2)
+                self.assertEqual(inspected, [snapshot.private_path, snapshot.private_path])
+
     def test_git_identity_records_head_and_exact_dirty_rows(self) -> None:
         responses = [
             SimpleNamespace(stdout="0123456789abcdef\n"),
@@ -865,8 +910,6 @@ class RunAttestationTest(unittest.TestCase):
             evidence.mkdir()
             (report_dir / "report.md").write_text("report\n", encoding="utf-8")
             (evidence / "frame.bin").write_bytes(b"frame")
-            (report_dir / runner.ATTESTATION_NAME).write_text("stale", encoding="utf-8")
-            (report_dir / runner.ATTESTATION_SHA_NAME).write_text("stale", encoding="utf-8")
 
             manifest = runner.artifact_manifest(report_dir)
             self.assertEqual(
@@ -876,14 +919,144 @@ class RunAttestationTest(unittest.TestCase):
             self.assertEqual(manifest[0]["sha256"], hashlib.sha256(b"frame").hexdigest())
 
             document = {"schema_version": 1, "artifacts": manifest}
-            attestation, sidecar = runner.write_attestation(report_dir, document)
+            attestation, sidecar = runner.write_attestation(
+                report_dir,
+                document,
+                expected_artifacts=manifest,
+            )
             payload = attestation.read_bytes()
             self.assertEqual(json.loads(payload), document)
             self.assertEqual(
                 sidecar.read_text(encoding="utf-8"),
                 f"{hashlib.sha256(payload).hexdigest()}  {runner.ATTESTATION_NAME}\n",
             )
-            self.assertEqual(runner.artifact_manifest(report_dir), manifest)
+            self.assertEqual(
+                runner.artifact_manifest(report_dir, allow_attestation_outputs=True),
+                manifest,
+            )
+
+    def test_report_freeze_rejects_symlink_and_fifo(self) -> None:
+        for special in ("symlink", "fifo"):
+            with self.subTest(special=special), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                if special == "symlink":
+                    target = root / "target.bin"
+                    target.write_bytes(b"target")
+                    (root / "evidence.bin").symlink_to(target)
+                else:
+                    os.mkfifo(root / "evidence.bin")
+                with self.assertRaisesRegex(ContractError, "must not be a symlink|regular file"):
+                    runner.artifact_manifest(root)
+
+    def test_report_freeze_rejects_file_and_parent_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            artifact = evidence / "frame.bin"
+            artifact.write_bytes(b"frame")
+            replacement = root / "replacement.bin"
+            replacement.write_bytes(b"replacement")
+            real_read = os.read
+            swapped = False
+
+            def swap_file(fd, size):
+                nonlocal swapped
+                chunk = real_read(fd, size)
+                if chunk and not swapped:
+                    swapped = True
+                    artifact.rename(evidence / "saved.bin")
+                    replacement.rename(artifact)
+                return chunk
+
+            with patch.object(runner.os, "read", side_effect=swap_file):
+                with self.assertRaisesRegex(ContractError, "changed while reading"):
+                    runner.artifact_manifest(root)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            (evidence / "frame.bin").write_bytes(b"frame")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "frame.bin").write_bytes(b"outside")
+            real_read = os.read
+            swapped = False
+
+            def swap_parent(fd, size):
+                nonlocal swapped
+                chunk = real_read(fd, size)
+                if chunk and not swapped:
+                    swapped = True
+                    evidence.rename(root / "saved-evidence")
+                    evidence.symlink_to(outside, target_is_directory=True)
+                return chunk
+
+            with patch.object(runner.os, "read", side_effect=swap_parent):
+                with self.assertRaisesRegex(ContractError, "directory changed while reading"):
+                    runner.artifact_manifest(root)
+
+    def test_report_freeze_rejects_disappearance_and_unexpected_addition(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "a.bin"
+            second = root / "b.bin"
+            first.write_bytes(b"a")
+            second.write_bytes(b"b")
+            real_read = os.read
+            removed = False
+
+            def remove_next(fd, size):
+                nonlocal removed
+                chunk = real_read(fd, size)
+                if chunk and not removed:
+                    removed = True
+                    second.unlink()
+                return chunk
+
+            with patch.object(runner.os, "read", side_effect=remove_next):
+                with self.assertRaisesRegex(ContractError, "disappeared|artifact set changed"):
+                    runner.artifact_manifest(root)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "a.bin").write_bytes(b"a")
+            real_read = os.read
+            added = False
+
+            def add_unexpected(fd, size):
+                nonlocal added
+                chunk = real_read(fd, size)
+                if chunk and not added:
+                    added = True
+                    (root / "unexpected.bin").write_bytes(b"unexpected")
+                return chunk
+
+            with patch.object(runner.os, "read", side_effect=add_unexpected):
+                with self.assertRaisesRegex(ContractError, "artifact set changed"):
+                    runner.artifact_manifest(root)
+
+    def test_attestation_refuses_artifact_set_change_after_freeze(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "report.md").write_text("report\n", encoding="utf-8")
+            frozen = runner.artifact_manifest(root)
+            (root / "unexpected.bin").write_bytes(b"unexpected")
+            with self.assertRaisesRegex(ContractError, "changed before attestation"):
+                runner.write_attestation(
+                    root,
+                    {"schema_version": 1, "artifacts": frozen},
+                    expected_artifacts=frozen,
+                )
+
+    def test_attestation_refuses_reserved_existing_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir)
+            (report_dir / "report.md").write_text("report\n", encoding="utf-8")
+            (report_dir / runner.ATTESTATION_NAME).write_text("stale", encoding="utf-8")
+            with self.assertRaisesRegex(ContractError, "reserved attestation output"):
+                runner.artifact_manifest(report_dir)
 
     def test_report_summary_exposes_restoration_failure_and_final_exit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

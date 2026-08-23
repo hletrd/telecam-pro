@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import secrets
 import shlex
 import shutil
@@ -27,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,12 +41,10 @@ SOURCE_HARNESS_ROOT = Path(
 ).resolve()
 _HARNESS_GENERATED_PARTS = {"reports", "__pycache__", ".pytest_cache"}
 _LEGACY_HARNESS_SNAPSHOT_ENV = "TELECAM_HARNESS_SNAPSHOT"
-_HARNESS_CHILD_FD_OPTION = "--telecam-internal-harness-child-fd"
-_HARNESS_CHILD_PROOF_SCHEMA = 1
+_FORBIDDEN_SERIALIZED_CHILD_OPTION = "--telecam-internal-harness-child-proof"
 _MAX_HARNESS_FILE_BYTES = 16 * 1024 * 1024
 _MAX_HARNESS_TOTAL_BYTES = 128 * 1024 * 1024
 _MAX_HARNESS_FILES = 4_096
-_MAX_CHILD_PROOF_BYTES = 4_096
 _READ_CHUNK_BYTES = 1024 * 1024
 
 
@@ -54,6 +54,119 @@ class _HarnessChildProof:
     snapshot_root: Path
     source_root: Path
     nonce: str
+
+
+@dataclass(frozen=True)
+class ApkInspectionSnapshot:
+    source_path: Path
+    private_path: Path
+    sha256: str
+
+
+def _open_regular_absolute_no_follow(path: Path) -> tuple[int, list[int], os.stat_result]:
+    """Pin one regular leaf with no-follow semantics beneath a canonical parent directory."""
+    absolute = Path(os.path.abspath(path))
+    if not absolute.is_absolute() or not absolute.parts:
+        raise ContractError(f"APK path is unsafe: {path}")
+    descriptors: list[int] = []
+    try:
+        expected = os.stat(absolute, follow_symlinks=False)
+        if stat.S_ISLNK(expected.st_mode) or not stat.S_ISREG(expected.st_mode):
+            raise ContractError(f"APK must be a no-follow regular file: {absolute}")
+        # macOS exposes /var and /tmp through stable system symlinks. Canonicalize the parent once,
+        # then pin that directory and no-follow-open only the artifact leaf. All later use is through
+        # the file descriptor/private copy, and the original leaf identity is rechecked after copy.
+        parent = absolute.parent.resolve(strict=True)
+        current = os.open(parent, _open_flags(directory=True))
+        descriptors.append(current)
+        file_fd = os.open(absolute.name, _open_flags(), dir_fd=current)
+        descriptors.append(file_fd)
+        attributes = os.fstat(file_fd)
+        if not stat.S_ISREG(attributes.st_mode) or not _same_file_identity(expected, attributes):
+            raise ContractError(f"APK changed before no-follow open: {absolute}")
+        return file_fd, descriptors, attributes
+    except OSError as error:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise ContractError(f"APK must be a stable no-follow regular file: {absolute}: {error}") from error
+
+
+def _digest_regular_absolute_no_follow(path: Path) -> tuple[int, str]:
+    file_fd, descriptors, before = _open_regular_absolute_no_follow(path)
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        while True:
+            chunk = os.read(file_fd, _READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+        after = os.fstat(file_fd)
+        current = os.stat(Path(os.path.abspath(path)), follow_symlinks=False)
+        if (
+            not _same_file_identity(before, after)
+            or not _same_file_identity(after, current)
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+            or total != after.st_size
+        ):
+            raise ContractError(f"regular file changed while reading: {path}")
+        return total, digest.hexdigest()
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+@contextmanager
+def apk_inspection_snapshot(source_path: Path):
+    """Copy/hash one pinned APK inode and expose only the private copy to inspectors."""
+    source_path = Path(os.path.abspath(source_path))
+    file_fd, descriptors, before = _open_regular_absolute_no_follow(source_path)
+    with tempfile.TemporaryDirectory(prefix="telecam-device-apk-") as temp_dir:
+        private_path = Path(temp_dir) / "inspected.apk"
+        digest = hashlib.sha256()
+        try:
+            output_fd = os.open(
+                private_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                while True:
+                    chunk = os.read(file_fd, _READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    _write_all(output_fd, chunk)
+                os.fsync(output_fd)
+            finally:
+                os.close(output_fd)
+            after = os.fstat(file_fd)
+            current = os.stat(source_path, follow_symlinks=False)
+            if (
+                not _same_file_identity(before, after)
+                or not _same_file_identity(after, current)
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or private_path.stat().st_size != after.st_size
+            ):
+                raise ContractError("APK changed while its private inspection snapshot was copied")
+            yield ApkInspectionSnapshot(source_path, private_path, digest.hexdigest())
+        finally:
+            for descriptor in reversed(descriptors):
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
 
 def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
@@ -311,77 +424,6 @@ def _copy_harness_snapshot(
     ]
 
 
-def _child_proof_payload(proof: _HarnessChildProof) -> bytes:
-    return (
-        json.dumps(
-            {
-                "schema": _HARNESS_CHILD_PROOF_SCHEMA,
-                "digest": proof.digest,
-                "snapshot_root": str(proof.snapshot_root),
-                "source_root": str(proof.source_root),
-                "nonce": proof.nonce,
-            },
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
-def _read_child_proof(fd: int) -> _HarnessChildProof:
-    try:
-        descriptor = os.fstat(fd)
-        if not stat.S_ISFIFO(descriptor.st_mode):
-            raise RuntimeError("harness child proof must arrive through a one-shot pipe")
-        payload = bytearray()
-        while len(payload) <= _MAX_CHILD_PROOF_BYTES:
-            chunk = os.read(fd, min(1024, _MAX_CHILD_PROOF_BYTES + 1 - len(payload)))
-            if not chunk:
-                break
-            payload.extend(chunk)
-        if len(payload) > _MAX_CHILD_PROOF_BYTES:
-            raise RuntimeError("harness child proof exceeds its bounded size")
-    finally:
-        os.close(fd)
-    try:
-        document = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError("harness child proof is malformed") from error
-    if not isinstance(document, dict) or set(document) != {
-        "schema", "digest", "snapshot_root", "source_root", "nonce"
-    }:
-        raise RuntimeError("harness child proof fields are not exact")
-    digest = str(document["digest"])
-    nonce = str(document["nonce"])
-    if document["schema"] != _HARNESS_CHILD_PROOF_SCHEMA:
-        raise RuntimeError("harness child proof schema is unsupported")
-    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-        raise RuntimeError("harness child proof digest is malformed")
-    if re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
-        raise RuntimeError("harness child proof nonce is malformed")
-    return _HarnessChildProof(
-        digest=digest,
-        snapshot_root=Path(str(document["snapshot_root"])).resolve(),
-        source_root=Path(str(document["source_root"])).resolve(),
-        nonce=nonce,
-    )
-
-
-def _consume_child_fd_argument(argv: list[str]) -> int | None:
-    positions = [index for index, value in enumerate(argv) if value == _HARNESS_CHILD_FD_OPTION]
-    if not positions:
-        return None
-    if len(positions) != 1:
-        raise RuntimeError("harness child proof option must appear exactly once")
-    index = positions[0]
-    if index + 1 >= len(argv):
-        raise RuntimeError("harness child proof descriptor is missing")
-    raw = argv[index + 1]
-    if re.fullmatch(r"[0-9]+", raw) is None:
-        raise RuntimeError("harness child proof descriptor is malformed")
-    del argv[index:index + 2]
-    return int(raw)
-
-
 def _validate_child_execution_root(proof: _HarnessChildProof) -> None:
     if proof.snapshot_root != HARNESS_ROOT or proof.source_root != SOURCE_HARNESS_ROOT:
         raise RuntimeError("harness child proof names the wrong execution/source root")
@@ -399,7 +441,7 @@ def _run_from_immutable_harness_snapshot(
     *,
     source_root: Path = HARNESS_ROOT,
     argv: Sequence[str] | None = None,
-    run_command: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    before_child: Callable[[Path], None] | None = None,
     temporary_parent: Path | None = None,
 ) -> int:
     """Execute the CLI from the exact private bytes recorded by its attestation."""
@@ -410,8 +452,6 @@ def _run_from_immutable_harness_snapshot(
         )
     )
     staging_root = temporary_root / "staging"
-    read_fd: int | None = None
-    write_fd: int | None = None
     try:
         source_root, source_identity = _canonical_non_symlink_directory(source_root)
         entries = _copy_harness_snapshot(
@@ -431,41 +471,55 @@ def _run_from_immutable_harness_snapshot(
             source_root=source_root,
             nonce=secrets.token_hex(16),
         )
-        read_fd, write_fd = os.pipe()
-        _write_all(write_fd, _child_proof_payload(proof))
-        os.close(write_fd)
-        write_fd = None
-        environment = os.environ.copy()
-        environment.pop(_LEGACY_HARNESS_SNAPSHOT_ENV, None)
-        environment["TELECAM_HARNESS_SOURCE_ROOT"] = str(source_root)
         forwarded = list(sys.argv[1:] if argv is None else argv)
-        completed = run_command(
-            [
-                sys.executable,
-                str(snapshot_root / "run.py"),
-                _HARNESS_CHILD_FD_OPTION,
-                str(read_fd),
-                *forwarded,
-            ],
-            env=environment,
-            pass_fds=(read_fd,),
-            check=False,
-        )
-        return completed.returncode
+        if before_child is not None:
+            before_child(snapshot_root)
+        # Fork preserves one unforgeable-in-argv object capability held by this already-running
+        # outer orchestrator. The child executes the copied run.py through runpy without an exec
+        # boundary, so a direct caller cannot mint child mode with CLI/env/proof bytes. A direct
+        # snapshot invocation merely enters this outer path and creates its own fresh immutable copy.
+        authority = object()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.environ.pop(_LEGACY_HARNESS_SNAPSHOT_ENV, None)
+                os.environ["TELECAM_HARNESS_SOURCE_ROOT"] = str(source_root)
+                sys.argv = [str(snapshot_root / "run.py"), *forwarded]
+                runpy.run_path(
+                    str(snapshot_root / "run.py"),
+                    run_name="__main__",
+                    init_globals={
+                        "_TELECAM_OUTER_AUTHORITY": authority,
+                        "_TELECAM_OUTER_AUTHORITY_CONFIRM": authority,
+                        "_TELECAM_OUTER_PROOF": proof,
+                    },
+                )
+            except SystemExit as exit_signal:
+                code = exit_signal.code if isinstance(exit_signal.code, int) else 1
+                os._exit(code)
+            except BaseException:
+                import traceback
+                traceback.print_exc()
+                os._exit(1)
+            os._exit(0)
+        _, status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(status)
     finally:
-        if write_fd is not None:
-            os.close(write_fd)
-        if read_fd is not None:
-            os.close(read_fd)
         shutil.rmtree(temporary_root, ignore_errors=True)
 
 
 _CHILD_PROOF: _HarnessChildProof | None = None
 if __name__ == "__main__":
-    child_fd = _consume_child_fd_argument(sys.argv)
-    if child_fd is None:
+    outer_authority = globals().get("_TELECAM_OUTER_AUTHORITY")
+    outer_confirmation = globals().get("_TELECAM_OUTER_AUTHORITY_CONFIRM")
+    outer_proof = globals().get("_TELECAM_OUTER_PROOF")
+    if outer_authority is None or outer_authority is not outer_confirmation or outer_proof is None:
+        if _FORBIDDEN_SERIALIZED_CHILD_OPTION in sys.argv:
+            raise RuntimeError(
+                "serialized harness child authority is forbidden; only inherited fork authority is accepted"
+            )
         raise SystemExit(_run_from_immutable_harness_snapshot())
-    _CHILD_PROOF = _read_child_proof(child_fd)
+    _CHILD_PROOF = outer_proof
     _validate_child_execution_root(_CHILD_PROOF)
 
 
@@ -987,24 +1041,114 @@ def attested_exit_code(case_exit_code: int, errors: list[str]) -> int:
     return case_exit_code if case_exit_code != 0 else (2 if errors else 0)
 
 
-def artifact_manifest(report_dir: Path) -> list[dict[str, object]]:
-    """Hash every regular report artifact except the self-referential attestation pair."""
-    excluded = {ATTESTATION_NAME, ATTESTATION_SHA_NAME}
-    artifacts = []
-    for path in sorted(report_dir.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
-        relative = path.relative_to(report_dir).as_posix()
-        if relative in excluded:
-            continue
-        artifacts.append(
-            {
-                "path": relative,
-                "bytes": path.stat().st_size,
-                "sha256": sha256_file(path),
-            }
-        )
-    return artifacts
+def artifact_manifest(
+    report_dir: Path,
+    *,
+    allow_attestation_outputs: bool = False,
+) -> list[dict[str, object]]:
+    """Freeze one exact no-follow regular-file identity for the completed report tree."""
+    root_path = Path(os.path.abspath(report_dir))
+    try:
+        expected_root = os.stat(root_path, follow_symlinks=False)
+    except OSError as error:
+        raise ContractError(f"report root is unavailable: {root_path}: {error}") from error
+    if not stat.S_ISDIR(expected_root.st_mode):
+        raise ContractError(f"report root must be a non-symlink directory: {root_path}")
+    root_fd = _open_directory_no_follow(None, str(root_path), Path("."))
+    root_identity = os.fstat(root_fd)
+    if not _same_file_identity(expected_root, root_identity):
+        os.close(root_fd)
+        raise ContractError("report root changed before evidence freeze")
+    artifacts: list[dict[str, object]] = []
+
+    def hash_file(parent_fd: int, name: str, relative: Path, expected: os.stat_result) -> None:
+        try:
+            fd = os.open(name, _open_flags(), dir_fd=parent_fd)
+        except OSError as error:
+            raise ContractError(
+                f"report artifact must be a stable non-symlink file: {relative.as_posix()}"
+            ) from error
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or not _same_file_identity(expected, before):
+                raise ContractError(f"report artifact changed before open: {relative.as_posix()}")
+            digest = hashlib.sha256()
+            total = 0
+            while True:
+                chunk = os.read(fd, _READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                total += len(chunk)
+            after = os.fstat(fd)
+            current = _entry_stat(parent_fd, name)
+            if (
+                not _same_file_identity(before, after)
+                or not _same_file_identity(after, current)
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or total != after.st_size
+            ):
+                raise ContractError(f"report artifact changed while reading: {relative.as_posix()}")
+            artifacts.append(
+                {"path": relative.as_posix(), "bytes": total, "sha256": digest.hexdigest()}
+            )
+        finally:
+            os.close(fd)
+
+    def walk(directory_fd: int, relative_directory: Path) -> None:
+        with os.scandir(directory_fd) as iterator:
+            initial_names = sorted(entry.name for entry in iterator)
+        for name in initial_names:
+            relative = relative_directory / name
+            if relative_directory == Path() and name in {ATTESTATION_NAME, ATTESTATION_SHA_NAME}:
+                if allow_attestation_outputs:
+                    continue
+                raise ContractError(f"reserved attestation output already exists: {name}")
+            try:
+                observed = _entry_stat(directory_fd, name)
+            except OSError as error:
+                raise ContractError(
+                    f"report artifact disappeared during freeze: {relative.as_posix()}"
+                ) from error
+            if stat.S_ISLNK(observed.st_mode):
+                raise ContractError(f"report artifact must not be a symlink: {relative.as_posix()}")
+            if stat.S_ISDIR(observed.st_mode):
+                child_fd = _open_directory_no_follow(directory_fd, name, relative)
+                opened = os.fstat(child_fd)
+                try:
+                    if not _same_file_identity(observed, opened):
+                        raise ContractError(
+                            f"report directory changed before open: {relative.as_posix()}"
+                        )
+                    walk(child_fd, relative)
+                    current = _entry_stat(directory_fd, name)
+                    if not _same_file_identity(opened, current):
+                        raise ContractError(
+                            f"report directory changed while reading: {relative.as_posix()}"
+                        )
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(observed.st_mode):
+                raise ContractError(f"report artifact must be a regular file: {relative.as_posix()}")
+            hash_file(directory_fd, name, relative, observed)
+        with os.scandir(directory_fd) as iterator:
+            final_names = sorted(entry.name for entry in iterator)
+        if final_names != initial_names:
+            raise ContractError(
+                f"report artifact set changed during freeze under {relative_directory.as_posix() or '.'}"
+            )
+
+    try:
+        walk(root_fd, Path())
+        final_root = os.stat(root_path, follow_symlinks=False)
+        if not _same_file_identity(root_identity, final_root):
+            raise ContractError("report root changed during evidence freeze")
+    finally:
+        os.close(root_fd)
+    return sorted(artifacts, key=lambda item: str(item["path"]))
 
 
 def append_attestation_summary(
@@ -1033,14 +1177,59 @@ def append_attestation_summary(
         output.write("\n".join(lines) + "\n")
 
 
-def write_attestation(report_dir: Path, document: dict[str, object]) -> tuple[Path, Path]:
-    """Write canonical-enough JSON plus a SHA-256 integrity sidecar."""
+def _write_report_output_exclusive(report_dir: Path, name: str, payload: bytes) -> Path:
+    root_fd = _open_directory_no_follow(None, str(Path(os.path.abspath(report_dir))), Path("."))
+    try:
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | _open_flags(),
+            0o600,
+            dir_fd=root_fd,
+        )
+        try:
+            _write_all(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except FileExistsError as error:
+        raise ContractError(f"refusing to overwrite reserved attestation output: {name}") from error
+    finally:
+        os.close(root_fd)
+    return report_dir / name
+
+
+def write_attestation(
+    report_dir: Path,
+    document: dict[str, object],
+    *,
+    expected_artifacts: list[dict[str, object]] | None = None,
+) -> tuple[Path, Path]:
+    """Write the attestation pair only around one stable, exact report artifact set."""
+    expected = expected_artifacts if expected_artifacts is not None else artifact_manifest(report_dir)
+    if artifact_manifest(report_dir) != expected:
+        raise ContractError("report artifact set changed before attestation write")
     attestation = report_dir / ATTESTATION_NAME
     payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
-    attestation.write_bytes(payload)
+    attestation = _write_report_output_exclusive(report_dir, ATTESTATION_NAME, payload)
     checksum = hashlib.sha256(payload).hexdigest()
-    sidecar = report_dir / ATTESTATION_SHA_NAME
-    sidecar.write_text(f"{checksum}  {ATTESTATION_NAME}\n", encoding="utf-8")
+    sidecar = _write_report_output_exclusive(
+        report_dir,
+        ATTESTATION_SHA_NAME,
+        f"{checksum}  {ATTESTATION_NAME}\n".encode(),
+    )
+    # Temporarily open the exact controlled outputs out of the frozen set, then prove every original
+    # artifact is still present and unchanged and no third member appeared.
+    attestation_bytes = attestation.read_bytes()
+    sidecar_bytes = sidecar.read_bytes()
+    if attestation_bytes != payload or sidecar_bytes != f"{checksum}  {ATTESTATION_NAME}\n".encode():
+        raise ContractError("attestation outputs changed immediately after controlled write")
+    if _digest_regular_absolute_no_follow(attestation) != (len(payload), checksum):
+        raise ContractError("attestation JSON changed after controlled write")
+    sidecar_digest = hashlib.sha256(sidecar_bytes).hexdigest()
+    if _digest_regular_absolute_no_follow(sidecar) != (len(sidecar_bytes), sidecar_digest):
+        raise ContractError("attestation sidecar changed after controlled write")
+    if artifact_manifest(report_dir, allow_attestation_outputs=True) != expected:
+        raise ContractError("report artifact set changed during attestation write")
     return attestation, sidecar
 
 
@@ -1048,6 +1237,7 @@ def run_locked_device(
     args: argparse.Namespace,
     tiers: list[str],
     expected_apk: Path,
+    source_apk: Path,
     expected_sha: str,
     apk_contract: ApkContract,
     packaged_source: DebugSourceIdentity,
@@ -1166,6 +1356,11 @@ def run_locked_device(
         errors=verification_errors,
         source_identity=packaged_source.identity,
     )
+    try:
+        frozen_artifacts = artifact_manifest(report_dir)
+    except ContractError as error:
+        print(f"could not freeze run evidence: {error}", file=sys.stderr)
+        return 2
     document: dict[str, object] = {
         "schema_version": 4,
         "run_id": allocation.run_id,
@@ -1204,7 +1399,8 @@ def run_locked_device(
             "build_fingerprint": build_fingerprint,
         },
         "apk": {
-            "host_path": str(expected_apk),
+            "host_path": str(source_apk),
+            "inspected_private_snapshot": True,
             "installed_path": installed_apk,
             "host_sha256": expected_sha,
             "installed_sha256": actual_sha,
@@ -1225,11 +1421,15 @@ def run_locked_device(
             "restoration": "pass" if not restore_errors else "fail",
             "evidence_verification": "pass" if not verification_errors else "fail",
         },
-        "artifacts": artifact_manifest(report_dir),
+        "artifacts": frozen_artifacts,
     }
     try:
-        attestation, sidecar = write_attestation(report_dir, document)
-    except OSError as error:
+        attestation, sidecar = write_attestation(
+            report_dir,
+            document,
+            expected_artifacts=frozen_artifacts,
+        )
+    except (ContractError, OSError) as error:
         print(f"could not write run attestation: {error}", file=sys.stderr)
         return 2
     print(f"Run ID: {allocation.run_id}")
@@ -1241,35 +1441,19 @@ def run_locked_device(
     return final_exit_code
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--serial", required=True, help="adb serial, e.g. 127.0.0.1:5599")
-    ap.add_argument("--tier", action="append", choices=[*TIERS, "all"], default=None,
-                    help="tier(s) to run; repeatable; default smoke")
-    ap.add_argument("-k", dest="filter", default=None, help="substring filter on case names")
-    ap.add_argument("--apk", type=Path, default=DEFAULT_APK,
-                    help="exact host debug APK that must match the installed base.apk")
-    ap.add_argument("--allow-destructive", action="store_true",
-                    help="allow cases that force-stop the app; requires explicit operator approval")
-    ap.add_argument("--allow-settings", action="store_true",
-                    help="allow cases that change persisted shooting settings; requires explicit approval")
-    ap.add_argument("--allow-media-writes", action="store_true",
-                    help="allow cases that create photos or videos; requires explicit approval")
-    ap.add_argument("--allow-partial", action="store_true",
-                    help="permit approval-gated skips and attest an intentionally partial tier")
-    args = ap.parse_args()
-
-    tiers = args.tier or ["smoke"]
-    if "all" in tiers:
-        tiers = list(TIERS)
-
-    expected_apk = args.apk.resolve()
+def _run_snapshotted_cli(
+    args: argparse.Namespace,
+    tiers: list[str],
+    snapshot: ApkInspectionSnapshot,
+) -> int:
+    expected_apk = snapshot.private_path
+    source_apk = snapshot.source_path
     try:
-        expected_sha = sha256_file(expected_apk)
+        expected_sha = snapshot.sha256
         apk_contract = inspect_apk_contract(expected_apk)
         packaged_source = require_apk_source_match(expected_apk, REPO_ROOT)
         if sha256_file(expected_apk) != expected_sha:
-            raise ContractError("APK changed while its manifest contract was being inspected")
+            raise ContractError("private APK snapshot changed while its contract was inspected")
         production_subdir = production_capture_subdir(REPO_ROOT)
         require_harness_identity_unchanged(
             IMPORTED_HARNESS_IDENTITY,
@@ -1325,6 +1509,7 @@ def main() -> int:
                 args,
                 tiers,
                 expected_apk,
+                source_apk,
                 expected_sha,
                 apk_contract,
                 packaged_source,
@@ -1360,6 +1545,37 @@ def main() -> int:
             f"failure report: {allocation.directory / 'run-failure.json'}",
             file=sys.stderr,
         )
+        return 2
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--serial", required=True, help="adb serial, e.g. 127.0.0.1:5599")
+    ap.add_argument("--tier", action="append", choices=[*TIERS, "all"], default=None,
+                    help="tier(s) to run; repeatable; default smoke")
+    ap.add_argument("-k", dest="filter", default=None, help="substring filter on case names")
+    ap.add_argument("--apk", type=Path, default=DEFAULT_APK,
+                    help="exact host debug APK that must match the installed base.apk")
+    ap.add_argument("--allow-destructive", action="store_true",
+                    help="allow cases that force-stop the app; requires explicit operator approval")
+    ap.add_argument("--allow-settings", action="store_true",
+                    help="allow cases that change persisted shooting settings; requires explicit approval")
+    ap.add_argument("--allow-media-writes", action="store_true",
+                    help="allow cases that create photos or videos; requires explicit approval")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="permit approval-gated skips and attest an intentionally partial tier")
+    args = ap.parse_args()
+
+    tiers = args.tier or ["smoke"]
+    if "all" in tiers:
+        tiers = list(TIERS)
+
+    source_apk = Path(os.path.abspath(args.apk))
+    try:
+        with apk_inspection_snapshot(source_apk) as snapshot:
+            return _run_snapshotted_cli(args, tiers, snapshot)
+    except (ContractError, OSError) as error:
+        print(f"could not establish APK snapshot: {error}", file=sys.stderr)
         return 2
 
 

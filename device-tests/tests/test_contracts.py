@@ -103,6 +103,7 @@ class SourceIdentityTest(unittest.TestCase):
             dirty,
             hashlib.sha256(canonical).hexdigest(),
             (entry,),
+            contracts.IMMUTABLE_DEBUG_SOURCE_OWNER,
         )
 
     @staticmethod
@@ -154,6 +155,23 @@ class SourceIdentityTest(unittest.TestCase):
                 proven = require_apk_source_match(apk, Path(temp_dir))
             self.assertEqual(proven.identity, identity.identity)
             self.assertIn(identity.content_sha256, proven.as_attestation()["identity"])
+            self.assertEqual(proven.source_owner, contracts.IMMUTABLE_DEBUG_SOURCE_OWNER)
+
+    def test_mutable_debug_manifest_is_not_evidence_grade(self) -> None:
+        identity = self.identity()
+        mutable = DebugSourceIdentity(
+            identity.commit,
+            identity.dirty,
+            identity.content_sha256,
+            identity.files,
+            contracts.MUTABLE_DEBUG_SOURCE_OWNER,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            apk = Path(temp_dir) / "debug.apk"
+            self.apk(apk, mutable)
+            with patch.object(contracts, "current_debug_source_identity", return_value=identity):
+                with self.assertRaisesRegex(ContractError, "not evidence-grade"):
+                    require_apk_source_match(apk, Path(temp_dir))
 
     def test_stale_commit_and_dirty_content_mismatch_fail_closed(self) -> None:
         packaged = self.identity(commit="a" * 40)

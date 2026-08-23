@@ -13,21 +13,25 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 ## Run
 
 ```bash
-# device over wireless ADB (loopback proxy fine); deploy the debug APK first
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke          # app already foreground
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # non-green until required approvals are supplied
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # non-green until required approvals are supplied
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture # substring filter
+# Build/deploy the evidence-grade debug APK first. Use the exact APK path printed by the wrapper.
+python3 tools/build_immutable_debug.py
+EVIDENCE_APK=app/build/immutable-debug/<printed-root>/apk/debug/app-debug.apk
+
+# device over wireless ADB (loopback proxy fine)
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier smoke
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier full
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier reliability
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier all -k capture
 
 # Supply only the effects that the operator explicitly approved:
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke --allow-destructive
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings --allow-media-writes
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability \
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier smoke --allow-destructive
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier full --allow-settings
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier full --allow-settings --allow-media-writes
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier reliability \
   --allow-destructive --allow-settings --allow-media-writes
 
 # Deliberately collect a partial report; skips and the partial flag remain attested.
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-partial
+python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier full --allow-partial
 ```
 
 Reports (markdown + JUnit XML + pulled evidence files) land in
@@ -52,21 +56,27 @@ inside the APK, unique run ID, connection alias + canonical physical-device key,
 APK SHA-256 values, exact approval flags, captured
 pre-run and verified post-run state, and a path-sorted list of SHA-256 hashes for report artifacts. A
 restoration failure or pre/post state mismatch makes the CLI result non-green rather than producing
-only a warning. The SHA-256 sidecar protects the attestation bytes against unnoticed alteration; it
-is an integrity check, not a signature or proof of who produced the report.
+only a warning. Finalization freezes one exact case-owned artifact set through no-follow directory
+descriptors, rejects symlinks/special files and any disappearance/addition/replacement, then creates
+the attestation pair exclusively and rechecks the original set. The SHA-256 sidecar protects the
+attestation bytes against unnoticed alteration; it is an integrity check, not a signature or proof
+of who produced the report.
 
-The runner inspects the exact host APK before device preflight. Android build tools provide its
+The runner no-follow-opens one regular host APK inode, copies and hashes it into a private 0600
+snapshot, and runs every Android/ZIP source and manifest inspector only against that copy. Android
+build tools provide its
 application ID, launcher activity, and debug-only `UiSnapshotActivity`; those exact components drive
-launch/foreground checks and are written to the attestation. The APK is hashed before and after
-manifest inspection so an artifact replacement cannot join identity from one file to bytes from
-another.
+launch/foreground checks and are written to the attestation. A source-path replacement therefore
+cannot join identity from one APK with contract facts from another.
 
-Every debug APK also packages `assets/telecam-debug-provenance/source.manifest`. It contains the Git
+Every debug APK also packages `assets/telecam-debug-provenance/source.manifest`. Evidence runs require
+schema 2 with `source_owner=immutable-debug-worktree-v1`; ordinary mutable `assembleDebug` output is
+explicitly refused. The manifest contains the Git
 commit and a sorted SHA-256/size manifest of the main/debug app source trees and Gradle inputs that
 can change APK bytes. The runner recomputes that same identity from the checkout and refuses before
 ADB access when the member is missing or malformed, its commit is stale, or any clean or dirty source
-content differs. Dirty builds are supported, but their attestation names the exact content-manifest
-digest embedded in the exercised APK; a bare `dirty: true` claim is never used as provenance.
+content differs. The immutable wrapper requires clean committed source, and the attestation names
+the exact content-manifest digest embedded in the exercised APK rather than a bare provenance flag.
 
 The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and queries/pulls only
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
@@ -76,8 +86,10 @@ any executable harness module, the CLI walks the source tree through pinned dire
 opens each input with no-follow semantics, requires the same regular-file inode before/after a
 bounded descriptor read, and rejects symlinks, special files, and file/directory replacement races.
 It copies every accepted input outside `reports/`, `__pycache__/`, and `.pytest_cache/` into a
-private digest-qualified snapshot. A child can enter execution mode only with the parent-created
-one-shot pipe proof naming that private root; a preset environment variable cannot skip the copy.
+private digest-qualified snapshot. The outer process forks and transfers a non-serialized in-memory
+object capability plus the proof directly into `runpy`; child mode has no CLI/environment/pipe proof
+format a direct caller can mint. A direct snapshot invocation therefore performs a fresh outer copy
+instead of entering child execution, and a preset environment variable cannot skip the copy.
 Case registration and execution import only the copied bytes, while repository artifacts (the
 default APK and report root) resolve from the separately attested source checkout. The attestation
 names and rechecks the snapshot manifest, and the parent removes the private tree when the child
