@@ -3241,6 +3241,9 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     override fun onReviewOpenChange(open: Boolean, uri: Uri): Boolean {
+        // A one-shot timer must never finish behind a full-screen review. Cancel before pinning or
+        // publishing modal ownership so no scheduler tick can race the visible transition.
+        if (open) cancelCountdown()
         // Pin before publishing the modal state: a concurrent capture callback may trim ordinary
         // history, but it cannot evict the exact family the confirmation copy now describes.
         val familyPinned = if (open) {
@@ -3261,6 +3264,9 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     override fun onCameraInputBlockedChange(blocked: Boolean) {
+        // Settings, Fn, permission/dialog gates, and future full-screen modal owners all enter
+        // through this seam. Acquisition cancels synchronously; release never changes timer state.
+        if (blocked) cancelCountdown()
         _state.update { it.copy(cameraInputBlocked = blocked) }
     }
 

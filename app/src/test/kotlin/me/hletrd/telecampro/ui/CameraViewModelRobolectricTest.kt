@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui
 
 import android.app.Application
+import android.net.Uri
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.camera.CameraStatusMessage
@@ -291,6 +292,42 @@ class CameraViewModelRobolectricTest {
         assertEquals(wbSet, v.state.value.status)
         idleFor(1) // "saved" confirmations clear at 1.5 s
         assertNull(v.state.value.status)
+    }
+
+    @Test fun `every shared modal input owner cancels a one-shot timer with no late capture attempt`() {
+        val (v, _) = createViewModel()
+
+        for (owner in listOf("Settings", "Fn", "permission or dialog")) {
+            // Arm the private scheduler seam directly: camera readiness belongs to the Engine and
+            // is irrelevant to whether a modal owns an already-running countdown.
+            armCountdown(v)
+            assertEquals("$owner precondition", 3, v.state.value.timerCountdownSec)
+
+            v.onCameraInputBlockedChange(true)
+            assertEquals("$owner did not cancel synchronously", 0, v.state.value.timerCountdownSec)
+            v.onCameraInputBlockedChange(false)
+            idleFor(3_100)
+
+            // With this never-started engine, any leaked deadline calls capturePhoto and publishes
+            // CAMERA_RECONFIGURING. Null therefore proves the scheduled shutter call never ran;
+            // timer state alone could pass even after a late attempt reset it to zero.
+            assertNull("$owner leaked a late capture attempt", v.state.value.status)
+            assertEquals(0, v.state.value.shutterFlashTick)
+        }
+    }
+
+    @Test fun `review ownership cancels a one-shot timer before pinning and never fires later`() {
+        val (v, _) = createViewModel()
+        armCountdown(v)
+        assertEquals(3, v.state.value.timerCountdownSec)
+
+        v.onReviewOpenChange(true, Uri.parse("content://telecam.test/previous"))
+        assertEquals(0, v.state.value.timerCountdownSec)
+        assertTrue(v.state.value.cameraInputBlocked)
+        idleFor(3_100)
+
+        assertNull("review leaked a late capture attempt", v.state.value.status)
+        assertEquals(0, v.state.value.shutterFlashTick)
     }
 
     // ---- Mode change ----

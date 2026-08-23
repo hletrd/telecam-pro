@@ -66,6 +66,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -361,6 +362,10 @@ fun CameraScreen(
     var reviewDeleteScope by rememberSaveable { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
+    // A programmatic open is an EVENT, not just a tab value. My Menu's non-manual WB row dismisses
+    // and reopens the sheet in one callback; Compose can batch false -> true without ever disposing
+    // ProSheet, so the old tab's unkeyed remember survives unless this identity advances.
+    var sheetOpenRequestId by remember { mutableLongStateOf(0L) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
     val modalVisible = sheetVisible || fnOverlayVisible || (state.reviewOpen && reviewUri != null)
@@ -391,6 +396,7 @@ fun CameraScreen(
     fun openSheet(tab: ProSheetTab) {
         currentActions.value.onCameraInputBlockedChange(true)
         sheetInitialTab = tab
+        sheetOpenRequestId += 1L
         sheetVisible = true
     }
 
@@ -1115,9 +1121,7 @@ fun CameraScreen(
             state = state,
             actions = actions,
             onOpenSheet = {
-                // Block Activity-owned camera keys before Compose can draw the modal.
-                currentActions.value.onCameraInputBlockedChange(true)
-                sheetVisible = true // reopen to the remembered last tab
+                openSheet(sheetInitialTab) // reopen to the remembered last tab
             },
             compact = !detailsVisible,
             onToggleDisp = {
@@ -1332,6 +1336,7 @@ fun CameraScreen(
             state = state,
             actions = actions,
             initialTab = sheetInitialTab,
+            openRequestId = sheetOpenRequestId,
             onTabChange = { sheetInitialTab = it },
             onDismiss = { sheetVisible = false },
             onSelectManualDial = ::selectManualDial,

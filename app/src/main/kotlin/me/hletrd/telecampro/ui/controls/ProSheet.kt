@@ -184,6 +184,10 @@ internal fun ProSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     initialTab: ProSheetTab = ProSheetTab.SHOOTING,
+    // Advances for every programmatic open, even when dismiss + reopen collapse into one Compose
+    // frame and this composable never leaves the tree. Ordinary rail taps do not change it, so
+    // their focus remains on the tab the operator just selected.
+    openRequestId: Long = 0L,
     onTabChange: (ProSheetTab) -> Unit = {},
     // Dial-backed My Menu / Recent rows route HERE (close the sheet, open that value's ruler) —
     // the same transition the Fn overlay tile uses. performQuickFn's cycle fallback RESET these
@@ -198,7 +202,10 @@ internal fun ProSheet(
     // it's dismissed only by the X, a scrim tap, or the system Back gesture.
     BackHandler(enabled = true, onBack = onDismiss)
     val closeFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
+    LaunchedEffect(openRequestId) {
+        selectedTab = initialTab
+        closeFocusRequester.requestFocus()
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val sideLayout = proSheetUsesSideLayout(maxWidth.value, maxHeight.value)

@@ -233,6 +233,8 @@ class MainActivity : ComponentActivity() {
                 val mediaAccessLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { _ ->
+                    // The visual-media picker/dialog has released its full-screen input ownership.
+                    vm.onCameraInputBlockedChange(false)
                     // Re-check LIVE state instead of the result map: Android 14+'s "Select photos"
                     // choice reports the full permissions denied while granting USER_SELECTED, and
                     // that partial grant is access (hasVisualMediaAccess). On any access, re-run
@@ -243,6 +245,8 @@ class MainActivity : ComponentActivity() {
                 val microphoneLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
+                    // The system permission dialog has released its full-screen input ownership.
+                    vm.onCameraInputBlockedChange(false)
                     hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
                     val action = pendingAudioAction
                     pendingAudioAction = null
@@ -261,6 +265,13 @@ class MainActivity : ComponentActivity() {
                     if (!hasCameraPermission && !cameraPermanentlyDenied) {
                         cameraLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                     }
+                }
+
+                // This gate replaces CameraScreen rather than opening through its modal state.
+                // Acquire the same input owner so a pending one-shot timer cannot survive a policy
+                // transition and fire behind the permission surface.
+                LaunchedEffect(state.cameraPolicyBlocked) {
+                    if (state.cameraPolicyBlocked) vm.onCameraInputBlockedChange(true)
                 }
 
                 if (hasCameraPermission) {
@@ -312,6 +323,7 @@ class MainActivity : ComponentActivity() {
                                 // re-restore (it covers a grant made in Settings mid-session, and
                                 // there is nothing further to ask for).
                                 if (shouldRequestVisualMediaAccess(visualMediaAccess())) {
+                                    vm.onCameraInputBlockedChange(true)
                                     mediaAccessLauncher.launch(
                                         arrayOf(
                                             Manifest.permission.READ_MEDIA_IMAGES,
@@ -350,6 +362,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onDismiss = {
                                 showMicrophoneRationale = false
+                                vm.onCameraInputBlockedChange(false)
                                 val action = pendingAudioAction
                                 pendingAudioAction = null
                                 declineMicrophone(action)
@@ -607,6 +620,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         pendingAudioAction = action
+        // Acquire before Compose can draw the rationale. Besides blocking physical keys, this
+        // synchronously cancels any pending one-shot timer through the ViewModel ownership seam.
+        vm.onCameraInputBlockedChange(true)
         showMicrophoneRationale = true
     }
 
@@ -650,6 +666,7 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshPermissionState() {
         hasCameraPermission = hasPermission(Manifest.permission.CAMERA)
+        if (!hasCameraPermission) vm.onCameraInputBlockedChange(true)
         hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
         val requestedBefore = permissionPreferences.getBoolean(CAMERA_REQUESTED_BEFORE_KEY, false)
         if (hasCameraPermission && requestedBefore) {

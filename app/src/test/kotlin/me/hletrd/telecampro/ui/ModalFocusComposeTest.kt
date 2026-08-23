@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.InputMode
@@ -20,6 +22,7 @@ import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
@@ -27,6 +30,7 @@ import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
@@ -37,11 +41,17 @@ import java.lang.reflect.Proxy
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.FocusMode
+import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.ui.controls.ProSheet
 import me.hletrd.telecampro.ui.controls.ProSheetTab
+import me.hletrd.telecampro.ui.controls.DialType
+import me.hletrd.telecampro.ui.controls.manualDialTransition
 import me.hletrd.telecampro.ui.review.MediaReviewOverlay
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -229,5 +239,65 @@ class ModalFocusComposeTest {
 
         compose.runOnIdle { backDispatcher.onBackPressed() }
         assertEquals(1, closes)
+    }
+
+    @Test
+    fun `same-frame My Menu WB reopen selects Exposure while ordinary rail focus stays put`() {
+        val visible = mutableStateOf(true)
+        val requestedTab = mutableStateOf(ProSheetTab.MY_MENU)
+        val openRequestId = mutableLongStateOf(1L)
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    if (visible.value) {
+                        ProSheet(
+                            state = CameraUiState(),
+                            actions = actions,
+                            onDismiss = { visible.value = false },
+                            initialTab = requestedTab.value,
+                            openRequestId = openRequestId.longValue,
+                            onTabChange = { requestedTab.value = it },
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        // An ordinary rail selection updates the remembered reopen tab, but does not advance the
+        // request identity. Its own focus must not be stolen by the open-request effect.
+        val exposure = compose.onNodeWithContentDescription(context.getString(R.string.settings_tab_exposure))
+        exposure.requestFocus().performClick()
+        compose.waitForIdle()
+        exposure.assertIsSelected().assertIsFocused()
+
+        val my = compose.onNodeWithContentDescription(context.getString(R.string.settings_tab_my))
+        my.requestFocus().performClick()
+        compose.waitForIdle()
+        my.assertIsSelected().assertIsFocused()
+
+        // This is CameraScreen's exact non-manual-WB plan. Dismiss + reopen happen in one main-loop
+        // turn, so `visible` is false and true before Compose can dispose the existing ProSheet.
+        compose.runOnIdle {
+            val transition = manualDialTransition(
+                requested = DialType.WB,
+                currentlyOpen = null,
+                exposureMode = ExposureMode.PROGRAM,
+                focusMode = FocusMode.CONTINUOUS,
+                wbMode = WbMode.DAYLIGHT,
+            )
+            assertTrue(transition.openExposureSheet)
+            visible.value = false
+            requestedTab.value = ProSheetTab.EXPOSURE
+            openRequestId.longValue += 1L
+            visible.value = true
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithContentDescription(context.getString(R.string.settings_tab_exposure))
+            .assertIsSelected()
+        compose.onNodeWithText(context.getString(R.string.label_mode)).assertExists()
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_settings))
+            .assertIsFocused()
     }
 }
