@@ -144,11 +144,37 @@ class MediaReviewSizingTest {
     }
 
     @Test
-    fun `video playback labels expose action and current state`() {
-        assertEquals(R.string.a11y_pause_video, videoPlaybackActionResource(playing = true))
-        assertEquals(R.string.a11y_playing, videoPlaybackStateResource(playing = true))
-        assertEquals(R.string.a11y_play_video, videoPlaybackActionResource(playing = false))
-        assertEquals(R.string.a11y_paused, videoPlaybackStateResource(playing = false))
+    fun `video playback resources withhold transport while preparing`() {
+        assertNull(videoPlaybackActionResource(VideoPlaybackUiState.PREPARING))
+        assertNull(videoPlaybackToggleTarget(VideoPlaybackUiState.PREPARING))
+        assertEquals(
+            R.string.a11y_preparing_video,
+            videoPlaybackStateResource(VideoPlaybackUiState.PREPARING),
+        )
+        assertEquals(
+            R.string.a11y_pause_video,
+            videoPlaybackActionResource(VideoPlaybackUiState.PLAYING),
+        )
+        assertEquals(
+            R.string.a11y_playing,
+            videoPlaybackStateResource(VideoPlaybackUiState.PLAYING),
+        )
+        assertEquals(
+            VideoPlaybackUiState.PAUSED,
+            videoPlaybackToggleTarget(VideoPlaybackUiState.PLAYING),
+        )
+        assertEquals(
+            R.string.a11y_play_video,
+            videoPlaybackActionResource(VideoPlaybackUiState.PAUSED),
+        )
+        assertEquals(
+            R.string.a11y_paused,
+            videoPlaybackStateResource(VideoPlaybackUiState.PAUSED),
+        )
+        assertEquals(
+            VideoPlaybackUiState.PLAYING,
+            videoPlaybackToggleTarget(VideoPlaybackUiState.PAUSED),
+        )
     }
 
     @Test

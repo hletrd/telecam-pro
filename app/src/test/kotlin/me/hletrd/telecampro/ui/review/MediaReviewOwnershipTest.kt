@@ -156,6 +156,43 @@ class MediaReviewOwnershipTest {
     }
 
     @Test
+    fun `one active slow setup is retryable rather than capacity exhausted`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val release = CountDownLatch(1)
+        try {
+            val started = CountDownLatch(1)
+            val released = CountDownLatch(1)
+            val lane = LatestReviewSetupLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                terminalTimeoutMs = 100,
+                work = {
+                    started.countDown()
+                    release.await()
+                    it
+                },
+                release = { released.countDown() },
+            )
+
+            runBlocking {
+                val slow = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.run(Any(), "slow") {}
+                }
+                assertTrue(started.await(2, TimeUnit.SECONDS))
+                assertSame(LatestReviewSetupLane.Outcome.TIMED_OUT, slow.await())
+                release.countDown()
+            }
+
+            assertTrue(released.await(2, TimeUnit.SECONDS))
+        } finally {
+            release.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `never-published review bitmap is recycled promptly`() {
         val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
         val owned = ReviewBitmap(bitmap)

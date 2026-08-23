@@ -191,7 +191,7 @@ internal class LatestReviewSetupLane<I, R : Any>(
     work: (I) -> R?,
     release: (R) -> Unit,
 ) {
-    internal enum class Outcome { PUBLISHED, RETIRED, CAPACITY_EXHAUSTED }
+    internal enum class Outcome { PUBLISHED, RETIRED, TIMED_OUT, CAPACITY_EXHAUSTED }
 
     private val lane = if (dispatcher == null) {
         ProgressiveLatestWorkLane(
@@ -210,6 +210,7 @@ internal class LatestReviewSetupLane<I, R : Any>(
                 if (lane.claim(submission.completion, publish)) Outcome.PUBLISHED else Outcome.RETIRED
             }
             ProgressiveLatestWorkLane.Submission.Retired -> Outcome.RETIRED
+            ProgressiveLatestWorkLane.Submission.TimedOut -> Outcome.TIMED_OUT
             ProgressiveLatestWorkLane.Submission.CapacityExhausted -> Outcome.CAPACITY_EXHAUSTED
         }
 
@@ -240,6 +241,13 @@ private class VideoPlaybackSetupRequest(
 private sealed interface VideoPlaybackSetupResult {
     data class Ready(val handle: VideoPlaybackHandle) : VideoPlaybackSetupResult
     data object Failed : VideoPlaybackSetupResult
+}
+
+/** Operator-visible transport truth; Preparing deliberately has no transport action. */
+internal enum class VideoPlaybackUiState {
+    PREPARING,
+    PLAYING,
+    PAUSED,
 }
 
 /** Opens the MediaProvider descriptor and initializes MediaPlayer entirely off the UI thread. */
@@ -547,6 +555,9 @@ private suspend fun loadReviewMedia(
     ) { descriptor = it }
     when (descriptorOutcome) {
         LatestReviewSetupLane.Outcome.RETIRED -> return null
+        LatestReviewSetupLane.Outcome.TIMED_OUT -> {
+            return LoadedReview(ReviewMediaState.Error(R.string.review_error_timed_out), null)
+        }
         LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED -> {
             return LoadedReview(ReviewMediaState.RestartRequired, null)
         }
@@ -572,6 +583,9 @@ private suspend fun loadReviewMedia(
             }
             when (bitmapOutcome) {
                 LatestReviewSetupLane.Outcome.RETIRED -> return null
+                LatestReviewSetupLane.Outcome.TIMED_OUT -> {
+                    ReviewMediaState.Error(R.string.review_error_timed_out)
+                }
                 LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED -> {
                     ReviewMediaState.RestartRequired
                 }
@@ -781,10 +795,11 @@ fun MediaReviewOverlay(
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
     val playerRef = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     val playbackSetupScope = rememberCoroutineScope()
-    var playing by remember { mutableStateOf(true) }
+    var playbackUiState by remember(uri) { mutableStateOf(VideoPlaybackUiState.PREPARING) }
     val reviewZoomAction = stringResource(reviewZoomActionResource(scale))
-    val playbackAction = stringResource(videoPlaybackActionResource(playing))
-    val playbackState = stringResource(videoPlaybackStateResource(playing))
+    val playbackActionRes = videoPlaybackActionResource(playbackUiState)
+    val playbackAction = playbackActionRes?.let { stringResource(it) }
+    val playbackState = stringResource(videoPlaybackStateResource(playbackUiState))
     val reviewPaneTitle = stringResource(
         if (rawReady) R.string.a11y_raw_capture_review else R.string.a11y_media_review,
     )
@@ -796,21 +811,24 @@ fun MediaReviewOverlay(
         scale = 1f
         offset = Offset.Zero
         dismissDrag = 0f
-        playing = true
+        playbackUiState = VideoPlaybackUiState.PREPARING
     }
 
     fun toggleVideoPlayback(): Boolean {
         val player = playerRef.value ?: return false
+        val target = videoPlaybackToggleTarget(playbackUiState) ?: return false
         return runCatching {
-            if (player.isPlaying) player.pause() else player.start()
-            player.isPlaying
-        }.fold(
-            onSuccess = { isPlaying ->
-                playing = isPlaying
-                true
-            },
-            onFailure = { false },
-        )
+            when (target) {
+                VideoPlaybackUiState.PLAYING -> player.start()
+                VideoPlaybackUiState.PAUSED -> player.pause()
+                VideoPlaybackUiState.PREPARING -> error("Preparing has no transport action")
+            }
+        }.onSuccess {
+            playbackUiState = target
+        }.onFailure {
+            playbackUiState = VideoPlaybackUiState.PAUSED
+            replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
+        }.isSuccess
     }
 
     fun setReviewScale(target: Float): Boolean {
@@ -831,7 +849,8 @@ fun MediaReviewOverlay(
             },
         contentAlignment = Alignment.Center,
     ) {
-        val bottomActionVisible = videoInfo != null || mediaState is ReviewMediaState.Ready.Still
+        val bottomActionVisible =
+            (videoInfo != null && playbackAction != null) || mediaState is ReviewMediaState.Ready.Still
         val metadataMaxWidth = reviewBottomMetadataMaxWidthDp(
             windowWidthDp = maxWidth.value,
             actionVisible = bottomActionVisible,
@@ -841,7 +860,7 @@ fun MediaReviewOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-            .pointerInput(gestureMediaReady, videoInfo != null) {
+            .pointerInput(gestureMediaReady, videoInfo != null, playbackUiState) {
                 if (!gestureMediaReady) return@pointerInput
                 // ONE gesture loop owns pinch + pan + swipe-dismiss + tap/double-tap/long-press.
                 // Two sibling pointerInput blocks fought here exactly like CameraScreen's tap-vs-
@@ -917,7 +936,9 @@ fun MediaReviewOverlay(
                         if (isVideo) {
                             // Single tap toggles play/pause — reliable now the consuming pinch loop
                             // no longer starves it.
-                            toggleVideoPlayback()
+                            if (playbackUiState != VideoPlaybackUiState.PREPARING) {
+                                toggleVideoPlayback()
+                            }
                         } else if (down.uptimeMillis - lastTapUptime < viewConfiguration.doubleTapTimeoutMillis) {
                             // Double tap (stills): cycle review zoom, centered on the tap. Measured
                             // first-tap-up → second-tap-down, matching detectTapGestures.
@@ -980,9 +1001,14 @@ fun MediaReviewOverlay(
                         .semantics {
                             contentDescription = a11yVideoReview
                             stateDescription = playbackState
-                            role = Role.Button
-                            onClick(label = playbackAction) {
-                                toggleVideoPlayback()
+                            if (playbackUiState == VideoPlaybackUiState.PREPARING) {
+                                liveRegion = LiveRegionMode.Polite
+                            }
+                            if (playbackAction != null) {
+                                role = Role.Button
+                                onClick(label = playbackAction) {
+                                    toggleVideoPlayback()
+                                }
                             }
                         },
                     factory = { ctx ->
@@ -1003,10 +1029,11 @@ fun MediaReviewOverlay(
 
                                     viewHandle?.let(::releaseIfOwned)
                                     retireSetup()
+                                    playbackUiState = VideoPlaybackUiState.PREPARING
                                     val playbackSurface = try {
                                         Surface(st)
                                     } catch (_: Throwable) {
-                                        playing = false
+                                        playbackUiState = VideoPlaybackUiState.PAUSED
                                         replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
                                         return
                                     }
@@ -1026,7 +1053,7 @@ fun MediaReviewOverlay(
                                             setupRequest.compareAndSet(request, null)
                                             when (result) {
                                                 VideoPlaybackSetupResult.Failed -> {
-                                                    playing = false
+                                                    playbackUiState = VideoPlaybackUiState.PAUSED
                                                     replaceMediaState(
                                                         ReviewMediaState.Error(R.string.review_error_play_video),
                                                     )
@@ -1042,7 +1069,7 @@ fun MediaReviewOverlay(
                                                         if (heldPlayback.value !== handle) return
                                                         if (viewHandle === handle) viewHandle = null
                                                         releaseIfOwned(handle)
-                                                        playing = false
+                                                        playbackUiState = VideoPlaybackUiState.PAUSED
                                                         replaceMediaState(
                                                             ReviewMediaState.Error(R.string.review_error_play_video),
                                                         )
@@ -1060,7 +1087,9 @@ fun MediaReviewOverlay(
                                                                     return@prepared
                                                                 }
                                                                 runCatching { p.start() }
-                                                                    .onSuccess { playing = true }
+                                                                    .onSuccess {
+                                                                        playbackUiState = VideoPlaybackUiState.PLAYING
+                                                                    }
                                                                     .onFailure { failPlayback() }
                                                             }
                                                         }
@@ -1073,12 +1102,21 @@ fun MediaReviewOverlay(
                                                 }
                                             }
                                         }
-                                        if (outcome == LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED) {
+                                        if (
+                                            outcome == LatestReviewSetupLane.Outcome.TIMED_OUT ||
+                                            outcome == LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED
+                                        ) {
                                             setupJob.value = null
                                             setupRequest.compareAndSet(request, null)
                                             request.releaseSurface()
-                                            playing = false
-                                            replaceMediaState(ReviewMediaState.RestartRequired)
+                                            playbackUiState = VideoPlaybackUiState.PAUSED
+                                            replaceMediaState(
+                                                if (outcome == LatestReviewSetupLane.Outcome.TIMED_OUT) {
+                                                    ReviewMediaState.Error(R.string.review_error_timed_out)
+                                                } else {
+                                                    ReviewMediaState.RestartRequired
+                                                },
+                                            )
                                         }
                                     }
                                 }
@@ -1090,6 +1128,7 @@ fun MediaReviewOverlay(
                                 ) = Unit
 
                                 override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
+                                    playbackUiState = VideoPlaybackUiState.PREPARING
                                     retireSetup()
                                     viewHandle?.let { handle ->
                                         viewHandle = null
@@ -1110,7 +1149,7 @@ fun MediaReviewOverlay(
                     }
                 }
             }
-            if (!playing) {
+            if (playbackUiState == VideoPlaybackUiState.PAUSED) {
                 // Paused indicator: a simple ▶ so it's obvious a tap resumes.
                 Canvas(Modifier.size(64.dp)) {
                     // Deliberately its own black, NOT the shared HudPlate. What sits on this disc is a
@@ -1237,7 +1276,7 @@ fun MediaReviewOverlay(
         }
 
         when {
-            videoInfo != null -> ReviewActionButton(
+            videoInfo != null && playbackAction != null -> ReviewActionButton(
                 actionLabel = playbackAction,
                 stateLabel = playbackState,
                 onClick = { toggleVideoPlayback() },
@@ -1249,7 +1288,7 @@ fun MediaReviewOverlay(
                     .navigationBarsPadding()
                     .padding(14.dp),
             ) {
-                PlaybackGlyph(playing = playing)
+                PlaybackGlyph(playing = playbackUiState == VideoPlaybackUiState.PLAYING)
             }
 
             mediaState is ReviewMediaState.Ready.Still -> ReviewActionButton(
@@ -1573,11 +1612,24 @@ internal fun reviewZoomActionResource(scale: Float): Int = when (nextReviewScale
 internal fun reviewZoomControlLabel(scale: Float): String =
     "→" + reviewScaleLabel(nextReviewScale(scale))
 
-internal fun videoPlaybackActionResource(playing: Boolean): Int =
-    if (playing) R.string.a11y_pause_video else R.string.a11y_play_video
+internal fun videoPlaybackActionResource(state: VideoPlaybackUiState): Int? = when (state) {
+    VideoPlaybackUiState.PREPARING -> null
+    VideoPlaybackUiState.PLAYING -> R.string.a11y_pause_video
+    VideoPlaybackUiState.PAUSED -> R.string.a11y_play_video
+}
 
-internal fun videoPlaybackStateResource(playing: Boolean): Int =
-    if (playing) R.string.a11y_playing else R.string.a11y_paused
+internal fun videoPlaybackToggleTarget(state: VideoPlaybackUiState): VideoPlaybackUiState? =
+    when (state) {
+        VideoPlaybackUiState.PREPARING -> null
+        VideoPlaybackUiState.PLAYING -> VideoPlaybackUiState.PAUSED
+        VideoPlaybackUiState.PAUSED -> VideoPlaybackUiState.PLAYING
+    }
+
+internal fun videoPlaybackStateResource(state: VideoPlaybackUiState): Int = when (state) {
+    VideoPlaybackUiState.PREPARING -> R.string.a11y_preparing_video
+    VideoPlaybackUiState.PLAYING -> R.string.a11y_playing
+    VideoPlaybackUiState.PAUSED -> R.string.a11y_paused
+}
 
 internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes: Long): String =
     buildList {

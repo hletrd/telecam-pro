@@ -397,6 +397,7 @@
     <string name="review_error_open_video">Unable to open this video.</string>
     <string name="review_error_open_image">Unable to open this image.</string>
     <string name="review_error_play_video">Unable to play this video.</string>
+    <string name="review_error_timed_out">Review timed out. Try again.</string>
     <string name="review_error_restart_required">Review is unavailable. Reopen the app.</string>
     <string name="review_delete_raw_capture_title">Delete RAW capture?</string>
     <string name="review_delete_capture_title">Delete capture?</string>
@@ -407,6 +408,7 @@
     <string name="a11y_review_zoom">Zoom %1$s</string>
     <string name="a11y_pause_video">Pause video</string>
     <string name="a11y_play_video">Play video</string>
+    <string name="a11y_preparing_video">Preparing video</string>
     <string name="a11y_playing">Playing</string>
     <string name="a11y_paused">Paused</string>
     <string name="format_raw">RAW</string>

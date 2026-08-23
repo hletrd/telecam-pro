@@ -13,6 +13,7 @@ import kotlin.coroutines.CoroutineContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -65,7 +66,7 @@ class LatestHeavyWorkLaneTest {
             retired.retire()
             retired.execute()
 
-            assertNull(retired.result.await())
+            assertEquals(ProgressiveLatestWorkLane.Submission.Retired, retired.result.await())
             assertFalse(executed)
         } finally {
             dispatcher.close()
@@ -93,6 +94,95 @@ class LatestHeavyWorkLaneTest {
                 request.terminalAfterTimeout(),
             )
         } finally {
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `timeout boundary atomically publishes or disposes an already produced value`() = runBlocking {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        try {
+            val disposed = mutableListOf<String>()
+            val lane = ProgressiveLatestWorkLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                work = { "result-$it" },
+                dispose = disposed::add,
+            )
+
+            // Models work completing after the caller's timer fired but before timeout
+            // classification. The produced completion owns the atomic state and must win.
+            val publishRequest = lane.Request(Any(), "publish")
+            publishRequest.executeOwned()
+            val publishSubmission = publishRequest.terminalAfterTimeout()
+            val publishCompletion = (publishSubmission as
+                ProgressiveLatestWorkLane.Submission.Completed).completion
+            var published: String? = null
+            assertTrue(publishCompletion.publish { published = it })
+            assertEquals("result-publish", published)
+            assertTrue(publishRequest.retire())
+            assertTrue(disposed.isEmpty())
+
+            // If invalidation wins after the same boundary, the exact value is disposed once and
+            // can no longer publish.
+            val disposeRequest = lane.Request(Any(), "dispose")
+            disposeRequest.executeOwned()
+            val disposeSubmission = disposeRequest.terminalAfterTimeout()
+            val disposeCompletion = (disposeSubmission as
+                ProgressiveLatestWorkLane.Submission.Completed).completion
+            assertTrue(disposeRequest.retire())
+            assertFalse(disposeCompletion.publish {})
+            assertEquals(listOf("result-dispose"), disposed)
+        } finally {
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `started timeout is retryable and does not claim exhausted capacity`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val release = CountDownLatch(1)
+        try {
+            val started = CountDownLatch(1)
+            val disposed = CountDownLatch(1)
+            val lane = ProgressiveLatestWorkLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                terminalTimeoutMs = 100,
+                work = { input ->
+                    if (input == "slow") {
+                        started.countDown()
+                        release.await()
+                    }
+                    "result-$input"
+                },
+                dispose = { if (it == "result-slow") disposed.countDown() },
+            )
+
+            runBlocking {
+                val slow = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.submit(Any(), "slow")
+                }
+                assertTrue(started.await(2, TimeUnit.SECONDS))
+                assertSame(ProgressiveLatestWorkLane.Submission.TimedOut, slow.await())
+                assertFalse(lane.hasLatestRequest())
+
+                release.countDown()
+                assertTrue(disposed.await(2, TimeUnit.SECONDS))
+
+                val retry = (lane.submit(Any(), "retry") as
+                    ProgressiveLatestWorkLane.Submission.Completed).completion
+                var published: String? = null
+                assertTrue(lane.claim(retry) { published = it })
+                assertEquals("result-retry", published)
+                assertFalse(lane.hasLatestRequest())
+            }
+        } finally {
+            release.countDown()
             dispatcher.close()
             executor.shutdownNow()
         }

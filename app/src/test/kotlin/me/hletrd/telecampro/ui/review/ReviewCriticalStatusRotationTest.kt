@@ -84,4 +84,23 @@ class ReviewCriticalStatusRotationTest {
         compose.onNodeWithText("미디어를 확인할 수 없습니다. 앱을 다시 열어 주세요.")
             .assertIsDisplayed()
     }
+
+    @Test
+    @Config(qualifiers = "ko-rKR-w320dp-h340dp-xxhdpi")
+    fun `active timeout renders retryable Korean review error`() {
+        compose.setContent {
+            TeleCamProTheme {
+                ReviewCriticalStatus(
+                    state = ReviewCriticalUiState.Error(R.string.review_error_timed_out),
+                    overlayRotation = 270f,
+                    onRetry = {},
+                    modifier = Modifier.size(320.dp, 340.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithText("미디어를 불러오지 못했습니다. 다시 시도해 주세요.")
+            .assertIsDisplayed()
+        compose.onNodeWithText("다시 시도").assertIsDisplayed()
+    }
 }

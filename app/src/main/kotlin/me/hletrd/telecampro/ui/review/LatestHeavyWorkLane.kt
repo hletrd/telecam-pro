@@ -107,6 +107,27 @@ internal class LatestHeavyWorkLane<I, R : Any>(
     }
 }
 
+/** Exact publication/disposal token detached from the generic lane's nested-type projections. */
+internal class ProgressiveWorkCompletion<R : Any>(
+    private val request: Any,
+    private val value: R,
+    private val dispose: (R) -> Unit,
+) {
+    private val terminal = AtomicBoolean(false)
+
+    internal fun owns(candidate: Any): Boolean = request === candidate
+
+    internal fun publish(block: (R) -> Unit): Boolean {
+        if (!terminal.compareAndSet(false, true)) return false
+        block(value)
+        return true
+    }
+
+    internal fun discard() {
+        if (terminal.compareAndSet(false, true)) runCatching { dispose(value) }
+    }
+}
+
 /**
  * Latest-wins lane for synchronous work that may block without observing coroutine cancellation.
  *
@@ -125,67 +146,84 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
     internal sealed interface Submission<out C> {
         data class Completed<C>(val completion: C) : Submission<C>
         data object Retired : Submission<Nothing>
+        data object TimedOut : Submission<Nothing>
         data object CapacityExhausted : Submission<Nothing>
     }
+
+    private enum class RequestStage { QUEUED, STARTED, PRODUCED, TERMINAL }
 
     internal inner class Request internal constructor(
         val owner: Any,
         private val input: I,
     ) {
-        val result = CompletableDeferred<Completion?>()
-        val retired = AtomicBoolean(false)
-        private val produced = AtomicReference<Completion?>(null)
+        val result = CompletableDeferred<Submission<ProgressiveWorkCompletion<R>>>()
+        private val stage = AtomicReference(RequestStage.QUEUED)
+        private val produced = AtomicReference<ProgressiveWorkCompletion<R>?>(null)
 
-        fun retire(): Boolean {
-            if (!retired.compareAndSet(false, true)) return false
-            latest.compareAndSet(this, null)
-            produced.get()?.discard()
-            result.complete(null)
-            return true
+        fun retire(): Boolean = terminate(Submission.Retired)
+
+        private fun terminate(outcome: Submission<Nothing>): Boolean {
+            while (true) {
+                val current = stage.get()
+                if (current == RequestStage.TERMINAL) return false
+                if (!stage.compareAndSet(current, RequestStage.TERMINAL)) continue
+                latest.compareAndSet(this, null)
+                if (current == RequestStage.PRODUCED) produced.getAndSet(null)?.discard()
+                result.complete(outcome)
+                return true
+            }
         }
 
         fun execute() {
-            if (retired.get() || latest.get() !== this) {
+            if (latest.get() !== this) {
                 retire()
                 return
             }
+            executeOwned()
+        }
+
+        /** The request has reached a consumer and is about to enter synchronous blocking work. */
+        internal fun executeOwned() {
+            if (!stage.compareAndSet(RequestStage.QUEUED, RequestStage.STARTED)) return
             val value = runCatching { work(input) }.getOrNull()
             if (value == null) {
                 retire()
                 return
             }
-            val completion = Completion(this, value)
+            val completion = ProgressiveWorkCompletion(this, value, dispose)
             produced.set(completion)
-            if (retired.get() || latest.get() !== this || !result.complete(completion)) {
-                completion.discard()
+            if (!stage.compareAndSet(RequestStage.STARTED, RequestStage.PRODUCED)) {
+                produced.getAndSet(null)?.discard()
+                return
+            }
+            result.complete(Submission.Completed(completion))
+        }
+
+        /**
+         * One atomic timeout boundary: a produced value wins completion; otherwise this call owns
+         * retirement. Only a request still waiting for a consumer represents exhausted capacity.
+         */
+        internal suspend fun terminalAfterTimeout(): Submission<ProgressiveWorkCompletion<R>> {
+            while (true) {
+                when (stage.get()) {
+                    RequestStage.PRODUCED -> {
+                        val completion = produced.get()
+                        if (completion != null) return Submission.Completed(completion)
+                    }
+                    RequestStage.QUEUED -> if (terminate(Submission.CapacityExhausted)) {
+                        return Submission.CapacityExhausted
+                    }
+                    RequestStage.STARTED -> if (terminate(Submission.TimedOut)) {
+                        return Submission.TimedOut
+                    }
+                    RequestStage.TERMINAL -> return result.await()
+                }
             }
         }
 
-        internal suspend fun terminalAfterTimeout(): Submission<Completion> =
-            if (retire()) {
-                Submission.CapacityExhausted
-            } else {
-                result.await()?.let { Submission.Completed(it) } ?: Submission.Retired
-            }
-    }
-
-    internal inner class Completion internal constructor(
-        private val request: Request,
-        private val value: R,
-    ) {
-        private val terminal = AtomicBoolean(false)
-
-        internal fun owns(candidate: Request): Boolean = request === candidate
-
-        internal fun publish(block: (R) -> Unit): Boolean {
-            if (!terminal.compareAndSet(false, true)) return false
-            block(value)
-            return true
-        }
-
-        internal fun discard() {
-            if (terminal.compareAndSet(false, true)) runCatching { dispose(value) }
-        }
+        internal fun take(completion: ProgressiveWorkCompletion<R>): Boolean =
+            produced.compareAndSet(completion, null) &&
+                stage.compareAndSet(RequestStage.PRODUCED, RequestStage.TERMINAL)
     }
 
     private val latest = AtomicReference<Request?>(null)
@@ -205,7 +243,7 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
         }
     }
 
-    suspend fun submit(owner: Any, input: I): Submission<Completion> {
+    suspend fun submit(owner: Any, input: I): Submission<ProgressiveWorkCompletion<R>> {
         val request = Request(owner, input)
         latest.getAndSet(request)?.retire()
         if (requests.trySend(request).isFailure) request.retire()
@@ -213,13 +251,7 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
             val awaited = withTimeoutOrNull(terminalTimeoutMs) {
                 request.result.await()
             }
-            if (awaited != null) {
-                Submission.Completed(awaited)
-            } else if (request.result.isCompleted) {
-                Submission.Retired
-            } else {
-                request.terminalAfterTimeout()
-            }
+            awaited ?: request.terminalAfterTimeout()
         } catch (cancelled: CancellationException) {
             request.retire()
             throw cancelled
@@ -227,10 +259,10 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
     }
 
     /** Final publication gate on the caller's context. */
-    fun claim(completion: Completion, publish: (R) -> Unit): Boolean {
+    fun claim(completion: ProgressiveWorkCompletion<R>, publish: (R) -> Unit): Boolean {
         val request = latest.get()
         if (request == null || !completion.owns(request) ||
-            !latest.compareAndSet(request, null) || !request.retired.compareAndSet(false, true)
+            !latest.compareAndSet(request, null) || !request.take(completion)
         ) {
             completion.discard()
             return false
@@ -248,6 +280,9 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
             }
         }
     }
+
+    /** Focused ownership assertion seam; production behavior never branches on this value. */
+    internal fun hasLatestRequest(): Boolean = latest.get() != null
 }
 
 internal const val REVIEW_PROCESS_WORKER_COUNT = 4

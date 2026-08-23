@@ -380,6 +380,7 @@
     <string name="review_error_open_video">이 동영상을 열 수 없습니다.</string>
     <string name="review_error_open_image">이 이미지를 열 수 없습니다.</string>
     <string name="review_error_play_video">이 동영상을 재생할 수 없습니다.</string>
+    <string name="review_error_timed_out">미디어를 불러오지 못했습니다. 다시 시도해 주세요.</string>
     <string name="review_error_restart_required">미디어를 확인할 수 없습니다. 앱을 다시 열어 주세요.</string>
     <string name="review_delete_raw_capture_title">RAW 촬영 결과를 삭제할까요?</string>
     <string name="review_delete_capture_title">촬영 결과를 삭제할까요?</string>
@@ -390,6 +391,7 @@
     <string name="a11y_review_zoom">%1$s 줌</string>
     <string name="a11y_pause_video">동영상 일시중지</string>
     <string name="a11y_play_video">동영상 재생</string>
+    <string name="a11y_preparing_video">동영상 준비 중</string>
     <string name="a11y_playing">재생 중</string>
     <string name="a11y_paused">일시중지됨</string>
     <string name="format_raw">RAW</string>
