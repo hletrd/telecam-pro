@@ -127,6 +127,23 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         return renamed
 
     @staticmethod
+    def repository_status(
+        commit: str,
+        *,
+        dirty: tuple[str, ...] = (),
+        ignored: tuple[str, ...] = (),
+    ) -> str:
+        return "\0".join(
+            (
+                f"# branch.oid {commit}",
+                "# branch.head main",
+                *dirty,
+                *(f"! {path}" for path in ignored),
+                "",
+            )
+        )
+
+    @staticmethod
     def runner(
         commit: str,
         *,
@@ -135,16 +152,17 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
     ):
         def run(command, cwd):
             del cwd
-            if command[:3] == ["git", "rev-parse", "HEAD"]:
-                return subprocess.CompletedProcess(command, 0, commit + "\n", "")
             if command[:2] == ["git", "rev-parse"] and command[2].endswith("^{tree}"):
                 return subprocess.CompletedProcess(
                     command, 0, ReleaseArtifactIdentityTest.TREE + "\n", ""
                 )
             if command[:2] == ["git", "status"]:
-                return subprocess.CompletedProcess(command, 0, "", "")
-            if command[:3] == ["git", "ls-files", "-z"]:
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    ReleaseArtifactIdentityTest.repository_status(commit),
+                    "",
+                )
             if command[0] == "jarsigner":
                 return subprocess.CompletedProcess(command, strict_returncode, "jar verified\n", "")
             if command[0] == "keytool":
@@ -555,8 +573,10 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
 
                 def run(command, cwd):
                     nonlocal current_head, changed
-                    if command[:3] == ["git", "rev-parse", "HEAD"]:
-                        return subprocess.CompletedProcess(command, 0, current_head + "\n", "")
+                    if command[:2] == ["git", "status"]:
+                        return subprocess.CompletedProcess(
+                            command, 0, self.repository_status(current_head), ""
+                        )
                     result = base(command, cwd)
                     if not changed and self.is_external_boundary(command, boundary):
                         current_head = "b" * 40
@@ -574,16 +594,21 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 root = Path(temp_dir)
                 attestation, _, commit = self.fixture(root)
                 base = self.runner(commit)
-                current_status = ""
+                current_dirty: tuple[str, ...] = ()
                 changed = False
 
                 def run(command, cwd):
-                    nonlocal current_status, changed
+                    nonlocal current_dirty, changed
                     if command[:2] == ["git", "status"]:
-                        return subprocess.CompletedProcess(command, 0, current_status, "")
+                        return subprocess.CompletedProcess(
+                            command,
+                            0,
+                            self.repository_status(commit, dirty=current_dirty),
+                            "",
+                        )
                     result = base(command, cwd)
                     if not changed and self.is_external_boundary(command, boundary):
-                        current_status = " M app/build.gradle.kts\n"
+                        current_dirty = ("? app/src/main/kotlin/example/Late.kt",)
                         changed = True
                     return result
 
@@ -592,49 +617,193 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 self.assertTrue(changed)
                 self.assertIn("working-tree status changed during verification", failures)
 
-    def test_clean_head_change_after_terminal_status_is_detected(self) -> None:
+    def test_terminal_snapshot_captures_every_state_at_former_split_probe_edges(self) -> None:
+        tracked = (
+            "1 .M N... 100644 100644 100644 "
+            f"{'1' * 40} {'1' * 40} app/build.gradle.kts"
+        )
+        cases = {
+            "tracked": ((tracked,), (), "a" * 40, "working-tree status changed"),
+            "untracked": (
+                ("? app/src/main/kotlin/example/Late.kt",),
+                (),
+                "a" * 40,
+                "working-tree status changed",
+            ),
+            "ignored": (
+                (),
+                ("app/src/main/res/raw/release.secret",),
+                "a" * 40,
+                "ignored packageable source inputs changed",
+            ),
+            "head": ((), (), "b" * 40, "HEAD changed"),
+        }
+        for former_edge in ("status-to-ignored", "ignored-to-head"):
+            for kind, (dirty, ignored, final_head, expected) in cases.items():
+                with (
+                    self.subTest(former_edge=former_edge, mutation=kind),
+                    tempfile.TemporaryDirectory() as temp_dir,
+                ):
+                    root = Path(temp_dir)
+                    attestation, _, commit = self.fixture(root)
+                    base = self.runner(commit)
+                    status_calls = 0
+
+                    def run(command, cwd):
+                        nonlocal status_calls
+                        if command[:2] == ["git", "status"]:
+                            status_calls += 1
+                            if status_calls == 2:
+                                return subprocess.CompletedProcess(
+                                    command,
+                                    0,
+                                    self.repository_status(
+                                        final_head, dirty=dirty, ignored=ignored
+                                    ),
+                                    "",
+                                )
+                        return base(command, cwd)
+
+                    failures = release.check_release_identity(root, attestation, run=run)
+
+                    self.assertEqual(2, status_calls)
+                    self.assertTrue(any(expected in failure for failure in failures), failures)
+
+    def test_terminal_snapshot_captures_every_state_mutated_during_cleanup(self) -> None:
+        tracked = (
+            "1 .M N... 100644 100644 100644 "
+            f"{'1' * 40} {'1' * 40} app/build.gradle.kts"
+        )
+        cases = {
+            "tracked": ((tracked,), (), "a" * 40, "working-tree status changed"),
+            "untracked": (
+                ("? app/src/release/kotlin/example/Late.kt",),
+                (),
+                "a" * 40,
+                "working-tree status changed",
+            ),
+            "ignored": (
+                (),
+                ("app/src/release/release-password.secret",),
+                "a" * 40,
+                "ignored packageable source inputs changed",
+            ),
+            "head": ((), (), "b" * 40, "HEAD changed"),
+        }
+        for kind, (dirty, ignored, final_head, expected) in cases.items():
+            with (
+                self.subTest(mutation=kind),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                base = self.runner(commit)
+                cleaned = False
+                actual_cleanup = release.cleanup_private_artifact
+
+                def run(command, cwd):
+                    if cleaned and command[:2] == ["git", "status"]:
+                        return subprocess.CompletedProcess(
+                            command,
+                            0,
+                            self.repository_status(final_head, dirty=dirty, ignored=ignored),
+                            "",
+                        )
+                    return base(command, cwd)
+
+                def cleanup(artifact_temp):
+                    nonlocal cleaned
+                    actual_cleanup(artifact_temp)
+                    cleaned = True
+
+                with patch.object(release, "cleanup_private_artifact", side_effect=cleanup):
+                    failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(cleaned)
+                self.assertTrue(any(expected in failure for failure in failures), failures)
+
+    def test_terminal_repository_snapshot_is_after_cleanup_and_is_last(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             attestation, _, commit = self.fixture(root)
             base = self.runner(commit)
-            current_head = commit
-            status_calls = 0
+            events: list[str] = []
+            actual_cleanup = release.cleanup_private_artifact
 
             def run(command, cwd):
-                nonlocal current_head, status_calls
-                if command[:3] == ["git", "rev-parse", "HEAD"]:
-                    return subprocess.CompletedProcess(command, 0, current_head + "\n", "")
-                result = base(command, cwd)
-                if command[:2] == ["git", "status"]:
-                    status_calls += 1
-                    if status_calls == 2:
-                        current_head = "b" * 40
-                return result
+                events.append("status" if command[:2] == ["git", "status"] else "tool")
+                return base(command, cwd)
 
-            failures = release.check_release_identity(root, attestation, run=run)
+            def cleanup(artifact_temp):
+                events.append("cleanup")
+                actual_cleanup(artifact_temp)
 
-            self.assertEqual(2, status_calls)
-            self.assertIn("HEAD changed during verification", failures)
+            with patch.object(release, "cleanup_private_artifact", side_effect=cleanup):
+                failures = release.check_release_identity(root, attestation, run=run)
+
+            self.assertEqual([], failures)
+            self.assertEqual(["cleanup", "status"], events[-2:])
+            self.assertEqual(2, events.count("status"))
+
+    def test_initial_repository_snapshot_fails_closed_independently(self) -> None:
+        cases = {
+            "command": subprocess.CompletedProcess(["git", "status"], 1, "", "boom"),
+            "termination": subprocess.CompletedProcess(
+                ["git", "status"], 0, f"# branch.oid {'a' * 40}", ""
+            ),
+            "head": subprocess.CompletedProcess(
+                ["git", "status"], 0, "# branch.head main\0", ""
+            ),
+            "record": subprocess.CompletedProcess(
+                ["git", "status"], 0, f"# branch.oid {'a' * 40}\0X unknown\0", ""
+            ),
+        }
+        for kind, invalid in cases.items():
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                base = self.runner(commit)
+                status_calls = 0
+
+                def run(command, cwd):
+                    nonlocal status_calls
+                    if command[:2] == ["git", "status"]:
+                        status_calls += 1
+                        if status_calls == 1:
+                            return invalid
+                    return base(command, cwd)
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(
+                    any("coherent initial repository state" in failure for failure in failures),
+                    failures,
+                )
 
     def test_dirty_tree_change_during_final_identity_scan_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             attestation, _, commit = self.fixture(root)
             base = self.runner(commit)
-            current_status = ""
+            current_dirty: tuple[str, ...] = ()
             mutated = False
             actual_identity = release.regular_file_identity
 
             def run(command, cwd):
                 if command[:2] == ["git", "status"]:
-                    return subprocess.CompletedProcess(command, 0, current_status, "")
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        self.repository_status(commit, dirty=current_dirty),
+                        "",
+                    )
                 return base(command, cwd)
 
             def identity(identity_root, relative):
-                nonlocal current_status, mutated
+                nonlocal current_dirty, mutated
                 result = actual_identity(identity_root, relative)
                 if str(relative).endswith("release-attestation.json.sha256"):
-                    current_status = " M app/build.gradle.kts\n"
+                    current_dirty = ("? app/src/main/kotlin/example/Late.kt",)
                     mutated = True
                 return result
 
@@ -659,20 +828,25 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                     root = Path(temp_dir)
                     attestation, _, commit = self.fixture(root)
                     base = self.runner(commit)
-                    ignored_calls = 0
+                    status_calls = 0
 
                     def run(command, cwd):
-                        nonlocal ignored_calls
-                        if command[:3] == ["git", "ls-files", "-z"]:
-                            ignored_calls += 1
-                            present = not added_late or ignored_calls == 2
-                            output = f"{relative}\0" if present else ""
-                            return subprocess.CompletedProcess(command, 0, output, "")
+                        nonlocal status_calls
+                        if command[:2] == ["git", "status"]:
+                            status_calls += 1
+                            present = not added_late or status_calls == 2
+                            ignored = (relative,) if present else ()
+                            return subprocess.CompletedProcess(
+                                command,
+                                0,
+                                self.repository_status(commit, ignored=ignored),
+                                "",
+                            )
                         return base(command, cwd)
 
                     failures = release.check_release_identity(root, attestation, run=run)
 
-                    self.assertEqual(2, ignored_calls)
+                    self.assertEqual(2, status_calls)
                     expected = (
                         "ignored packageable source inputs changed during verification"
                         if added_late
@@ -685,17 +859,27 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             root = Path(temp_dir)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             (root / ".gitignore").write_text("*.secret\n", encoding="utf-8")
-            ignored = root / "app/src/main/res/raw/release.secret"
+            subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Release Test", "-c",
+                    "user.email=release@example.invalid", "commit", "-q", "-m", "fixture",
+                ],
+                cwd=root,
+                check=True,
+            )
+            ignored_relative = "app/src/main/res/raw/release\nvalue.secret"
+            ignored = root / ignored_relative
             ignored.parent.mkdir(parents=True)
             ignored.write_bytes(b"package input")
             allowed = root / "releases/upload.secret"
             allowed.parent.mkdir()
             allowed.write_bytes(b"immutable output")
 
-            result = release.ignored_packageable_sources(release.default_run, root)
+            snapshot = release.repository_snapshot(release.default_run, root)
 
-            self.assertEqual(0, result.returncode)
-            self.assertEqual("app/src/main/res/raw/release.secret\0", result.stdout)
+            self.assertEqual((), snapshot.dirty_records)
+            self.assertEqual((ignored_relative,), snapshot.ignored_protected_sources)
 
     def test_source_version_path_swap_at_early_and_late_tool_boundaries_fails_closed(self) -> None:
         for boundary in ("early", "late"):

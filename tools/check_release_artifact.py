@@ -76,6 +76,15 @@ class PrivateArtifactSeal:
             raise OSError(f"private AAB inspection copy changed {phase}")
 
 
+@dataclass(frozen=True)
+class RepositorySnapshot:
+    """One Git-owned view of HEAD plus ordinary and protected ignored source state."""
+
+    head: str
+    dirty_records: tuple[str, ...]
+    ignored_protected_sources: tuple[str, ...]
+
+
 def _open_regular_beneath(root: pathlib.Path, relative: pathlib.PurePath) -> tuple[int, list[int]]:
     parts = relative.parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
@@ -361,24 +370,80 @@ def default_run(command: Sequence[str], cwd: pathlib.Path) -> subprocess.Complet
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=120)
 
 
-def ignored_packageable_sources(
+def _is_protected_source(path: str) -> bool:
+    normalized = path.removesuffix("/")
+    return any(
+        normalized == root or normalized.startswith(root + "/")
+        for root in PROTECTED_SOURCE_ROOTS
+    )
+
+
+def parse_repository_snapshot(output: str) -> RepositorySnapshot:
+    """Parse one NUL-delimited porcelain-v2 status stream without path ambiguity."""
+    if not output.endswith("\0"):
+        raise ValueError("Git status output was not NUL-terminated")
+    records = output.split("\0")[:-1]
+    head_values: list[str] = []
+    dirty_records: list[str] = []
+    ignored_protected_sources: list[str] = []
+    for record in records:
+        if record.startswith("# branch.oid "):
+            head_values.append(record.removeprefix("# branch.oid "))
+        elif record.startswith(("# branch.head ", "# branch.upstream ", "# branch.ab ")):
+            # branch.head/upstream/ab are Git-owned metadata but do not affect release identity.
+            continue
+        elif record.startswith(("1 ", "u ", "? ")):
+            if len(record) < 3:
+                raise ValueError("Git status emitted a malformed worktree record")
+            dirty_records.append(record)
+        elif record.startswith("! "):
+            path = record[2:]
+            if not path or path.startswith("/") or path == ".." or path.startswith("../"):
+                raise ValueError("Git status emitted an unsafe ignored path")
+            if _is_protected_source(path):
+                ignored_protected_sources.append(path)
+        else:
+            raise ValueError("Git status emitted an unknown porcelain-v2 record")
+    if len(head_values) != 1 or not re.fullmatch(r"[0-9a-f]{40}", head_values[0]):
+        raise ValueError("Git status did not emit one canonical branch.oid")
+    return RepositorySnapshot(
+        head=head_values[0],
+        dirty_records=tuple(dirty_records),
+        ignored_protected_sources=tuple(ignored_protected_sources),
+    )
+
+
+def repository_snapshot(
     run: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]],
     root: pathlib.Path,
-) -> subprocess.CompletedProcess[str]:
-    """Enumerate ignored untracked Android package inputs without newline ambiguity."""
-    return run(
-        [
-            "git",
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--",
-            *PROTECTED_SOURCE_ROOTS,
-        ],
-        root,
-    )
+) -> RepositorySnapshot:
+    """Obtain all release-relevant repository truth from one coordinated Git process."""
+    try:
+        result = run(
+            [
+                "git",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "-z",
+                "--untracked-files=all",
+                "--ignored=matching",
+                "--no-renames",
+            ],
+            root,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        raise ValueError(f"Git status failed: {error}") from error
+    if result.returncode != 0:
+        raise ValueError("Git status returned a non-zero exit status")
+    if not isinstance(result.stdout, str):
+        raise ValueError("Git status did not return text output")
+    return parse_repository_snapshot(result.stdout)
+
+
+def cleanup_private_artifact(artifact_temp: tempfile.TemporaryDirectory[str]) -> None:
+    """Remove private inspection files before the terminal repository snapshot begins."""
+    artifact_temp.cleanup()
 
 
 def check_release_identity(
@@ -457,30 +522,22 @@ def check_release_identity(
         source_version_identity = None
         source_version = None
 
-    head_result = run(["git", "rev-parse", "HEAD"], root)
-    head = head_result.stdout.strip().casefold() if head_result.returncode == 0 else ""
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
-        failures.append("could not snapshot current HEAD")
+    try:
+        initial_repository = repository_snapshot(run, root)
+    except ValueError as error:
+        failures.append(f"could not snapshot coherent initial repository state: {error}")
+        initial_repository = None
+    head = initial_repository.head if initial_repository is not None else ""
     attested_commit = str(document["git_commit"]).casefold()
     if not re.fullmatch(r"[0-9a-f]{40}", attested_commit):
         failures.append("attested git_commit is not a full 40-character commit")
     elif head != attested_commit:
         failures.append(f"HEAD {head or '?'} does not match attested commit {attested_commit}")
-
-    status_result = run(
-        ["git", "status", "--porcelain", "--untracked-files=all"], root
-    )
-    initial_status = status_result.stdout
-    if status_result.returncode != 0:
-        failures.append("could not snapshot exact working-tree status")
-    elif initial_status:
-        failures.append("working tree is not clean")
-    ignored_source_result = ignored_packageable_sources(run, root)
-    initial_ignored_sources = ignored_source_result.stdout
-    if ignored_source_result.returncode != 0:
-        failures.append("could not snapshot ignored packageable source inputs")
-    elif initial_ignored_sources:
-        failures.append("release source roots contain ignored packageable inputs")
+    if initial_repository is not None:
+        if initial_repository.dirty_records:
+            failures.append("working tree is not clean")
+        if initial_repository.ignored_protected_sources:
+            failures.append("release source roots contain ignored packageable inputs")
     if source_version is not None:
         if document["version_code"] != source_version.version_code:
             failures.append("attested version_code does not match app/build.gradle.kts")
@@ -729,36 +786,27 @@ def check_release_identity(
         else:
             if final_identity != identity:
                 failures.append(f"{label} source identity or digest changed during verification")
-    # Every external verifier and every potentially long file digest is complete. These fast Git
-    # observations are the terminal repository boundary: ignored package inputs are source too,
-    # and HEAD is deliberately sampled last so a clean commit after status is still detected.
-    final_status_result = run(
-        ["git", "status", "--porcelain", "--untracked-files=all"], root
-    )
-    if final_status_result.returncode != 0:
-        failures.append(
-            "could not revalidate exact working-tree status before verification completion"
-        )
-    elif final_status_result.stdout != initial_status:
-        failures.append("working-tree status changed during verification")
-    final_ignored_source_result = ignored_packageable_sources(run, root)
-    if final_ignored_source_result.returncode != 0:
-        failures.append(
-            "could not revalidate ignored packageable source inputs before verification completion"
-        )
-    elif final_ignored_source_result.stdout != initial_ignored_sources:
-        failures.append("ignored packageable source inputs changed during verification")
-    final_head_result = run(["git", "rev-parse", "HEAD"], root)
-    final_head = (
-        final_head_result.stdout.strip().casefold()
-        if final_head_result.returncode == 0
-        else ""
-    )
-    if not re.fullmatch(r"[0-9a-f]{40}", final_head):
-        failures.append("could not revalidate current HEAD before verification completion")
-    elif final_head != head:
-        failures.append("HEAD changed during verification")
-    artifact_temp.cleanup()
+    # All file revalidation and private-file cleanup must finish before this boundary. The one
+    # NUL-delimited porcelain-v2 process owns HEAD plus tracked, untracked, and ignored protected
+    # source truth together; no external command or filesystem cleanup may follow a successful read.
+    try:
+        cleanup_private_artifact(artifact_temp)
+    except OSError as error:
+        return failures + [f"could not remove private AAB inspection files: {error}"]
+    try:
+        final_repository = repository_snapshot(run, root)
+    except ValueError as error:
+        return failures + [f"could not snapshot coherent terminal repository state: {error}"]
+    if initial_repository is not None:
+        if final_repository.dirty_records != initial_repository.dirty_records:
+            failures.append("working-tree status changed during verification")
+        if (
+            final_repository.ignored_protected_sources
+            != initial_repository.ignored_protected_sources
+        ):
+            failures.append("ignored packageable source inputs changed during verification")
+        if final_repository.head != initial_repository.head:
+            failures.append("HEAD changed during verification")
     return failures
 
 
