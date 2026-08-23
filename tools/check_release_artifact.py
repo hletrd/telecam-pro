@@ -82,10 +82,8 @@ def packaged_source_commits(aab_path: pathlib.Path) -> set[str]:
             text = bundle.read(info).decode("utf-8")
     except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
         return set()
-    return {
-        revision.casefold()
-        for revision in re.findall(r'^\s*revision:\s*"([0-9A-Fa-f]{40})"\s*$', text, re.MULTILINE)
-    }
+    revisions = re.findall(r'^\s*revision:\s*"([0-9a-f]{40})"\s*$', text, re.MULTILINE)
+    return {revisions[0]} if len(revisions) == 1 else set()
 
 
 def strict_jar_verification_failure(
