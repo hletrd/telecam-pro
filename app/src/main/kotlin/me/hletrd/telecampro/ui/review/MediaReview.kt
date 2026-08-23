@@ -52,6 +52,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -82,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.ui.controls.MinTouchTarget48
 import me.hletrd.telecampro.ui.controls.formatShutterSpeed
+import me.hletrd.telecampro.ui.modalFocusBoundary
 import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
@@ -510,6 +513,8 @@ fun MediaReviewOverlay(
     var confirmDelete by remember { mutableStateOf(false) }
     BackHandler(enabled = confirmDelete) { confirmDelete = false }
     BackHandler(enabled = !confirmDelete, onBack = onClose)
+    val closeFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
     // In-review playback (videos): a TextureView + MediaPlayer — NOT VideoView, whose SurfaceView
     // sits behind the window and is occluded by this overlay's opaque black background (the same
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
@@ -556,6 +561,7 @@ fun MediaReviewOverlay(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
+            .modalFocusBoundary()
             .background(CameraColors.Background)
             .semantics {
                 paneTitle = reviewPaneTitle
@@ -971,6 +977,7 @@ fun MediaReviewOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
+                .focusRequester(closeFocusRequester)
                 .statusBarsPadding()
                 .padding(12.dp)
                 .size(48.dp)

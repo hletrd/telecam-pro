@@ -112,6 +112,7 @@ import me.hletrd.telecampro.camera.hiResToggleEnabled
 import me.hletrd.telecampro.camera.videoBitRate
 import me.hletrd.telecampro.camera.rawSelectable
 import me.hletrd.telecampro.ui.CameraActions
+import me.hletrd.telecampro.ui.modalFocusBoundary
 import me.hletrd.telecampro.ui.formatZoomMultiplier
 import me.hletrd.telecampro.ui.resolve
 import me.hletrd.telecampro.ui.overlays.photoFormatLabel
@@ -233,6 +234,7 @@ internal fun ProSheet(
         val cameraSettingsPaneTitle = stringResource(R.string.a11y_camera_settings)
         Column(
             modifier = panelModifier
+                .modalFocusBoundary()
                 .clip(panelShape)
                 .background(CameraColors.Pill)
                 .semantics {

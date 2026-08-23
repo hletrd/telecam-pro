@@ -496,6 +496,7 @@ fun CameraScreen(
         modifier = modifier
             .fillMaxSize()
             .background(CameraColors.Background)
+            .finderFocusEnabled(!modalVisible)
             .then(if (modalVisible) Modifier.clearAndSetSemantics { } else Modifier),
     ) {
         // LIVE since 2026-08-04. This stayed dormant while "GL sampling, capture masks, tap mapping
@@ -2141,7 +2142,7 @@ private fun ZoomIndicator(
 }
 
 @Composable
-private fun FnOverlay(
+internal fun FnOverlay(
     state: CameraUiState,
     actions: CameraActions,
     onSelectManualDial: (DialType) -> Unit,
@@ -2221,6 +2222,7 @@ private fun FnOverlay(
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             Column(
                 modifier = panelPlacement
+                    .modalFocusBoundary()
                     .clip(RoundedCornerShape(8.dp))
                     // The full-screen scrim stays light, but the compact panel itself is opaque so
                     // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
