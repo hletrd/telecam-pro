@@ -132,6 +132,17 @@ class SourceIdentityTest(unittest.TestCase):
             self.assertEqual([entry["path"] for entry in before], ["README.md", "dtest/runner.py"])
             self.assertNotEqual(before_digest, source_manifest_sha256(after))
 
+    def test_harness_manifest_rejects_symlinked_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "target.py"
+            target.write_text("VALUE = 1\n", encoding="utf-8")
+            link = root / "cases.py"
+            link.symlink_to(target)
+
+            with self.assertRaisesRegex(ContractError, "must not be a symlink: cases.py"):
+                harness_source_manifest(root)
+
     def test_packaged_manifest_clean_match_and_attestation_identity(self) -> None:
         identity = self.identity()
         with tempfile.TemporaryDirectory() as temp_dir:

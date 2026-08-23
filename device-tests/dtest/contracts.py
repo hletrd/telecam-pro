@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 import shutil
 import subprocess
 import zipfile
@@ -357,11 +358,16 @@ def harness_source_manifest(harness_root: Path) -> list[dict[str, object]]:
     """Hash every versionable harness input, excluding only generated artifacts/caches."""
     entries: list[dict[str, object]] = []
     for path in sorted(harness_root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
         relative = path.relative_to(harness_root)
         if any(part in {"reports", "__pycache__", ".pytest_cache"} for part in relative.parts):
             continue
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise ContractError(f"harness source must not be a symlink: {relative.as_posix()}")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise ContractError(f"harness source must be a regular file: {relative.as_posix()}")
         payload = path.read_bytes()
         entries.append(
             {

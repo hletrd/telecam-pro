@@ -363,6 +363,58 @@ class RunAttestationTest(unittest.TestCase):
             after.stdin.close()
             after.stdout.close()
 
+    def test_snapshot_import_is_bound_to_copied_bytes_after_source_restoration(self) -> None:
+        program = textwrap.dedent(
+            f"""
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, {str(DEVICE_TESTS)!r})
+            import run as runner
+            source = Path(sys.argv[1])
+            snapshot = Path(sys.argv[2])
+            runner._copy_harness_snapshot(source, snapshot)
+            print("SNAPSHOT", flush=True)
+            sys.stdin.readline()
+            sys.path.insert(0, str(snapshot))
+            import snapshot_probe
+            print(snapshot_probe.VERSION, flush=True)
+            """
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            snapshot = root / "snapshot"
+            source.mkdir()
+            module = source / "snapshot_probe.py"
+            module.write_text("VERSION = 'attested'\n", encoding="utf-8")
+            process = subprocess.Popen(
+                [sys.executable, "-c", program, str(source), str(snapshot)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual("SNAPSHOT", process.stdout.readline().strip())
+            module.write_text("VERSION = 'mutated'\n", encoding="utf-8")
+            module.write_text("VERSION = 'attested'\n", encoding="utf-8")
+            process.stdin.write("continue\n")
+            process.stdin.flush()
+            self.assertEqual("attested", process.stdout.readline().strip())
+            self.assertEqual(0, process.wait(timeout=10))
+            process.stdin.close()
+            process.stdout.close()
+
+    def test_snapshot_rejects_symlinked_executable_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source"
+            source.mkdir()
+            target = root / "outside.py"
+            target.write_text("VALUE = 1\n", encoding="utf-8")
+            (source / "cases.py").symlink_to(target)
+
+            with self.assertRaisesRegex(RuntimeError, "must not be a symlink: cases.py"):
+                runner._copy_harness_snapshot(source, root / "snapshot")
+
     def test_restoration_attests_display_geometry(self) -> None:
         before = {
             "foreground_component": MAIN_ACTIVITY,

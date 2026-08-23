@@ -72,11 +72,13 @@ The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and 
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
 
 `device-tests/` remains ignored because historical evidence is several gigabytes. Before importing
-any executable harness module, `run.py` freezes a sorted SHA-256 manifest of every harness input
-outside `reports/`, `__pycache__/`, and `.pytest_cache/`. The exact manifest must still match
-immediately before case dispatch and after case execution/restoration. Any one-byte drift at either
-boundary makes the run non-green; a green attestation therefore names the bytes that registered and
-executed its cases, not merely a later filesystem snapshot. Verify the source contracts with:
+any executable harness module, the CLI rejects symlinks and special files, copies every regular
+harness input outside `reports/`, `__pycache__/`, and `.pytest_cache/` into a private
+digest-qualified snapshot, and starts a child interpreter from that snapshot. Case registration and
+execution import only those copied bytes; the attestation names and rechecks the snapshot manifest.
+Source edits after the copy cannot change resident executable modules, and the private snapshot is
+removed when the child exits. A green attestation therefore names the exact immutable bytes that
+registered and executed its cases. Verify the source contracts with:
 
 ```bash
 python3 -m unittest discover -s device-tests/tests -v

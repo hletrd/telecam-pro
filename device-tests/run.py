@@ -22,8 +22,11 @@ import os
 import re
 import secrets
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,18 +34,27 @@ from typing import Callable, Sequence
 
 
 HARNESS_ROOT = Path(__file__).resolve().parent
+SOURCE_HARNESS_ROOT = Path(
+    os.environ.get("TELECAM_HARNESS_SOURCE_ROOT", str(HARNESS_ROOT))
+).resolve()
 _HARNESS_GENERATED_PARTS = {"reports", "__pycache__", ".pytest_cache"}
+_HARNESS_SNAPSHOT_ENV = "TELECAM_HARNESS_SNAPSHOT"
 
 
 def _bootstrap_harness_source_manifest(harness_root: Path) -> list[dict[str, object]]:
     """Hash harness bytes before importing any executable harness module."""
     entries: list[dict[str, object]] = []
     for path in sorted(harness_root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
         relative = path.relative_to(harness_root)
         if any(part in _HARNESS_GENERATED_PARTS for part in relative.parts):
             continue
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise RuntimeError(f"harness source must not be a symlink: {relative.as_posix()}")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise RuntimeError(f"harness source must be a regular file: {relative.as_posix()}")
         payload = path.read_bytes()
         entries.append(
             {
@@ -56,10 +68,83 @@ def _bootstrap_harness_source_manifest(harness_root: Path) -> list[dict[str, obj
     return entries
 
 
+def _copy_harness_snapshot(source_root: Path, snapshot_root: Path) -> list[dict[str, object]]:
+    """Copy accepted regular inputs and return a manifest of the exact copied bytes."""
+    entries: list[dict[str, object]] = []
+    snapshot_root.mkdir(parents=True)
+    for source in sorted(source_root.rglob("*")):
+        relative = source.relative_to(source_root)
+        if any(part in _HARNESS_GENERATED_PARTS for part in relative.parts):
+            continue
+        mode = source.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise RuntimeError(f"harness source must not be a symlink: {relative.as_posix()}")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise RuntimeError(f"harness source must be a regular file: {relative.as_posix()}")
+        payload = source.read_bytes()
+        destination = snapshot_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        entries.append(
+            {
+                "path": relative.as_posix(),
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    if not entries:
+        raise RuntimeError(f"no harness sources found under {source_root}")
+    return entries
+
+
+def _run_from_immutable_harness_snapshot() -> int:
+    """Execute the CLI from the exact private bytes recorded by its attestation."""
+    temporary_root = Path(tempfile.mkdtemp(prefix="telecam-device-harness-"))
+    staging_root = temporary_root / "staging"
+    try:
+        entries = _copy_harness_snapshot(HARNESS_ROOT, staging_root)
+        canonical = "".join(
+            f"{entry['sha256']}  {entry['bytes']}  {entry['path']}\n" for entry in entries
+        ).encode()
+        digest = hashlib.sha256(canonical).hexdigest()
+        snapshot_root = temporary_root / f"harness-{digest}"
+        staging_root.rename(snapshot_root)
+        environment = os.environ.copy()
+        environment[_HARNESS_SNAPSHOT_ENV] = digest
+        environment["TELECAM_HARNESS_SOURCE_ROOT"] = str(HARNESS_ROOT)
+        completed = subprocess.run(
+            [sys.executable, str(snapshot_root / "run.py"), *sys.argv[1:]],
+            env=environment,
+            check=False,
+        )
+        return completed.returncode
+    finally:
+        shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+if __name__ == "__main__" and _HARNESS_SNAPSHOT_ENV not in os.environ:
+    raise SystemExit(_run_from_immutable_harness_snapshot())
+
+
 # This is intentionally evaluated before dtest/cases imports. A green run must verify these exact
 # bytes both immediately before case dispatch and after restoration, so imports cannot execute one
 # source revision while the attestation names another.
 IMPORTED_HARNESS_SOURCES = _bootstrap_harness_source_manifest(HARNESS_ROOT)
+_IMPORTED_MANIFEST_CANONICAL = "".join(
+    f"{entry['sha256']}  {entry['bytes']}  {entry['path']}\n"
+    for entry in IMPORTED_HARNESS_SOURCES
+).encode()
+_IMPORTED_MANIFEST_DIGEST = hashlib.sha256(_IMPORTED_MANIFEST_CANONICAL).hexdigest()
+if (
+    _HARNESS_SNAPSHOT_ENV in os.environ
+    and os.environ[_HARNESS_SNAPSHOT_ENV] != _IMPORTED_MANIFEST_DIGEST
+):
+    raise RuntimeError(
+        "harness snapshot digest mismatch: "
+        f"expected={os.environ[_HARNESS_SNAPSHOT_ENV]} actual={_IMPORTED_MANIFEST_DIGEST}"
+    )
 
 sys.path.insert(0, str(HARNESS_ROOT))
 
@@ -80,7 +165,7 @@ import cases  # noqa: E402, F401  — registers all test cases
 EXPECTED_MODEL = "PMA110"
 EXPECTED_API = 36
 DEFAULT_APK = Path(__file__).resolve().parent.parent / "app/build/outputs/apk/debug/app-debug.apk"
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = SOURCE_HARNESS_ROOT.parent
 ATTESTATION_NAME = "run-attestation.json"
 ATTESTATION_SHA_NAME = "run-attestation.sha256"
 RESTORED_SETTINGS = ("font_scale", "accelerometer_rotation", "user_rotation")
@@ -755,7 +840,7 @@ def run_locked_device(
         "workspace": workspace,
         "harness": {
             **harness_identity.as_attestation(),
-            "identity_basis": "import-time bytes; exact equality required before and after cases",
+            "identity_basis": "private digest-qualified snapshot bytes imported and executed",
             "pre_run_verified": True,
             "post_run_verified": not any(
                 error.startswith("device harness source drifted")
@@ -853,7 +938,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    reports_root = Path(__file__).parent / "reports"
+    reports_root = SOURCE_HARNESS_ROOT / "reports"
     try:
         allocation = allocate_report_directory(reports_root)
         write_run_identity(allocation, serial=args.serial)
