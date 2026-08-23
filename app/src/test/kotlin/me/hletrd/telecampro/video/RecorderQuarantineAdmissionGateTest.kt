@@ -510,6 +510,80 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
+    fun `setup owner replays at publication while replacement waits for strict finish`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val setupOwner = Any()
+        val replacementOwner = Any()
+        val token = checkNotNull(gate.snapshot(setupOwner))
+        val setupOutcomes = mutableListOf<NativeAcquisitionReplayOutcome>()
+        val replacementOutcomes = mutableListOf<NativeAcquisitionReplayOutcome>()
+
+        assertTrue(gate.observeNativeAcquisitionReplay(setupOwner, setupOutcomes::add) != null)
+        assertTrue(gate.observeNativeAcquisitionReplay(replacementOwner, replacementOutcomes::add) != null)
+
+        assertTrue(gate.publish(token) { true })
+        assertEquals(listOf(NativeAcquisitionReplayOutcome.AVAILABLE), setupOutcomes)
+        assertTrue(replacementOutcomes.isEmpty())
+
+        gate.finish(token)
+        assertEquals(listOf(NativeAcquisitionReplayOutcome.AVAILABLE), replacementOutcomes)
+    }
+
+    @Test
+    fun `active recorder admits its Engine native work and excludes foreign Engines until finish`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val recordingEngine = Any()
+        val replacementEngine = Any()
+        val token = checkNotNull(gate.snapshot(recordingEngine))
+        assertTrue(gate.publish(token) { true })
+        var recordingWorkEntered = false
+        var replacementWorkEntered = false
+
+        assertTrue(gate.runNativeIfSafe(recordingEngine) { recordingWorkEntered = true })
+        assertTrue(recordingWorkEntered)
+        assertFalse(gate.runNativeIfSafe(replacementEngine) { replacementWorkEntered = true })
+        assertFalse(replacementWorkEntered)
+        assertTrue(gate.generalNativeAcquisitionState(recordingEngine).let {
+            !it.quarantined && !it.setupPending && !it.activeRecorderOwnedByForeignEngine
+        })
+        assertTrue(gate.generalNativeAcquisitionState(replacementEngine).activeRecorderOwnedByForeignEngine)
+
+        gate.finish(token)
+        assertTrue(gate.runNativeIfSafe(replacementEngine) { replacementWorkEntered = true })
+        assertTrue(replacementWorkEntered)
+    }
+
+    @Test
+    fun `clean setup retirement replays every waiter exactly once and cancellation stays stale`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val token = checkNotNull(gate.snapshot(Any()))
+        val live = mutableListOf<NativeAcquisitionReplayOutcome>()
+        val cancelled = mutableListOf<NativeAcquisitionReplayOutcome>()
+        val cancellation = checkNotNull(gate.observeNativeAcquisitionReplay(Any(), cancelled::add))
+        checkNotNull(gate.observeNativeAcquisitionReplay(Any(), live::add))
+        cancellation.cancel()
+
+        gate.abandonPending(token)
+        gate.abandonPending(token)
+
+        assertEquals(listOf(NativeAcquisitionReplayOutcome.AVAILABLE), live)
+        assertTrue(cancelled.isEmpty())
+    }
+
+    @Test
+    fun `quarantine terminal notifies waiters without granting replay`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        checkNotNull(gate.snapshot(Any()))
+        val outcomes = mutableListOf<NativeAcquisitionReplayOutcome>()
+        checkNotNull(gate.observeNativeAcquisitionReplay(Any(), outcomes::add))
+
+        assertTrue(gate.close())
+
+        assertEquals(listOf(NativeAcquisitionReplayOutcome.QUARANTINED), outcomes)
+        assertFalse(gate.runNativeIfSafe {})
+    }
+
+    @Test
     fun `stale token cannot enter pending native setup`() {
         val gate = RecorderQuarantineAdmissionGate()
         val current = checkNotNull(gate.snapshot(Any()))

@@ -1,7 +1,9 @@
 package me.hletrd.telecampro.camera
 
 import android.app.Application
+import android.graphics.SurfaceTexture
 import android.net.Uri
+import android.view.Surface
 import androidx.test.core.app.ApplicationProvider
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -11,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
+import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -449,6 +452,279 @@ class CameraEngineRecordingPreNativeTest {
         releaseOldSetup.countDown()
     }
 
+    @Test
+    fun `same Engine resume during claimed setup replays retained preview after clean retirement`() {
+        val setupEntered = CountDownLatch(1)
+        val releaseSetup = CountDownLatch(1)
+        val replayed = CountDownLatch(1)
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val engine = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/resume-replay") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ ->
+                    setupEntered.countDown()
+                    releaseSetup.await()
+                    false
+                },
+                onReplay = replayed::countDown,
+            ),
+        )
+        try {
+            engine.startRecording(false) {}
+            assertTrue(setupEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+
+            engine.onPreviewSurfaceAvailable(surface, 1080, 1920)
+            engine.pause()
+            engine.resume()
+            assertFalse(replayed.await(50, TimeUnit.MILLISECONDS))
+
+            releaseSetup.countDown()
+            assertTrue(replayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        } finally {
+            releaseSetup.countDown()
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
+    fun `replacement Engine retains surface and replays only after foreign setup retires`() {
+        val oldSetupEntered = CountDownLatch(1)
+        val releaseOldSetup = CountDownLatch(1)
+        val replacementReplayed = CountDownLatch(1)
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val old = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/foreign-setup") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ ->
+                    oldSetupEntered.countDown()
+                    releaseOldSetup.await()
+                    false
+                },
+            ),
+        )
+        val replacement = engine(
+            overrides(
+                allocate = { _, _ -> null },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+                onReplay = replacementReplayed::countDown,
+            ),
+        )
+        try {
+            old.startRecording(false) {}
+            assertTrue(oldSetupEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+
+            replacement.onPreviewSurfaceAvailable(surface, 1080, 1920)
+            assertFalse(replacementReplayed.await(50, TimeUnit.MILLISECONDS))
+
+            releaseOldSetup.countDown()
+            assertTrue(replacementReplayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        } finally {
+            releaseOldSetup.countDown()
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
+    fun `replacement surface arriving after foreign recorder publish waits for strict finish`() {
+        val foreignOwner = Any()
+        val foreignToken = checkNotNull(UnsafeRecorderQuarantine.snapshotAdmission(foreignOwner))
+        assertTrue(UnsafeRecorderQuarantine.publishAdmission(foreignToken) { true })
+        val replacementReplayed = CountDownLatch(1)
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val replacement = engine(
+            overrides(
+                allocate = { _, _ -> null },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+                onReplay = replacementReplayed::countDown,
+            ),
+        )
+        try {
+            replacement.onPreviewSurfaceAvailable(surface, 1080, 1920)
+            assertFalse(replacementReplayed.await(50, TimeUnit.MILLISECONDS))
+
+            UnsafeRecorderQuarantine.finishAdmission(foreignToken)
+            assertTrue(replacementReplayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        } finally {
+            UnsafeRecorderQuarantine.finishAdmission(foreignToken)
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
+    fun `token acquired after advisory but before GL native entry replays after retirement`() {
+        val foreignToken = java.util.concurrent.atomic.AtomicReference<
+            me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken?
+        >()
+        val nativeBarrierEntered = CountDownLatch(1)
+        val replayed = CountDownLatch(1)
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val engine = engine(
+            overrides(
+                allocate = { _, _ -> null },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+                onReplay = replayed::countDown,
+                beforeGlNative = {
+                    if (foreignToken.get() == null) {
+                        val token = checkNotNull(UnsafeRecorderQuarantine.snapshotAdmission(Any()))
+                        check(UnsafeRecorderQuarantine.publishAdmission(token) { true })
+                        foreignToken.compareAndSet(null, token)
+                    }
+                    nativeBarrierEntered.countDown()
+                },
+            ),
+        )
+        try {
+            engine.onPreviewSurfaceAvailable(surface, 1080, 1920)
+            assertTrue(nativeBarrierEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            assertFalse(replayed.await(100, TimeUnit.MILLISECONDS))
+
+            UnsafeRecorderQuarantine.finishAdmission(checkNotNull(foreignToken.get()))
+            assertTrue(replayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        } finally {
+            foreignToken.get()?.let(UnsafeRecorderQuarantine::finishAdmission)
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
+    fun `released Engine cancels replay after advisory native-entry race`() {
+        val foreignToken = java.util.concurrent.atomic.AtomicReference<
+            me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken?
+        >()
+        val nativeBarrierEntered = CountDownLatch(1)
+        val staleReplay = CountDownLatch(1)
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val engine = engine(
+            overrides(
+                allocate = { _, _ -> null },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+                onReplay = staleReplay::countDown,
+                beforeGlNative = {
+                    if (foreignToken.get() == null) {
+                        val token = checkNotNull(UnsafeRecorderQuarantine.snapshotAdmission(Any()))
+                        check(UnsafeRecorderQuarantine.publishAdmission(token) { true })
+                        foreignToken.compareAndSet(null, token)
+                    }
+                    nativeBarrierEntered.countDown()
+                },
+            ),
+        )
+        try {
+            engine.onPreviewSurfaceAvailable(surface, 1080, 1920)
+            assertTrue(nativeBarrierEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            engine.release()
+            engines.remove(engine)
+
+            UnsafeRecorderQuarantine.finishAdmission(checkNotNull(foreignToken.get()))
+            assertFalse(staleReplay.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            foreignToken.get()?.let(UnsafeRecorderQuarantine::finishAdmission)
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
+    fun `same Engine preview bind pending race rebinds active graph after publication`() {
+        val token = java.util.concurrent.atomic.AtomicReference<
+            me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken?
+        >()
+        val previewBarrierEntered = CountDownLatch(1)
+        val bindAttempts = CountDownLatch(2)
+        val fullGraphReplays = AtomicInteger()
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val engine = engine(
+            overrides(
+                allocate = { _, _ -> null },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+                beforePreviewOutputNative = { owner ->
+                    if (token.get() == null) {
+                        token.compareAndSet(
+                            null,
+                            UnsafeRecorderQuarantine.snapshotAdmission(checkNotNull(owner)),
+                        )
+                    }
+                    previewBarrierEntered.countDown()
+                },
+                onPreviewBind = bindAttempts::countDown,
+                onFullGraphReplay = fullGraphReplays::incrementAndGet,
+            ),
+        )
+        try {
+            engine.onPreviewSurfaceAvailable(surface, 1080, 1920)
+            assertTrue(previewBarrierEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            val ownedToken = checkNotNull(token.get())
+            assertTrue(UnsafeRecorderQuarantine.publishAdmission(ownedToken) { true })
+
+            assertTrue(bindAttempts.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            assertEquals(0, fullGraphReplays.get())
+        } finally {
+            token.get()?.let(UnsafeRecorderQuarantine::finishAdmission)
+            surface.release()
+            texture.release()
+        }
+    }
+
+    @Test
+    fun `released replacement cancels recorder setup replay`() {
+        val oldSetupEntered = CountDownLatch(1)
+        val releaseOldSetup = CountDownLatch(1)
+        val staleReplay = CountDownLatch(1)
+        val texture = SurfaceTexture(0)
+        val surface = Surface(texture)
+        val old = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/released-replacement") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ ->
+                    oldSetupEntered.countDown()
+                    releaseOldSetup.await()
+                    false
+                },
+            ),
+        )
+        val replacement = engine(
+            overrides(
+                allocate = { _, _ -> null },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> false },
+                onReplay = staleReplay::countDown,
+            ),
+        )
+        try {
+            old.startRecording(false) {}
+            assertTrue(oldSetupEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            replacement.onPreviewSurfaceAvailable(surface, 1080, 1920)
+
+            replacement.release()
+            engines.remove(replacement)
+            releaseOldSetup.countDown()
+
+            assertFalse(staleReplay.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            releaseOldSetup.countDown()
+            surface.release()
+            texture.release()
+        }
+    }
+
     private fun engine(overrides: RecordingPreNativeEngineOverrides): CameraEngine =
         CameraEngine(app, overrides).also(engines::add)
 
@@ -464,6 +740,11 @@ class CameraEngineRecordingPreNativeTest {
         discard: (Uri) -> PendingOutputDiscardResult = {
             PendingOutputDiscardResult.RECOVERY_MARKED
         },
+        onReplay: (() -> Unit)? = null,
+        beforeGlNative: (() -> Unit)? = null,
+        beforePreviewOutputNative: ((Any?) -> Unit)? = null,
+        onPreviewBind: (() -> Unit)? = null,
+        onFullGraphReplay: (() -> Unit)? = null,
     ) = RecordingPreNativeEngineOverrides(
         admissionCurrent = admissionCurrent,
         allocatePendingVideo = allocate,
@@ -473,6 +754,11 @@ class CameraEngineRecordingPreNativeTest {
         setupReleaseTimeoutMs = setupReleaseTimeoutMs,
         afterMicrophoneClaim = afterMic,
         discardPendingOutput = discard,
+        onNativeAcquisitionReplay = onReplay,
+        beforeGlNativeAcquisition = beforeGlNative,
+        beforePreviewOutputNativeAcquisition = beforePreviewOutputNative,
+        onPreviewBindAttempt = onPreviewBind,
+        onFullGraphReplayAttempt = onFullGraphReplay,
     )
 
     private fun trackedDispatcher(

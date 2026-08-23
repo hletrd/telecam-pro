@@ -24,6 +24,8 @@ import android.util.Log
 import android.view.Surface
 import me.hletrd.telecampro.BuildConfig
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
+import me.hletrd.telecampro.video.NativeAcquisitionRefusedException
+import me.hletrd.telecampro.video.NativeAcquisitionRefusalPhase
 import java.util.concurrent.Executor
 
 /**
@@ -124,6 +126,8 @@ class CameraController(context: Context) {
 
     private lateinit var caps: CameraCaps
     private var glSurface: Surface? = null
+    private var runNativeAcquisition: ((() -> Unit) -> Boolean) =
+        UnsafeRecorderQuarantine::runNativeAcquisition
     // Read on the camera handler thread (startPreview/capturePhoto) and mutated via updateControls,
     // which is invoked from BOTH the main thread (ViewModel) and the camera thread (AEB/BURST chain).
     // @Volatile for visibility; updateControls confines the actual write to the handler thread.
@@ -252,6 +256,7 @@ class CameraController(context: Context) {
         this.selection = selection
         this.caps = caps
         this.glSurface = glInputSurface
+        this.runNativeAcquisition = runNativeAcquisition
         val modeIntent = if (pinAutoFps && controls.exposureMode == ExposureMode.PROGRAM) {
             controls.copy(programAppSide = false)
         } else {
@@ -304,7 +309,12 @@ class CameraController(context: Context) {
                         }
                         if (!sessionAdmitted) {
                             runCatching { camera.close() }
-                            onError.onError(IllegalStateException("native acquisition closed before session"))
+                            onError.onError(
+                                NativeAcquisitionRefusedException(
+                                    NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
+                                    "Native acquisition refused before camera session",
+                                ),
+                            )
                         }
                     }
                 }
@@ -346,7 +356,12 @@ class CameraController(context: Context) {
             }.onFailure { onError.onError(it) }
         }
         if (!openAdmitted) {
-            onError.onError(IllegalStateException("native acquisition closed before camera open"))
+            onError.onError(
+                NativeAcquisitionRefusedException(
+                    NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
+                    "Native acquisition refused before camera open",
+                ),
+            )
         }
     }
 
@@ -362,11 +377,16 @@ class CameraController(context: Context) {
             if (deferredReady !== ready || deferredError !== err) return@postToCamera
             deferredReady = null
             deferredError = null
-            val sessionAdmitted = UnsafeRecorderQuarantine.runNativeAcquisition {
+            val sessionAdmitted = runNativeAcquisition {
                 runCatching { configureSession(ready, err) }.onFailure { err.onError(it) }
             }
             if (!sessionAdmitted) {
-                err.onError(IllegalStateException("native acquisition closed before deferred session"))
+                err.onError(
+                    NativeAcquisitionRefusedException(
+                        NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
+                        "Native acquisition refused before deferred camera session",
+                    ),
+                )
             }
         }
         if (!accepted) {
@@ -744,17 +764,27 @@ class CameraController(context: Context) {
         // degradation path built to absorb vendor-mode rejection never runs. Advance it like
         // onConfigureFailed does (the high-speed path already guards this same call).
         StartupTrace.mark("createCaptureSession")
-        runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
-            configAttempt = attempt + 1
-            // Same profile-collapsed bound as above.
-            val maxAttempt = maxSessionAttempt(teleconverterMode && deviceProfile.vendorTcSessionType, hiResStill)
-            if (configAttempt > maxAttempt) {
-                Log.e(TAG, "createCaptureSession threw; fallback ladder exhausted", failure)
-                onError.onError(failure)
-            } else {
-                if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession threw at fallback $attempt; retrying at $configAttempt: ${failure.message}")
-                runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+        val sessionAdmitted = runNativeAcquisition {
+            runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
+                configAttempt = attempt + 1
+                // Same profile-collapsed bound as above.
+                val maxAttempt = maxSessionAttempt(teleconverterMode && deviceProfile.vendorTcSessionType, hiResStill)
+                if (configAttempt > maxAttempt) {
+                    Log.e(TAG, "createCaptureSession threw; fallback ladder exhausted", failure)
+                    onError.onError(failure)
+                } else {
+                    if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession threw at fallback $attempt; retrying at $configAttempt: ${failure.message}")
+                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                }
             }
+        }
+        if (!sessionAdmitted) {
+            onError.onError(
+                NativeAcquisitionRefusedException(
+                    NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
+                    "Native acquisition refused before camera session",
+                ),
+            )
         }
     }
 
@@ -797,11 +827,21 @@ class CameraController(context: Context) {
             sp.applyTeleconverterHints()
             sessionConfig.setSessionParameters(sp.build())
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "high-speed session params with vendor stabilization/log failed: ${it.message}") }
-        runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
-            if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
-            highSpeedFps = 0
-            configAttempt = 0
-            runCatching { configureSession(onReady, onError) }.onFailure { e -> onError.onError(e) }
+        val sessionAdmitted = runNativeAcquisition {
+            runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
+                if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
+                highSpeedFps = 0
+                configAttempt = 0
+                runCatching { configureSession(onReady, onError) }.onFailure { e -> onError.onError(e) }
+            }
+        }
+        if (!sessionAdmitted) {
+            onError.onError(
+                NativeAcquisitionRefusedException(
+                    NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
+                    "Native acquisition refused before high-speed camera session",
+                ),
+            )
         }
     }
 

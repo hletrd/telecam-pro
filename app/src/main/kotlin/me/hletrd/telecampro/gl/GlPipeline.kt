@@ -17,6 +17,8 @@ import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.WaveformData
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
+import me.hletrd.telecampro.video.NativeAcquisitionRefusedException
+import me.hletrd.telecampro.video.NativeAcquisitionRefusalPhase
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CancellationException
@@ -65,7 +67,14 @@ internal fun <T> installPreparedEncoderOutput(
  * the preview [setPreviewOutput] surface first arrives, at which point [onInputReady] fires so the
  * caller can open the camera against [inputSurface].
  */
-class GlPipeline {
+class GlPipeline(
+    /** Engine identity used to exclude a replacement graph while another Engine owns active REC. */
+    private val nativeAcquisitionOwner: Any? = null,
+    /** Deterministic test barrier between Engine advisory and the atomic native-entry gate. */
+    private val beforeNativeAcquisition: (() -> Unit)? = null,
+    /** Narrow test barrier for a healthy-context preview-window bind. */
+    private val beforePreviewOutputNativeAcquisition: ((Any?) -> Unit)? = null,
+) {
 
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
@@ -76,6 +85,7 @@ class GlPipeline {
     @Volatile
     private var terminallyAbandoned = false
     private var egl: EglCore? = null
+    private var eglStartRefusal: NativeAcquisitionRefusedException? = null
     private var unsafeOutputAbandoned = false
     private val renderer = FlipRenderer()
 
@@ -283,6 +293,7 @@ class GlPipeline {
         thread = t
         resourceReleaseHub = ResourceReleaseHub()
         unsafeOutputAbandoned = false
+        eglStartRefusal = null
         handler = Handler(t.looper)
         post {
             // EGL init containment (CR-3). EglCore's constructor throws on any eglInitialize/
@@ -302,7 +313,8 @@ class GlPipeline {
             // already-broken-EGL device is strictly safer than a possible process-wide display
             // teardown; EglCore's constructor is atomic, so there is no core to run the checked
             // release on and nothing of ours is current on this thread.
-            val admitted = UnsafeRecorderQuarantine.runNativeAcquisition {
+            beforeNativeAcquisition?.invoke()
+            val admitted = UnsafeRecorderQuarantine.runNativeAcquisition(nativeAcquisitionOwner) {
                 egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
                     if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                         android.util.Log.e("GlPipeline", "EGL init failed; preview stays Not-Ready", failure)
@@ -310,7 +322,13 @@ class GlPipeline {
                     null
                 }
             }
-            if (!admitted) egl = null
+            if (!admitted) {
+                egl = null
+                eglStartRefusal = NativeAcquisitionRefusedException(
+                    NativeAcquisitionRefusalPhase.EGL_CONTEXT,
+                    "Native acquisition refused before EGL context creation",
+                )
+            }
         }
     }
 
@@ -338,7 +356,9 @@ class GlPipeline {
                 if (surface == null) {
                     applied = applyPreviewOutput(generation, null, width, height, null)
                 } else {
-                    val admitted = UnsafeRecorderQuarantine.runNativeAcquisition {
+                    beforeNativeAcquisition?.invoke()
+                    beforePreviewOutputNativeAcquisition?.invoke(nativeAcquisitionOwner)
+                    val admitted = UnsafeRecorderQuarantine.runNativeAcquisition(nativeAcquisitionOwner) {
                         applied = applyPreviewOutput(
                             generation = generation,
                             surface = surface,
@@ -348,7 +368,10 @@ class GlPipeline {
                         )
                     }
                     if (!admitted) {
-                        throw CancellationException("Recorder quarantine refused preview EGL acquisition")
+                        throw NativeAcquisitionRefusedException(
+                            NativeAcquisitionRefusalPhase.PREVIEW_OUTPUT,
+                            "Native acquisition refused before preview EGL attachment",
+                        )
                     }
                 }
             },
@@ -375,6 +398,7 @@ class GlPipeline {
         val core = egl
         if (core == null) {
             if (surface == null) return false
+            eglStartRefusal?.let { throw it }
             throw IllegalStateException("GL context is unavailable for preview output")
         }
         if (surface == null) {
@@ -705,7 +729,7 @@ class GlPipeline {
                 // codec/native window fails inside this result boundary, then restore preview (or
                 // no current output) before publishing ownership.
                 lateinit var candidate: EGLSurface
-                val nativePrepared = UnsafeRecorderQuarantine.runNativeAcquisition {
+                val nativePrepared = UnsafeRecorderQuarantine.runNativeAcquisition(nativeAcquisitionOwner) {
                     candidate = prepareEglOutput(
                         create = { core.createWindowSurface(surface) },
                         makeCandidateCurrent = core::makeCurrent,

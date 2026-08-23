@@ -62,6 +62,16 @@ internal data class RecordingPreNativeEngineOverrides(
     /** Test terminal after the REAL standby-mic claim; false exercises ordinary admission rollback. */
     val afterMicrophoneClaim: (uri: android.net.Uri, captureId: Int, recordAudio: Boolean) -> Boolean,
     val discardPendingOutput: (android.net.Uri) -> PendingOutputDiscardResult,
+    /** Engine-level lifecycle barrier probe; production replays the retained preview Surface. */
+    val onNativeAcquisitionReplay: (() -> Unit)? = null,
+    /** Test-only token-acquisition barrier after advisory acceptance but before GL native entry. */
+    val beforeGlNativeAcquisition: (() -> Unit)? = null,
+    /** Same-Engine pending->published barrier at the preview-window native bind only. */
+    val beforePreviewOutputNativeAcquisition: ((Any?) -> Unit)? = null,
+    /** Records the production bind branch after replay; does not replace or short-circuit it. */
+    val onPreviewBindAttempt: (() -> Unit)? = null,
+    /** Records full-graph replay selection without replacing the production restart. */
+    val onFullGraphReplayAttempt: (() -> Unit)? = null,
 )
 
 /** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
@@ -84,7 +94,19 @@ class CameraEngine internal constructor(
 
     private val manager = context.getSystemService(CameraManager::class.java)
     private val processNativeOwner = Any()
-    private val glOwners = AtomicOwnerSlot(GlPipeline()) { GlPipeline() }
+    private val glOwners = AtomicOwnerSlot(
+        GlPipeline(
+            processNativeOwner,
+            recordingPreNativeOverrides?.beforeGlNativeAcquisition,
+            recordingPreNativeOverrides?.beforePreviewOutputNativeAcquisition,
+        ),
+    ) {
+        GlPipeline(
+            processNativeOwner,
+            recordingPreNativeOverrides?.beforeGlNativeAcquisition,
+            recordingPreNativeOverrides?.beforePreviewOutputNativeAcquisition,
+        )
+    }
     private val gl: GlPipeline
         get() = glOwners.current()
     private val rendererAssists = RendererAssists(glOwners::current)
@@ -118,6 +140,10 @@ class CameraEngine internal constructor(
     >(null)
     @Volatile
     private var recorderSetupFinalizationOwner: RecorderSetupOwner? = null
+    private val recorderSetupReplayGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    private val recorderSetupReplayLock = Any()
+    private var recorderSetupReplayObservation:
+        me.hletrd.telecampro.video.NativeAcquisitionReplayObservation? = null
     // Extractor/MediaStore tails own no native recorder resources. The lane is deliberately finite:
     // provider outages may occupy two workers plus a bounded backlog, after which the pending row is
     // the durable overflow owner for launch recovery. Admission never falls back inline/raw-thread.
@@ -1224,19 +1250,23 @@ class CameraEngine internal constructor(
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
         if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
-        if (!nativeAcquisitionMayProceed()) {
-            if (UnsafeRecorderQuarantine.isActive()) {
-                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
-            }
-            invalidateCameraReady()
-            return
-        }
-        registerRouteAvailabilityIfNeeded()
+        // Retain the TextureView edge before a finite recorder-setup refusal. TextureView does not
+        // promise to repeat this callback when a process-wide setup token later retires.
+        cancelRecorderSetupReplay()
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
-        previewSurface = surface // published synchronously on the calling (main) thread
+        previewSurface = surface
         previewSurfaceW = width
         previewSurfaceH = height
         markPreviewPending(surface, surfaceGeneration)
+        if (!nativeAcquisitionMayProceed()) {
+            if (UnsafeRecorderQuarantine.isActive()) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            } else {
+                awaitRecorderSetupReplay(surfaceGeneration)
+            }
+            return
+        }
+        registerRouteAvailabilityIfNeeded()
         if (started) {
             bindPreviewSurface(surface, width, height, surfaceGeneration)
             return
@@ -1437,13 +1467,23 @@ class CameraEngine internal constructor(
         previewSurfaceW = width
         previewSurfaceH = height
         val surface = previewSurface ?: return
+        cancelRecorderSetupReplay()
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
         markPreviewPending(surface, surfaceGeneration)
+        if (!nativeAcquisitionMayProceed()) {
+            if (UnsafeRecorderQuarantine.isActive()) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            } else {
+                awaitRecorderSetupReplay(surfaceGeneration)
+            }
+            return
+        }
         bindPreviewSurface(surface, width, height, surfaceGeneration)
     }
 
     fun onPreviewSurfaceDestroyed() {
         if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
+        cancelRecorderSetupReplay()
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
         val outgoing = previewSurface
         previewSurface = null
@@ -1517,6 +1557,7 @@ class CameraEngine internal constructor(
         height: Int,
         surfaceGeneration: Long,
     ) {
+        recordingPreNativeOverrides?.onPreviewBindAttempt?.invoke()
         val ownedGl = glOwners.current()
         terminalAcquisitionGate.runIfOpen {
             if (UnsafeRecorderQuarantine.isActive()) return@runIfOpen
@@ -1601,6 +1642,12 @@ class CameraEngine internal constructor(
         surfaceGeneration: Long,
         failure: Throwable,
     ) {
+        if (failure is me.hletrd.telecampro.video.NativeAcquisitionRefusedException) {
+            val current = glOwners.owns(ownedGl) &&
+                surfaceGeneration == previewSurfaceGeneration.get() && previewSurface === surface
+            if (current) convergeRetainedSurfaceAfterNativeRefusal(failure)
+            return
+        }
         if (!nativeAcquisitionMayProceed()) return
         val outcome = synchronized(this) {
             val ownerCurrent = glOwners.owns(ownedGl) &&
@@ -1786,6 +1833,9 @@ class CameraEngine internal constructor(
                 teleconverterMagnification = teleconverterMagnification,
                 pinAutoFps = videoMode,
                 diagnosticOpticsGeneration = expectedOpticsGeneration,
+                runNativeAcquisition = { block ->
+                    UnsafeRecorderQuarantine.runNativeAcquisition(processNativeOwner, block)
+                },
                 onReady = { outputs ->
                     if (!nativeAcquisitionMayProceed() || !glInputTransactionMayProceed(
                             ownerCurrent = glOwners.owns(ownedGl),
@@ -1808,7 +1858,10 @@ class CameraEngine internal constructor(
                     )
                 },
                 onError = { failure ->
-                    if (nativeAcquisitionMayProceed() && glInputTransactionMayProceed(
+                    if (convergeRetainedSurfaceAfterNativeRefusal(failure)) {
+                        synchronized(this) { if (controller === ctrl) controller = null }
+                        ctrl.close()
+                    } else if (nativeAcquisitionMayProceed() && glInputTransactionMayProceed(
                             ownerCurrent = glOwners.owns(ownedGl),
                             engineStarted = started,
                             inputCurrent = ownedGl.inputSurface === input,
@@ -3387,6 +3440,9 @@ class CameraEngine internal constructor(
                     diagnosticOpticsGeneration = transaction.generation,
                     deferSession = true,
                     onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
+                    runNativeAcquisition = { block ->
+                        UnsafeRecorderQuarantine.runNativeAcquisition(processNativeOwner, block)
+                    },
                     onReady = { outputs ->
                         if (nativeAcquisitionMayProceed() && glInputTransactionMayProceed(
                                 ownerCurrent = glOwners.owns(ownedGl),
@@ -3409,7 +3465,10 @@ class CameraEngine internal constructor(
                         // A concurrent-open refusal is expected on devices that cannot dual-open a
                         // shared sensor; the setup task below owns that local sequential fallback.
                         // Only an error AFTER the next device opened is a real active-controller fault.
-                        if (nativeAcquisitionMayProceed() && deviceOk.get() && glInputTransactionMayProceed(
+                        if (convergeRetainedSurfaceAfterNativeRefusal(failure)) {
+                            synchronized(this) { if (controller === next) controller = null }
+                            next.close()
+                        } else if (nativeAcquisitionMayProceed() && deviceOk.get() && glInputTransactionMayProceed(
                                 ownerCurrent = glOwners.owns(ownedGl),
                                 engineStarted = started,
                                 inputCurrent = ownedGl.inputSurface === input,
@@ -5525,11 +5584,130 @@ class CameraEngine internal constructor(
         }
     }
 
-    private fun nativeAcquisitionMayProceed(): Boolean = nativeAcquisitionAllowed(
-        acquisitionOpen = terminalAcquisitionGate.isOpen(),
-        recorderQuarantined = UnsafeRecorderQuarantine.isActive(),
-        recorderSetupPending = UnsafeRecorderQuarantine.hasPendingRecorderSetup(),
-    )
+    private fun nativeAcquisitionMayProceed(): Boolean {
+        val process = UnsafeRecorderQuarantine.generalNativeAcquisitionState(processNativeOwner)
+        return nativeAcquisitionAllowed(
+            acquisitionOpen = terminalAcquisitionGate.isOpen(),
+            recorderQuarantined = process.quarantined,
+            recorderSetupPending = process.setupPending,
+            activeRecorderOwnedByForeignEngine = process.activeRecorderOwnedByForeignEngine,
+        )
+    }
+
+    /**
+     * Parks exactly one current preview generation behind the process recorder owner. The setup
+     * Engine is released when it publishes its own graph; a foreign/replacement Engine remains
+     * parked through that recording's strict finalization. Every callback re-enters setupExecutor
+     * and rechecks local terminal, lifecycle, Surface, and process authority before replay.
+     */
+    private fun awaitRecorderSetupReplay(
+        expectedSurfaceGeneration: Long,
+        restartNativeGraph: Boolean = false,
+    ) {
+        val replayGeneration = recorderSetupReplayGeneration.incrementAndGet()
+        val previous = synchronized(recorderSetupReplayLock) {
+            recorderSetupReplayObservation.also { recorderSetupReplayObservation = null }
+        }
+        previous?.cancel()
+        val observation = UnsafeRecorderQuarantine.observeNativeAcquisitionReplay(processNativeOwner) { outcome ->
+            dispatchRecorderSetupReplay(
+                replayGeneration,
+                expectedSurfaceGeneration,
+                restartNativeGraph,
+                outcome,
+            )
+        }
+        val installed = synchronized(recorderSetupReplayLock) {
+            if (recorderSetupReplayGeneration.get() == replayGeneration && observation != null) {
+                recorderSetupReplayObservation = observation
+                true
+            } else {
+                false
+            }
+        }
+        if (!installed) observation?.cancel()
+        if (observation == null) {
+            // The pending edge may have retired between the refusal and atomic registration.
+            dispatchRecorderSetupReplay(
+                replayGeneration,
+                expectedSurfaceGeneration,
+                restartNativeGraph,
+                if (UnsafeRecorderQuarantine.isActive()) {
+                    me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome.QUARANTINED
+                } else {
+                    me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome.AVAILABLE
+                },
+            )
+        }
+    }
+
+    private fun dispatchRecorderSetupReplay(
+        replayGeneration: Long,
+        expectedSurfaceGeneration: Long,
+        restartNativeGraph: Boolean,
+        outcome: me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome,
+    ) {
+        val task = Runnable {
+            if (recorderSetupReplayGeneration.get() != replayGeneration) return@Runnable
+            synchronized(recorderSetupReplayLock) { recorderSetupReplayObservation = null }
+            if (paused || !terminalAcquisitionGate.isOpen() ||
+                previewSurfaceGeneration.get() != expectedSurfaceGeneration
+            ) return@Runnable
+            if (outcome == me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome.QUARANTINED ||
+                UnsafeRecorderQuarantine.isActive()
+            ) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+                invalidateCameraReady()
+                return@Runnable
+            }
+            if (!nativeAcquisitionMayProceed()) {
+                awaitRecorderSetupReplay(expectedSurfaceGeneration, restartNativeGraph)
+                return@Runnable
+            }
+            val surface = previewSurface ?: return@Runnable
+            recordingPreNativeOverrides?.onNativeAcquisitionReplay?.let { probe ->
+                probe()
+                return@Runnable
+            }
+            if (restartNativeGraph) {
+                recordingPreNativeOverrides?.onFullGraphReplayAttempt?.invoke()
+                restartGlAfterPreviewSurfaceLoss()
+            } else {
+                onPreviewSurfaceAvailable(surface, previewSurfaceW, previewSurfaceH)
+            }
+        }
+        runCatching { setupExecutor.execute(task) }
+    }
+
+    private fun cancelRecorderSetupReplay() {
+        recorderSetupReplayGeneration.incrementAndGet()
+        synchronized(recorderSetupReplayLock) {
+            recorderSetupReplayObservation.also { recorderSetupReplayObservation = null }
+        }?.cancel()
+    }
+
+    /** Converts an atomic GL/Camera2 refusal into the retained Surface's one-shot replay owner. */
+    private fun convergeRetainedSurfaceAfterNativeRefusal(failure: Throwable): Boolean {
+        if (failure !is me.hletrd.telecampro.video.NativeAcquisitionRefusedException) return false
+        val surfaceGeneration = synchronized(this) {
+            if (paused || !terminalAcquisitionGate.isOpen() || previewSurface == null) null
+            else previewSurfaceGeneration.get()
+        } ?: return true
+        val process = UnsafeRecorderQuarantine.generalNativeAcquisitionState(processNativeOwner)
+        if (process.quarantined) {
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            invalidateCameraReady()
+        } else {
+            // Even if the token retired between refusal and this check, atomic registration returns
+            // null and dispatches the same generation immediately instead of losing the edge.
+            awaitRecorderSetupReplay(
+                surfaceGeneration,
+                restartNativeGraph = failure.phase !=
+                    me.hletrd.telecampro.video.NativeAcquisitionRefusalPhase.PREVIEW_OUTPUT,
+            )
+        }
+        return true
+    }
 
     private fun finishRecordingNative(
         rec: VideoRecorder,
@@ -5728,6 +5906,7 @@ class CameraEngine internal constructor(
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
+        cancelRecorderSetupReplay()
         retirePreNativeRecordingAllocation()
         coldStartRetryGate.cancel()
         standbyAudioController.disable()
@@ -5804,6 +5983,8 @@ class CameraEngine internal constructor(
             StartupTrace.disarm()
             if (UnsafeRecorderQuarantine.isActive()) {
                 onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            } else {
+                previewSurface?.let { awaitRecorderSetupReplay(previewSurfaceGeneration.get()) }
             }
             invalidateCameraReady()
             return
@@ -6021,6 +6202,7 @@ class CameraEngine internal constructor(
         // Terminal before state/executor teardown: either an in-flight acquisition completes before
         // this close (and the stop below owns it), or close wins and no later task can call gl.start.
         terminalAcquisitionGate.close()
+        cancelRecorderSetupReplay()
         routeAvailabilityReleased.set(true)
         paused = true
         retirePreNativeRecordingAllocation()
@@ -6381,7 +6563,9 @@ internal fun nativeAcquisitionAllowed(
     acquisitionOpen: Boolean,
     recorderQuarantined: Boolean,
     recorderSetupPending: Boolean = false,
-): Boolean = acquisitionOpen && !recorderQuarantined && !recorderSetupPending
+    activeRecorderOwnedByForeignEngine: Boolean = false,
+): Boolean = acquisitionOpen && !recorderQuarantined && !recorderSetupPending &&
+    !activeRecorderOwnedByForeignEngine
 
 /** A partial latest inventory must remain eligible even when ids and identity epochs are unchanged. */
 internal fun routeAvailabilityRefreshRequired(

@@ -29,6 +29,7 @@ import me.hletrd.telecampro.storage.publishCompletedOutput
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Collections
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -743,7 +744,9 @@ class VideoRecorder(private val context: Context) {
         // inside that process lock. A terminal refusal must leave the quarantined owner untouched.
         val audioStart = runCatching {
             startNativeOwnerIfSafe(
-                runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisition,
+                runNativeAcquisition = { block ->
+                    UnsafeRecorderQuarantine.runNativeAcquisition(processAdmissionToken?.owner, block)
+                },
                 isTerminal = terminallyQuarantined::get,
                 start = record::startRecording,
             )
@@ -894,7 +897,9 @@ class VideoRecorder(private val context: Context) {
             audioTrackReady = audioTrack >= 0,
         ) {
             startNativeOwnerIfSafe(
-                runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisition,
+                runNativeAcquisition = { block ->
+                    UnsafeRecorderQuarantine.runNativeAcquisition(processAdmissionToken?.owner, block)
+                },
                 isTerminal = terminallyQuarantined::get,
                 start = ownedMuxer::start,
             )
@@ -1056,6 +1061,27 @@ internal class UnsafeRecorderAdmissionToken internal constructor(
     internal val owner: Any,
 )
 
+internal enum class NativeAcquisitionReplayOutcome { AVAILABLE, QUARANTINED }
+
+internal data class GeneralNativeAcquisitionState(
+    val quarantined: Boolean,
+    val setupPending: Boolean,
+    val activeRecorderOwnedByForeignEngine: Boolean,
+)
+
+/** Typed finite/terminal process-gate refusal; Engine decides replay versus restart-required. */
+internal enum class NativeAcquisitionRefusalPhase { EGL_CONTEXT, PREVIEW_OUTPUT, CAMERA_GRAPH }
+
+internal class NativeAcquisitionRefusedException(
+    val phase: NativeAcquisitionRefusalPhase,
+    message: String,
+) : CancellationException(message)
+
+/** One-shot cancellation for an Engine waiting behind a recorder setup/native owner. */
+internal fun interface NativeAcquisitionReplayObservation {
+    fun cancel()
+}
+
 internal class UnsafeStandbyAdmissionToken internal constructor(
     internal val epoch: Long,
     internal val owner: Any,
@@ -1067,9 +1093,31 @@ internal class RecorderQuarantineAdmissionGate {
     private val nativeAcquisitionsDrained = lock.newCondition()
     private val epoch = AtomicLong(0L)
     private val quarantined = AtomicBoolean(false)
-    private var pendingToken: Long? = null
-    private var activeToken: Long? = null
+    private var pendingToken: UnsafeRecorderAdmissionToken? = null
+    private var activeToken: UnsafeRecorderAdmissionToken? = null
     private var standbyToken: UnsafeStandbyAdmissionToken? = null
+    private data class ReplayObserver(
+        val tokenEpoch: Long,
+        val owner: Any,
+        val callback: (NativeAcquisitionReplayOutcome) -> Unit,
+    )
+    private val replayObserverId = AtomicLong(0L)
+    private val replayObservers = LinkedHashMap<Long, ReplayObserver>()
+
+    private fun notifyReplayObservers(
+        observers: List<ReplayObserver>,
+        outcome: NativeAcquisitionReplayOutcome,
+    ) {
+        observers.forEach { observer -> runCatching { observer.callback(outcome) } }
+    }
+
+    private fun removeReplayObserversLocked(
+        predicate: (ReplayObserver) -> Boolean,
+    ): List<ReplayObserver> {
+        val removed = replayObservers.filterValues(predicate)
+        removed.keys.forEach(replayObservers::remove)
+        return removed.values.toList()
+    }
     private var nativeAcquisitions = 0
 
     fun snapshot(owner: Any): UnsafeRecorderAdmissionToken? = lock.withLock {
@@ -1077,9 +1125,7 @@ internal class RecorderQuarantineAdmissionGate {
         if (quarantined.get() || pendingToken != null || activeToken != null || foreignStandby) {
             null
         } else {
-            UnsafeRecorderAdmissionToken(epoch.incrementAndGet(), owner).also {
-                pendingToken = it.epoch
-            }
+            UnsafeRecorderAdmissionToken(epoch.incrementAndGet(), owner).also { pendingToken = it }
         }
     }
 
@@ -1100,7 +1146,7 @@ internal class RecorderQuarantineAdmissionGate {
     }
 
     fun isCurrent(token: UnsafeRecorderAdmissionToken): Boolean = lock.withLock {
-        !quarantined.get() && (pendingToken == token.epoch || activeToken == token.epoch)
+        !quarantined.get() && (pendingToken == token || activeToken == token)
     }
 
     fun commit(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean = lock.withLock {
@@ -1119,12 +1165,23 @@ internal class RecorderQuarantineAdmissionGate {
      * Drain observation is deliberately separate and bounded: quarantine cannot wait forever for
      * the native call whose failure caused the terminal transition.
      */
-    fun runNativeIfSafe(block: () -> Unit): Boolean {
+    fun generalNativeAcquisitionState(owner: Any?): GeneralNativeAcquisitionState = lock.withLock {
+        GeneralNativeAcquisitionState(
+            quarantined = quarantined.get(),
+            setupPending = pendingToken != null,
+            activeRecorderOwnedByForeignEngine = activeToken?.owner?.let { it !== owner } == true,
+        )
+    }
+
+    fun runNativeIfSafe(block: () -> Unit): Boolean = runNativeIfSafe(null, block)
+
+    fun runNativeIfSafe(owner: Any?, block: () -> Unit): Boolean {
         val admitted = lock.withLock {
             // A pending REC token can already be inside MediaCodec setup while its recorder has not
             // yet reached the published Engine slot. General GL/Camera2 acquisition must wait for
             // that setup to publish or retire; token-specific [runPendingNative] is its sole entry.
-            if (quarantined.get() || pendingToken != null) {
+            val foreignActiveRecorder = activeToken?.owner?.let { it !== owner } == true
+            if (quarantined.get() || pendingToken != null || foreignActiveRecorder) {
                 false
             } else {
                 nativeAcquisitions++
@@ -1147,7 +1204,7 @@ internal class RecorderQuarantineAdmissionGate {
     /** Token-specific setup lease: bookkeeping under lock, native work outside it. */
     fun runPendingNative(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean {
         val admitted = lock.withLock {
-            if (quarantined.get() || pendingToken != token.epoch) {
+            if (quarantined.get() || pendingToken != token) {
                 false
             } else {
                 nativeAcquisitions++
@@ -1165,46 +1222,86 @@ internal class RecorderQuarantineAdmissionGate {
             }
         }
         return lock.withLock {
-            !quarantined.get() && pendingToken == token.epoch
+            !quarantined.get() && pendingToken == token
         }
     }
 
-    fun publish(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean = lock.withLock {
-        if (quarantined.get() || pendingToken != token.epoch || activeToken != null) {
-            return@withLock false
+    fun publish(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean {
+        val observers = lock.withLock {
+            if (quarantined.get() || pendingToken != token || activeToken != null) {
+                return false
+            }
+            if (!block()) return false
+            pendingToken = null
+            activeToken = token
+            // The setup-owning Engine may now safely continue against its published graph. A
+            // replacement Engine remains parked until strict finalization releases this token.
+            removeReplayObserversLocked { it.tokenEpoch == token.epoch && it.owner === token.owner }
         }
-        if (!block()) return@withLock false
-        pendingToken = null
-        activeToken = token.epoch
-        true
+        notifyReplayObservers(observers, NativeAcquisitionReplayOutcome.AVAILABLE)
+        return true
     }
 
     /** Clears a setup lease only; a successfully published owner remains process-exclusive. */
-    fun abandonPending(token: UnsafeRecorderAdmissionToken) = lock.withLock {
-        if (pendingToken == token.epoch) {
+    fun abandonPending(token: UnsafeRecorderAdmissionToken) {
+        val observers = lock.withLock {
+            if (pendingToken != token) return
             pendingToken = null
             epoch.incrementAndGet()
+            removeReplayObserversLocked { it.tokenEpoch == token.epoch }
         }
+        notifyReplayObservers(observers, NativeAcquisitionReplayOutcome.AVAILABLE)
     }
 
     /** Strict recorder finalization releases the one process-wide active recording lease. */
-    fun finish(token: UnsafeRecorderAdmissionToken?) = lock.withLock {
-        if (token != null && activeToken == token.epoch) {
+    fun finish(token: UnsafeRecorderAdmissionToken?) {
+        if (token == null) return
+        val observers = lock.withLock {
+            if (activeToken != token) return
             activeToken = null
             epoch.incrementAndGet()
+            removeReplayObserversLocked { it.tokenEpoch == token.epoch }
+        }
+        notifyReplayObservers(observers, NativeAcquisitionReplayOutcome.AVAILABLE)
+    }
+
+    /**
+     * Registers one exact Engine owner behind the current recorder token without a check/register
+     * race. The setup owner is released at publication; foreign Engines remain parked through the
+     * active recording and are released only by strict finalization.
+     */
+    fun observeNativeAcquisitionReplay(
+        owner: Any,
+        callback: (NativeAcquisitionReplayOutcome) -> Unit,
+    ): NativeAcquisitionReplayObservation? = lock.withLock {
+        val token = pendingToken ?: activeToken?.takeIf { it.owner !== owner } ?: return null
+        val id = replayObserverId.incrementAndGet()
+        replayObservers[id] = ReplayObserver(token.epoch, owner, callback)
+        val cancelled = AtomicBoolean(false)
+        NativeAcquisitionReplayObservation {
+            if (cancelled.compareAndSet(false, true)) {
+                lock.withLock { replayObservers.remove(id) }
+            }
         }
     }
 
     /** Irreversible and non-blocking: closes publication/admission before terminal convergence. */
-    fun close(): Boolean = lock.withLock {
-        val firstClose = !quarantined.getAndSet(true)
-        if (firstClose) {
-            epoch.incrementAndGet()
-            pendingToken = null
-            activeToken = null
-            standbyToken = null
+    fun close(): Boolean {
+        val (firstClose, observers) = lock.withLock {
+            val first = !quarantined.getAndSet(true)
+            val removed = if (first) {
+                epoch.incrementAndGet()
+                pendingToken = null
+                activeToken = null
+                standbyToken = null
+                removeReplayObserversLocked { true }
+            } else {
+                emptyList()
+            }
+            first to removed
         }
-        firstClose
+        notifyReplayObservers(observers, NativeAcquisitionReplayOutcome.QUARANTINED)
+        return firstClose
     }
 
     /** Best-effort observation only; false retains every unsafe owner for process restart. */
@@ -1249,12 +1346,24 @@ internal object UnsafeRecorderQuarantine {
     fun commitAdmission(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.commit(token, block)
 
-    fun runNativeAcquisition(block: () -> Unit): Boolean = admissionGate.runNativeIfSafe(block)
+    fun generalNativeAcquisitionState(owner: Any?): GeneralNativeAcquisitionState =
+        admissionGate.generalNativeAcquisitionState(owner)
+
+    fun runNativeAcquisition(block: () -> Unit): Boolean = admissionGate.runNativeIfSafe(block = block)
+
+    fun runNativeAcquisition(owner: Any?, block: () -> Unit): Boolean =
+        admissionGate.runNativeIfSafe(owner, block)
 
     fun runPendingNativeSetup(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.runPendingNative(token, block)
 
     fun hasPendingRecorderSetup(): Boolean = admissionGate.hasPendingRecorderSetup()
+
+    fun observeNativeAcquisitionReplay(
+        owner: Any,
+        callback: (NativeAcquisitionReplayOutcome) -> Unit,
+    ): NativeAcquisitionReplayObservation? =
+        admissionGate.observeNativeAcquisitionReplay(owner, callback)
 
     fun publishAdmission(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean =
         admissionGate.publish(token, block)
