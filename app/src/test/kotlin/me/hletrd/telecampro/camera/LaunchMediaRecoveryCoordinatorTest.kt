@@ -7,10 +7,24 @@ import me.hletrd.telecampro.storage.RecoveryEvent
 import me.hletrd.telecampro.storage.RecoveryRetryDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LaunchMediaRecoveryCoordinatorTest {
+    @Test
+    fun `dispatcher rejection retires the sole admission before throwing`() {
+        val coordinator = LaunchMediaRecoveryCoordinator<Int> { false }
+        val owner = Any()
+
+        assertThrows(IllegalStateException::class.java) {
+            coordinator.request(owner, recover = { 1 }) {}
+        }
+
+        assertFalse(coordinator.isRunning())
+        assertEquals(0, coordinator.subscriberCount())
+    }
+
     @Test
     fun `blocked recovery stays single flight across engine replacement`() {
         val tasks = ArrayDeque<Runnable>()

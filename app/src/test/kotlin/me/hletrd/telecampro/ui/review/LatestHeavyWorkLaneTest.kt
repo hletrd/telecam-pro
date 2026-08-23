@@ -4,10 +4,12 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.CoroutineContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,6 +17,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LatestHeavyWorkLaneTest {
+    @Test
+    fun `cancellation after worker result disposes the admitted completion`() = runBlocking {
+        val workerTasks = ArrayDeque<Runnable>()
+        val workerDispatcher = object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) {
+                workerTasks.addLast(block)
+            }
+        }
+        val disposed = mutableListOf<String>()
+        val lane = LatestHeavyWorkLane<String, String>(
+            dispatcher = workerDispatcher,
+            work = { "result-$it" },
+            dispose = disposed::add,
+        )
+        val pending = async(start = CoroutineStart.UNDISPATCHED) { lane.submit(Any(), "A") }
+
+        // Work and Completion creation finish on the manual dispatcher. The caller continuation is
+        // still queued on runBlocking's event loop, creating the exact produced-result cancellation gap.
+        workerTasks.removeFirst().run()
+        pending.cancel()
+        pending.join()
+
+        assertTrue(pending.isCancelled)
+        assertEquals(listOf("result-A"), disposed)
+    }
+
     @Test
     fun `blocked A coalesces waiting B into newest C and disposes stale A`() {
         val executor = Executors.newFixedThreadPool(3)

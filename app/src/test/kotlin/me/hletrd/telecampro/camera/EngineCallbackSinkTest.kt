@@ -12,6 +12,29 @@ import org.junit.Test
 
 class EngineCallbackSinkTest {
     @Test
+    fun `four and ten argument callbacks preserve every argument`() {
+        val sink = EngineCallbackSink()
+        var four: List<Int>? = null
+        var ten: List<Int>? = null
+        sink.install<(Int, Int, Int, Int) -> Unit>(EngineCallbackKey.ANALYSIS) { a, b, c, d ->
+            four = listOf(a, b, c, d)
+        }
+        sink.install<(Int, Int, Int, Int, Int, Int, Int, Int, Int, Int) -> Unit>(
+            EngineCallbackKey.OPTICS_ROLLBACK,
+        ) { a, b, c, d, e, f, g, h, i, j ->
+            ten = listOf(a, b, c, d, e, f, g, h, i, j)
+        }
+
+        sink.function4<Int, Int, Int, Int>(EngineCallbackKey.ANALYSIS)!!(1, 2, 3, 4)
+        sink.function10<Int, Int, Int, Int, Int, Int, Int, Int, Int, Int>(
+            EngineCallbackKey.OPTICS_ROLLBACK,
+        )!!(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+        assertEquals(listOf(1, 2, 3, 4), four)
+        assertEquals((1..10).toList(), ten)
+    }
+
+    @Test
     fun `function acquired before close rechecks terminal state`() {
         val sink = EngineCallbackSink()
         var publications = 0
