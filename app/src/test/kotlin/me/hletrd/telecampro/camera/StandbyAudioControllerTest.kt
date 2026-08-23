@@ -441,7 +441,7 @@ class StandbyAudioControllerTest {
     }
 
     @Test
-    fun `failed async stop dispatch falls back to worker and preserves interruption`() {
+    fun `failed async stop dispatch falls back after the worker has begun waiting`() {
         val dispatchEntered = CountDownLatch(1)
         val releaseDispatch = CountDownLatch(1)
         val workerEntered = CountDownLatch(1)
@@ -473,24 +473,66 @@ class StandbyAudioControllerTest {
                 owner.finishAndRelease(input) { value ->
                     events += if (value === input) "release" else "wrong-release"
                 }
-                events += if (Thread.currentThread().isInterrupted) "interrupted" else "not-interrupted"
                 workerDone.countDown()
             },
             "standby-stop-fallback",
         )
         worker.start()
         assertTrue(workerEntered.await(2, TimeUnit.SECONDS))
-        worker.interrupt()
+        assertTrue(awaitThreadWait(worker))
         releaseDispatch.countDown()
 
         requestThread.join(2_000)
         assertTrue(workerDone.await(2, TimeUnit.SECONDS))
-        assertEquals(listOf("stop", "release", "interrupted"), events)
+        assertEquals(listOf("stop", "release"), events)
 
         // Terminal ownership is idempotent and rejects a replacement binding.
         owner.finishAndRelease(input) { events += "duplicate-release" }
         assertFalse(owner.bind(Any()))
-        assertEquals(listOf("stop", "release", "interrupted"), events)
+        assertEquals(listOf("stop", "release"), events)
+    }
+
+    @Test
+    fun `interrupted worker restores its flag after the owned async stop completes`() {
+        val stopTasks = ArrayDeque<() -> Unit>()
+        val input = Any()
+        val workerDone = CountDownLatch(1)
+        val owner = StandbyInputTerminationOwner(
+            generationId = 74L,
+            stopDispatcher = StandbyStopDispatcher { task -> stopTasks.addLast(task) },
+            stop = { _: Any -> },
+        )
+        assertTrue(owner.bind(input))
+        assertTrue(owner.beginStart(input))
+        owner.finishStart(input, succeeded = true)
+        owner.requestStop()
+
+        val worker = Thread(
+            {
+                owner.finishAndRelease(input) {}
+                if (Thread.currentThread().isInterrupted) workerDone.countDown()
+            },
+            "standby-stop-interrupted-wait",
+        )
+        worker.start()
+        assertTrue(awaitThreadWait(worker))
+        worker.interrupt()
+        // Let the interrupted waiter enter its next bounded await before the exact stop completes.
+        assertTrue(awaitThreadWait(worker))
+        stopTasks.removeFirst().invoke()
+
+        assertTrue(workerDone.await(2, TimeUnit.SECONDS))
+    }
+
+    private fun awaitThreadWait(thread: Thread): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (thread.state == Thread.State.WAITING || thread.state == Thread.State.TIMED_WAITING) {
+                return true
+            }
+            Thread.yield()
+        }
+        return false
     }
 
     @Test
