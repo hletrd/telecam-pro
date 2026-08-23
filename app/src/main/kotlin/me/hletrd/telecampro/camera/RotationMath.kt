@@ -151,8 +151,12 @@ object RotationMath {
         teleconverterMode: Boolean,
         deviceOrientation: Int,
         frontFacing: Boolean,
+        route: CameraRoute = if (frontFacing) CameraRoute.FRONT else CameraRoute.BACK,
     ): Int {
-        if (frontFacing) return normalize(sensorOrientation + deviceOrientation)
+        // EXTERNAL has no fixed facing relative to the host display. Handset gravity therefore has
+        // no defensible contribution: keep the camera's own advertised sensor orientation only.
+        if (route == CameraRoute.EXTERNAL) return normalize(sensorOrientation)
+        if (route == CameraRoute.FRONT || frontFacing) return normalize(sensorOrientation + deviceOrientation)
         val base = sensorOrientation + if (teleconverterMode) AFOCAL_FLIP else 0
         return normalize(base - deviceOrientation)
     }
@@ -176,6 +180,16 @@ object RotationMath {
      */
     fun videoOrientationHint(deviceOrientation: Int, frontFacing: Boolean = false): Int =
         if (frontFacing) normalize(deviceOrientation) else normalize(-deviceOrientation)
+
+    /** Route-aware container hint; an external camera cannot inherit unrelated host gravity. */
+    fun videoOrientationHint(
+        deviceOrientation: Int,
+        route: CameraRoute,
+    ): Int = when (route) {
+        CameraRoute.BACK -> normalize(-deviceOrientation)
+        CameraRoute.FRONT -> normalize(deviceOrientation)
+        CameraRoute.EXTERNAL -> 0
+    }
 
     /**
      * True when the GL content aspect is SWAPPED relative to the camera stream: the SurfaceTexture

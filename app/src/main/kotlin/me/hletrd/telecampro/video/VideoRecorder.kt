@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.normalizeAudioGain
@@ -208,6 +209,7 @@ class VideoRecorder(private val context: Context) {
         audioGain: Float = 1f,
         orientationHint: Int = 0,
         frontFacing: Boolean = false,
+        cameraRoute: CameraRoute = if (frontFacing) CameraRoute.FRONT else CameraRoute.BACK,
         audioScene: AudioScene = AudioScene.STANDARD,
         audioZoom: Float = 1f,
         audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
@@ -252,7 +254,7 @@ class VideoRecorder(private val context: Context) {
             // upright. Must be set before start(). Sign is device-verify (see RotationMath helper doc).
             nativeOperation {
                 muxer?.setOrientationHint(
-                    RotationMath.videoOrientationHint(orientationHint, frontFacing),
+                    RotationMath.videoOrientationHint(orientationHint, cameraRoute),
                 )
             }
 

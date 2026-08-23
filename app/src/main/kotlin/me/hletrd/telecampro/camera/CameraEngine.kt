@@ -186,7 +186,7 @@ class CameraEngine(private val context: Context) {
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
     var onCameraReadyChange: ((CameraReadyPublication) -> Unit)? = null
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
-    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, ManualControls, Long, String?, restoredPreTeleUnifiedZoom: Float, generation: Long) -> Unit)? = null
+    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, CameraRoute, ManualControls, Long, String?, restoredPreTeleUnifiedZoom: Float, generation: Long) -> Unit)? = null
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
@@ -291,7 +291,7 @@ class CameraEngine(private val context: Context) {
         // the lens-local 1.0 was read as main-relative and collapsed the band to 1×, so the rail
         // highlighted 1× while the focal readout correctly said 69 mm (device-reported 2026-08-04).
         if (!standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone) &&
-            !teleconverterMode && facing == CameraFacing.BACK
+            !teleconverterMode && activeCameraRoute == CameraRoute.BACK
         ) {
             lensChoice = LensChoice.forZoom(controls.zoomRatio)
         }
@@ -303,6 +303,7 @@ class CameraEngine(private val context: Context) {
         val lens: LensChoice,
         val teleconverter: Boolean,
         val facing: CameraFacing,
+        val route: CameraRoute,
         val controls: ManualControls,
         val photoExposureTimeNs: Long,
         val overrideId: String?,
@@ -367,6 +368,7 @@ class CameraEngine(private val context: Context) {
         lens = lensChoice,
         teleconverter = teleconverterMode,
         facing = facing,
+        route = activeCameraRoute,
         controls = controls,
         photoExposureTimeNs = photoExposureTimeNs,
         overrideId = overrideId,
@@ -571,6 +573,7 @@ class CameraEngine(private val context: Context) {
                 lens = before.lens,
                 teleconverter = before.teleconverter,
                 facing = before.facing,
+                route = before.route,
                 controls = before.controls,
                 photoExposureTimeNs = before.photoExposureTimeNs,
                 overrideId = before.overrideId,
@@ -585,6 +588,7 @@ class CameraEngine(private val context: Context) {
         // A failed FRONT open (or a failed exit) restores the exact prior facing with the rest of
         // the packet; applyStabilization below then re-pushes the matching preview mirror.
         facing = restored.facing
+        activeCameraRoute = restored.route
         controls = restored.controls
         photoExposureTimeNs = restored.photoExposureTimeNs
         overrideId = restored.overrideId
@@ -603,6 +607,7 @@ class CameraEngine(private val context: Context) {
             restored.lens,
             restored.teleconverter,
             restored.facing,
+            restored.route,
             restored.controls,
             restored.photoExposureTimeNs,
             // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
@@ -678,11 +683,7 @@ class CameraEngine(private val context: Context) {
     private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
 
     private fun activeDeviceProfile(): DeviceProfile =
-        deviceProfileForRoute(
-            deviceProfile,
-            externalRoute = externalRouteActive &&
-                facing != CameraFacing.FRONT && !cameraRouteInventory.back,
-        )
+        deviceProfileForRoute(deviceProfile, externalRoute = activeCameraRoute == CameraRoute.EXTERNAL)
 
     private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
         runCatching {
@@ -819,34 +820,68 @@ class CameraEngine(private val context: Context) {
     @Volatile private var cachedExternalSelection: TeleSelection? = null
     @Volatile private var cameraRouteInventory = CameraRouteInventory.UNKNOWN
     @Volatile private var cameraRouteInventoryResolved = false
-    // External cameras take the non-front side of the existing switch without pretending to be
-    // rear optics. They stay on GENERIC DeviceProfile paths and never expose TELE/focal chrome.
-    @Volatile private var externalRouteActive = false
+    @Volatile private var knownCameraIds: Set<String> = emptySet()
+    @Volatile private var routeAvailabilityRegistered = false
+    private val routeAvailabilityRefreshScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val routeInventoryRetryScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var routeInventoryRetryAttempts = 0
 
     private fun cachedExternal(): TeleSelection? =
         cachedExternalSelection
             ?: CameraSelector2.pickExternal(manager)?.also { cachedExternalSelection = it }
 
+    private fun setActiveCameraRoute(route: CameraRoute) {
+        activeCameraRoute = route
+        facing = route.facing
+    }
+
     /** Resolve an honest startup route before snapshotting the first optics transaction. */
-    private fun resolveInitialCameraRouteAvailability() {
-        if (cameraRouteInventoryResolved) return
+    private fun resolveInitialCameraRouteAvailability(force: Boolean = false) {
+        if (cameraRouteInventoryResolved && !force) {
+            runCatching { onCameraRouteInventory?.invoke(cameraRouteInventory, activeCameraRoute) }
+            return
+        }
         val inventory = CameraSelector2.routeInventory(manager)
-        if (!inventory.complete) return
+        val ids = runCatching { manager.cameraIdList.toSet() }.getOrDefault(emptySet())
+        if (!inventory.complete) {
+            cameraRouteInventory = inventory
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            scheduleRouteInventoryRetry()
+            return
+        }
+        routeInventoryRetryAttempts = 0
+        routeInventoryRetryScheduled.set(false)
+        val topology = cameraRouteTopologyDecision(
+            previousIds = knownCameraIds,
+            currentIds = ids,
+            inventory = inventory,
+            currentRoute = activeCameraRoute,
+        )
+        val topologyChanged = topology.topologyChanged
+        if (topologyChanged) {
+            knownCameraIds = ids
+            cachedExternalSelection = null
+            cachedFrontSelection = null
+            cachedLogicalBackId = null
+            idForFocalCache.clear()
+            capsCache.clear()
+            lensExifCache.clear()
+            lensInventoryPublished = false
+        }
         cameraRouteInventory = inventory
         if (!inventory.any) {
             // CameraService can transiently enumerate nothing. Publish the honest temporary state,
             // but retry enumeration with the existing bounded cold-start retry rather than caching it.
-            runCatching { onCameraRouteInventory?.invoke(inventory, facing) }
+            cameraRouteInventoryResolved = false
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            scheduleRouteInventoryRetry()
             return
         }
-        when (inventory.initialRoute()) {
-            CameraRoute.BACK -> {
-                // PMA110 and every ordinary phone remain byte-for-byte on the historical BACK path.
-                externalRouteActive = false
-            }
+        val resolvedRoute = topology.targetRoute ?: return
+        when (resolvedRoute) {
+            CameraRoute.BACK -> setActiveCameraRoute(CameraRoute.BACK)
             CameraRoute.FRONT -> {
-                facing = CameraFacing.FRONT
-                externalRouteActive = inventory.external
+                setActiveCameraRoute(CameraRoute.FRONT)
                 teleconverterMode = false
                 controls = controls.copy(zoomRatio = 1f)
                 overrideId = null
@@ -855,19 +890,74 @@ class CameraEngine(private val context: Context) {
             CameraRoute.EXTERNAL -> {
                 // Reuse non-mirrored capture semantics, but route selection and UI availability
                 // remain explicitly external so no PMA110/rear-only quirk leaks onto this camera.
-                facing = CameraFacing.BACK
-                externalRouteActive = true
+                setActiveCameraRoute(CameraRoute.EXTERNAL)
                 teleconverterMode = false
                 controls = controls.copy(zoomRatio = 1f)
                 overrideId = null
                 userCameraPin = null
             }
-            null -> return
         }
         cameraRouteInventoryResolved = true
         // UI publication cannot own camera startup: a detached or throwing observer must not turn
         // valid enumerated hardware into a black viewfinder.
-        runCatching { onCameraRouteInventory?.invoke(inventory, facing) }
+        runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+        // Ordinary startup/resume callers immediately snapshot and reconfigure after this method.
+        // Only asynchronous availability/retry (`force`) owns convergence itself; doing both paid
+        // two optics generations and could dual-open the same initial route.
+        if (force && topologyChanged && started && !paused) convergeAfterRouteTopologyChange()
+    }
+
+    private fun scheduleRouteInventoryRetry() {
+        if (routeInventoryRetryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS ||
+            !routeInventoryRetryScheduled.compareAndSet(false, true)
+        ) return
+        routeInventoryRetryAttempts++
+        runCatching {
+            timelapseScheduler.schedule(
+                {
+                    routeInventoryRetryScheduled.set(false)
+                    runCatching { setupExecutor.execute { resolveInitialCameraRouteAvailability(force = true) } }
+                },
+                CAMERA_RECOVERY_DELAY_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+        }.onFailure { routeInventoryRetryScheduled.set(false) }
+    }
+
+    private fun scheduleRouteAvailabilityRefresh() {
+        if (!routeAvailabilityRefreshScheduled.compareAndSet(false, true)) return
+        runCatching {
+            setupExecutor.execute {
+                routeAvailabilityRefreshScheduled.set(false)
+                val ids = runCatching { manager.cameraIdList.toSet() }.getOrDefault(emptySet())
+                // Opening our own camera emits onCameraUnavailable without changing topology.
+                if (cameraRouteInventoryResolved && ids == knownCameraIds) return@execute
+                resolveInitialCameraRouteAvailability(force = true)
+            }
+        }.onFailure { routeAvailabilityRefreshScheduled.set(false) }
+    }
+
+    private val routeAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraAvailable(cameraId: String) = scheduleRouteAvailabilityRefresh()
+        override fun onCameraUnavailable(cameraId: String) = scheduleRouteAvailabilityRefresh()
+        override fun onCameraRemoved(cameraId: String) = scheduleRouteAvailabilityRefresh()
+    }
+
+    private fun registerRouteAvailabilityIfNeeded() {
+        if (routeAvailabilityRegistered) return
+        routeAvailabilityRegistered = true
+        manager.registerAvailabilityCallback(context.mainExecutor, routeAvailabilityCallback)
+    }
+
+    private fun convergeAfterRouteTopologyChange() {
+        val transaction = beginOpticsTransaction {
+            teleconverterMode = teleconverterMode && activeCameraRoute == CameraRoute.BACK
+            if (activeCameraRoute != CameraRoute.BACK) controls = controls.copy(zoomRatio = 1f)
+            overrideId = null
+            userCameraPin = null
+        }.first
+        reconfigureCamera(null, transaction, startup = controller == null)
+        runCatching { publishLensInventoryOnce() }
     }
 
     private val gyro = me.hletrd.telecampro.stab.GyroEis(context)
@@ -887,6 +977,7 @@ class CameraEngine(private val context: Context) {
     // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
     // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
     @Volatile private var facing = CameraFacing.BACK
+    @Volatile private var activeCameraRoute = CameraRoute.BACK
     private val facingIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     // Hi-res still INTENT (user toggle, persisted). Resolution to an actual session demand happens
     // in exactly one place ([resolvedHiResStill], the shared hiResAdmitted predicate) and is pushed
@@ -915,7 +1006,7 @@ class CameraEngine(private val context: Context) {
     var onStatus: ((CameraStatus?) -> Unit)? = null
     var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
     /** Device-static route truth plus the initial facing selected before first Camera2 open. */
-    var onCameraRouteInventory: ((CameraRouteInventory, CameraFacing) -> Unit)? = null
+    var onCameraRouteInventory: ((CameraRouteInventory, CameraRoute) -> Unit)? = null
     // Device-static lens inventory (enumerated once, published once): which lens presets this
     // hardware can actually deliver. The rail rendered the PMA110 set unconditionally before.
     var onLensInventory: ((LensInventory) -> Unit)? = null
@@ -992,6 +1083,7 @@ class CameraEngine(private val context: Context) {
             invalidateCameraReady()
             return
         }
+        registerRouteAvailabilityIfNeeded()
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
         previewSurface = surface // published synchronously on the calling (main) thread
         previewSurfaceW = width
@@ -1130,7 +1222,7 @@ class CameraEngine(private val context: Context) {
         // [DeviceProfile.frontStreamPreMirrored] quirk: spec devices deliver the unmirrored scene
         // and take the naive roles (preview mirrors, encoder/analysis pass through).
         gl.setFrontMirrorConvention(
-            facing == CameraFacing.FRONT,
+            activeCameraRoute == CameraRoute.FRONT,
             activeDeviceProfile().frontStreamPreMirrored,
         )
         // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
@@ -1430,7 +1522,7 @@ class CameraEngine(private val context: Context) {
         // exact submit for one gesture).
         zoomInteractionActive = false
         val ctrl = CameraController(context)
-        if (externalRouteActive && facing != CameraFacing.FRONT && !cameraRouteInventory.back) {
+        if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
         }
         // Every result callback is identity-gated: a CLOSING controller's capture results keep
@@ -1712,7 +1804,7 @@ class CameraEngine(private val context: Context) {
             // FRONT keeps its one camera across the mode flip (photo/video are stream-size, not
             // camera, changes there); the rear split keeps its documented tele/mode-home routing.
             val id = when {
-                facing == CameraFacing.FRONT -> cachedFront()?.logicalId
+                activeCameraRoute == CameraRoute.FRONT -> cachedFront()?.logicalId
                 teleconverterMode -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
                 else -> resolveNonTeleId(lensChoice)
             }
@@ -1766,7 +1858,7 @@ class CameraEngine(private val context: Context) {
                                 capsUpper = range?.upper,
                             )
                             if (!enabled) photoExposureTimeNs = controls.exposureTimeNs
-                            if (!enabled && !teleconverterMode && facing == CameraFacing.BACK) {
+                            if (!enabled && !teleconverterMode && activeCameraRoute == CameraRoute.BACK) {
                                 lensChoice = LensChoice.forZoom(controls.zoomRatio)
                             }
                             seedGlZoom()
@@ -1803,19 +1895,22 @@ class CameraEngine(private val context: Context) {
         } else {
             resolvedControls
         }
-        val modeControls = modeIntent.normalizedForCaptureMode(
+        val route = recalledCameraRoute(cameraRouteInventory, activeCameraRoute) ?: return false
+        val routeTeleconverter = resolvedTeleconverter && route == CameraRoute.BACK
+        val routeControls = if (route.lensLocalZoom) resolvedControls.copy(zoomRatio = resolvedControls.zoomRatio.coerceAtLeast(1f)) else resolvedControls
+        val modeControls = modeIntent.copy(zoomRatio = routeControls.zoomRatio).normalizedForCaptureMode(
             if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
         val transaction = beginOpticsTransaction {
             videoMode = enabledVideo
             lensChoice = resolvedLens
-            teleconverterMode = resolvedTeleconverter
+            teleconverterMode = routeTeleconverter
             // MR recall / settings restore EXITS the front camera in this same atomic publication:
             // recalled packets are rear-route optics (lens band, TC state, unified/lens-local zoom
             // semantics — facing itself is deliberately never persisted), so applying one while
             // FRONT would pair front hardware with rear-scale values. One transaction, no
             // intermediate front-with-recalled-optics state.
-            facing = CameraFacing.BACK
+            setActiveCameraRoute(route)
             controls = modeControls
             photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
             recalledVideoSize?.let { requestedVideoSize = it }
@@ -1844,10 +1939,11 @@ class CameraEngine(private val context: Context) {
                 rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_RECALL_UNCHANGED.status())
                 return@execute
             }
-            val id = if (resolvedTeleconverter) {
-                cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
-            } else {
-                resolveNonTeleId(resolvedLens)
+            val id = when {
+                route == CameraRoute.FRONT -> cachedFront()?.logicalId
+                route == CameraRoute.EXTERNAL -> cachedExternal()?.logicalId
+                routeTeleconverter -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                else -> resolveNonTeleId(resolvedLens)
             }
             if (id == null) {
                 rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
@@ -1859,7 +1955,7 @@ class CameraEngine(private val context: Context) {
                 beforeVideo = before.videoMode,
                 targetVideo = enabledVideo,
                 beforeTeleconverter = before.teleconverter,
-                targetTeleconverter = resolvedTeleconverter,
+                targetTeleconverter = routeTeleconverter,
                 beforeCameraId = beforeCameraId,
                 targetCameraId = id,
                 controllerAvailable = controller != null,
@@ -1886,13 +1982,13 @@ class CameraEngine(private val context: Context) {
                             liveControls = controls,
                             capabilities = routeCaps.controlCapabilities(),
                             mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
-                            teleconverter = resolvedTeleconverter,
+                            teleconverter = routeTeleconverter,
                             teleconverterMagnification = teleconverterMagnification,
                             capsLower = range?.lower,
                             capsUpper = range?.upper,
                         )
                         if (!enabledVideo) photoExposureTimeNs = controls.exposureTimeNs
-                        if (!enabledVideo && !resolvedTeleconverter) {
+                        if (!enabledVideo && !routeTeleconverter && route == CameraRoute.BACK) {
                             lensChoice = LensChoice.forZoom(controls.zoomRatio)
                         }
                         seedGlZoom()
@@ -2136,7 +2232,7 @@ class CameraEngine(private val context: Context) {
             // FrontMirrorConvention authority so a re-diagnosed mirror role cannot leave this seam
             // and the GL draw roles disagreeing (cycle-6 architect F4).
             mirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.tapDisplayMirrorX(
-                facing == CameraFacing.FRONT,
+                activeCameraRoute == CameraRoute.FRONT,
                 activeDeviceProfile().frontStreamPreMirrored,
             ),
             // The METERING half is a different question and a different answer: AE/AF regions are
@@ -2144,7 +2240,7 @@ class CameraEngine(private val context: Context) {
             // shows it mirrored. Derived from the same one authority so the two halves can never
             // drift apart.
             meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
-                facing == CameraFacing.FRONT,
+                activeCameraRoute == CameraRoute.FRONT,
                 activeDeviceProfile().frontStreamPreMirrored,
             ),
         )
@@ -2735,7 +2831,7 @@ class CameraEngine(private val context: Context) {
         when (
             backOpticsDoorRefusal(
                 recorder != null,
-                facing == CameraFacing.FRONT || !cameraRouteInventory.back,
+                activeCameraRoute != CameraRoute.BACK,
             )
         ) {
             BackOpticsRefusal.RECORDING -> { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
@@ -2861,11 +2957,18 @@ class CameraEngine(private val context: Context) {
      */
     fun setFrontCamera(enabled: Boolean) {
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
-        if ((facing == CameraFacing.FRONT) == enabled) return
+        if ((activeCameraRoute == CameraRoute.FRONT) == enabled) return
+        val targetRoute = if (enabled) {
+            CameraRoute.FRONT
+        } else if (cameraRouteInventory.back) {
+            CameraRoute.BACK
+        } else {
+            CameraRoute.EXTERNAL
+        }
         val intentGeneration = facingIntentGeneration.incrementAndGet()
         val transaction = beginOpticsTransaction {
-            facing = if (enabled) CameraFacing.FRONT else CameraFacing.BACK
-            if (enabled) teleconverterMode = false
+            setActiveCameraRoute(targetRoute)
+            if (targetRoute != CameraRoute.BACK) teleconverterMode = false
             // Snapshot BEFORE the overwrite below, so leaving restores the framing the operator
             // actually had rather than the lens PRESET (which is 3x for the rest of the session
             // once TELE has been used, silently zooming them in on every front trip).
@@ -2880,6 +2983,8 @@ class CameraEngine(private val context: Context) {
             }
             controls = controls.copy(
                 zoomRatio = if (enabled) {
+                    1f
+                } else if (targetRoute == CameraRoute.EXTERNAL) {
                     1f
                 } else {
                     rearReturnZoom(
@@ -2914,10 +3019,10 @@ class CameraEngine(private val context: Context) {
                 rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_CAMERA_UNCHANGED.status())
                 return@execute
             }
-            val id = if (enabled) {
-                cachedFront()?.logicalId
-            } else {
-                resolveNonTeleId(lensChoice)
+            val id = when (targetRoute) {
+                CameraRoute.FRONT -> cachedFront()?.logicalId
+                CameraRoute.EXTERNAL -> cachedExternal()?.logicalId
+                CameraRoute.BACK -> resolveNonTeleId(lensChoice)
             }
             if (id == null) {
                 rollbackOptics(
@@ -2941,7 +3046,7 @@ class CameraEngine(private val context: Context) {
      * Falls back to the closest standalone id on devices without a logical back camera.
      */
     private fun resolveNonTeleId(choice: LensChoice): String? =
-        if (externalRouteActive && facing != CameraFacing.FRONT && !cameraRouteInventory.back) {
+        if (activeCameraRoute == CameraRoute.EXTERNAL) {
             cachedExternal()?.logicalId
         } else if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone)) {
             cachedIdForFocal(choice.targetEquivMm)
@@ -2988,7 +3093,7 @@ class CameraEngine(private val context: Context) {
         // A debug override pins an explicit rear-route id; it is not the facing door, so it also
         // drops FRONT (selectCurrentLens would otherwise ignore the pinned id while facing FRONT).
         val transaction = beginOpticsTransaction {
-            facing = CameraFacing.BACK
+            setActiveCameraRoute(CameraRoute.BACK)
             overrideId = id
             userCameraPin = id
         }.first
@@ -3275,8 +3380,8 @@ class CameraEngine(private val context: Context) {
         // for it, and the facing door already cleared overrideId in its transaction. Standalone-
         // shaped (physicalId == null), so every downstream session/capture axis behaves like the
         // proven rear standalone path.
-        if (facing == CameraFacing.FRONT) return cachedFront()
-        if (externalRouteActive && !cameraRouteInventory.back) return cachedExternal()
+        if (activeCameraRoute == CameraRoute.FRONT) return cachedFront()
+        if (activeCameraRoute == CameraRoute.EXTERNAL) return cachedExternal()
         val id = overrideId
             ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
             ?: cachedIdForFocal(lensChoice.targetEquivMm)
@@ -3780,6 +3885,7 @@ class CameraEngine(private val context: Context) {
         // phone re-declared mid-save cannot relabel this frame's focal (same rule as above).
         val hostTeleEquivMm: Float,
         val frontFacing: Boolean,
+        val route: CameraRoute,
         val aspectRatio: AspectRatio,
     )
 
@@ -3790,7 +3896,8 @@ class CameraEngine(private val context: Context) {
             teleconverterMode,
             teleconverterMagnification,
             teleconverterHostEquivMm,
-            facing == CameraFacing.FRONT,
+            activeCameraRoute == CameraRoute.FRONT,
+            activeCameraRoute,
             aspectRatio,
         )
     }
@@ -3810,6 +3917,7 @@ class CameraEngine(private val context: Context) {
                 optics.teleconverter,
                 gyro.currentDeviceOrientation(),
                 frontFacing = optics.frontFacing,
+                route = optics.route,
             )
         } ?: 0
         return ShotSpec(
@@ -4458,8 +4566,11 @@ class CameraEngine(private val context: Context) {
             configuredSurface = rec.start(
                 uri, encoderSize, rate.encoderRate, captureRate, attemptBitRate,
                 fileTransfer, encoderCandidates, recordAudio, audioGain, orientationHint,
-                frontFacing = facing == CameraFacing.FRONT,
-                audioScene, controls.zoomRatio, audioInputPreference,
+                frontFacing = activeCameraRoute == CameraRoute.FRONT,
+                cameraRoute = activeCameraRoute,
+                audioScene = audioScene,
+                audioZoom = controls.zoomRatio,
+                audioInputPreference = audioInputPreference,
                 onRoute = { route -> onAudioRoute?.invoke(route) },
                 onLevel = { lvl -> onAudioLevel?.invoke(lvl) },
                 onFailure = reportRecorderFailure,
@@ -5394,7 +5505,7 @@ class CameraEngine(private val context: Context) {
      */
     private fun pushPunchIn() {
         rendererAssists.setPunchInResolved(
-            punchInResolved(rendererAssists.isPunchInIntended(), facing == CameraFacing.FRONT),
+            punchInResolved(rendererAssists.isPunchInIntended(), activeCameraRoute == CameraRoute.FRONT),
         )
     }
 
@@ -5566,6 +5677,10 @@ class CameraEngine(private val context: Context) {
                 "$unresolvedDeletedStills deleted still output(s) remain pending durable discard",
             )
         }
+        if (routeAvailabilityRegistered) {
+            runCatching { manager.unregisterAvailabilityCallback(routeAvailabilityCallback) }
+            routeAvailabilityRegistered = false
+        }
         setupExecutor.shutdown()
         ioExecutor.shutdown()
         mediaRecoveryExecutor.shutdown()
@@ -5589,7 +5704,8 @@ class CameraEngine(private val context: Context) {
             c.sensorOrientation,
             teleconverterMode,
             gyro.currentDeviceOrientation(),
-            frontFacing = facing == CameraFacing.FRONT,
+            frontFacing = activeCameraRoute == CameraRoute.FRONT,
+            route = activeCameraRoute,
         )
     }
 
@@ -6122,6 +6238,7 @@ internal data class OpticsIntentState(
     // Facing rolls back with the packet like every other optics axis: a refused FRONT entry must
     // restore BACK (and vice versa) under the exact owning generation, never optimistically.
     val facing: CameraFacing = CameraFacing.BACK,
+    val route: CameraRoute = CameraRoute.BACK,
 )
 
 /** Returns the exact pre-intent optics only while that intent still owns the current generation. */

@@ -246,6 +246,7 @@
     <string name="a11y_recording">Recording</string>
     <string name="a11y_front_camera">Front camera</string>
     <string name="a11y_rear_camera">Rear camera</string>
+    <string name="a11y_external_camera">External camera</string>
     <string name="osd_tap_af">TAP AF ×</string>
     <string name="a11y_selected">Selected</string>
     <string name="a11y_not_selected">Not selected</string>
@@ -402,6 +403,7 @@
     <string name="format_raw">RAW</string>
     <string name="format_dng">DNG</string>
     <string name="osd_front">FRONT</string>
+    <string name="osd_external">EXTERNAL</string>
     <string name="osd_assist">ASSIST</string>
     <string name="osd_mute">MUTE</string>
     <string name="osd_high_resolution">HR</string>

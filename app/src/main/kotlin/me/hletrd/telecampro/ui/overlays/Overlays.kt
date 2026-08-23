@@ -495,7 +495,7 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
         // FRONT changes what the app IS (the teleconverter is forced off, the tele chip and focal
         // rail disappear). Sighted users read it from the vanished chrome and the mirrored image;
         // without a tag there was no readout of it at all, and no non-visual way to know.
-        state.facing == CameraFacing.FRONT ||
+        state.activeCameraRoute != me.hletrd.telecampro.camera.CameraRoute.BACK ||
         state.mode == CaptureMode.VIDEO ||
         (state.mode == CaptureMode.PHOTO && compactPhotoFormatLabel(state) != null) ||
         (state.mode == CaptureMode.PHOTO && state.driveMode != DriveMode.SINGLE) ||
@@ -556,7 +556,7 @@ internal data class StatusBarPriorityResetKey(
     val compact: Boolean,
     val focalLabel: String?,
     val memorySlot: String?,
-    val frontTagVisible: Boolean,
+    val routeTag: me.hletrd.telecampro.camera.CameraRoute?,
     val videoOutput: StatusBarVideoOutputIdentity?,
     val transferTag: ColorTransfer?,
     val gammaAssistTagVisible: Boolean,
@@ -601,7 +601,7 @@ internal fun statusBarPriorityResetKey(
         compact = compact,
         focalLabel = focalLabel,
         memorySlot = state.activeMemorySlot?.name,
-        frontTagVisible = state.facing == CameraFacing.FRONT,
+        routeTag = state.activeCameraRoute.takeIf { it != me.hletrd.telecampro.camera.CameraRoute.BACK },
         videoOutput = if (videoMode && !compact) {
             StatusBarVideoOutputIdentity(
                 width = encodedSize.width,
@@ -698,6 +698,8 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         // untagged (UX_POLICY: keep the viewfinder quiet); FRONT is the exception and says so.
         if (state.facing == CameraFacing.FRONT) {
             Text(stringResource(R.string.osd_front), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        } else if (state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.EXTERNAL) {
+            Text(stringResource(R.string.osd_external), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.mode == CaptureMode.VIDEO) {
             if (!compact) {

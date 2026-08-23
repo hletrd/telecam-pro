@@ -73,6 +73,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
             state.teleconverterMagnification,
             state.caps?.equivalentFocalMm,
             frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
+            activeRoute = state.activeCameraRoute,
         )
         FnSlot.STABILIZATION -> context?.localizedLabel(state.videoStabMode) ?: videoStabModeLabel(state.videoStabMode)
         FnSlot.DRIVE -> context?.localizedLabel(state.driveMode) ?: driveModeLabel(state.driveMode)

@@ -1020,6 +1020,7 @@ fun CameraScreen(
                         state.teleconverterMagnification,
                         state.caps?.equivalentFocalMm,
                         frontFacing = state.facing == CameraFacing.FRONT,
+                        activeRoute = state.activeCameraRoute,
                     )
                     ZoomIndicator(
                         zoom = state.controls.zoomRatio * mul,
@@ -1210,7 +1211,7 @@ fun CameraScreen(
                     // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
                     // concepts — the selfie route has exactly one lens, so a disabled rail would
                     // advertise choices that cannot exist (same rationale as the TELE chip).
-                    if (state.facing == CameraFacing.BACK && state.cameraRoutes.back) {
+                    if (state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.BACK && state.cameraRoutes.back) {
                         FocalRail(
                             state = state,
                             onLens = actions::onLens,
@@ -1579,7 +1580,7 @@ private fun TopBar(
             // headline function must keep one stable, always-visible home in every rear mode.
             // GONE (not disabled) while FRONT: the converter is a rear-3× accessory, so the chip is
             // a rear-only concept with no meaningful disabled state on the selfie route.
-            if (state.facing == CameraFacing.BACK && state.cameraRoutes.back) {
+            if (state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.BACK && state.cameraRoutes.back) {
                 TeleChip(
                     active = state.teleconverterMode,
                     enabled = !recordingLocked,
@@ -1600,6 +1601,7 @@ private fun TopBar(
                 enabled = !recordingLocked,
                 modifier = Modifier.rotate(glyphRotation),
                 frontFacing = state.facing == CameraFacing.FRONT,
+                activeRoute = state.activeCameraRoute,
             )
             DispButton(infoHidden = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
@@ -1929,6 +1931,8 @@ private fun FlipCameraButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     frontFacing: Boolean = false,
+    activeRoute: me.hletrd.telecampro.camera.CameraRoute =
+        if (frontFacing) me.hletrd.telecampro.camera.CameraRoute.FRONT else me.hletrd.telecampro.camera.CameraRoute.BACK,
 ) {
     ChromeIconButton(
         onClick = onClick,
@@ -1938,7 +1942,11 @@ private fun FlipCameraButton(
         // The glyph is the same on both cameras, so without this a TalkBack user has no way at all
         // to tell which camera is live — and entering FRONT silently forces the teleconverter off.
         stateDescription = stringResource(
-            if (frontFacing) R.string.a11y_front_camera else R.string.a11y_rear_camera,
+            when (activeRoute) {
+                me.hletrd.telecampro.camera.CameraRoute.FRONT -> R.string.a11y_front_camera
+                me.hletrd.telecampro.camera.CameraRoute.EXTERNAL -> R.string.a11y_external_camera
+                me.hletrd.telecampro.camera.CameraRoute.BACK -> R.string.a11y_rear_camera
+            },
         ),
     ) {
         Canvas(Modifier.size(18.dp)) {
@@ -1984,6 +1992,8 @@ internal fun CameraSwitchButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     frontFacing: Boolean = false,
+    activeRoute: me.hletrd.telecampro.camera.CameraRoute =
+        if (frontFacing) me.hletrd.telecampro.camera.CameraRoute.FRONT else me.hletrd.telecampro.camera.CameraRoute.BACK,
 ) {
     if (!available) return
     FlipCameraButton(
@@ -1991,6 +2001,7 @@ internal fun CameraSwitchButton(
         modifier = modifier,
         enabled = enabled,
         frontFacing = frontFacing,
+        activeRoute = activeRoute,
     )
 }
 

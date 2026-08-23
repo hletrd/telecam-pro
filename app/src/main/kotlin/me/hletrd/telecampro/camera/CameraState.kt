@@ -18,6 +18,23 @@ enum class CaptureMode { PHOTO, VIDEO }
  */
 enum class CameraFacing { BACK, FRONT }
 
+/**
+ * The accepted camera route. Unlike [CameraFacing], this preserves EXTERNAL as a first-class
+ * identity: an external camera has no fixed relationship to the host display, so treating it as
+ * BACK corrupts rotation, zoom presentation, accessibility, and persisted-optics rules.
+ */
+enum class CameraRoute {
+    BACK,
+    FRONT,
+    EXTERNAL;
+
+    val facing: CameraFacing
+        get() = if (this == FRONT) CameraFacing.FRONT else CameraFacing.BACK
+
+    val lensLocalZoom: Boolean
+        get() = this != BACK
+}
+
 /** Why a back-only optics door (TC toggle, lens preset) refused, in refusal priority order. */
 internal enum class BackOpticsRefusal { NONE, RECORDING, FRONT_ROUTE }
 
@@ -484,7 +501,9 @@ fun tenBitSessionWanted(videoMode: Boolean, transfer: ColorTransfer): Boolean =
  * a scale conversion is how one of them ends up reading the wrong scale.
  */
 val CameraUiState.unifiedZoom: Float
-    get() = unifiedZoomOf(
+    get() = if (activeCameraRoute.lensLocalZoom) {
+        controls.zoomRatio
+    } else unifiedZoomOf(
         lens = lens,
         zoomRatio = controls.zoomRatio,
         standaloneRoute = standaloneRouteWanted(
@@ -1265,6 +1284,9 @@ data class CameraUiState(
     // files stay unmirrored. Not persisted — fresh launch is always BACK (see [CameraFacing]).
     // [lens] keeps the last rear band across a front trip so flipping back restores that preset.
     val facing: CameraFacing = CameraFacing.BACK,
+    // Exact accepted/startup route. Facing remains for the established front/rear UI and rollback
+    // contracts, but EXTERNAL must never be reconstructed from `facing == BACK && !routes.back`.
+    val activeCameraRoute: CameraRoute = CameraRoute.BACK,
     // Device-static route truth, enumerated before the first Camera2 open. UNKNOWN deliberately
     // preserves the historical PMA110 chrome for the few milliseconds before publication.
     val cameraRoutes: CameraRouteInventory = CameraRouteInventory.UNKNOWN,

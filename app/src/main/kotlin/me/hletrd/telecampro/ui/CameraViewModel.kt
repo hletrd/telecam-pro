@@ -21,6 +21,8 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CameraReadyPublicationGate
 import me.hletrd.telecampro.camera.CameraRouteInventory
+import me.hletrd.telecampro.camera.CameraRoute
+import me.hletrd.telecampro.camera.recalledCameraRoute
 import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
@@ -642,12 +644,12 @@ class CameraViewModel @JvmOverloads constructor(
         // Route inventory is resolved before the first Camera2 open. Mirror both availability and
         // the Engine's selected initial facing in one fold so a front-only device never renders a
         // dead rear route while its first session is already opening on FRONT.
-        engine.onCameraRouteInventory = { routes, initialFacing ->
+        engine.onCameraRouteInventory = { routes, activeRoute ->
             _state.update { current ->
                 cameraRoutePublishedState(
                     current = current,
                     routes = routes,
-                    initialFacing = initialFacing,
+                    activeRoute = activeRoute,
                     rawForcesStandalone = engine.rawForcesStandalone,
                 )
             }
@@ -796,7 +798,7 @@ class CameraViewModel @JvmOverloads constructor(
             }
         }
         engine.onOpticsRollback = {
-                mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, userPin,
+                mode, lens, teleconverter, facing, route, controls, restoredPhotoExposureTimeNs, userPin,
                 restoredPreTeleUnifiedZoom, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
@@ -826,6 +828,7 @@ class CameraViewModel @JvmOverloads constructor(
                         lens = lens,
                         teleconverterMode = teleconverter,
                         facing = facing,
+                        activeCameraRoute = route,
                         controls = controls,
                         // The engine publishes only a GENUINE diagnostic pin here (its routed-target
                         // pin stays internal) — so a routine failed door can no longer surface the
@@ -1162,13 +1165,15 @@ class CameraViewModel @JvmOverloads constructor(
             teleconverterMagnification = restoredMagnification,
             savedZoomRatio = requestedZoom,
         )
-        val restoredLens = restoredOptics.lens
-        val restoredTeleconverter = restoredOptics.teleconverter
+        val currentState = _state.value
+        val restoredRoute = recalledCameraRoute(currentState.cameraRoutes, currentState.activeCameraRoute)
+            ?: return
+        val restoredLens = if (restoredRoute == CameraRoute.BACK) restoredOptics.lens else currentState.lens
+        val restoredTeleconverter = restoredOptics.teleconverter && restoredRoute == CameraRoute.BACK
         // Clamp only when the currently accepted session is the same route as the restored target.
         // Outgoing caps are not authoritative across mode/lens recalls: applying a 0.5 s Video-lens
         // ceiling to a 4 s Photo bank would permanently destroy the photographer's saved shutter.
         // Target-route normalization still runs before that route publishes Ready.
-        val currentState = _state.value
         val currentCapsDescribeTarget = restoredRouteUsesCurrentCaps(
             cameraReady = currentState.cameraReady,
             currentMode = currentState.mode,
@@ -1321,7 +1326,8 @@ class CameraViewModel @JvmOverloads constructor(
                 // Recall/restore packets are rear-route optics; the engine's setResolvedOptics
                 // exits FRONT in the same transaction, so the UI mirrors that here (MR recall
                 // stays available while FRONT — it flips back as part of the recall).
-                facing = CameraFacing.BACK,
+                facing = restoredRoute.facing,
+                activeCameraRoute = restoredRoute,
                 videoStabMode = e.videoStabMode,
                 aspectRatio = e.aspectRatio,
                 timer = e.timer,
@@ -1616,9 +1622,9 @@ class CameraViewModel @JvmOverloads constructor(
 
     /** Handheld-safe shutter target for app-side PROGRAM: the 1/(35mm-equivalent focal) rule. */
     private fun preferredProgramShutterNs(s: CameraUiState): Long =
-        if (s.facing == CameraFacing.FRONT) {
-            // [s.lens] retains the REAR band across a front trip; the front lens's own measured
-            // equiv (from the accepted route's caps) is the honest 1/focal input, TC never applies.
+        if (s.activeCameraRoute.lensLocalZoom) {
+            // FRONT/EXTERNAL do not use the retained rear band. Their opened lens's measured equiv
+            // is the honest 1/focal input, and rear-only TELE can never apply.
             preferredProgramShutterNs(
                 s.caps?.equivalentFocalMm?.takeIf { it > 0f } ?: LensChoice.MAIN.targetEquivMm,
                 teleconverterMode = false,
@@ -2010,7 +2016,7 @@ class CameraViewModel @JvmOverloads constructor(
         // Only the LOGICAL seamless camera speaks the unified scale forZoom() reads; every
         // standalone route (video, TC, and DNG) carries a lens-local ratio.
         val lensBand = if (
-            !s.teleconverterMode && s.facing == CameraFacing.BACK &&
+            !s.teleconverterMode && s.activeCameraRoute == CameraRoute.BACK &&
             !standaloneRouteWanted(s.mode == CaptureMode.VIDEO, s.photoFormats.dngRaw, s.rawForcesStandalone)
         ) {
             LensChoice.forZoom(z)
@@ -2136,6 +2142,7 @@ class CameraViewModel @JvmOverloads constructor(
             teleconverter = before.teleconverterMode,
             controls = exposureState.controls,
             frontFacing = before.facing == CameraFacing.FRONT,
+            lensLocalRoute = before.activeCameraRoute.lensLocalZoom,
             // DNG keeps PHOTO on a standalone lens too, so there is no unified↔local gap to bridge.
             photoIsStandalone = standaloneRouteWanted(
                 videoMode = false, rawWanted = before.photoFormats.dngRaw,
@@ -2617,7 +2624,7 @@ class CameraViewModel @JvmOverloads constructor(
         if (rejectIfRecording()) return
         cancelCountdown()
         drainPendingControls()
-        val entering = _state.value.facing == CameraFacing.BACK
+        val entering = _state.value.activeCameraRoute != CameraRoute.FRONT
         // Mirrors the engine transaction exactly (like onToggleTeleconverter mirrors setLens):
         // entering forces TC off and front-local 1×; leaving lands on the retained rear band's
         // mode home (unified preset in photo, lens-local 1× in video). Deliberately NO explicit
@@ -2639,6 +2646,7 @@ class CameraViewModel @JvmOverloads constructor(
             if (entering) {
                 it.copy(
                     facing = CameraFacing.FRONT,
+                    activeCameraRoute = CameraRoute.FRONT,
                     teleconverterMode = false,
                     controls = it.controls.copy(zoomRatio = 1f),
                     activeMemorySlot = null,
@@ -2646,20 +2654,25 @@ class CameraViewModel @JvmOverloads constructor(
             } else {
                 it.copy(
                     facing = CameraFacing.BACK,
+                    activeCameraRoute = if (it.cameraRoutes.back) CameraRoute.BACK else CameraRoute.EXTERNAL,
                     controls = it.controls.copy(
                         // Mirrors the engine transaction: restore the framing held before the front
                         // trip, NOT the lens preset — once TELE has been used the preset is 3x for
                         // the rest of the session, so the preset fallback zoomed the operator in on
                         // every flip back (user-reported).
-                        zoomRatio = rearReturnZoom(
-                            videoMode = it.mode == CaptureMode.VIDEO,
-                            preFrontZoom = if (preFrontRearVideoMode == (it.mode == CaptureMode.VIDEO)) {
-                                preFrontRearZoom
-                            } else {
-                                Float.NaN
-                            },
-                            lensPreset = it.lens.zoomPreset,
-                        ),
+                        zoomRatio = if (it.cameraRoutes.back) {
+                            rearReturnZoom(
+                                videoMode = it.mode == CaptureMode.VIDEO,
+                                preFrontZoom = if (preFrontRearVideoMode == (it.mode == CaptureMode.VIDEO)) {
+                                    preFrontRearZoom
+                                } else {
+                                    Float.NaN
+                                },
+                                lensPreset = it.lens.zoomPreset,
+                            )
+                        } else {
+                            1f
+                        },
                     ),
                     activeMemorySlot = null,
                 )
@@ -2771,7 +2784,7 @@ class CameraViewModel @JvmOverloads constructor(
             capsUpper = range?.upper,
         )
         val lens = if (
-            !current.teleconverterMode && current.facing == CameraFacing.BACK &&
+            !current.teleconverterMode && current.activeCameraRoute == CameraRoute.BACK &&
             !standaloneRouteWanted(
                 current.mode == CaptureMode.VIDEO, current.photoFormats.dngRaw, current.rawForcesStandalone,
             )
@@ -3544,14 +3557,15 @@ class CameraViewModel @JvmOverloads constructor(
 internal fun cameraRoutePublishedState(
     current: CameraUiState,
     routes: CameraRouteInventory,
-    initialFacing: CameraFacing,
+    activeRoute: CameraRoute,
     rawForcesStandalone: Boolean,
 ): CameraUiState = current.copy(
     cameraRoutes = routes,
-    facing = initialFacing,
-    teleconverterMode = current.teleconverterMode && routes.back,
+    facing = activeRoute.facing,
+    activeCameraRoute = activeRoute,
+    teleconverterMode = current.teleconverterMode && activeRoute == CameraRoute.BACK,
     rawForcesStandalone = rawForcesStandalone,
-    controls = if (initialFacing == CameraFacing.FRONT || !routes.back) {
+    controls = if (activeRoute.lensLocalZoom) {
         current.controls.copy(zoomRatio = 1f)
     } else {
         current.controls

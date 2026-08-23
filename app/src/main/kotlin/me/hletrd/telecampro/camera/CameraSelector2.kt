@@ -29,13 +29,6 @@ data class FrontCandidate(
     val activeArrayArea: Long,
 )
 
-/** Camera directions the app can open without inheriting any device-specific behavior. */
-internal enum class CameraRoute {
-    BACK,
-    FRONT,
-    EXTERNAL,
-}
-
 /**
  * One device-static projection of the Camera2 inventory, resolved before the first open.
  *
@@ -82,6 +75,64 @@ internal fun cameraRouteInventoryOf(routes: Iterable<CameraRoute>): CameraRouteI
     )
 }
 
+/** Route target for settings/MR intent under the currently proved inventory. */
+internal fun recalledCameraRoute(
+    inventory: CameraRouteInventory,
+    current: CameraRoute,
+): CameraRoute? = when {
+    inventory.back -> CameraRoute.BACK
+    current == CameraRoute.FRONT && inventory.front -> CameraRoute.FRONT
+    current == CameraRoute.EXTERNAL && inventory.external -> CameraRoute.EXTERNAL
+    inventory.external -> CameraRoute.EXTERNAL
+    inventory.front -> CameraRoute.FRONT
+    else -> null
+}
+
+internal data class CameraRouteTopologyDecision(
+    val topologyChanged: Boolean,
+    val targetRoute: CameraRoute?,
+)
+
+/** Pure attach/detach/replacement decision used by the Engine's ordered availability owner. */
+internal fun cameraRouteTopologyDecision(
+    previousIds: Set<String>,
+    currentIds: Set<String>,
+    inventory: CameraRouteInventory,
+    currentRoute: CameraRoute,
+): CameraRouteTopologyDecision = CameraRouteTopologyDecision(
+    topologyChanged = previousIds != currentIds,
+    targetRoute = currentRoute.takeIf { route ->
+        when (route) {
+            CameraRoute.BACK -> inventory.back
+            CameraRoute.FRONT -> inventory.front
+            CameraRoute.EXTERNAL -> inventory.external
+        }
+    } ?: inventory.initialRoute(),
+)
+
+/** One attempted classification, including states that prevent a truthful complete inventory. */
+internal enum class CameraRouteObservation {
+    BACK,
+    FRONT,
+    EXTERNAL,
+    UNKNOWN,
+    READ_FAILED,
+}
+
+internal fun cameraRouteInventoryOfObservations(
+    observations: Iterable<CameraRouteObservation>,
+): CameraRouteInventory {
+    val values = observations.toList()
+    return CameraRouteInventory(
+        back = CameraRouteObservation.BACK in values,
+        front = CameraRouteObservation.FRONT in values,
+        external = CameraRouteObservation.EXTERNAL in values,
+        complete = values.none {
+            it == CameraRouteObservation.UNKNOWN || it == CameraRouteObservation.READ_FAILED
+        },
+    )
+}
+
 /**
  * Selects the lens the teleconverter mounts on: the back camera whose 35mm-equivalent focal length
  * is CLOSEST to [TARGET_EQUIV_MM] (the 3x/70mm periscope) — NOT the longest lens.
@@ -116,22 +167,19 @@ object CameraSelector2 {
                 complete = false,
             )
         }
-        var complete = true
-        val routes = ids.mapNotNull { id ->
+        val observations = ids.map { id ->
             val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull()
             if (chars == null) {
-                complete = false
-                return@mapNotNull null
+                return@map CameraRouteObservation.READ_FAILED
             }
-            val facing = chars.get(CameraCharacteristics.LENS_FACING)
-            when (facing) {
-                CameraMetadata.LENS_FACING_BACK -> CameraRoute.BACK
-                CameraMetadata.LENS_FACING_FRONT -> CameraRoute.FRONT
-                CameraMetadata.LENS_FACING_EXTERNAL -> CameraRoute.EXTERNAL
-                else -> null
+            when (chars.get(CameraCharacteristics.LENS_FACING)) {
+                CameraMetadata.LENS_FACING_BACK -> CameraRouteObservation.BACK
+                CameraMetadata.LENS_FACING_FRONT -> CameraRouteObservation.FRONT
+                CameraMetadata.LENS_FACING_EXTERNAL -> CameraRouteObservation.EXTERNAL
+                else -> CameraRouteObservation.UNKNOWN
             }
         }
-        return cameraRouteInventoryOf(routes).copy(complete = complete)
+        return cameraRouteInventoryOfObservations(observations)
     }
 
     /** Enumerates every back-facing lens as a candidate (standalone ids + logical physical sub-cameras). */

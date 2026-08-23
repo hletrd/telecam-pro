@@ -1086,7 +1086,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // (backOpticsDoorRefusal): on the selfie route they must dim like the viewfinder's
     // TeleChip/FocalRail go GONE — a bright row whose refusal lives only in a toast is the same
     // anti-pattern.
-    val rearRoute = state.facing == CameraFacing.BACK && state.cameraRoutes.back
+    val rearRoute = state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.BACK && state.cameraRoutes.back
     val recordingMutable = !state.isRecording
     val rearOpticsMutable = recordingMutable && rearRoute
     TabTitle(stringResource(R.string.settings_tab_lens))

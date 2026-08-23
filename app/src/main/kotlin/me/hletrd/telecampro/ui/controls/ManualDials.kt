@@ -564,6 +564,7 @@ private fun FnDialChip(
                 state.teleconverterMagnification,
                 state.caps?.equivalentFocalMm,
                 frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
+                activeRoute = state.activeCameraRoute,
             ),
             active = openDial == DialType.ZOOM,
             enabled = policyEnabled && quickManualDialEnabled(DialType.ZOOM, availability),

@@ -237,6 +237,7 @@
     <string name="a11y_recording">녹화 중</string>
     <string name="a11y_front_camera">전면 카메라</string>
     <string name="a11y_rear_camera">후면 카메라</string>
+    <string name="a11y_external_camera">외장 카메라</string>
     <string name="osd_tap_af">탭 AF ×</string>
     <string name="a11y_selected">선택됨</string>
     <string name="a11y_not_selected">선택되지 않음</string>
@@ -385,6 +386,7 @@
     <string name="format_raw">RAW</string>
     <string name="format_dng">DNG</string>
     <string name="osd_front">전면</string>
+    <string name="osd_external">외장</string>
     <string name="osd_assist">보조</string>
     <string name="osd_mute">음소거</string>
     <string name="osd_high_resolution">고해상도</string>

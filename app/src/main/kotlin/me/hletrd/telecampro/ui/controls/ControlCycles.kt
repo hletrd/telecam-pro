@@ -4,6 +4,7 @@ import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
@@ -232,7 +233,7 @@ internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlo
     // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
     // only toasts on tap — exactly the drift this predicate's contract forbids.
     FnSlot.TELECONVERTER ->
-        !state.isRecording && state.facing == CameraFacing.BACK && state.cameraRoutes.back
+        !state.isRecording && state.activeCameraRoute == CameraRoute.BACK && state.cameraRoutes.back
     FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
     FnSlot.STABILIZATION -> !state.isRecording
     FnSlot.AUDIO_SCENE -> !state.isRecording

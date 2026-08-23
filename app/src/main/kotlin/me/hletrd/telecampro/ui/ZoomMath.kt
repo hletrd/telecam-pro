@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.localZoomOf
@@ -35,11 +36,12 @@ internal fun zoomDisplayMultiplier(
     teleconverterMagnification: Float,
     equivalentFocalMm: Float?,
     frontFacing: Boolean = false,
+    activeRoute: CameraRoute? = null,
 ): Float = when {
     // The main-relative scale is a REAR concept (which rear lens the unified zoom sits on). The
     // front camera has no place on it — front-equiv ÷ main-equiv would read "0.9×" at the selfie
     // 1× — so front zoom displays as its honest lens-local ratio.
-    frontFacing -> 1f
+    activeRoute?.lensLocalZoom == true || frontFacing -> 1f
     teleconverter -> teleDisplayBase(teleconverterMagnification)
     else -> (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
 }
@@ -54,12 +56,14 @@ internal fun formatDisplayZoom(
     teleconverterMagnification: Float,
     equivalentFocalMm: Float?,
     frontFacing: Boolean = false,
+    activeRoute: CameraRoute? = null,
 ): String = formatZoomMultiplier(
     localZoomRatio * zoomDisplayMultiplier(
         teleconverter,
         teleconverterMagnification,
         equivalentFocalMm,
         frontFacing,
+        activeRoute,
     ),
 )
 
@@ -318,6 +322,7 @@ internal fun remapModeOptics(
     teleconverter: Boolean,
     controls: ManualControls,
     frontFacing: Boolean = false,
+    lensLocalRoute: Boolean = frontFacing,
     /**
      * True when the PHOTO side is also pinned to a standalone lens — i.e. DNG is on. Then both modes
      * already store a lens-local ratio and there is nothing to remap; converting anyway rewrote the
@@ -340,7 +345,7 @@ internal fun remapModeOptics(
     // local remap does not apply (it would rewrite the retained rear band from a front-local ratio).
     // Same early return as TELE/FRONT, for the same reason: when photo is ALSO standalone both
     // sides store a lens-local ratio, so a remap would corrupt rather than convert.
-    if (fromMode == toMode || teleconverter || frontFacing || photoIsStandalone) {
+    if (fromMode == toMode || teleconverter || lensLocalRoute || photoIsStandalone) {
         return ModeOptics(lens, modeControls)
     }
     return if (toMode == CaptureMode.VIDEO) {
