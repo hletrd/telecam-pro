@@ -109,7 +109,7 @@ class CameraEngine(private val context: Context) {
     // silently mis-frames every photo.
     @Volatile private var previewStreamSize = Size(1920, 1080)
     @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
-    @Volatile private var videoEncoderSelection: EncoderSelection? = null
+    @Volatile private var videoEncoderCandidates: List<EncoderSelection> = emptyList()
     @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.ULTRA
     @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
     @Volatile private var openGate = false
@@ -823,6 +823,8 @@ class CameraEngine(private val context: Context) {
     // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
     // what the engine will actually encode instead of drifting from a hardcoded default.
     var onVideoSizeChosen: ((Size, generation: Long?) -> Unit)? = null
+    /** Exact encoder raster accepted for the current REC attempt, including a configure fallback. */
+    var onEncoderSizeAccepted: ((Size) -> Unit)? = null
     // Displayed preview aspect (width/height AS SHOWN on the portrait screen — the ~90° sensor
     // orientation already swaps the stream's W/H). The UI sizes the TextureView to this so the
     // viewfinder letterboxes the FULL capture field instead of cover-cropping it: with a 16:9 stream
@@ -1814,8 +1816,14 @@ class CameraEngine(private val context: Context) {
      * for the next recording; stopRecording/pause re-apply it). See docs/reviews record-pipeline #4.
      */
     fun setTransfer(t: ColorTransfer) {
+        val resolved = if (videoCodec == VideoCodec.HEVC) {
+            if (t == ColorTransfer.SDR || videoEncoderCandidates.any { it.main10 }) t
+            else ColorTransfer.SDR
+        } else {
+            ColorTransfer.SDR
+        }
         val previousTransfer = transfer
-        transfer = t
+        transfer = resolved
         // Log = a GL-baked standard curve (proven architecture, inherited from the removed O-Log2
         // option). The native com.oplus.log.video.mode key was tried twice and is effectively INERT
         // for a third-party Camera2 session: the HAL accepts it ("applied" logs) but neither the
@@ -1831,9 +1839,9 @@ class CameraEngine(private val context: Context) {
         // The transfer is a SESSION input (it decides 10-bit), not just a GL/encoder setting, so
         // a change that flips that answer has to reconfigure or the new curve rides the old buffers.
         val tenBitChanged = tenBitSessionWanted(videoMode, previousTransfer) !=
-            tenBitSessionWanted(videoMode, t)
+            tenBitSessionWanted(videoMode, resolved)
         if (tenBitChanged) reopenForSession()
-        if (recorder == null) gl.setTransfer(t)
+        if (recorder == null) gl.setTransfer(resolved)
     }
     fun setPeaking(enabled: Boolean) {
         rendererAssists.setPeaking(enabled)
@@ -2190,13 +2198,22 @@ class CameraEngine(private val context: Context) {
     fun setIntervalSec(s: Int) { intervalSec = s }
     fun setVideoCodec(c: VideoCodec) {
         videoCodec = c
-        if (videoEncoderSelection?.codec != c) videoEncoderSelection = null
+        if (videoEncoderCandidates.any { it.codec != c }) videoEncoderCandidates = emptyList()
+        if (c != VideoCodec.HEVC && transfer != ColorTransfer.SDR) setTransfer(ColorTransfer.SDR)
     }
 
-    /** Installs the exact component token admitted by the immutable codec inventory. */
-    fun setVideoEncoder(selection: EncoderSelection?) {
-        videoEncoderSelection = selection
-        selection?.let { videoCodec = it.codec }
+    /** Installs every exact component eligible for the selected codec/transfer, in attempt order. */
+    fun setVideoEncoders(candidates: List<EncoderSelection>) {
+        val codec = candidates.firstOrNull()?.codec
+        videoEncoderCandidates = if (codec == null) {
+            emptyList()
+        } else {
+            candidates.filter { it.codec == codec }.distinctBy { it.codecName }
+        }
+        codec?.let { videoCodec = it }
+        if (codec != null && codec != VideoCodec.HEVC && transfer != ColorTransfer.SDR) {
+            setTransfer(ColorTransfer.SDR)
+        }
     }
     fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
 
@@ -3916,7 +3933,9 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke(CameraStatusMessage.SELECTED_FPS_UNAVAILABLE.status())
             return false
         }
-        val encoderSelection = videoEncoderSelection?.takeIf { it.codec == videoCodec } ?: run {
+        val encoderCandidates = videoEncoderCandidates.filter {
+            it.codec == videoCodec && me.hletrd.telecampro.video.encoderSelectionAdmitsTransfer(it, transfer)
+        }.ifEmpty {
             onStatus?.invoke(CameraStatusMessage.SELECTED_CODEC_UNAVAILABLE.status())
             return false
         }
@@ -3951,7 +3970,7 @@ class CameraEngine(private val context: Context) {
                         acceptedSession,
                         audioClaim,
                         processAdmission,
-                        encoderSelection,
+                        encoderCandidates,
                     )
                 } catch (t: Throwable) {
                     android.util.Log.w("CameraEngine", "REC admission threw; releasing mic claim", t)
@@ -3972,7 +3991,7 @@ class CameraEngine(private val context: Context) {
         acceptedSession: AcceptedCameraSession,
         audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
-        encoderSelection: EncoderSelection,
+        encoderCandidates: List<EncoderSelection>,
     ): Boolean {
         val meterReleased = audioClaim.release?.let {
             runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
@@ -4015,7 +4034,7 @@ class CameraEngine(private val context: Context) {
             return false
         }
         val size = videoSize
-        val codec = encoderSelection.codec
+        val codec = encoderCandidates.first().codec
         val rate = videoFrameRate
         // High-speed (≥120 fps via the constrained session) tells the encoder it is fed faster than
         // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0. (High-speed is disabled — it
@@ -4096,7 +4115,7 @@ class CameraEngine(private val context: Context) {
         val nativeSetupAdmitted = UnsafeRecorderQuarantine.commitAdmission(processAdmission) {
             configuredSurface = rec.start(
                 uri, encoderSize, rate.encoderRate, captureRate, requestedBitRate,
-                fileTransfer, encoderSelection, recordAudio, audioGain, orientationHint,
+                fileTransfer, encoderCandidates, recordAudio, audioGain, orientationHint,
                 frontFacing = facing == CameraFacing.FRONT,
                 audioScene, controls.zoomRatio, audioInputPreference,
                 onRoute = { route -> onAudioRoute?.invoke(route) },
@@ -4213,6 +4232,8 @@ class CameraEngine(private val context: Context) {
         // must draw at the size the encoder actually took, or the viewport would not match the
         // input Surface. Identical to `encoderSize` on every verified handset.
         val acceptedEncoderSize = rec.configuredSize ?: encoderSize
+        val acceptedEncoder = rec.configuredEncoderSelection ?: encoderCandidates.first()
+        onEncoderSizeAccepted?.invoke(acceptedEncoderSize)
         ownedGl.setEncoderOutput(
             surface,
             acceptedEncoderSize.width,
@@ -4254,7 +4275,8 @@ class CameraEngine(private val context: Context) {
             android.util.Log.i(
                 "CameraEngine",
                 "RecordingSpec: admitted stem=${name.substringBeforeLast('.')} " +
-                    "codec=${codec.name} source=${size.width}x${size.height} " +
+                    "codec=${codec.name}/${acceptedEncoder.codecName} " +
+                    "source=${size.width}x${size.height} " +
                     "encoder=${acceptedEncoderSize.width}x${acceptedEncoderSize.height}" +
                     (if (acceptedEncoderSize != encoderSize) " (asked ${encoderSize.width}x${encoderSize.height})" else "") +
                     " bitrate=$requestedBitRate " +
@@ -4917,6 +4939,7 @@ class CameraEngine(private val context: Context) {
         onStatus = null
         onCapsReady = null
         onVideoSizeChosen = null
+        onEncoderSizeAccepted = null
         onPreviewAspect = null
         onAnalysis = null
         onAudioLevel = null

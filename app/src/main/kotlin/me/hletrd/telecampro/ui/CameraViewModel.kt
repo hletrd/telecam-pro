@@ -629,6 +629,7 @@ class CameraViewModel @JvmOverloads constructor(
         Thread(r, "vm-io").apply { isDaemon = true }
     }
     @Volatile private var cleared = false
+    private var encoderInventory: CodecInventory = CodecInventory.EMPTY
     private var pendingCodecUntilInventory: VideoCodec? = null
     private var pendingTransferUntilInventory: ColorTransfer? = null
     private var pendingPhotoFormatsUntilInventory: PhotoFormats? = null
@@ -676,6 +677,13 @@ class CameraViewModel @JvmOverloads constructor(
                 if (generation != null && !engine.isOpticsGenerationCurrent(generation)) return@post
                 _state.update { it.copy(videoResolution = size) }
                 reconcileFrameRate()
+            }
+        }
+        engine.onEncoderSizeAccepted = { size ->
+            mainHandler.post {
+                if (_state.value.isRecording) {
+                    _state.update { it.copy(activeEncoderResolution = size) }
+                }
             }
         }
         // Displayed preview aspect (engine setup thread → StateFlow is thread-safe): sizes the
@@ -986,6 +994,7 @@ class CameraViewModel @JvmOverloads constructor(
                     it.copy(
                         isRecording = false,
                         isRecordingStarting = false,
+                        activeEncoderResolution = null,
                         recordElapsedMs = 0,
                         audioRoute = audioInputStatus(it.audioInputPreference).route,
                     )
@@ -1108,6 +1117,7 @@ class CameraViewModel @JvmOverloads constructor(
             inventoryLoaded && _state.value.heifAvailable,
         )
         val safeTransfer = e.transfer.normalizedForEncoder(
+            safeCodec,
             inventoryLoaded && _state.value.tenBitEncodeAvailable,
         )
         if (!inventoryLoaded) {
@@ -1251,7 +1261,14 @@ class CameraViewModel @JvmOverloads constructor(
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(exposureAnalysisRequired(cSynced))
-        applyEngineTransfer(e.mode, safeTransfer)
+        if (inventoryLoaded) {
+            engine.setVideoEncoders(
+                encoderInventory.candidatesFor(safeCodec, safeTransfer),
+            )
+        } else {
+            engine.setVideoCodec(safeCodec)
+        }
+        applyEngineTransfer(e.mode, safeTransfer, safeCodec)
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
@@ -1267,11 +1284,6 @@ class CameraViewModel @JvmOverloads constructor(
         engine.setPunchIn(e.punchIn)
         engine.setTeleFinder(e.teleFinder)
         engine.setHiResStill(e.hiResStill)
-        if (inventoryLoaded) {
-            engine.setVideoEncoder(EncoderCaps.currentInventory().selectionFor(safeCodec))
-        } else {
-            engine.setVideoCodec(safeCodec)
-        }
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
         engine.setAudioGain(e.audioGain)
@@ -1493,6 +1505,8 @@ class CameraViewModel @JvmOverloads constructor(
     private fun applyEngineTransfer(
         mode: CaptureMode = _state.value.mode,
         transfer: ColorTransfer = _state.value.transfer,
+        codec: VideoCodec = _state.value.videoCodec,
+        tenBitEncodeAvailable: Boolean = _state.value.tenBitEncodeAvailable,
     ) {
         // Gamma/Log monitoring is a VIDEO concern. Keeping O-Log selected for the next clip must not
         // make the still-photo viewfinder look flat/log.
@@ -1501,7 +1515,7 @@ class CameraViewModel @JvmOverloads constructor(
         // writer funnels through — seed, settings restore, the live picker, and MR recall alike. A
         // gamma the encoder cannot honestly carry must never reach the wire regardless of which of
         // them produced it.
-        val safe = transfer.normalizedForEncoder(_state.value.tenBitEncodeAvailable)
+        val safe = transfer.normalizedForEncoder(codec, tenBitEncodeAvailable)
         engine.setTransfer(if (mode == CaptureMode.VIDEO) safe else ColorTransfer.SDR)
     }
 
@@ -2165,9 +2179,19 @@ class CameraViewModel @JvmOverloads constructor(
     }
     override fun onTransfer(transfer: ColorTransfer) {
         if (rejectIfRecording()) return
-        if (!_state.value.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
-        applyEngineTransfer(_state.value.mode, transfer)
-        _state.update { it.copy(transfer = transfer) }
+        val current = _state.value
+        val safeTransfer = transfer.normalizedForEncoder(
+            current.videoCodec,
+            current.tenBitEncodeAvailable,
+        )
+        if (!current.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
+        if (current.encoderInventoryLoaded) {
+            engine.setVideoEncoders(
+                encoderInventory.candidatesFor(current.videoCodec, safeTransfer),
+            )
+        }
+        applyEngineTransfer(current.mode, safeTransfer, current.videoCodec)
+        _state.update { it.copy(transfer = safeTransfer) }
         markChanged(FnSlot.TRANSFER)
         scheduleSettingsSave()
     }
@@ -2415,6 +2439,7 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun applyEncoderInventory(inventory: CodecInventory) {
+        encoderInventory = inventory
         val before = _state.value
         val requestedCodec = pendingCodecUntilInventory ?: before.videoCodec
         val requestedTransfer = pendingTransferUntilInventory ?: before.transfer
@@ -2428,10 +2453,18 @@ class CameraViewModel @JvmOverloads constructor(
             ExtraSettings().videoCodec in codecs -> ExtraSettings().videoCodec
             else -> codecs.firstOrNull() ?: requestedCodec
         }
-        val safeTransfer = requestedTransfer.normalizedForEncoder(inventory.tenBitEncodeAvailable)
+        val safeTransfer = requestedTransfer.normalizedForEncoder(
+            safeCodec,
+            inventory.tenBitEncodeAvailable,
+        )
         val safeFormats = requestedFormats.normalizedForEncoder(inventory.heifEncodeAvailable)
-        engine.setVideoEncoder(inventory.selectionFor(safeCodec))
-        applyEngineTransfer(before.mode, safeTransfer)
+        engine.setVideoEncoders(inventory.candidatesFor(safeCodec, safeTransfer))
+        applyEngineTransfer(
+            before.mode,
+            safeTransfer,
+            safeCodec,
+            inventory.tenBitEncodeAvailable,
+        )
         engine.setRawWanted(safeFormats.dngRaw)
         _state.update {
             it.copy(
@@ -2649,9 +2682,22 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onVideoCodec(codec: VideoCodec) {
         if (rejectIfRecording()) return
-        val selection = EncoderCaps.currentInventory().selectionFor(codec) ?: return
-        engine.setVideoEncoder(selection)
-        _state.update { it.copy(videoCodec = codec, activeMemorySlot = null) }
+        val current = _state.value
+        val safeTransfer = current.transfer.normalizedForEncoder(
+            codec,
+            current.tenBitEncodeAvailable,
+        )
+        val candidates = encoderInventory.candidatesFor(codec, safeTransfer)
+        if (candidates.isEmpty()) return
+        engine.setVideoEncoders(candidates)
+        applyEngineTransfer(current.mode, safeTransfer, codec)
+        _state.update {
+            it.copy(
+                videoCodec = codec,
+                transfer = safeTransfer,
+                activeMemorySlot = null,
+            )
+        }
         reconcileFrameRate()
         scheduleSettingsSave()
     }
@@ -3007,6 +3053,7 @@ class CameraViewModel @JvmOverloads constructor(
                 it.copy(
                     isRecording = false,
                     isRecordingStarting = false,
+                    activeEncoderResolution = null,
                     recordElapsedMs = 0,
                     audioRoute = audioInputStatus(it.audioInputPreference).route,
                 )
@@ -3027,6 +3074,7 @@ class CameraViewModel @JvmOverloads constructor(
                     ),
                     isRecording = true,
                     isRecordingStarting = true,
+                    activeEncoderResolution = null,
                     recordElapsedMs = 0,
                 )
             }
@@ -3059,6 +3107,7 @@ class CameraViewModel @JvmOverloads constructor(
                             it.copy(
                                 isRecording = false,
                                 isRecordingStarting = false,
+                                activeEncoderResolution = null,
                                 recordElapsedMs = 0,
                                 audioRoute = audioInputStatus(it.audioInputPreference).route,
                             )
@@ -3428,7 +3477,14 @@ class CameraViewModel @JvmOverloads constructor(
         // to a phantom "recording" state with the timer still ticking.
         if (_state.value.isRecording) {
             mainHandler.removeCallbacks(recordTicker)
-            _state.update { it.copy(isRecording = false, isRecordingStarting = false, recordElapsedMs = 0) }
+            _state.update {
+                it.copy(
+                    isRecording = false,
+                    isRecordingStarting = false,
+                    activeEncoderResolution = null,
+                    recordElapsedMs = 0,
+                )
+            }
         }
         // Nothing renders while backgrounded, but these self-rescheduling tickers kept waking the
         // main thread every 100/200 ms (and 10 s) indefinitely — pure battery/Doze cost. Paused

@@ -3,6 +3,7 @@ package me.hletrd.telecampro.video
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.VideoCodec
 
 /** The exact encoder component admitted by capability discovery and used for recording. */
@@ -22,14 +23,19 @@ data class EncoderSelection(
  * instantiated later through MIME-based factory selection as a different component.
  */
 class CodecInventory internal constructor(
-    private val selections: Map<VideoCodec, EncoderSelection>,
+    private val candidates: Map<VideoCodec, List<EncoderSelection>>,
 ) {
     val availableVideoCodecs: List<VideoCodec> =
-        listOf(VideoCodec.HEVC, VideoCodec.AVC).filter(selections::containsKey)
-    val heifEncodeAvailable: Boolean = selections.containsKey(VideoCodec.HEVC)
-    val tenBitEncodeAvailable: Boolean = selections[VideoCodec.HEVC]?.main10 == true
+        listOf(VideoCodec.HEVC, VideoCodec.AVC).filter { candidates[it].orEmpty().isNotEmpty() }
+    val heifEncodeAvailable: Boolean = candidates[VideoCodec.HEVC].orEmpty().isNotEmpty()
+    val tenBitEncodeAvailable: Boolean = candidates[VideoCodec.HEVC].orEmpty().any { it.main10 }
 
-    fun selectionFor(codec: VideoCodec): EncoderSelection? = selections[codec]
+    /** Exact components that can honestly encode [transfer], hardware-first and registry-stable. */
+    fun candidatesFor(codec: VideoCodec, transfer: ColorTransfer = ColorTransfer.SDR): List<EncoderSelection> =
+        candidates[codec].orEmpty().filter { encoderSelectionAdmitsTransfer(it, transfer) }
+
+    fun selectionFor(codec: VideoCodec, transfer: ColorTransfer = ColorTransfer.SDR): EncoderSelection? =
+        candidatesFor(codec, transfer).firstOrNull()
 
     companion object {
         val EMPTY = CodecInventory(emptyMap())
@@ -51,7 +57,7 @@ internal data class CodecComponent(
  * failed HEVC capability query is represented by null profiles and never grants Main10.
  */
 internal fun buildCodecInventory(components: List<CodecComponent>): CodecInventory {
-    val selections = buildMap {
+    val candidatesByCodec = buildMap {
         for ((codec, mime) in listOf(
             VideoCodec.HEVC to MediaFormat.MIMETYPE_VIDEO_HEVC,
             VideoCodec.AVC to MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -71,13 +77,19 @@ internal fun buildCodecInventory(components: List<CodecComponent>): CodecInvento
                             component.hevcProfiles?.contains(
                                 MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
                             ) == true,
-                    ) to component.hardwareAccelerated
+                    )
                 }
                 .toList()
-            pickBestEncoder(candidates)?.let { put(codec, it) }
+                .withIndex()
+                .sortedWith(
+                    compareByDescending<IndexedValue<EncoderSelection>> { it.value.hardwareAccelerated }
+                        .thenBy { it.index },
+                )
+                .map { it.value }
+            if (candidates.isNotEmpty()) put(codec, candidates)
         }
     }
-    return CodecInventory(selections.toMap())
+    return CodecInventory(candidatesByCodec.toMap())
 }
 
 /** Fail-closed boundary for platform-list and component-metadata failures. */
@@ -117,6 +129,11 @@ object EncoderCaps {
     fun tenBitEncodeAvailable(): Boolean = inventory.tenBitEncodeAvailable
 
     fun selectionFor(codec: VideoCodec): EncoderSelection? = inventory.selectionFor(codec)
+
+    fun candidatesFor(
+        codec: VideoCodec,
+        transfer: ColorTransfer = ColorTransfer.SDR,
+    ): List<EncoderSelection> = inventory.candidatesFor(codec, transfer)
 
     fun encoderName(codec: VideoCodec): String? = selectionFor(codec)?.codecName
 

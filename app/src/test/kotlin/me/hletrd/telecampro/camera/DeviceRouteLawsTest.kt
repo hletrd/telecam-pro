@@ -253,29 +253,60 @@ class EncoderSizeLadderTest {
 class TransferEncoderHonestyTest {
     @Test
     fun `a Main10 encoder offers every gamma`() {
-        assertEquals(ColorTransfer.entries.toList(), availableTransfers(tenBitEncodeAvailable = true))
+        assertEquals(
+            ColorTransfer.entries.toList(),
+            availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = true),
+        )
     }
 
     @Test
     fun `an 8-bit-only encoder offers SDR alone`() {
-        assertEquals(listOf(ColorTransfer.SDR), availableTransfers(tenBitEncodeAvailable = false))
+        assertEquals(
+            listOf(ColorTransfer.SDR),
+            availableTransfers(VideoCodec.HEVC, tenBitEncodeAvailable = false),
+        )
     }
 
     @Test
     fun `SDR is never withheld — it is the 8-bit BT709 case by construction`() {
-        assertTrue(ColorTransfer.SDR in availableTransfers(true))
-        assertTrue(ColorTransfer.SDR in availableTransfers(false))
+        assertTrue(ColorTransfer.SDR in availableTransfers(VideoCodec.HEVC, true))
+        assertTrue(ColorTransfer.SDR in availableTransfers(VideoCodec.HEVC, false))
     }
 
     @Test
     fun `a persisted HLG or log selection falls back to SDR on an 8-bit encoder`() {
         listOf(ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
-            .forEach { assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(false)) }
+            .forEach {
+                assertEquals(
+                    ColorTransfer.SDR,
+                    it.normalizedForEncoder(VideoCodec.HEVC, false),
+                )
+            }
     }
 
     @Test
     fun `PMA110-class hardware keeps whatever the operator chose`() {
-        ColorTransfer.entries.forEach { assertEquals(it, it.normalizedForEncoder(true)) }
+        ColorTransfer.entries.forEach {
+            assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true))
+        }
+    }
+
+    @Test
+    fun `AVC atomically normalizes every non-SDR intent`() {
+        ColorTransfer.entries.filter { it != ColorTransfer.SDR }.forEach {
+            assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(VideoCodec.AVC, true))
+        }
+        assertEquals(
+            listOf(ColorTransfer.SDR),
+            availableTransfers(VideoCodec.AVC, tenBitEncodeAvailable = true),
+        )
+    }
+
+    @Test
+    fun `HEVC Main10 retains non-SDR intent`() {
+        ColorTransfer.entries.forEach {
+            assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true))
+        }
     }
 }
 

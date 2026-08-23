@@ -1978,14 +1978,15 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
     // telemetry ticks) though its real inputs change on the 10 s info tick or a settings change
     // (PERF4-2).
     val remaining: String? = remember(
-        state.freeBytes, state.mode, state.videoResolution, state.videoFrameRate,
+        state.freeBytes, state.mode, state.encodedVideoResolution, state.videoFrameRate,
         state.bitrateLevel, state.videoCodec, state.photoFormats,
     ) {
         when {
             state.freeBytes <= 0 -> null
             state.mode == CaptureMode.VIDEO -> {
+                val encodedSize = state.encodedVideoResolution
                 val bps = me.hletrd.telecampro.camera.videoBitRate(
-                    state.videoResolution.width, state.videoResolution.height,
+                    encodedSize.width, encodedSize.height,
                     state.videoFrameRate.encoderRate,
                     me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
                 ).toLong() + 192_000L // + AAC

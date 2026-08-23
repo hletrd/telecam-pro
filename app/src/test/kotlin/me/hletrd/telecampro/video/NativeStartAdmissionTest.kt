@@ -21,13 +21,11 @@ class NativeStartAdmissionTest {
     }
 
     /**
-     * A close landing while a native start owns a counted admission waits for that block to leave,
-     * then revokes its result. The native call deliberately runs OUTSIDE the process monitor; the
-     * condition wait also releases it, so this drain cannot recreate the historical process-lock
-     * versus terminal-gate ABBA. The deterministic latches pin the check/close/native-call race.
+     * A close landing while a native start owns a counted admission publishes quarantine without
+     * waiting for that potentially non-returning native call. Its eventual result is still revoked.
      */
     @Test
-    fun `terminal close drains and revokes an in-flight native start`() {
+    fun `terminal close converges and revokes an in-flight native start`() {
         val gate = RecorderQuarantineAdmissionGate()
         val enteredStart = CountDownLatch(1)
         val releaseStart = CountDownLatch(1)
@@ -54,10 +52,10 @@ class NativeStartAdmissionTest {
         starter.start()
         assertTrue(enteredStart.await(5, TimeUnit.SECONDS))
         closer.start()
-        // Quarantine becomes visible immediately, then waits (with its lock released) for the
-        // counted native lease to leave. It must not return across the still-running native call.
+        // Quarantine and caller-visible convergence must not depend on native return.
         assertTrue(awaitQuarantine(gate))
-        assertFalse(closeDone.await(50, TimeUnit.MILLISECONDS))
+        assertTrue(closeDone.await(1, TimeUnit.SECONDS))
+        assertFalse(gate.awaitNativeAcquisitionsDrained(25, TimeUnit.MILLISECONDS))
 
         releaseStart.countDown()
         starter.join(5_000)
@@ -65,6 +63,7 @@ class NativeStartAdmissionTest {
 
         assertTrue(closeAccepted.get())
         assertEquals(NativeStartOutcome.REFUSED, outcome.get())
+        assertTrue(gate.awaitNativeAcquisitionsDrained(1, TimeUnit.SECONDS))
         // Quarantine linearizes with ADMISSION, so no new owner can be leased afterwards.
         assertNull(gate.snapshot(owner = Any()))
     }

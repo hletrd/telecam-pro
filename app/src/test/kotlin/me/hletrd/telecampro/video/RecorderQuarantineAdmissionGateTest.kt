@@ -131,7 +131,7 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
-    fun `terminal close drains a counted native lease without holding the process monitor`() {
+    fun `terminal close converges while a native lease never returns`() {
         val gate = RecorderQuarantineAdmissionGate()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -153,24 +153,23 @@ class RecorderQuarantineAdmissionGateTest {
         acquirer.start()
         assertTrue(entered.await(5, TimeUnit.SECONDS))
         closer.start()
-        // The close boundary waits for the admitted block, but wait() releases the process monitor:
-        // isQuarantined remains promptly observable and no ABBA-style lock hold blocks the worker.
+        // Terminal ownership/admission converges without waiting for the native block whose hang is
+        // exactly why quarantine exists.
         assertTrue(awaitQuarantine(gate))
-        closer.join(50)
-        assertFalse(closeDone.get())
-        assertFalse(acquisitionDone.get())
-        release.countDown()
-        acquirer.join(5_000)
-        closer.join(5_000)
-
-        // The already-admitted call may finish, but the racing close revokes its result. Once close
-        // returns, no native block remains and every later attempt is refused before entry.
-        assertTrue(acquisitionDone.get())
-        assertFalse(acquisitionAccepted.get())
+        closer.join(1_000)
         assertTrue(closeDone.get())
+        assertFalse(acquisitionDone.get())
+        assertFalse(gate.awaitNativeAcquisitionsDrained(25, TimeUnit.MILLISECONDS))
         var lateAcquisition = false
         assertFalse(gate.runNativeIfSafe { lateAcquisition = true })
         assertFalse(lateAcquisition)
         assertFalse(gate.commit(UnsafeRecorderAdmissionToken(1L, this)) { })
+
+        // A later native return remains revoked and merely makes bounded observation report drained.
+        release.countDown()
+        acquirer.join(5_000)
+        assertTrue(acquisitionDone.get())
+        assertFalse(acquisitionAccepted.get())
+        assertTrue(gate.awaitNativeAcquisitionsDrained(1, TimeUnit.SECONDS))
     }
 }

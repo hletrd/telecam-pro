@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
@@ -15,8 +16,13 @@ import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.TeleconverterProfile
+import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.SettingsStore
+import me.hletrd.telecampro.video.CodecComponent
+import me.hletrd.telecampro.video.CodecInventory
+import me.hletrd.telecampro.video.buildCodecInventory
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -143,6 +149,42 @@ class CameraViewModelRobolectricTest {
         assertEquals(1600, s.controls.iso)
         // Facing is deliberately never persisted — a restored packet is rear-route optics.
         assertEquals(CameraFacing.BACK, s.facing)
+    }
+
+    @Test fun `live HEVC HLG to AVC transition atomically normalizes gamma to SDR`() {
+        val (v, _) = createViewModel()
+        val inventory = buildCodecInventory(
+            listOf(
+                CodecComponent(
+                    name = "vendor.hevc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = setOf(
+                        android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+                    ),
+                ),
+                CodecComponent(
+                    name = "vendor.avc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_AVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = emptySet(),
+                ),
+            ),
+        )
+        CameraViewModel::class.java.getDeclaredMethod(
+            "applyEncoderInventory",
+            CodecInventory::class.java,
+        ).apply { isAccessible = true }.invoke(v, inventory)
+
+        v.onVideoCodec(VideoCodec.HEVC)
+        v.onTransfer(ColorTransfer.HLG)
+        assertEquals(ColorTransfer.HLG, v.state.value.transfer)
+
+        v.onVideoCodec(VideoCodec.AVC)
+        assertEquals(VideoCodec.AVC, v.state.value.videoCodec)
+        assertEquals(ColorTransfer.SDR, v.state.value.transfer)
     }
 
     // ---- Status auto-clear (Handler-timed, deterministic via the shadow main looper) ----

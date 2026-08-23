@@ -1072,12 +1072,24 @@ data class PhotoFormats(
  * wearing those tags, so they are withheld rather than offered as a claim the file cannot back.
  * SDR always survives — it is the 8-bit BT.709 case by construction.
  */
-fun availableTransfers(tenBitEncodeAvailable: Boolean): List<ColorTransfer> =
+fun availableTransfers(
+    codec: VideoCodec,
+    tenBitEncodeAvailable: Boolean,
+): List<ColorTransfer> = if (codec == VideoCodec.HEVC) {
     if (tenBitEncodeAvailable) ColorTransfer.entries.toList() else listOf(ColorTransfer.SDR)
+} else {
+    listOf(ColorTransfer.SDR)
+}
 
-/** Falls back to SDR when the selected gamma is not one this device can encode honestly. */
-fun ColorTransfer.normalizedForEncoder(tenBitEncodeAvailable: Boolean): ColorTransfer =
-    if (this in availableTransfers(tenBitEncodeAvailable)) this else ColorTransfer.SDR
+/** One codec/transfer invariant shared by restore, recall, live selection, and REC admission. */
+fun ColorTransfer.normalizedForEncoder(
+    codec: VideoCodec,
+    tenBitEncodeAvailable: Boolean,
+): ColorTransfer = if (this in availableTransfers(codec, tenBitEncodeAvailable)) {
+    this
+} else {
+    ColorTransfer.SDR
+}
 
 fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormats = when {
     heifEncodeAvailable || !heif -> this
@@ -1281,6 +1293,8 @@ data class CameraUiState(
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoResolution: Size = Size(3840, 2160),
+    /** Actual encoder raster while REC owns a configured component; null outside recording. */
+    val activeEncoderResolution: Size? = null,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     // Open Gate: record the full 4:3 sensor readout instead of a 16:9 crop. Switches the resolution
     // selector to the camera's 4:3 sizes and encodes at that aspect.
@@ -1404,6 +1418,10 @@ data class CameraUiState(
 ) {
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
+
+    /** Operator-facing file raster: accepted fallback during REC, requested/session size otherwise. */
+    val encodedVideoResolution: Size
+        get() = activeEncoderResolution ?: videoResolution
 
     /**
      * The converter magnification in force. Every focal, zoom-scale, and HAL-hint consumer reads

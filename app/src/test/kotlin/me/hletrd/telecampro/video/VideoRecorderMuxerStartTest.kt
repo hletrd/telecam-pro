@@ -19,33 +19,7 @@ import org.junit.Test
  */
 class VideoRecorderMuxerStartTest {
 
-    @Test
-    fun `track rendezvous degrades only missing optional audio`() {
-        assertEquals(
-            MuxerRendezvousTimeoutAction.DEGRADE_AUDIO,
-            muxerRendezvousTimeoutAction(
-                videoTrackReady = true,
-                expectedTracks = 2,
-                audioTrackReady = false,
-            ),
-        )
-        assertEquals(
-            MuxerRendezvousTimeoutAction.FAIL_VIDEO,
-            muxerRendezvousTimeoutAction(
-                videoTrackReady = false,
-                expectedTracks = 2,
-                audioTrackReady = true,
-            ),
-        )
-        assertEquals(
-            MuxerRendezvousTimeoutAction.FAIL_VIDEO,
-            muxerRendezvousTimeoutAction(
-                videoTrackReady = false,
-                expectedTracks = 1,
-                audioTrackReady = false,
-            ),
-        )
-    }
+    private fun ms(value: Long) = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(value)
 
     @Test
     fun `video startup proof requires format and first muxed sample`() {
@@ -67,6 +41,75 @@ class VideoRecorderMuxerStartTest {
         assertTrue(complete.observeMuxedSample())
         assertEquals(null, complete.expire())
         assertEquals(null, complete.expire())
+    }
+
+    @Test
+    fun `audio-first output cannot shorten the absolute video startup budget`() {
+        val videoDeadline = ms(4_000)
+        val earlyAudioDeadline = ms(1_000)
+
+        assertEquals(
+            null,
+            startupRendezvousTimeoutAction(
+                nowNs = ms(1_000),
+                videoDeadlineNs = videoDeadline,
+                audioDeadlineNs = earlyAudioDeadline,
+                videoTrackReady = false,
+                expectedTracks = 2,
+                audioTrackReady = true,
+            ),
+        )
+        assertEquals(
+            null,
+            startupRendezvousTimeoutAction(
+                nowNs = ms(3_999),
+                videoDeadlineNs = videoDeadline,
+                audioDeadlineNs = earlyAudioDeadline,
+                videoTrackReady = false,
+                expectedTracks = 2,
+                audioTrackReady = true,
+            ),
+        )
+        assertEquals(
+            MuxerRendezvousTimeoutAction.FAIL_VIDEO,
+            startupRendezvousTimeoutAction(
+                nowNs = videoDeadline,
+                videoDeadlineNs = videoDeadline,
+                audioDeadlineNs = earlyAudioDeadline,
+                videoTrackReady = false,
+                expectedTracks = 2,
+                audioTrackReady = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `video-first output degrades optional audio on its own grace deadline`() {
+        val videoDeadline = ms(4_000)
+        val audioDeadline = ms(2_000)
+
+        assertEquals(
+            null,
+            startupRendezvousTimeoutAction(
+                nowNs = ms(1_999),
+                videoDeadlineNs = videoDeadline,
+                audioDeadlineNs = audioDeadline,
+                videoTrackReady = true,
+                expectedTracks = 2,
+                audioTrackReady = false,
+            ),
+        )
+        assertEquals(
+            MuxerRendezvousTimeoutAction.DEGRADE_AUDIO,
+            startupRendezvousTimeoutAction(
+                nowNs = audioDeadline,
+                videoDeadlineNs = videoDeadline,
+                audioDeadlineNs = audioDeadline,
+                videoTrackReady = true,
+                expectedTracks = 2,
+                audioTrackReady = false,
+            ),
+        )
     }
 
     @Test

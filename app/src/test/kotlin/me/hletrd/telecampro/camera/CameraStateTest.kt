@@ -1,13 +1,27 @@
 package me.hletrd.telecampro.camera
 
 import android.hardware.camera2.CameraMetadata
+import android.util.Size
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Pins [CameraUiState.activeFnSlots]: the Fn bar reflects the current capture mode. */
 class CameraStateTest {
+
+    @Test
+    fun `accepted encoder fallback replaces requested raster only while active`() {
+        val requested = Size(3840, 2160)
+        val accepted = Size(1920, 1080)
+        val idle = CameraUiState(videoResolution = requested)
+        assertSame(requested, idle.encodedVideoResolution)
+        assertSame(
+            accepted,
+            idle.copy(activeEncoderResolution = accepted).encodedVideoResolution,
+        )
+    }
 
     @Test
     fun activeFnSlots_selectsByMode() {

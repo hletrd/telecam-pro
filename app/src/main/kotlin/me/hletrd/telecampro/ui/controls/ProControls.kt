@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.ui.theme.CameraColors
@@ -788,6 +789,7 @@ internal fun TransferSelector(
     transfer: ColorTransfer,
     onTransfer: (ColorTransfer) -> Unit,
     modifier: Modifier = Modifier,
+    codec: VideoCodec = VideoCodec.HEVC,
     enabled: Boolean = true,
     /**
      * False on a device whose HEVC encoder has no Main10 profile. Every option except SDR is tagged
@@ -823,7 +825,7 @@ internal fun TransferSelector(
                 .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            availableTransfers(tenBitEncodeAvailable).forEach { option ->
+            availableTransfers(codec, tenBitEncodeAvailable).forEach { option ->
                 val isSelected = transfer == option
                 val optionName = segmentedOptionName(stringResource(R.string.label_gamma), transferLabel(option))
                 MinTouchTarget48 {

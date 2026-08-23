@@ -1308,8 +1308,9 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Resolved encoder settings summary, e.g. "HEVC · 4K · 30p · 84 Mbps" — the exact computed
     // bitrate. The rate carries its "p" like the OSD's spec line does: in a list next to "4K" a
     // bare number reads as another dimension.
+    val encodedSize = state.encodedVideoResolution
     val mbps = videoBitRate(
-        state.videoResolution.width, state.videoResolution.height,
+        encodedSize.width, encodedSize.height,
         state.videoFrameRate.encoderRate,
         me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, codec), codec,
     ) / 1_000_000
@@ -1318,7 +1319,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // can change, and the 12 dp base gap returns to being the boundary before Gamma
     // (UI review #16).
     Text(
-        "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${videoFrameRateLabel(state.videoFrameRate)}p · $mbps Mbps",
+        "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(encodedSize)} · ${videoFrameRateLabel(state.videoFrameRate)}p · $mbps Mbps",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
@@ -1337,6 +1338,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         TransferSelector(
             transfer = state.transfer,
             onTransfer = actions::onTransfer,
+            codec = codec,
             enabled = codec == VideoCodec.HEVC && recordingMutable,
             tenBitEncodeAvailable = state.tenBitEncodeAvailable,
         )

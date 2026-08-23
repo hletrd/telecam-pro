@@ -79,7 +79,7 @@ class EncoderCapsTest {
     }
 
     @Test
-    fun `Main10 fact belongs to selected component rather than a different candidate`() {
+    fun `Main10 intent selects the capable component without changing SDR registry preference`() {
         val inventory = buildCodecInventory(
             listOf(
                 component(
@@ -97,10 +97,95 @@ class EncoderCapsTest {
         )
 
         assertEquals("vendor.main-only", inventory.selectionFor(VideoCodec.HEVC)?.codecName)
-        assertFalse(inventory.tenBitEncodeAvailable)
-        val selection = inventory.selectionFor(VideoCodec.HEVC)!!
-        assertTrue(encoderSelectionAdmitsTransfer(selection, ColorTransfer.SDR))
-        assertFalse(encoderSelectionAdmitsTransfer(selection, ColorTransfer.HLG))
+        assertTrue(inventory.tenBitEncodeAvailable)
+        assertEquals(
+            "software.main10",
+            inventory.selectionFor(VideoCodec.HEVC, ColorTransfer.HLG)?.codecName,
+        )
+        assertEquals(
+            listOf("vendor.main-only", "software.main10"),
+            inventory.candidatesFor(VideoCodec.HEVC).map { it.codecName },
+        )
+        assertEquals(
+            listOf("software.main10"),
+            inventory.candidatesFor(VideoCodec.HEVC, ColorTransfer.SLOG3).map { it.codecName },
+        )
+    }
+
+    @Test
+    fun `hardware candidates remain registry-stable across input permutations`() {
+        val first = buildCodecInventory(
+            listOf(
+                component("sw", MediaFormat.MIMETYPE_VIDEO_HEVC, hardware = false),
+                component("hw-a", MediaFormat.MIMETYPE_VIDEO_HEVC),
+                component("hw-b", MediaFormat.MIMETYPE_VIDEO_HEVC),
+            ),
+        )
+        val second = buildCodecInventory(
+            listOf(
+                component("hw-b", MediaFormat.MIMETYPE_VIDEO_HEVC),
+                component("sw", MediaFormat.MIMETYPE_VIDEO_HEVC, hardware = false),
+                component("hw-a", MediaFormat.MIMETYPE_VIDEO_HEVC),
+            ),
+        )
+
+        assertEquals(listOf("hw-a", "hw-b", "sw"), first.candidatesFor(VideoCodec.HEVC).map { it.codecName })
+        assertEquals(listOf("hw-b", "hw-a", "sw"), second.candidatesFor(VideoCodec.HEVC).map { it.codecName })
+    }
+
+    @Test
+    fun `configure attempts preserve requested size before spending resolution`() {
+        val limited = EncoderSelection(
+            VideoCodec.HEVC, "limited", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        val full = limited.copy(codecName = "full")
+        val attempts = encoderConfigureAttempts(listOf(limited, full), 1080, 1920)
+
+        assertEquals(
+            listOf("limited" to (1080 to 1920), "full" to (1080 to 1920)),
+            attempts.take(2).map { it.selection.codecName to (it.width to it.height) },
+        )
+        assertTrue(attempts[2].width < 1080)
+    }
+
+    @Test
+    fun `configure runner releases rejected component before accepting the next at requested size`() {
+        val limited = EncoderSelection(
+            VideoCodec.HEVC, "limited", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        val full = limited.copy(codecName = "full")
+        data class FakeOwner(val name: String)
+        val visited = mutableListOf<Pair<String, Pair<Int, Int>>>()
+        val released = mutableListOf<String>()
+
+        val accepted = firstConfiguredEncoderAttempt(
+            attempts = encoderConfigureAttempts(listOf(limited, full), 1080, 1920),
+            acquire = { FakeOwner(it.codecName) },
+            configure = { owner, attempt ->
+                visited += owner.name to (attempt.width to attempt.height)
+                if (owner.name == "limited") error("requested portrait size rejected")
+            },
+            releaseRejected = { released += it.name },
+        )
+
+        assertEquals("full", accepted.owner.name)
+        assertEquals(1080, accepted.attempt.width)
+        assertEquals(1920, accepted.attempt.height)
+        assertEquals(listOf("limited"), released)
+        assertEquals(
+            listOf("limited" to (1080 to 1920), "full" to (1080 to 1920)),
+            visited,
+        )
+    }
+
+    @Test
+    fun `AVC rejects every non-SDR transfer at the final recorder boundary`() {
+        val avc = EncoderSelection(
+            VideoCodec.AVC, "vendor.avc", MediaFormat.MIMETYPE_VIDEO_AVC, true, false,
+        )
+        assertTrue(encoderSelectionAdmitsTransfer(avc, ColorTransfer.SDR))
+        assertFalse(encoderSelectionAdmitsTransfer(avc, ColorTransfer.HLG))
+        assertFalse(encoderSelectionAdmitsTransfer(avc, ColorTransfer.SLOG3))
     }
 
     @Test

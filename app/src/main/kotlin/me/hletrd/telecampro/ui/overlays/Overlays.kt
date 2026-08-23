@@ -575,17 +575,18 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         if (state.mode == CaptureMode.VIDEO) {
             if (!compact) {
                 val spec = remember(
-                    state.videoResolution, state.videoFrameRate, state.videoCodec, state.bitrateLevel,
+                    state.encodedVideoResolution, state.videoFrameRate, state.videoCodec, state.bitrateLevel,
                 ) {
+                    val encodedSize = state.encodedVideoResolution
                     val mbps = videoBitRate(
-                        state.videoResolution.width, state.videoResolution.height,
+                        encodedSize.width, encodedSize.height,
                         state.videoFrameRate.encoderRate,
                         me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
                     ) / 1_000_000
                     // A bare "M" is the finder convention for a bitrate; "Mb" named megabits, which
                     // is a quantity, not a rate. The menu's Encoder row spells the full "Mbps" —
                     // two registers on purpose, both now correct.
-                    "${videoResolutionLabel(state.videoResolution)} ${videoFrameRateLabel(state.videoFrameRate)}p " +
+                    "${videoResolutionLabel(encodedSize)} ${videoFrameRateLabel(state.videoFrameRate)}p " +
                         "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
                 }
                 Text(spec, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)

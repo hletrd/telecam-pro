@@ -69,6 +69,8 @@ class VideoRecorder(private val context: Context) {
      */
     @Volatile var configuredSize: Size? = null
         private set
+    @Volatile var configuredEncoderSelection: EncoderSelection? = null
+        private set
 
     private var muxer: MediaMuxer? = null
     private var pfd: ParcelFileDescriptor? = null
@@ -89,6 +91,7 @@ class VideoRecorder(private val context: Context) {
         get() = muxerStartState == MuxerStartState.STARTED
     private val muxerLock = ReentrantLock()
     private val muxerStateChanged = muxerLock.newCondition()
+    private var audioTrackDeadlineNs = Long.MAX_VALUE
 
     @Volatile private var running = false
     // An encoder whose EGL input ownership could not be proven released is never stopped/released
@@ -101,6 +104,7 @@ class VideoRecorder(private val context: Context) {
         Thread(runnable, "video-start-proof").apply { isDaemon = true }
     }
     private var videoStartupDeadline: ScheduledFuture<*>? = null
+    @Volatile private var videoStartupDeadlineNs = Long.MAX_VALUE
     private var onFailure: ((Throwable) -> Unit)? = null
     @Volatile private var wroteVideoSample = false
     // Set the first time an AUDIO sample is muxed, and when a mid-REC audio fault degrades the
@@ -140,7 +144,7 @@ class VideoRecorder(private val context: Context) {
         captureRate: Double,
         bitRate: Int,
         transfer: ColorTransfer,
-        encoderSelection: EncoderSelection,
+        encoderCandidates: List<EncoderSelection>,
         recordAudio: Boolean,
         audioGain: Float = 1f,
         orientationHint: Int = 0,
@@ -152,8 +156,11 @@ class VideoRecorder(private val context: Context) {
         onLevel: ((FloatArray) -> Unit)? = null,
         onFailure: ((Throwable) -> Unit)? = null,
     ): Surface? {
-        val codec = encoderSelection.codec
-        if (!encoderSelectionAdmitsTransfer(encoderSelection, transfer)) return null
+        val admittedCandidates = encoderCandidates
+            .filter { encoderSelectionAdmitsTransfer(it, transfer) }
+            .distinctBy { it.codecName }
+        val codec = admittedCandidates.firstOrNull()?.codec ?: return null
+        if (admittedCandidates.any { it.codec != codec }) return null
         this.uri = uri
         this.audioGain = normalizeAudioGain(audioGain)
         this.audioScene = audioScene
@@ -185,28 +192,35 @@ class VideoRecorder(private val context: Context) {
             // height cap, device-probed — see [encoderSizeLadder]). Their advertised capabilities
             // are wrong in both directions there, so an actual configure is the only honest oracle.
             // Rung 0 IS the requested size, so every verified handset takes this path unchanged.
-            var chosen: Size? = null
-            var lastFailure: Throwable? = null
-            for ((lw, lh) in encoderSizeLadder(size.width, size.height)) {
-                val vFmt = ColorProfiles.videoFormat(codec, lw, lh, encoderRate, captureRate, bitRate, transfer)
-                val vCodec = MediaCodec.createByCodecName(encoderSelection.codecName)
-                // Assign the field BEFORE configure/createInputSurface/start: any of those can throw,
-                // and a codec held only in the local would slip past the failure cleanup below —
-                // orphaning a live HW encoder instance until process death.
-                videoCodec = vCodec
-                val ok = runCatching {
-                    vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                }.onFailure { lastFailure = it }.isSuccess
-                if (ok) { chosen = Size(lw, lh); break }
-                // This rung's codec never produced an input Surface, so it has no exactly-once owner
-                // to hand back — release it directly before trying the next one.
-                runCatching { vCodec.release() }
-                videoCodec = null
-            }
-            val vCodec = videoCodec ?: throw (lastFailure ?: IllegalStateException("no encoder size accepted"))
-            configuredSize = chosen
-            inputSurfaceOwner.install(vCodec.createInputSurface())
-            vCodec.start()
+            val accepted = firstConfiguredEncoderAttempt(
+                attempts = encoderConfigureAttempts(
+                    admittedCandidates,
+                    size.width,
+                    size.height,
+                ),
+                acquire = { selection ->
+                    MediaCodecAttemptOwner(MediaCodec.createByCodecName(selection.codecName))
+                },
+                configure = { owner, attempt ->
+                    val selection = attempt.selection
+                    val vFmt = ColorProfiles.videoFormat(
+                        codec, attempt.width, attempt.height,
+                        encoderRate, captureRate, bitRate, transfer,
+                    )
+                    owner.codec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    owner.surface = owner.codec.createInputSurface()
+                    owner.codec.start()
+                },
+                releaseRejected = { owner ->
+                    runCatching { owner.surface?.release() }
+                    runCatching { owner.codec.stop() }
+                    runCatching { owner.codec.release() }
+                },
+            )
+            videoCodec = accepted.owner.codec
+            configuredSize = Size(accepted.attempt.width, accepted.attempt.height)
+            configuredEncoderSelection = accepted.attempt.selection
+            inputSurfaceOwner.install(checkNotNull(accepted.owner.surface))
         }.isSuccess
 
         if (!videoOk) {
@@ -233,6 +247,9 @@ class VideoRecorder(private val context: Context) {
         // AudioRecord's worker reads this flag as soon as startAudio() creates its thread. Publish the
         // running state first so a fast scheduler cannot observe false and enqueue EOS immediately.
         running = true
+        // One absolute video-start budget begins before either drain worker. An audio worker that
+        // wins the scheduler race therefore cannot invent its own shorter missing-video deadline.
+        armVideoStartupDeadline()
 
         val doAudio = recordAudio && hasRecordPermission()
         expectedTracks = if (doAudio) 2 else 1
@@ -249,8 +266,6 @@ class VideoRecorder(private val context: Context) {
                 expectedTracks = 1
             }
         }
-
-        armVideoStartupDeadline()
         videoThread = thread(name = "video-drain") { drainVideo() }
         return inputSurface
     }
@@ -397,6 +412,7 @@ class VideoRecorder(private val context: Context) {
         videoTrack = -1
         audioTrack = -1
         muxerStartState = MuxerStartState.WAITING
+        audioTrackDeadlineNs = Long.MAX_VALUE
         wroteVideoSample = false
         wroteAudioSample = false
         audioDegradedMidRec = false
@@ -744,6 +760,12 @@ class VideoRecorder(private val context: Context) {
 
     private fun maybeStartMuxer() {
         val ownedMuxer = muxer ?: return
+        if (videoTrack >= 0 && expectedTracks > 1 && audioTrack < 0 &&
+            audioTrackDeadlineNs == Long.MAX_VALUE
+        ) {
+            audioTrackDeadlineNs = System.nanoTime() +
+                TimeUnit.MILLISECONDS.toNanos(TRACK_RENDEZVOUS_TIMEOUT_MS)
+        }
         // Both drain workers can arrive here after VideoRecorder.start() has left setup admission.
         // Publish the immutable result before reporting a failure so re-entrant teardown/audio
         // degradation observes a terminal attempt and cannot touch MediaMuxer.start() again.
@@ -770,19 +792,35 @@ class VideoRecorder(private val context: Context) {
      * video format is clip-terminal. No codec output buffer is retained beyond this deadline.
      */
     private fun awaitMuxerStart(): Boolean {
-        val deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TRACK_RENDEZVOUS_TIMEOUT_MS)
         while (true) {
             var timeoutAction: MuxerRendezvousTimeoutAction? = null
             val started = muxerLock.withLock {
                 while (running && muxerStartState == MuxerStartState.WAITING) {
-                    val remainingNs = deadlineNs - System.nanoTime()
-                    if (remainingNs <= 0L) {
-                        timeoutAction = muxerRendezvousTimeoutAction(
-                            videoTrackReady = videoTrack >= 0,
-                            expectedTracks = expectedTracks,
-                            audioTrackReady = audioTrack >= 0,
-                        )
+                    val nowNs = System.nanoTime()
+                    val videoReady = videoTrack >= 0
+                    val audioReady = audioTrack >= 0
+                    val action = startupRendezvousTimeoutAction(
+                        nowNs = nowNs,
+                        videoDeadlineNs = videoStartupDeadlineNs,
+                        audioDeadlineNs = audioTrackDeadlineNs,
+                        videoTrackReady = videoReady,
+                        expectedTracks = expectedTracks,
+                        audioTrackReady = audioReady,
+                    )
+                    if (action != null) {
+                        timeoutAction = action
                         break
+                    }
+                    val deadlineNs = startupRendezvousWakeDeadlineNs(
+                        videoDeadlineNs = videoStartupDeadlineNs,
+                        audioDeadlineNs = audioTrackDeadlineNs,
+                        videoTrackReady = videoReady,
+                        expectedTracks = expectedTracks,
+                        audioTrackReady = audioReady,
+                    )
+                    val remainingNs = deadlineNs - nowNs
+                    if (remainingNs <= 0L) {
+                        continue
                     }
                     muxerStateChanged.awaitNanos(remainingNs)
                 }
@@ -794,7 +832,9 @@ class VideoRecorder(private val context: Context) {
                     continue
                 }
                 MuxerRendezvousTimeoutAction.FAIL_VIDEO -> {
-                    recordFailure(IllegalStateException("Video output format timed out"))
+                    val reason = videoStartupProof.expire()
+                        ?: "Video encoder startup deadline expired"
+                    recordFailure(IllegalStateException(reason))
                     return false
                 }
                 null -> return started
@@ -803,6 +843,8 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun armVideoStartupDeadline() {
+        videoStartupDeadlineNs = System.nanoTime() +
+            TimeUnit.MILLISECONDS.toNanos(VIDEO_STARTUP_PROOF_TIMEOUT_MS)
         videoStartupDeadline = videoStartupDeadlineExecutor.schedule(
             {
                 videoStartupProof.expire()?.let { reason ->
@@ -817,6 +859,7 @@ class VideoRecorder(private val context: Context) {
     private fun cancelVideoStartupDeadline() {
         videoStartupDeadline?.cancel(false)
         videoStartupDeadline = null
+        videoStartupDeadlineNs = Long.MAX_VALUE
         videoStartupDeadlineExecutor.shutdownNow()
     }
 
@@ -953,12 +996,10 @@ internal class RecorderQuarantineAdmissionGate {
      * if quarantine did not revoke the lease while the native call was in flight.
      *
      * The count closes the old check -> close -> native-entry hole: [close] first prevents another
-     * lease, then waits for every already-admitted block to leave before returning. The wait is on a
-     * [java.util.concurrent.locks.Condition], so it RELEASES [lock]; native work never holds the
-     * process monitor and cannot recreate the historical process-lock <-> terminal-gate ABBA
-     * deadlock. A block admitted before close may finish because a native call cannot be un-called,
-     * but its false result prevents downstream publication or cleanup after quarantine owns the
-     * graph. Once close returns, no admitted block is executing and no later block can enter.
+     * lease. A block admitted before close may finish because a native call cannot be un-called, but
+     * its false result prevents downstream publication or cleanup after quarantine owns the graph.
+     * Drain observation is deliberately separate and bounded: quarantine cannot wait forever for
+     * the native call whose failure caused the terminal transition.
      */
     fun runNativeIfSafe(block: () -> Unit): Boolean {
         val admitted = lock.withLock {
@@ -1008,32 +1049,35 @@ internal class RecorderQuarantineAdmissionGate {
         }
     }
 
-    /**
-     * Irreversible. Closes admission first, then drains counted native leases without holding the
-     * monitor while waiting. Interrupts cannot weaken the terminal boundary: the drain continues
-     * and the caller's interrupt status is restored before returning.
-     */
-    fun close(): Boolean {
+    /** Irreversible and non-blocking: closes publication/admission before terminal convergence. */
+    fun close(): Boolean = lock.withLock {
+        val firstClose = !quarantined.getAndSet(true)
+        if (firstClose) {
+            epoch.incrementAndGet()
+            pendingToken = null
+            activeToken = null
+            standbyToken = null
+        }
+        firstClose
+    }
+
+    /** Best-effort observation only; false retains every unsafe owner for process restart. */
+    fun awaitNativeAcquisitionsDrained(timeout: Long, unit: TimeUnit): Boolean {
+        var remainingNs = unit.toNanos(timeout.coerceAtLeast(0L))
         var interrupted = false
-        val newlyClosed = lock.withLock {
-            val firstClose = !quarantined.getAndSet(true)
-            if (firstClose) {
-                epoch.incrementAndGet()
-                pendingToken = null
-                activeToken = null
-                standbyToken = null
-            }
-            while (nativeAcquisitions > 0) {
+        val drained = lock.withLock {
+            while (nativeAcquisitions > 0 && remainingNs > 0L) {
                 try {
-                    nativeAcquisitionsDrained.await()
+                    remainingNs = nativeAcquisitionsDrained.awaitNanos(remainingNs)
                 } catch (_: InterruptedException) {
                     interrupted = true
+                    remainingNs = 0L
                 }
             }
-            firstClose
+            nativeAcquisitions == 0
         }
         if (interrupted) Thread.currentThread().interrupt()
-        return newlyClosed
+        return drained
     }
 
     fun isQuarantined(): Boolean = quarantined.get()
@@ -1169,22 +1213,104 @@ internal fun shouldStartMuxer(
 internal fun encoderSelectionAdmitsTransfer(
     selection: EncoderSelection,
     transfer: ColorTransfer,
-): Boolean = selection.mime == ColorProfiles.mimeFor(selection.codec) &&
-    (selection.codec != VideoCodec.HEVC || transfer == ColorTransfer.SDR || selection.main10)
+): Boolean = selection.mime == ColorProfiles.mimeFor(selection.codec) && when (selection.codec) {
+    VideoCodec.HEVC -> transfer == ColorTransfer.SDR || selection.main10
+    VideoCodec.AVC -> transfer == ColorTransfer.SDR
+    VideoCodec.APV -> false
+}
+
+internal data class EncoderConfigureAttempt(
+    val selection: EncoderSelection,
+    val width: Int,
+    val height: Int,
+)
+
+private class MediaCodecAttemptOwner(
+    val codec: MediaCodec,
+    var surface: Surface? = null,
+)
+
+internal data class ConfiguredEncoderAttempt<T>(
+    val attempt: EncoderConfigureAttempt,
+    val owner: T,
+)
+
+/**
+ * Runs the real component/size attempt order with explicit rejected-owner cleanup. The generic
+ * owner keeps the failure and release contract host-testable without mocking final MediaCodec APIs.
+ */
+internal fun <T> firstConfiguredEncoderAttempt(
+    attempts: List<EncoderConfigureAttempt>,
+    acquire: (EncoderSelection) -> T,
+    configure: (T, EncoderConfigureAttempt) -> Unit,
+    releaseRejected: (T) -> Unit,
+): ConfiguredEncoderAttempt<T> {
+    var lastFailure: Throwable? = null
+    for (attempt in attempts) {
+        val owner = runCatching { acquire(attempt.selection) }
+            .onFailure { lastFailure = it }
+            .getOrNull() ?: continue
+        val configured = runCatching { configure(owner, attempt) }
+            .onFailure { lastFailure = it }
+            .isSuccess
+        if (configured) return ConfiguredEncoderAttempt(attempt, owner)
+        runCatching { releaseRejected(owner) }
+    }
+    throw (lastFailure ?: IllegalStateException("no encoder size accepted"))
+}
+
+/** Preserve requested resolution first: try every exact component before spending a size rung. */
+internal fun encoderConfigureAttempts(
+    candidates: List<EncoderSelection>,
+    width: Int,
+    height: Int,
+): List<EncoderConfigureAttempt> = encoderSizeLadder(width, height).flatMap { (w, h) ->
+    candidates.distinctBy { it.codecName }.map { EncoderConfigureAttempt(it, w, h) }
+}
 
 internal enum class MuxerRendezvousTimeoutAction { DEGRADE_AUDIO, FAIL_VIDEO }
 
-/** The only recoverable track-start timeout is a missing optional audio track after video is ready. */
-internal fun muxerRendezvousTimeoutAction(
+private const val VIDEO_STARTUP_AUDIO_GUARD_MS = 100L
+
+/**
+ * One absolute startup budget owns missing video. Optional audio receives its ordinary grace only
+ * after video exists, capped just inside the video deadline so it can degrade without stealing the
+ * encoded-video proof window.
+ */
+internal fun startupRendezvousWakeDeadlineNs(
+    videoDeadlineNs: Long,
+    audioDeadlineNs: Long,
     videoTrackReady: Boolean,
     expectedTracks: Int,
     audioTrackReady: Boolean,
-): MuxerRendezvousTimeoutAction = if (
-    videoTrackReady && expectedTracks > 1 && !audioTrackReady
-) {
-    MuxerRendezvousTimeoutAction.DEGRADE_AUDIO
+): Long = if (videoTrackReady && expectedTracks > 1 && !audioTrackReady) {
+    minOf(
+        audioDeadlineNs,
+        videoDeadlineNs - TimeUnit.MILLISECONDS.toNanos(VIDEO_STARTUP_AUDIO_GUARD_MS),
+    )
 } else {
-    MuxerRendezvousTimeoutAction.FAIL_VIDEO
+    videoDeadlineNs
+}
+
+/** Fake-clock-friendly terminal decision for the unified recorder startup deadline. */
+internal fun startupRendezvousTimeoutAction(
+    nowNs: Long,
+    videoDeadlineNs: Long,
+    audioDeadlineNs: Long,
+    videoTrackReady: Boolean,
+    expectedTracks: Int,
+    audioTrackReady: Boolean,
+): MuxerRendezvousTimeoutAction? = when {
+    !videoTrackReady && nowNs >= videoDeadlineNs -> MuxerRendezvousTimeoutAction.FAIL_VIDEO
+    videoTrackReady && expectedTracks > 1 && !audioTrackReady && nowNs >=
+        startupRendezvousWakeDeadlineNs(
+            videoDeadlineNs,
+            audioDeadlineNs,
+            videoTrackReady,
+            expectedTracks,
+            audioTrackReady,
+        ) -> MuxerRendezvousTimeoutAction.DEGRADE_AUDIO
+    else -> null
 }
 
 /**
