@@ -168,6 +168,58 @@ class PendingDiscardJournalTest {
     }
 
     @Test
+    fun `blocked legacy cleanup does not own unrelated discard database work`() {
+        val suffix = UUID.randomUUID().toString()
+        val preferences = context.getSharedPreferences("legacy-$suffix", Context.MODE_PRIVATE)
+        val legacyUri = "content://legacy/blocked-cleanup"
+        val independentUri = "content://independent/progress"
+        assertTrue(preferences.edit().putString(legacyUri, "discard").commit())
+        val cleanupEntered = CountDownLatch(1)
+        val allowCleanup = CountDownLatch(1)
+        val blockedJournal = PendingDiscardJournal(
+            context = context,
+            databaseName = "discard-$suffix.db",
+            legacyPreferences = preferences,
+            removeLegacyEntries = {
+                cleanupEntered.countDown()
+                assertTrue(allowCleanup.await(2, TimeUnit.SECONDS))
+            },
+        )
+        val independentJournal = PendingDiscardJournal(
+            context = context,
+            databaseName = "discard-$suffix.db",
+            legacyPreferences = preferences,
+        )
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val blockedPage = executor.submit<DiscardJournalPage> {
+                blockedJournal.page(afterKey = null, batchLimit = 8)
+            }
+            assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS))
+
+            val independentProgress = executor.submit<Boolean> {
+                if (!independentJournal.mark(independentUri)) return@submit false
+                if (independentJournal.lookup(independentUri) != DiscardJournalLookup.PRESENT) {
+                    return@submit false
+                }
+                val publishLookup = independentJournal.withLookupAuthority(independentUri) { it }
+                if (publishLookup != DiscardJournalLookup.PRESENT) return@submit false
+                if (!independentJournal.remove(independentUri)) return@submit false
+                independentJournal.lookup(independentUri) == DiscardJournalLookup.ABSENT
+            }
+
+            assertTrue(independentProgress.get(2, TimeUnit.SECONDS))
+            assertFalse(blockedPage.isDone)
+            allowCleanup.countDown()
+            assertEquals(listOf(legacyUri), blockedPage.get(2, TimeUnit.SECONDS).keys)
+        } finally {
+            allowCleanup.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `failed media delete retains marker and exact successful retry removes it`() {
         val authority = "discard-retention-${UUID.randomUUID()}"
         val provider = RetainingProvider()

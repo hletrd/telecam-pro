@@ -107,37 +107,40 @@ internal class PendingDiscardJournal(
      * Reads at most [batchLimit] + 1 indexed rows. The extra row proves continuation without a
      * table-sized materialization or sort in app memory.
      */
-    fun page(afterKey: String?, batchLimit: Int): DiscardJournalPage = synchronized(databaseLock) {
+    fun page(afterKey: String?, batchLimit: Int): DiscardJournalPage {
         require(batchLimit > 0)
-        migrateLegacyDiscardMarkers()
-        withReadableDatabase { database ->
-            val queryLimit = batchLimit + 1
-            val candidates = buildList(queryLimit) {
-                database.query(
-                    DISCARD_TABLE,
-                    arrayOf(URI_COLUMN),
-                    "$URI_COLUMN > ?",
-                    arrayOf(afterKey.orEmpty()),
-                    null,
-                    null,
-                    "$URI_COLUMN ASC",
-                    queryLimit.toString(),
-                ).use { cursor ->
-                    while (cursor.moveToNext()) add(cursor.getString(0))
+        val page = synchronized(databaseLock) {
+            migrateLegacyDiscardMarkers()
+            withReadableDatabase { database ->
+                val queryLimit = batchLimit + 1
+                val candidates = buildList(queryLimit) {
+                    database.query(
+                        DISCARD_TABLE,
+                        arrayOf(URI_COLUMN),
+                        "$URI_COLUMN > ?",
+                        arrayOf(afterKey.orEmpty()),
+                        null,
+                        null,
+                        "$URI_COLUMN ASC",
+                        queryLimit.toString(),
+                    ).use { cursor ->
+                        while (cursor.moveToNext()) add(cursor.getString(0))
+                    }
                 }
+                val keys = candidates.take(batchLimit)
+                DiscardJournalPage(
+                    keys = keys,
+                    nextAfterKey = keys.lastOrNull() ?: afterKey,
+                    hasMore = candidates.size > batchLimit,
+                    rowsRead = candidates.size,
+                )
             }
-            val keys = candidates.take(batchLimit)
-            // Import completion is already durable. Preference cleanup is deliberately a separate,
-            // bounded, idempotent operation: a failed commit is retried when this page is visited
-            // on a later launch, without ever re-enumerating or re-importing the full legacy set.
-            runCatching { removeLegacyEntries(keys.toSet()) }
-            DiscardJournalPage(
-                keys = keys,
-                nextAfterKey = keys.lastOrNull() ?: afterKey,
-                hasMore = candidates.size > batchLimit,
-                rowsRead = candidates.size,
-            )
         }
+        // Import completion is already durable. Preference cleanup is deliberately a separate,
+        // bounded, idempotent operation after database ownership is released: a failed commit is
+        // retried when this page is visited on a later launch without blocking unrelated URI work.
+        runCatching { removeLegacyEntries(page.keys.toSet()) }
+        return page
     }
 
     /**
