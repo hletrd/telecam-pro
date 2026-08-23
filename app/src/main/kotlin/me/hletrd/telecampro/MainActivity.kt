@@ -757,7 +757,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MicrophonePermissionRationale(
+internal fun MicrophonePermissionRationale(
     onContinue: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -783,7 +783,7 @@ private fun MicrophonePermissionRationale(
 }
 
 @Composable
-private fun PermissionGate(
+internal fun PermissionGate(
     permanentlyDenied: Boolean,
     /**
      * The permission is GRANTED but the platform still refuses the camera for this app. Different

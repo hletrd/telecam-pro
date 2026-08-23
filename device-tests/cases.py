@@ -234,6 +234,7 @@ def launch_ui_snapshot(
     orientation: int,
     scenario: str = "default",
     rtl: bool = False,
+    font_scale: float = 1.0,
 ):
     """Open the debug-only, HAL-free production-composable snapshot surface."""
     # Defense-in-depth parity with Adb.launch: this raw `am start` bypasses that guard, so the
@@ -246,6 +247,7 @@ def launch_ui_snapshot(
         f"am start -W --activity-reorder-to-front -n {ctx.adb.snapshot_activity} "
         f"--ei device_orientation {orientation} "
         f"--ez snapshot_rtl {str(rtl).lower()} "
+        f"--ef snapshot_font_scale {font_scale} "
         f"--es snapshot_scenario {scenario}"
     )
     deadline = time.monotonic() + 8

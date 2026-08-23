@@ -1,9 +1,18 @@
 package me.hletrd.telecampro.ui.controls
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProSheetTabTest {
+
+    @Test
+    fun `Fn editor rows adapt for compact and enlarged text widths`() {
+        assertTrue(fnSlotOrderUsesCompactLayout(212f, 1f))
+        assertTrue(fnSlotOrderUsesCompactLayout(303f, 2f))
+        assertFalse(fnSlotOrderUsesCompactLayout(340f, 1f))
+    }
 
     @Test
     fun `nine tab selection model always has exactly one selected item`() {

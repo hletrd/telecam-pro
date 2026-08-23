@@ -59,6 +59,28 @@ class SliderKeyPolicyTest {
     }
 
     @Test
+    fun `domain keyboard units and quantizer preserve integer interval grid`() {
+        assertEquals(29, sliderDomainKeyUnits(span = 29f, step = 1f, fallbackUnits = 100))
+        assertEquals(6f, quantizedSliderDomainValue(5f / 29f, 1f, 30f, 1f), 0f)
+        assertEquals(18f, quantizedSliderDomainValue(17f / 29f, 1f, 30f, 1f), 0f)
+        assertEquals(1f, quantizedSliderDomainValue(-1f, 1f, 30f, 1f), 0f)
+        assertEquals(30f, quantizedSliderDomainValue(2f, 1f, 30f, 1f), 0f)
+    }
+
+    @Test
+    fun `invalid domain step falls back without inventing quantization`() {
+        for (step in listOf<Float?>(null, 0f, -1f, Float.NaN)) {
+            assertEquals(100, sliderDomainKeyUnits(span = 29f, step = step, fallbackUnits = 100))
+            assertEquals(15.5f, quantizedSliderDomainValue(0.5f, 1f, 30f, step), 0f)
+        }
+        assertEquals(100, sliderDomainKeyUnits(span = Float.NaN, step = 1f, fallbackUnits = 100))
+        assertEquals(100, sliderDomainKeyUnits(span = 0f, step = 1f, fallbackUnits = 100))
+        assertEquals(1, sliderDomainKeyUnits(span = 0.25f, step = 1f, fallbackUnits = 100))
+        assertEquals(1f, quantizedSliderDomainValue(Float.NaN, 1f, 30f, 1f), 0f)
+        assertEquals(1f, quantizedSliderDomainValue(0.5f, 1f, 1f, 1f), 0f)
+    }
+
+    @Test
     fun `settings axis mirrors endpoints and is involutive`() {
         assertEquals(0f, cameraSliderAxisFraction(0f, rtl = false), 0f)
         assertEquals(1f, cameraSliderAxisFraction(1f, rtl = false), 0f)

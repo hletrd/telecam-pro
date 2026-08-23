@@ -731,7 +731,7 @@ private fun FnDialChip(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DialChip(
+internal fun DialChip(
     label: String,
     value: String,
     active: Boolean,
@@ -781,7 +781,13 @@ private fun DialChip(
     Box(
         modifier = modifier
             .sizeIn(minHeight = 48.dp)
-            .focusable()
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+                onLongClickLabel = stringResource(R.string.a11y_open_function_menu),
+                onLongClick = onLongClick,
+            )
             .clearAndSetSemantics {
                 contentDescription = accessibleName
                 stateDescription = accessibleState ?: spokenValue
@@ -803,14 +809,7 @@ private fun DialChip(
                     longActivate()
                     true
                 }
-            }
-            .combinedClickable(
-                enabled = enabled,
-                role = Role.Button,
-                onClick = onClick,
-                onLongClickLabel = stringResource(R.string.a11y_open_function_menu),
-                onLongClick = onLongClick,
-            ),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -1014,7 +1013,12 @@ internal fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Sh
             Box(
                 modifier = Modifier
                     .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                    .focusable()
+                    .selectable(
+                        selected = on,
+                        enabled = enabled,
+                        role = Role.RadioButton,
+                        onClick = activate,
+                    )
                     .clearAndSetSemantics {
                         contentDescription = semanticLabel
                         stateDescription = if (on) selectedDescription else notSelectedDescription
@@ -1026,13 +1030,7 @@ internal fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Sh
                             activate()
                             true
                         }
-                    }
-                    .selectable(
-                        selected = on,
-                        enabled = enabled,
-                        role = Role.RadioButton,
-                        onClick = activate,
-                    ),
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Box(

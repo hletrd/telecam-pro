@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.controls
 
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.InputMode
@@ -143,6 +144,65 @@ class SliderKeyboardComposeTest {
         compose.waitForIdle()
         assertEquals(0.51f, fraction.floatValue, 0.0001f)
         assertEquals(1, emissions)
+    }
+
+    @Test
+    fun `production timelapse interval reaches every integer with keyboard commands`() {
+        val interval = mutableIntStateOf(5)
+        emissions = 0
+        compose.setContent {
+            LocalInputModeManager.current.requestInputMode(InputMode.Keyboard)
+            TeleCamProTheme {
+                TimelapseIntervalSlider(interval.intValue) {
+                    emissions++
+                    interval.intValue = it
+                }
+            }
+        }
+        val slider = compose.onNodeWithContentDescription("Interval")
+            .requestFocus()
+            .assertIsFocused()
+
+        repeat(3) { slider.performKeyInput { pressKey(Key.DirectionRight) } }
+        compose.waitForIdle()
+        assertEquals(8, interval.intValue)
+
+        slider.performKeyInput { pressKey(Key.DirectionLeft) }
+        compose.waitForIdle()
+        assertEquals(7, interval.intValue)
+
+        slider.performKeyInput { pressKey(Key.PageUp) }
+        compose.waitForIdle()
+        assertEquals(9, interval.intValue)
+        slider.performKeyInput { pressKey(Key.PageDown) }
+        compose.waitForIdle()
+        assertEquals(7, interval.intValue)
+
+        compose.runOnIdle { interval.intValue = 17 }
+        slider.performKeyInput { pressKey(Key.DirectionRight) }
+        compose.waitForIdle()
+        assertEquals(18, interval.intValue)
+        slider.performKeyInput { pressKey(Key.DirectionLeft) }
+        compose.waitForIdle()
+        assertEquals(17, interval.intValue)
+
+        slider.performKeyInput { pressKey(Key.MoveHome) }
+        compose.waitForIdle()
+        assertEquals(1, interval.intValue)
+        val atLowEndpoint = emissions
+        slider.performKeyInput { pressKey(Key.DirectionLeft) }
+        compose.waitForIdle()
+        assertEquals(1, interval.intValue)
+        assertEquals(atLowEndpoint, emissions)
+
+        slider.performKeyInput { pressKey(Key.MoveEnd) }
+        compose.waitForIdle()
+        assertEquals(30, interval.intValue)
+        val atHighEndpoint = emissions
+        slider.performKeyInput { pressKey(Key.DirectionRight) }
+        compose.waitForIdle()
+        assertEquals(30, interval.intValue)
+        assertEquals(atHighEndpoint, emissions)
     }
 
     @Test

@@ -387,12 +387,14 @@ class CameraUiPolicyTest {
     }
 
     @Test
-    fun `settings sheet selects a side panel only in landscape`() {
+    fun `settings sheet selects a side panel only when landscape content remains usable`() {
         // (Moved here from SettingSemanticsTest, which is an accessibility file — a layout-policy
         // assertion parked there is part of why that surface read as covered.)
         assertTrue(proSheetUsesSideLayout(900f, 400f))
         assertFalse(proSheetUsesSideLayout(400f, 900f))
         assertFalse(proSheetUsesSideLayout(500f, 500f))
+        assertFalse(proSheetUsesSideLayout(411f, 320f))
+        assertFalse(proSheetUsesSideLayout(340f, 320f))
     }
 
     @Test

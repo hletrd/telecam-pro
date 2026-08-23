@@ -26,7 +26,24 @@ import java.util.Locale
 internal fun proSheetTabSelection(selected: ProSheetTab): List<ProSheetTabSelection> =
     ProSheetTab.entries.map { ProSheetTabSelection(it, it == selected) }
 
-internal fun proSheetUsesSideLayout(width: Float, height: Float): Boolean = width > height
+private const val PRO_SHEET_SIDE_FRACTION = 0.72f
+private const val PRO_SHEET_TAB_RAIL_DP = 76f
+private const val PRO_SHEET_CONTENT_HORIZONTAL_PADDING_DP = 32f
+private const val PRO_SHEET_MIN_USABLE_CONTENT_WIDTH_DP = 260f
+
+/** A wide window earns a side sheet only when the page remains usable after fixed chrome. */
+internal fun proSheetUsesSideLayout(width: Float, height: Float): Boolean {
+    if (!width.isFinite() || !height.isFinite() || width <= height) return false
+    val usableContentWidth =
+        width * PRO_SHEET_SIDE_FRACTION - PRO_SHEET_TAB_RAIL_DP - PRO_SHEET_CONTENT_HORIZONTAL_PADDING_DP
+    return usableContentWidth >= PRO_SHEET_MIN_USABLE_CONTENT_WIDTH_DP
+}
+
+/** Compact Fn rows use a second action line and fixed glyphs at narrow or enlarged-text widths. */
+internal fun fnSlotOrderUsesCompactLayout(contentWidthDp: Float, fontScale: Float): Boolean {
+    if (!contentWidthDp.isFinite() || !fontScale.isFinite()) return true
+    return contentWidthDp < 300f * fontScale.coerceIn(1f, 1.5f)
+}
 
 internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? = null): String {
     val c = state.controls

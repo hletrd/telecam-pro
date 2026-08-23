@@ -16,8 +16,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -1101,21 +1103,11 @@ fun CameraScreen(
             // This is the channel for capture/permission/storage ERRORS, so its scrim rides the tested
             // contrast floor (05486cb) like every sibling pill — 0.55 cleared 4.5 only by a hair and
             // was one alpha tweak from regressing the app's most important on-screen text.
-            Text(
-                text = message,
-                color = CameraColors.TextPrimary,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(HudPlate, RoundedCornerShape(8.dp))
-                    .semantics {
-                        liveRegion = if (status.livePriority == CameraStatusLivePriority.ASSERTIVE) {
-                            LiveRegionMode.Assertive
-                        } else {
-                            LiveRegionMode.Polite
-                        }
-                    }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            CriticalCameraStatusPlate(
+                message = message,
+                livePriority = status.livePriority,
+                overlayRotation = overlayRotation,
+                modifier = Modifier.align(Alignment.Center),
             )
         }
 
@@ -1375,6 +1367,32 @@ fun CameraScreen(
     }
 }
 
+/** Central capture/storage truth, kept readable and bounded in the operator's held orientation. */
+@Composable
+internal fun CriticalCameraStatusPlate(
+    message: String,
+    livePriority: CameraStatusLivePriority,
+    overlayRotation: Float,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = message,
+        color = CameraColors.TextPrimary,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = modifier
+            .rotateLayout(overlayRotation)
+            .background(HudPlate, RoundedCornerShape(8.dp))
+            .semantics {
+                liveRegion = if (livePriority == CameraStatusLivePriority.ASSERTIVE) {
+                    LiveRegionMode.Assertive
+                } else {
+                    LiveRegionMode.Polite
+                }
+            }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    )
+}
+
 // (The pure status/rotation/Fn-overlay/meter/rail policy helpers live in CameraScreenPolicy.kt —
 // hoisted to a non-composable file so they stay host-testable apart from Compose emission.)
 
@@ -1630,7 +1648,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
  * actually LOWER contrast than either the floor or the old 0.22, so a single floor alpha is correct.
  */
 @Composable
-private fun ChromeIconButton(
+internal fun ChromeIconButton(
     onClick: () -> Unit,
     contentDescription: String,
     modifier: Modifier = Modifier,
@@ -1643,7 +1661,7 @@ private fun ChromeIconButton(
         modifier = modifier
             .size(48.dp)
             .clip(CircleShape)
-            .focusable()
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 this.contentDescription = contentDescription
                 // Optional: for the chrome buttons whose glyph does not name the state it is IN
@@ -1657,8 +1675,7 @@ private fun ChromeIconButton(
                     activate()
                     true
                 }
-            }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            },
         contentAlignment = Alignment.Center,
     ) {
         // background(shape) rather than clip(CircleShape) + background(): the plate draws identically
@@ -1840,7 +1857,7 @@ private fun GridButton(type: GridType, onClick: () -> Unit, modifier: Modifier =
 }
 
 @Composable
-private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+internal fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val onDesc = stringResource(R.string.a11y_state_on)
     val offDesc = stringResource(R.string.a11y_state_off)
     val labelTeleconverter = stringResource(R.string.label_teleconverter)
@@ -1863,7 +1880,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .focusable()
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = labelTeleconverter
                 stateDescription = if (active) onDesc else offDesc
@@ -1874,8 +1891,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
                     activate()
                     true
                 }
-            }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -2326,7 +2342,7 @@ internal fun FnOverlay(
 }
 
 @Composable
-private fun FnOverlayTile(
+internal fun FnOverlayTile(
     slot: FnSlot,
     value: String,
     enabled: Boolean,
@@ -2353,7 +2369,7 @@ private fun FnOverlayTile(
             .clip(RoundedCornerShape(8.dp))
             .background(if (enabled) CameraColors.Block else CameraColors.BlockDisabled)
             .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
-            .focusable()
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = localizedSlotLabel
                 stateDescription = value
@@ -2365,7 +2381,6 @@ private fun FnOverlayTile(
                     true
                 }
             }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             // Carve-out from the shared 12/6 pill inset: this tile sits in the width-contended
             // 148 dp held tray (CameraScreenPolicy), so only the vertical joins the scale.
             .padding(horizontal = 9.dp, vertical = 6.dp),
@@ -2637,14 +2652,17 @@ private fun FocalRail(
 
 /** One rail chip: identical box, semantics, and plate treatment for a lens pick and a zoom mark. */
 @Composable
-private fun RailChip(
+internal fun RailChip(
     label: String,
     contentDescription: String,
     presentation: FocalRailState,
     onClick: () -> Unit,
     glyphRotation: Float,
+    modifier: Modifier = Modifier,
 ) {
     val description = contentDescription
+    val interactionSource = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
     val selectionDescription = stringResource(
         when (presentation.state) {
             CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING -> R.string.a11y_unavailable_while_recording
@@ -2654,18 +2672,21 @@ private fun RailChip(
             CameraControlSelectionState.NOT_SELECTED -> R.string.a11y_not_selected
         },
     )
-    // The press ripple is drawn by the indication on whichever node carries `selectable`. That used
-    // to be this 48 dp SQUARE touch target, so a square slab flashed behind a round pill; clipping
-    // the square merely made it a 48 dp CIRCLE, still visibly bigger and rounder than the stadium it
-    // sits behind (user-reported twice, 2026-07-29). The only way the ripple matches the pill is for
-    // the PILL to be the interactive node — so `selectable` moved inside, onto the same node that
-    // already clips itself to the pill shape. This outer box keeps the 48 dp extent (layout rhythm
-    // and hit area) and owns the semantics.
+    // The 48 dp outer box is the one focus, selection, semantics, and activation owner. Its shared
+    // interaction source is rendered by the clipped inner pill, so keyboard traversal sees one node
+    // while the press ripple keeps the compact stadium treatment instead of flashing a 48 dp slab.
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(48.dp)
             .rotate(glyphRotation)
-            .focusable()
+            .selectable(
+                selected = presentation.selected,
+                enabled = presentation.enabled,
+                role = presentation.accessibilityRole,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
             // Selection and activation must live on the same outer node. A separate
             // selected semantic followed by clickable exported selected=false from the
             // actionable AccessibilityNodeInfo on PMA110.
@@ -2685,15 +2706,9 @@ private fun RailChip(
     ) {
         Box(
             modifier = Modifier
-                // Clip BEFORE selectable so the ripple is bounded by the pill's own shape, and
-                // before the background so the fill is clipped to it too.
+                // Render the outer owner's indication inside the visual pill's clip.
                 .clip(CircleShape)
-                .selectable(
-                    selected = presentation.selected,
-                    enabled = presentation.enabled,
-                    role = presentation.accessibilityRole,
-                    onClick = onClick,
-                )
+                .indication(interactionSource, indication)
                 .background(
                     if (presentation.selected) CameraColors.TextPrimary
                     else HudPlate,
@@ -2753,7 +2768,7 @@ private fun ModeCarousel(
 }
 
 @Composable
-private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val modeButtonDescription = stringResource(R.string.a11y_mode_button, text)
     val presentation = modeCarouselState(active, enabled)
     val selectionDescription = stringResource(
@@ -2763,7 +2778,12 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .focusable()
+            .selectable(
+                selected = presentation.selected,
+                enabled = presentation.enabled,
+                role = presentation.accessibilityRole,
+                onClick = onClick,
+            )
             .clearAndSetSemantics {
                 contentDescription = modeButtonDescription
                 stateDescription = selectionDescription
@@ -2775,13 +2795,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
                     activate()
                     true
                 }
-            }
-            .selectable(
-                selected = presentation.selected,
-                enabled = presentation.enabled,
-                role = presentation.accessibilityRole,
-                onClick = onClick,
-            ),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Column(
@@ -2942,7 +2956,14 @@ internal fun ShutterButton(
             // feedback — an earlier version of this comment promised a status message that the
             // enabled=shutterEnabled clickable below can never reach.
             .alpha(if (cameraHealthy) 1f else 0.35f)
-            .focusable()
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClickLabel = if (timerCountdownSec > 0) cancelSelfTimerDesc else null,
+                onClick = activate,
+            )
             .clearAndSetSemantics {
                 contentDescription = when {
                     timerCountdownSec > 0 -> cancelSelfTimerDesc
@@ -2962,15 +2983,7 @@ internal fun ShutterButton(
                     activate()
                     true
                 }
-            }
-            .clickable(
-                enabled = enabled,
-                interactionSource = interaction,
-                indication = null,
-                role = Role.Button,
-                onClickLabel = if (timerCountdownSec > 0) cancelSelfTimerDesc else null,
-                onClick = activate,
-            ),
+            },
     ) {
         // Inset the ring by half the stroke: a centered stroke at minDimension/2 hangs 2 dp outside
         // the canvas, and the unhealthy-dim `alpha(0.35f)` forces a clipping composition layer
@@ -3000,7 +3013,7 @@ internal fun ShutterButton(
  * recording.
  */
 @Composable
-private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
+internal fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
     val a11yTakePhotoWhileRecording = stringResource(R.string.a11y_take_photo_while_recording)
     val state = stringResource(if (enabled) R.string.a11y_state_ready else R.string.a11y_state_unavailable)
     // 48 dp touch target, 36 dp visual dot.
@@ -3009,7 +3022,7 @@ private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modi
         modifier = modifier
             .size(48.dp)
             .alpha(if (enabled) 1f else 0.35f)
-            .focusable()
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = a11yTakePhotoWhileRecording
                 role = Role.Button
@@ -3020,8 +3033,7 @@ private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modi
                     activate()
                     true
                 }
-            }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(36.dp)) {

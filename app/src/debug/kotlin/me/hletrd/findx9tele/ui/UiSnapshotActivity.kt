@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -39,7 +40,21 @@ import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
+import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.FocusConfidenceSource
+import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.MicrophonePermissionRationale
+import me.hletrd.telecampro.PermissionGate
+import me.hletrd.telecampro.R
+import me.hletrd.telecampro.ui.controls.ProSheet
+import me.hletrd.telecampro.ui.controls.ProSheetTab
+import me.hletrd.telecampro.ui.review.ReviewCriticalStatus
+import me.hletrd.telecampro.ui.review.ReviewCriticalUiState
+import me.hletrd.telecampro.ui.review.ReviewDeleteConfirmationDialog
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+import androidx.compose.ui.unit.Density
 
 /**
  * Deterministic debug-only host for screenshot review. It renders the production camera composable
@@ -58,7 +73,11 @@ class UiSnapshotActivity : ComponentActivity() {
                 val request = snapshotRequest
                 val generation = snapshotGeneration
                 val layoutDirection = if (request.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr
-                CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+                val density = LocalDensity.current
+                CompositionLocalProvider(
+                    LocalLayoutDirection provides layoutDirection,
+                    LocalDensity provides Density(density.density, request.fontScale),
+                ) {
                     // A new intent is a new evidence scene even when its extras equal the preceding
                     // request. Key the whole stateful production subtree, not only the fixture data.
                     key(generation) {
@@ -87,7 +106,8 @@ class UiSnapshotActivity : ComponentActivity() {
                             }
                         }
                         Box(modifier = Modifier.fillMaxSize()) {
-                            CameraScreen(
+                            SnapshotSurface(
+                                request = request,
                                 state = snapshotState,
                                 actions = snapshotActions,
                             )
@@ -118,11 +138,23 @@ class UiSnapshotActivity : ComponentActivity() {
         const val EXTRA_DEVICE_ORIENTATION = "device_orientation"
         const val EXTRA_LAYOUT_DIRECTION_RTL = "snapshot_rtl"
         const val EXTRA_SCENARIO = "snapshot_scenario"
+        const val EXTRA_FONT_SCALE = "snapshot_font_scale"
 
         const val SCENARIO_DEFAULT = "default"
         const val SCENARIO_MEMORY = "memory"
         const val SCENARIO_ADJUSTMENT = "adjustment"
         const val SCENARIO_LOUPE = "loupe"
+        const val SCENARIO_MAXIMAL_OSD = "maximal_osd"
+        const val SCENARIO_FN = "fn"
+        const val SCENARIO_SETTINGS = "settings"
+        const val SCENARIO_SETTINGS_FN = "settings_fn"
+        const val SCENARIO_REVIEW_RAW = "review_raw"
+        const val SCENARIO_REVIEW_LOADING = "review_loading"
+        const val SCENARIO_REVIEW_ERROR = "review_error"
+        const val SCENARIO_REVIEW_DELETE = "review_delete"
+        const val SCENARIO_PERMISSION = "permission"
+        const val SCENARIO_PERMISSION_DENIED = "permission_denied"
+        const val SCENARIO_MIC_RATIONALE = "microphone_rationale"
     }
 }
 
@@ -130,13 +162,78 @@ private data class SnapshotRequest(
     val scenario: String? = null,
     val orientation: Int = 0,
     val rtl: Boolean = false,
+    val fontScale: Float = 1f,
 )
 
 private fun Intent.snapshotRequest(): SnapshotRequest = SnapshotRequest(
     scenario = getStringExtra(UiSnapshotActivity.EXTRA_SCENARIO),
     orientation = getIntExtra(UiSnapshotActivity.EXTRA_DEVICE_ORIENTATION, 0),
     rtl = getBooleanExtra(UiSnapshotActivity.EXTRA_LAYOUT_DIRECTION_RTL, false),
+    fontScale = getFloatExtra(UiSnapshotActivity.EXTRA_FONT_SCALE, 1f).coerceIn(0.85f, 2f),
 )
+
+@Composable
+private fun SnapshotSurface(
+    request: SnapshotRequest,
+    state: CameraUiState,
+    actions: CameraActions,
+) {
+    val settingsTab = snapshotSettingsTab(request.scenario)
+    if (settingsTab != null) {
+        ProSheet(state = state, actions = actions, onDismiss = {}, initialTab = settingsTab)
+        return
+    }
+    when (request.scenario) {
+        UiSnapshotActivity.SCENARIO_FN -> FnOverlay(
+            state = state,
+            actions = actions,
+            onSelectManualDial = {},
+            onDismiss = {},
+            glyphRotation = request.orientation.toFloat(),
+        )
+        UiSnapshotActivity.SCENARIO_REVIEW_RAW -> ReviewCriticalStatus(
+            ReviewCriticalUiState.Raw,
+            request.orientation.toFloat(),
+            onRetry = {},
+            modifier = Modifier.fillMaxSize(),
+        )
+        UiSnapshotActivity.SCENARIO_REVIEW_LOADING -> ReviewCriticalStatus(
+            ReviewCriticalUiState.Loading,
+            request.orientation.toFloat(),
+            onRetry = {},
+            modifier = Modifier.fillMaxSize(),
+        )
+        UiSnapshotActivity.SCENARIO_REVIEW_ERROR -> ReviewCriticalStatus(
+            ReviewCriticalUiState.Error(R.string.review_error_open_image),
+            request.orientation.toFloat(),
+            onRetry = {},
+            modifier = Modifier.fillMaxSize(),
+        )
+        UiSnapshotActivity.SCENARIO_REVIEW_DELETE -> ReviewDeleteConfirmationDialog(
+            scope = MediaDeleteScope.CAPTURE_FAMILY,
+            raw = true,
+            onConfirm = {},
+            onDismiss = {},
+        )
+        UiSnapshotActivity.SCENARIO_PERMISSION -> PermissionGate(false, onRequest = {}, onOpenSettings = {}, onOpenPrivacy = {})
+        UiSnapshotActivity.SCENARIO_PERMISSION_DENIED -> PermissionGate(true, onRequest = {}, onOpenSettings = {}, onOpenPrivacy = {})
+        UiSnapshotActivity.SCENARIO_MIC_RATIONALE -> MicrophonePermissionRationale(onContinue = {}, onDismiss = {})
+        else -> CameraScreen(state = state, actions = actions)
+    }
+}
+
+private fun snapshotSettingsTab(scenario: String?): ProSheetTab? = when (scenario) {
+    UiSnapshotActivity.SCENARIO_SETTINGS, "settings_shooting" -> ProSheetTab.SHOOTING
+    "settings_my" -> ProSheetTab.MY_MENU
+    "settings_exposure" -> ProSheetTab.EXPOSURE
+    "settings_focus" -> ProSheetTab.FOCUS
+    "settings_lens" -> ProSheetTab.LENS
+    "settings_video" -> ProSheetTab.VIDEO
+    "settings_image" -> ProSheetTab.PROCESSING
+    "settings_assist" -> ProSheetTab.ASSISTS
+    UiSnapshotActivity.SCENARIO_SETTINGS_FN, "settings_setup" -> ProSheetTab.ADVANCED
+    else -> null
+}
 
 @Composable
 private fun SnapshotStateProbe(
@@ -216,6 +313,24 @@ private fun snapshotState(scenario: String?, orientation: Int): CameraUiState {
             punchIn = true,
             teleFinder = true,
             photoSessionOutputs = PhotoSessionOutputs(processed = true),
+        )
+        UiSnapshotActivity.SCENARIO_MAXIMAL_OSD -> common.copy(
+            caps = snapshotCameraCaps(),
+            facing = me.hletrd.telecampro.camera.CameraFacing.FRONT,
+            activeMemorySlot = MemorySlot.MR3,
+            transfer = ColorTransfer.SLOG3_CINE,
+            gammaAssist = true,
+            openGate = true,
+            recordAudio = false,
+            videoStabMode = VideoStabMode.OFF,
+            controls = ManualControls(
+                aeLock = true,
+                awbLock = true,
+                afLock = true,
+                meteringMode = MeteringMode.SPOT,
+            ),
+            focusConfidence = FocusConfidenceSource.FRAME_DETAIL,
+            punchIn = true,
         )
         else -> common
     }

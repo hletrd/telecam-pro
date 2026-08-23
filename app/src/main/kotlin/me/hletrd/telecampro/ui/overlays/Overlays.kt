@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import me.hletrd.telecampro.camera.unifiedZoom
 import me.hletrd.telecampro.camera.AfIndication
 import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -53,6 +55,8 @@ import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WaveformData
 import me.hletrd.telecampro.camera.displayedStillAspect
 import me.hletrd.telecampro.camera.largestCenteredRect
@@ -64,6 +68,7 @@ import me.hletrd.telecampro.ui.controls.videoResolutionLabel
 import me.hletrd.telecampro.ui.controls.videoFrameRateLabel
 import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.theme.CameraColors
+import me.hletrd.telecampro.ui.controls.trailingEdgeFadeScrollHint
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -546,6 +551,39 @@ internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
     return photoFormatLabel(formats)
 }
 
+internal data class StatusBarPriorityResetKey(
+    val mode: CaptureMode,
+    val compact: Boolean,
+    val focalLabel: String?,
+    val facing: CameraFacing,
+    val memorySlot: String?,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val frameRate: VideoFrameRate,
+    val codec: VideoCodec,
+    val bitrateLevel: BitrateLevel,
+    val photoFormats: PhotoFormats,
+)
+
+/** Stable reset policy for the OSD scroll: priority identity/output truth, never live telemetry. */
+internal fun statusBarPriorityResetKey(
+    state: CameraUiState,
+    focalLabel: String?,
+    compact: Boolean,
+): StatusBarPriorityResetKey = StatusBarPriorityResetKey(
+    mode = state.mode,
+    compact = compact,
+    focalLabel = focalLabel,
+    facing = state.facing,
+    memorySlot = state.activeMemorySlot?.name,
+    outputWidth = state.encodedVideoResolution.width,
+    outputHeight = state.encodedVideoResolution.height,
+    frameRate = state.videoFrameRate,
+    codec = state.videoCodec,
+    bitrateLevel = state.bitrateLevel,
+    photoFormats = state.photoFormats,
+)
+
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
     if (compact && !compactShootingStatusVisible(state)) return
@@ -578,12 +616,19 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             }
         }
     }
+    val scrollState = rememberScrollState()
+    // Reset to logical Start only when the leading identity/output truth changes. Volatile metering,
+    // lock, and assist tags may update without yanking a user who is intentionally inspecting the
+    // tail, while a lens/facing/memory or encoder/output transition immediately returns priority.
+    val priorityResetKey = statusBarPriorityResetKey(state, focalLabel, compact)
+    LaunchedEffect(priorityResetKey) { scrollState.scrollTo(0) }
     Row(
         modifier = modifier
             .background(HudPlate, RoundedCornerShape(8.dp))
             // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
             // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
-            .horizontalScroll(rememberScrollState())
+            .trailingEdgeFadeScrollHint(scrollState)
+            .horizontalScroll(scrollState)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,

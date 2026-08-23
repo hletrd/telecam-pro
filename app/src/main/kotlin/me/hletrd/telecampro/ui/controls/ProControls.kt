@@ -399,9 +399,11 @@ internal fun LabeledSlider(
     valueRange: ClosedFloatingPointRange<Float>,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    keyboardStep: Float? = null,
 ) {
     val span = valueRange.endInclusive - valueRange.start
     val fraction = if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
+    val keyboardUnits = sliderDomainKeyUnits(span, keyboardStep, CAMERA_SLIDER_KEY_UNITS)
     val accessibility = sliderSettingSemantics(label, valueLabel)
     Column(
         modifier = modifier
@@ -430,10 +432,15 @@ internal fun LabeledSlider(
         Spacer(modifier = Modifier.height(2.dp))
         CameraSlider(
             fraction = fraction,
-            onFraction = { f -> onValueChange(valueRange.start + f * span) },
+            onFraction = { f ->
+                onValueChange(
+                    quantizedSliderDomainValue(f, valueRange.start, valueRange.endInclusive, keyboardStep),
+                )
+            },
             enabled = enabled,
             semanticLabel = accessibility.label,
             valueDescription = valueLabel,
+            keyboardUnits = keyboardUnits,
         )
     }
 }
@@ -456,6 +463,7 @@ internal fun CameraSlider(
     semanticLabel: String,
     valueDescription: String,
     modifier: Modifier = Modifier,
+    keyboardUnits: Int = CAMERA_SLIDER_KEY_UNITS,
 ) {
     // Fresh callback for the running gesture: see the stale-closure note at the pointerInput below.
     val currentOnFraction by rememberUpdatedState(onFraction)
@@ -480,7 +488,7 @@ internal fun CameraSlider(
                 val target = sliderKeyTargetFraction(
                     currentFraction = fraction,
                     key = event.key,
-                    totalUnits = CAMERA_SLIDER_KEY_UNITS,
+                    totalUnits = keyboardUnits,
                     rtlHorizontal = rtl,
                     enabled = enabled,
                 ) ?: return@onPreviewKeyEvent false

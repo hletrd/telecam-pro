@@ -85,6 +85,7 @@ import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.ui.controls.MinTouchTarget48
 import me.hletrd.telecampro.ui.controls.formatShutterSpeed
 import me.hletrd.telecampro.ui.modalFocusBoundary
+import me.hletrd.telecampro.ui.rotateLayout
 import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
@@ -181,6 +182,12 @@ private sealed interface ReviewMediaState {
         data object Raw : Ready
     }
     data class Error(@StringRes val messageRes: Int) : ReviewMediaState
+}
+
+internal sealed interface ReviewCriticalUiState {
+    data object Loading : ReviewCriticalUiState
+    data object Raw : ReviewCriticalUiState
+    data class Error(@StringRes val messageRes: Int) : ReviewCriticalUiState
 }
 
 private const val REVIEW_PREVIEW_MAX_DIM = 3000
@@ -501,7 +508,6 @@ fun MediaReviewOverlay(
     val rawReady = mediaState is ReviewMediaState.Ready.Raw
     val deleteCopy = mediaDeleteConfirmationCopy(deleteScope, rawReady)
     val deleteTitle = stringResource(deleteCopy.title)
-    val deleteBody = stringResource(deleteCopy.body)
     val zoom4Action = stringResource(R.string.a11y_zoom_4x)
     val zoom8Action = stringResource(R.string.a11y_zoom_8x)
     val resetZoomAction = stringResource(R.string.a11y_reset_zoom)
@@ -846,34 +852,21 @@ fun MediaReviewOverlay(
                         )
                     },
             )
-        } else if (rawReady) {
-            RawReviewPlaceholder(Modifier.fillMaxSize())
-        } else when (val current = mediaState) {
-            ReviewMediaState.Loading -> Text(
-                stringResource(R.string.review_loading),
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
-            is ReviewMediaState.Error -> Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier
-                    .padding(horizontal = 32.dp)
-                    .semantics { liveRegion = LiveRegionMode.Assertive },
-            ) {
-                Text(
-                    stringResource(current.messageRes),
-                    color = CameraColors.TextPrimary,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                MinTouchTarget48 {
-                    TextButton(onClick = { loadAttempt += 1 }) {
-                        Text(stringResource(R.string.action_retry))
-                    }
-                }
+        } else {
+            val criticalState = when (val current = mediaState) {
+                ReviewMediaState.Loading -> ReviewCriticalUiState.Loading
+                is ReviewMediaState.Error -> ReviewCriticalUiState.Error(current.messageRes)
+                ReviewMediaState.Ready.Raw -> ReviewCriticalUiState.Raw
+                is ReviewMediaState.Ready -> null
             }
-            is ReviewMediaState.Ready -> Unit
+            criticalState?.let {
+                ReviewCriticalStatus(
+                    state = it,
+                    overlayRotation = overlayRotation,
+                    onRetry = { loadAttempt += 1 },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
         }
         }
@@ -1047,33 +1040,14 @@ fun MediaReviewOverlay(
     }
 
     if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            // The app's own panel grey. Left to material3 this dialog rendered on the scheme's
-            // derived surface (Theme.kt's 0xFF0B0B0B), making the one destructive surface in the app
-            // the only one not using the app's palette.
-            containerColor = CameraColors.Pill,
-            title = { Text(deleteTitle) },
-            text = { Text(deleteBody) },
-            confirmButton = {
-                // 48 dp outer targets (DES4-2): a mis-tap is costliest right here, next to the
-                // app's one destructive, irreversible action.
-                MinTouchTarget48 {
-                    TextButton(onClick = {
-                        confirmDelete = false
-                        onDelete()
-                    }) {
-                        // Destructive action reads red (same delete-red as the trash glyph); the rest of
-                        // the review chrome stays Sony-style monochrome.
-                        Text(stringResource(R.string.action_delete), color = CameraColors.Alert)
-                    }
-                }
+        ReviewDeleteConfirmationDialog(
+            scope = deleteScope,
+            raw = rawReady,
+            onConfirm = {
+                confirmDelete = false
+                onDelete()
             },
-            dismissButton = {
-                MinTouchTarget48 {
-                    TextButton(onClick = { confirmDelete = false }) { Text(stringResource(R.string.action_cancel)) }
-                }
-            },
+            onDismiss = { confirmDelete = false },
         )
     }
 }
@@ -1097,30 +1071,105 @@ internal fun mediaDeleteConfirmationCopy(
     )
 }
 
+/** Production destructive confirmation, shared with the deterministic debug snapshot host. */
 @Composable
-private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
+internal fun ReviewDeleteConfirmationDialog(
+    scope: MediaDeleteScope,
+    raw: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val copy = mediaDeleteConfirmationCopy(scope, raw)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CameraColors.Pill,
+        title = { Text(stringResource(copy.title)) },
+        text = { Text(stringResource(copy.body)) },
+        confirmButton = {
+            MinTouchTarget48 {
+                TextButton(onClick = onConfirm) {
+                    Text(stringResource(R.string.action_delete), color = CameraColors.Alert)
+                }
+            }
+        },
+        dismissButton = {
+            MinTouchTarget48 {
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+            }
+        },
+    )
+}
+
+@Composable
+internal fun RawReviewPlaceholder(
+    modifier: Modifier = Modifier,
+    overlayRotation: Float = 0f,
+) {
     val a11yRawDngCapture = stringResource(R.string.a11y_raw_dng_capture)
     val reviewPreviewUnavailable = stringResource(R.string.review_preview_unavailable)
-    Column(
-        modifier = modifier
-            .padding(48.dp)
-            .semantics(mergeDescendants = true) {
-                contentDescription = a11yRawDngCapture
-                stateDescription = reviewPreviewUnavailable
-            },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(
-            text = stringResource(R.string.format_raw),
-            color = CameraColors.TextPrimary,
-            style = MaterialTheme.typography.displaySmall,
-        )
-        Text(
-            text = stringResource(R.string.format_dng),
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.titleMedium,
-        )
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .padding(48.dp)
+                .rotateLayout(overlayRotation)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = a11yRawDngCapture
+                    stateDescription = reviewPreviewUnavailable
+                },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = stringResource(R.string.format_raw),
+                color = CameraColors.TextPrimary,
+                style = MaterialTheme.typography.displaySmall,
+            )
+            Text(
+                text = stringResource(R.string.format_dng),
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+    }
+}
+
+/** Production review critical-state surface, shared with the deterministic debug host. */
+@Composable
+internal fun ReviewCriticalStatus(
+    state: ReviewCriticalUiState,
+    overlayRotation: Float,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        when (state) {
+            ReviewCriticalUiState.Raw -> RawReviewPlaceholder(Modifier.fillMaxSize(), overlayRotation)
+            ReviewCriticalUiState.Loading -> Text(
+                stringResource(R.string.review_loading),
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .rotateLayout(overlayRotation)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            is ReviewCriticalUiState.Error -> Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .padding(horizontal = 32.dp)
+                    .rotateLayout(overlayRotation)
+                    .semantics { liveRegion = LiveRegionMode.Assertive },
+            ) {
+                Text(
+                    stringResource(state.messageRes),
+                    color = CameraColors.TextPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                MinTouchTarget48 {
+                    TextButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+                }
+            }
+        }
     }
 }
 

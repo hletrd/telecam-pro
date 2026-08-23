@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -839,13 +840,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onDriveMode,
     )
     if (state.driveMode == DriveMode.TIMELAPSE) {
-        LabeledSlider(
-            label = stringResource(R.string.label_interval),
-            valueLabel = "${state.intervalSec}s",
-            value = state.intervalSec.toFloat().coerceIn(1f, 30f),
-            onValueChange = { actions.onIntervalSec(it.roundToInt()) },
-            valueRange = 1f..30f,
-        )
+        TimelapseIntervalSlider(state.intervalSec, actions::onIntervalSec)
     }
     SegmentedSelector(
         label = stringResource(R.string.label_self_timer),
@@ -855,6 +850,19 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onTimer,
     )
     MemoryRecallControls(state = state, actions = actions)
+}
+
+/** Integer production domain for the Timelapse Interval row, shared with its Compose contract test. */
+@Composable
+internal fun TimelapseIntervalSlider(intervalSec: Int, onIntervalSec: (Int) -> Unit) {
+    LabeledSlider(
+        label = stringResource(R.string.label_interval),
+        valueLabel = "${intervalSec}s",
+        value = intervalSec.toFloat().coerceIn(1f, 30f),
+        onValueChange = { onIntervalSec(it.roundToInt()) },
+        valueRange = 1f..30f,
+        keyboardStep = 1f,
+    )
 }
 
 @Composable
@@ -1717,7 +1725,7 @@ private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (Lis
 }
 
 @Composable
-private fun FnSlotOrderRow(
+internal fun FnSlotOrderRow(
     slot: FnSlot,
     index: Int,
     count: Int,
@@ -1725,8 +1733,44 @@ private fun FnSlotOrderRow(
     onMoveDown: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val name = LocalContext.current.localizedLabel(slot)
+    val moveUpLabel = stringResource(R.string.action_move_up, name)
+    val moveDownLabel = stringResource(R.string.action_move_down, name)
+    val removeLabel = stringResource(R.string.action_remove_named, name)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = fnSlotOrderUsesCompactLayout(maxWidth.value, LocalDensity.current.fontScale)
+        if (compact) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                FnSlotOrderIdentity(index = index, name = name)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    MiniTextButton(text = "↑", clickLabel = moveUpLabel, enabled = index > 0, onClick = onMoveUp)
+                    MiniTextButton(text = "↓", clickLabel = moveDownLabel, enabled = index < count - 1, onClick = onMoveDown)
+                    MiniTextButton(text = "×", clickLabel = removeLabel, enabled = true, onClick = onRemove)
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FnSlotOrderIdentity(index = index, name = name, modifier = Modifier.weight(1f))
+                MiniTextButton(text = stringResource(R.string.action_up), clickLabel = moveUpLabel, enabled = index > 0, onClick = onMoveUp)
+                MiniTextButton(text = stringResource(R.string.action_down), clickLabel = moveDownLabel, enabled = index < count - 1, onClick = onMoveDown)
+                MiniTextButton(text = stringResource(R.string.action_remove), clickLabel = removeLabel, enabled = true, onClick = onRemove)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FnSlotOrderIdentity(index: Int, name: String, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1737,19 +1781,11 @@ private fun FnSlotOrderRow(
             modifier = Modifier.width(26.dp),
         )
         Text(
-            text = LocalContext.current.localizedLabel(slot),
+            text = name,
             color = CameraColors.TextPrimary,
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.weight(1f),
         )
-        // Up to eight identical Up/Down/Remove triples sit in this list and MiniTextButton exports
-        // only its bare text, so a TalkBack user heard "Up, button" eight times with no way to tell
-        // WHICH slot they were reordering. The visual text stays compact; the spoken action names
-        // the slot.
-        val name = LocalContext.current.localizedLabel(slot)
-        MiniTextButton(text = stringResource(R.string.action_up), clickLabel = stringResource(R.string.action_move_up, name), enabled = index > 0, onClick = onMoveUp)
-        MiniTextButton(text = stringResource(R.string.action_down), clickLabel = stringResource(R.string.action_move_down, name), enabled = index < count - 1, onClick = onMoveDown)
-        MiniTextButton(text = stringResource(R.string.action_remove), clickLabel = stringResource(R.string.action_remove_named, name), enabled = true, onClick = onRemove)
     }
 }
 
@@ -1767,6 +1803,7 @@ private fun MiniTextButton(
     Box(
         modifier = Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .semantics { clickLabel?.let { contentDescription = it } }
             .clickable(enabled = enabled, onClickLabel = clickLabel, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
