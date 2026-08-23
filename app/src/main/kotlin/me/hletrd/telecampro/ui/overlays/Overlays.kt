@@ -555,34 +555,89 @@ internal data class StatusBarPriorityResetKey(
     val mode: CaptureMode,
     val compact: Boolean,
     val focalLabel: String?,
-    val facing: CameraFacing,
     val memorySlot: String?,
-    val outputWidth: Int,
-    val outputHeight: Int,
+    val frontTagVisible: Boolean,
+    val videoOutput: StatusBarVideoOutputIdentity?,
+    val transferTag: ColorTransfer?,
+    val gammaAssistTagVisible: Boolean,
+    val openGateTagVisible: Boolean,
+    val mutedTagVisible: Boolean,
+    val stabilizationTag: VideoStabMode?,
+    val photoFormatTag: String?,
+    val highResolutionTagVisible: Boolean,
+    val driveTag: StatusBarDriveIdentity?,
+    val oisOffTagVisible: Boolean,
+    val timerTag: ShutterTimer?,
+)
+
+internal data class StatusBarVideoOutputIdentity(
+    val width: Int,
+    val height: Int,
     val frameRate: VideoFrameRate,
     val codec: VideoCodec,
     val bitrateLevel: BitrateLevel,
-    val photoFormats: PhotoFormats,
 )
 
-/** Stable reset policy for the OSD scroll: priority identity/output truth, never live telemetry. */
+internal data class StatusBarDriveIdentity(
+    val mode: DriveMode,
+    val intervalSec: Int?,
+)
+
+/**
+ * Stable reset policy for the OSD scroll. Fields follow the leading tag order rendered below and
+ * are populated only when that slot is visible in the active mode/compactness. The tail begins at
+ * metering: locks, focus analysis, loupe/overview, and all live telemetry deliberately stay out.
+ */
 internal fun statusBarPriorityResetKey(
     state: CameraUiState,
     focalLabel: String?,
     compact: Boolean,
-): StatusBarPriorityResetKey = StatusBarPriorityResetKey(
-    mode = state.mode,
-    compact = compact,
-    focalLabel = focalLabel,
-    facing = state.facing,
-    memorySlot = state.activeMemorySlot?.name,
-    outputWidth = state.encodedVideoResolution.width,
-    outputHeight = state.encodedVideoResolution.height,
-    frameRate = state.videoFrameRate,
-    codec = state.videoCodec,
-    bitrateLevel = state.bitrateLevel,
-    photoFormats = state.photoFormats,
-)
+): StatusBarPriorityResetKey {
+    val videoMode = state.mode == CaptureMode.VIDEO
+    val photoMode = !videoMode
+    val encodedSize = state.encodedVideoResolution
+    return StatusBarPriorityResetKey(
+        mode = state.mode,
+        compact = compact,
+        focalLabel = focalLabel,
+        memorySlot = state.activeMemorySlot?.name,
+        frontTagVisible = state.facing == CameraFacing.FRONT,
+        videoOutput = if (videoMode && !compact) {
+            StatusBarVideoOutputIdentity(
+                width = encodedSize.width,
+                height = encodedSize.height,
+                frameRate = state.videoFrameRate,
+                codec = state.videoCodec,
+                bitrateLevel = state.bitrateLevel,
+            )
+        } else {
+            null
+        },
+        transferTag = state.transfer.takeIf { videoMode && (!compact || it != ColorTransfer.SDR) },
+        gammaAssistTagVisible = videoMode && state.transfer.isLog && state.gammaAssist,
+        openGateTagVisible = videoMode && state.openGate,
+        mutedTagVisible = videoMode && !state.recordAudio,
+        stabilizationTag = state.videoStabMode.takeIf { videoMode },
+        photoFormatTag = if (photoMode) {
+            if (compact) compactPhotoFormatLabel(state) else photoFormatLabel(state.photoFormats)
+        } else {
+            null
+        },
+        highResolutionTagVisible = photoMode && state.photoSessionOutputs.hiRes,
+        driveTag = state.driveMode.takeIf { photoMode && it != DriveMode.SINGLE }?.let { driveMode ->
+            StatusBarDriveIdentity(
+                mode = driveMode,
+                intervalSec = state.intervalSec.takeIf { driveMode == DriveMode.TIMELAPSE },
+            )
+        },
+        oisOffTagVisible = oisOffTagVisible(
+            photoMode = photoMode,
+            oisAvailable = state.caps?.oisAvailable == true,
+            oisEnabled = state.controls.oisEnabled,
+        ),
+        timerTag = state.timer.takeIf { photoMode && !compact && it != ShutterTimer.OFF },
+    )
+}
 
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
@@ -617,9 +672,9 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         }
     }
     val scrollState = rememberScrollState()
-    // Reset to logical Start only when the leading identity/output truth changes. Volatile metering,
-    // lock, and assist tags may update without yanking a user who is intentionally inspecting the
-    // tail, while a lens/facing/memory or encoder/output transition immediately returns priority.
+    // Reset to logical Start only when the ordered leading identity/output truth changes. Volatile
+    // telemetry and tail-only metering/lock/analysis/assist tags may update without yanking a user
+    // who is inspecting the tail; any leading tag transition immediately returns priority.
     val priorityResetKey = statusBarPriorityResetKey(state, focalLabel, compact)
     LaunchedEffect(priorityResetKey) { scrollState.scrollTo(0) }
     Row(
