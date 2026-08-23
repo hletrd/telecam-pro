@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,9 +89,13 @@ import me.hletrd.telecampro.ui.modalFocusBoundary
 import me.hletrd.telecampro.ui.rotateLayout
 import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.theme.CameraColors
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -174,6 +179,80 @@ private class VideoPlaybackHandle(
     }
 }
 
+/**
+ * Latest-wins setup boundary for provider/native work that cannot observe coroutine cancellation.
+ *
+ * A caller can invalidate its owner synchronously from Back/disposal while [work] is blocked. The
+ * worker may return later, but [LatestHeavyWorkLane] then releases its unpublished result instead of
+ * letting a retired TextureView generation reach Compose. A replacement owner's request remains
+ * untouched by invalidating the old owner.
+ */
+internal class LatestReviewSetupLane<I, R : Any>(
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    work: (I) -> R?,
+    release: (R) -> Unit,
+) {
+    private val lane = LatestHeavyWorkLane(dispatcher, work, release)
+
+    suspend fun run(owner: Any, input: I, publish: (R) -> Unit): Boolean {
+        val completion = lane.submit(owner, input) ?: return false
+        return lane.claim(completion, publish)
+    }
+
+    fun invalidate(owner: Any) = lane.invalidate(owner)
+}
+
+private class VideoPlaybackSetupRequest(
+    val context: Context,
+    val uri: Uri,
+    surface: Surface,
+) {
+    private val surfaceOwner = AtomicReference(surface)
+
+    /** Transfers the exact Surface to a successfully configured playback handle. */
+    fun claimSurface(): Surface? = surfaceOwner.getAndSet(null)
+
+    /** Releases a request canceled before its worker transferred Surface ownership. */
+    fun releaseSurface() {
+        surfaceOwner.getAndSet(null)?.let { surface -> runCatching { surface.release() } }
+    }
+}
+
+private sealed interface VideoPlaybackSetupResult {
+    data class Ready(val handle: VideoPlaybackHandle) : VideoPlaybackSetupResult
+    data object Failed : VideoPlaybackSetupResult
+}
+
+/** Opens the MediaProvider descriptor and initializes MediaPlayer entirely off the UI thread. */
+private fun createVideoPlayback(request: VideoPlaybackSetupRequest): VideoPlaybackSetupResult {
+    val player = android.media.MediaPlayer()
+    var playbackSurface: Surface? = null
+    return try {
+        // Context+Uri synchronously opens an AssetFileDescriptor before prepareAsync can begin.
+        // This function is owned by [videoPlaybackSetupLane]'s Dispatchers.IO worker.
+        player.setDataSource(request.context.applicationContext, request.uri)
+        val claimedSurface = checkNotNull(request.claimSurface()) { "Playback setup was retired" }
+        playbackSurface = claimedSurface
+        player.setSurface(claimedSurface)
+        player.isLooping = true
+        VideoPlaybackSetupResult.Ready(VideoPlaybackHandle(player, claimedSurface))
+    } catch (_: Throwable) {
+        runCatching { player.release() }
+        playbackSurface?.let { surface -> runCatching { surface.release() } }
+            ?: request.releaseSurface()
+        VideoPlaybackSetupResult.Failed
+    }
+}
+
+/** One process-wide provider setup at a time; a blocked retired review cannot multiply workers. */
+private val videoPlaybackSetupLane =
+    LatestReviewSetupLane<VideoPlaybackSetupRequest, VideoPlaybackSetupResult>(
+        work = ::createVideoPlayback,
+        release = { result ->
+            if (result is VideoPlaybackSetupResult.Ready) result.handle.release()
+        },
+    )
+
 private sealed interface ReviewMediaState {
     data object Loading : ReviewMediaState
     sealed interface Ready : ReviewMediaState {
@@ -184,12 +263,25 @@ private sealed interface ReviewMediaState {
     data class Error(@StringRes val messageRes: Int) : ReviewMediaState
 }
 
-/** Compose image plus the Android bitmap whose native allocation needs an explicit stale owner. */
-private class ReviewBitmap(private val source: Bitmap) {
+/**
+ * Compose image plus exact ownership of its Android bitmap.
+ *
+ * Never-published decoder results are recycled promptly. Once transferred to Compose, however, the
+ * bitmap becomes GC-owned: assigning replacement state merely schedules recomposition, so recycling
+ * the previous bitmap at that instant can race the still-live draw node. There is no public Compose
+ * callback that proves every renderer reference has retired.
+ */
+internal class ReviewBitmap(private val source: Bitmap) {
     val image: ImageBitmap = source.asImageBitmap()
+    @Volatile private var compositionOwned = false
+
+    fun transferToComposition(): ReviewBitmap {
+        compositionOwned = true
+        return this
+    }
 
     fun dispose() {
-        if (!source.isRecycled) source.recycle()
+        if (!compositionOwned && !source.isRecycled) source.recycle()
     }
 }
 
@@ -216,6 +308,10 @@ private val reviewBitmapDecodeLane = LatestHeavyWorkLane<ReviewBitmapRequest, Re
 
 private fun ReviewMediaState.dispose() {
     (this as? ReviewMediaState.Ready.Still)?.bitmap?.dispose()
+}
+
+private fun ReviewMediaState.transferToComposition(): ReviewMediaState = also {
+    (it as? ReviewMediaState.Ready.Still)?.bitmap?.transferToComposition()
 }
 
 internal sealed interface ReviewCriticalUiState {
@@ -546,12 +642,21 @@ fun MediaReviewOverlay(
     var mediaState by mediaStateHolder
     fun replaceMediaState(next: ReviewMediaState) {
         val previous = mediaStateHolder.value
-        mediaStateHolder.value = next
+        mediaStateHolder.value = next.transferToComposition()
         if (previous !== next) previous.dispose()
     }
     LaunchedEffect(uri, loadAttempt) {
         replaceMediaState(ReviewMediaState.Loading)
-        loadReviewMedia(context, uri, decodeOwner)?.let(::replaceMediaState)
+        var loaded: ReviewMediaState? = null
+        try {
+            loaded = loadReviewMedia(context, uri, decodeOwner)
+            loaded?.let(::replaceMediaState)
+            loaded = null
+        } finally {
+            // Cancellation can win after the lane returned but before state publication. That
+            // bitmap never reached Compose and still has an exact eager recycle owner.
+            loaded?.dispose()
+        }
     }
     DisposableEffect(decodeOwner) {
         onDispose {
@@ -584,6 +689,7 @@ fun MediaReviewOverlay(
     // sits behind the window and is occluded by this overlay's opaque black background (the same
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
     val playerRef = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+    val playbackSetupScope = rememberCoroutineScope()
     var playing by remember { mutableStateOf(true) }
     val reviewZoomAction = stringResource(reviewZoomActionResource(scale))
     val playbackAction = stringResource(videoPlaybackActionResource(playing))
@@ -758,11 +864,20 @@ fun MediaReviewOverlay(
                 // single identity guard therefore owns BOTH the MediaPlayer and caller-created
                 // Surface, preventing clip A's late teardown from releasing clip B's generation.
                 val heldPlayback = remember { mutableStateOf<VideoPlaybackHandle?>(null) }
+                val setupOwner = remember { Any() }
+                val setupJob = remember { mutableStateOf<Job?>(null) }
+                val setupRequest = remember { AtomicReference<VideoPlaybackSetupRequest?>(null) }
                 fun releaseIfOwned(handle: VideoPlaybackHandle) {
                     if (heldPlayback.value !== handle) return
                     heldPlayback.value = null
                     if (playerRef.value === handle.player) playerRef.value = null
                     handle.release()
+                }
+                fun retireSetup() {
+                    setupJob.value?.cancel()
+                    setupJob.value = null
+                    videoPlaybackSetupLane.invalidate(setupOwner)
+                    setupRequest.getAndSet(null)?.releaseSurface()
                 }
                 AndroidView(
                     modifier = Modifier
@@ -796,46 +911,78 @@ fun MediaReviewOverlay(
                                     }
 
                                     viewHandle?.let(::releaseIfOwned)
-                                    val mp = android.media.MediaPlayer()
+                                    retireSetup()
                                     val playbackSurface = try {
                                         Surface(st)
                                     } catch (_: Throwable) {
-                                        runCatching { mp.release() }
                                         playing = false
                                         replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
                                         return
                                     }
-                                    val handle = VideoPlaybackHandle(mp, playbackSurface)
-                                    viewHandle = handle
-                                    heldPlayback.value = handle
-                                    playerRef.value = mp
+                                    val request = VideoPlaybackSetupRequest(ctx, uri, playbackSurface)
+                                    setupRequest.set(request)
 
-                                    fun failPlayback() {
-                                        if (heldPlayback.value !== handle) return
-                                        if (viewHandle === handle) viewHandle = null
-                                        releaseIfOwned(handle)
-                                        playing = false
-                                        replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
+                                    // Context+Uri synchronously opens MediaProvider before
+                                    // prepareAsync. The latest-wins lane keeps that Binder call off
+                                    // main; Back/disposal invalidates immediately and a late result
+                                    // releases its player + Surface without publishing.
+                                    setupJob.value = playbackSetupScope.launch {
+                                        videoPlaybackSetupLane.run(
+                                            owner = setupOwner,
+                                            input = request,
+                                        ) { result ->
+                                            setupJob.value = null
+                                            setupRequest.compareAndSet(request, null)
+                                            when (result) {
+                                                VideoPlaybackSetupResult.Failed -> {
+                                                    playing = false
+                                                    replaceMediaState(
+                                                        ReviewMediaState.Error(R.string.review_error_play_video),
+                                                    )
+                                                }
+                                                is VideoPlaybackSetupResult.Ready -> {
+                                                    val handle = result.handle
+                                                    val mp = handle.player
+                                                    viewHandle = handle
+                                                    heldPlayback.value = handle
+                                                    playerRef.value = mp
+
+                                                    fun failPlayback() {
+                                                        if (heldPlayback.value !== handle) return
+                                                        if (viewHandle === handle) viewHandle = null
+                                                        releaseIfOwned(handle)
+                                                        playing = false
+                                                        replaceMediaState(
+                                                            ReviewMediaState.Error(R.string.review_error_play_video),
+                                                        )
+                                                    }
+
+                                                    runCatching {
+                                                        // Do not depend on which Looper MediaPlayer
+                                                        // selected when constructed on its worker.
+                                                        // Every event crosses explicitly to the
+                                                        // composition-owned main scope, then rechecks
+                                                        // this TextureView generation.
+                                                        mp.setOnPreparedListener { p ->
+                                                            playbackSetupScope.launch prepared@{
+                                                                if (heldPlayback.value !== handle) {
+                                                                    return@prepared
+                                                                }
+                                                                runCatching { p.start() }
+                                                                    .onSuccess { playing = true }
+                                                                    .onFailure { failPlayback() }
+                                                            }
+                                                        }
+                                                        mp.setOnErrorListener { _, _, _ ->
+                                                            playbackSetupScope.launch { failPlayback() }
+                                                            true
+                                                        }
+                                                        mp.prepareAsync()
+                                                    }.onFailure { failPlayback() }
+                                                }
+                                            }
+                                        }
                                     }
-
-                                    runCatching {
-                                        mp.setDataSource(ctx, uri)
-                                        mp.setSurface(playbackSurface)
-                                        mp.isLooping = true
-                                        // Async callbacks may arrive after teardown; identity gates
-                                        // keep them from starting or releasing a replacement player.
-                                        mp.setOnPreparedListener { p ->
-                                            if (heldPlayback.value !== handle) return@setOnPreparedListener
-                                            runCatching { p.start() }
-                                                .onSuccess { playing = true }
-                                                .onFailure { failPlayback() }
-                                        }
-                                        mp.setOnErrorListener { _, _, _ ->
-                                            failPlayback()
-                                            true
-                                        }
-                                        mp.prepareAsync()
-                                    }.onFailure { failPlayback() }
                                 }
 
                                 override fun onSurfaceTextureSizeChanged(
@@ -845,6 +992,7 @@ fun MediaReviewOverlay(
                                 ) = Unit
 
                                 override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
+                                    retireSetup()
                                     viewHandle?.let { handle ->
                                         viewHandle = null
                                         releaseIfOwned(handle)
@@ -859,6 +1007,7 @@ fun MediaReviewOverlay(
                 )
                 DisposableEffect(Unit) {
                     onDispose {
+                        retireSetup()
                         heldPlayback.value?.let(::releaseIfOwned)
                     }
                 }
