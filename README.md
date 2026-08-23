@@ -30,7 +30,9 @@ shooting needs.
 ## Features
 
 **Teleconverter**
-- Afocal 180° flip corrected everywhere — preview, stills, and video.
+- Afocal 180° flip corrected in the main viewfinder, stills, and video. The optional Loupe Overview
+  currently reuses the same converter-fed stream and deliberately shows its raw delivered
+  orientation; an upright genuinely wide overview requires the planned second camera stream.
 - Tell the app which converter you mounted: pick your phone, then the optics that clamp onto it.
   Presets cover the Hasselblad 300 mm and 230 mm, ZEISS 200 mm and 400 mm, generic 1.5/2/3× clip-ons,
   and a custom magnification. Passive glass cannot identify itself, so this is a declaration — only

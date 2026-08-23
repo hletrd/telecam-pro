@@ -391,6 +391,7 @@ architecture = read("docs/ARCHITECTURE.md")
 required_owners = (
     "CameraStatus.kt", "DeviceProfile.kt", "FrontMirrorConvention.kt", "MotionInversion.kt",
     "EncoderSizeLadder.kt", "CameraScreenPolicy.kt", "LocalizedStatus.kt",
+    "RecordingStorageDispatcher.kt",
 )
 check(
     all(owner in architecture for owner in required_owners),
@@ -401,6 +402,7 @@ retired_claims = (
     "Absorbed the former `FrontMirrorConvention.kt`",
     "This is the ONLY model-string branch",
     "also owns the dormant O-Log2 de-log assist",
+    "cached independent workers",
 )
 check(
     not any(claim in architecture for claim in retired_claims),
@@ -452,8 +454,35 @@ check(
     "current comments describe maximum-resolution discovery and enabled R8",
 )
 check(
-    "python3 tools/verify_host.py" in claude,
-    "CLAUDE documents the consolidated non-device host gate",
+    all(
+        "python3 tools/verify_host.py" in authority
+        for authority in (claude, architecture, read("docs/TESTING.md"))
+    )
+    and "device-harness self-tests" in architecture
+    and "device-tests/tests" in read("docs/TESTING.md"),
+    "all host-gate authorities document the consolidated non-device suite",
+)
+check(
+    "Photo, TC off, RAW/DNG wanted" in architecture
+    and "Standalone rear lens" in architecture
+    and "route inputs" in architecture,
+    "zoom-route table keeps RAW/DNG on its standalone lens-local home",
+)
+check(
+    "The `nativelog` filename survives only as the separate debug EGL precision gate" in backlog
+    and "tenBitExperimentEnabled" in backlog
+    and "getExternalFilesDir(null), \"nativelog\"" in read(
+        "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
+    ),
+    "native-log history preserves the surviving debug EGL flag without reviving vendor plumbing",
+)
+readme = read("README.md")
+check(
+    "flip corrected everywhere" not in readme
+    and "main viewfinder, stills, and video" in readme
+    and "Loupe Overview" in readme
+    and "raw delivered" in readme,
+    "README scopes afocal correction around the honest same-stream overview exception",
 )
 
 # The overview once shared renderer rotation state with the main draw. It now owns an explicit
