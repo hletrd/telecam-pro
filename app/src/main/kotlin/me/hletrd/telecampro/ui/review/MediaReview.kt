@@ -177,11 +177,45 @@ private class VideoPlaybackHandle(
 private sealed interface ReviewMediaState {
     data object Loading : ReviewMediaState
     sealed interface Ready : ReviewMediaState {
-        data class Still(val bitmap: ImageBitmap) : Ready
+        data class Still(val bitmap: ReviewBitmap) : Ready
         data class Video(val info: VideoInfo) : Ready
         data object Raw : Ready
     }
     data class Error(@StringRes val messageRes: Int) : ReviewMediaState
+}
+
+/** Compose image plus the Android bitmap whose native allocation needs an explicit stale owner. */
+private class ReviewBitmap(private val source: Bitmap) {
+    val image: ImageBitmap = source.asImageBitmap()
+
+    fun dispose() {
+        if (!source.isRecycled) source.recycle()
+    }
+}
+
+private data class ReviewBitmapRequest(
+    val context: Context,
+    val uri: Uri,
+    val maxDim: Int,
+)
+
+private sealed interface ReviewBitmapLoad {
+    data class Ready(val bitmap: ReviewBitmap) : ReviewBitmapLoad
+    data object Failed : ReviewBitmapLoad
+}
+
+/** One process-wide heavy decode; canceled/replaced overlays cannot multiply ARGB allocations. */
+private val reviewBitmapDecodeLane = LatestHeavyWorkLane<ReviewBitmapRequest, ReviewBitmapLoad>(
+    work = { request ->
+        decodeReviewBitmap(request.context, request.uri, request.maxDim)
+            ?.let { ReviewBitmapLoad.Ready(ReviewBitmap(it)) }
+            ?: ReviewBitmapLoad.Failed
+    },
+    dispose = { result -> if (result is ReviewBitmapLoad.Ready) result.bitmap.dispose() },
+)
+
+private fun ReviewMediaState.dispose() {
+    (this as? ReviewMediaState.Ready.Still)?.bitmap?.dispose()
 }
 
 internal sealed interface ReviewCriticalUiState {
@@ -251,23 +285,20 @@ private fun loadVideoThumbnail(context: Context, uri: Uri, maxDim: Int): ImageBi
     return bitmap.asImageBitmap()
 }
 
-private suspend fun loadBitmap(context: Context, uri: Uri, maxDim: Int): ImageBitmap? =
-    withContext(Dispatchers.IO) {
-        runCatching {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            var sample = 1
-            if (maxDim > 0) {
-                val longest = max(bounds.outWidth, bounds.outHeight)
-                while (longest / sample > maxDim) sample *= 2
-            }
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            val decoded = context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, opts)
-            } ?: return@runCatching null
-            applyExifOrientation(context, uri, decoded).asImageBitmap()
-        }.getOrNull()
+private fun decodeReviewBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? = runCatching {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    var sample = 1
+    if (maxDim > 0) {
+        val longest = max(bounds.outWidth, bounds.outHeight)
+        while (longest / sample > maxDim) sample *= 2
     }
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val decoded = context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, opts)
+    } ?: return@runCatching null
+    applyExifOrientation(context, uri, decoded)
+}.getOrNull()
 
 /**
  * Honors the file's EXIF orientation on the decoded pixels. The ordinary processed lanes
@@ -303,7 +334,7 @@ private fun applyExifOrientation(context: Context, uri: Uri, decoded: Bitmap): B
     return rotated
 }
 
-private suspend fun loadReviewMedia(context: Context, uri: Uri): ReviewMediaState {
+private suspend fun loadReviewMedia(context: Context, uri: Uri, decodeOwner: Any): ReviewMediaState? {
     val mimeType = withContext(Dispatchers.IO) {
         runCatching { context.contentResolver.getType(uri) }.getOrNull()
     }
@@ -317,9 +348,18 @@ private suspend fun loadReviewMedia(context: Context, uri: Uri): ReviewMediaStat
         ReviewMediaKind.STILL -> {
             // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
             // The resulting 3000 px preview still carries ample detail for the existing 4×/8× focus check.
-            loadBitmap(context, uri, REVIEW_PREVIEW_MAX_DIM)
-                ?.let { ReviewMediaState.Ready.Still(it) }
-                ?: ReviewMediaState.Error(R.string.review_error_open_image)
+            val completion = reviewBitmapDecodeLane.submit(
+                decodeOwner,
+                ReviewBitmapRequest(context, uri, REVIEW_PREVIEW_MAX_DIM),
+            ) ?: return null
+            var state: ReviewMediaState? = null
+            reviewBitmapDecodeLane.claim(completion) { result ->
+                state = when (result) {
+                    is ReviewBitmapLoad.Ready -> ReviewMediaState.Ready.Still(result.bitmap)
+                    ReviewBitmapLoad.Failed -> ReviewMediaState.Error(R.string.review_error_open_image)
+                }
+            }
+            state
         }
     }
 }
@@ -402,7 +442,9 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
             ReviewMediaKind.VIDEO -> withContext(Dispatchers.IO) {
                 loadVideoThumbnail(context, uri, 240)
             }
-            ReviewMediaKind.STILL -> loadBitmap(context, uri, 240)
+            ReviewMediaKind.STILL -> withContext(Dispatchers.IO) {
+                decodeReviewBitmap(context, uri, 240)?.asImageBitmap()
+            }
         }
         value = GalleryThumbContent(kind, bitmap)
     }
@@ -497,10 +539,25 @@ fun MediaReviewOverlay(
     val a11yCloseReview = stringResource(R.string.a11y_close_review)
     val context = LocalContext.current
     var loadAttempt by remember(uri) { mutableIntStateOf(0) }
-    var mediaState by remember(uri) { mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading) }
+    val decodeOwner = remember(uri) { Any() }
+    val mediaStateHolder = remember(uri) {
+        mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading)
+    }
+    var mediaState by mediaStateHolder
+    fun replaceMediaState(next: ReviewMediaState) {
+        val previous = mediaStateHolder.value
+        mediaStateHolder.value = next
+        if (previous !== next) previous.dispose()
+    }
     LaunchedEffect(uri, loadAttempt) {
-        mediaState = ReviewMediaState.Loading
-        mediaState = loadReviewMedia(context, uri)
+        replaceMediaState(ReviewMediaState.Loading)
+        loadReviewMedia(context, uri, decodeOwner)?.let(::replaceMediaState)
+    }
+    DisposableEffect(decodeOwner) {
+        onDispose {
+            reviewBitmapDecodeLane.invalidate(decodeOwner)
+            mediaStateHolder.value.dispose()
+        }
     }
     val videoInfo = (mediaState as? ReviewMediaState.Ready.Video)?.info
     val gestureMediaReady =
@@ -745,7 +802,7 @@ fun MediaReviewOverlay(
                                     } catch (_: Throwable) {
                                         runCatching { mp.release() }
                                         playing = false
-                                        mediaState = ReviewMediaState.Error(R.string.review_error_play_video)
+                                        replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
                                         return
                                     }
                                     val handle = VideoPlaybackHandle(mp, playbackSurface)
@@ -758,7 +815,7 @@ fun MediaReviewOverlay(
                                         if (viewHandle === handle) viewHandle = null
                                         releaseIfOwned(handle)
                                         playing = false
-                                        mediaState = ReviewMediaState.Error(R.string.review_error_play_video)
+                                        replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
                                     }
 
                                     runCatching {
@@ -831,7 +888,7 @@ fun MediaReviewOverlay(
         val still = mediaState as? ReviewMediaState.Ready.Still
         if (still != null) {
             Image(
-                bitmap = still.bitmap,
+                bitmap = still.bitmap.image,
                 contentDescription = stringResource(R.string.a11y_photo_review),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
