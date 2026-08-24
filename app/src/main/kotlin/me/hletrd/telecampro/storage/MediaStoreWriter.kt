@@ -450,11 +450,15 @@ object MediaStoreWriter {
      * of adopting and publishing media the user deleted. A successful delete clears the journal in
      * the ordinary [delete] path.
      */
-    internal fun discardPendingOutput(context: Context, uri: Uri): PendingOutputDiscardResult {
+    internal fun discardPendingOutput(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputDiscardResult {
         val marker = markCompletionWithRetry(
             maxAttempts = COMPLETION_MARK_ATTEMPTS,
             commit = {
-                PendingDiscardJournal(context).mark(uri.toString())
+                discardJournal.mark(uri.toString())
             },
             backoff = { attempt ->
                 runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
@@ -820,11 +824,19 @@ object MediaStoreWriter {
      * while an unanswered provider probe is kept distinct so the UI can report uncertainty without
      * manufacturing a phantom handle.
      */
-    internal fun deleteKnownOutput(context: Context, uri: Uri): KnownOutputDeletionResult =
+    internal fun deleteKnownOutput(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+        expectedIdentity: PendingDiscardIdentity? = null,
+    ): KnownOutputDeletionResult =
         knownOutputDeletionResult(
-            delete = { context.contentResolver.delete(uri, null, null) },
+            delete = {
+                val condition = expectedIdentity?.let(::discardDeleteCondition)
+                context.contentResolver.delete(uri, condition?.first, condition?.second)
+            },
             rowExistsAfter = { mediaRowExists(context, uri) },
-            clearDiscardMarker = { clearPending(context, uri) },
+            clearDiscardMarker = { clearPending(context, uri, discardJournal) },
         )
 
     /**
@@ -1197,7 +1209,7 @@ object MediaStoreWriter {
         return report
     }
 
-    private fun cleanupDiscardJournalBatch(
+    internal fun cleanupDiscardJournalBatch(
         context: Context,
         afterKey: String?,
         batchLimit: Int,
@@ -1213,13 +1225,44 @@ object MediaStoreWriter {
             )
         }
         var report = RecoveryReport()
-        for (rawUri in page.keys) {
+        for (record in page.records) {
             report = report.record(RecoveryEvent.SCANNED)
-            val uri = runCatching { rawUri.toUri() }.getOrNull()
-            report = report.record(
-                if (uri != null && delete(context, uri)) RecoveryEvent.DELETED
-                else RecoveryEvent.DELETE_FAILED,
-            )
+            val uri = runCatching { record.uri.toUri() }.getOrNull()
+            val event = if (uri == null) {
+                RecoveryEvent.DELETE_FAILED
+            } else {
+                discardJournal.withReplayIdentityAuthority(record) { identity ->
+                    when (identity) {
+                        DiscardReplayIdentity.MATCH -> {
+                            if (
+                                deleteKnownOutput(
+                                    context = context,
+                                    uri = uri,
+                                    discardJournal = discardJournal,
+                                    expectedIdentity = requireNotNull(record.identity),
+                                ).fullyRetired
+                            ) {
+                                RecoveryEvent.DELETED
+                            } else {
+                                RecoveryEvent.DELETE_FAILED
+                            }
+                        }
+                        DiscardReplayIdentity.ABSENT -> {
+                            if (clearPending(context, uri, discardJournal)) {
+                                RecoveryEvent.DELETED
+                            } else {
+                                RecoveryEvent.DELETE_FAILED
+                            }
+                        }
+                        DiscardReplayIdentity.MISMATCH,
+                        DiscardReplayIdentity.AMBIGUOUS,
+                        DiscardReplayIdentity.UNAVAILABLE,
+                        DiscardReplayIdentity.LEGACY,
+                        -> RecoveryEvent.DELETE_FAILED
+                    }
+                }
+            }
+            report = report.record(event)
         }
         return DiscardJournalRecoveryBatch(report, page.nextAfterKey, page.hasMore)
     }
@@ -1258,11 +1301,44 @@ object MediaStoreWriter {
             }
         }.getOrDefault(PendingJournalState.UNAVAILABLE)
 
-    private fun clearPending(context: Context, uri: Uri): Boolean {
-        val discardRemoved = PendingDiscardJournal(context).remove(uri.toString())
+    private fun clearPending(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): Boolean {
+        val discardRemoved = discardJournal.remove(uri.toString())
         context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
             .edit(commit = true) { remove(uri.toString()) }
         return discardRemoved
+    }
+
+    /** Atomically refuses a row that changed after the replay identity query. */
+    private fun discardDeleteCondition(
+        identity: PendingDiscardIdentity,
+    ): Pair<String, Array<String>> {
+        val clauses = mutableListOf(
+            "${MediaStore.MediaColumns._ID} = ?",
+            "${MediaStore.MediaColumns.GENERATION_ADDED} = ?",
+            "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+            "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+            "${MediaStore.MediaColumns.MIME_TYPE} = ?",
+        )
+        val args = mutableListOf(
+            identity.rowId.toString(),
+            identity.generationAdded.toString(),
+            identity.displayName,
+            identity.relativePath,
+            identity.mimeType,
+        )
+        identity.ownerPackageName?.let { owner ->
+            clauses += "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
+            args += owner
+        }
+        identity.dateTaken?.let { dateTaken ->
+            clauses += "${MediaStore.MediaColumns.DATE_TAKEN} = ?"
+            args += dateTaken.toString()
+        }
+        return clauses.joinToString(" AND ") to args.toTypedArray()
     }
 
     private fun deletedFamilyJournalKey(family: CaptureFamilyKey): String =
@@ -1688,11 +1764,14 @@ internal data class OrphanRecoveryBatch(
 )
 
 internal data class DiscardJournalPage(
-    val keys: List<String>,
+    val records: List<PendingDiscardRecord>,
     val nextAfterKey: String?,
     val hasMore: Boolean,
     val rowsRead: Int,
-)
+) {
+    val keys: List<String>
+        get() = records.map(PendingDiscardRecord::uri)
+}
 
 internal data class DiscardJournalRecoveryBatch(
     val report: RecoveryReport,

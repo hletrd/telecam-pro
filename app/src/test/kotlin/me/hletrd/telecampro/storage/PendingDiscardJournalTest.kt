@@ -189,6 +189,7 @@ class PendingDiscardJournalTest {
             context = context,
             databaseName = "discard-$suffix.db",
             legacyPreferences = preferences,
+            identityReader = testIdentityReader(),
         )
         val executor = Executors.newFixedThreadPool(2)
 
@@ -242,6 +243,7 @@ class PendingDiscardJournalTest {
             context = context,
             databaseName = "discard-$suffix.db",
             legacyPreferences = preferences,
+            identityReader = testIdentityReader(),
         )
         val executor = Executors.newFixedThreadPool(2)
 
@@ -278,10 +280,14 @@ class PendingDiscardJournalTest {
         val provider = RetainingProvider()
         ShadowContentResolver.registerProviderInternal(authority, provider)
         val uri = Uri.parse("content://$authority/rows/1")
+        val journal = PendingDiscardJournal(
+            context = context,
+            identityReader = testIdentityReader(),
+        )
 
         assertEquals(
             PendingOutputDiscardResult.RECOVERY_MARKED,
-            MediaStoreWriter.discardPendingOutput(context, uri),
+            MediaStoreWriter.discardPendingOutput(context, uri, journal),
         )
         assertEquals(
             DiscardJournalLookup.PRESENT,
@@ -353,6 +359,7 @@ class PendingDiscardJournalTest {
                 markerCommitted.countDown()
                 assertTrue(finishMarker.await(2, TimeUnit.SECONDS))
             },
+            identityReader = testIdentityReader(),
         )
         val executor = Executors.newFixedThreadPool(2)
 
@@ -424,16 +431,221 @@ class PendingDiscardJournalTest {
     }
 
     @Test
+    fun `v1 sqlite rows migrate additively as legacy and a fresh mark upgrades exact identity`() {
+        val suffix = UUID.randomUUID().toString()
+        val databaseName = "discard-v1-$suffix.db"
+        val uri = "content://media/external_primary/images/media/1"
+        context.openOrCreateDatabase(databaseName, Context.MODE_PRIVATE, null).use { database ->
+            database.execSQL(
+                "CREATE TABLE pending_discards (uri TEXT NOT NULL PRIMARY KEY)",
+            )
+            database.execSQL(
+                "CREATE TABLE journal_metadata (" +
+                    "metadata_key TEXT NOT NULL PRIMARY KEY, metadata_value TEXT NOT NULL)",
+            )
+            database.execSQL("INSERT INTO pending_discards (uri) VALUES (?)", arrayOf(uri))
+            database.version = 1
+        }
+        val expected = testIdentity()
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = databaseName,
+            legacyPreferences = context.getSharedPreferences("legacy-v1-$suffix", Context.MODE_PRIVATE),
+            identityReader = testIdentityReader(PendingDiscardIdentityRead.Present(expected)),
+        )
+
+        val migrated = journal.page(afterKey = null, batchLimit = 8).records.single()
+
+        assertEquals(1, migrated.recordVersion)
+        assertEquals(null, migrated.identity)
+        assertEquals(DiscardReplayIdentity.LEGACY, journal.replayIdentity(migrated))
+        assertTrue(journal.mark(uri))
+        val upgraded = journal.page(afterKey = null, batchLimit = 8).records.single()
+        assertEquals(PendingDiscardJournal.IDENTITY_RECORD_VERSION, upgraded.recordVersion)
+        assertEquals(expected, upgraded.identity)
+        assertEquals(DiscardReplayIdentity.MATCH, journal.replayIdentity(upgraded))
+    }
+
+    @Test
+    fun `stable identity retries exact delete and clears only after provider success`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-stable-$suffix"
+        val uri = Uri.parse("content://$authority/images/1")
+        val provider = ReplayProvider()
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val expected = testIdentity()
+        val reader = MutableIdentityReader(PendingDiscardIdentityRead.Present(expected))
+        val journal = replayJournal(suffix, reader)
+        assertTrue(journal.mark(uri.toString()))
+
+        val failed = MediaStoreWriter.cleanupDiscardJournalBatch(
+            context = context,
+            afterKey = null,
+            batchLimit = 8,
+            discardJournal = journal,
+        )
+
+        assertEquals(1, provider.deleteCalls)
+        assertTrue(provider.lastDeleteSelection.orEmpty().contains(MediaStore.MediaColumns.GENERATION_ADDED))
+        assertEquals(1, failed.report.errors)
+        assertEquals(DiscardJournalLookup.PRESENT, journal.lookup(uri.toString()))
+
+        provider.allowDelete = true
+        val retried = MediaStoreWriter.cleanupDiscardJournalBatch(
+            context = context,
+            afterKey = null,
+            batchLimit = 8,
+            discardJournal = journal,
+        )
+
+        assertEquals(2, provider.deleteCalls)
+        assertEquals(1, retried.report.deleted)
+        assertEquals(DiscardJournalLookup.ABSENT, journal.lookup(uri.toString()))
+    }
+
+    @Test
+    fun `conditional replay delete rejects uri reassignment after identity query`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-racing-remap-$suffix"
+        val uri = Uri.parse("content://$authority/images/1")
+        val provider = ReplayProvider(allowDelete = true)
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val expected = testIdentity()
+        val reader = MutableIdentityReader(PendingDiscardIdentityRead.Present(expected))
+        val journal = replayJournal(suffix, reader)
+        assertTrue(journal.mark(uri.toString()))
+
+        // The replay query observed the expected row, but the fake provider reassigns this URI
+        // immediately before its atomic delete predicate is evaluated.
+        provider.generationAdded = expected.generationAdded + 1
+        val replay = MediaStoreWriter.cleanupDiscardJournalBatch(
+            context = context,
+            afterKey = null,
+            batchLimit = 8,
+            discardJournal = journal,
+        )
+
+        assertEquals(1, provider.deleteCalls)
+        assertEquals(1, replay.report.errors)
+        assertEquals(DiscardJournalLookup.PRESENT, journal.lookup(uri.toString()))
+    }
+
+    @Test
+    fun `reassigned version changed unreadable and ambiguous identities retain markers without delete`() {
+        val expected = testIdentity()
+        val cases = listOf(
+            PendingDiscardIdentityRead.Present(
+                expected.copy(generationAdded = expected.generationAdded + 1),
+            ) to DiscardReplayIdentity.MISMATCH,
+            PendingDiscardIdentityRead.Present(
+                expected.copy(providerVersion = "provider-v2"),
+            ) to DiscardReplayIdentity.MISMATCH,
+            PendingDiscardIdentityRead.Present(
+                expected.copy(displayName = "IMG_TELECAM_F1_0000000000002_0000000002.jpg"),
+            ) to DiscardReplayIdentity.MISMATCH,
+            PendingDiscardIdentityRead.Absent(
+                volumeName = expected.volumeName,
+                providerVersion = "provider-v2",
+            ) to DiscardReplayIdentity.MISMATCH,
+            PendingDiscardIdentityRead.Unavailable to DiscardReplayIdentity.UNAVAILABLE,
+            PendingDiscardIdentityRead.Ambiguous to DiscardReplayIdentity.AMBIGUOUS,
+        )
+
+        cases.forEachIndexed { index, (current, disposition) ->
+            val suffix = "${UUID.randomUUID()}-$index"
+            val authority = "discard-mismatch-${UUID.randomUUID()}"
+            val uri = Uri.parse("content://$authority/images/1")
+            val provider = ReplayProvider(allowDelete = true)
+            ShadowContentResolver.registerProviderInternal(authority, provider)
+            val reader = MutableIdentityReader(PendingDiscardIdentityRead.Present(expected))
+            val journal = replayJournal(suffix, reader)
+            assertTrue(journal.mark(uri.toString()))
+            reader.current = current
+            val record = journal.page(afterKey = null, batchLimit = 8).records.single()
+
+            assertEquals(disposition, journal.replayIdentity(record))
+            val replay = MediaStoreWriter.cleanupDiscardJournalBatch(
+                context = context,
+                afterKey = null,
+                batchLimit = 8,
+                discardJournal = journal,
+            )
+
+            assertEquals(0, provider.deleteCalls)
+            assertEquals(1, replay.report.errors)
+            assertEquals(DiscardJournalLookup.PRESENT, journal.lookup(uri.toString()))
+        }
+    }
+
+    @Test
+    fun `stable provider absence retires marker without issuing a delete`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-absent-$suffix"
+        val uri = Uri.parse("content://$authority/images/1")
+        val provider = ReplayProvider(allowDelete = true)
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val reader = MutableIdentityReader(PendingDiscardIdentityRead.Present(testIdentity()))
+        val journal = replayJournal(suffix, reader)
+        assertTrue(journal.mark(uri.toString()))
+        reader.current = PendingDiscardIdentityRead.Absent(
+            volumeName = "external_primary",
+            providerVersion = "provider-v1",
+        )
+
+        val replay = MediaStoreWriter.cleanupDiscardJournalBatch(
+            context = context,
+            afterKey = null,
+            batchLimit = 8,
+            discardJournal = journal,
+        )
+
+        assertEquals(0, provider.deleteCalls)
+        assertEquals(1, replay.report.deleted)
+        assertEquals(DiscardJournalLookup.ABSENT, journal.lookup(uri.toString()))
+    }
+
+    @Test
+    fun `legacy preference marker fails closed during replay and is not silently dropped`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "discard-legacy-$suffix"
+        val uri = Uri.parse("content://$authority/images/1")
+        val provider = ReplayProvider(allowDelete = true)
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val preferences = context.getSharedPreferences("legacy-replay-$suffix", Context.MODE_PRIVATE)
+        assertTrue(preferences.edit().putString(uri.toString(), "discard").commit())
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = "discard-legacy-$suffix.db",
+            legacyPreferences = preferences,
+            identityReader = testIdentityReader(),
+        )
+
+        val replay = MediaStoreWriter.cleanupDiscardJournalBatch(
+            context = context,
+            afterKey = null,
+            batchLimit = 8,
+            discardJournal = journal,
+        )
+
+        assertEquals(0, provider.deleteCalls)
+        assertEquals(1, replay.report.errors)
+        assertEquals(DiscardJournalLookup.PRESENT, journal.lookup(uri.toString()))
+        assertEquals(DiscardReplayIdentity.LEGACY, journal.replayIdentity(
+            journal.page(afterKey = null, batchLimit = 8).records.single(),
+        ))
+    }
+
+    @Test
     fun `unsupported database upgrade fails closed`() {
         val suffix = UUID.randomUUID().toString()
         val databaseName = "discard-upgrade-$suffix.db"
         context.openOrCreateDatabase(databaseName, Context.MODE_PRIVATE, null).use { database ->
-            database.version = 1
+            database.version = 2
         }
         val journal = PendingDiscardJournal(
             context = context,
             databaseName = databaseName,
-            databaseVersion = 2,
+            databaseVersion = 3,
             legacyPreferences = context.getSharedPreferences(
                 "legacy-upgrade-$suffix",
                 Context.MODE_PRIVATE,
@@ -481,6 +693,7 @@ class PendingDiscardJournalTest {
             context = context,
             databaseName = databaseName,
             legacyPreferences = legacyPreferences,
+            identityReader = testIdentityReader(),
         )
         assertTrue(healthyJournal.mark(rowUri.toString()))
         assertEquals(DiscardJournalLookup.PRESENT, healthyJournal.lookup(rowUri.toString()))
@@ -512,7 +725,7 @@ class PendingDiscardJournalTest {
         val unavailableJournal = PendingDiscardJournal(
             context = context,
             databaseName = databaseName,
-            databaseVersion = 2,
+            databaseVersion = 3,
             legacyPreferences = legacyPreferences,
         )
         assertFalse(MediaStoreWriter.publish(context, rowUri, healthyJournal))
@@ -546,7 +759,45 @@ class PendingDiscardJournalTest {
             context = context,
             databaseName = "discard-$suffix.db",
             legacyPreferences = context.getSharedPreferences("legacy-$suffix", Context.MODE_PRIVATE),
+            identityReader = testIdentityReader(),
         )
+    }
+
+    private fun replayJournal(
+        suffix: String,
+        reader: PendingDiscardIdentityReader,
+    ): PendingDiscardJournal = PendingDiscardJournal(
+        context = context,
+        databaseName = "discard-replay-$suffix.db",
+        legacyPreferences = context.getSharedPreferences("legacy-replay-$suffix", Context.MODE_PRIVATE),
+        identityReader = reader,
+    )
+
+    private fun testIdentityReader(
+        read: PendingDiscardIdentityRead = PendingDiscardIdentityRead.Present(testIdentity()),
+    ): PendingDiscardIdentityReader = PendingDiscardIdentityReader { read }
+
+    private fun testIdentity(
+        providerVersion: String = "provider-v1",
+        generationAdded: Long = 11L,
+        displayName: String = "IMG_TELECAM_F1_0000000000001_0000000001.jpg",
+    ): PendingDiscardIdentity = PendingDiscardIdentity(
+        volumeName = "external_primary",
+        providerVersion = providerVersion,
+        rowId = 1L,
+        generationAdded = generationAdded,
+        displayName = displayName,
+        relativePath = "DCIM/TeleCamPro/",
+        mimeType = "image/jpeg",
+        ownerPackageName = context.packageName,
+        familyIdentity = "STILL|1|1",
+        dateTaken = 1L,
+    )
+
+    private class MutableIdentityReader(
+        @Volatile var current: PendingDiscardIdentityRead,
+    ) : PendingDiscardIdentityReader {
+        override fun read(uri: String): PendingDiscardIdentityRead = current
     }
 
     private class RetainingProvider : ContentProvider() {
@@ -567,6 +818,53 @@ class PendingDiscardJournalTest {
 
         override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int {
             if (!allowDelete || !exists) return 0
+            exists = false
+            return 1
+        }
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ): Int = 0
+    }
+
+    private class ReplayProvider(
+        var allowDelete: Boolean = false,
+    ) : ContentProvider() {
+        var deleteCalls = 0
+        var generationAdded = 11L
+        var lastDeleteSelection: String? = null
+        private var exists = true
+
+        override fun onCreate(): Boolean = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): Cursor = MatrixCursor(projection ?: arrayOf(MediaStore.MediaColumns._ID)).apply {
+            if (exists) {
+                addRow(Array(columnCount) { index ->
+                    if (getColumnName(index) == MediaStore.MediaColumns._ID) 1L else null
+                })
+            }
+        }
+
+        override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int {
+            deleteCalls += 1
+            lastDeleteSelection = selection
+            if (!allowDelete || !exists) return 0
+            if (selectionArgs == null || selectionArgs.getOrNull(1)?.toLongOrNull() != generationAdded) {
+                return 0
+            }
             exists = false
             return 1
         }
