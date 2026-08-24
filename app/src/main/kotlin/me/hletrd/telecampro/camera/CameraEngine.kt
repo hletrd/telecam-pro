@@ -3699,9 +3699,23 @@ class CameraEngine internal constructor(
                 }
                 return@execute
             }
-            // The old camera streams through the new device's open. Bounded wait: a refusal or a
-            // wedged open must degrade to the sequential path, not hang the setup thread.
-            deviceUp.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            // The old camera streams through the new device's open. Keep the absolute two-second
+            // HAL deadline, but wake at a short ownership cadence: a newer optics intent can only
+            // enqueue on this same setupExecutor, so parking here unconditionally made an
+            // already-known-stale switch hold the sole setup lane (and Not-Ready UI) for two seconds.
+            waitForDualOpenBoundary(
+                awaitSlice = { nanos ->
+                    deviceUp.await(nanos, java.util.concurrent.TimeUnit.NANOSECONDS)
+                },
+                shouldContinue = {
+                    ownsOpticsTransaction(transaction) && nativeAcquisitionMayProceed() &&
+                        !paused && recorder == null && glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        )
+                },
+            )
             // The blocking wait is an ownership boundary: pause, REC, or a newer reopen may have
             // superseded this attempt while the setup thread was parked. Do not publish sizes or
             // start a deferred session from an obsolete device; release every local handle.
@@ -7004,6 +7018,41 @@ internal fun previewRecoveryDecision(
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */
 internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
     currentGeneration == expectedGeneration
+
+internal enum class DualOpenWaitResult { SIGNALED, SUPERSEDED, TIMED_OUT }
+
+/**
+ * Waits for a CameraDevice-open terminal without letting stale ownership monopolize setup.
+ *
+ * [awaitSlice] receives nanoseconds and returns true when open/error signalled. The small polling
+ * slice is deliberate: the superseding transaction is queued on the same executor and therefore
+ * cannot directly run a cancellation callback until this function returns. All native/controller
+ * cleanup remains with the existing post-wait ownership branches in [CameraEngine].
+ */
+internal fun waitForDualOpenBoundary(
+    awaitSlice: (timeoutNanos: Long) -> Boolean,
+    shouldContinue: () -> Boolean,
+    timeoutNanos: Long = java.util.concurrent.TimeUnit.SECONDS.toNanos(2),
+    ownershipPollNanos: Long = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(20),
+    nowNanos: () -> Long = System::nanoTime,
+): DualOpenWaitResult {
+    require(timeoutNanos > 0L)
+    require(ownershipPollNanos > 0L)
+    val startedAt = nowNanos()
+    while (shouldContinue()) {
+        val elapsed = (nowNanos() - startedAt).coerceAtLeast(0L)
+        val remaining = timeoutNanos - elapsed
+        if (remaining <= 0L) return DualOpenWaitResult.TIMED_OUT
+        val signalled = try {
+            awaitSlice(minOf(remaining, ownershipPollNanos))
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return DualOpenWaitResult.SUPERSEDED
+        }
+        if (signalled) return DualOpenWaitResult.SIGNALED
+    }
+    return DualOpenWaitResult.SUPERSEDED
+}
 
 /** Camera2 health callbacks remain owned for the complete installed-controller lifetime. */
 internal fun activeCameraFailureBelongsToController(
