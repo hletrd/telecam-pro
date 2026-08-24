@@ -124,6 +124,30 @@ class ReviewSourceSpoolTest {
     }
 
     @Test
+    fun `zero length bulk read makes bounded progress through the single byte fallback`() {
+        val directory = temporaryFolder.newFolder("zero-read")
+        val budget = ReviewSourceByteBudget(4L)
+        var bulkReads = 0
+        val input = object : InputStream() {
+            private var delivered = false
+
+            override fun read(): Int = if (delivered) -1 else 0x5a.also { delivered = true }
+
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int = when {
+                bulkReads++ == 0 -> 0
+                delivered -> -1
+                else -> error("single-byte fallback must own progress")
+            }
+        }
+
+        val source = requireNotNull(spoolReviewSource(directory, input, 4L, budget))
+        assertArrayEquals(byteArrayOf(0x5a), source.openInputStream().use { it.readBytes() })
+        assertEquals(1L, budget.usedBytes())
+        source.close()
+        assertEquals(0L, budget.usedBytes())
+    }
+
+    @Test
     fun `retired request keeps exact admission until its blocked worker cleans up`() = runBlocking {
         val directory = temporaryFolder.newFolder("retired")
         val budget = ReviewSourceByteBudget(12L)

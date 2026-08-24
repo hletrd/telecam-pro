@@ -136,6 +136,15 @@ class FlipRendererResourceOwnershipTest {
         renderer.release()
     }
 
+    @Test
+    fun `error boundary refuses a GLES error source that never clears`() {
+        val boundary = GlOperationErrorBoundary { GLES20.GL_INVALID_OPERATION }
+
+        val failure = assertThrows(IllegalStateException::class.java) { boundary.begin() }
+
+        assertTrue(failure.message.orEmpty().contains("did not clear"))
+    }
+
     private fun rendererField(renderer: FlipRenderer, name: String): Int =
         renderer.javaClass.getDeclaredField(name).apply { isAccessible = true }.getInt(renderer)
 

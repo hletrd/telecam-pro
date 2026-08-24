@@ -49,6 +49,9 @@ me/hletrd/telecampro/camera/StandbyAudioControllerKt
 
 # ---- gl: EGL/GLES glue (pure seams live in *Kt facades, which stay A) -----------------------
 me/hletrd/telecampro/gl/EglCore
+# Concrete GLES20 bridge: every method calls android.jar's native/static GL surface. The injected
+# FlipRendererGlApi contract and all ownership/error policy remain host-tested in Partition A.
+me/hletrd/telecampro/gl/AndroidFlipRendererGlApi
 me/hletrd/telecampro/gl/FlipRenderer
 me/hletrd/telecampro/gl/FlipRenderer$*
 me/hletrd/telecampro/gl/GlPipeline
