@@ -1825,7 +1825,6 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .focusable()
             .clearAndSetSemantics {
                 contentDescription = a11yResetFocusPoint
                 stateDescription = a11yTapFocusHeld
@@ -2518,7 +2517,6 @@ internal fun FnOverlay(
                             .focusRequester(closeFocusRequester)
                             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                             .clip(RoundedCornerShape(50))
-                            .focusable()
                             .clearAndSetSemantics {
                                 contentDescription = a11yCloseFunctionMenu
                                 role = Role.Button

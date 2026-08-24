@@ -404,7 +404,6 @@ internal fun CompactFnButton(
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .focusable()
             .clearAndSetSemantics {
                 contentDescription = a11yOpenFunctionMenu
                 role = Role.Button
@@ -446,7 +445,6 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
     Box(
         modifier = modifier
             .size(48.dp)
-            .focusable()
             .clearAndSetSemantics {
                 contentDescription = a11yCloseAdjustment
                 role = Role.Button

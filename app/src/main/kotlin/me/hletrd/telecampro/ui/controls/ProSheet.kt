@@ -13,7 +13,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -413,7 +412,6 @@ private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .size(48.dp)
-            .focusable()
             .clearAndSetSemantics {
                 contentDescription = a11yCloseSettings
                 role = Role.Button
@@ -484,7 +482,6 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
             // Keep the visible icon/label and the Tab action on one accessibility node. Without
             // this merge Android exported an unnamed focusable parent plus a separate inert Text,
             // so switch/TalkBack users could focus a tab without hearing which tab it was.
-            .focusable()
             .clearAndSetSemantics {
                 contentDescription = tabLabel
                 stateDescription = selectedState
