@@ -937,6 +937,25 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_unbound_front_zsl_field_claim(self) -> None:
+        def remove_front_zsl_identity(root: Path) -> None:
+            path = root / "CLAUDE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "`docs/FIELD_CHECKS.md` A5"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, "`docs/FIELD_CHECKS.md`", 1), encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            remove_front_zsl_identity,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  active CLAUDE field-check claims bind to open ledger identities",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_confirmed_ois_with_unresolved_body(self) -> None:
         def overclaim_ois(root: Path) -> None:
             path = root / "docs/FIELD_CHECKS.md"

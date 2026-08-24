@@ -839,6 +839,29 @@ open_body_ids = [
     identity for identity, heading in body_headings
     if "◯ OPEN" in heading or "◐ HALF DONE" in heading
 ]
+
+# Top-level authority may create a manual evidence obligation outside this ledger. Every active
+# "remains a field check" claim must point to one exact OPEN/HALF-DONE body identity, or the
+# supposedly exhaustive dashboard can go green while shipping work remains unscheduled.
+normalized_claude = re.sub(r"\s+", " ", read("CLAUDE.md"))
+active_field_claims = re.findall(
+    r"\bremains a field check\b.{0,180}",
+    normalized_claude,
+    re.I,
+)
+claim_bindings = [
+    re.search(r"docs/FIELD_CHECKS\.md`?\s+([A-Z]\d+)", claim)
+    for claim in active_field_claims
+]
+check(
+    bool(active_field_claims)
+    and all(
+        binding is not None and binding.group(1) in open_body_ids
+        for binding in claim_bindings
+    ),
+    "active CLAUDE field-check claims bind to open ledger identities",
+    " | ".join(active_field_claims),
+)
 check(
     bool(status_match)
     and dashboard_ids == body_ids

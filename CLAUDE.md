@@ -226,7 +226,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   byte-for-byte. FRONT takes deep YUV on its full rung, degrades to shallow YUV, then returns to its
   proven HAL-JPEG path before preview-only; PMA110's mandatory-YUV quirk remains LOGICAL-only. The
   front route has capture-latency evidence, but its sustained idle/memory-pressure cost has no soak
-  evidence yet and remains a field check rather than an inferred success claim.
+  evidence yet and remains a field check (`docs/FIELD_CHECKS.md` A5) rather than an inferred success
+  claim.
 - **Seamless zoom = the logical camera, PHOTO ONLY (2026-07-14).** Camera 0 (`logicalMultiCamera`,
   physIds 3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens.
   Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at

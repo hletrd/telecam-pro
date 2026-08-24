@@ -6,10 +6,11 @@ these are the ones that need a real scene, real light, the physical converter, o
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-08-24):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐ · E2 ☐.
-Five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
-front route, **D1** needs an off-axis sound source, and **E1/E2** need real MediaProvider ownership
-and system-consent behavior. B1 closed the rotation work end to end; C1 confirmed the afocal
+**Status (2026-08-24):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐ · E2 ☐.
+Six remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
+front route, **A5** needs a sustained front pseudo-ZSL soak, **D1** needs an off-axis sound source,
+and **E1/E2** need real MediaProvider ownership and system-consent behavior. B1 closed the rotation
+work end to end; C1 confirmed the afocal
 correction against real converter glass. C3 is closed as an honest no-observable-difference result,
 not proof of a distinct teleconverter OIS profile.
 
@@ -101,6 +102,27 @@ device with an enumerated front camera and a scene whose bright target is unambi
 **Pass:** in both window rotations, the applied front metering region lands on the displayed target
 and the exposure response follows that target rather than its quarter-turned counterpart. Record
 device model, window rotation, displayed target quadrant, applied region, and exposure response.
+
+### A5. Front pseudo-ZSL sustained idle and memory pressure — ◯ OPEN 2026-08-24
+
+The front route has one-shot capture-latency evidence, but not the logical route's sustained
+full-resolution repeating-YUV soak. This check owns that evidence gap; do not generalize the rear
+S4a result to a different camera/session.
+
+- Record the immutable debug APK path, source commit/tree, device model, Android build, and the
+  front camera's advertised largest-YUV minimum frame duration.
+- Select front PHOTO, SINGLE drive, processed still output, and leave the viewfinder running for
+  10 minutes in an ordinary lit scene. Capture delivered frame cadence, every `FrameGap` ≥200 ms,
+  camera errors, `dumpsys meminfo`/gralloc observations, and battery temperature before/after.
+- During a second bounded run, create ordinary memory pressure by switching among other apps and
+  returning to TeleCam Pro; do not kill the camera process or infer success from session configure.
+- Take a front photo after each soak and verify capture completion plus a valid published file.
+
+**Pass:** the front finder sustains its advertised/selected cadence without recurring ≥200 ms gaps
+or camera errors, memory/gralloc use stays bounded without growing across the soak/return cycle,
+thermal change is recorded rather than guessed, and the post-soak still completes and publishes.
+Record the exact measurements even when they pass. A failure keeps pseudo-ZSL disabled for that
+route/device until measured admission evidence exists.
 
 ---
 
