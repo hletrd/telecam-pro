@@ -962,9 +962,12 @@ check(
     "active zoom comments keep coordinate ownership route-based",
 )
 build_script = read("app/build.gradle.kts")
+debug_preview_source = read("app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt")
 check(
     "capability-gated read here misses" not in current_comments
-    and "release keeps minify off" not in build_script,
+    and "isMinifyEnabled = false" not in debug_preview_source
+    and "release keeps minify off" not in debug_preview_source.lower()
+    and re.search(r"release\s+(?:keeps|has|uses).*minif(?:y|ication)\s+(?:off|disabled)", debug_preview_source, re.I) is None,
     "current comments describe maximum-resolution discovery and enabled R8",
 )
 check(

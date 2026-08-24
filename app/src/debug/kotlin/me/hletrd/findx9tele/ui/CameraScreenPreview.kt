@@ -24,9 +24,9 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 
-// Debug-only source set on purpose: release keeps isMinifyEnabled = false (deliberate, see
-// app/build.gradle.kts), so an @Preview entry point and a ~110-method no-op CameraActions living in
-// main would ship inside the AAB with nothing able to strip them. Same package as CameraScreen.kt,
+// Debug-only source set on purpose: previews and screenshot fixtures are developer surfaces, not
+// production code. Release uses full-mode R8, but source-set ownership keeps these entry points out
+// of the release graph before shrinker behavior becomes relevant. Same package as CameraScreen.kt,
 // so the debug-only UiSnapshotActivity keeps resolving PreviewCameraActions unchanged.
 
 /** No-op [CameraActions] used only by previews and the debug-only snapshot Activity. */

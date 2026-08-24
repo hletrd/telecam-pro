@@ -63,6 +63,7 @@ def run_documentation_gate_from_committed_export(
             "docs/ARCHITECTURE.md",
             "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
+            "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
         if mutate is not None:
@@ -318,6 +319,27 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
+
+    def test_committed_export_rejects_a_stale_release_minification_comment(self) -> None:
+        def claim_release_minification_is_off(root: Path) -> None:
+            path = root / "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt"
+            text = path.read_text(encoding="utf-8")
+            marker = "// Debug-only source set on purpose:"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "// Debug-only source set on purpose: release keeps minify off.", 1),
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(
+            claim_release_minification_is_off,
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  current comments describe maximum-resolution discovery and enabled R8",
+            result.stdout,
+        )
 
     def test_committed_export_rejects_mandatory_absent_private_context(self) -> None:
         def require_private_context(root: Path) -> None:
