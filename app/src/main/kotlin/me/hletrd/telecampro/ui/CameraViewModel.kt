@@ -2064,7 +2064,7 @@ class CameraViewModel @JvmOverloads constructor(
         if (zoomGlide.flushScheduled) return z // the scheduled flush picks up this newest value
         zoomGlide.flushScheduled = true
         flushZoom() // leading edge: first tick lands instantly
-        mainHandler.postDelayed(zoomTrailingFlush, 16) // ~60 Hz: engine throttles HAL submits; GL follows
+        mainHandler.postDelayed(zoomTrailingFlush, 16) // ~60 Hz: GL follows; moving ticks never submit to HAL
         return z
     }
 
@@ -2080,8 +2080,8 @@ class CameraViewModel @JvmOverloads constructor(
         // every fresh pinch-out (3-lane cycle-4 consensus). Now the leading tick only COMMITS the
         // ratio (engine controls + GL target + still-truth, no submit); the boost flip right below
         // is the edge's ONE submit and carries this z as its finalZoom (a rebuild on a cold edge, a
-        // bare fast-path submit when the boost is already active). Mid-gesture ticks keep the
-        // coalesced/throttled wide-aim path unchanged.
+        // bare fast-path submit when the boost is already active). Every later moving tick is
+        // coalesced for GL/still truth and suppressed at the HAL until the quiet landing or end.
         val leadingWide = zoomGlide.isLeadingEdgeToWide(z, _state.value.controls.zoomRatio)
         // One flush spends the edge, whether or not it took it. Idempotent for every later tick of
         // the same gesture; re-armed only by a real pinch-end or the quiet-window landing.
@@ -2109,9 +2109,9 @@ class CameraViewModel @JvmOverloads constructor(
         mainHandler.postDelayed(zoomInteractionEnd, 700)
         mainHandler.removeCallbacks(zoomQuietLanding)
         mainHandler.postDelayed(zoomQuietLanding, 250)
-        // Straight to the engine fast path (cached-builder resubmit) — updateControls would re-apply
-        // the FULL control set. The leading zoom-OUT tick already submitted above; every other tick
-        // submits here. Chip highlight follows the zoom band only on the logical seamless route;
+        // Straight to the engine zoom path — updateControls would re-apply the FULL control set.
+        // The start edge already submitted above; every later moving tick updates GL/still truth
+        // without submitting to Camera2. Chip highlight follows the logical seamless route only;
         // every standalone route is lens-local, including RAW/DNG Photo. Persistence rides the
         // debounced settings save.
         if (!leadingWide) engine.setZoomRatio(z)

@@ -1731,8 +1731,8 @@ class CameraController(context: Context) {
     fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null, halZoom: Float? = null) {
         postToCamera {
             // Land the caller's exact zoom INSIDE the same rebuild that flips the boost. The old
-            // rebuild-then-correct order at gesture end submitted the stale mid-gesture wide-aimed
-            // ratio first (this field was last written by the throttled wide submit) and then paid
+            // rebuild-then-correct order at gesture end submitted the stale start-edge wide aim
+            // first (the controller still held the edge's wire ratio) and then paid
             // a second ~180 ms repeating-request stall for the correction.
             if (finalZoom != null) {
                 synchronized(controlsWriteLock) { controls = controls.copy(zoomRatio = finalZoom) }

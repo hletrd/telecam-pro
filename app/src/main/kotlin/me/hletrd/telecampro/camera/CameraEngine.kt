@@ -702,7 +702,6 @@ class CameraEngine internal constructor(
      */
     private fun finishRetainedControllerOpticsRemap(expectedController: CameraController) {
         zoomInteractionActive = false
-        lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
         gl.setZoomTarget(controls.zoomRatio)
         expectedController.commitRetainedOpticsControls(controls)
     }
@@ -3878,12 +3877,9 @@ class CameraEngine internal constructor(
         // ONE submit per boost flip: the boost's own preview rebuild carries the current exact
         // ratio, so no separate corrective submit runs. The old rebuild-then-correct order at
         // gesture end paid two ~180 ms repeating-request stalls back to back AND transiently
-        // re-submitted the stale mid-gesture wide-aimed ratio (the rebuild read the controller's
-        // last stored zoom, which the throttled wide submit had written) — real frames and the
-        // video encoder saw the wrong framing for a beat. Gesture start also swallows the first
-        // fast-path tick (throttle stamp below): GL zoomComp covers instantly and the HAL follows
-        // at the next ≥200 ms window. The GL compensation converges to 1 as matching results land.
-        lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
+        // re-submitted the stale mid-gesture wide-aimed ratio — real frames and the video encoder
+        // saw the wrong framing for a beat. The start edge now carries the wide aim, every moving
+        // tick is GL-only, and the quiet landing or end edge carries the next exact HAL ratio.
         // The STARTING edge carries the wide aim. Mid-gesture submits are suppressed entirely now
         // (resolveHalZoomSubmit), so this is the only submit that can pre-buy the zoom-out margin
         // the GL crop lives on for the rest of the gesture; the ENDING edge lands exact.
@@ -3947,28 +3943,21 @@ class CameraEngine internal constructor(
         // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
         // so per-tick HAL submits made zoom read as ~5 fps no matter how smooth the input was).
         gl.setZoomTarget(z)
-        // The HAL follows at a throttled pace. Mid-gesture it is aimed slightly WIDE
-        // (÷ZOOM_GESTURE_MARGIN) so the GL crop has field for instant zoom-out too; the exact
-        // value lands at the quiet-window landing (landExactZoom) or gesture end
-        // (setZoomInteraction(false)). The throttle/wide-aim decision is the pure, unit-tested
-        // resolveHalZoomSubmit. requestRatio carries the EXACT z so stills never inherit the aim.
-        val now = android.os.SystemClock.uptimeMillis()
+        // A moving tick never submits to the HAL: only GL follows it immediately. The START edge
+        // pre-buys a slightly wide field (÷ZOOM_GESTURE_MARGIN), while the quiet landing or END edge
+        // lands the exact ratio. requestRatio still carries exact z so stills never inherit the aim.
         val plan = resolveHalZoomSubmit(
             requestedZoom = z,
             interactionActive = zoomInteractionActive,
-            nowMs = now,
-            lastSubmitMs = lastHalZoomSubmitMs,
             gestureMargin = ZOOM_GESTURE_MARGIN,
-            throttleMs = ZOOM_HAL_THROTTLE_MS,
             rangeLower = r?.lower,
             rangeUpper = r?.upper,
         )
         if (plan.submitNow) {
-            lastHalZoomSubmitMs = now
             controller?.setZoomRatio(plan.halTarget, requestRatio = plan.controlsZoomRatio)
         } else {
             // A swallowed tick must STILL update the controller's still-request truth: the
-            // viewfinder (GL target) already frames z, and a shutter press inside the throttle
+            // viewfinder (GL target) already frames z, and a shutter press during the gesture
             // window would otherwise capture the PREVIOUS tick's ratio (aggregate AGG3-27).
             controller?.noteRequestZoom(plan.controlsZoomRatio)
         }
@@ -3976,7 +3965,7 @@ class CameraEngine internal constructor(
 
     /**
      * Lands the EXACT (non-wide-aimed) ratio while a gesture is still formally active but has gone
-     * quiet for one throttle window. Without this, the last throttled submit's ~1.2×-wide framing
+     * quiet for one landing window. Without this, the start edge's ~1.2×-wide HAL framing
      * held for the full 700 ms interaction tail — a recorded clip carried it after finger-up (the
      * encoder only sees real frames; GL zoomComp masks it in the preview only). One spaced
      * fast-path swap, NOT a boost flip — the fps-boost window and its single gesture-end rebuild
@@ -3984,7 +3973,6 @@ class CameraEngine internal constructor(
      */
     fun landExactZoom() {
         if (!zoomInteractionActive) return
-        lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
         controller?.setZoomRatio(controls.zoomRatio)
     }
 
@@ -4021,7 +4009,6 @@ class CameraEngine internal constructor(
     }
 
     @Volatile private var zoomInteractionActive = false
-    @Volatile private var lastHalZoomSubmitMs = 0L
 
     // ---- Photo ----
 
@@ -6954,11 +6941,6 @@ class CameraEngine internal constructor(
         // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
         // took over the gesture exposure trade; it was unreferenced and its comment still asserted
         // a policy nothing enforced.)
-
-        // Live-zoom HAL pacing: every setRepeatingRequest swap stalls this HAL's preview ~180 ms
-        // (measured 2026-07-14), so mid-gesture submits are spaced at least this far apart — the
-        // GL compensation renders the requested zoom in between.
-        private const val ZOOM_HAL_THROTTLE_MS = 200L
 
         // Mid-gesture the HAL is aimed this factor WIDER than requested so the GL crop has spare
         // field in BOTH directions (instant zoom-out within the margin). Converged at gesture end.

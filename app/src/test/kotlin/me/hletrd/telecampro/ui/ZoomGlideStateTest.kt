@@ -15,7 +15,7 @@ import org.junit.Test
  *    (AGG3-10/25/26/51, VER-3, ARCH-4) — these tests fail if any field stops being cleared.
  *  - `isLeadingEdgeToWide()` is the zoom-OUT leading-edge decision (AGG3-9): the first outward tick
  *    after the pipeline goes QUIET must submit immediately, while zoom-IN and every mid-gesture tick
- *    must NOT (they ride the existing coalesced/throttled wide-aim path). Quiet — not `!interacting`
+ *    must NOT (they update coalesced GL/still truth without a HAL submit). Quiet — not `!interacting`
  *    — is the axis (AGG4-14): `interacting` is a 700 ms tail that outlives the finger, so gating on
  *    it disarmed the edge for a re-pinch that starts inside that tail.
  *  - `base()` is the compounding-input source of truth (`currentZoomBase()`): the coalesced pending
@@ -92,7 +92,7 @@ class ZoomGlideStateTest {
             interacting = true
             leadingEdgeArmed = false // this gesture's first flush spent it; no quiet window since
         }
-        assertFalse("subsequent outward ticks ride the throttled wide-aim path", g.isLeadingEdgeToWide(2f, 6f))
+        assertFalse("subsequent outward ticks remain HAL-suppressed", g.isLeadingEdgeToWide(2f, 6f))
     }
 
     // ---- AGG4-14: a gesture that BEGINS inside the previous gesture's 700 ms tail ----
