@@ -18,6 +18,7 @@ from typing import NamedTuple
 _TOOLS_DIR = pathlib.Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
+from android_sdk import android_sdk_environment
 from immutable_outputs import FrozenOutputSet
 
 
@@ -410,6 +411,11 @@ def main() -> int:
     )
     parser.add_argument("--output", type=pathlib.Path)
     args = parser.parse_args()
+    try:
+        os.environ.update(android_sdk_environment(args.root.resolve()))
+    except (OSError, RuntimeError) as error:
+        print(f"immutable debug build failed: {error}", file=sys.stderr)
+        return 1
     commit = git_value(args.root.resolve(), "rev-parse", "HEAD")
     output = args.output or (
         args.root / "app/build/immutable-debug" / f"{commit[:12]}-{secrets.token_hex(4)}"

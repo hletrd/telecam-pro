@@ -20,6 +20,7 @@ from typing import NamedTuple
 _TOOLS_DIR = pathlib.Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
+from android_sdk import android_sdk_environment
 from immutable_outputs import FrozenOutputSet
 
 
@@ -689,6 +690,11 @@ def main() -> int:
         default=[":app:lintRelease", ":app:assembleRelease", ":app:bundleRelease"],
     )
     args = parser.parse_args()
+    try:
+        os.environ.update(android_sdk_environment(args.root.resolve()))
+    except (OSError, RuntimeError) as error:
+        print(f"immutable release build failed: {error}", file=sys.stderr)
+        return 1
     if args.output is None:
         commit = git_value(args.root.resolve(), "rev-parse", "HEAD")
         output = args.root / "app/build/immutable-release" / (

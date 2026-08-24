@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,8 @@ from dtest.contracts import (  # noqa: E402
     source_manifest_sha256,
 )
 from dtest.selectors import FULL_ACTION_SELECTORS, OPEN_SETTINGS, START_RECORDING  # noqa: E402
+import cases  # noqa: E402, F401 — materialize the executable registry
+from dtest import framework  # noqa: E402
 
 
 BADGING = """\
@@ -85,6 +88,29 @@ class ApkContractTest(unittest.TestCase):
             self.assertEqual(contract.application_id, "me.hletrd.telecampro.debug")
             self.assertEqual(commands[0][-1], str(apk))
             self.assertEqual(commands[1][-1], str(apk))
+
+
+class DocumentedCaseRegistryTest(unittest.TestCase):
+    def test_readme_case_matrix_exactly_matches_executable_registry(self) -> None:
+        readme = (DEVICE_TESTS / "README.md").read_text(encoding="utf-8")
+        matrix = readme.split("## Tiers and cases", 1)[1].split(
+            "## Device facts the harness encodes",
+            1,
+        )[0]
+        documented = [
+            (tier, name, summary.strip())
+            for tier, name, summary in re.findall(
+                r"^\| (smoke|full|reliability) \| `([^`]+)` \| (.+) \|$",
+                matrix,
+                re.MULTILINE,
+            )
+        ]
+        executable = [(case.tier, case.name) for case in framework._REGISTRY]
+
+        self.assertEqual(executable, [(tier, name) for tier, name, _ in documented])
+        self.assertTrue(documented)
+        self.assertTrue(all(summary for _, _, summary in documented))
+        self.assertTrue(all(case.doc for case in framework._REGISTRY))
 
 
 class SourceIdentityTest(unittest.TestCase):

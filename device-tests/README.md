@@ -14,6 +14,7 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 
 ```bash
 # Build/deploy the evidence-grade debug APK first. Use the exact APK path printed by the wrapper.
+# Complete README.md "Android SDK setup" first; the wrapper runs the same SDK preflight.
 BUILD_RESULT="$(python3 tools/build_immutable_debug.py)"
 printf '%s\n' "$BUILD_RESULT"
 EVIDENCE_APK="${BUILD_RESULT##* apk=}"
@@ -86,8 +87,9 @@ refused here.
 The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and queries/pulls only
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
 
-`device-tests/` remains ignored because historical evidence is several gigabytes. Before importing
-any executable harness module, the CLI walks the source tree through pinned directory descriptors,
+Executable `device-tests/` harness source is versioned. Only generated reports/evidence and Python
+caches remain ignored because historical evidence is several gigabytes. Before importing any
+executable harness module, the CLI walks the source tree through pinned directory descriptors,
 opens each input with no-follow semantics, requires the same regular-file inode before/after a
 bounded descriptor read, and rejects symlinks, special files, and file/directory replacement races.
 It copies every accepted input outside `reports/`, `__pycache__/`, and `.pytest_cache/` into a
@@ -133,6 +135,7 @@ present; the smoke command with that flag is the intentional cold-start path.
 | tier | case | asserts |
 |---|---|---|
 | smoke | `launch_preview_live` | cold launch → live viewfinder (frame-diff), OSD chrome, clean logcat |
+| smoke | `localized_camera_semantics` | current EN/KO locale exposes exact non-mutating camera, mode, Fn/settings, and shutter semantics |
 | smoke | `session_configured_3a` | 3A telemetry flows (configured repeating request; ois/vstab visible) |
 | full | `camera_chrome_layout` | top/Fn/focal/mode/gallery/shutter bounds ≥48 dp, ordered, non-overlapping, centered |
 | full | `mode_switch_roundtrip` | photo↔video sessions plus exactly one checked RadioButton mode, without camera errors |
@@ -209,5 +212,6 @@ present; the smoke command with that flag is the intentional cold-start path.
   ST2084/PQ). The remaining non-coverage is the log CURVE's visual correctness (a grading
   judgment) and the two log profiles not currently persisted; `RECORDING_SPEC` still matches
   all five transfer names so any persisted profile fails honestly instead of timing out.
-- Visual quality judgments (HLG look, OIS effectiveness, uprightness in hand) — human checks,
-  tracked in `docs/BACKLOG.md`.
+- Visual quality judgments (HLG look, OIS effectiveness, uprightness in hand) are human checks
+  tracked in the committed `docs/FIELD_CHECKS.md` ledger. The optional private `docs/BACKLOG.md`,
+  when present, may mirror maintainer scheduling/history.

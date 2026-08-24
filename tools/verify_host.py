@@ -10,6 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from android_sdk import android_sdk_environment
+
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT_JAVA_HOME = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")
@@ -50,8 +55,13 @@ def main() -> int:
     args = parser.parse_args()
 
     home = java_home()
+    try:
+        sdk_environment = android_sdk_environment(ROOT)
+    except (OSError, RuntimeError) as error:
+        raise SystemExit(f"Android SDK preflight failed: {error}") from error
     env = {
         **os.environ,
+        **sdk_environment,
         "JAVA_HOME": str(home),
         "PATH": str(home / "bin") + os.pathsep + os.environ.get("PATH", ""),
     }

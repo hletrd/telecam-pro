@@ -35,6 +35,15 @@ PRIVATE_DOCS = {
     "docs/UX_POLICY.md",
     "docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md",
 }
+COMMITTED_AUTHORITY_DOCS = (
+    "README.md",
+    "CLAUDE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/FIELD_CHECKS.md",
+    "docs/play-console-submit.md",
+    "docs/play-data-safety.md",
+    "device-tests/README.md",
+)
 
 
 def check(ok: bool, label: str, detail: str = "") -> None:
@@ -590,7 +599,7 @@ check(
     f"missing {[fragment for fragment in private_context_fragments if fragment not in claude]}",
 )
 
-for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_CHECKS.md"):
+for rel in (*COMMITTED_AUTHORITY_DOCS, "docs/TESTING.md"):
     text = read_if_available(rel)
     if text is None:
         skip_private(f"{rel} references only files that exist", rel)
@@ -604,6 +613,105 @@ for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_
     check(not dead, f"{rel} references only files that exist", f"{dead}")
     if missing_private_refs:
         skip_private(f"{rel} private references resolve in maintainer checkout", *missing_private_refs)
+
+# The private backlog may carry richer maintainer history, but every committed mention must remain
+# usable when that file is absent. Qualify at paragraph scope so one global disclaimer cannot make a
+# distant imperative such as "record results in BACKLOG" look clone-safe.
+unqualified_backlog_refs: list[str] = []
+for rel in COMMITTED_AUTHORITY_DOCS:
+    for paragraph_index, paragraph in enumerate(re.split(r"\n\s*\n", read(rel)), start=1):
+        if "docs/BACKLOG.md" not in paragraph:
+            continue
+        normalized = re.sub(r"\s+", " ", paragraph).casefold()
+        if "optional" not in normalized or not any(
+            qualifier in normalized for qualifier in ("when present", "clean clone")
+        ):
+            unqualified_backlog_refs.append(f"{rel}:paragraph-{paragraph_index}")
+check(
+    not unqualified_backlog_refs,
+    "all committed backlog references are locally optional in clean clones",
+    str(unqualified_backlog_refs),
+)
+
+field_checks = read("docs/FIELD_CHECKS.md")
+field_results = field_checks.split("## Recording results", 1)[1]
+check(
+    "This committed file is the clean-clone field-results ledger" in field_results
+    and "Record a new result in the matching" in field_results
+    and "optional private `docs/BACKLOG.md`" in field_results
+    and "its absence never blocks recording evidence here" in field_results,
+    "FIELD_CHECKS provides a committed result ledger when private backlog is absent",
+)
+
+# The dashboard is an index, not a second hand-maintained opinion. Every body check must appear once,
+# and every OPEN/HALF DONE body obligation must be represented by an open/partial dashboard symbol.
+status_match = re.search(r"^\*\*Status \([^)]+\):\*\* (.+)\.$", field_checks, re.MULTILINE)
+dashboard_entries = (
+    re.findall(r"\b([A-Z]\d+)\s+(✅|◐|☐|◯)", status_match.group(1))
+    if status_match else []
+)
+body_headings = re.findall(r"^### ([A-Z]\d+)\. (.+)$", field_checks, re.MULTILINE)
+dashboard_ids = [identity for identity, _ in dashboard_entries]
+body_ids = [identity for identity, _ in body_headings]
+normalized_dashboard_entries = [
+    (identity, "☐" if symbol == "◯" else symbol)
+    for identity, symbol in dashboard_entries
+]
+expected_body_entries = [
+    (
+        identity,
+        "◐" if "◐ HALF DONE" in heading else "☐" if "◯ OPEN" in heading else "✅",
+    )
+    for identity, heading in body_headings
+]
+open_dashboard_ids = [
+    identity for identity, symbol in dashboard_entries if symbol in {"◐", "☐", "◯"}
+]
+open_body_ids = [
+    identity for identity, heading in body_headings
+    if "◯ OPEN" in heading or "◐ HALF DONE" in heading
+]
+check(
+    bool(status_match)
+    and dashboard_ids == body_ids
+    and len(dashboard_ids) == len(set(dashboard_ids)),
+    "field dashboard names every body check exactly and in order",
+    f"dashboard={dashboard_ids} body={body_ids}",
+)
+remain_words = {
+    "One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5,
+    "Six": 6, "Seven": 7, "Eight": 8, "Nine": 9, "Ten": 10,
+}
+remain_match = re.search(r"^(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten) remain:", field_checks, re.MULTILINE)
+check(
+    normalized_dashboard_entries == expected_body_entries
+    and open_dashboard_ids == open_body_ids
+    and bool(remain_match)
+    and remain_words[remain_match.group(1)] == len(open_body_ids),
+    "field dashboard open membership and prose count match the body",
+    f"dashboard={normalized_dashboard_entries} body={expected_body_entries} count={remain_match.group(1) if remain_match else '?'}",
+)
+
+# A current PASS/CONFIRMED heading may not contain an unresolved evidence qualifier in its own
+# section. Historical/superseded text belongs under an explicitly closed or historical heading.
+confirmed_with_unresolved_body: list[str] = []
+heading_matches = list(re.finditer(r"^### ([A-Z]\d+)\. (.+)$", field_checks, re.MULTILINE))
+for index, heading in enumerate(heading_matches):
+    title = heading.group(2)
+    if not re.search(r"✅.*(?:PASSED|CONFIRMED)", title):
+        continue
+    end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(field_checks)
+    body = field_checks[heading.end():end]
+    if re.search(r"\b(?:never verified|not verified|unverified|not demonstrated)\b", body, re.I):
+        confirmed_with_unresolved_body.append(heading.group(1))
+check(
+    not confirmed_with_unresolved_body
+    and "C3. TC OIS (optional) — ✅ CLOSED" in field_checks
+    and "no observable difference" in field_checks
+    and "not demonstrated" in field_checks,
+    "field evidence never labels an unresolved profile difference confirmed",
+    str(confirmed_with_unresolved_body),
+)
 
 # The specific shape that drifted: a doc naming a minSdk value that is not the build's.
 for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
@@ -863,6 +971,32 @@ check(
     all("python3 tools/verify_host.py" in authority for authority in (claude, architecture))
     and "device-harness self-tests" in architecture,
     "committed host-gate authorities document the consolidated non-device suite",
+)
+sdk_authority = read("tools/android_sdk.py")
+verify_host_source = read("tools/verify_host.py")
+debug_wrapper_source = read("tools/build_immutable_debug.py")
+release_wrapper_source = read("tools/build_immutable_release.py")
+check(
+    "### Android SDK setup" in readme
+    and "sdk.dir" in readme
+    and "ANDROID_HOME" in readme
+    and "$HOME/Library/Android/sdk" in readme
+    and "$HOME/Android/Sdk" in readme
+    and "Platform 37" in readme
+    and "Build Tools 36.0.0" in readme
+    and "README.md` § **Android SDK setup**" in claude
+    and "README.md` § **Android SDK setup**" in field_checks
+    and 'README.md "Android SDK setup"' in read("device-tests/README.md")
+    and "def android_sdk_environment(" in sdk_authority
+    and "local.properties" in sdk_authority
+    and "ANDROID_HOME" in sdk_authority
+    and "Library/Android/sdk" in sdk_authority
+    and "Android/Sdk" in sdk_authority
+    and all(
+        "android_sdk_environment" in source
+        for source in (verify_host_source, debug_wrapper_source, release_wrapper_source)
+    ),
+    "build field and harness workflows share one clean-clone Android SDK authority",
 )
 testing_doc = read_private("docs/TESTING.md")
 if testing_doc is None:

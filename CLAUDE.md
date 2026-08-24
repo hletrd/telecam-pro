@@ -76,6 +76,10 @@ export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 export PATH="$JAVA_HOME/bin:$PATH"
 ```
 
+**Android SDK for CLI builds:** follow `README.md` § **Android SDK setup**. The repository CLI tools
+honor an ignored `local.properties` `sdk.dir`, agreeing SDK environment variables, then conventional
+macOS/Linux paths, and fail before Gradle with the missing Platform 37 / Build Tools 36.0.0 detail.
+
 ## Build / deploy / verify loop
 
 ```bash
@@ -421,7 +425,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   role, and **capture masks and encoder framing stay GRAVITY-derived on purpose** so a clip records
   the same field however the window is turned — routing them through window shape re-opens the
   cycle-4 overscan bug. Sign device-BISECTED on TB336ZU, not assumed: the preview's brightness
-  asymmetry moved top → left, i.e. 90° CCW. Details in `docs/BACKLOG.md`.
+  asymmetry moved top → left, i.e. 90° CCW. The optional private `docs/BACKLOG.md`, when present,
+  carries the measurement log; this paragraph is the committed clean-clone result.
 - **ORIENTATION MOVES NO CONTROL (2026-08-05, owner decision).** The shutter, gallery and Fn stay at
   the device's physical bottom however it is held; only what must be READ — text, chips, hints, and
   the histogram/waveform — rotates, in place, via `overlayRotation`. A wide window briefly earned a
@@ -503,7 +508,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   30000/1001 with AAC. The release smoke test had no crash or ANR. Saved-STILL uprightness in
   deliberately held poses is CLOSED (device-verified 2026-07-25 — see the rotation bullet above),
   and the muxer orientation hint's EXTERNAL-player playback check is CLOSED too (operator-reported
-  2026-07-29). No rotation residual remains. See `docs/BACKLOG.md`.
+  2026-07-29). No rotation residual remains. The optional private `docs/BACKLOG.md`, when present,
+  carries the historical run log; this paragraph and `docs/FIELD_CHECKS.md` are the committed
+  clean-clone result.
 - **Photo and video AUTO use different target-FPS policies.** A fixed `[30,30]` range blocks photo
   AE from extending exposure in low light, so photo AUTO uses `CameraCaps.autoFpsRange()` with the
   lowest available floor. Video AUTO must hold the selected recording cadence: without that pin, a
@@ -532,7 +539,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   violate it; relaxing the threshold was tried and REVERTED because it false-fires on
   shallow-depth-of-field shots, which for a 300 mm telephoto app are the normal photograph. Measured
   votes, the exact binding constraint, and the deferred way to close it properly live in ONE place —
-  `docs/BACKLOG.md` cycle 8, item 3. Do not re-run the check expecting a defect. Because of the
+  the optional private `docs/BACKLOG.md` cycle 8, item 3 when present; this bullet preserves the
+  committed binding constraint. Do not re-run the check expecting a defect. Because of the
   false-lock above, focus confidence is
   measured from the **existing** scopes/AE analysis readback (no second readback, no new GL pass —
   it is a pure CPU **rider** that computes only when that readback already runs, so it is silent in
@@ -805,7 +813,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   corrupted measurement. Unlike the 200 MP entry above, this is no longer merely "do not re-probe
   without cause" — the option itself is CLOSED. The former re-enable checklist was deleted along
   with the decision (a step-by-step restore order under a declined item is how a closed decision
-  quietly reopens itself); `docs/BACKLOG.md` carries the closure and what it rules out for good:
+  quietly reopens itself); the optional private `docs/BACKLOG.md`, when present, carries the
+  historical closure, while this bullet is the committed authority for what it rules out for good:
   the 200 MP remosaic, a scene-referred log stream, and this OIS profile. The dormant code kept
   alive for that future — the de-log shader branch and the `vendorLogMode`/`setNativeLog` plumbing —
   was REMOVED on 2026-08-04 in the same pass; see the log-profile entry for the exact inventory.

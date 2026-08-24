@@ -106,6 +106,23 @@ best-effort basis.
 
 ## Build
 
+### Android SDK setup
+
+Repository CLI entry points resolve one Android SDK authority in this order: an ignored
+`local.properties` `sdk.dir`, agreeing `ANDROID_HOME` / `ANDROID_SDK_ROOT` values, then the
+conventional macOS (`$HOME/Library/Android/sdk`) or Linux (`$HOME/Android/Sdk`) path. The selected
+SDK must contain Platform 37 and Build Tools 36.0.0. For a non-conventional installation, configure
+it before any build:
+
+```bash
+export ANDROID_HOME="/absolute/path/to/Android/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+```
+
+Alternatively, put `sdk.dir=/absolute/path/to/Android/sdk` in the gitignored `local.properties`.
+`tools/verify_host.py` and both immutable build wrappers run the same pre-Gradle check and report the
+missing authority or component directly; no local SDK path belongs in Git.
+
 For local development only (these mutable Gradle outputs are not device-evidence artifacts):
 
 ```bash

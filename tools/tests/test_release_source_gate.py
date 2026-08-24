@@ -4,12 +4,17 @@ import base64
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOLS = REPO_ROOT / "tools"
+sys.path.insert(0, str(TOOLS))
+from android_sdk import android_sdk_environment  # noqa: E402
+
 PROJECT_JAVA_HOME = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")
 
 
@@ -28,6 +33,7 @@ def gradle_environment() -> dict[str, str]:
         raise AssertionError("JDK 21 is required for release-source gate tests")
     return {
         **os.environ,
+        **android_sdk_environment(REPO_ROOT),
         "JAVA_HOME": str(home),
         "PATH": str(home / "bin") + os.pathsep + os.environ.get("PATH", ""),
     }

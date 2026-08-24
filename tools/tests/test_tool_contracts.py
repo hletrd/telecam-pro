@@ -53,9 +53,15 @@ def run_documentation_gate_from_committed_export(
         # and policy under test; no ignored/private document is copied from the maintainer workspace.
         for relative in (
             "tools/check_docs.py",
+            "tools/android_sdk.py",
+            "tools/verify_host.py",
+            "tools/build_immutable_debug.py",
+            "tools/build_immutable_release.py",
+            "README.md",
             "CLAUDE.md",
             "privacy-policy/index.html",
             "docs/ARCHITECTURE.md",
+            "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
@@ -291,6 +297,26 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "Architecture scopes the fixed lens list to PMA110 and documents enumeration",
             result.stdout,
         )
+        self.assertIn(
+            "all committed backlog references are locally optional in clean clones",
+            result.stdout,
+        )
+        self.assertIn(
+            "FIELD_CHECKS provides a committed result ledger when private backlog is absent",
+            result.stdout,
+        )
+        self.assertIn(
+            "field dashboard open membership and prose count match the body",
+            result.stdout,
+        )
+        self.assertIn(
+            "field evidence never labels an unresolved profile difference confirmed",
+            result.stdout,
+        )
+        self.assertIn(
+            "build field and harness workflows share one clean-clone Android SDK authority",
+            result.stdout,
+        )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
 
     def test_committed_export_rejects_mandatory_absent_private_context(self) -> None:
@@ -338,6 +364,75 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  Architecture qualifies the optional private UX policy and names committed fallbacks",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_backlog_only_field_recording(self) -> None:
+        def remove_committed_ledger(root: Path) -> None:
+            path = root / "docs/FIELD_CHECKS.md"
+            text = path.read_text(encoding="utf-8")
+            start = text.index("## Recording results")
+            path.write_text(
+                text[:start]
+                + "## Recording results\n\nPut every outcome in required private `docs/BACKLOG.md`.\n",
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            remove_committed_ledger,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  all committed backlog references are locally optional in clean clones",
+            result.stdout,
+        )
+        self.assertIn(
+            "FAIL  FIELD_CHECKS provides a committed result ledger when private backlog is absent",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_open_field_missing_from_dashboard(self) -> None:
+        def remove_e2_from_dashboard(root: Path) -> None:
+            path = root / "docs/FIELD_CHECKS.md"
+            text = path.read_text(encoding="utf-8")
+            marker = " · E2 ☐."
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, ".", 1), encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            remove_e2_from_dashboard,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  field dashboard names every body check exactly and in order",
+            result.stdout,
+        )
+        self.assertIn(
+            "FAIL  field dashboard open membership and prose count match the body",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_confirmed_ois_with_unresolved_body(self) -> None:
+        def overclaim_ois(root: Path) -> None:
+            path = root / "docs/FIELD_CHECKS.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "C3. TC OIS (optional) — ✅ CLOSED"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "C3. TC OIS (optional) — ✅ CONFIRMED WORKING", 1),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(overclaim_ois)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  field evidence never labels an unresolved profile difference confirmed",
             result.stdout,
         )
 

@@ -6,13 +6,17 @@ these are the ones that need a real scene, real light, the physical converter, o
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-08-24):** A1 ✅ · A2 ✅ · A3 ◐ (brightness half) · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐.
-Three remain: **A3** needs the rear camera pointed at a lit room, **D1** needs an off-axis sound
-source, and **E1** needs real MediaProvider ownership behavior. B1 closed the rotation work end to
-end; C1 confirmed the afocal correction against real converter glass.
+**Status (2026-08-24):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐ · E2 ☐.
+Five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
+front route, **D1** needs an off-axis sound source, and **E1/E2** need real MediaProvider ownership
+and system-consent behavior. B1 closed the rotation work end to end; C1 confirmed the afocal
+correction against real converter glass. C3 is closed as an honest no-observable-difference result,
+not proof of a distinct teleconverter OIS profile.
 
 Install the exact immutable debug build first (the release strips the diagnostic logs these rely
 on). The ordinary Gradle APK is developer-only and cannot support a field-evidence claim:
+
+Complete `README.md` § **Android SDK setup** first; the wrapper runs that same SDK preflight.
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
@@ -54,7 +58,7 @@ precondition missed (railed meter, too-even scene, wrong mode). Fix that and re-
 exit-2 as either result.
 
 > Only proves the horizontal half. The tap mapping's **rotation** term is still uncalibrated on the
-> front route, so a vertical/axis error would survive a PASS and is a separate finding.
+> front route, so a vertical/axis error would survive a PASS; A4 owns that residual explicitly.
 
 ### A2. Front video mirror truth — ✅ PASSED 2026-07-28
 
@@ -82,6 +86,21 @@ with the rear camera actually pointed at the lit room.
 
 **Pass:** the image settles at a sensible brightness within ~2 s and then sits still — no slow
 breathing or hunting at rest.
+
+### A4. Front tap-AF window-rotation axis — ◯ OPEN 2026-08-24
+
+A1 proves the front route's horizontal mirror term in the portrait-locked PMA110 window. It cannot
+prove the window-rotation term because that handset stays at `ROTATION_0`. Use a rotatable sw600dp+
+device with an enumerated front camera and a scene whose bright target is unambiguous on both axes.
+
+- Rotate the window to 90° and 270°, enter front VIDEO/PROGRAM, and tap the bright target well away
+  from the centre and diagonal symmetry axes.
+- Observe the metering region/result with the same fixed-exposure/ISO directionality discipline as
+  A1; do not infer a pass from a reticle that merely draws under the finger.
+
+**Pass:** in both window rotations, the applied front metering region lands on the displayed target
+and the exposure response follows that target rather than its quarter-turned counterpart. Record
+device model, window rotation, displayed target quadrant, applied region, and exposure response.
 
 ---
 
@@ -143,7 +162,8 @@ one-call `rotationOverrideDeg` carries only the window-rotation term (0 on the p
 phone), and the framing hint uses the same term. With the converter mounted, the main view must be
 upright while today's same-stream overview shows the converter-fed **raw, inverted field**. That is
 the current executable contract, not a claim that the inset is already a true upright wide finder.
-The genuinely-wide second stream in `docs/BACKLOG.md` is what would make that intent physically true.
+The optional private `docs/BACKLOG.md`, when present, carries the second-stream design history; this
+section is the committed clean-clone authority for today's same-stream limitation.
 
 Procedure, kept for re-runs:
 
@@ -160,23 +180,24 @@ the operator recorded the two draws as “the same way up” under the old crite
 historical evidence, but do not reuse it as the current pass condition; the contradictory 2026-07-28
 backlog conclusion is explicitly marked superseded.
 
-### C3. TC OIS (optional) — ✅ CONFIRMED WORKING 2026-07-28 (operator)
+### C3. TC OIS (optional) — ✅ CLOSED 2026-07-28 (operator; no observable difference)
 
-Never verified whether the vendor `0x80b4` TC session actually engages a different OIS profile at
-300 mm — result metadata reads identically either way.
+The public Camera2 OIS/stabilization path and the vendor `0x80b4` session acceptance are verified.
+The operator's handheld A/B found **no observable difference** attributable to a distinct 300 mm
+profile; such a profile was not demonstrated, and this check does not claim one.
 
 - Record two handheld clips of the same distant subject, TELE on, at the same shutter, with the app
   force-stopped between them.
 
-**Pass/fail:** honestly, only a visible difference in handheld steadiness would tell you anything. If
-you can't see one, record "no observable difference" — that is a legitimate result and closes the
-item.
+**Future re-run:** only a reproducible visible or measured difference in handheld steadiness may be
+recorded as confirmation of a distinct profile. An indistinguishable A/B remains “no observable
+difference,” not “confirmed working.”
 
 ---
 
 ## D. Audio, quiet room — 2 min
 
-### D1. Sound Focus off-axis rejection
+### D1. Sound Focus off-axis rejection — ◯ OPEN
 
 Parameter acceptance is verified; the acoustic effect has never been heard.
 
@@ -189,7 +210,7 @@ feature would then be advertising something it doesn't deliver here.
 
 ## E. MediaProvider provenance — disposable test media
 
-### E1. Owner-null legacy-format restore boundary
+### E1. Owner-null legacy-format restore boundary — ◯ OPEN
 
 Host fakes prove the reducer contract, but cannot prove when a real Android MediaProvider clears
 `OWNER_PACKAGE_NAME` after uninstall/reinstall or import. Use disposable media only; do not delete an
@@ -233,6 +254,9 @@ check because only a real MediaProvider can prove the consent and disappearance 
 
 ## Recording results
 
-Put outcomes in `docs/BACKLOG.md` under the matching residual-check entry. Please write what was
-actually observed rather than "passed" — the entries above exist because a previous "verified" note
-turned out to describe a superseded build.
+This committed file is the clean-clone field-results ledger. Record a new result in the matching
+check section, update its heading and the dashboard in the same change, and include the date, device/
+Android build, setup, immutable APK/source identity, and what was actually observed rather than only
+“passed.” The entries above exist because a previous “verified” note described a superseded build.
+The optional private `docs/BACKLOG.md`, when present, may mirror maintainer scheduling/history;
+its absence never blocks recording evidence here.
