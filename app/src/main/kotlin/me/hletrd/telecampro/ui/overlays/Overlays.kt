@@ -948,8 +948,8 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // was the ONE alpha-modulated tag here, and dimming is this app's vocabulary for
                 // UNAVAILABLE everywhere else (0.38 chrome glyphs, DISABLED_ROW_ALPHA, the 0.55 Fn
                 // tile). A tag that only exists while the assist is ON must not wear the disabled
-                // treatment. (The other 0.55s in this file are the frame lines and the grid — they
-                // are CameraColors.GuideLine now: graphics over the image, not tags. The old note
+                // treatment. (The frame lines and grid are CameraColors.GuideLine at 0.40: graphics
+                // over the image, not tags. The old note
                 // here said "the level scale", which was never one of them; that gauge is 0.4.)
                 Text(stringResource(R.string.osd_assist), color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
             }

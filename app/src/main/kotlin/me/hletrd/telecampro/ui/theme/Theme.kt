@@ -149,14 +149,14 @@ object CameraColors {
      * The border of a scope's plot box: the histogram's and the waveform's, which stack in one column
      * on the same HUD plate. Two consumers, one job.
      *
-     * These were 0.3 and 0.35 — one hundredth apart for the same role, left as a knowing drift by the
+     * These were 0.30 and 0.35 — five hundredths apart for the same role, left as a knowing drift by the
      * naming pass because closing it moves rendered pixels and that is a visual call. It was then made
      * on device: with both scopes enabled the two frames measure differently (mean stroke 78 vs 90 on
      * a dark plate) and are still indistinguishable by eye at a 1 dp stroke, so unifying costs nothing
      * a photographer can see. 0.3 is the survivor because the quieter of two indistinguishable weights
      * is the one a preview-first finder should carry, and it leaves the more-used scope untouched.
      *
-     * Distinct from [GuideLine] (0.55) on purpose: a guide is drawn straight onto the live image and
+     * Distinct from [GuideLine] (0.40) on purpose: a guide is drawn straight onto the live image and
      * has to survive it, while this edges a plot that already sits on a plate.
      */
     val ScopeFrame = Color.White.copy(alpha = 0.3f)

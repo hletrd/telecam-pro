@@ -1561,6 +1561,23 @@ check(
     "Loupe source and Compose-test guidance rejects the superseded Photo/TELE-only gate",
 )
 
+# GuideLine's quiet 0.40 restyle is executable truth. Keep nearby comparative rationale aligned so
+# a future visual pass cannot restore the retired 0.55 weight by following stale live comments.
+ui_theme = read("app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt")
+ui_overlays = read("app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt")
+guide_authority = "\n".join((ui_theme, camera_screen, ui_overlays))
+check(
+    "val GuideLine = Color.White.copy(alpha = 0.40f)" in ui_theme
+    and "These were 0.30 and 0.35 — five hundredths apart" in ui_theme
+    and "Distinct from [GuideLine] (0.40)" in ui_theme
+    and "0.40 GuideLine the thirds/frame-line rules" in camera_screen
+    and "CameraColors.GuideLine at 0.40" in ui_overlays
+    and "GuideLine] (0.55)" not in guide_authority
+    and "0.55 GuideLine" not in guide_authority
+    and "other 0.55s in this file are the frame lines" not in guide_authority,
+    "live UI authority keeps the current 0.40 GuideLine weight",
+)
+
 # ---- coverage residual authority must stay machine-checked, not copied into prose --------------
 residual_manifest = read("tools/coverage/partition-a-residuals.txt")
 if testing_doc is None:

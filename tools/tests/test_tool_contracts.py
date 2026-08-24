@@ -77,6 +77,8 @@ def run_documentation_gate_from_committed_export(
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt",
             "app/src/main/res/values/strings.xml",
             "app/src/main/res/values-ko/strings.xml",
         ):
@@ -415,6 +417,10 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "REC border authority keeps the device-accepted platform radius unscaled",
             result.stdout,
         )
+        self.assertIn(
+            "live UI authority keeps the current 0.40 GuideLine weight",
+            result.stdout,
+        )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
 
     def test_documentation_gate_rejects_an_omitted_java_production_module(self) -> None:
@@ -434,6 +440,44 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("OmittedOwner.java", result.stdout)
+
+    def test_documentation_gate_rejects_retired_guide_weight_guidance(self) -> None:
+        fixtures = (
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt",
+                "Distinct from [GuideLine] (0.40)",
+                "Distinct from [GuideLine] (0.55)",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt",
+                "0.40 GuideLine the thirds/frame-line rules",
+                "0.55 GuideLine the thirds/frame-line rules",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt",
+                "CameraColors.GuideLine at 0.40",
+                "other 0.55s in this file are the frame lines",
+            ),
+        )
+        for relative, current, retired in fixtures:
+            with self.subTest(relative=relative):
+                def restore_retired_weight(
+                    root: Path,
+                    relative: str = relative,
+                    current: str = current,
+                    retired: str = retired,
+                ) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, retired, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(restore_retired_weight)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  live UI authority keeps the current 0.40 GuideLine weight",
+                    result.stdout,
+                )
 
     def test_committed_export_rejects_stale_agp_zsl_and_field_reference_facts(self) -> None:
         fixtures = (

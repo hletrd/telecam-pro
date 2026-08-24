@@ -919,7 +919,7 @@ fun CameraScreen(
                             // One-off structural stroke, not ink and not a composition guide: it
                             // traces the GL scissor rect of a SECOND rendering of the camera frame,
                             // so it must read against arbitrary live pixels on both of its sides.
-                            // Hence 0.85 rather than the 0.55 GuideLine the thirds/frame-line rules
+                            // Hence 0.85 rather than the 0.40 GuideLine the thirds/frame-line rules
                             // use — those sit over ONE image and may recede; this one delimits two.
                             .border(1.dp, Color.White.copy(alpha = 0.85f))
                             .semantics {
