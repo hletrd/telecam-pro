@@ -1303,12 +1303,14 @@ def append_attestation_summary(
     report = report_dir / "report.md"
     if not report.is_file():
         return
-    status = "PASS" if not errors else "FAIL"
+    overall_status = "PASS" if final_exit_code == 0 else "FAIL"
+    verification_status = "PASS" if not errors else "FAIL"
     lines = [
         "",
         "## Run attestation",
         "",
-        f"- evidence verification: **{status}**",
+        f"- overall run result: **{overall_status}**",
+        f"- evidence verification: **{verification_status}**",
         f"- final CLI exit code: `{final_exit_code}`",
         f"- APK source identity: `{source_identity}`",
         f"- metadata: `{ATTESTATION_NAME}` (`{ATTESTATION_SHA_NAME}`)",

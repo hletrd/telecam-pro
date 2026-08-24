@@ -2529,6 +2529,44 @@ class FrameworkSafetyTest(unittest.TestCase):
         self.assertEqual(self.run_suite(tiers=["full"]), 2)
         self.assertEqual(self.run_suite(tiers=["full"], allow_partial=True), 0)
 
+    def test_runtime_skip_is_incomplete_in_strict_full_and_reliability_runs(self) -> None:
+        @framework.test("full_pass", "full")
+        def full_pass(_ctx) -> None:
+            pass
+
+        @framework.test("full_runtime_skip", "full")
+        def full_runtime_skip(_ctx) -> None:
+            raise framework.Skip("foreground ownership was lost")
+
+        @framework.test("reliability_pass", "reliability")
+        def reliability_pass(_ctx) -> None:
+            pass
+
+        @framework.test("reliability_runtime_skip", "reliability")
+        def reliability_runtime_skip(_ctx) -> None:
+            raise framework.Skip("decoder disappeared")
+
+        self.assertEqual(self.run_suite(tiers=["full"]), 2)
+        self.assertEqual(self.run_suite(tiers=["reliability"]), 2)
+
+    def test_runtime_skip_remains_green_for_smoke_or_explicit_partial_evidence(self) -> None:
+        for tier, allow_partial in (("smoke", False), ("full", True), ("reliability", True)):
+            with self.subTest(tier=tier, allow_partial=allow_partial):
+                framework._REGISTRY.clear()
+
+                @framework.test(f"{tier}_pass", tier)
+                def passing(_ctx) -> None:
+                    pass
+
+                @framework.test(f"{tier}_runtime_skip", tier)
+                def runtime_skip(_ctx) -> None:
+                    raise framework.Skip("intentionally unavailable")
+
+                self.assertEqual(
+                    self.run_suite(tiers=[tier], allow_partial=allow_partial),
+                    0,
+                )
+
     def test_failed_recording_case_cannot_feed_a_later_force_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             adb = GuardAdb(

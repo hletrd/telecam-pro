@@ -135,8 +135,13 @@ def run(
             res = Result(case, "pass", "; ".join(ctx.notes[-3:]), time.time() - t0)
             print(f"  PASS ({res.seconds:.1f}s)")
         except Skip as e:
-            res = Result(case, "skip", str(e), time.time() - t0)
-            print(f"  SKIP: {e}")
+            # A runtime precondition can disappear after earlier cases have passed (for example,
+            # foreground ownership or an optional host decoder). Full/reliability runs promise
+            # complete evidence, so they must not turn that loss into a green attestation unless
+            # the operator explicitly requested partial evidence. Smoke remains observational.
+            status = "skip" if allow_partial or case.tier == "smoke" else "incomplete"
+            res = Result(case, status, str(e), time.time() - t0)
+            print(f"  {status.upper()}: {e}")
         except Incomplete as e:
             res = Result(case, "incomplete", str(e), time.time() - t0)
             print(f"  INCOMPLETE: {e}")

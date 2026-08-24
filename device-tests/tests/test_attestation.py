@@ -1271,11 +1271,30 @@ class RunAttestationTest(unittest.TestCase):
             )
 
             rendered = report.read_text(encoding="utf-8")
+            self.assertIn("overall run result: **FAIL**", rendered)
             self.assertIn("evidence verification: **FAIL**", rendered)
             self.assertIn("final CLI exit code: `2`", rendered)
             self.assertIn(runner.ATTESTATION_NAME, rendered)
             self.assertIn("APK source identity", rendered)
             self.assertIn("font_scale changed", rendered)
+
+    def test_report_summary_never_labels_a_nonzero_case_result_as_overall_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir)
+            report = report_dir / "report.md"
+            report.write_text("# Device test report\n", encoding="utf-8")
+
+            runner.append_attestation_summary(
+                report_dir,
+                final_exit_code=2,
+                errors=[],
+                source_identity="git:" + "a" * 40 + "/content-sha256:" + "b" * 64 + "/clean",
+            )
+
+            rendered = report.read_text(encoding="utf-8")
+            self.assertIn("overall run result: **FAIL**", rendered)
+            self.assertIn("evidence verification: **PASS**", rendered)
+            self.assertIn("final CLI exit code: `2`", rendered)
 
 
 if __name__ == "__main__":
