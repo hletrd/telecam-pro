@@ -4650,6 +4650,13 @@ class CameraEngine internal constructor(
             if (formats.dngRaw) add("dng")
         }
         val familyStem = requestSpec.familyKey.displayName("complete").substringBeforeLast('.')
+        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+            android.util.Log.i(
+                "CameraEngine",
+                "CaptureFamily: registered stem=$familyStem " +
+                    "outputs=${expectedOutputExtensions.joinToString(",")}",
+            )
+        }
         val remainingSaveLanes = java.util.concurrent.atomic.AtomicInteger(
             (if (formats.wantsProcessedStill) 1 else 0) + (if (formats.dngRaw) 1 else 0),
         )

@@ -1932,6 +1932,21 @@ class RecordingCleanupTest(unittest.TestCase):
 
 
 class MediaStoreTest(unittest.TestCase):
+    def test_kill_window_identity_accepts_only_the_complete_frozen_family(self) -> None:
+        baseline = media_row(1)
+        heif = media_row(2, family_sequence=42, extension="heic")
+        dng = media_row(3, family_sequence=42, extension="dng")
+
+        self.assertIsNone(
+            cases.exact_named_media_delta_error(
+                {baseline.key},
+                {heif.display_name, dng.display_name},
+                [baseline, heif, dng],
+            )
+        )
+        self.assertEqual(cases.KILL_STILL_AIM_SECONDS, 0.6)
+        self.assertEqual(cases.KILL_RECORDING_AIM_SECONDS, 0.5)
+
     def test_existing_media_row_metadata_must_remain_present_and_stable(self) -> None:
         first = media_row(1)
         second = media_row(2, collection="video")
@@ -1968,6 +1983,52 @@ class MediaStoreTest(unittest.TestCase):
                 [baseline, first, duplicate],
             )
         )
+
+    def test_kill_window_rejects_an_unrelated_late_mp4(self) -> None:
+        baseline = media_row(1)
+        expected = media_row(2, collection="video", family_sequence=42)
+        unrelated = media_row(3, collection="video", family_sequence=41)
+
+        error = cases.exact_named_media_delta_error(
+            {baseline.key},
+            {expected.display_name},
+            [baseline, expected, unrelated],
+        )
+
+        self.assertIsNotNone(error)
+        self.assertIn(unrelated.display_name, error)
+
+    def test_kill_window_rejects_a_missing_still_sibling(self) -> None:
+        baseline = media_row(1)
+        heif = media_row(2, family_sequence=42, extension="heic")
+        expected_names = {
+            heif.display_name,
+            media_row(3, family_sequence=42, extension="dng").display_name,
+        }
+
+        error = cases.exact_named_media_delta_error(
+            {baseline.key},
+            expected_names,
+            [baseline, heif],
+        )
+
+        self.assertIsNotNone(error)
+        self.assertIn(".dng", error)
+
+    def test_kill_window_rejects_a_recording_with_the_wrong_spec_stem(self) -> None:
+        baseline = media_row(1)
+        admitted = media_row(2, collection="video", family_sequence=42)
+        wrong = media_row(3, collection="video", family_sequence=43)
+
+        error = cases.exact_named_media_delta_error(
+            {baseline.key},
+            {admitted.display_name},
+            [baseline, wrong],
+        )
+
+        self.assertIsNotNone(error)
+        self.assertIn(admitted.display_name, error)
+        self.assertIn(wrong.display_name, error)
 
     def test_sips_dimension_parser_reads_full_heif_canvas(self) -> None:
         output = "/tmp/image.heic:\n  pixelWidth: 3072\n  pixelHeight: 4096\n"

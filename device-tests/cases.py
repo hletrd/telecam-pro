@@ -84,6 +84,10 @@ CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"outputs=([a-z0-9,]+)"
 )
+CAPTURE_REGISTERED = re.compile(
+    r"CaptureFamily: registered stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
+    r"outputs=([a-z0-9,]+)"
+)
 VIDEO_OSD = re.compile(
     r"^(?P<resolution>.+) (?P<fps>[0-9]+(?:\.[0-9]+)?)p "
     r"(?P<codec>HEVC|H\.264|APV) (?P<mbps>[0-9]+)Mb$"
@@ -131,6 +135,8 @@ REC_SNAPSHOT_TERMINAL_SETTLE_SECONDS = 3.0
 # scene, 2026-07-23). Pathological stalls are still failures.
 REC_SNAPSHOT_MAX_STILL_GAP_SECONDS = Fraction(3, 2)
 REC_SNAPSHOT_MAX_STILL_GAP_INTERVALS = 3
+KILL_STILL_AIM_SECONDS = 0.6
+KILL_RECORDING_AIM_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -1261,6 +1267,19 @@ def exact_media_delta_error(
     if actual == expected:
         return None
     return f"expected new keys={sorted(expected)}, actual={sorted(actual)}"
+
+
+def exact_named_media_delta_error(
+    before: set[tuple[str, int]],
+    expected_names: set[str],
+    current: list[MediaRow],
+) -> str | None:
+    """Require the post-operation delta to contain exactly the frozen canonical identities."""
+    delta = [row for row in current if row.key not in before]
+    actual_names = [row.display_name for row in delta]
+    if len(delta) == len(expected_names) and set(actual_names) == expected_names:
+        return None
+    return f"expected new names={sorted(expected_names)}, actual={sorted(actual_names)}"
 
 
 def focal_rail_error(tree, expected: str) -> str | None:
@@ -2906,6 +2925,7 @@ RULER_TICK_DP = 12
 RULER_SLOP_DP = 8
 
 PHOTO_OUTPUT_LABELS = ("HEIF", "JPEG", "DNG")
+PHOTO_OUTPUT_EXTENSIONS = {"HEIF": "heic", "JPEG": "jpg", "DNG": "dng"}
 ASPECT_LABELS = ("4:3", "16:9")
 EXPOSURE_MODE_LABELS = ("P", "S", "ISO", "M")
 EXPOSURE_STEP_EV = {"1/3 EV": 1.0 / 3.0, "1/2 EV": 0.5, "1 EV": 1.0}
@@ -4732,22 +4752,46 @@ def t_kill_capture(ctx: Context) -> None:
     """A still whose process dies right after the shot must survive as valid, published files."""
     ensure_foreground(ctx)
     ensure_photo_mode(ctx)
+    photo_settings = read_photo_settings(ctx)
+    if photo_settings.drive_option != "Single":
+        raise Incomplete(
+            "capture kill-window evidence requires Single drive; "
+            f"current persisted drive is {photo_settings.drive_option}"
+        )
+    requested_formats = read_photo_output_formats(ctx)
+    requested_extensions = {PHOTO_OUTPUT_EXTENSIONS[value] for value in requested_formats}
     before = {row.key for row in ctx.adb.media_store_rows()}
     mark = ctx.adb.log_mark()
     ctx.adb.tap(*shutter_node(ctx).center)
+    registered_line = ctx.adb.wait_log(mark, CAPTURE_REGISTERED.pattern, timeout_s=14)
+    assert registered_line, "capture family was not registered before the kill window"
+    registered = CAPTURE_REGISTERED.search(registered_line)
+    assert registered is not None, f"malformed capture-family registration: {registered_line}"
+    registered_extensions = set(registered.group(2).split(","))
+    assert registered_extensions == requested_extensions, (
+        "registered capture outputs differ from the frozen request: "
+        f"requested={sorted(requested_extensions)}, registered={sorted(registered_extensions)}"
+    )
+    expected_names = {
+        f"{registered.group(1)}.{extension}" for extension in requested_extensions
+    }
     assert ctx.adb.wait_log(mark, r"ShutterLag: started", timeout_s=14), "capture never started"
     started_seen_at = time.monotonic()
-    time.sleep(0.6)  # aim inside the write/publish window
+    time.sleep(KILL_STILL_AIM_SECONDS)  # aim inside the write/publish window
     ctx.adb.force_stop()
     # The idle-proof uiautomator dump inside force_stop adds ~2-3 s, so the true shutter→kill
     # delta is well above the 0.6 s sleep; report the measured value (a lower bound — the
     # shutter start itself was observed with up to ~1 s of logcat poll latency).
     kill_delta_s = time.monotonic() - started_seen_at
-    ctx.note(f"killed {kill_delta_s:.1f}s after the observed shutter start (0.6s aim + idle proof)")
+    ctx.note(
+        f"killed {kill_delta_s:.1f}s after the observed shutter start "
+        f"({KILL_STILL_AIM_SECONDS:.1f}s aim + idle proof)"
+    )
     time.sleep(1)
     ctx.adb.launch()  # launch recovery adopts/publishes completed pending files
-    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
-    assert new, "capture lost after kill — no file survived"
+    new = ctx.adb.wait_new_media_rows(before, min_new=len(expected_names), timeout_s=30)
+    delta_error = exact_named_media_delta_error(before, expected_names, new)
+    assert delta_error is None, f"capture family incomplete or unrelated after kill: {delta_error}"
     for row in new:
         assert_published_row(row)
         name = row.display_name
@@ -4825,21 +4869,30 @@ def t_rec_background(ctx: Context) -> None:
 )
 def t_rec_stop_kill(ctx: Context) -> None:
     """Killing the app right after REC-stop must not lose the clip (publish window durability)."""
-    ensure_foreground(ctx)
+    pid = ensure_foreground(ctx)
     ensure_video_mode(ctx)
     before = {row.key for row in ctx.adb.media_store_rows()}
+    mark = ctx.adb.log_mark()
     tap_identity(ctx, START_RECORDING)
+    admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
+    assert admitted_line, "kill-window REC did not publish an admitted encoder spec"
+    admitted = RECORDING_SPEC.search(admitted_line)
+    assert admitted is not None, f"malformed admitted encoder spec: {admitted_line}"
+    expected_name = f"{admitted.group(1)}.mp4"
+    wait_recording_running(ctx, pid)
     time.sleep(4)
     tap_identity(ctx, STOP_RECORDING)
-    time.sleep(0.5)  # inside the stop→publish window
+    time.sleep(KILL_RECORDING_AIM_SECONDS)  # inside the stop→publish window
     ctx.adb.force_stop()
-    ctx.note("killed 0.5 s after REC stop")
+    ctx.note(f"killed {KILL_RECORDING_AIM_SECONDS:.1f} s after REC stop")
     time.sleep(1)
     ctx.adb.launch()  # sweep must adopt/publish, never delete
     new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
+    delta_error = exact_named_media_delta_error(before, {expected_name}, new)
+    assert delta_error is None, f"recording family incomplete or unrelated after kill: {delta_error}"
     vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
-    assert vids, "clip lost when killed after stop"
-    row = vids[-1]
+    assert len(vids) == 1, f"clip lost when killed after stop: {new}"
+    row = vids[0]
     assert_published_row(row)
     local = ctx.adb.pull(
         f"{ctx.adb.media_dir}/{row.display_name}",
