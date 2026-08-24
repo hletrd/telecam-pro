@@ -143,21 +143,22 @@ class CameraAdmissionPresentationComposeTest {
     }
 
     @Test
-    fun `review target is enabled only outside starting and active video capture`() {
-        val activations = IntArray(3)
+    fun `review target is enabled only outside recording ownership`() {
+        val activations = IntArray(4)
         val states = listOf(
-            false to false,
-            true to false,
-            false to true,
+            Triple(false, false, false),
+            Triple(true, false, false),
+            Triple(false, true, false),
+            Triple(false, false, true),
         )
         compose.setContent {
             TeleCamProTheme {
                 Column {
-                    states.forEachIndexed { index, (starting, recording) ->
+                    states.forEachIndexed { index, (starting, recording, finalizing) ->
                         GalleryThumb(
                             uri = null,
                             onClick = { activations[index]++ },
-                            enabled = reviewTargetEnabled(starting, recording),
+                            enabled = reviewTargetEnabled(starting, recording, finalizing),
                             modifier = Modifier.testTag("review-$index"),
                         )
                     }
@@ -167,7 +168,7 @@ class CameraAdmissionPresentationComposeTest {
         compose.waitForIdle()
 
         compose.onNodeWithTag("review-0").assertIsEnabled().performClick()
-        listOf(1, 2).forEach { index ->
+        listOf(1, 2, 3).forEach { index ->
             compose.onNodeWithTag("review-$index")
                 .assertIsNotEnabled()
                 // Raw pointer input proves the disabled visual target cannot be activated even
@@ -175,7 +176,7 @@ class CameraAdmissionPresentationComposeTest {
                 .performTouchInput { click() }
         }
         compose.waitForIdle()
-        assertEquals(listOf(1, 0, 0), activations.toList())
+        assertEquals(listOf(1, 0, 0, 0), activations.toList())
     }
 
     private fun customActionLabels(): List<String> = compose.onNodeWithTag("viewfinder")

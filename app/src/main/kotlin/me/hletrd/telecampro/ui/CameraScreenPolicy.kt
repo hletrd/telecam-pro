@@ -73,7 +73,8 @@ internal fun windowFollowsDevice(smallestScreenWidthDp: Int): Boolean = smallest
 internal fun reviewTargetEnabled(
     recordingStarting: Boolean,
     recording: Boolean,
-): Boolean = !recordingStarting && !recording
+    recordingFinalizing: Boolean = false,
+): Boolean = !recordingStarting && !recording && !recordingFinalizing
 
 /**
  * PROGRESS statuses describe a condition that is either true or false right now, so an EVENT ends

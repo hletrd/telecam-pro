@@ -109,6 +109,7 @@ class CameraViewModelRobolectricTest {
         v: CameraViewModel,
         recording: Boolean,
         starting: Boolean,
+        finalizing: Boolean = false,
     ) {
         @Suppress("UNCHECKED_CAST")
         val state = CameraViewModel::class.java.getDeclaredField("_state")
@@ -117,7 +118,22 @@ class CameraViewModelRobolectricTest {
         state.value = state.value.copy(
             isRecording = recording,
             isRecordingStarting = starting,
+            isRecordingFinalizing = finalizing,
         )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun captureTracker(v: CameraViewModel): CaptureOutputTracker<Uri> =
+        CameraViewModel::class.java.getDeclaredField("captureOutputs")
+            .apply { isAccessible = true }
+            .get(v) as CaptureOutputTracker<Uri>
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setState(v: CameraViewModel, transform: (CameraUiState) -> CameraUiState) {
+        val state = CameraViewModel::class.java.getDeclaredField("_state")
+            .apply { isAccessible = true }
+            .get(v) as MutableStateFlow<CameraUiState>
+        state.value = transform(state.value)
     }
 
     @After fun tearDown() {
@@ -330,6 +346,7 @@ class CameraViewModelRobolectricTest {
         assertNotNull(e.onStandbyAudioUnavailable)
         assertNotNull(e.onRecordingStarted)
         assertNotNull(e.onRecordingTerminated)
+        assertNotNull(e.onRecordingFinalizing)
         assertNotNull(e.onExposureInfo)
         assertNotNull(e.onFocusDistance)
         assertNotNull(e.onMediaSaved)
@@ -594,22 +611,49 @@ class CameraViewModelRobolectricTest {
         assertEquals(0, v.state.value.shutterFlashTick)
     }
 
-    @Test fun `review refuses starting and active video without acquiring modal ownership`() {
+    @Test fun `review gate covers every starting and active video combination`() {
         val (v, _) = createViewModel()
         val uri = Uri.parse("content://telecam.test/previous-video")
 
-        for ((recording, starting) in listOf(true to true, true to false)) {
+        data class Case(val starting: Boolean, val recording: Boolean, val refused: Boolean)
+        val cases = listOf(
+            Case(starting = false, recording = true, refused = true),
+            Case(starting = true, recording = false, refused = true),
+            Case(starting = true, recording = true, refused = true),
+            // Keep idle last: it deliberately acquires modal ownership for the untracked fixture.
+            Case(starting = false, recording = false, refused = false),
+        )
+        for ((starting, recording, refused) in cases) {
             setRecordingPresentation(v, recording = recording, starting = starting)
-            assertFalse(v.onReviewOpenChange(true, uri))
-            assertFalse(v.state.value.reviewOpen)
-            assertFalse(v.state.value.cameraInputBlocked)
-            assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+            val pinned = v.onReviewOpenChange(true, uri)
+            assertFalse("untracked fixture family is never pinnable", pinned)
+            if (refused) {
+                assertFalse("review opened for starting=$starting recording=$recording", v.state.value.reviewOpen)
+                assertFalse(v.state.value.cameraInputBlocked)
+                assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+            } else {
+                assertTrue(v.state.value.reviewOpen)
+                assertTrue(v.state.value.cameraInputBlocked)
+            }
         }
+    }
 
+    @Test fun `native finalization blocks review after visible REC clears`() {
+        val (v, e) = createViewModel()
+        val uri = Uri.parse("content://telecam.test/previous-video")
         setRecordingPresentation(v, recording = false, starting = false)
-        assertFalse("untracked fixture family is not pinnable", v.onReviewOpenChange(true, uri))
-        assertTrue("idle review must still acquire modal ownership", v.state.value.reviewOpen)
-        assertTrue(v.state.value.cameraInputBlocked)
+
+        e.onRecordingFinalizing?.invoke(true)
+        assertTrue(v.state.value.isRecordingFinalizing)
+        assertFalse(v.state.value.isRecording)
+        assertFalse(v.onReviewOpenChange(true, uri))
+        assertFalse(v.state.value.reviewOpen)
+        assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+
+        e.onRecordingFinalizing?.invoke(false)
+        assertFalse(v.state.value.isRecordingFinalizing)
+        assertFalse("untracked fixture is not pinnable", v.onReviewOpenChange(true, uri))
+        assertTrue("terminal native release restores review ownership", v.state.value.reviewOpen)
     }
 
     // ---- Mode change ----

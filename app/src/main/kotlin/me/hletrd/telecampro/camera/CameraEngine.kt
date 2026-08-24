@@ -1299,6 +1299,10 @@ class CameraEngine internal constructor(
     var onRecordingStarted: (() -> Unit)?
         get() = callbackSink.function0(EngineCallbackKey.RECORDING_STARTED)
         set(value) = callbackSink.install(EngineCallbackKey.RECORDING_STARTED, value)
+    /** Exact native/container ownership edge after visible REC has stopped. */
+    var onRecordingFinalizing: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.RECORDING_FINALIZING)
+        set(value) = callbackSink.install(EngineCallbackKey.RECORDING_FINALIZING, value)
     // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
     // the camera thread, only on change; the ViewModel hoists it into UI state.
     var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)?
@@ -5506,7 +5510,14 @@ class CameraEngine internal constructor(
     // `recorder == null` alone says nothing about the mic, and the standby meter starting
     // in that window would violate the one-AudioRecord invariant (its init would fail, or worse,
     // steal the route from the finalizing clip).
-    @Volatile private var recorderTeardownInFlight = false
+    private val recorderTeardownOwner = RecordingFinalizationPublication { finalizing ->
+        onRecordingFinalizing?.invoke(finalizing)
+    }
+    private var recorderTeardownInFlight: Boolean
+        get() = recorderTeardownOwner.current()
+        set(value) {
+            recorderTeardownOwner.set(value)
+        }
 
     /** Pre-publication failure may release admission; recorder ownership makes this a strict no-op. */
     private fun releaseRecordingAdmissionTopologyLease(expected: Long) {

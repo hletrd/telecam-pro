@@ -4,6 +4,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal enum class RecordingTeardownTerminal { FINALIZE, QUARANTINE }
 
@@ -19,6 +20,19 @@ internal fun interface RecordingTeardownScheduler {
 internal enum class RecordingOperationState { NEW, ACTIVE, COMPLETED, TIMED_OUT }
 
 internal enum class RecorderNativeFinalization { PENDING, RELEASED, QUARANTINED }
+
+/** Change-gated publication of native recorder ownership after the visible REC intent ends. */
+internal class RecordingFinalizationPublication(
+    private val publish: (Boolean) -> Unit,
+) {
+    private val active = AtomicBoolean(false)
+
+    fun current(): Boolean = active.get()
+
+    fun set(value: Boolean) {
+        if (active.getAndSet(value) != value) publish(value)
+    }
+}
 
 /**
  * First-wins classification of the recorder's native graph, independent from the later storage tail.

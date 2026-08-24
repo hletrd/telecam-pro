@@ -1481,6 +1481,9 @@ data class CameraUiState(
     // Recorder admission succeeded but the encoder input has not yet attached to EGL. Controls stay
     // locked and the shutter remains a stop action, while tally/timer wait for genuine readiness.
     val isRecordingStarting: Boolean = false,
+    // Native recorder/container/microphone ownership can outlive the visible REC state while Stop
+    // drains and releases its exact graph. Review stays unavailable until this terminal clears.
+    val isRecordingFinalizing: Boolean = false,
     val recordElapsedMs: Long = 0L,
     val timerCountdownSec: Int = 0,
     val caps: CameraCaps? = null,

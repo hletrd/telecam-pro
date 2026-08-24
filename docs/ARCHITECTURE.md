@@ -1038,6 +1038,13 @@ according to its own provider result and is logged by capture id; suppression is
 This keeps the review surface and save verdict on the same take even when provider tails finish out
 of order.
 
+Review admission also follows native recording ownership rather than visible REC intent alone.
+`CameraEngine` change-gates a separate finalization edge from the moment Stop detaches the recorder
+until checked native/container/microphone release or quarantine is terminal; `CameraUiState` keeps
+that edge distinct from starting/active REC so the shutter does not falsely remain a Stop action.
+Both Compose and the ViewModel defense refuse review throughout finalization, preventing prior-video
+speaker playback from overlapping the still-live `AudioRecord` tail.
+
 On relaunch, `MediaStoreWriter.latestOwnCapture` independently queries bounded sets of current-package
 rows and owner-null TeleCam-format candidates under `DCIM/TeleCamPro` from Images and Video. Public
 path/name/collection/extension/MIME syntax recognizes an owner-null legacy candidate but cannot prove

@@ -1045,6 +1045,14 @@ class CameraViewModel @JvmOverloads constructor(
                 refreshStandbyAudioMeter()
             }
         }
+        engine.onRecordingFinalizing = { finalizing ->
+            // The callback is owned by the native-release terminal, not the REC intent. Keeping it
+            // separate leaves Stop visually complete while preventing review playback from racing
+            // the still-live AudioRecord/container tail. StateFlow is thread-safe, so publish this
+            // exact ownership edge synchronously: Stop cannot expose review for even one frame
+            // between clearing visible REC and a posted finalization update.
+            _state.update { it.copy(isRecordingFinalizing = finalizing) }
+        }
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
         // thread-safe, Compose observes on main. The controller only fires this on change.
         engine.onExposureInfo = { iso, exp -> _state.update { it.copy(liveIso = iso, liveExposureNs = exp) } }
@@ -3308,6 +3316,7 @@ class CameraViewModel @JvmOverloads constructor(
         if (open && !reviewTargetEnabled(
                 recordingStarting = _state.value.isRecordingStarting,
                 recording = _state.value.isRecording,
+                recordingFinalizing = _state.value.isRecordingFinalizing,
             )
         ) {
             // Defense in depth for non-Compose callers. A review would remove the visible Stop

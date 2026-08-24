@@ -1280,6 +1280,7 @@ fun CameraScreen(
                 val reviewEnabled = reviewTargetEnabled(
                     recordingStarting = state.isRecordingStarting,
                     recording = state.isRecording,
+                    recordingFinalizing = state.isRecordingFinalizing,
                 )
                 val onOpenReview = remember(reviewOpenUri, reviewOpenScope, reviewOpenProvenance) {
                     {
