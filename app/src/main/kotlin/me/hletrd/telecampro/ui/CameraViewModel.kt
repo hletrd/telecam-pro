@@ -309,7 +309,6 @@ class CameraViewModel @JvmOverloads constructor(
     // so an old event may clear only the exact publication it armed for.
     private var statusSequence = 0L
     private var clearStatusRunnable: Runnable? = null
-    private val statusLock = Any()
 
     private var reticleHideRunnable: Runnable? = null
     // Tap publications can originate on camera/setup/main threads while the visual timeout runs on
@@ -797,15 +796,12 @@ class CameraViewModel @JvmOverloads constructor(
                     }
                 }
             } else {
-                // An owned READY publication is what ENDS "Starting camera…": the message reports a
-                // condition, so an EVENT retires it and it carries no display timer at all (see
-                // CameraStatusLifecycle). Retired HERE, on the gate's ordering alone, rather than inside
-                // the post below — that block additionally rechecks engine truth to protect the
-                // ACCEPTED aux state (formats, pre-TELE baseline) from a stale cross-thread post,
-                // and a progress pill has no such hazard: the worst a superseded ready can do is
-                // clear it slightly early, and a genuinely new cold start/reopen re-emits its exact
-                // progress identity.
-                clearProgressStatus()
+                // Ready ends only the progress condition it still owns. Passing observe() above is
+                // not a lifetime lease: a newer Not-Ready + progress publication can land before
+                // this callback reaches retirement. runIfOwned shares the gate monitor with status
+                // publication, so the only two orders are old Ready clears first/new progress wins,
+                // or Not-Ready wins first/old Ready is inert.
+                clearProgressStatus(publication)
                 mainHandler.post {
                     // A newer optics intent or pause/session reopen can land while this camera-thread
                     // callback is queued for main. Both generations bind its output snapshot.
@@ -867,7 +863,9 @@ class CameraViewModel @JvmOverloads constructor(
                         )
                     }
                     if (acceptedApplied) preTeleUnifiedZoom = acceptedPreTele
-                    if (cameraReadyPublicationGate.owns(publication)) formatStatus?.let(::showStatus)
+                    formatStatus?.let { status ->
+                        cameraReadyPublicationGate.runIfOwned(publication) { showStatus(status) }
+                    }
                 }
             }
         }
@@ -1627,7 +1625,7 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun publishStatus(status: CameraStatus?) {
-        synchronized(statusLock) {
+        cameraReadyPublicationGate.serialized {
             _state.update { it.copy(status = status) }
             armStatusTimer(status)
         }
@@ -1644,7 +1642,7 @@ class CameraViewModel @JvmOverloads constructor(
         val sequence = ++statusSequence
         status?.durationMs?.let { durationMs ->
             val runnable = Runnable {
-                synchronized(statusLock) {
+                cameraReadyPublicationGate.serialized {
                     if (statusSequence == sequence) _state.update { current ->
                         if (current.status == status) current.copy(status = null) else current
                     }
@@ -1660,9 +1658,9 @@ class CameraViewModel @JvmOverloads constructor(
      * message still being that progress status: anything published since owns the pill and must not
      * be swallowed by a late arrival of the event this clears on.
      */
-    private fun clearProgressStatus() {
-        synchronized(statusLock) {
-            if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) return
+    private fun clearProgressStatus(readyPublication: CameraReadyPublication? = null) {
+        val clear: () -> Unit = clear@{
+            if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) return@clear
             _state.update { current ->
                 val status = current.status
                 if (status?.lifecycle == CameraStatusLifecycle.PROGRESS) current.copy(status = null)
@@ -1671,6 +1669,11 @@ class CameraViewModel @JvmOverloads constructor(
             statusSequence++
             clearStatusRunnable?.let(mainHandler::removeCallbacks)
             clearStatusRunnable = null
+        }
+        if (readyPublication == null) {
+            cameraReadyPublicationGate.serialized(clear)
+        } else {
+            cameraReadyPublicationGate.runIfOwned(readyPublication, clear)
         }
     }
 

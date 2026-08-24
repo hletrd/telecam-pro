@@ -1221,15 +1221,38 @@ data class OpenReviewPresentation(
     val deleteScope: MediaDeleteScope,
 )
 
-/** Latest-event identity gate for callbacks delivered across camera/setup/main threads. */
-internal class CameraReadyPublicationGate {
+/**
+ * Latest-event identity gate for callbacks delivered across camera/setup/main threads.
+ *
+ * Status mutation shares [serialized] / [runIfOwned] with publication observation. Merely passing
+ * [observe] is not a lifetime lease: a newer Not-Ready can arrive before an admitted Ready retires
+ * progress, and that stale Ready may not clear the newer operation's untimed condition.
+ */
+internal class CameraReadyPublicationGate(
+    private val monitor: Any = Any(),
+) {
     private val latestSequence = java.util.concurrent.atomic.AtomicLong(0)
 
-    fun observe(publication: CameraReadyPublication): Boolean =
+    fun observe(publication: CameraReadyPublication): Boolean = synchronized(monitor) {
         latestSequence.accumulateAndGet(publication.sequence, ::maxOf) == publication.sequence
+    }
 
-    fun owns(publication: CameraReadyPublication): Boolean =
+    fun owns(publication: CameraReadyPublication): Boolean = synchronized(monitor) {
         latestSequence.get() == publication.sequence
+    }
+
+    /** Runs arbitrary status-owner work in the same order as Ready/Not-Ready observations. */
+    fun <T> serialized(block: () -> T): T = synchronized(monitor) { block() }
+
+    /** Runs [block] only while [publication] still owns the exact retirement boundary. */
+    fun runIfOwned(publication: CameraReadyPublication, block: () -> Unit): Boolean =
+        synchronized(monitor) {
+            if (latestSequence.get() != publication.sequence) false
+            else {
+                block()
+                true
+            }
+        }
 }
 
 /** One ordered tap-point ownership event crossing the engine/ViewModel thread boundary. */

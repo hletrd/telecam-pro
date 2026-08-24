@@ -499,6 +499,45 @@ class ReconfigurationGenerationTest {
     }
 
     @Test
+    fun `admitted stale Ready cannot retire a newer NotReady progress owner`() {
+        val gate = CameraReadyPublicationGate()
+        val ready = CameraReadyPublication(
+            sequence = 20L,
+            ready = true,
+            opticsGeneration = 7L,
+            sessionGeneration = 30L,
+        )
+        val notReady = CameraReadyPublication(
+            sequence = 21L,
+            ready = false,
+            opticsGeneration = 8L,
+            sessionGeneration = 31L,
+        )
+        val readyAdmitted = CountDownLatch(1)
+        val releaseReadyRetirement = CountDownLatch(1)
+        val progress = AtomicReference("old progress")
+        val staleReadyRetired = AtomicBoolean(true)
+
+        assertTrue(gate.observe(ready))
+        val retirement = thread(start = true, name = "stale-ready-progress-retirement") {
+            readyAdmitted.countDown()
+            assertTrue(releaseReadyRetirement.await(1, TimeUnit.SECONDS))
+            staleReadyRetired.set(gate.runIfOwned(ready) { progress.set(null) })
+        }
+
+        assertTrue(readyAdmitted.await(1, TimeUnit.SECONDS))
+        assertTrue(gate.observe(notReady))
+        gate.serialized { progress.set("newer recovery") }
+        releaseReadyRetirement.countDown()
+        retirement.join(1_000)
+
+        assertFalse(retirement.isAlive)
+        assertFalse(staleReadyRetired.get())
+        assertEquals("newer recovery", progress.get())
+        assertTrue(gate.owns(notReady))
+    }
+
+    @Test
     fun `tap focus admission requires one live accepted AF session`() {
         val controller = Any()
         assertTrue(
