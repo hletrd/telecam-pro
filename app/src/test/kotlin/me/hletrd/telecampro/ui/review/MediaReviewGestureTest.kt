@@ -69,6 +69,89 @@ class MediaReviewGestureTest {
     }
 
     @Test
+    fun `pinch transform preserves centered and off-center content points`() {
+        val geometry = reviewStillGeometry(1200, 800, 1600, 900)
+
+        val centered = geometry.transformGesture(
+            currentScale = 1f,
+            currentOffset = Offset.Zero,
+            centroid = Offset(600f, 400f),
+            pan = Offset.Zero,
+            zoomChange = 2f,
+        )
+        assertEquals(2f, centered.scale, 0.001f)
+        assertOffset(0f, 0f, centered.offset)
+
+        val offCenter = geometry.transformGesture(
+            currentScale = 1f,
+            currentOffset = Offset.Zero,
+            centroid = Offset(900f, 200f),
+            pan = Offset.Zero,
+            zoomChange = 2f,
+        )
+        assertEquals(2f, offCenter.scale, 0.001f)
+        assertOffset(-300f, 200f, offCenter.offset)
+    }
+
+    @Test
+    fun `pinch transform combines pan and zoom before one boundary clamp`() {
+        val geometry = reviewStillGeometry(1200, 800, 1600, 900)
+
+        val combined = geometry.transformGesture(
+            currentScale = 2f,
+            currentOffset = Offset(100f, -50f),
+            centroid = Offset(900f, 600f),
+            pan = Offset(40f, -20f),
+            zoomChange = 2f,
+        )
+        assertEquals(4f, combined.scale, 0.001f)
+        assertOffset(-60f, -320f, combined.offset)
+
+        val clamped = geometry.transformGesture(
+            currentScale = 8f,
+            currentOffset = Offset(99_999f, -99_999f),
+            centroid = Offset.Zero,
+            pan = Offset(99_999f, -99_999f),
+            zoomChange = 2f,
+        )
+        assertEquals(12f, clamped.scale, 0.001f)
+        assertOffset(6600f, -3650f, clamped.offset)
+    }
+
+    @Test
+    fun `non-touch pan is bounded and position reports the viewed image region`() {
+        val geometry = reviewStillGeometry(1200, 800, 1600, 900)
+        val scale = 4f
+
+        assertEquals(ReviewStillPosition.CENTER, geometry.position(scale, Offset.Zero))
+        val left = requireNotNull(geometry.panTarget(Offset.Zero, scale, ReviewPanDirection.LEFT))
+        assertOffset(300f, 0f, left)
+        assertEquals(ReviewStillPosition.CENTER, geometry.position(scale, left))
+
+        var topLeft = Offset.Zero
+        while (true) {
+            val next = geometry.panTarget(topLeft, scale, ReviewPanDirection.LEFT) ?: break
+            topLeft = next
+        }
+        while (true) {
+            val next = geometry.panTarget(topLeft, scale, ReviewPanDirection.UP) ?: break
+            topLeft = next
+        }
+        assertOffset(1800f, 950f, topLeft)
+        assertEquals(ReviewStillPosition.TOP_LEFT, geometry.position(scale, topLeft))
+        assertNull(geometry.panTarget(topLeft, scale, ReviewPanDirection.LEFT))
+        assertNull(geometry.panTarget(topLeft, scale, ReviewPanDirection.UP))
+        assertEquals(
+            Offset(1500f, 950f),
+            geometry.panTarget(topLeft, scale, ReviewPanDirection.RIGHT),
+        )
+        assertEquals(
+            Offset(1800f, 750f),
+            geometry.panTarget(topLeft, scale, ReviewPanDirection.DOWN),
+        )
+    }
+
+    @Test
     fun `size and orientation transition reclamps the prior maximum`() {
         val landscapeViewport = reviewStillGeometry(1200, 800, 1600, 900)
         val portraitViewport = reviewStillGeometry(800, 1200, 1600, 900)
@@ -116,6 +199,25 @@ class MediaReviewGestureTest {
 
         assertTrue(decision.isDoubleTap)
         assertNull(decision.nextCandidate)
+    }
+
+    @Test
+    fun `placement beyond touch slop but inside double tap slop is accepted`() {
+        val touchSlop = 18f
+        val doubleTapSlop = 100f
+        val betweenThresholds = reviewTapSequenceDecision(
+            previous = firstTap,
+            cleanTap = true,
+            downTimeMillis = 180L,
+            upTimeMillis = 195L,
+            position = Offset(firstTap.position.x + 60f, firstTap.position.y),
+            minimumIntervalMillis = 40L,
+            maximumIntervalMillis = 300L,
+            maximumDistance = doubleTapSlop,
+        )
+
+        assertTrue(60f > touchSlop)
+        assertTrue(betweenThresholds.isDoubleTap)
     }
 
     @Test

@@ -21,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -65,6 +66,12 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
@@ -812,6 +819,11 @@ fun MediaReviewOverlay(
     val zoom4Action = stringResource(R.string.a11y_zoom_4x)
     val zoom8Action = stringResource(R.string.a11y_zoom_8x)
     val resetZoomAction = stringResource(R.string.a11y_reset_zoom)
+    val panLeftAction = stringResource(R.string.a11y_pan_left)
+    val panRightAction = stringResource(R.string.a11y_pan_right)
+    val panUpAction = stringResource(R.string.a11y_pan_up)
+    val panDownAction = stringResource(R.string.a11y_pan_down)
+    val doubleTapSlopPx = reviewDoubleTapSlop(context)
     var scale by remember { mutableFloatStateOf(1f) }
     val reviewZoomDescription = stringResource(R.string.a11y_review_zoom, reviewScaleLabel(scale))
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -978,15 +990,19 @@ fun MediaReviewOverlay(
                         // Pinch-zoom is a stills-only focus check; a video plays at fit size.
                         if (!isVideo && zoom != 1f) {
                             zoomed = true
-                            val next = (scale * zoom).takeIf { it.isFinite() }
-                                ?.coerceIn(1f, 12f)
-                                ?: scale.takeIf { it.isFinite() }?.coerceIn(1f, 12f)
-                                ?: 1f
-                            scale = next
-                            offset = stillGeometry.clampOffset(offset, next)
+                            val transform = stillGeometry.transformGesture(
+                                currentScale = scale,
+                                currentOffset = offset,
+                                centroid = event.calculateCentroid(useCurrent = false),
+                                pan = pan,
+                                zoomChange = zoom,
+                            )
+                            scale = transform.scale
+                            offset = transform.offset
+                        } else if (scale > 1f) {
+                            offset = stillGeometry.clampOffset(offset + pan, scale)
                         }
                         if (scale > 1f) {
-                            offset = stillGeometry.clampOffset(offset + pan, scale)
                             dismissDrag = 0f
                         } else {
                             offset = Offset.Zero
@@ -1014,7 +1030,9 @@ fun MediaReviewOverlay(
                                 position = tapPos,
                                 minimumIntervalMillis = viewConfiguration.doubleTapMinTimeMillis,
                                 maximumIntervalMillis = viewConfiguration.doubleTapTimeoutMillis,
-                                maximumDistance = viewConfiguration.touchSlop,
+                                // Inter-contact placement has its own platform threshold. Touch
+                                // slop above remains the one-contact drag discriminator.
+                                maximumDistance = doubleTapSlopPx,
                             )
                             firstTapCandidate = tapDecision.nextCandidate
                             if (tapDecision.isDoubleTap) {
@@ -1280,6 +1298,33 @@ fun MediaReviewOverlay(
         } else {
         val still = mediaState as? ReviewMediaState.Ready.Still
         if (still != null) {
+            val position = stillGeometry.position(scale, offset)
+            val positionDescription = stringResource(position.stringRes)
+            val fullReviewState = if (scale > 1.05f) {
+                stringResource(R.string.a11y_review_zoom_position, reviewZoomDescription, positionDescription)
+            } else {
+                reviewZoomDescription
+            }
+            fun pan(direction: ReviewPanDirection): Boolean {
+                val target = stillGeometry.panTarget(offset, scale, direction) ?: return false
+                offset = target
+                dismissDrag = 0f
+                return true
+            }
+            val panActions = buildList {
+                if (stillGeometry.panTarget(offset, scale, ReviewPanDirection.LEFT) != null) {
+                    add(ReviewPanAccessibilityAction(ReviewPanDirection.LEFT, panLeftAction))
+                }
+                if (stillGeometry.panTarget(offset, scale, ReviewPanDirection.RIGHT) != null) {
+                    add(ReviewPanAccessibilityAction(ReviewPanDirection.RIGHT, panRightAction))
+                }
+                if (stillGeometry.panTarget(offset, scale, ReviewPanDirection.UP) != null) {
+                    add(ReviewPanAccessibilityAction(ReviewPanDirection.UP, panUpAction))
+                }
+                if (stillGeometry.panTarget(offset, scale, ReviewPanDirection.DOWN) != null) {
+                    add(ReviewPanAccessibilityAction(ReviewPanDirection.DOWN, panDownAction))
+                }
+            }
             ReviewStillImage(
                 bitmap = still.bitmap.image,
                 contentDescription = stringResource(R.string.a11y_photo_review),
@@ -1287,14 +1332,16 @@ fun MediaReviewOverlay(
                 offset = offset,
                 dismissDrag = dismissDrag,
                 geometry = stillGeometry,
-                modifier = Modifier.semantics {
-                    stateDescription = reviewZoomDescription
-                    customActions = listOf(
+                modifier = Modifier.reviewStillNonTouchControls(
+                    state = fullReviewState,
+                    panActions = panActions,
+                    onPan = ::pan,
+                    otherActions = listOf(
                         CustomAccessibilityAction(zoom4Action) { setReviewScale(4f) },
                         CustomAccessibilityAction(zoom8Action) { setReviewScale(8f) },
                         CustomAccessibilityAction(resetZoomAction) { setReviewScale(1f) },
-                    )
-                },
+                    ),
+                ),
             )
         } else {
             val criticalState = when (val current = mediaState) {
@@ -1729,6 +1776,57 @@ internal data class ReviewStillTransform(
     val alpha: Float,
 )
 
+internal data class ReviewStillGestureTransform(
+    val scale: Float,
+    val offset: Offset,
+)
+
+internal enum class ReviewPanDirection { LEFT, RIGHT, UP, DOWN }
+
+internal enum class ReviewStillPosition(@StringRes val stringRes: Int) {
+    CENTER(R.string.a11y_review_position_center),
+    LEFT(R.string.a11y_review_position_left),
+    RIGHT(R.string.a11y_review_position_right),
+    TOP(R.string.a11y_review_position_top),
+    BOTTOM(R.string.a11y_review_position_bottom),
+    TOP_LEFT(R.string.a11y_review_position_top_left),
+    TOP_RIGHT(R.string.a11y_review_position_top_right),
+    BOTTOM_LEFT(R.string.a11y_review_position_bottom_left),
+    BOTTOM_RIGHT(R.string.a11y_review_position_bottom_right),
+}
+
+internal data class ReviewPanAccessibilityAction(
+    val direction: ReviewPanDirection,
+    val label: String,
+)
+
+internal fun reviewPanDirectionForKey(key: Key): ReviewPanDirection? = when (key) {
+    Key.DirectionLeft -> ReviewPanDirection.LEFT
+    Key.DirectionRight -> ReviewPanDirection.RIGHT
+    Key.DirectionUp -> ReviewPanDirection.UP
+    Key.DirectionDown -> ReviewPanDirection.DOWN
+    else -> null
+}
+
+/** One non-touch owner for bounded image navigation. Image geometry is physical and never RTL-flipped. */
+internal fun Modifier.reviewStillNonTouchControls(
+    state: String,
+    panActions: List<ReviewPanAccessibilityAction>,
+    onPan: (ReviewPanDirection) -> Boolean,
+    otherActions: List<CustomAccessibilityAction>,
+): Modifier = this
+    .onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        reviewPanDirectionForKey(event.key)?.let(onPan) ?: false
+    }
+    .focusable()
+    .semantics {
+        stateDescription = state
+        customActions = otherActions + panActions.map { action ->
+            CustomAccessibilityAction(action.label) { onPan(action.direction) }
+        }
+    }
+
 internal fun reviewStillTransform(
     scale: Float,
     offset: Offset,
@@ -1773,6 +1871,71 @@ internal data class ReviewStillGeometry(
             x = candidate.x.coerceIn(-bounds.x, bounds.x),
             y = candidate.y.coerceIn(-bounds.y, bounds.y),
         )
+    }
+
+    /** Scale about the gesture centroid, translate with it, then clamp exactly once. */
+    fun transformGesture(
+        currentScale: Float,
+        currentOffset: Offset,
+        centroid: Offset,
+        pan: Offset,
+        zoomChange: Float,
+    ): ReviewStillGestureTransform {
+        val oldScale = currentScale.takeIf { it.isFinite() }?.coerceIn(1f, 12f) ?: 1f
+        val oldOffset = clampOffset(currentOffset, oldScale)
+        val nextScale = (oldScale * zoomChange).takeIf { it.isFinite() }
+            ?.coerceIn(1f, 12f)
+            ?: oldScale
+        if (!centroid.x.isFinite() || !centroid.y.isFinite() || !pan.x.isFinite() || !pan.y.isFinite()) {
+            return ReviewStillGestureTransform(oldScale, oldOffset)
+        }
+        val ratio = nextScale / oldScale
+        val center = Offset(viewportWidth / 2f, viewportHeight / 2f)
+        val nextOffset = oldOffset * ratio + (centroid - center) * (1f - ratio) + pan
+        return ReviewStillGestureTransform(nextScale, clampOffset(nextOffset, nextScale))
+    }
+
+    /** One quarter-viewport navigation step; null means that direction is already at its bound. */
+    fun panTarget(
+        currentOffset: Offset,
+        scale: Float,
+        direction: ReviewPanDirection,
+    ): Offset? {
+        val owned = clampOffset(currentOffset, scale)
+        val delta = when (direction) {
+            ReviewPanDirection.LEFT -> Offset(viewportWidth * 0.25f, 0f)
+            ReviewPanDirection.RIGHT -> Offset(-viewportWidth * 0.25f, 0f)
+            ReviewPanDirection.UP -> Offset(0f, viewportHeight * 0.25f)
+            ReviewPanDirection.DOWN -> Offset(0f, -viewportHeight * 0.25f)
+        }
+        val target = clampOffset(owned + delta, scale)
+        return target.takeIf { it != owned }
+    }
+
+    fun position(scale: Float, currentOffset: Offset): ReviewStillPosition {
+        val bounds = panBounds(scale)
+        val owned = clampOffset(currentOffset, scale)
+        val horizontal = when {
+            bounds.x <= 0f || abs(owned.x) < bounds.x / 3f -> 0
+            owned.x > 0f -> -1 // image right => viewport is inspecting its left side
+            else -> 1
+        }
+        val vertical = when {
+            bounds.y <= 0f || abs(owned.y) < bounds.y / 3f -> 0
+            owned.y > 0f -> -1 // image down => viewport is inspecting its top
+            else -> 1
+        }
+        return when (horizontal to vertical) {
+            0 to 0 -> ReviewStillPosition.CENTER
+            -1 to 0 -> ReviewStillPosition.LEFT
+            1 to 0 -> ReviewStillPosition.RIGHT
+            0 to -1 -> ReviewStillPosition.TOP
+            0 to 1 -> ReviewStillPosition.BOTTOM
+            -1 to -1 -> ReviewStillPosition.TOP_LEFT
+            1 to -1 -> ReviewStillPosition.TOP_RIGHT
+            -1 to 1 -> ReviewStillPosition.BOTTOM_LEFT
+            else -> ReviewStillPosition.BOTTOM_RIGHT
+        }
     }
 
     /** Centers the content under a viewport-space point across an arbitrary zoom transition. */
@@ -1825,6 +1988,9 @@ internal data class ReviewTapSequenceDecision(
     val isDoubleTap: Boolean,
     val nextCandidate: ReviewTapCandidate?,
 )
+
+internal fun reviewDoubleTapSlop(context: Context): Float =
+    android.view.ViewConfiguration.get(context).scaledDoubleTapSlop.toFloat()
 
 /**
  * One still-gesture owner's double-tap reducer. Non-tap gestures cancel the sequence; an invalid
