@@ -101,7 +101,6 @@ import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoStabMode
-import me.hletrd.telecampro.camera.availableVideoStabModes
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ControlAvailability
@@ -1248,8 +1247,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
     SectionHeader(stringResource(R.string.section_stabilization))
-    val videoStabChoices = state.caps?.let { availableVideoStabModes(it.videoStabModes) }
-        ?: listOf(state.videoStabMode)
+    val videoStabChoices = state.videoStabChoices.ifEmpty { listOf(state.videoStabMode) }
     Captioned(
         when (state.videoStabMode) {
             // null, not "Off": the selected chip already says Off, and a caption restating the

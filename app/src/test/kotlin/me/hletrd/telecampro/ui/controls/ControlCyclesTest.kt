@@ -11,7 +11,6 @@ import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.ShutterTimer
-import me.hletrd.telecampro.camera.VideoStabMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -51,14 +50,6 @@ class ControlCyclesTest {
             assertEquals("cycle from $start must return to start in ${members.size} steps", start, cur)
             assertEquals("cycle from $start must visit every loop member", members.toSet(), visited)
         }
-    }
-
-    @Test
-    fun videoStabModeCycle() {
-        assertEquals(VideoStabMode.STANDARD, nextVideoStabMode(VideoStabMode.OFF))
-        assertEquals(VideoStabMode.ENHANCED, nextVideoStabMode(VideoStabMode.STANDARD))
-        assertEquals(VideoStabMode.OFF, nextVideoStabMode(VideoStabMode.ENHANCED))
-        assertClosedCycle(VideoStabMode.entries, ::nextVideoStabMode)
     }
 
     @Test

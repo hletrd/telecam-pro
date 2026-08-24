@@ -13,9 +13,7 @@ import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.ShutterTimer
-import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.availableTransfers
-import me.hletrd.telecampro.camera.availableVideoStabModes
 
 /**
  * The SINGLE home of the enum tap-cycle orders and the auto-exposure readout text shared by the
@@ -40,12 +38,6 @@ internal fun <T> nextAvailable(current: T, available: List<T>): T {
     if (available.isEmpty()) return current
     val currentIndex = available.indexOf(current)
     return available[if (currentIndex < 0) 0 else (currentIndex + 1) % available.size]
-}
-
-internal fun nextVideoStabMode(mode: VideoStabMode): VideoStabMode = when (mode) {
-    VideoStabMode.OFF -> VideoStabMode.STANDARD
-    VideoStabMode.STANDARD -> VideoStabMode.ENHANCED
-    VideoStabMode.ENHANCED -> VideoStabMode.OFF
 }
 
 internal fun nextDriveMode(mode: DriveMode): DriveMode = when (mode) {
@@ -228,9 +220,7 @@ internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlo
     FnSlot.TELECONVERTER ->
         !state.isRecording && state.activeCameraRoute == CameraRoute.BACK && state.cameraRoutes.back
     FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
-    FnSlot.STABILIZATION -> !state.isRecording && state.caps?.let {
-        availableVideoStabModes(it.videoStabModes).size > 1
-    } == true
+    FnSlot.STABILIZATION -> !state.isRecording && state.videoStabChoices.size > 1
     FnSlot.AUDIO_SCENE -> !state.isRecording
     // Session-reconfiguring (still reader size is fixed at configureStreams) / mic-route handoff:
     // both actions rejectIfRecording, so the tile must dim in step (this predicate's contract).

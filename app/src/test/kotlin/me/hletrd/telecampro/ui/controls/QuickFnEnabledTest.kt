@@ -6,6 +6,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoStabMode
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,6 +26,7 @@ class QuickFnEnabledTest {
         mode = CaptureMode.VIDEO,
         encoderInventoryLoaded = true,
         tenBitEncodeAvailable = true,
+        videoStabChoices = VideoStabMode.entries,
     )
     private val recording = CameraUiState(isRecording = true, videoCodec = VideoCodec.HEVC)
 
@@ -34,9 +36,10 @@ class QuickFnEnabledTest {
             assertTrue("$slot idle", quickFnEnabled(slot, idle))
             assertFalse("$slot recording", quickFnEnabled(slot, recording.copy(mode = CaptureMode.VIDEO)))
         }
-        // Stabilization stays unavailable until exact route capabilities arrive; advertising a
-        // guessed Standard/Active profile is the defect this projection prevents.
-        assertFalse(quickFnEnabled(FnSlot.STABILIZATION, idle))
+        assertTrue(quickFnEnabled(FnSlot.STABILIZATION, idle))
+        assertFalse(
+            quickFnEnabled(FnSlot.STABILIZATION, idle.copy(videoStabChoices = emptyList())),
+        )
     }
 
     @Test
@@ -47,11 +50,7 @@ class QuickFnEnabledTest {
         // which the OSD reports as OIS OFF, so a hot chip could contradict the OSD for one frame.
         for (slot in listOf(FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE)) {
             assertFalse("$slot in photo", quickFnEnabled(slot, idle.copy(mode = CaptureMode.PHOTO)))
-            if (slot == FnSlot.STABILIZATION) {
-                assertFalse("$slot waits for route caps", quickFnEnabled(slot, idle))
-            } else {
-                assertTrue("$slot in video", quickFnEnabled(slot, idle))
-            }
+            assertTrue("$slot in video", quickFnEnabled(slot, idle))
         }
         // Slots that act in both modes are untouched by the new axis.
         for (slot in listOf(FnSlot.ISO, FnSlot.WB, FnSlot.FOCUS, FnSlot.TELECONVERTER)) {

@@ -1490,6 +1490,8 @@ data class CameraUiState(
     val recordElapsedMs: Long = 0L,
     val timerCountdownSec: Int = 0,
     val caps: CameraCaps? = null,
+    /** Exact route-advertised stabilization choices; empty until capability truth arrives. */
+    val videoStabChoices: List<VideoStabMode> = emptyList(),
     // Device-static, enumerated once: which lens presets this hardware can actually deliver.
     val lensInventory: LensInventory = LensInventory.ALL,
     // Device-static codec truth starts conservative until the one off-main inventory completes.

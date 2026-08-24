@@ -9,7 +9,6 @@ import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.availableTransfers
-import me.hletrd.telecampro.camera.availableVideoStabModes
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.ui.CameraActions
@@ -122,10 +121,7 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.EV -> if (availability.evDialEnabled) actions.onExposureCompensation(0)
         FnSlot.ZOOM -> if (availability.zoomDialEnabled) actions.onZoomRatio(1f)
         FnSlot.STABILIZATION -> actions.onVideoStabMode(
-            nextAvailable(
-                state.videoStabMode,
-                availableVideoStabModes(requireNotNull(state.caps).videoStabModes),
-            ),
+            nextAvailable(state.videoStabMode, state.videoStabChoices),
         )
         FnSlot.DRIVE -> actions.onDriveMode(nextDriveMode(state.driveMode))
         FnSlot.METERING -> actions.onMeteringMode(

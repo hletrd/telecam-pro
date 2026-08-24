@@ -106,7 +106,6 @@ import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.availableTransfers
-import me.hletrd.telecampro.camera.availableVideoStabModes
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.exposureUpperBoundForCaptureMode
@@ -586,8 +585,9 @@ private fun FnDialChip(
             active = state.videoStabMode != VideoStabMode.OFF,
             enabled = policyEnabled,
             onClick = {
-                val modes = state.caps?.let { availableVideoStabModes(it.videoStabModes) }.orEmpty()
-                if (policyEnabled) actions.onVideoStabMode(nextAvailable(state.videoStabMode, modes))
+                if (policyEnabled) {
+                    actions.onVideoStabMode(nextAvailable(state.videoStabMode, state.videoStabChoices))
+                }
             },
             onLongClick = onOpenFnMenu,
         )

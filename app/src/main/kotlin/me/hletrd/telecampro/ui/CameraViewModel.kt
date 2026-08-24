@@ -72,6 +72,7 @@ import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
 import me.hletrd.telecampro.camera.normalizedForAvailableModes
+import me.hletrd.telecampro.camera.availableVideoStabModes
 import me.hletrd.telecampro.camera.PendingControlsDisposition
 import me.hletrd.telecampro.camera.acceptedOpticsAuxState
 import me.hletrd.telecampro.camera.controlAvailability
@@ -2876,6 +2877,7 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun reconcileZoomToCaps(caps: CameraCaps) {
         val current = _state.value
+        val videoStabChoices = availableVideoStabModes(caps.videoStabModes)
         val normalizedVideoStabMode =
             current.videoStabMode.normalizedForAvailableModes(caps.videoStabModes)
         val range = caps.zoomRatioRange
@@ -2915,6 +2917,7 @@ class CameraViewModel @JvmOverloads constructor(
                 lens = lens,
                 controls = normalizedControls,
                 videoStabMode = normalizedVideoStabMode,
+                videoStabChoices = videoStabChoices,
             )
         }
         if (normalizedVideoStabMode != current.videoStabMode) {
