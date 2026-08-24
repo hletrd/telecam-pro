@@ -24,12 +24,28 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import java.lang.reflect.Modifier
 import java.util.concurrent.atomic.AtomicLong
 
 @RunWith(RobolectricTestRunner::class)
 class ModeRollbackOwnershipRobolectricTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private var vm: CameraViewModel? = null
+
+    @Test
+    fun `video pipeline mutation serializes its decision with optics rollback`() {
+        val method = CameraEngine::class.java.getDeclaredMethod(
+            "setVideoPipeline",
+            List::class.java,
+            ColorTransfer::class.java,
+            VideoCodec::class.java,
+        )
+
+        assertTrue(
+            "setVideoPipeline must hold the Engine monitor across mode-transfer derivation and commit",
+            Modifier.isSynchronized(method.modifiers),
+        )
+    }
 
     private fun createAccepted(
         mode: CaptureMode,

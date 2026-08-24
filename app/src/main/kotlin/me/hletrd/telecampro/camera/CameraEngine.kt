@@ -2508,11 +2508,17 @@ class CameraEngine internal constructor(
      * One immutable codec/candidate/curve command. A source-precision boundary change owns one
      * optics generation, and rollback restores this complete tuple rather than a hybrid pipeline.
      */
+    @Synchronized
     fun setVideoPipeline(
         candidates: List<EncoderSelection>,
         requestedTransfer: ColorTransfer,
         fallbackCodec: VideoCodec = videoCodec,
     ) {
+        // Keep every state read below on the Engine monitor shared with rollbackOptics. In
+        // particular, mode/active-transfer and the ten-bit boundary must describe the same instant:
+        // deriving them before this monitor allowed an owned rollback to restore Photo/SDR and then
+        // be overwritten by a stale no-generation Video/HLG packet. The monitor is reentrant, so a
+        // real boundary change can enter beginOpticsTransaction without opening an interleaving gap.
         val codec = candidates.firstOrNull()?.codec ?: fallbackCodec
         val normalizedCandidates = candidates
             .filter { it.codec == codec }
