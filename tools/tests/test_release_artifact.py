@@ -168,7 +168,9 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         *,
         additional_signer: str | None = None,
         strict_returncode: int = 0,
-        manifest_permissions: frozenset[str] = release.EXPECTED_RELEASE_PERMISSIONS,
+        manifest_permissions: frozenset[str] | None = None,
+        private_guard_name: str | None = None,
+        private_guard_protection: str | None = "signature",
     ):
         def run(command, cwd):
             del cwd
@@ -210,13 +212,29 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             if command[0] == "bundletool":
                 if command[1] == "validate":
                     return subprocess.CompletedProcess(command, 0, "App Bundle validated\n", "")
+                application_id = "me.hletrd.telecampro"
+                permissions = (
+                    manifest_permissions
+                    if manifest_permissions is not None
+                    else release.expected_packaged_permissions(application_id)
+                )
+                guard_name = private_guard_name or (
+                    application_id + release.PACKAGE_PRIVATE_PERMISSION_SUFFIX
+                )
+                declaration = (
+                    f'  <permission android:protectionLevel="{private_guard_protection}" '
+                    f'android:name="{guard_name}" />\n'
+                    if private_guard_protection is not None
+                    else ""
+                )
                 manifest = (
                     '<manifest package="me.hletrd.telecampro" android:versionCode="4" '
                     'android:versionName="1.0.2">\n'
                     '  <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />\n'
+                    + declaration
                     + "".join(
                         f'  <uses-permission android:name="{permission}" />\n'
-                        for permission in sorted(manifest_permissions)
+                        for permission in sorted(permissions)
                     )
                     +
                     '</manifest>\n'
@@ -239,7 +257,9 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             with self.subTest(permission=permission), tempfile.TemporaryDirectory() as temp_dir:
                 root = Path(temp_dir)
                 attestation, _, commit = self.fixture(root)
-                permissions = release.EXPECTED_RELEASE_PERMISSIONS | {permission}
+                permissions = release.expected_packaged_permissions("me.hletrd.telecampro") | {
+                    permission
+                }
 
                 failures = release.check_release_identity(
                     root,
@@ -256,7 +276,45 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             attestation, _, commit = self.fixture(root)
-            permissions = release.EXPECTED_RELEASE_PERMISSIONS - {"android.permission.CAMERA"}
+            permissions = release.expected_packaged_permissions("me.hletrd.telecampro") - {
+                "android.permission.CAMERA"
+            }
+
+            failures = release.check_release_identity(
+                root,
+                attestation,
+                run=self.runner(commit, manifest_permissions=permissions),
+            )
+
+            self.assertTrue(
+                any("packaged permission set does not match privacy authority" in item for item in failures),
+                failures,
+            )
+
+    def test_packaged_manifest_requires_signature_protected_private_guard(self) -> None:
+        for protection in (None, "normal", "dangerous"):
+            with self.subTest(protection=protection), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+
+                failures = release.check_release_identity(
+                    root,
+                    attestation,
+                    run=self.runner(commit, private_guard_protection=protection),
+                )
+
+                self.assertIn(
+                    "package-private receiver permission is missing its signature protection",
+                    failures,
+                )
+
+    def test_packaged_manifest_rejects_extra_same_package_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, _, commit = self.fixture(root)
+            permissions = release.expected_packaged_permissions("me.hletrd.telecampro") | {
+                "me.hletrd.telecampro.UNREVIEWED_PERMISSION"
+            }
 
             failures = release.check_release_identity(
                 root,

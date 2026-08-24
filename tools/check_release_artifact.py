@@ -25,9 +25,21 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 try:
-    from tools.release_permissions import EXPECTED_RELEASE_PERMISSIONS, packaged_permissions
+    from tools.release_permissions import (
+        EXPECTED_RELEASE_PERMISSIONS,
+        PACKAGE_PRIVATE_PERMISSION_SUFFIX,
+        expected_packaged_permissions,
+        packaged_permission_declarations,
+        packaged_permissions,
+    )
 except ModuleNotFoundError:  # Direct `python3 tools/check_release_artifact.py` execution.
-    from release_permissions import EXPECTED_RELEASE_PERMISSIONS, packaged_permissions
+    from release_permissions import (
+        EXPECTED_RELEASE_PERMISSIONS,
+        PACKAGE_PRIVATE_PERMISSION_SUFFIX,
+        expected_packaged_permissions,
+        packaged_permission_declarations,
+        packaged_permissions,
+    )
 
 
 EXPECTED_UPLOAD_CERT_SHA256 = (
@@ -741,20 +753,28 @@ def check_release_identity(
         assert packaged_name is not None
         assert packaged_min_sdk is not None
         assert packaged_target_sdk is not None
+        application_id = packaged_application.group(1)
+        expected_permissions = expected_packaged_permissions(application_id)
         effective_permissions = packaged_permissions(manifest)
-        if effective_permissions != EXPECTED_RELEASE_PERMISSIONS:
-            unexpected = sorted(effective_permissions - EXPECTED_RELEASE_PERMISSIONS)
-            missing = sorted(EXPECTED_RELEASE_PERMISSIONS - effective_permissions)
+        if effective_permissions != expected_permissions:
+            unexpected = sorted(effective_permissions - expected_permissions)
+            missing = sorted(expected_permissions - effective_permissions)
             failures.append(
                 "packaged permission set does not match privacy authority "
                 f"(unexpected={unexpected}, missing={missing})"
+            )
+        private_guard = application_id + PACKAGE_PRIVATE_PERMISSION_SUFFIX
+        private_declarations = packaged_permission_declarations(manifest)
+        if private_declarations.get(private_guard) != "signature":
+            failures.append(
+                "package-private receiver permission is missing its signature protection"
             )
         if int(packaged_code.group(1)) != document["version_code"]:
             failures.append("packaged versionCode does not match attestation")
         if packaged_name.group(1) != document["version_name"]:
             failures.append("packaged versionName does not match attestation")
         if source_version is not None:
-            if packaged_application.group(1) != source_version.application_id:
+            if application_id != source_version.application_id:
                 failures.append("packaged applicationId does not match source")
             if int(packaged_min_sdk.group(1)) != source_version.min_sdk:
                 failures.append("packaged minSdk does not match source")
