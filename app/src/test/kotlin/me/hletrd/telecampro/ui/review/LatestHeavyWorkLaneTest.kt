@@ -432,17 +432,18 @@ class LatestHeavyWorkLaneTest {
                 },
                 dispose = {},
             )
-            val first = lane()
-            val second = lane()
+            // One request per lane: a second request on the same lane is allowed to retire its
+            // predecessor before dispatch (the production latest-wins contract), which made this
+            // capacity test race its own setup under host load.
+            val blockers = List(4) { lane() }
             val healthy = lane()
 
             runBlocking {
-                val blocked = listOf(
-                    async(start = CoroutineStart.UNDISPATCHED) { first.submit(Any(), "A") },
-                    async(start = CoroutineStart.UNDISPATCHED) { first.submit(Any(), "B") },
-                    async(start = CoroutineStart.UNDISPATCHED) { second.submit(Any(), "C") },
-                    async(start = CoroutineStart.UNDISPATCHED) { second.submit(Any(), "D") },
-                )
+                val blocked = blockers.mapIndexed { index, blocker ->
+                    async(start = CoroutineStart.UNDISPATCHED) {
+                        blocker.submit(Any(), ('A'.code + index).toChar().toString())
+                    }
+                }
                 assertTrue(started.await(2, TimeUnit.SECONDS))
 
                 assertEquals(
