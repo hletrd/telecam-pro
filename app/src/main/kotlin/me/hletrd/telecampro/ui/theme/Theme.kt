@@ -119,11 +119,12 @@ object CameraColors {
      * must not swallow — they simply had no name of their own, so the number lived inline four times.
      *
      * Kept SEPARATE from [Hairline] rather than merged upward: Hairline edges something you cannot
-     * touch, this edges a touch target. Composited on [Pill] these four already measure only ~1.8:1,
-     * so 0.18 is a floor being held, not a knob — moving it toward the decorative edge would dim an
-     * affordance, which is a visual decision and not a cleanup.
+     * touch, this edges a touch target. At 0.36 over [Pill] and the worst-case black HUD plate it
+     * clears the WCAG2ICT 1.4.11 3:1
+     * non-text contrast floor while retaining the quiet 1 dp Sony-style geometry. Disabled Material
+     * controls resolve their own quieter edge and must not be promoted to this enabled-state token.
      */
-    val AffordanceEdge = Color.White.copy(alpha = 0.18f)
+    val AffordanceEdge = Color.White.copy(alpha = 0.36f)
     /**
      * Composition-guide foreground drawn straight onto the live image: the
      * FrameLinesOverlay delivery-aspect box and every GridOverlay rule (thirds / golden / square /
@@ -166,9 +167,9 @@ object CameraColors {
      *
      * NOT for interactive boundaries: those four sites (the settings FilterChip via
      * `pixelChipBorder`, the dial close pill, the FocalRail circle, and MediaReview's
-     * ReviewActionButton) are [AffordanceEdge] now — a token of their own at 0.18, not this one at
-     * 0.14. They keep their own number because composited on Pill they already measure ~1.8:1, and
-     * lowering an affordance edge is not a cleanup. (The Fn overlay's own Close carries no border.)
+     * ReviewActionButton) are [AffordanceEdge] now — a token of their own at 0.36, not this one at
+     * 0.14. They keep their own number because active control boundaries carry a 3:1 non-text
+     * contrast contract. (The Fn overlay's own Close carries no border.)
      */
     val Hairline = Color.White.copy(alpha = 0.14f)
 }

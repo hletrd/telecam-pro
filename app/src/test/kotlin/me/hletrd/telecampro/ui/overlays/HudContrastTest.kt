@@ -255,11 +255,11 @@ class HudContrastTest {
 
     @Test
     fun `the white-derived structural tokens stay six distinct roles`() {
-        // AffordanceEdge (0.18) and GuideLine (0.55) were minted from repeated inline literals: four
+        // AffordanceEdge and GuideLine were minted from repeated inline literals: four
         // interactive borders and two composition guides. Two things must hold. First, each is
-        // EXACTLY the wash it replaced — otherwise the naming pass silently restyled six surfaces.
+        // exact role token remains distinct; AffordanceEdge was later raised for 3:1 non-text contrast.
         val white = androidx.compose.ui.graphics.Color.White
-        assertTrue(CameraColors.AffordanceEdge == white.copy(alpha = 0.18f))
+        assertTrue(CameraColors.AffordanceEdge == white.copy(alpha = 0.36f))
         // GuideLine was minted at 0.55 (the wash it replaced) and RESTYLED to 0.40 on 2026-07-28,
         // deliberately: the operator reported the grid and level reading too bright and heavy on the
         // live image. Re-pinned rather than loosened, so the next change is equally visible in a
@@ -270,7 +270,7 @@ class HudContrastTest {
         // future edit cannot quietly reopen the gap by nudging the token toward the value it retired.
         assertTrue(CameraColors.ScopeFrame == white.copy(alpha = 0.3f))
         // Second, the six white-derived tokens stay six NUMBERS. They are close enough to look like
-        // redundancy in a diff (0.04 / 0.09 / 0.14 / 0.18 / 0.3 / 0.55), and the temptation to collapse
+        // redundancy in a diff (0.04 / 0.09 / 0.14 / 0.36 / 0.3 / 0.4), and the temptation to collapse
         // "nearly the same grey" is exactly how the Block and Hairline drifts happened in the first
         // place. Each encodes a different role; a merge must delete a token, not quietly equalize it.
         val alphas = listOf(
@@ -288,6 +288,29 @@ class HudContrastTest {
             CameraColors.BlockDisabled, CameraColors.Block, CameraColors.Hairline,
             CameraColors.AffordanceEdge, CameraColors.ScopeFrame, CameraColors.GuideLine,
         ).forEach { assertEquals(0xFFFFFF, rgbOf(it)) }
+    }
+
+    @Test
+    fun `enabled affordance edge clears non-text contrast on every adjacent dark plate`() {
+        val plates = mapOf(
+            "sheet pill" to rgbOf(CameraColors.Pill),
+            "HUD over bright frame" to compositeOn(0x000000, HUD_TEXT_SCRIM_ALPHA, 0xFFFFFF),
+            "HUD over dark frame" to compositeOn(0x000000, HUD_TEXT_SCRIM_ALPHA, 0x000000),
+        )
+        plates.forEach { (label, plate) ->
+            val edge = compositeOn(
+                rgbOf(CameraColors.AffordanceEdge),
+                CameraColors.AffordanceEdge.alpha,
+                plate,
+            )
+            val ratio = contrastOnComposited(edge, plate)
+            assertTrue("$label enabled affordance edge contrast was $ratio", ratio >= 3.0)
+        }
+        // The 18% predecessor measured below the component-boundary floor. Keep the negative
+        // control so a future alpha change cannot weaken this into a vacuous formula check.
+        val sheet = plates.getValue("sheet pill")
+        val oldEdge = compositeOn(0xFFFFFF, 0.18f, sheet)
+        assertTrue(contrastOnComposited(oldEdge, sheet) < 3.0)
     }
 
     /** Source-over composite of an [alpha] plate of [plateRgb] onto an opaque white frame. */
