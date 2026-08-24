@@ -133,38 +133,64 @@ class CameraViewModelRobolectricTest {
         assertEquals(1f, s.controls.zoomRatio)
     }
 
-    @Test fun `delete survivor publishes uri provenance and scope as one state packet`() {
-        val ownedUri = Uri.parse("content://media/owned")
-        val unverifiedUri = Uri.parse("content://media/unverified")
-        val initial = CameraUiState(
-            lastMediaUri = ownedUri,
-            lastMediaProvenance = MediaProvenance.APP_OWNED,
-            lastMediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
-        )
-
-        val unverified = initial.withDeleteSurvivor(
-            CaptureDeleteSurvivor(
-                output = unverifiedUri,
-                kind = CaptureOutputKind.RAW,
-                provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+    @Test fun `ordinary partial delete publishes survivor and capture retry from one decision`() {
+        val survivorUri = Uri.parse("content://media/survivor")
+        val tracker = CaptureOutputTracker<Uri>(maxCaptureHistory = 4)
+        assertTrue(
+            tracker.seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput(
+                        output = survivorUri,
+                        kind = CaptureOutputKind.RAW,
+                        provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                    ),
+                ),
+                preferredOutput = survivorUri,
                 deleteScope = MediaDeleteScope.FILE_ONLY,
             ),
         )
-        assertEquals(unverifiedUri, unverified.lastMediaUri)
-        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, unverified.lastMediaProvenance)
-        assertEquals(MediaDeleteScope.FILE_ONLY, unverified.lastMediaDeleteScope)
+        val plan = tracker.beginDelete(survivorUri)
+        val survivor = checkNotNull(tracker.restoreDeleteSurvivors(plan, setOf(survivorUri)))
 
-        val owned = unverified.withDeleteSurvivor(
-            CaptureDeleteSurvivor(
-                output = ownedUri,
-                kind = CaptureOutputKind.DISPLAYABLE,
-                provenance = MediaProvenance.APP_OWNED,
-                deleteScope = MediaDeleteScope.FILE_ONLY,
-            ),
+        val delivery = resolveDeleteSurvivorDelivery(
+            current = CameraUiState(),
+            survivor = survivor,
+            captureOutputs = tracker,
         )
-        assertEquals(ownedUri, owned.lastMediaUri)
-        assertEquals(MediaProvenance.APP_OWNED, owned.lastMediaProvenance)
-        assertEquals(MediaDeleteScope.FILE_ONLY, owned.lastMediaDeleteScope)
+
+        assertEquals(DeleteRetryDestination.CAPTURE, delivery.retryDestination)
+        assertEquals(survivorUri, delivery.state.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, delivery.state.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, delivery.state.lastMediaDeleteScope)
+    }
+
+    @Test fun `superseded delete survivor preserves newer packet and selects gallery retry`() {
+        val oldUri = Uri.parse("content://media/old")
+        val newerUri = Uri.parse("content://media/newer")
+        val tracker = CaptureOutputTracker<Uri>(maxCaptureHistory = 4)
+        tracker.record(31, oldUri, CaptureOutputKind.DISPLAYABLE)
+        val plan = tracker.beginDelete(oldUri)
+        val restored = checkNotNull(tracker.restoreDeleteSurvivors(plan, setOf(oldUri)))
+        // This is the exact uncovered boundary: restore completed on the provider lane, then a
+        // newer capture became owner before the queued main-thread delivery ran.
+        tracker.record(32, newerUri, CaptureOutputKind.DISPLAYABLE)
+        val newerState = CameraUiState(
+            lastMediaUri = newerUri,
+            lastMediaProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+        )
+
+        val delivery = resolveDeleteSurvivorDelivery(
+            current = newerState,
+            survivor = restored,
+            captureOutputs = tracker,
+        )
+
+        assertEquals(DeleteRetryDestination.GALLERY, delivery.retryDestination)
+        assertEquals(newerState, delivery.state)
+        assertEquals(newerUri, delivery.state.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, delivery.state.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, delivery.state.lastMediaDeleteScope)
     }
 
     @Test fun `engine route publication installs explicit external truth without hidden tele`() {
