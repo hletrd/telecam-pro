@@ -752,6 +752,41 @@ internal fun MemoryPresetAction(
     )
 }
 
+internal data class ImmediateActionChipColors(
+    val container: Color,
+    val content: Color,
+    val border: Color?,
+)
+
+/**
+ * Paint for a click-only command. Active identity and action admission are independent axes:
+ * Custom WB is active precisely while a new measurement is unavailable, so disabled paint must
+ * cover both active states instead of relying on Material's click admission alone.
+ */
+internal fun immediateActionChipColors(active: Boolean, enabled: Boolean): ImmediateActionChipColors =
+    when {
+        active && enabled -> ImmediateActionChipColors(
+            container = CameraColors.TextPrimary,
+            content = Color.Black,
+            border = null,
+        )
+        active -> ImmediateActionChipColors(
+            container = CameraColors.TextPrimary.copy(alpha = DISABLED_ROW_ALPHA),
+            content = Color.Black.copy(alpha = DISABLED_ROW_ALPHA),
+            border = null,
+        )
+        enabled -> ImmediateActionChipColors(
+            container = Color.Transparent,
+            content = CameraColors.TextPrimary,
+            border = CameraColors.AffordanceEdge,
+        )
+        else -> ImmediateActionChipColors(
+            container = Color.Transparent,
+            content = CameraColors.TextPrimary.copy(alpha = DISABLED_ROW_ALPHA),
+            border = CameraColors.TextPrimary.copy(alpha = 0.12f),
+        )
+    }
+
 /** Compact click-only command surface; [active] affects paint, never selectable semantics. */
 @Composable
 internal fun ImmediateActionChip(
@@ -761,22 +796,16 @@ internal fun ImmediateActionChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val colors = immediateActionChipColors(active, enabled)
     MinTouchTarget48 {
         Surface(
             onClick = onClick,
             enabled = enabled,
             modifier = modifier.semantics { role = Role.Button },
             shape = RoundedCornerShape(8.dp),
-            color = if (active) CameraColors.TextPrimary else Color.Transparent,
-            contentColor = if (active) Color.Black else CameraColors.TextPrimary,
-            border = if (active) {
-                null
-            } else {
-                BorderStroke(
-                    1.dp,
-                    if (enabled) CameraColors.AffordanceEdge else CameraColors.TextPrimary.copy(alpha = 0.12f),
-                )
-            },
+            color = colors.container,
+            contentColor = colors.content,
+            border = colors.border?.let { BorderStroke(1.dp, it) },
         ) {
             Text(
                 text = label,

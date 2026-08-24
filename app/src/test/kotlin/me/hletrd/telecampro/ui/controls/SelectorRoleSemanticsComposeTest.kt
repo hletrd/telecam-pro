@@ -15,12 +15,16 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
+import androidx.compose.ui.graphics.Color
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Rule
 import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -88,7 +92,7 @@ class SelectorRoleSemanticsComposeTest {
                     ImmediateActionChip(
                         label = customWb,
                         active = true,
-                        enabled = true,
+                        enabled = false,
                         onClick = clicks::incrementAndGet,
                     )
                 }
@@ -109,7 +113,32 @@ class SelectorRoleSemanticsComposeTest {
         }
         compose.onNode(hasText(save)).assertIsEnabled().performClick()
         compose.onNode(hasText(update)).assertIsNotEnabled()
-        compose.onNode(hasText(customWb)).assertIsEnabled().performClick()
-        assert(clicks.get() == 2)
+        compose.onNode(hasText(customWb)).assertIsNotEnabled()
+        assert(clicks.get() == 1)
+    }
+
+    @Test
+    fun `immediate command paint covers every reachable active and enabled state`() {
+        val inactiveEnabled = immediateActionChipColors(active = false, enabled = true)
+        val inactiveDisabled = immediateActionChipColors(active = false, enabled = false)
+        val activeEnabled = immediateActionChipColors(active = true, enabled = true)
+        val activeDisabled = immediateActionChipColors(active = true, enabled = false)
+
+        assertEquals(Color.Transparent, inactiveEnabled.container)
+        assertEquals(CameraColors.TextPrimary, inactiveEnabled.content)
+        assertEquals(CameraColors.AffordanceEdge, inactiveEnabled.border)
+
+        assertEquals(Color.Transparent, inactiveDisabled.container)
+        assertEquals(CameraColors.TextPrimary.copy(alpha = DISABLED_ROW_ALPHA), inactiveDisabled.content)
+        assertEquals(CameraColors.TextPrimary.copy(alpha = 0.12f), inactiveDisabled.border)
+
+        assertEquals(CameraColors.TextPrimary, activeEnabled.container)
+        assertEquals(Color.Black, activeEnabled.content)
+        assertEquals(null, activeEnabled.border)
+
+        assertEquals(CameraColors.TextPrimary.copy(alpha = DISABLED_ROW_ALPHA), activeDisabled.container)
+        assertEquals(Color.Black.copy(alpha = DISABLED_ROW_ALPHA), activeDisabled.content)
+        assertEquals(null, activeDisabled.border)
+        assertNotEquals(activeEnabled, activeDisabled)
     }
 }
