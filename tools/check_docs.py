@@ -23,6 +23,18 @@ import xml.etree.ElementTree as ET
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
 CHECKS = 0
+PRIVATE_SKIPS = 0
+
+# These are intentional local/operator authorities ignored by git. Public committed checks must
+# never depend on them being present, while a maintainer checkout that provides them must retain the
+# complete stricter suite.
+PRIVATE_DOCS = {
+    "docs/play-store-listing.md",
+    "docs/BACKLOG.md",
+    "docs/TESTING.md",
+    "docs/UX_POLICY.md",
+    "docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md",
+}
 
 
 def check(ok: bool, label: str, detail: str = "") -> None:
@@ -37,6 +49,23 @@ def check(ok: bool, label: str, detail: str = "") -> None:
 
 def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def read_private(rel: str) -> str | None:
+    assert rel in PRIVATE_DOCS, f"unregistered private document: {rel}"
+    path = ROOT / rel
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def read_if_available(rel: str) -> str | None:
+    return read_private(rel) if rel in PRIVATE_DOCS else read(rel)
+
+
+def skip_private(label: str, *required: str) -> None:
+    global PRIVATE_SKIPS
+    PRIVATE_SKIPS += 1
+    missing = [rel for rel in required if not (ROOT / rel).is_file()]
+    print(f"  skip  {label} — private docs absent: {', '.join(missing)}")
 
 
 def fenced(text: str, heading: str) -> str:
@@ -56,7 +85,7 @@ def language_fenced(text: str, heading: str, language: str) -> str:
 
 
 # ---- store copy: Play's hard limits, and the wrapping trap -------------------------------------
-listing = read("docs/play-store-listing.md")
+listing = read_private("docs/play-store-listing.md")
 
 # The phone screenshot set is device evidence, not generic artwork. Its manifest pins the exact
 # checked-in bytes and the source copy those frames must show. A changed PNG or resource string must
@@ -100,17 +129,12 @@ check(not copy_mismatches, "phone screenshot recapture copy matches current reso
 blocking_assets = screenshot_manifest.get("blocking_assets", [])
 required_recapture = screenshot_manifest.get("required_recapture", {})
 obsolete_visible_copy = screenshot_manifest.get("obsolete_visible_copy", {})
-asset_authorities = re.sub(
-    r"\s+",
-    " ",
-    listing + "\n" + read("docs/play-console-submit.md"),
-)
 ready = screenshot_manifest.get("submission_ready") is True
 provenance_ready = (
     re.fullmatch(r"[0-9a-f]{64}", required_recapture.get("immutable_source_manifest_digest") or "")
     and re.fullmatch(r"[0-9a-f]{64}", required_recapture.get("apk_sha256") or "")
 )
-stale_state_valid = (
+stale_manifest_valid = (
     not ready
     and blocking_assets == [
         "docs/assets/play/screenshots/02-pro-settings.png",
@@ -123,86 +147,88 @@ stale_state_valid = (
             "Transfer", "Applied to the SDR stream",
         ],
     }
-    and "NOT SUBMISSION-READY" in listing
-    and "NOT SUBMISSION-READY" in read("docs/play-console-submit.md")
 )
-ready_state_valid = (
+ready_manifest_valid = (
     ready
     and not blocking_assets
     and not obsolete_visible_copy
     and bool(provenance_ready)
-    and "NOT SUBMISSION-READY" not in asset_authorities
-    and "SUBMISSION-READY" in asset_authorities
 )
 check(
-    (stale_state_valid or ready_state_valid)
+    (stale_manifest_valid or ready_manifest_valid)
     and required_recapture.get("source_owner") == "immutable-debug-worktree-v1"
     and required_recapture.get("source_manifest_schema") == 2,
-    "stale phone screenshots fail closed pending immutable PMA110 recapture",
-)
-check(
-    ready or all(
-        obsolete in asset_authorities
-        for values in obsolete_visible_copy.values()
-        for obsolete in values
-    ),
-    "stale phone screenshot semantics are explicit in both submission authorities",
+    "phone screenshot manifest records a valid fail-closed recapture state",
 )
 
-short = fenced(listing, "## Short description")
-check(len(short) <= 80, "short description <= 80 chars", f"{len(short)}")
+if listing is None:
+    skip_private("Play listing copy and screenshot-authority checks", "docs/play-store-listing.md")
+else:
+    asset_authorities = re.sub(
+        r"\s+",
+        " ",
+        listing + "\n" + read("docs/play-console-submit.md"),
+    )
+    stale_state_valid = (
+        stale_manifest_valid
+        and "NOT SUBMISSION-READY" in listing
+        and "NOT SUBMISSION-READY" in read("docs/play-console-submit.md")
+    )
+    ready_state_valid = (
+        ready_manifest_valid
+        and "NOT SUBMISSION-READY" not in asset_authorities
+        and "SUBMISSION-READY" in asset_authorities
+    )
+    check(
+        stale_state_valid or ready_state_valid,
+        "stale phone screenshots fail closed pending immutable PMA110 recapture",
+    )
+    check(
+        ready or all(
+            obsolete in asset_authorities
+            for values in obsolete_visible_copy.values()
+            for obsolete in values
+        ),
+        "stale phone screenshot semantics are explicit in both submission authorities",
+    )
 
-full = fenced(listing, "## Full description")
-check(len(full) <= 4000, "full description <= 4000 chars", f"{len(full)}")
+    short = fenced(listing, "## Short description")
+    check(len(short) <= 80, "short description <= 80 chars", f"{len(short)}")
+    full = fenced(listing, "## Full description")
+    check(len(full) <= 4000, "full description <= 4000 chars", f"{len(full)}")
+    notes = fenced(listing, "## Release notes")
+    inner = re.sub(r"</?(en-US|ko-KR)>", "", notes).strip()
+    check(len(inner) <= 500, "release notes <= 500 chars", f"{len(inner)}")
 
-notes = fenced(listing, "## Release notes")
-inner = re.sub(r"</?(en-US|ko-KR)>", "", notes).strip()
-check(len(inner) <= 500, "release notes <= 500 chars", f"{len(inner)}")
+    # Play applies its limits per language. Indexed on Korean headings because English headings are
+    # substrings of them ("## Short description" occurs in "### Short description — ...").
+    ko_short = fenced(listing, "간단한 설명 (≤80자)")
+    check(len(ko_short) <= 80, "ko short description <= 80 chars", f"{len(ko_short)}")
+    ko_full = fenced(listing, "자세한 설명 (≤4000자)")
+    check(len(ko_full) <= 4000, "ko full description <= 4000 chars", f"{len(ko_full)}")
+    ko_notes = fenced(listing, "출시 노트 (≤500자)")
+    ko_inner = re.sub(r"</?ko-KR>", "", ko_notes).strip()
+    check(len(ko_inner) <= 500, "ko release notes <= 500 chars", f"{len(ko_inner)}")
 
-# ---- the Korean listing is held to the same limits and the same wrapping rule -------------------
-# Play applies its limits per language, and a translation that overruns is rejected at paste time
-# rather than at review. Indexed on the Korean headings because the English ones are substrings of
-# them ("## Short description" matches inside "### Short description — ...").
-ko_short = fenced(listing, "간단한 설명 (≤80자)")
-check(len(ko_short) <= 80, "ko short description <= 80 chars", f"{len(ko_short)}")
+    def prose_line(s: str) -> bool:
+        s = s.strip()
+        return bool(s) and not s.startswith("•") and not s.startswith("<")
 
-ko_full = fenced(listing, "자세한 설명 (≤4000자)")
-check(len(ko_full) <= 4000, "ko full description <= 4000 chars", f"{len(ko_full)}")
+    for label, block in (("ko full description", ko_full), ("ko release notes", ko_notes)):
+        lines = block.split("\n")
+        wrapped = [a for a, b in zip(lines, lines[1:]) if prose_line(a) and prose_line(b)]
+        check(not wrapped, f"{label} is not hard-wrapped", f"{len(wrapped)} continuation lines")
 
-ko_notes = fenced(listing, "출시 노트 (≤500자)")
-ko_inner = re.sub(r"</?ko-KR>", "", ko_notes).strip()
-check(len(ko_inner) <= 500, "ko release notes <= 500 chars", f"{len(ko_inner)}")
+    ko_floor = re.findall(r"Android (\d+) 이상", listing)
+    check(bool(ko_floor), "the Korean copy states an Android floor")
 
-# The English wrap detector keys on a lower-case continuation, which Hangul has no notion of. The
-# language-neutral signal is structural: in the intended format every prose paragraph is ONE line,
-# so any two consecutive non-empty prose lines mean the block was re-wrapped. Bullets legitimately
-# run consecutively, and the language tags bracket the notes, so both are exempt.
-def prose_line(s: str) -> bool:
-    s = s.strip()
-    return bool(s) and not s.startswith("•") and not s.startswith("<")
-
-for label, block in (("ko full description", ko_full), ("ko release notes", ko_notes)):
-    lines = block.split("\n")
-    wrapped = [a for a, b in zip(lines, lines[1:]) if prose_line(a) and prose_line(b)]
-    check(not wrapped, f"{label} is not hard-wrapped", f"{len(wrapped)} continuation lines")
-
-# The two languages must state the same Android floor. A listing that promises a lower floor in one
-# language than the other is a support problem in exactly the market that reads the wrong one.
-ko_floor = re.findall(r"Android (\d+) 이상", listing)
-check(bool(ko_floor), "the Korean copy states an Android floor")
-
-# Play renders the description verbatim. A block re-wrapped for editor readability puts a break in
-# the middle of every sentence, which is how the listing shipped shredded the first time.
-# The signal is CONTINUATION, not line length: a hard wrap leaves a line whose successor picks the
-# sentence up mid-flow (lowercase, not a new bullet). Length alone false-flagged a legitimately
-# short bullet that happened to end in a URL.
-for label, block in (("full description", full), ("release notes", notes)):
-    lines = block.split("\n")
-    wrapped = [
-        a for a, b in zip(lines, lines[1:])
-        if a.strip() and b[:1].islower() and not b.lstrip().startswith("•")
-    ]
-    check(not wrapped, f"{label} is not hard-wrapped", f"{len(wrapped)} continuation lines")
+    for label, block in (("full description", full), ("release notes", notes)):
+        lines = block.split("\n")
+        wrapped = [
+            a for a, b in zip(lines, lines[1:])
+            if a.strip() and b[:1].islower() and not b.lstrip().startswith("•")
+        ]
+        check(not wrapped, f"{label} is not hard-wrapped", f"{len(wrapped)} continuation lines")
 
 # ---- the two privacy documents must agree ------------------------------------------------------
 privacy_md = read("PRIVACY.md")
@@ -273,7 +299,10 @@ for rel in (
     # does the most damage.
     "docs/ARCHITECTURE.md", "CLAUDE.md",
 ):
-    text = read(rel)
+    text = read_if_available(rel)
+    if text is None:
+        skip_private(f"{rel} states the real Android floor", rel)
+        continue
     # "Requires Android 16" style claims are what the audit caught; tie them to the real floor.
     android_release = {33: "13", 34: "14", 35: "15", 36: "16"}[int(min_sdk)]
     # Ignore occurrences inside quotation marks: the listing doc records the WRONG old wording in
@@ -311,41 +340,55 @@ def release_state(text: str) -> tuple[str, str] | None:
     return marker.groups() if marker else None
 
 
-backlog = read("docs/BACKLOG.md")
-backlog_release_state = release_state(backlog)
+backlog = read_private("docs/BACKLOG.md")
+backlog_release_state = release_state(backlog) if backlog is not None else None
 submit_release_state = release_state(submit)
-backlog_prose = re.sub(r"[^a-z0-9./=-]+", " ", backlog.casefold())
 submit_prose = re.sub(r"[^a-z0-9./=-]+", " ", submit.casefold())
 check(
-    backlog_release_state == submit_release_state == (expected_release_target, "none"),
-    "release authorities agree on target and no-current-artifact state",
-    f"build={expected_release_target}, backlog={backlog_release_state}, submit={submit_release_state}",
+    submit_release_state == (expected_release_target, "none"),
+    "committed submission authority matches target and no-current-artifact state",
+    f"build={expected_release_target}, submit={submit_release_state}",
 )
 check(
-    "current source/release target" in backlog_prose
-    and "no current artifact candidate exists" in backlog_prose
-    and "source/release target" in submit_prose
+    "source/release target" in submit_prose
     and "no current artifact candidate exists" in submit_prose,
-    "active release prose distinguishes source target from artifact candidate",
+    "committed submission prose distinguishes source target from artifact candidate",
 )
+if backlog is None:
+    skip_private("release board agrees with committed submission authority", "docs/BACKLOG.md")
+else:
+    backlog_prose = re.sub(r"[^a-z0-9./=-]+", " ", backlog.casefold())
+    check(
+        backlog_release_state == submit_release_state,
+        "release authorities agree on target and no-current-artifact state",
+        f"backlog={backlog_release_state}, submit={submit_release_state}",
+    )
+    check(
+        "current source/release target" in backlog_prose
+        and "no current artifact candidate exists" in backlog_prose,
+        "private release board distinguishes source target from artifact candidate",
+    )
 
 # The active external-action board once preserved its July GitHub About copy as if it were current,
 # including the now-false claim that DNG existed only in TELE. Historical investigation sections may
 # retain old route facts; this guard scopes the prohibition to the live owner-action section.
-owner_actions_match = re.search(
-    r"\*\*Owner actions outside this repo.*?:\*\*(.*?)\n## Residual Field Checks",
-    backlog,
-    re.S,
-)
-owner_actions = owner_actions_match.group(1) if owner_actions_match else ""
-check(
-    bool(owner_actions_match)
-    and "DNG only exists in TELE mode" not in owner_actions
-    and "Now: *\"Manual camera for the OPPO" not in owner_actions
-    and "DNG stills in tele mode” is **SUPERSEDED history**" in owner_actions
-    and "RAW/DNG on any lens advertising it" in owner_actions,
-    "active GitHub About record rejects the superseded TELE-only DNG claim",
-)
+if backlog is None:
+    skip_private("active GitHub About record rejects superseded route copy", "docs/BACKLOG.md")
+else:
+    owner_actions_match = re.search(
+        r"\*\*Owner actions outside this repo.*?:\*\*(.*?)\n## Residual Field Checks",
+        backlog,
+        re.S,
+    )
+    owner_actions = owner_actions_match.group(1) if owner_actions_match else ""
+    check(
+        bool(owner_actions_match)
+        and "DNG only exists in TELE mode" not in owner_actions
+        and "Now: *\"Manual camera for the OPPO" not in owner_actions
+        and "DNG stills in tele mode” is **SUPERSEDED history**" in owner_actions
+        and "RAW/DNG on any lens advertising it" in owner_actions,
+        "active GitHub About record rejects the superseded TELE-only DNG claim",
+    )
 
 # Direct Gradle release entry points are developer-only: only the immutable-source wrapper may
 # publish release evidence. Historical evidence may retain its old commands/paths when the containing
@@ -385,7 +428,11 @@ release_docs = (
 bare_release_gradle: list[str] = []
 stale_release_promises: list[str] = []
 for rel in release_docs:
-    lines = markdown_lines_with_history(read(rel))
+    text = read_if_available(rel)
+    if text is None:
+        skip_private(f"{rel} active release-path audit", rel)
+        continue
+    lines = markdown_lines_with_history(text)
     for index, (line, historical) in enumerate(lines):
         if historical:
             continue
@@ -416,10 +463,14 @@ check(
     f"{stale_release_promises}",
 )
 for rel in ("docs/play-store-listing.md", "docs/play-console-submit.md", "docs/BACKLOG.md"):
-    check(
-        "tools/build_immutable_release.py" in read(rel),
-        f"{rel} routes active release builds through the immutable wrapper",
-    )
+    text = read_if_available(rel)
+    if text is None:
+        skip_private(f"{rel} routes active release builds through the immutable wrapper", rel)
+    else:
+        check(
+            "tools/build_immutable_release.py" in text,
+            f"{rel} routes active release builds through the immutable wrapper",
+        )
 
 # Only the do-not-upload bullets define "superseded". Reading every parenthesised short digest in the
 # file instead swept in ordinary prose — the device matrix names the CURRENT artifact that way — and
@@ -484,16 +535,28 @@ check(not stale_claims, "no historical heading claims to be the current cut", f"
 # parenthetical like "(main is now 1329)" inside such a record: it drifts the moment a test lands,
 # and one had already gone stale by 35 tests when this check was written.
 for rel in ("docs/play-console-submit.md", "docs/BACKLOG.md", "README.md"):
-    text = read(rel)
+    text = read_if_available(rel)
+    if text is None:
+        skip_private(f"{rel} carries no running count cross-reference", rel)
+        continue
     running = re.findall(r"\(?`?main`? is now [\d,]+", text)
     check(not running, f"{rel} carries no running count cross-reference", f"{running}")
 
 # ---- referenced repo paths must exist -----------------------------------------------------------
 for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_CHECKS.md"):
-    text = read(rel)
+    text = read_if_available(rel)
+    if text is None:
+        skip_private(f"{rel} references only files that exist", rel)
+        continue
     refs = re.findall(r"`((?:app|docs|tools|device-tests|gradle)/[A-Za-z0-9_./-]+\.(?:kt|md|py|txt|toml|kts))`", text)
-    dead = [r for r in refs if "..." not in r and not (ROOT / r).exists()]
+    missing_private_refs = sorted({r for r in refs if r in PRIVATE_DOCS and not (ROOT / r).exists()})
+    dead = [
+        r for r in refs
+        if "..." not in r and r not in PRIVATE_DOCS and not (ROOT / r).exists()
+    ]
     check(not dead, f"{rel} references only files that exist", f"{dead}")
+    if missing_private_refs:
+        skip_private(f"{rel} private references resolve in maintainer checkout", *missing_private_refs)
 
 # The specific shape that drifted: a doc naming a minSdk value that is not the build's.
 for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
@@ -662,13 +725,22 @@ check(
     not any(claim in architecture for claim in retired_claims),
     "architecture carries no retired ownership claim",
 )
-stage_text = architecture + read("docs/play-store-listing.md")
 check(
-    all(term in stage_text for term in (
+    all(term in architecture for term in (
         "HLG10 Camera2 source", "display-referred", "8-bit", "Main10",
     )),
-    "camera/store authority names every non-SDR pipeline stage",
+    "committed camera/store authority names every non-SDR pipeline stage",
 )
+if listing is None:
+    skip_private("Play listing names every non-SDR pipeline stage", "docs/play-store-listing.md")
+else:
+    check(
+        all(
+            term in architecture + listing
+            for term in ("HLG10 Camera2 source", "display-referred", "8-bit", "Main10")
+        ),
+        "camera/store authorities jointly name every non-SDR pipeline stage",
+    )
 production_comments = "\n".join(
     read(rel) for rel in (
         "app/src/main/kotlin/me/hletrd/telecampro/gl/Shaders.kt",
@@ -687,14 +759,19 @@ check(
 manifest = read("app/src/main/AndroidManifest.xml")
 main_activity = read("app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt")
 claude = read("CLAUDE.md")
-backlog = read("docs/BACKLOG.md")
 check(
     re.search(r"<activity\b[^>]*\bandroid:screenOrientation=", manifest, re.S) is None
     and "lockPortraitOnHandsets" in main_activity
-    and "manifest carries no" in claude
-    and "manifest orientation restriction is" in backlog,
-    "orientation authority joins absent manifest restriction to handset runtime lock",
+    and "manifest carries no" in claude,
+    "committed orientation authority joins absent manifest restriction to handset runtime lock",
 )
+if backlog is None:
+    skip_private("release board records the removed orientation restriction", "docs/BACKLOG.md")
+else:
+    check(
+        "manifest orientation restriction is" in backlog,
+        "release board records the removed orientation restriction",
+    )
 check(
     "current TELE capture is eligible" not in architecture
     and "DNG is not TELE-only" in architecture,
@@ -724,14 +801,18 @@ check(
     "current comments describe maximum-resolution discovery and enabled R8",
 )
 check(
-    all(
-        "python3 tools/verify_host.py" in authority
-        for authority in (claude, architecture, read("docs/TESTING.md"))
-    )
-    and "device-harness self-tests" in architecture
-    and "device-tests/tests" in read("docs/TESTING.md"),
-    "all host-gate authorities document the consolidated non-device suite",
+    all("python3 tools/verify_host.py" in authority for authority in (claude, architecture))
+    and "device-harness self-tests" in architecture,
+    "committed host-gate authorities document the consolidated non-device suite",
 )
+testing_doc = read_private("docs/TESTING.md")
+if testing_doc is None:
+    skip_private("TESTING documents the consolidated non-device suite", "docs/TESTING.md")
+else:
+    check(
+        "python3 tools/verify_host.py" in testing_doc and "device-tests/tests" in testing_doc,
+        "TESTING documents the consolidated non-device suite",
+    )
 check(
     "python3 tools/build_immutable_debug.py" in architecture
     and "source_owner=immutable-debug-worktree-v1" in architecture
@@ -883,20 +964,23 @@ check(
     and "TopBarScope" not in camera_screen,
     "CameraScreen keeps one full-width top-bar layout and no deleted operator-rail guidance",
 )
-tablet_guidance_match = re.search(
-    r"### Tablet screenshots(.*?)\nBoth tablet slots",
-    listing,
-    re.S,
-)
-tablet_guidance = tablet_guidance_match.group(1) if tablet_guidance_match else ""
-check(
-    bool(tablet_guidance_match)
-    and "operator RAIL layout" not in tablet_guidance
-    and "controls in their own column" not in tablet_guidance
-    and "Camera controls keep the same homes" in tablet_guidance
-    and "settings panel may dock as a side sheet" in tablet_guidance,
-    "active tablet asset guidance keeps the deleted operator rail retired",
-)
+if listing is None:
+    skip_private("active tablet asset guidance keeps the deleted operator rail retired", "docs/play-store-listing.md")
+else:
+    tablet_guidance_match = re.search(
+        r"### Tablet screenshots(.*?)\nBoth tablet slots",
+        listing,
+        re.S,
+    )
+    tablet_guidance = tablet_guidance_match.group(1) if tablet_guidance_match else ""
+    check(
+        bool(tablet_guidance_match)
+        and "operator RAIL layout" not in tablet_guidance
+        and "controls in their own column" not in tablet_guidance
+        and "Camera controls keep the same homes" in tablet_guidance
+        and "settings panel may dock as a side sheet" in tablet_guidance,
+        "active tablet asset guidance keeps the deleted operator rail retired",
+    )
 stale_handset_rotation_guidance = (
     "Since the activity stopped locking orientation",
     "sideways phone already gets a rotated LAYOUT",
@@ -940,14 +1024,17 @@ check(
     and "route inputs" in architecture,
     "zoom-route table keeps RAW/DNG on its standalone lens-local home",
 )
-check(
-    "The `nativelog` filename survives only as the separate debug EGL precision gate" in backlog
-    and "tenBitExperimentEnabled" in backlog
-    and "getExternalFilesDir(null), \"nativelog\"" in read(
-        "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
-    ),
-    "native-log history preserves the surviving debug EGL flag without reviving vendor plumbing",
-)
+if backlog is None:
+    skip_private("native-log history preserves the surviving debug EGL flag", "docs/BACKLOG.md")
+else:
+    check(
+        "The `nativelog` filename survives only as the separate debug EGL precision gate" in backlog
+        and "tenBitExperimentEnabled" in backlog
+        and "getExternalFilesDir(null), \"nativelog\"" in read(
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
+        ),
+        "native-log history preserves the surviving debug EGL flag without reviving vendor plumbing",
+    )
 readme = read("README.md")
 check(
     "flip corrected everywhere" not in readme
@@ -986,11 +1073,16 @@ check(
     and "window-rotation term" in claude
     and "raw, inverted field" in claude
     and "one-call `rotationOverrideDeg`" in field_checks
-    and "raw, inverted field" in field_checks
-    and "SUPERSEDED — Loupe Overview" in backlog
-    and "predates the later per-draw" in backlog,
-    "Loupe Overview field criteria match the per-draw orientation authority",
+    and "raw, inverted field" in field_checks,
+    "committed Loupe Overview criteria match the per-draw orientation authority",
 )
+if backlog is None:
+    skip_private("Loupe history labels the superseded orientation rule", "docs/BACKLOG.md")
+else:
+    check(
+        "SUPERSEDED — Loupe Overview" in backlog and "predates the later per-draw" in backlog,
+        "Loupe history labels the superseded orientation rule",
+    )
 camera_state = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt")
 finder_tests = read("app/src/test/kotlin/me/hletrd/telecampro/camera/TeleFinderVisibilityTest.kt")
 camera_actions = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraActions.kt")
@@ -1026,20 +1118,23 @@ check(
 )
 
 # ---- coverage residual authority must stay machine-checked, not copied into prose --------------
-testing_doc = read("docs/TESTING.md")
 residual_manifest = read("tools/coverage/partition-a-residuals.txt")
-check(
-    "tools/coverage/partition-a-residuals.txt" in testing_doc
-    and "unexpected miss" in testing_doc
-    and "resolved-but-still-listed" in testing_doc
-    and "count drift" in testing_doc,
-    "TESTING points to the exact checked Partition-A residual authority",
-)
-check(
-    "cycle-7 close (10 lines" not in testing_doc
-    and "`storage/SettingsStore` 1" not in testing_doc,
-    "TESTING carries no obsolete hand-maintained residual inventory",
-)
+if testing_doc is None:
+    skip_private("TESTING points to the exact checked Partition-A residual authority", "docs/TESTING.md")
+    skip_private("TESTING carries no obsolete hand-maintained residual inventory", "docs/TESTING.md")
+else:
+    check(
+        "tools/coverage/partition-a-residuals.txt" in testing_doc
+        and "unexpected miss" in testing_doc
+        and "resolved-but-still-listed" in testing_doc
+        and "count drift" in testing_doc,
+        "TESTING points to the exact checked Partition-A residual authority",
+    )
+    check(
+        "cycle-7 close (10 lines" not in testing_doc
+        and "`storage/SettingsStore` 1" not in testing_doc,
+        "TESTING carries no obsolete hand-maintained residual inventory",
+    )
 manifest_rows = [
     line for line in residual_manifest.splitlines()
     if line.strip() and not line.lstrip().startswith("#")
@@ -1087,5 +1182,5 @@ check(
     "active Device Catalog carries no obsolete device count",
 )
 
-print(f"\n{CHECKS} checks, {len(FAILURES)} failed")
+print(f"\n{CHECKS} checks, {len(FAILURES)} failed, {PRIVATE_SKIPS} private checks skipped")
 sys.exit(1 if FAILURES else 0)

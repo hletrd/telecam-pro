@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 import os
+import shutil
 import subprocess
+import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -138,6 +142,63 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             unstaged = subprocess.run(command, cwd=root, capture_output=True, text=True)
             self.assertNotEqual(unstaged.returncode, 0, unstaged.stdout + unstaged.stderr)
             self.assertIn("trailing whitespace", unstaged.stdout + unstaged.stderr)
+
+    def test_documentation_gate_runs_from_committed_export_without_private_docs(self) -> None:
+        def extract(payload: bytes, destination: Path) -> None:
+            destination.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
+                archive.extractall(destination, filter="data")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging = root / "staging"
+            exported = root / "exported"
+            baseline = subprocess.run(
+                ["git", "archive", "HEAD"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+            ).stdout
+            extract(baseline, staging)
+
+            # The test must pass before this change itself is committed. Overlay only the tracked
+            # checker under test, commit that complete public tree, and test a second export. No
+            # ignored/private document is copied from the maintainer workspace.
+            shutil.copy2(REPO_ROOT / "tools/check_docs.py", staging / "tools/check_docs.py")
+            subprocess.run(["git", "init", "-b", "main"], cwd=staging, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Docs Export Test"], cwd=staging, check=True)
+            subprocess.run(["git", "config", "user.email", "docs@example.invalid"], cwd=staging, check=True)
+            subprocess.run(["git", "add", "-f", "."], cwd=staging, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture"], cwd=staging, check=True, capture_output=True)
+
+            committed = subprocess.run(
+                ["git", "archive", "HEAD"],
+                cwd=staging,
+                check=True,
+                capture_output=True,
+            ).stdout
+            extract(committed, exported)
+            for private_doc in (
+                "docs/play-store-listing.md",
+                "docs/BACKLOG.md",
+                "docs/TESTING.md",
+                "docs/UX_POLICY.md",
+            ):
+                self.assertFalse((exported / private_doc).exists(), private_doc)
+
+            result = subprocess.run(
+                [sys.executable, "tools/check_docs.py"],
+                cwd=exported,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("phone screenshot bytes match the validity manifest", result.stdout)
+            self.assertIn("PRIVACY.md discloses CAMERA", result.stdout)
+            self.assertIn("Architecture Module Map names every production Kotlin module", result.stdout)
+            self.assertRegex(result.stdout, r"\d+ private checks skipped")
 
 
 if __name__ == "__main__":
