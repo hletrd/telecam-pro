@@ -199,6 +199,7 @@ class CameraViewModel private constructor(
     ) : this(app, engine, latestCaptureRestoreOverrides, Unit)
 
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
+    private val cameraPolicyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0L)
 
     // The focus-ruler loupe assist owns `punchIn` transiently; these keep the operator's own value
 
@@ -1078,8 +1079,17 @@ class CameraViewModel private constructor(
         // Run-state edges only (engine is edge-gated); may arrive from the timelapse scheduler
         // thread — StateFlow.update is thread-safe.
         engine.onTimelapseRun = { running -> _state.update { it.copy(timelapseRunning = running) } }
-        engine.onCameraPolicyBlocked = { blocked ->
-            _state.update { if (it.cameraPolicyBlocked == blocked) it else it.copy(cameraPolicyBlocked = blocked) }
+        engine.onCameraPolicyBlocked = { publication ->
+            val previous = cameraPolicyPublicationSequence.getAndAccumulate(
+                publication.sequence,
+                ::maxOf,
+            )
+            if (publication.sequence > previous) {
+                _state.update {
+                    if (it.cameraPolicyBlocked == publication.blocked) it
+                    else it.copy(cameraPolicyBlocked = publication.blocked)
+                }
+            }
         }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRoute = route) } }
         engine.onStandbyAudioAvailable = {

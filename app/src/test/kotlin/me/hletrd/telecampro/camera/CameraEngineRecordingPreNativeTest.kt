@@ -201,6 +201,63 @@ class CameraEngineRecordingPreNativeTest {
     }
 
     @Test
+    fun `same precision edit cannot tear the production native setup packet`() {
+        val allocationEntered = CountDownLatch(1)
+        val releaseAllocation = CountDownLatch(1)
+        val setupPackets = CopyOnWriteArrayList<RecordingNativeSetupPacket>()
+        val resultDone = CountDownLatch(1)
+        val uri = Uri.parse("content://video/frozen-rec-packet")
+        val hevc = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-main10",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val overrides = RecordingPreNativeEngineOverrides(
+            allocatePendingVideo = { _, _ ->
+                allocationEntered.countDown()
+                releaseAllocation.await(WAIT_SECONDS, TimeUnit.SECONDS)
+                uri
+            },
+            dispatchAllocation = ::runInline,
+            scheduleDeadline = { _, _ -> RecordingTeardownCancellation {} },
+            afterMicrophoneClaim = { _, _, _ -> error("native setup observer owns this terminal") },
+            discardPendingOutput = { PendingOutputDiscardResult.RECOVERY_MARKED },
+            useProductionEncoderAdmission = true,
+            frameRateAvailable = true,
+            onNativeSetupPacket = { packet ->
+                setupPackets += packet
+                false
+            },
+        )
+        val engine = engine(overrides)
+        setField(engine, "videoMode", true)
+        engine.setVideoPipeline(listOf(hevc), ColorTransfer.HLG, VideoCodec.HEVC)
+        installAcceptedSession(engine)
+        val frozenSize = field(engine, "videoSize")
+        val frozenRate = field(engine, "videoFrameRate")
+
+        engine.startRecording(recordAudio = false) { resultDone.countDown() }
+        assertTrue(allocationEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+
+        // HLG and S-Log3 use the same accepted HLG10 Camera2 source, so this does not invalidate
+        // the session. The already-admitted take nevertheless owns one complete old packet.
+        engine.setVideoPipeline(listOf(hevc), ColorTransfer.SLOG3, VideoCodec.HEVC)
+        releaseAllocation.countDown()
+
+        assertTrue(resultDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        val packet = setupPackets.single()
+        assertEquals(frozenSize, packet.size)
+        assertEquals(frozenRate, packet.frameRate)
+        assertEquals(0.0, packet.captureRate, 0.0)
+        assertEquals(VideoCodec.HEVC, packet.codec)
+        assertEquals(ColorTransfer.HLG, packet.transfer)
+        assertEquals(listOf(hevc), packet.candidates)
+        assertEquals(ColorTransfer.SLOG3, field(engine, "transfer"))
+    }
+
+    @Test
     fun `real start timeout retires provider with exactly one result and failure status`() {
         val providerEntered = CountDownLatch(1)
         val providerRelease = trackedRelease()

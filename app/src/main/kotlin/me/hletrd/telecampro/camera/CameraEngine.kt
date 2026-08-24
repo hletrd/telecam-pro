@@ -80,13 +80,46 @@ internal data class RecordingPreNativeEngineOverrides(
     val beforeEncoderAdmissionSnapshot: (() -> Unit)? = null,
     /** Observes the exact pre-policy packet after the Engine monitor has been released. */
     val onEncoderAdmissionInputs: ((RecordingAdmissionInputs) -> Unit)? = null,
+    /** Executes the production setup-packet composition without entering MediaCodec in host tests. */
+    val onNativeSetupPacket: ((RecordingNativeSetupPacket) -> Boolean)? = null,
+    /** Host-only capability answer; null keeps exact CameraCaps-derived production admission. */
+    val frameRateAvailable: Boolean? = null,
 )
 
 internal data class RecordingAdmissionInputs(
     val frameRateAvailable: Boolean,
+    val size: Size,
+    val frameRate: VideoFrameRate,
+    val captureRate: Double,
     val codec: VideoCodec,
     val transfer: ColorTransfer,
     val candidates: List<EncoderSelection>,
+)
+
+/** One exact accepted REC packet carried unchanged from admission through native setup. */
+internal data class RecordingNativeSetupPacket(
+    val size: Size,
+    val frameRate: VideoFrameRate,
+    val captureRate: Double,
+    val codec: VideoCodec,
+    val transfer: ColorTransfer,
+    val candidates: List<EncoderSelection>,
+)
+
+/** Host observation edge for the active GL transfer lane; production still posts to GlPipeline. */
+internal data class VideoPipelineEngineOverrides(
+    val onGlTransfer: (ColorTransfer?) -> Unit,
+)
+
+/** Host-only Binder classification seam for deterministic delayed AppOps ownership tests. */
+internal data class CameraPolicyEngineOverrides(
+    val cameraOpWithheld: () -> Boolean,
+)
+
+/** Monotonic camera-policy terminal so delayed true/false callbacks cannot repaint newer truth. */
+data class CameraPolicyPublication(
+    val sequence: Long,
+    val blocked: Boolean,
 )
 
 /** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
@@ -143,6 +176,8 @@ class CameraEngine internal constructor(
     private val stabilizationOverrides: StabilizationEngineOverrides? = null,
     private val zoomOverrides: ZoomEngineOverrides? = null,
     private val timelapseOverrides: TimelapseEngineOverrides? = null,
+    private val videoPipelineOverrides: VideoPipelineEngineOverrides? = null,
+    private val cameraPolicyOverrides: CameraPolicyEngineOverrides? = null,
 ) {
 
     /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
@@ -347,6 +382,8 @@ class CameraEngine internal constructor(
     @Volatile private var acceptedCameraSession: AcceptedCameraSession? = null
     private val cameraSessionGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val cameraReadyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    private val cameraPolicyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    @Volatile private var currentCameraPolicyPublication = CameraPolicyPublication(0L, false)
     // Instrumentation-readable lifecycle evidence. These are observations of production events,
     // not test-controlled state: Ready publications remain owned by the existing sequence, while
     // preview orders advance only at accepted pending edges and producer-fed first-frame swaps.
@@ -412,6 +449,13 @@ class CameraEngine internal constructor(
         held = held,
         point = point,
     )
+
+    /** Engine-monitor-only: advances one exact policy terminal for out-of-order UI rejection. */
+    private fun nextCameraPolicyPublication(blocked: Boolean): CameraPolicyPublication =
+        CameraPolicyPublication(
+            sequence = cameraPolicyPublicationSequence.incrementAndGet(),
+            blocked = blocked,
+        ).also { currentCameraPolicyPublication = it }
 
     /** Engine-monitor-only: retires the exact session that owned the functional tap point. */
     private fun retireTapFocusLocked(rebuildPreview: Boolean): TapFocusPublication? {
@@ -506,6 +550,12 @@ class CameraEngine internal constructor(
         requestedTransfer = requestedVideoTransfer,
         activeTransfer = transfer,
     )
+
+    /** Posts one transfer to the live GL owner and mirrors that exact command into host evidence. */
+    private fun postGlTransfer(value: ColorTransfer?) {
+        videoPipelineOverrides?.onGlTransfer?.invoke(value)
+        gl.setTransfer(value)
+    }
 
     /** Publishes one complete pipeline packet while the caller owns the Engine monitor. */
     private fun publishVideoPipelineLocked(selection: VideoPipelineSelection): Long {
@@ -663,7 +713,7 @@ class CameraEngine internal constructor(
         // while the optics monitor is held.
         var publication: CameraReadyPublication? = null
         var acceptedDiagnostic: String? = null
-        var publishPolicyUnblocked = false
+        var policyPublication: CameraPolicyPublication? = null
         val publicationGeneration = opticsCommitGate.commit(
             expectedGeneration = expectedGeneration,
             ownsTerminal = {
@@ -706,7 +756,7 @@ class CameraEngine internal constructor(
                 // same commit that publishes Ready — leaving it up over a live camera would be a
                 // worse lie than the silence this feature replaced.
                 cameraPolicyBlocked = false
-                publishPolicyUnblocked = true
+                policyPublication = nextCameraPolicyPublication(blocked = false)
             }
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
@@ -714,7 +764,7 @@ class CameraEngine internal constructor(
         // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
         // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
         runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
-        if (publishPolicyUnblocked) onCameraPolicyBlocked?.invoke(false)
+        policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
         onCameraReadyChange?.invoke(checkNotNull(publication))
         return true
     }
@@ -832,7 +882,7 @@ class CameraEngine internal constructor(
         } else {
             currentVideoPipelineSelection()
         }
-        if (recorder == null) gl.setTransfer(before.transfer)
+        if (recorder == null) postGlTransfer(restoredVideoPipeline.activeTransfer)
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
         // A failed FRONT open (or a failed exit) restores the exact prior facing with the rest of
@@ -1441,7 +1491,7 @@ class CameraEngine internal constructor(
      * spent. Retrying cannot clear it — only the user can, in the app's settings page — so the UI
      * shows the permission gate rather than an interactive-looking black viewfinder.
      */
-    var onCameraPolicyBlocked: ((Boolean) -> Unit)?
+    var onCameraPolicyBlocked: ((CameraPolicyPublication) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.CAMERA_POLICY)
         set(value) = callbackSink.install(EngineCallbackKey.CAMERA_POLICY, value)
 
@@ -2603,11 +2653,11 @@ class CameraEngine internal constructor(
         val publish = { publishVideoPipelineLocked(targetPipeline) }
         if (tenBitChanged && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
-            gl.setTransfer(activeTransfer)
+            postGlTransfer(activeTransfer)
             reopenForSession(transaction)
         } else {
             publish()
-            if (recorder == null) gl.setTransfer(activeTransfer)
+            if (recorder == null) postGlTransfer(activeTransfer)
         }
     }
 
@@ -3069,7 +3119,8 @@ class CameraEngine internal constructor(
      * unanswerable question can never produce the accusation. That biases toward the old silent
      * behaviour rather than toward a wrong claim, which is the right way round.
      */
-    private fun cameraOpWithheld(): Boolean = runCatching {
+    private fun cameraOpWithheld(): Boolean = cameraPolicyOverrides?.cameraOpWithheld?.invoke()
+        ?: runCatching {
         val ops = context.getSystemService(android.app.AppOpsManager::class.java) ?: return false
         val mode = ops.checkOpNoThrow(
             android.app.AppOpsManager.OPSTR_CAMERA,
@@ -3077,7 +3128,7 @@ class CameraEngine internal constructor(
             context.packageName,
         )
         cameraOpModeWithheld(mode)
-    }.getOrDefault(false)
+        }.getOrDefault(false)
 
     private fun handleActiveCameraFailure(
         failedController: CameraController,
@@ -3123,8 +3174,25 @@ class CameraEngine internal constructor(
         // question — is the camera op withheld from THIS package right now — and turns an inference
         // into a proof. A transient lifecycle race leaves the op ALLOWED and is therefore never
         // accused; only a genuine withholding latches.
-        val policyBlocked = cameraFailureIsPolicyBlock(failure) && cameraOpWithheld()
-        if (policyBlocked) cameraPolicyBlocked = true
+        val policyQueryBlocked = cameraFailureIsPolicyBlock(failure) && cameraOpWithheld()
+        // AppOps is Binder I/O and deliberately runs outside the Engine monitor. Its answer belongs
+        // only to the exact failed controller/session invalidation captured above; a replacement
+        // Ready may commit while the query is blocked, and that newer session must make the old
+        // result inert rather than letting it relatch policy truth afterward.
+        val policyBlocked = if (policyQueryBlocked) synchronized(this) {
+            val stillOwned = controller === failedController &&
+                cameraSessionGeneration.get() == outcome.first.sessionGeneration &&
+                acceptedCameraSession == null && !cameraReady
+            if (stillOwned) {
+                cameraPolicyBlocked = true
+                nextCameraPolicyPublication(blocked = true)
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
         val evicted = cameraFailureIsEviction(failure)
         if (evicted) {
             // Another camera app took the device — ordinary multitasking, not a fault. The status
@@ -3167,10 +3235,15 @@ class CameraEngine internal constructor(
             // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
             // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
             // background/foreground cycle (resume()) retries with a fresh attempt budget.
-            if (cameraPolicyBlocked) {
+            val policyPublication = synchronized(this) {
+                currentCameraPolicyPublication.takeIf {
+                    cameraPolicyBlocked && it.blocked
+                }
+            }
+            if (policyPublication != null) {
                 // A policy block never heals by reopening, and "Reopen the app." would send the
                 // user around a loop that cannot end. Hand it to the permission gate instead.
-                onCameraPolicyBlocked?.invoke(true)
+                onCameraPolicyBlocked?.invoke(policyPublication)
             } else {
                 onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
             }
@@ -5028,7 +5101,7 @@ class CameraEngine internal constructor(
     private data class RecordingAdmissionSnapshot(
         val acceptedSession: AcceptedCameraSession?,
         val inputs: RecordingAdmissionInputs? = null,
-        val encoderCandidates: List<EncoderSelection>,
+        val setupPacket: RecordingNativeSetupPacket? = null,
         val failure: CameraStatusMessage? = null,
         val isCurrent: () -> Boolean,
     )
@@ -5040,11 +5113,25 @@ class CameraEngine internal constructor(
     private fun currentRecordingAdmissionSnapshot(): RecordingAdmissionSnapshot? = synchronized(this) {
         val acceptedSession = currentAcceptedRecordingSession() ?: return@synchronized null
         recordingPreNativeOverrides?.beforeEncoderAdmissionSnapshot?.invoke()
+        val frozenSize = videoSize
+        val frozenFrameRate = videoFrameRate
+        val frozenCodec = videoCodec
+        val frozenTransfer = transfer
+        val frozenCandidates = videoEncoderCandidates.toList()
+        val frozenHighSpeedFps = desiredHighSpeedFps()
         val inputs = RecordingAdmissionInputs(
-            frameRateAvailable = videoFrameRate in VideoFrameRate.availableFor(caps, videoSize, videoCodec),
-            codec = videoCodec,
-            transfer = transfer,
-            candidates = videoEncoderCandidates,
+            frameRateAvailable = recordingPreNativeOverrides?.frameRateAvailable
+                ?: (frozenFrameRate in VideoFrameRate.availableFor(
+                    caps,
+                    frozenSize,
+                    frozenCodec,
+                )),
+            size = frozenSize,
+            frameRate = frozenFrameRate,
+            captureRate = if (frozenHighSpeedFps != 0) frozenFrameRate.encoderRate else 0.0,
+            codec = frozenCodec,
+            transfer = frozenTransfer,
+            candidates = frozenCandidates,
         )
         val encoderAdmission = recordingEncoderAdmission(
             frameRateAvailable = inputs.frameRateAvailable,
@@ -5055,7 +5142,14 @@ class CameraEngine internal constructor(
         RecordingAdmissionSnapshot(
             acceptedSession = acceptedSession,
             inputs = inputs,
-            encoderCandidates = encoderAdmission.candidates,
+            setupPacket = RecordingNativeSetupPacket(
+                size = inputs.size,
+                frameRate = inputs.frameRate,
+                captureRate = inputs.captureRate,
+                codec = inputs.codec,
+                transfer = inputs.transfer,
+                candidates = encoderAdmission.candidates,
+            ),
             failure = encoderAdmission.failure,
             isCurrent = { currentAcceptedRecordingSession() === acceptedSession },
         )
@@ -5126,7 +5220,6 @@ class CameraEngine internal constructor(
             ?.let { overrides ->
             RecordingAdmissionSnapshot(
                 acceptedSession = null,
-                encoderCandidates = emptyList(),
                 isCurrent = overrides.admissionCurrent,
             )
         } ?: run {
@@ -5136,7 +5229,7 @@ class CameraEngine internal constructor(
                 return false
             }
             val observedDecision = RecordingEncoderAdmission(
-                candidates = snapshot.encoderCandidates,
+                candidates = snapshot.setupPacket?.candidates.orEmpty(),
                 failure = snapshot.failure,
             )
             snapshot.inputs?.let { recordingPreNativeOverrides?.onEncoderAdmissionInputs?.invoke(it) }
@@ -5366,7 +5459,7 @@ class CameraEngine internal constructor(
             } else {
                 try {
                     val overrides = recordingPreNativeOverrides
-                    if (overrides != null) {
+                    if (overrides != null && overrides.onNativeSetupPacket == null) {
                         val admitted = overrides.afterMicrophoneClaim(
                             uri,
                             recordingCaptureId,
@@ -5391,7 +5484,7 @@ class CameraEngine internal constructor(
                             audioClaim = audioClaim,
                             processAdmission = processAdmission,
                             setupContext = setupContext,
-                            encoderCandidates = admission.encoderCandidates,
+                            setupPacket = checkNotNull(admission.setupPacket),
                             completeAttempt = completeAttempt,
                             uri = uri,
                             recordingCaptureId = recordingCaptureId,
@@ -5420,7 +5513,7 @@ class CameraEngine internal constructor(
         audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
         setupContext: RecorderSetupOwner,
-        encoderCandidates: List<EncoderSelection>,
+        setupPacket: RecordingNativeSetupPacket,
         completeAttempt: (Boolean) -> Unit,
         uri: android.net.Uri,
         recordingCaptureId: Int,
@@ -5459,27 +5552,32 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
-        val size = videoSize
-        val codec = encoderCandidates.first().codec
-        val rate = videoFrameRate
-        // High-speed (≥120 fps via the constrained session) tells the encoder it is fed faster than
-        // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0. (High-speed is disabled — it
-        // SIGABRTs the HAL — so desiredHighSpeedFps() is always 0 in practice.)
-        val captureRate = if (desiredHighSpeedFps() != 0) rate.encoderRate else 0.0
+        val size = setupPacket.size
+        val codec = setupPacket.codec
+        val rate = setupPacket.frameRate
+        val captureRate = setupPacket.captureRate
+        val encoderCandidates = setupPacket.candidates
         // AVC is 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC/APV keep the
         // 10-bit HLG/Log path. (Resolution changes after this point stream the old size until reopen.)
         // The HAL-native-log arm both of these carried was removed 2026-08-04 with the vendor-SDK
         // decision: it only ever triggered on a stream this app can no longer be given.
         val glTransfer = when {
-            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
+            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> setupPacket.transfer
             else -> null
         }
         // File color tags: use the selected transfer on the 10-bit paths (HEVC/APV); AVC is always
         // SDR. The log-class members still share one container policy (BT.2020 full-range + an
         // explicit SDR-class transfer, never unset — the QTI PQ-mistag trap); see ColorProfiles.
         val fileTransfer = when {
-            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
+            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> setupPacket.transfer
             else -> ColorTransfer.SDR
+        }
+        recordingPreNativeOverrides?.onNativeSetupPacket?.let { observe ->
+            if (!observe(setupPacket)) {
+                retirePendingRecordingRow(uri, recordingCaptureId, "injected-native-setup-terminal")
+                abortRecordingStart()
+                return false
+            }
         }
         val rec = VideoRecorder(context).also { it.processAdmissionToken = processAdmission }
         // Bind before the first vendor-native setup call. A release timeout that wins from here on
@@ -6616,11 +6714,16 @@ class CameraEngine internal constructor(
         // how to fix it. Returning from Settings is exactly the moment to try again; if the block is
         // still in place the bounded reopen re-raises the gate within a second or two, which is the
         // same contract as "Camera unavailable. Reopen the app." one branch over.
-        if (cameraPolicyBlocked) {
-            cameraPolicyBlocked = false
-            cameraRecoveryAttempts = 0
-            onCameraPolicyBlocked?.invoke(false)
+        val policyPublication = synchronized(this) {
+            if (cameraPolicyBlocked) {
+                cameraPolicyBlocked = false
+                cameraRecoveryAttempts = 0
+                nextCameraPolicyPublication(blocked = false)
+            } else {
+                null
+            }
         }
+        policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
         if (!nativeAcquisitionMayProceed()) {
             StartupTrace.disarm()
             if (UnsafeRecorderQuarantine.isActive()) {

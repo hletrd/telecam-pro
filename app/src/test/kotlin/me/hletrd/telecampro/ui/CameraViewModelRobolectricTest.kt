@@ -12,6 +12,7 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraReadyPublication
+import me.hletrd.telecampro.camera.CameraPolicyPublication
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
@@ -916,12 +917,14 @@ class CameraViewModelRobolectricTest {
         // MainActivity replaces CameraScreen with PermissionGate for this Engine state and installs
         // a separate owner. The exact review is ViewModel state, so composition replacement cannot
         // discard its URI while retaining only the pin/block Boolean.
-        e.onCameraPolicyBlocked!!.invoke(true)
+        e.onCameraPolicyBlocked!!.invoke(CameraPolicyPublication(1L, true))
         v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_POLICY, true)
         assertEquals(frozen, v.state.value.openReview)
         assertTrue(v.state.value.cameraInputBlocked)
 
-        e.onCameraPolicyBlocked!!.invoke(false)
+        e.onCameraPolicyBlocked!!.invoke(CameraPolicyPublication(2L, false))
+        e.onCameraPolicyBlocked!!.invoke(CameraPolicyPublication(1L, true))
+        assertFalse("older policy terminal repainted replacement truth", v.state.value.cameraPolicyBlocked)
         v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_POLICY, false)
         assertEquals(frozen, v.state.value.openReview)
         assertTrue("the reconstructed review still owns input", v.state.value.cameraInputBlocked)

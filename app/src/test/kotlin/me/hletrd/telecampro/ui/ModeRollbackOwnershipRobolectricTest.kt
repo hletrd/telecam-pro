@@ -14,6 +14,7 @@ import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.recordingEncoderAdmission
 import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoPipelineEngineOverrides
 import me.hletrd.telecampro.video.EncoderSelection
 import me.hletrd.telecampro.video.CodecInventory
 import org.junit.After
@@ -140,13 +141,45 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals(listOf(VideoCodec.AVC), admitted.candidates.map { it.codec })
     }
 
+    @Test
+    fun `newer same precision packet is the observable GL winner after rollback`() {
+        val glTransfers = mutableListOf<ColorTransfer?>()
+        val (viewModel, engine) = createAccepted(
+            mode = CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.HLG,
+            requestedTransfer = ColorTransfer.HLG,
+            videoPipelineOverrides = VideoPipelineEngineOverrides(glTransfers::add),
+        )
+        glTransfers.clear()
+        val transaction = beginUnchangedOpticsTransaction(engine)
+
+        viewModel.onTransfer(ColorTransfer.SLOG3)
+        assertEquals(ColorTransfer.SLOG3, glTransfers.last())
+        forceOwnedRollback(engine, transaction, drainMain = false)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(ColorTransfer.SLOG3, glTransfers.last())
+        assertEquals(ColorTransfer.SLOG3, engineTransfer(engine))
+        assertEquals(ColorTransfer.SLOG3, field(engine, "requestedVideoTransfer"))
+        assertEquals(ColorTransfer.SLOG3, viewModel.state.value.transfer)
+        val admitted = recordingEncoderAdmission(
+            frameRateAvailable = true,
+            codec = field(engine, "videoCodec") as VideoCodec,
+            transfer = engineTransfer(engine),
+            candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+                .filterIsInstance<EncoderSelection>(),
+        )
+        assertEquals(null, admitted.failure)
+    }
+
     private fun createAccepted(
         mode: CaptureMode,
         acceptedTransfer: ColorTransfer = transferFor(mode),
         requestedTransfer: ColorTransfer = ColorTransfer.HLG,
+        videoPipelineOverrides: VideoPipelineEngineOverrides? = null,
     ): Pair<CameraViewModel, CameraEngine> {
         RobolectricEglSentinels.ensure()
-        val engine = CameraEngine(app)
+        val engine = CameraEngine(app, videoPipelineOverrides = videoPipelineOverrides)
         val viewModel = CameraViewModel(app, engine)
         vm = viewModel
         // Drain constructor-time capability publication before installing the accepted fixture.
@@ -218,6 +251,24 @@ class ModeRollbackOwnershipRobolectricTest {
             .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
         assertEquals(acceptedTransfer, engineTransfer(engine))
         assertEquals(requestedTransfer, field(engine, "requestedVideoTransfer"))
+        if (drainMain) shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun beginUnchangedOpticsTransaction(engine: CameraEngine): Any {
+        val result = CameraEngine::class.java.declaredMethods.single {
+            it.name == "beginOpticsTransaction"
+        }.apply { isAccessible = true }.invoke(engine, { Unit }) as Pair<*, *>
+        return checkNotNull(result.first)
+    }
+
+    private fun forceOwnedRollback(
+        engine: CameraEngine,
+        transaction: Any,
+        drainMain: Boolean,
+    ) {
+        CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
+            .apply { isAccessible = true }
+            .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
         if (drainMain) shadowOf(Looper.getMainLooper()).idle()
     }
 
