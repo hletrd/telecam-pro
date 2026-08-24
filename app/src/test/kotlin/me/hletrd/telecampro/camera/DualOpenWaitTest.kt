@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -95,6 +96,41 @@ class DualOpenWaitTest {
             assertTrue(Thread.currentThread().isInterrupted)
         } finally {
             Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun `supersession restores outgoing when candidate owns or already cleared the slot`() {
+        assertEquals(
+            DualOpenSupersessionCleanup.RESTORE_OUTGOING,
+            dualOpenSupersessionCleanup(true, false, false),
+        )
+        assertEquals(
+            DualOpenSupersessionCleanup.RESTORE_OUTGOING,
+            dualOpenSupersessionCleanup(false, true, false),
+        )
+    }
+
+    @Test
+    fun `supersession keeps an already restored outgoing owner`() {
+        assertEquals(
+            DualOpenSupersessionCleanup.KEEP_OUTGOING,
+            dualOpenSupersessionCleanup(false, false, true),
+        )
+    }
+
+    @Test
+    fun `supersession releases outgoing rather than overwriting a newer controller`() {
+        assertEquals(
+            DualOpenSupersessionCleanup.RELEASE_OUTGOING,
+            dualOpenSupersessionCleanup(false, false, false),
+        )
+    }
+
+    @Test
+    fun `supersession rejects ambiguous shared-slot state`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            dualOpenSupersessionCleanup(true, true, false)
         }
     }
 }

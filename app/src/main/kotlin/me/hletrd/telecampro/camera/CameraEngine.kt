@@ -3745,15 +3745,24 @@ class CameraEngine internal constructor(
             }
             if (!ownsOpticsTransaction(transaction)) {
                 next.close()
-                synchronized(this) {
-                    if (controller === next) {
-                        controller = old
-                        selection = transaction.before.selection
-                        caps = transaction.before.caps
-                        videoSize = transaction.before.videoSize
-                        previewStreamSize = transaction.before.previewStreamSize
+                val cleanup = synchronized(this) {
+                    dualOpenSupersessionCleanup(
+                        candidateOwnsSlot = controller === next,
+                        slotVacant = controller == null,
+                        outgoingOwnsSlot = controller === old,
+                    ).also { action ->
+                        if (action != DualOpenSupersessionCleanup.RELEASE_OUTGOING) {
+                            controller = old
+                            selection = transaction.before.selection
+                            caps = transaction.before.caps
+                            videoSize = transaction.before.videoSize
+                            previewStreamSize = transaction.before.previewStreamSize
+                        }
                     }
                 }
+                // Candidate self-removal may have vacated the slot before setup observes the newer
+                // intent. Vacancy still belongs to this attempt; a different non-null slot does not.
+                if (cleanup == DualOpenSupersessionCleanup.RELEASE_OUTGOING) old?.close()
                 return@execute
             }
             if (!nativeAcquisitionMayProceed() || paused || recorder != null || controller !== next) {
@@ -7020,6 +7029,22 @@ internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGene
     currentGeneration == expectedGeneration
 
 internal enum class DualOpenWaitResult { SIGNALED, SUPERSEDED, TIMED_OUT }
+
+internal enum class DualOpenSupersessionCleanup { RESTORE_OUTGOING, KEEP_OUTGOING, RELEASE_OUTGOING }
+
+/** Exact outgoing-owner terminal for one superseded dual-open attempt. */
+internal fun dualOpenSupersessionCleanup(
+    candidateOwnsSlot: Boolean,
+    slotVacant: Boolean,
+    outgoingOwnsSlot: Boolean,
+): DualOpenSupersessionCleanup {
+    require(listOf(candidateOwnsSlot, slotVacant, outgoingOwnsSlot).count { it } <= 1)
+    return when {
+        candidateOwnsSlot || slotVacant -> DualOpenSupersessionCleanup.RESTORE_OUTGOING
+        outgoingOwnsSlot -> DualOpenSupersessionCleanup.KEEP_OUTGOING
+        else -> DualOpenSupersessionCleanup.RELEASE_OUTGOING
+    }
+}
 
 /**
  * Waits for a CameraDevice-open terminal without letting stale ownership monopolize setup.
