@@ -25,6 +25,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import java.lang.reflect.Modifier
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 @RunWith(RobolectricTestRunner::class)
@@ -45,6 +47,44 @@ class ModeRollbackOwnershipRobolectricTest {
             "setVideoPipeline must hold the Engine monitor across mode-transfer derivation and commit",
             Modifier.isSynchronized(method.modifiers),
         )
+    }
+
+    @Test
+    fun `pipeline command queued behind rollback cannot publish Photo with active HLG`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        viewModel.onModeChange(CaptureMode.VIDEO)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        val candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+            .filterIsInstance<EncoderSelection>()
+        val started = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val pipelineThread: Thread
+
+        synchronized(engine) {
+            pipelineThread = Thread {
+                started.countDown()
+                try {
+                    engine.setVideoPipeline(candidates, ColorTransfer.HLG)
+                } finally {
+                    completed.countDown()
+                }
+            }.apply { start() }
+            assertTrue(started.await(2, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (pipelineThread.state != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.yield()
+            }
+            assertEquals(Thread.State.BLOCKED, pipelineThread.state)
+            forceOwnedRollback(engine, ColorTransfer.SDR, ColorTransfer.HLG)
+            assertFalse(field(engine, "videoMode") as Boolean)
+            assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        }
+
+        assertTrue(completed.await(2, TimeUnit.SECONDS))
+        pipelineThread.join()
+        assertFalse(field(engine, "videoMode") as Boolean)
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertEquals(ColorTransfer.HLG, field(engine, "requestedVideoTransfer"))
     }
 
     private fun createAccepted(
