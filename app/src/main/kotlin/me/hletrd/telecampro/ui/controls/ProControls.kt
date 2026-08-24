@@ -10,6 +10,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.clickable
@@ -132,6 +133,9 @@ internal fun SectionHeader(text: String, modifier: Modifier = Modifier) {
  * without either of them having to know the other's colour.
  */
 internal const val DISABLED_ROW_ALPHA = 0.55f
+
+/** Test-only probe for the visual Switch child; unknown semantics keys are not exported to a11y. */
+internal val ToggleRowVisualState = SemanticsPropertyKey<Boolean>("ToggleRowVisualState")
 
 /**
  * The ONE settings-row label treatment, shared by every row primitive in this file.
@@ -638,12 +642,21 @@ internal fun ToggleRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SettingsRowLabel(label, enabled = enabled)
+        // Reserve the fixed Switch before measuring text. At the 212 dp compact sheet lane and 2x
+        // font, an unweighted first child could consume the complete Row width and squeeze the
+        // trailing state affordance out of sight even though the parent remained clickable.
+        SettingsRowLabel(
+            label,
+            enabled = enabled,
+            modifier = Modifier.weight(1f).padding(end = 12.dp),
+        )
         Switch(
             checked = checked,
             onCheckedChange = null,
             enabled = enabled,
-            modifier = Modifier.clearAndSetSemantics { },
+            modifier = Modifier.clearAndSetSemantics {
+                this[ToggleRowVisualState] = checked
+            },
             colors = SwitchDefaults.colors(
                 // The knob is this app's foreground mark, not Material's on-surface concept: the
                 // scheme's own `onPrimary` is BLACK here, so a slot resolved from Material would
