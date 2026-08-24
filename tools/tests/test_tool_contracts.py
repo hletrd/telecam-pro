@@ -258,6 +258,52 @@ class BackupPolicyContractTest(unittest.TestCase):
 
 
 class ConsolidatedHostGateTest(unittest.TestCase):
+    def test_v101_korean_count_is_derived_from_named_version_code_3_source(self) -> None:
+        revision = "bcbeaf0c"
+
+        def historical_text(relative: str) -> str:
+            result = subprocess.run(
+                ["git", "show", f"{revision}:{relative}"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return result.stdout
+
+        build = historical_text("app/build.gradle.kts")
+        korean = ET.fromstring(
+            historical_text("app/src/main/res/values-ko/strings.xml"),
+        )
+        self.assertRegex(build, r"(?m)^\s*versionCode = 3$")
+        self.assertEqual(sum(element.tag == "string" for element in korean), 126)
+
+        submit = (REPO_ROOT / "docs/play-console-submit.md").read_text(encoding="utf-8")
+        self.assertIn("126 strings became resources", submit)
+        self.assertIn(f"versionCode-3 pin `{revision}`", submit)
+
+    def test_documentation_gate_rejects_v101_korean_count_or_source_drift(self) -> None:
+        def drift(root: Path, old: str, new: str) -> None:
+            path = root / "docs/play-console-submit.md"
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(old, text)
+            path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+        for old, new in (
+            ("126 strings became resources", "131 strings became resources"),
+            ("versionCode-3 pin `bcbeaf0c`", "versionCode-3 pin `fe6a8a0`"),
+        ):
+            with self.subTest(old=old):
+                result, _ = run_documentation_gate_from_committed_export(
+                    lambda root, old=old, new=new: drift(root, old, new),
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  v1.0.1 Korean count names reproducible versionCode-3 source evidence",
+                    result.stdout,
+                )
+
     def test_host_and_documentation_gates_reject_optimized_python(self) -> None:
         commands = (
             ("tools/verify_host.py", "host verification gate"),

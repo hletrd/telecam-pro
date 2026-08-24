@@ -407,6 +407,23 @@ check(
     "every translatable string and plural has a Korean peer",
     str(missing_korean_resources),
 )
+
+# The v1.0.1 release note is retained as historical evidence, so its count must identify the source
+# it was derived from rather than float as an unauditable prose number. The focused tooling test
+# additionally opens this exact local Git revision and proves versionCode + XML entry count; this
+# committed-export check keeps the two public authorities bound even when `.git` is deliberately
+# absent from an immutable source export.
+V101_KOREAN_SOURCE_COMMIT = "bcbeaf0c"
+V101_KOREAN_STRING_COUNT = 126
+v101_korean_count_phrase = f"{V101_KOREAN_STRING_COUNT} strings became resources"
+check(
+    v101_korean_count_phrase in submit
+    and f"versionCode-3 pin `{V101_KOREAN_SOURCE_COMMIT}`" in submit
+    and f"contains exactly {V101_KOREAN_STRING_COUNT}\n>   `<string>` entries" in submit
+    and f"v1.0.1 shipped {V101_KOREAN_STRING_COUNT} Korean strings" in read("CLAUDE.md")
+    and "131 strings became resources" not in submit,
+    "v1.0.1 Korean count names reproducible versionCode-3 source evidence",
+)
 required_current_copy = screenshot_manifest.get("required_current_copy", {})
 copy_mismatches = {
     key: (expected, default_strings.get(key))
