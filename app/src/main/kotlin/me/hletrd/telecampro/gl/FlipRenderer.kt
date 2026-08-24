@@ -55,6 +55,34 @@ internal fun resolveShaderLocations(
     )
 }
 
+internal data class PendingGlObjects(
+    var vertexShader: Int = 0,
+    var fragmentShader: Int = 0,
+    var program: Int = 0,
+    var buffer: Int = 0,
+    var texture: Int = 0,
+)
+
+/** Exact failure cleanup shared by shader compile/link and renderer initialization. */
+internal fun releasePendingGlObjects(
+    pending: PendingGlObjects,
+    deleteShader: (Int) -> Unit,
+    deleteProgram: (Int) -> Unit,
+    deleteBuffer: (Int) -> Unit,
+    deleteTexture: (Int) -> Unit,
+) {
+    if (pending.vertexShader != 0) deleteShader(pending.vertexShader)
+    if (pending.fragmentShader != 0) deleteShader(pending.fragmentShader)
+    if (pending.program != 0) deleteProgram(pending.program)
+    if (pending.buffer != 0) deleteBuffer(pending.buffer)
+    if (pending.texture != 0) deleteTexture(pending.texture)
+    pending.vertexShader = 0
+    pending.fragmentShader = 0
+    pending.program = 0
+    pending.buffer = 0
+    pending.texture = 0
+}
+
 /**
  * Draws the camera external-OES texture to whatever GL surface is current.
  *
@@ -113,56 +141,83 @@ class FlipRenderer {
 
     /** Compiles the program and allocates the external texture. Must run with an EGL context current. */
     fun init(): Int {
-        program = buildProgram(Shaders.VERTEX, Shaders.FRAGMENT)
-        val locations = resolveShaderLocations(
-            attributeLookup = { GLES20.glGetAttribLocation(program, it) },
-            uniformLookup = { GLES20.glGetUniformLocation(program, it) },
-        )
-        aPosition = locations.aPosition
-        aTexCoord = locations.aTexCoord
-        uMvp = locations.uMvp
-        uTexMatrix = locations.uTexMatrix
-        uTexture = locations.uTexture
-        uTransfer = locations.uTransfer
-        uSourceHlg = locations.uSourceHlg
-        uPeaking = locations.uPeaking
-        uPeakThreshold = locations.uPeakThreshold
-        uPeakColor = locations.uPeakColor
-        uZebra = locations.uZebra
-        uZebraThreshold = locations.uZebraThreshold
-        uFalseColor = locations.uFalseColor
-        uTexel = locations.uTexel
-        uDigitalGain = locations.uDigitalGain
+        check(program == 0 && quadVbo == 0 && oesTextureId == 0) {
+            "FlipRenderer.init requires released resource fields"
+        }
+        val pending = PendingGlObjects()
+        try {
+            pending.program = buildProgram(Shaders.VERTEX, Shaders.FRAGMENT)
+            val locations = resolveShaderLocations(
+                attributeLookup = { GLES20.glGetAttribLocation(pending.program, it) },
+                uniformLookup = { GLES20.glGetUniformLocation(pending.program, it) },
+            )
 
-        // Fresh VBO per GL generation (same replay discipline as RendererConfigStore: init() must
-        // fully re-seed everything a replacement context needs; release() deletes it).
-        val vboIds = IntArray(1)
-        GLES20.glGenBuffers(1, vboIds, 0)
-        quadVbo = vboIds[0]
-        val staging = floatBuffer(
-            // x, y  (triangle strip)          | tex u,v (plain)      | tex u,v (mirrored x)
-            floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f) +
-                texCoordQuad(mirrorX = false) +
-                texCoordQuad(mirrorX = true),
-        )
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadVbo)
-        GLES20.glBufferData(
-            GLES20.GL_ARRAY_BUFFER,
-            staging.capacity() * 4,
-            staging,
-            GLES20.GL_STATIC_DRAW,
-        )
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            // Fresh VBO per GL generation (same replay discipline as RendererConfigStore: init()
+            // fully re-seeds everything a replacement context needs; release() deletes it).
+            val vboIds = IntArray(1)
+            GLES20.glGenBuffers(1, vboIds, 0)
+            pending.buffer = vboIds[0]
+            check(pending.buffer != 0) { "VBO allocation failed" }
+            val staging = floatBuffer(
+                // x, y  (triangle strip)       | tex u,v (plain)      | tex u,v (mirrored x)
+                floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f) +
+                    texCoordQuad(mirrorX = false) +
+                    texCoordQuad(mirrorX = true),
+            )
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pending.buffer)
+            GLES20.glBufferData(
+                GLES20.GL_ARRAY_BUFFER,
+                staging.capacity() * 4,
+                staging,
+                GLES20.GL_STATIC_DRAW,
+            )
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
 
-        val ids = IntArray(1)
-        GLES20.glGenTextures(1, ids, 0)
-        oesTextureId = ids[0]
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        return oesTextureId
+            val ids = IntArray(1)
+            GLES20.glGenTextures(1, ids, 0)
+            pending.texture = ids[0]
+            check(pending.texture != 0) { "External texture allocation failed" }
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, pending.texture)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+
+            // Transfer all ids only after every location and GL object is ready. A retry therefore
+            // starts from zero fields and cannot overwrite an unreachable object from this attempt.
+            program = pending.program
+            quadVbo = pending.buffer
+            oesTextureId = pending.texture
+            aPosition = locations.aPosition
+            aTexCoord = locations.aTexCoord
+            uMvp = locations.uMvp
+            uTexMatrix = locations.uTexMatrix
+            uTexture = locations.uTexture
+            uTransfer = locations.uTransfer
+            uSourceHlg = locations.uSourceHlg
+            uPeaking = locations.uPeaking
+            uPeakThreshold = locations.uPeakThreshold
+            uPeakColor = locations.uPeakColor
+            uZebra = locations.uZebra
+            uZebraThreshold = locations.uZebraThreshold
+            uFalseColor = locations.uFalseColor
+            uTexel = locations.uTexel
+            uDigitalGain = locations.uDigitalGain
+            pending.program = 0
+            pending.buffer = 0
+            pending.texture = 0
+            return oesTextureId
+        } finally {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+            releasePendingGlObjects(
+                pending = pending,
+                deleteShader = GLES20::glDeleteShader,
+                deleteProgram = GLES20::glDeleteProgram,
+                deleteBuffer = { GLES20.glDeleteBuffers(1, intArrayOf(it), 0) },
+                deleteTexture = { GLES20.glDeleteTextures(1, intArrayOf(it), 0) },
+            )
+        }
     }
 
     fun setPreviewSize(width: Int, height: Int) {
@@ -320,28 +375,57 @@ class FlipRenderer {
         }
 
     private fun buildProgram(vertexSrc: String, fragmentSrc: String): Int {
-        val vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
-        val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSrc)
-        val prog = GLES20.glCreateProgram()
-        GLES20.glAttachShader(prog, vs)
-        GLES20.glAttachShader(prog, fs)
-        GLES20.glLinkProgram(prog)
-        val status = IntArray(1)
-        GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, status, 0)
-        check(status[0] == GLES20.GL_TRUE) { "Program link failed: ${GLES20.glGetProgramInfoLog(prog)}" }
-        GLES20.glDeleteShader(vs)
-        GLES20.glDeleteShader(fs)
-        return prog
+        val pending = PendingGlObjects()
+        try {
+            pending.vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
+            pending.fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSrc)
+            pending.program = GLES20.glCreateProgram()
+            check(pending.program != 0) { "Program allocation failed" }
+            GLES20.glAttachShader(pending.program, pending.vertexShader)
+            GLES20.glAttachShader(pending.program, pending.fragmentShader)
+            GLES20.glLinkProgram(pending.program)
+            val status = IntArray(1)
+            GLES20.glGetProgramiv(pending.program, GLES20.GL_LINK_STATUS, status, 0)
+            check(status[0] == GLES20.GL_TRUE) {
+                "Program link failed: ${GLES20.glGetProgramInfoLog(pending.program)}"
+            }
+            val transferred = pending.program
+            pending.program = 0
+            return transferred
+        } finally {
+            releasePendingGlObjects(
+                pending = pending,
+                deleteShader = GLES20::glDeleteShader,
+                deleteProgram = GLES20::glDeleteProgram,
+                deleteBuffer = { GLES20.glDeleteBuffers(1, intArrayOf(it), 0) },
+                deleteTexture = { GLES20.glDeleteTextures(1, intArrayOf(it), 0) },
+            )
+        }
     }
 
     private fun compileShader(type: Int, src: String): Int {
-        val shader = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(shader, src)
-        GLES20.glCompileShader(shader)
-        val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-        check(status[0] == GLES20.GL_TRUE) { "Shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}" }
-        return shader
+        val pending = PendingGlObjects(vertexShader = GLES20.glCreateShader(type))
+        check(pending.vertexShader != 0) { "Shader allocation failed" }
+        try {
+            GLES20.glShaderSource(pending.vertexShader, src)
+            GLES20.glCompileShader(pending.vertexShader)
+            val status = IntArray(1)
+            GLES20.glGetShaderiv(pending.vertexShader, GLES20.GL_COMPILE_STATUS, status, 0)
+            check(status[0] == GLES20.GL_TRUE) {
+                "Shader compile failed: ${GLES20.glGetShaderInfoLog(pending.vertexShader)}"
+            }
+            val transferred = pending.vertexShader
+            pending.vertexShader = 0
+            return transferred
+        } finally {
+            releasePendingGlObjects(
+                pending = pending,
+                deleteShader = GLES20::glDeleteShader,
+                deleteProgram = GLES20::glDeleteProgram,
+                deleteBuffer = { GLES20.glDeleteBuffers(1, intArrayOf(it), 0) },
+                deleteTexture = { GLES20.glDeleteTextures(1, intArrayOf(it), 0) },
+            )
+        }
     }
 
     private companion object {
