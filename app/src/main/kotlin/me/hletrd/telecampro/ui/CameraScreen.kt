@@ -2653,7 +2653,7 @@ private fun ExposureMeter(
  * with less digital headroom simply offers fewer marks.
  */
 @Composable
-private fun FocalRail(
+internal fun FocalRail(
     state: CameraUiState,
     onLens: (LensChoice) -> Unit,
     onTeleZoomMark: (Float) -> Unit,
@@ -2670,8 +2670,10 @@ private fun FocalRail(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .horizontalScroll(railScroll)
-            .trailingEdgeFadeScrollHint(railScroll),
+            // The fade owns viewport draw coordinates, so it must wrap the scroll modifier. The
+            // reverse order moves the mask with the content and leaves a hard-cut trailing chip.
+            .trailingEdgeFadeScrollHint(railScroll)
+            .horizontalScroll(railScroll),
         horizontalArrangement = Arrangement.Center,
     ) {
         Row(

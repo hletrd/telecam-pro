@@ -241,6 +241,9 @@ internal fun MinTouchTarget48(content: @Composable () -> Unit) {
     }
 }
 
+/** Non-exported test probe mirroring the draw condition of [trailingEdgeFadeScrollHint]. */
+internal val TrailingEdgeFadeVisible = SemanticsPropertyKey<Boolean>("TrailingEdgeFadeVisible")
+
 /**
  * Trailing-edge fade for horizontally scrolling chip rows: without the hint, the half-cut trailing
  * chip at the panel edge reads as a LAYOUT BUG rather than "scrollable" (user-reported on the Fn
@@ -273,6 +276,7 @@ internal fun Modifier.trailingEdgeFadeScrollHint(scrollState: ScrollState): Modi
             )
         }
     }
+    .semantics { this[TrailingEdgeFadeVisible] = scrollState.canScrollForward }
 
 /** Exclusive segmented selector (FilterChip row) for a fixed set of enum/value options. */
 @Composable
