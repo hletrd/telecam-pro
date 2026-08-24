@@ -32,6 +32,9 @@ import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
 import me.hletrd.telecampro.storage.DeletedFamilySweepResult
+import me.hletrd.telecampro.storage.DiscardMarkerCleanupDisposition
+import me.hletrd.telecampro.storage.KnownOutputDeletionResult
+import me.hletrd.telecampro.storage.KnownOutputProviderDisposition
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.video.CodecComponent
@@ -219,6 +222,62 @@ class CameraViewModelRobolectricTest {
         assertEquals(
             CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
             deleteResultStatus(true, DeletedFamilySweepResult.QUERY_FAILED),
+        )
+    }
+
+    @Test fun `known output composition restores only confirmed provider survivors`() {
+        val deletedCleanupRetry = Uri.parse("content://media/deleted-cleanup-retry")
+        val absentCleanupRetry = Uri.parse("content://media/absent-cleanup-retry")
+        val survivor = Uri.parse("content://media/confirmed-survivor")
+        val unknown = Uri.parse("content://media/provider-unknown")
+
+        val composition = knownOutputDeleteComposition(
+            linkedMapOf(
+                deletedCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.DELETED,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+                absentCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.ALREADY_ABSENT,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+                survivor to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.PRESENT,
+                    markerCleanup = DiscardMarkerCleanupDisposition.NOT_ATTEMPTED,
+                ),
+                unknown to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.UNKNOWN,
+                    markerCleanup = DiscardMarkerCleanupDisposition.NOT_ATTEMPTED,
+                ),
+            ),
+        )
+
+        assertEquals(setOf(survivor), composition.survivors)
+        assertEquals(setOf(deletedCleanupRetry, absentCleanupRetry), composition.cleanupRetry)
+        assertEquals(setOf(unknown), composition.providerUnknown)
+        assertFalse(composition.providerDeletionComplete)
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(composition.providerDeletionComplete, DeletedFamilySweepResult()),
+        )
+
+        val absentOnly = knownOutputDeleteComposition(
+            mapOf(
+                deletedCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.DELETED,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+                absentCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.ALREADY_ABSENT,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+            ),
+        )
+        assertTrue(absentOnly.survivors.isEmpty())
+        assertTrue(absentOnly.providerDeletionComplete)
+        assertEquals(
+            CameraStatusMessage.DELETED,
+            deleteResultStatus(absentOnly.providerDeletionComplete, DeletedFamilySweepResult()),
         )
     }
 

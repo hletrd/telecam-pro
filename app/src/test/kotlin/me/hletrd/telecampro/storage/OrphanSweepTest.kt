@@ -197,4 +197,58 @@ class OrphanSweepTest {
             mediaDeleteDisposition(deleteCount = 1, rowExistsAfter = null),
         )
     }
+
+    @Test
+    fun `known output deletion keeps provider truth separate from marker cleanup`() {
+        var positiveDeleteProbeCalled = false
+        val deletedCleanupFailure = knownOutputDeletionResult(
+            delete = { 1 },
+            rowExistsAfter = {
+                positiveDeleteProbeCalled = true
+                true
+            },
+            clearDiscardMarker = { false },
+        )
+        assertFalse(positiveDeleteProbeCalled)
+        assertEquals(KnownOutputProviderDisposition.DELETED, deletedCleanupFailure.provider)
+        assertEquals(
+            DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+            deletedCleanupFailure.markerCleanup,
+        )
+        assertFalse(deletedCleanupFailure.restoreAsSurvivor)
+        assertTrue(deletedCleanupFailure.cleanupRetryRequired)
+
+        val absentCleanupFailure = knownOutputDeletionResult(
+            delete = { 0 },
+            rowExistsAfter = { false },
+            clearDiscardMarker = { false },
+        )
+        assertEquals(KnownOutputProviderDisposition.ALREADY_ABSENT, absentCleanupFailure.provider)
+        assertTrue(absentCleanupFailure.cleanupRetryRequired)
+        assertFalse(absentCleanupFailure.restoreAsSurvivor)
+
+        var survivorCleanupCalled = false
+        val survivor = knownOutputDeletionResult(
+            delete = { 0 },
+            rowExistsAfter = { true },
+            clearDiscardMarker = {
+                survivorCleanupCalled = true
+                true
+            },
+        )
+        assertEquals(KnownOutputProviderDisposition.PRESENT, survivor.provider)
+        assertEquals(DiscardMarkerCleanupDisposition.NOT_ATTEMPTED, survivor.markerCleanup)
+        assertTrue(survivor.restoreAsSurvivor)
+        assertFalse(survivorCleanupCalled)
+
+        val providerUnknown = knownOutputDeletionResult(
+            delete = { throw IllegalStateException("provider failed") },
+            rowExistsAfter = { null },
+            clearDiscardMarker = { error("unknown provider state must not clear ownership") },
+        )
+        assertEquals(KnownOutputProviderDisposition.UNKNOWN, providerUnknown.provider)
+        assertEquals(DiscardMarkerCleanupDisposition.NOT_ATTEMPTED, providerUnknown.markerCleanup)
+        assertFalse(providerUnknown.restoreAsSurvivor)
+        assertFalse(providerUnknown.fullyRetired)
+    }
 }

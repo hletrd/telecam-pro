@@ -797,25 +797,29 @@ object MediaStoreWriter {
     private const val PUBLISH_RETRY_BACKOFF_MS = 50L
 
     /**
-     * True when the requested media is gone after the operation. A resolver delete count of zero
-     * is ambiguous (already absent vs. provider failure), so probe the exact URI before reporting a
-     * failure. This keeps asynchronous family-delete reconciliation from restoring a stale URI as a
-     * broken review thumbnail merely because another app removed it first.
+     * Deletes one tracker-known output without conflating provider truth with journal cleanup.
+     *
+     * A deleted/already-absent provider row stays absent even when exact DISCARD-marker removal
+     * fails. The retained marker is then recovery work, not evidence that the URI still exists and
+     * should be restored into review. Conversely, a confirmed provider survivor remains reviewable,
+     * while an unanswered provider probe is kept distinct so the UI can report uncertainty without
+     * manufacturing a phantom handle.
      */
-    fun delete(context: Context, uri: Uri): Boolean {
-        val deleteCount = runCatching { context.contentResolver.delete(uri, null, null) }.getOrNull()
-        val rowExistsAfter = if ((deleteCount ?: 0) > 0) {
-            null
-        } else {
-            mediaRowExists(context, uri)
-        }
-        val disposition = mediaDeleteDisposition(deleteCount, rowExistsAfter)
-        if (disposition == MediaDeleteDisposition.FAILED) return false
-        // The delete is terminal only after its exact durable retry marker is gone. If SQLite is
-        // temporarily unavailable, report failure so launch recovery retries the now-absent URI
-        // and gets another chance to retire the marker.
-        return clearPending(context, uri)
-    }
+    internal fun deleteKnownOutput(context: Context, uri: Uri): KnownOutputDeletionResult =
+        knownOutputDeletionResult(
+            delete = { context.contentResolver.delete(uri, null, null) },
+            rowExistsAfter = { mediaRowExists(context, uri) },
+            clearDiscardMarker = { clearPending(context, uri) },
+        )
+
+    /**
+     * True only when both the provider row and its exact durable retry metadata are gone.
+     *
+     * Generic recovery/discard callers retain the historical Boolean contract. Review-family
+     * deletion consumes [deleteKnownOutput] directly because it needs the two axes separately.
+     */
+    fun delete(context: Context, uri: Uri): Boolean =
+        deleteKnownOutput(context, uri).fullyRetired
 
     /** Null means the provider could not answer; false is an authoritative already-absent row. */
     private fun mediaRowExists(context: Context, uri: Uri): Boolean? = runCatching {
@@ -1739,6 +1743,86 @@ internal fun mediaDeleteDisposition(
     deleteCount != null && deleteCount > 0 -> MediaDeleteDisposition.DELETED
     rowExistsAfter == false -> MediaDeleteDisposition.ALREADY_ABSENT
     else -> MediaDeleteDisposition.FAILED
+}
+
+/** Provider truth for one tracker-known URI after a delete attempt. */
+internal enum class KnownOutputProviderDisposition {
+    DELETED,
+    ALREADY_ABSENT,
+    PRESENT,
+    UNKNOWN,
+}
+
+/** Whether exact DISCARD/recovery metadata was retired after provider absence was established. */
+internal enum class DiscardMarkerCleanupDisposition {
+    CLEARED,
+    RETAINED_FOR_RETRY,
+    NOT_ATTEMPTED,
+}
+
+/** Two-axis result: provider presence is never inferred from marker-cleanup success. */
+internal data class KnownOutputDeletionResult(
+    val provider: KnownOutputProviderDisposition,
+    val markerCleanup: DiscardMarkerCleanupDisposition,
+) {
+    val restoreAsSurvivor: Boolean
+        get() = provider == KnownOutputProviderDisposition.PRESENT
+
+    val providerAbsent: Boolean
+        get() = provider == KnownOutputProviderDisposition.DELETED ||
+            provider == KnownOutputProviderDisposition.ALREADY_ABSENT
+
+    val providerUnknown: Boolean
+        get() = provider == KnownOutputProviderDisposition.UNKNOWN
+
+    val cleanupRetryRequired: Boolean
+        get() = providerAbsent &&
+            markerCleanup == DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY
+
+    val fullyRetired: Boolean
+        get() = providerAbsent && markerCleanup == DiscardMarkerCleanupDisposition.CLEARED
+}
+
+/**
+ * Executes one known-output delete while preserving provider and marker-cleanup evidence.
+ *
+ * A positive delete count proves absence without a second query. A zero/throwing delete needs an
+ * exact existence probe: false proves prior absence, true proves a survivor, and null/throw remains
+ * unknown. Marker cleanup runs only after provider absence is authoritative.
+ */
+internal fun knownOutputDeletionResult(
+    delete: () -> Int?,
+    rowExistsAfter: () -> Boolean?,
+    clearDiscardMarker: () -> Boolean,
+): KnownOutputDeletionResult {
+    val deleteCount = runCatching(delete).getOrNull()
+    val rowExists = if (deleteCount != null && deleteCount > 0) {
+        null
+    } else {
+        runCatching(rowExistsAfter).getOrNull()
+    }
+    val provider = when (mediaDeleteDisposition(deleteCount, rowExists)) {
+        MediaDeleteDisposition.DELETED -> KnownOutputProviderDisposition.DELETED
+        MediaDeleteDisposition.ALREADY_ABSENT -> KnownOutputProviderDisposition.ALREADY_ABSENT
+        MediaDeleteDisposition.FAILED -> if (rowExists == true) {
+            KnownOutputProviderDisposition.PRESENT
+        } else {
+            KnownOutputProviderDisposition.UNKNOWN
+        }
+    }
+    val markerCleanup = if (
+        provider == KnownOutputProviderDisposition.DELETED ||
+        provider == KnownOutputProviderDisposition.ALREADY_ABSENT
+    ) {
+        if (runCatching(clearDiscardMarker).getOrDefault(false)) {
+            DiscardMarkerCleanupDisposition.CLEARED
+        } else {
+            DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY
+        }
+    } else {
+        DiscardMarkerCleanupDisposition.NOT_ATTEMPTED
+    }
+    return KnownOutputDeletionResult(provider, markerCleanup)
 }
 
 internal enum class PendingMediaProbeKind { VIDEO, JPEG, DNG, HEIF, KEEP_PENDING }

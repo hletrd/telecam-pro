@@ -108,6 +108,9 @@ import me.hletrd.telecampro.focus.frameDefocusCandidate
 import me.hletrd.telecampro.focus.macroTooCloseCandidate
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.DeletedFamilySweepResult
+import me.hletrd.telecampro.storage.DiscardMarkerCleanupDisposition
+import me.hletrd.telecampro.storage.KnownOutputDeletionResult
+import me.hletrd.telecampro.storage.KnownOutputProviderDisposition
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.SettingsStore
@@ -3375,25 +3378,34 @@ class CameraViewModel @JvmOverloads constructor(
                     // ordering where an old publication completed immediately before Delete won.
                     // The frozen tracker rows stay excluded so survivor accounting remains exact.
                     var sweep = DeletedFamilySweepResult()
-                    val providerWork = runCatching {
-                        if (deletePlan.deleteScope == MediaDeleteScope.CAPTURE_FAMILY) {
-                            sweep = deletePlan.familyKey?.let { family ->
-                                MediaStoreWriter.deleteUntrackedFamilySiblings(
-                                    context = application,
-                                    family = family,
-                                    excluded = deletePlan.outputs,
-                                )
-                            } ?: DeletedFamilySweepResult.QUERY_FAILED
-                        }
-                        outputs.filterTo(linkedSetOf()) { output ->
-                            !MediaStoreWriter.delete(application, output)
-                        }
+                    if (deletePlan.deleteScope == MediaDeleteScope.CAPTURE_FAMILY) {
+                        sweep = deletePlan.familyKey?.let { family ->
+                            MediaStoreWriter.deleteUntrackedFamilySiblings(
+                                context = application,
+                                family = family,
+                                excluded = deletePlan.outputs,
+                            )
+                        } ?: DeletedFamilySweepResult.QUERY_FAILED
                     }
-                    val survivors = providerWork.getOrElse {
-                        sweep = DeletedFamilySweepResult.QUERY_FAILED
-                        outputs
-                    }
-                    val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, survivors)
+                    val knownOutputs = knownOutputDeleteComposition(
+                        outputs.associateWith { output ->
+                            runCatching {
+                                MediaStoreWriter.deleteKnownOutput(application, output)
+                            }.getOrDefault(
+                                KnownOutputDeletionResult(
+                                    provider = KnownOutputProviderDisposition.UNKNOWN,
+                                    markerCleanup = DiscardMarkerCleanupDisposition.NOT_ATTEMPTED,
+                                ),
+                            )
+                        },
+                    )
+                    // Restore only rows the provider authoritatively confirmed still exist. An
+                    // absent row with a retained DISCARD marker needs cleanup retry, not a phantom
+                    // review owner; an unknown row likewise has no safe handle to republish.
+                    val restored = captureOutputs.restoreDeleteSurvivors(
+                        deletePlan,
+                        knownOutputs.survivors,
+                    )
                     deletePlan.familyKey?.let { family ->
                         engine.reconcileDeletedFamilyAfterProviderMutation(
                             family = family,
@@ -3414,7 +3426,12 @@ class CameraViewModel @JvmOverloads constructor(
                         // A later capture can replace review ownership immediately after the survivor
                         // decision. Gallery is the one retry route that stays truthful across that
                         // race and across an uncertain exact-family sweep.
-                        showStatus(deleteResultStatus(survivors.isEmpty(), sweep).status())
+                        showStatus(
+                            deleteResultStatus(
+                                knownOutputs.providerDeletionComplete,
+                                sweep,
+                            ).status(),
+                        )
                     }
                 },
             )
@@ -3701,12 +3718,30 @@ internal fun resolveDeleteSurvivorState(
     current.withDeleteSurvivor(survivor)
 } else current
 
+/** ViewModel-facing reduction of provider truth; retry metadata never becomes review presence. */
+internal data class KnownOutputDeleteComposition<T>(
+    val survivors: Set<T>,
+    val cleanupRetry: Set<T>,
+    val providerUnknown: Set<T>,
+) {
+    val providerDeletionComplete: Boolean
+        get() = survivors.isEmpty() && providerUnknown.isEmpty()
+}
+
+internal fun <T> knownOutputDeleteComposition(
+    results: Map<T, KnownOutputDeletionResult>,
+): KnownOutputDeleteComposition<T> = KnownOutputDeleteComposition(
+    survivors = results.filterValues(KnownOutputDeletionResult::restoreAsSurvivor).keys,
+    cleanupRetry = results.filterValues(KnownOutputDeletionResult::cleanupRetryRequired).keys,
+    providerUnknown = results.filterValues(KnownOutputDeletionResult::providerUnknown).keys,
+)
+
 /** Gallery remains valid even if a newer capture replaces the in-app review owner. */
 internal fun deleteResultStatus(
-    knownSurvivorsEmpty: Boolean,
+    knownProviderDeletionComplete: Boolean,
     untrackedSweep: DeletedFamilySweepResult,
 ): CameraStatusMessage =
-    if (knownSurvivorsEmpty && untrackedSweep.complete) CameraStatusMessage.DELETED
+    if (knownProviderDeletionComplete && untrackedSweep.complete) CameraStatusMessage.DELETED
     else CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY
 
 /** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */
