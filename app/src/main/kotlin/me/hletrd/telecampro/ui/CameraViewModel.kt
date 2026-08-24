@@ -3329,12 +3329,9 @@ class CameraViewModel @JvmOverloads constructor(
             if (durability == CaptureFamilyDeleteDurability.FAILED) {
                 val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, deletePlan.outputs)
                 mainHandler.post {
-                    if (restored != null && captureOutputs.isCurrentReviewOutput(restored)) {
+                    if (restored != null && captureOutputs.isCurrentReviewOutput(restored.output)) {
                         _state.update {
-                            it.copy(
-                                lastMediaUri = restored,
-                                lastMediaDeleteScope = deletePlan.deleteScope,
-                            )
+                            it.withDeleteSurvivor(restored)
                         }
                     }
                     showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
@@ -3378,11 +3375,8 @@ class CameraViewModel @JvmOverloads constructor(
             mainHandler.post {
                 if (restored != null) {
                     _state.update { current ->
-                        if (captureOutputs.isCurrentReviewOutput(restored)) {
-                            current.copy(
-                                lastMediaUri = restored,
-                                lastMediaDeleteScope = deletePlan.deleteScope,
-                            )
+                        if (captureOutputs.isCurrentReviewOutput(restored.output)) {
+                            current.withDeleteSurvivor(restored)
                         } else {
                             current
                         }
@@ -3630,6 +3624,15 @@ class CameraViewModel @JvmOverloads constructor(
         const val SETTINGS_SAVE_DEBOUNCE_MS = 500L
     }
 }
+
+/** Publishes the exact survivor identity atomically after file-only or partial deletion. */
+internal fun CameraUiState.withDeleteSurvivor(
+    survivor: CaptureDeleteSurvivor<Uri>,
+): CameraUiState = copy(
+    lastMediaUri = survivor.output,
+    lastMediaProvenance = survivor.provenance,
+    lastMediaDeleteScope = survivor.deleteScope,
+)
 
 /** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */
 internal fun cameraRoutePublishedState(

@@ -4,6 +4,8 @@ import me.hletrd.telecampro.R
 
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.storage.MediaProvenance
+import me.hletrd.telecampro.ui.CaptureDeleteSurvivor
+import me.hletrd.telecampro.ui.CaptureOutputKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -126,6 +128,31 @@ class MediaReviewSizingTest {
             R.string.review_legacy_unverified_provenance,
             reviewProvenanceLabel(MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
         )
+    }
+
+    @Test
+    fun `promoted survivor semantics follow its provenance in both mixed ownership directions`() {
+        val unverifiedRaw = CaptureDeleteSurvivor(
+            output = "photo.dng",
+            kind = CaptureOutputKind.RAW,
+            provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            deleteScope = MediaDeleteScope.FILE_ONLY,
+        )
+        assertEquals(
+            R.string.a11y_review_legacy_unverified_media,
+            galleryReviewContentDescription(true, ReviewMediaKind.RAW, unverifiedRaw.provenance),
+        )
+        assertEquals(
+            R.string.review_legacy_unverified_provenance,
+            reviewProvenanceLabel(unverifiedRaw.provenance),
+        )
+
+        val ownedRaw = unverifiedRaw.copy(provenance = MediaProvenance.APP_OWNED)
+        assertEquals(
+            R.string.a11y_review_last_raw,
+            galleryReviewContentDescription(true, ReviewMediaKind.RAW, ownedRaw.provenance),
+        )
+        assertNull(reviewProvenanceLabel(ownedRaw.provenance))
     }
 
     @Test

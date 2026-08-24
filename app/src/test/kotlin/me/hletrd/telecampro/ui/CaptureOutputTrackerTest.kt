@@ -3,6 +3,7 @@ package me.hletrd.telecampro.ui
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.RestoredDeleteScope
 import me.hletrd.telecampro.storage.StoredMediaCollection
 import me.hletrd.telecampro.storage.StoredMediaRow
@@ -95,7 +96,7 @@ class CaptureOutputTrackerTest {
             assertEquals(setOf(restored.preferred.output), plan.outputs)
             assertEquals(
                 restored.preferred.output,
-                tracker.restoreDeleteSurvivors(plan, plan.outputs),
+                tracker.restoreDeleteSurvivors(plan, plan.outputs)?.output,
             )
             assertEquals(
                 MediaDeleteScope.FILE_ONLY,
@@ -119,10 +120,30 @@ class CaptureOutputTrackerTest {
         assertEquals(setOf("photo.dng"), plan.preservedOutputs)
         // Empty resolver survivors means the one requested file was deleted successfully. The DNG
         // was never targeted and therefore remains a truthful file-only review owner.
-        assertEquals("photo.dng", tracker.restoreDeleteSurvivors(plan, emptySet()))
+        assertEquals("photo.dng", tracker.restoreDeleteSurvivors(plan, emptySet())?.output)
         assertTrue(tracker.isCurrentReviewOutput("photo.dng"))
         assertEquals(MediaDeleteScope.FILE_ONLY, tracker.deleteScopeFor("photo.dng"))
         assertEquals(setOf("photo.dng"), tracker.takeForDelete("photo.dng"))
+    }
+
+    @Test
+    fun successfulFileOnlyDelete_promotesExactSiblingProvenanceInBothMixedDirections() {
+        listOf(
+            Triple(true, false, MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
+            Triple(false, true, MediaProvenance.APP_OWNED),
+        ).forEach { (processedOwned, rawOwned, expectedProvenance) ->
+            val restored = checkNotNull(restoredStillFamily(processedOwned, rawOwned))
+            val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+            assertTrue(tracker.seedRestoredCapture(restored))
+
+            val plan = tracker.beginDelete("photo.heic")
+            val survivor = checkNotNull(tracker.restoreDeleteSurvivors(plan, emptySet()))
+
+            assertEquals("photo.dng", survivor.output)
+            assertEquals(CaptureOutputKind.RAW, survivor.kind)
+            assertEquals(expectedProvenance, survivor.provenance)
+            assertEquals(MediaDeleteScope.FILE_ONLY, survivor.deleteScope)
+        }
     }
 
     @Test
@@ -142,7 +163,7 @@ class CaptureOutputTrackerTest {
 
         val plan = tracker.beginDelete("shot.heic")
 
-        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, emptySet()))
+        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, emptySet())?.output)
         assertTrue(tracker.isCurrentReviewOutput("shot.jpg"))
     }
 
@@ -186,7 +207,7 @@ class CaptureOutputTrackerTest {
         assertTrue(tracker.seedRestoredCapture(restored))
 
         val firstPlan = tracker.beginDelete("photo.dng")
-        assertEquals("photo.dng", tracker.restoreDeleteSurvivors(firstPlan, setOf("photo.dng")))
+        assertEquals("photo.dng", tracker.restoreDeleteSurvivors(firstPlan, setOf("photo.dng"))?.output)
         val retryPlan = tracker.beginDelete("photo.dng")
 
         assertEquals(MediaDeleteScope.FILE_ONLY, retryPlan.deleteScope)
@@ -309,7 +330,7 @@ class CaptureOutputTrackerTest {
         assertEquals(setOf("shot.heic", "shot.jpg", "shot.dng"), plan.outputs)
         assertEquals(
             "shot.jpg",
-            tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg", "shot.dng")),
+            tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg", "shot.dng"))?.output,
         )
         assertTrue(tracker.isCurrentReviewOutput("shot.jpg"))
         assertEquals(setOf("shot.jpg", "shot.dng"), tracker.takeForDelete("shot.jpg"))
@@ -338,7 +359,7 @@ class CaptureOutputTrackerTest {
 
         assertEquals(
             "external.jpg",
-            tracker.restoreDeleteSurvivors(plan, setOf("external.jpg")),
+            tracker.restoreDeleteSurvivors(plan, setOf("external.jpg"))?.output,
         )
         assertTrue(tracker.isCurrentReviewOutput("external.jpg"))
         assertEquals(setOf("external.jpg"), tracker.takeForDelete("external.jpg"))
@@ -584,8 +605,8 @@ class CaptureOutputTrackerTest {
 
         // First resolver pass restores two survivors; a retry of the same plan then confirms only
         // one. The still-present restored family must be REPLACED, its dropped sibling unlinked.
-        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg", "shot.dng")))
-        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg")))
+        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg", "shot.dng"))?.output)
+        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg"))?.output)
         assertTrue(tracker.isCurrentReviewOutput("shot.jpg"))
         assertEquals(setOf("shot.jpg"), tracker.takeForDelete("shot.jpg"))
     }
@@ -599,7 +620,7 @@ class CaptureOutputTrackerTest {
 
         // Only the RAW sibling survived: with the preferred (displayable) owner gone and no other
         // displayable survivor, review truthfully falls back to the RAW file itself.
-        assertEquals("shot.dng", tracker.restoreDeleteSurvivors(plan, setOf("shot.dng")))
+        assertEquals("shot.dng", tracker.restoreDeleteSurvivors(plan, setOf("shot.dng"))?.output)
         assertTrue(tracker.isCurrentReviewOutput("shot.dng"))
     }
 

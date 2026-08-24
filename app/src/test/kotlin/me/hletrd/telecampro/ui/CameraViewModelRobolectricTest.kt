@@ -12,6 +12,7 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraReadyPublication
+import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CaptureMode
@@ -30,6 +31,7 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.video.CodecComponent
 import me.hletrd.telecampro.video.CodecInventory
@@ -129,6 +131,40 @@ class CameraViewModelRobolectricTest {
         assertEquals(ExposureMode.PROGRAM, s.controls.exposureMode)
         assertTrue(s.controls.programAppSide)
         assertEquals(1f, s.controls.zoomRatio)
+    }
+
+    @Test fun `delete survivor publishes uri provenance and scope as one state packet`() {
+        val ownedUri = Uri.parse("content://media/owned")
+        val unverifiedUri = Uri.parse("content://media/unverified")
+        val initial = CameraUiState(
+            lastMediaUri = ownedUri,
+            lastMediaProvenance = MediaProvenance.APP_OWNED,
+            lastMediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
+        )
+
+        val unverified = initial.withDeleteSurvivor(
+            CaptureDeleteSurvivor(
+                output = unverifiedUri,
+                kind = CaptureOutputKind.RAW,
+                provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        assertEquals(unverifiedUri, unverified.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, unverified.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, unverified.lastMediaDeleteScope)
+
+        val owned = unverified.withDeleteSurvivor(
+            CaptureDeleteSurvivor(
+                output = ownedUri,
+                kind = CaptureOutputKind.DISPLAYABLE,
+                provenance = MediaProvenance.APP_OWNED,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        assertEquals(ownedUri, owned.lastMediaUri)
+        assertEquals(MediaProvenance.APP_OWNED, owned.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, owned.lastMediaDeleteScope)
     }
 
     @Test fun `engine route publication installs explicit external truth without hidden tele`() {

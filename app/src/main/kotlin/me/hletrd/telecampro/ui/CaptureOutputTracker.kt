@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.RestoredCapture
 import me.hletrd.telecampro.storage.RestoredDeleteScope
 import me.hletrd.telecampro.storage.StoredMediaOutputKind
@@ -25,6 +26,15 @@ internal enum class CaptureOutputDecision {
 internal data class PriorCaptureOutput<T>(
     val output: T,
     val kind: CaptureOutputKind,
+    val provenance: MediaProvenance = MediaProvenance.APP_OWNED,
+)
+
+/** Exact review state restored after an asynchronous delete attempt. */
+internal data class CaptureDeleteSurvivor<T>(
+    val output: T,
+    val kind: CaptureOutputKind,
+    val provenance: MediaProvenance,
+    val deleteScope: MediaDeleteScope,
 )
 
 /** Immutable ownership snapshot carried across an asynchronous MediaStore delete attempt. */
@@ -39,6 +49,7 @@ internal data class CaptureDeletePlan<T>(
     /** Only a live still family can have retained HEIF/JPEG/DNG callbacks after review deletion. */
     internal val liveStillCaptureId: Int? = null,
     internal val kindsByOutput: Map<T, CaptureOutputKind>,
+    internal val provenanceByOutput: Map<T, MediaProvenance> = emptyMap(),
     internal val preferredOutput: T?,
 )
 
@@ -57,6 +68,7 @@ internal class CaptureOutputTracker<T>(
     private val outputsByCapture = LinkedHashMap<Int, LinkedHashSet<T>>()
     private val captureByOutput = HashMap<T, Int>()
     private val kindByOutput = HashMap<T, CaptureOutputKind>()
+    private val provenanceByOutput = HashMap<T, MediaProvenance>()
     private val deleteScopeByCapture = HashMap<Int, MediaDeleteScope>()
     private val familyByCapture = HashMap<Int, CaptureFamilyKey>()
     private val liveStillFamilies = HashSet<Int>()
@@ -79,9 +91,9 @@ internal class CaptureOutputTracker<T>(
         familyKey: CaptureFamilyKey? = null,
     ): Boolean {
         if (PRIOR_PROCESS_CAPTURE_ID in tombstones) return false
-        val distinct = LinkedHashMap<T, CaptureOutputKind>()
-        outputs.forEach { seeded -> distinct.putIfAbsent(seeded.output, seeded.kind) }
-        val preferredKind = distinct[preferredOutput] ?: return false
+        val distinct = LinkedHashMap<T, PriorCaptureOutput<T>>()
+        outputs.forEach { seeded -> distinct.putIfAbsent(seeded.output, seeded) }
+        val preferredKind = distinct[preferredOutput]?.kind ?: return false
 
         val accepted = distinct.filterKeys { output ->
             captureByOutput[output].let { it == null || it == PRIOR_PROCESS_CAPTURE_ID }
@@ -94,6 +106,7 @@ internal class CaptureOutputTracker<T>(
             if (captureByOutput[output] == PRIOR_PROCESS_CAPTURE_ID) {
                 captureByOutput.remove(output)
                 kindByOutput.remove(output)
+                provenanceByOutput.remove(output)
             }
         }
         deleteScopeByCapture.remove(PRIOR_PROCESS_CAPTURE_ID)
@@ -102,9 +115,10 @@ internal class CaptureOutputTracker<T>(
         outputsByCapture[PRIOR_PROCESS_CAPTURE_ID] = LinkedHashSet(accepted.keys)
         deleteScopeByCapture[PRIOR_PROCESS_CAPTURE_ID] = deleteScope
         familyKey?.let { familyByCapture[PRIOR_PROCESS_CAPTURE_ID] = it }
-        accepted.forEach { (output, kind) ->
+        accepted.forEach { (output, seeded) ->
             captureByOutput[output] = PRIOR_PROCESS_CAPTURE_ID
-            kindByOutput[output] = kind
+            kindByOutput[output] = seeded.kind
+            provenanceByOutput[output] = seeded.provenance
         }
         trimCaptures()
         if (PRIOR_PROCESS_CAPTURE_ID !in outputsByCapture) return false
@@ -142,6 +156,7 @@ internal class CaptureOutputTracker<T>(
         deleteScopeByCapture.putIfAbsent(captureId, MediaDeleteScope.CAPTURE_FAMILY)
         captureByOutput[output] = captureId
         kindByOutput[output] = kind
+        provenanceByOutput[output] = MediaProvenance.APP_OWNED
         trimCaptures()
         // Trimming can evict the capture that was JUST added — a late sibling of an old id arriving
         // while the ordinary history is full (reachable right after deleting a pinned review while
@@ -219,6 +234,7 @@ internal class CaptureOutputTracker<T>(
                 familyKey = null,
                 liveStillCaptureId = null,
                 kindsByOutput = emptyMap(),
+                provenanceByOutput = emptyMap(),
                 preferredOutput = output,
             )
         val preferredOutput = reviewOutput.takeIf { reviewCaptureId == captureId } ?: output
@@ -259,9 +275,13 @@ internal class CaptureOutputTracker<T>(
         val kinds = tracked.mapNotNull { ownedOutput ->
             kindByOutput[ownedOutput]?.let { ownedOutput to it }
         }.toMap()
+        val provenances = tracked.mapNotNull { ownedOutput ->
+            provenanceByOutput[ownedOutput]?.let { ownedOutput to it }
+        }.toMap()
         tracked.forEach { ownedOutput ->
             captureByOutput.remove(ownedOutput)
             kindByOutput.remove(ownedOutput)
+            provenanceByOutput.remove(ownedOutput)
         }
         if (reviewCaptureId == captureId) {
             reviewCaptureId = null
@@ -277,6 +297,7 @@ internal class CaptureOutputTracker<T>(
             familyKey = familyKey,
             liveStillCaptureId = liveStillCaptureId,
             kindsByOutput = kinds,
+            provenanceByOutput = provenances,
             preferredOutput = preferredOutput,
         )
     }
@@ -293,10 +314,14 @@ internal class CaptureOutputTracker<T>(
      * Restores only the resolver-confirmed survivors from [plan]. The capture tombstone remains,
      * so a late HEIF/JPEG/DNG callback is still rejected instead of growing the family after the
      * user's delete intent. A newer capture that arrived during Binder I/O keeps review ownership.
-     * Returns the survivor that truthfully became the review owner, or null when a newer owner won.
+     * Returns the typed survivor that truthfully became the review owner, or null when a newer owner
+     * won. URI, provenance, and scope must publish as one packet so review authorship cannot lag.
      */
     @Synchronized
-    fun restoreDeleteSurvivors(plan: CaptureDeletePlan<T>, survivors: Set<T>): T? {
+    fun restoreDeleteSurvivors(
+        plan: CaptureDeletePlan<T>,
+        survivors: Set<T>,
+    ): CaptureDeleteSurvivor<T>? {
         // FILE_ONLY targets only the displayed URI. Every other known sibling is a confirmed
         // survivor by construction: no resolver delete was attempted for it. Keep those siblings
         // in review ownership instead of making the gallery appear empty while files remain.
@@ -312,6 +337,7 @@ internal class CaptureOutputTracker<T>(
                         PriorCaptureOutput(
                             it,
                             plan.kindsByOutput[it] ?: CaptureOutputKind.DISPLAYABLE,
+                            plan.provenanceByOutput[it] ?: MediaProvenance.APP_OWNED,
                         )
                     },
                     preferredOutput = plan.requestedOutput.takeIf { it in retained }
@@ -323,7 +349,7 @@ internal class CaptureOutputTracker<T>(
                     familyKey = plan.familyKey,
                 )
             ) {
-                reviewOutput
+                reviewOutput?.let { restored -> captureDeleteSurvivor(restored, plan.deleteScope) }
             } else {
                 null
             }
@@ -333,6 +359,7 @@ internal class CaptureOutputTracker<T>(
             if (captureByOutput[oldOutput] == captureId) {
                 captureByOutput.remove(oldOutput)
                 kindByOutput.remove(oldOutput)
+                provenanceByOutput.remove(oldOutput)
             }
         }
         outputsByCapture[captureId] = retained
@@ -342,6 +369,8 @@ internal class CaptureOutputTracker<T>(
         retained.forEach { survivor ->
             captureByOutput[survivor] = captureId
             kindByOutput[survivor] = plan.kindsByOutput[survivor] ?: CaptureOutputKind.DISPLAYABLE
+            provenanceByOutput[survivor] =
+                plan.provenanceByOutput[survivor] ?: MediaProvenance.APP_OWNED
         }
         trimCaptures()
         if (captureId !in outputsByCapture) return null
@@ -356,7 +385,18 @@ internal class CaptureOutputTracker<T>(
             reviewKind = kindByOutput[chosen]
         }
         return chosen.takeIf { reviewCaptureId == captureId && reviewOutput == chosen }
+            ?.let { captureDeleteSurvivor(it, plan.deleteScope) }
     }
+
+    private fun captureDeleteSurvivor(
+        output: T,
+        deleteScope: MediaDeleteScope,
+    ): CaptureDeleteSurvivor<T> = CaptureDeleteSurvivor(
+        output = output,
+        kind = kindByOutput[output] ?: CaptureOutputKind.DISPLAYABLE,
+        provenance = provenanceByOutput[output] ?: MediaProvenance.APP_OWNED,
+        deleteScope = deleteScope,
+    )
 
     @Synchronized
     private fun trimCaptures() {
@@ -376,6 +416,7 @@ internal class CaptureOutputTracker<T>(
             evicted.forEach { output ->
                 captureByOutput.remove(output)
                 kindByOutput.remove(output)
+                provenanceByOutput.remove(output)
             }
         }
     }
@@ -417,6 +458,7 @@ internal fun <T> CaptureOutputTracker<T>.seedRestoredCapture(
                 StoredMediaOutputKind.DISPLAYABLE -> CaptureOutputKind.DISPLAYABLE
                 StoredMediaOutputKind.RAW -> CaptureOutputKind.RAW
             },
+            provenance = output.provenance,
         )
     },
     preferredOutput = restored.preferred.output,
