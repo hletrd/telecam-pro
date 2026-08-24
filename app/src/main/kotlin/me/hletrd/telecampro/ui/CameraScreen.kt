@@ -20,6 +20,7 @@ import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -2671,10 +2672,7 @@ internal fun FocalRail(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            // The fade owns viewport draw coordinates, so it must wrap the scroll modifier. The
-            // reverse order moves the mask with the content and leaves a hard-cut trailing chip.
-            .trailingEdgeFadeScrollHint(railScroll)
-            .horizontalScroll(railScroll),
+            .focalRailViewportScroll(railScroll),
         horizontalArrangement = Arrangement.Center,
     ) {
         Row(
@@ -2743,6 +2741,16 @@ internal fun FocalRail(
         }
     }
 }
+
+/**
+ * Keeps the focal-rail fade in viewport draw coordinates.
+ *
+ * The fade must wrap the scroll modifier. Reversing these calls evaluates the mask in the wider
+ * content coordinate space, moving its ramp off the visible edge and restoring a hard-cut chip.
+ * Kept as one production seam so the regression can exercise rendered coordinates directly.
+ */
+internal fun Modifier.focalRailViewportScroll(scrollState: ScrollState): Modifier =
+    trailingEdgeFadeScrollHint(scrollState).horizontalScroll(scrollState)
 
 /** One rail chip: identical box, semantics, and plate treatment for a lens pick and a zoom mark. */
 @Composable
