@@ -39,6 +39,28 @@ class RetainedStillDiscardDispatcherTest {
     }
 
     @Test
+    fun `registered producer terminal survives old Engine facade shutdown`() {
+        val staleEngine = RetainedStillDiscardDispatcher(
+            RETAINED_STILL_DISCARD_WORKER_COUNT,
+            RETAINED_STILL_DISCARD_BACKLOG_CAPACITY,
+        )
+        staleEngine.shutdown()
+        assertEquals(
+            RetainedStillDiscardDispatch.SHUTDOWN,
+            staleEngine.dispatch(Runnable { error("closed Engine facade admitted new work") }),
+        )
+
+        val terminalFinished = CountDownLatch(1)
+        assertEquals(
+            RetainedStillDiscardDispatch.ACCEPTED,
+            ProcessRetainedStillDiscardOwner.dispatchRegisteredProducerTerminal(
+                Runnable { terminalFinished.countDown() },
+            ),
+        )
+        assertTrue(terminalFinished.await(5, TimeUnit.SECONDS))
+    }
+
+    @Test
     fun `process owner rejects capacity drift across Engine generations`() {
         assertThrows(IllegalArgumentException::class.java) {
             ProcessRetainedStillDiscardOwner.capacity(

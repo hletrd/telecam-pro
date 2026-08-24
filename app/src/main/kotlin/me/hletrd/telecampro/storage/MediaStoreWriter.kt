@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.SharedPreferences
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
@@ -18,6 +19,7 @@ import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import me.hletrd.telecampro.camera.MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_BACKLOG_CAPACITY
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_WORKER_COUNT
@@ -75,6 +77,11 @@ object MediaStoreWriter {
     private class FamilyJournalAuthority(
         val monitor: Any = Any(),
         var users: Int = 0,
+        // Registered before Camera2 receives the still request and retained until every possible
+        // HEIF/JPEG/DNG continuation is terminal. Unlike an Engine-local capture id, this survives
+        // Engine replacement and therefore prevents a restored delete from retiring the exact
+        // family veto in front of a future old-Engine sibling.
+        var producerLeases: Int = 0,
         // Registered before a publication caller waits for [monitor]. Retirement consults this
         // count after its exact-family absence query, so it cannot erase the durable veto in front
         // of an old-Engine publication that is already queued behind it.
@@ -107,6 +114,31 @@ object MediaStoreWriter {
         }
     }
 
+    /**
+     * Registers process-wide producer ownership before Camera2 can create any row in [family].
+     * The returned lease is exact-family and idempotent; callers close it only after every output
+     * lane is terminal, including rejected dispatch and exceptional completion.
+     */
+    internal fun registerStillFamilyProducer(family: CaptureFamilyKey): CaptureFamilyProducerLease {
+        val key = deletedFamilyJournalKey(family)
+        val authority = synchronized(familyAuthorityRegistryLock) {
+            familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
+                it.users += 1
+                it.producerLeases += 1
+            }
+        }
+        return CaptureFamilyProducerLease {
+            synchronized(familyAuthorityRegistryLock) {
+                check(authority.producerLeases > 0) { "family producer lease underflow" }
+                authority.producerLeases -= 1
+                authority.users -= 1
+                if (authority.users == 0 && familyAuthorities[key] === authority) {
+                    familyAuthorities.remove(key)
+                }
+            }
+        }
+    }
+
     private data class RejectedOutput(val context: Context, val uri: Uri)
 
     private val rejectedOutputOwner = BoundedRejectedOutputOwner<RejectedOutput>(
@@ -118,7 +150,7 @@ object MediaStoreWriter {
     )
 
     /**
-     * Reconstructs the newest published capture THIS APP saved under its own folder.
+     * Reconstructs the newest package-owned row or recognized owner-null TeleCam-format candidate.
      *
      * Images and Video are separate MediaStore collections, so each query is bounded and the pure
      * reducer compares their results. Versioned filenames prove sibling identity; legacy files stay
@@ -219,15 +251,17 @@ object MediaStoreWriter {
                 ?.joinToString(prefix = " AND ${MediaStore.MediaColumns.DISPLAY_NAME} IN (", postfix = ")") { "?" }
                 .orEmpty()
             // `OWNER_PACKAGE_NAME = ?` alone silently loses every capture this app made in a
-            // PREVIOUS install: Android clears that column when the owning package is uninstalled,
+            // PREVIOUS install: Android can clear that column when the owning package is uninstalled,
             // and in SQL `NULL = 'anything'` is NULL — never true — so those rows can never match
             // any package name. Device evidence (2026-07-27): four rows in our own capture directory
             // with our own IMG_TELECAM_* filenames sat at owner NULL, invisible to this query,
             // which is why the gallery button fell back to its placeholder after a reinstall even
-            // though the photos were right there. A NULL owner is therefore accepted only through
-            // the explicit historical/current filename + collection + MIME rules. The reducer
-            // repeats their exact grammar after this coarse provider filter. A row owned by a
-            // DIFFERENT package is still excluded.
+            // though the photos were right there. A NULL owner is therefore recognized only through
+            // the explicit historical/current filename + collection + MIME rules. Those public
+            // properties cannot prove authorship: an imported lookalike can match too, so the reducer
+            // labels every admitted NULL-owner row LEGACY_FORMAT_UNVERIFIED and limits it to file-only
+            // deletion. The reducer repeats the exact grammar after this coarse provider filter. A
+            // row owned by a DIFFERENT package is still excluded.
             putString(
                 ContentResolver.QUERY_ARG_SQL_SELECTION,
                 "${MediaStore.MediaColumns.RELATIVE_PATH} IN " +
@@ -281,9 +315,9 @@ object MediaStoreWriter {
                             dateAddedEpochSeconds = cursor.getLong(addedColumn),
                             dateModifiedEpochSeconds = cursor.getLong(modifiedColumn),
                             isPending = cursor.getInt(pendingColumn) != 0,
-                            // The selection admits our package OR a cleared owner matching the
-                            // historical/current TeleCam contract. Cleared-owner rows remain
-                            // display-only because deleting them requires a system consent flow.
+                            // The selection admits our package OR a null owner matching the
+                            // historical/current TeleCam format. Null-owner rows are recognized but
+                            // unverifiable and remain file-only because deletion can require consent.
                             isOwned = !cursor.isNull(ownerColumn),
                         ),
                     )
@@ -395,23 +429,30 @@ object MediaStoreWriter {
     internal fun markFamilyDeletedResult(
         context: Context,
         family: CaptureFamilyKey,
+    ): FamilyDeletionMarkResult = markFamilyDeletedResult(
+        family = family,
+        markerStore = SharedPreferencesFamilyMarkerStore(
+            context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE),
+        ),
+    )
+
+    internal fun markFamilyDeletedResult(
+        family: CaptureFamilyKey,
+        markerStore: FamilyDeletionMarkerStore,
     ): FamilyDeletionMarkResult = withFamilyJournalAuthority(deletedFamilyJournalKey(family)) {
-        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
         val key = deletedFamilyJournalKey(family)
         repeat(COMPLETION_MARK_ATTEMPTS) { attempt ->
             val durable = synchronized(familyJournalMetadataLock) {
-                if (preferences.contains(key)) {
+                if (markerStore.contains(key)) {
                     return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
                 }
-                val markerCount = runCatching { preferences.all.size }.getOrElse {
+                val markerCount = runCatching { markerStore.size() }.getOrElse {
                     return@withFamilyJournalAuthority FamilyDeletionMarkResult.UNAVAILABLE
                 }
                 if (markerCount >= MAX_DELETED_FAMILY_MARKERS) {
                     return@withFamilyJournalAuthority FamilyDeletionMarkResult.CAPACITY_EXHAUSTED
                 }
-                preferences.edit()
-                    .putString(key, processJournalOwner)
-                    .commit()
+                markerStore.put(key, processJournalOwner)
             }
             if (durable) return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
             if (attempt + 1 < COMPLETION_MARK_ATTEMPTS) {
@@ -435,12 +476,32 @@ object MediaStoreWriter {
         family: CaptureFamilyKey,
         producersTerminal: Boolean,
         exactFamilyAbsent: () -> Boolean?,
+    ): FamilyDeletionRetirementResult = retireFamilyDeletionMarker(
+        family = family,
+        producersTerminal = producersTerminal,
+        markerStore = SharedPreferencesFamilyMarkerStore(
+            context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE),
+        ),
+        exactFamilyAbsent = exactFamilyAbsent,
+    )
+
+    internal fun retireFamilyDeletionMarker(
+        family: CaptureFamilyKey,
+        producersTerminal: Boolean,
+        markerStore: FamilyDeletionMarkerStore,
+        exactFamilyAbsent: () -> Boolean?,
     ): FamilyDeletionRetirementResult {
         if (!producersTerminal) return FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
         val key = deletedFamilyJournalKey(family)
         return withFamilyJournalAuthority(key) { authority ->
-            val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
-            val markerPresent = synchronized(familyJournalMetadataLock) { preferences.contains(key) }
+            if (synchronized(familyAuthorityRegistryLock) { authority.producerLeases > 0 }) {
+                return@withFamilyJournalAuthority FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
+            }
+            // SharedPreferences reads are thread-safe. Exact-family authority supplies the required
+            // same-key ordering; taking the global capacity/RMW lock here would couple an unrelated
+            // family's publication or absence query to a slow synchronous commit.
+            val markerPresent = runCatching { markerStore.contains(key) }.getOrNull()
+                ?: return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
             if (!markerPresent) {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.ALREADY_ABSENT
             }
@@ -453,6 +514,9 @@ object MediaStoreWriter {
             }
 
             synchronized(familyAuthorityRegistryLock) {
+                if (authority.producerLeases > 0) {
+                    return@synchronized FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
+                }
                 // A publication registers before it waits for this family's monitor. If one
                 // arrived during the absence query, retain the marker: after we release the exact
                 // authority that publication must observe the durable delete and discard its row.
@@ -460,9 +524,9 @@ object MediaStoreWriter {
                     FamilyDeletionRetirementResult.RETAINED
                 } else {
                     synchronized(familyJournalMetadataLock) {
-                        if (!preferences.contains(key)) {
+                        if (!markerStore.contains(key)) {
                             FamilyDeletionRetirementResult.ALREADY_ABSENT
-                        } else if (preferences.edit().remove(key).commit()) {
+                        } else if (markerStore.remove(key)) {
                             FamilyDeletionRetirementResult.RETIRED
                         } else {
                             FamilyDeletionRetirementResult.RETAINED
@@ -528,6 +592,24 @@ object MediaStoreWriter {
         unavailable: () -> T,
         live: () -> T,
         publicationRegistered: () -> Unit = {},
+    ): T = withFamilyPublicationAuthority(
+        family = family,
+        markerStore = SharedPreferencesFamilyMarkerStore(
+            context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE),
+        ),
+        deleted = deleted,
+        unavailable = unavailable,
+        live = live,
+        publicationRegistered = publicationRegistered,
+    )
+
+    internal fun <T> withFamilyPublicationAuthority(
+        family: CaptureFamilyKey,
+        markerStore: FamilyDeletionMarkerStore,
+        deleted: () -> T,
+        unavailable: () -> T,
+        live: () -> T,
+        publicationRegistered: () -> Unit = {},
     ): T {
         val key = deletedFamilyJournalKey(family)
         return withFamilyJournalAuthority(
@@ -535,12 +617,10 @@ object MediaStoreWriter {
             publication = true,
             onRegistered = publicationRegistered,
         ) {
-            val markerPresent = runCatching {
-                synchronized(familyJournalMetadataLock) {
-                    context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
-                        .contains(key)
-                }
-            }.getOrNull()
+            // The exact-family monitor is the ordering authority. SharedPreferences.contains is
+            // thread-safe, so a read-only publication decision must not wait for another family's
+            // capacity-changing commit under [familyJournalMetadataLock].
+            val markerPresent = runCatching { markerStore.contains(key) }.getOrNull()
             when (markerPresent) {
                 true -> deleted()
                 false -> live()
@@ -1165,6 +1245,38 @@ object MediaStoreWriter {
         context.contentResolver.openFileDescriptor(uri, "r")
             ?: throw IOException("MediaProvider returned no file descriptor")
 
+}
+
+/** Exact process-owned still-family producer marker; [close] is safe to repeat. */
+internal class CaptureFamilyProducerLease(
+    private val release: () -> Unit,
+) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) release()
+    }
+}
+
+/** Narrow storage seam that keeps family ordering tests independent of Android preference timing. */
+internal interface FamilyDeletionMarkerStore {
+    fun contains(key: String): Boolean
+    fun size(): Int
+    fun put(key: String, owner: String): Boolean
+    fun remove(key: String): Boolean
+}
+
+private class SharedPreferencesFamilyMarkerStore(
+    private val preferences: SharedPreferences,
+) : FamilyDeletionMarkerStore {
+    override fun contains(key: String): Boolean = preferences.contains(key)
+
+    override fun size(): Int = preferences.all.size
+
+    override fun put(key: String, owner: String): Boolean =
+        preferences.edit().putString(key, owner).commit()
+
+    override fun remove(key: String): Boolean = preferences.edit().remove(key).commit()
 }
 
 internal enum class FamilyDeletionMarkResult { DURABLE, CAPACITY_EXHAUSTED, UNAVAILABLE }

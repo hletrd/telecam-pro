@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -243,6 +244,71 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
+    fun `replacement engine cannot retire delete before old engine future sibling is terminal`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_024_100_000L, 241L)
+        // Engine A registers before Camera2 receives the still. At this point its processed/DNG
+        // continuations may not have created a row or publication claim yet.
+        val oldEngineProducer = MediaStoreWriter.registerStillFamilyProducer(family)
+        var absenceQueried = false
+
+        try {
+            // Engine B restores the already-published first sibling and commits whole-family Delete.
+            assertEquals(FamilyDeletionMarkResult.DURABLE, MediaStoreWriter.markFamilyDeletedResult(context, family))
+            assertEquals(
+                FamilyDeletionRetirementResult.PRODUCERS_ACTIVE,
+                MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) {
+                    absenceQueried = true
+                    true
+                },
+            )
+            assertFalse(absenceQueried)
+
+            // The future old-Engine sibling arrives only now. It must still see Engine B's marker
+            // and enter discard instead of becoming visible in Gallery.
+            assertEquals(
+                "discard",
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    context = context,
+                    family = family,
+                    deleted = { "discard" },
+                    unavailable = { "unavailable" },
+                    live = { "publish" },
+                ),
+            )
+        } finally {
+            // Models every processed/DNG rejection, exception, or accepted continuation reaching
+            // its exactly-once terminal edge after Engine replacement.
+            oldEngineProducer.close()
+        }
+
+        assertEquals(
+            FamilyDeletionRetirementResult.RETIRED,
+            MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { true },
+        )
+    }
+
+    @Test
+    fun `family producer leases are exact ref counted and idempotent`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_024_200_000L, 242L)
+        val firstLaneOwner = MediaStoreWriter.registerStillFamilyProducer(family)
+        val secondLaneOwner = MediaStoreWriter.registerStillFamilyProducer(family)
+        assertEquals(FamilyDeletionMarkResult.DURABLE, MediaStoreWriter.markFamilyDeletedResult(context, family))
+
+        firstLaneOwner.close()
+        firstLaneOwner.close()
+        assertEquals(
+            FamilyDeletionRetirementResult.PRODUCERS_ACTIVE,
+            MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { true },
+        )
+
+        secondLaneOwner.close()
+        assertEquals(
+            FamilyDeletionRetirementResult.RETIRED,
+            MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { true },
+        )
+    }
+
+    @Test
     fun `publication first owns provider and callback interval before family delete`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_025_000_000L, 25L)
         val publicationEntered = CountDownLatch(1)
@@ -327,6 +393,41 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
+    fun `blocked family commit does not block unrelated publication marker read`() {
+        val blockedFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_027_100_000L, 271L)
+        val independentFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_027_200_000L, 272L)
+        val commitEntered = CountDownLatch(1)
+        val allowCommit = CountDownLatch(1)
+        val markerStore = BlockingFamilyMarkerStore(commitEntered, allowCommit)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val blockedMark = executor.submit<FamilyDeletionMarkResult> {
+                MediaStoreWriter.markFamilyDeletedResult(blockedFamily, markerStore)
+            }
+            assertTrue(commitEntered.await(2, TimeUnit.SECONDS))
+
+            val publication = executor.submit<String> {
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    family = independentFamily,
+                    markerStore = markerStore,
+                    deleted = { "discard" },
+                    unavailable = { "unavailable" },
+                    live = { "published-and-callback-complete" },
+                )
+            }
+            assertEquals("published-and-callback-complete", publication.get(2, TimeUnit.SECONDS))
+            assertFalse(blockedMark.isDone)
+
+            allowCommit.countDown()
+            assertEquals(FamilyDeletionMarkResult.DURABLE, blockedMark.get(2, TimeUnit.SECONDS))
+        } finally {
+            allowCommit.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `queued publication prevents retirement from erasing its family veto`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_028_000_000L, 28L)
         assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))
@@ -405,5 +506,28 @@ class DeletedFamilyJournalTest {
 
         assertEquals(MediaStoreWriter.MAX_DELETED_FAMILY_MARKERS, batch.entries.size)
         assertTrue(batch.hasMore)
+    }
+
+    private class BlockingFamilyMarkerStore(
+        private val commitEntered: CountDownLatch,
+        private val allowCommit: CountDownLatch,
+    ) : FamilyDeletionMarkerStore {
+        private val markers = ConcurrentHashMap<String, String>()
+
+        override fun contains(key: String): Boolean = markers.containsKey(key)
+
+        override fun size(): Int = markers.size
+
+        override fun put(key: String, owner: String): Boolean {
+            commitEntered.countDown()
+            check(allowCommit.await(2, TimeUnit.SECONDS))
+            markers[key] = owner
+            return true
+        }
+
+        override fun remove(key: String): Boolean {
+            markers.remove(key)
+            return true
+        }
     }
 }

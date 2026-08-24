@@ -103,6 +103,14 @@ internal object ProcessRetainedStillDiscardOwner {
         }
         return capacityOwner
     }
+
+    /**
+     * A still-family producer registered before Engine release may become terminal only after its
+     * old facade closes. Admit that already-owned retirement continuation directly to the same
+     * finite process lane; overflow leaves the durable family marker for launch recovery.
+     */
+    fun dispatchRegisteredProducerTerminal(task: Runnable): RetainedStillDiscardDispatch =
+        capacityOwner.dispatch(task)
 }
 
 private fun retainedStillDiscardThreadFactory(): ThreadFactory {

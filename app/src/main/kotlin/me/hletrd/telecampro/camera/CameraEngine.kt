@@ -27,6 +27,7 @@ import me.hletrd.telecampro.gl.glInputTransactionMayProceed
 import me.hletrd.telecampro.gl.glReplacementMayRestartPreview
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.CaptureFamilyProducerLease
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import me.hletrd.telecampro.storage.RecoveryReport
@@ -4175,16 +4176,23 @@ class CameraEngine internal constructor(
         scheduleDeletedFamilyRetirement(family, liveStillCaptureId)
     }
 
-    private fun scheduleDeletedFamilyRetirement(family: CaptureFamilyKey, liveStillCaptureId: Int?) {
+    private fun scheduleDeletedFamilyRetirement(
+        family: CaptureFamilyKey,
+        liveStillCaptureId: Int?,
+        exactProducerTerminal: Boolean = false,
+    ) {
         val task = Runnable {
-            val producersTerminal = liveStillCaptureId == null ||
-                retainedStillDeletionOwner.deletedFamilyIfProducersTerminal(liveStillCaptureId) == family
+            val locallyDeletedTerminalFamily = liveStillCaptureId?.let(
+                retainedStillDeletionOwner::deletedFamilyIfProducersTerminal,
+            )
+            val producersTerminal = exactProducerTerminal || liveStillCaptureId == null ||
+                locallyDeletedTerminalFamily == family
             val result = MediaStoreWriter.retireFamilyDeletionIfAbsent(
                 context,
                 family,
                 producersTerminal,
             )
-            if (liveStillCaptureId != null &&
+            if (liveStillCaptureId != null && locallyDeletedTerminalFamily == family &&
                 (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETIRED ||
                     result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.ALREADY_ABSENT)
             ) {
@@ -4192,7 +4200,13 @@ class CameraEngine internal constructor(
             }
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         }
-        runCatching { ioExecutor.execute(task) }
+        if (runCatching { ioExecutor.execute(task) }.isFailure) {
+            // Accepted process-owned DNG publication can finish after this old Engine has shut its
+            // io executor. Its producer lease was registered before release, so route the terminal
+            // retirement continuation to the existing finite process provider lane. Rejection is
+            // safe: the durable family marker remains launch recovery's exact veto.
+            ProcessRetainedStillDiscardOwner.dispatchRegisteredProducerTerminal(task)
+        }
     }
 
     /**
@@ -4278,7 +4292,16 @@ class CameraEngine internal constructor(
         )
     }
 
-    private fun shotSpec(shotControls: ManualControls, hiRes: Boolean, optics: ShotOptics): ShotSpec {
+    private data class RegisteredStillShot(
+        val spec: ShotSpec,
+        val producerLease: CaptureFamilyProducerLease,
+    )
+
+    private fun shotSpec(
+        shotControls: ManualControls,
+        hiRes: Boolean,
+        optics: ShotOptics,
+    ): RegisteredStillShot {
         val requestedAtMs = System.currentTimeMillis()
         val captureId = captureSeq.incrementAndGet()
         // A newer still (including an in-REC snapshot) also owns current capture presentation. Its
@@ -4318,11 +4341,20 @@ class CameraEngine internal constructor(
             frontFacing = optics.frontFacing,
             route = optics.route,
         )
-        // Register before Camera2 sees the request, so review deletion can synchronously persist
-        // the whole family without a MediaStore query even while output siblings are still late.
-        retainedStillDeletionOwner.registerCaptureFamily(captureId, spec.familyKey)
-        onCaptureFamilyRegistered?.invoke(captureId, spec.familyKey, true)
-        return spec
+        // Process ownership must precede both the UI callback and the Camera2 request. A replacement
+        // Engine can restore/delete this family from that callback while this Engine has not yet
+        // created the later JPEG/DNG row or publication claim; the exact process lease is the only
+        // authority visible to both generations during that gap.
+        val producerLease = MediaStoreWriter.registerStillFamilyProducer(spec.familyKey)
+        return try {
+            retainedStillDeletionOwner.registerCaptureFamily(captureId, spec.familyKey)
+            onCaptureFamilyRegistered?.invoke(captureId, spec.familyKey, true)
+            RegisteredStillShot(spec, producerLease)
+        } catch (failure: Throwable) {
+            retainedStillDeletionOwner.markCaptureProducersTerminal(captureId)
+            producerLease.close()
+            throw failure
+        }
     }
 
     /**
@@ -4348,7 +4380,9 @@ class CameraEngine internal constructor(
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
         require(!processOwnedDngTail || formats.dngRaw && !formats.wantsProcessedStill)
-        val requestSpec = shotSpec(shotControls, hiRes, optics)
+        val registeredShot = shotSpec(shotControls, hiRes, optics)
+        val requestSpec = registeredShot.spec
+        val familyProducerLease = registeredShot.producerLease
         val expectedOutputExtensions = buildList {
             if (formats.heif) add("heic")
             if (formats.jpeg) add("jpg")
@@ -4368,9 +4402,22 @@ class CameraEngine internal constructor(
                             "outputs=${expectedOutputExtensions.joinToString(",")}",
                     )
                 }
-                retainedStillDeletionOwner.markCaptureProducersTerminal(requestSpec.captureId)?.let { family ->
-                    scheduleDeletedFamilyRetirement(family, requestSpec.captureId)
-                }
+                retainedStillDeletionOwner.markCaptureProducersTerminal(
+                    requestSpec.captureId,
+                )
+                // This is the last producer edge: processed and DNG lanes have both reached their
+                // exactly-once terminal callbacks, including executor/dispatcher rejection and
+                // exceptions. Release process authority before retirement rechecks the marker.
+                familyProducerLease.close()
+                // Always recheck: a replacement Engine may have durably deleted this exact family
+                // without installing its tombstone into this old Engine's local owner. The cheap
+                // marker read is normally absent; when Delete did race, this edge is the missing
+                // retry after every earlier replacement-Engine retirement observed our lease.
+                scheduleDeletedFamilyRetirement(
+                    requestSpec.familyKey,
+                    requestSpec.captureId,
+                    exactProducerTerminal = true,
+                )
                 onDone?.invoke()
             }
             Unit
