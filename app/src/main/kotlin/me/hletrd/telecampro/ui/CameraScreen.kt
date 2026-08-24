@@ -2827,6 +2827,7 @@ internal fun Modifier.focalRailViewportScroll(scrollState: ScrollState): Modifie
 /** One rail chip: identical box, semantics, and plate treatment for a lens pick and a zoom mark. */
 internal data class FocalRailVisualColors(
     val container: Color,
+    val selectionOverlay: Color = Color.Transparent,
     val border: Color,
     val label: Color,
 )
@@ -2844,7 +2845,10 @@ internal fun focalRailVisualColors(presentation: FocalRailState): FocalRailVisua
         label = CameraColors.TextPrimary,
     )
     presentation.selected -> FocalRailVisualColors(
-        container = CameraColors.TextPrimary.copy(alpha = 0.12f),
+        // Keep the shared live-frame contrast floor. The quiet wash alone converged to white over
+        // sky/snow and erased the active focal choice for the whole REC/reconfigure interval.
+        container = HudPlate,
+        selectionOverlay = CameraColors.TextPrimary.copy(alpha = 0.12f),
         border = CameraColors.TextPrimary.copy(alpha = 0.12f),
         label = CameraColors.TextPrimary.copy(alpha = 0.38f),
     )
@@ -2915,6 +2919,7 @@ internal fun RailChip(
                 .clip(CircleShape)
                 .indication(interactionSource, indication)
                 .background(colors.container)
+                .background(colors.selectionOverlay)
                 .border(1.dp, colors.border, CircleShape)
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center,

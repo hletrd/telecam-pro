@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.controls
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
@@ -20,6 +21,7 @@ import me.hletrd.telecampro.ui.CameraControlSelectionState
 import me.hletrd.telecampro.ui.FocalRailState
 import me.hletrd.telecampro.ui.RailChip
 import me.hletrd.telecampro.ui.focalRailVisualColors
+import me.hletrd.telecampro.ui.overlays.HudPlate
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -68,7 +70,8 @@ class AffordanceEdgeComposeTest {
         val selectedDisabled = railState(selected = true, enabled = false)
         assertTrue(focalRailVisualColors(enabled).border == CameraColors.AffordanceEdge)
         assertEquals(0.12f, focalRailVisualColors(disabled).border.alpha, 0.002f)
-        assertEquals(0.12f, focalRailVisualColors(selectedDisabled).container.alpha, 0.002f)
+        assertEquals(HudPlate, focalRailVisualColors(selectedDisabled).container)
+        assertEquals(0.12f, focalRailVisualColors(selectedDisabled).selectionOverlay.alpha, 0.002f)
         assertEquals(0.38f, focalRailVisualColors(selectedDisabled).label.alpha, 0.002f)
 
         compose.setContent {
@@ -107,6 +110,44 @@ class AffordanceEdgeComposeTest {
         )
     }
 
+    @Test
+    fun `focal rail state matrix remains visible over bright and dark frames`() {
+        val states = listOf(
+            "idle" to railState(selected = false, enabled = true),
+            "selected" to railState(selected = true, enabled = true),
+            "disabled" to railState(selected = false, enabled = false),
+            "selected-disabled" to railState(selected = true, enabled = false),
+        )
+        compose.setContent {
+            TeleCamProTheme {
+                Column {
+                    listOf("bright" to Color.White, "dark" to Color.Black).forEach { (frame, color) ->
+                        Row(Modifier.background(color).padding(16.dp)) {
+                            states.forEach { (name, state) ->
+                                RailChip(
+                                    label = "3×",
+                                    contentDescription = "$frame-$name",
+                                    presentation = state,
+                                    onClick = {},
+                                    glyphRotation = 0f,
+                                    modifier = Modifier.testTag("$frame-$name"),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        listOf("bright" to Color.White, "dark" to Color.Black).forEach { (frame, color) ->
+            states.forEach { (name, _) ->
+                val contrast = renderedRailPeakContrast("$frame-$name", color)
+                assertTrue("$frame $name focal state disappeared at $contrast:1", contrast >= 3.0)
+            }
+        }
+    }
+
     @androidx.compose.runtime.Composable
     private fun Chip(tag: String, selected: Boolean, enabled: Boolean) {
         FilterChip(
@@ -136,6 +177,13 @@ class AffordanceEdgeComposeTest {
             (7..minOf(17, pixels.height - 1)).map { y -> pixels[x, y] }
         }
         return edgePixels.maxOf { contrast(it, CameraColors.Pill) }
+    }
+
+    private fun renderedRailPeakContrast(tag: String, frame: Color): Double {
+        val pixels = compose.onNodeWithTag(tag).captureToImage().toPixelMap()
+        return (0 until pixels.width).maxOf { x ->
+            (0 until pixels.height).maxOf { y -> contrast(pixels[x, y], frame) }
+        }
     }
 
     private fun railState(selected: Boolean, enabled: Boolean) = FocalRailState(
