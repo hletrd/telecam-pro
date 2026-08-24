@@ -21,14 +21,15 @@ internal enum class ExternalLaunchOutcome {
     SECURITY_BLOCKED,
 }
 
+internal enum class ExternalNavigationFailureReason {
+    UNRESOLVED,
+    SECURITY_BLOCKED,
+}
+
 internal data class ExternalNavigationFailure(
     val target: ExternalNavigationTarget,
-    val outcome: ExternalLaunchOutcome,
-) {
-    init {
-        require(outcome != ExternalLaunchOutcome.LAUNCHED)
-    }
-}
+    val reason: ExternalNavigationFailureReason,
+)
 
 /**
  * One classification boundary for framework external-activity launch failures.
@@ -67,23 +68,27 @@ internal fun launchExternal(
 internal fun externalNavigationFailure(
     target: ExternalNavigationTarget,
     outcome: ExternalLaunchOutcome,
-): ExternalNavigationFailure? = if (outcome == ExternalLaunchOutcome.LAUNCHED) {
-    null
-} else {
-    ExternalNavigationFailure(target, outcome)
+): ExternalNavigationFailure? = when (outcome) {
+    ExternalLaunchOutcome.LAUNCHED -> null
+    ExternalLaunchOutcome.UNRESOLVED -> ExternalNavigationFailure(
+        target,
+        ExternalNavigationFailureReason.UNRESOLVED,
+    )
+    ExternalLaunchOutcome.SECURITY_BLOCKED -> ExternalNavigationFailure(
+        target,
+        ExternalNavigationFailureReason.SECURITY_BLOCKED,
+    )
 }
 
 @StringRes
 internal fun ExternalNavigationFailure.messageRes(): Int = when (target) {
-    ExternalNavigationTarget.APP_SETTINGS -> when (outcome) {
-        ExternalLaunchOutcome.UNRESOLVED -> R.string.external_settings_unavailable
-        ExternalLaunchOutcome.SECURITY_BLOCKED -> R.string.external_settings_blocked
-        ExternalLaunchOutcome.LAUNCHED -> error("A launched outcome is not a failure")
+    ExternalNavigationTarget.APP_SETTINGS -> when (reason) {
+        ExternalNavigationFailureReason.UNRESOLVED -> R.string.external_settings_unavailable
+        ExternalNavigationFailureReason.SECURITY_BLOCKED -> R.string.external_settings_blocked
     }
-    ExternalNavigationTarget.PRIVACY_POLICY -> when (outcome) {
-        ExternalLaunchOutcome.UNRESOLVED -> R.string.external_privacy_unavailable
-        ExternalLaunchOutcome.SECURITY_BLOCKED -> R.string.external_privacy_blocked
-        ExternalLaunchOutcome.LAUNCHED -> error("A launched outcome is not a failure")
+    ExternalNavigationTarget.PRIVACY_POLICY -> when (reason) {
+        ExternalNavigationFailureReason.UNRESOLVED -> R.string.external_privacy_unavailable
+        ExternalNavigationFailureReason.SECURITY_BLOCKED -> R.string.external_privacy_blocked
     }
 }
 

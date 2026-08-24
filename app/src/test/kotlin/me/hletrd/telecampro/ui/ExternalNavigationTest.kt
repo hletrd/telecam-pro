@@ -2,7 +2,10 @@ package me.hletrd.telecampro.ui
 
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
 import android.content.res.Configuration
+import android.provider.Settings
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -46,6 +49,14 @@ class ExternalNavigationTest {
         arrayOf(CameraActions::class.java),
     ) { _, method, _ -> if (method.returnType == java.lang.Boolean.TYPE) false else null } as CameraActions
 
+    private class RecordingContext(base: Context) : ContextWrapper(base) {
+        lateinit var launchedIntent: Intent
+
+        override fun startActivity(intent: Intent) {
+            launchedIntent = intent
+        }
+    }
+
     @Test
     fun `external launcher distinguishes unresolved blocked and successful attempts`() {
         assertEquals(
@@ -63,6 +74,63 @@ class ExternalNavigationTest {
                 ExternalLaunchOutcome.LAUNCHED,
             ),
         )
+        assertEquals(
+            R.string.external_settings_unavailable,
+            checkNotNull(
+                externalNavigationFailure(
+                    ExternalNavigationTarget.APP_SETTINGS,
+                    ExternalLaunchOutcome.UNRESOLVED,
+                ),
+            ).messageRes(),
+        )
+        assertEquals(
+            R.string.external_settings_blocked,
+            checkNotNull(
+                externalNavigationFailure(
+                    ExternalNavigationTarget.APP_SETTINGS,
+                    ExternalLaunchOutcome.SECURITY_BLOCKED,
+                ),
+            ).messageRes(),
+        )
+        assertEquals(
+            R.string.external_privacy_unavailable,
+            checkNotNull(
+                externalNavigationFailure(
+                    ExternalNavigationTarget.PRIVACY_POLICY,
+                    ExternalLaunchOutcome.UNRESOLVED,
+                ),
+            ).messageRes(),
+        )
+        assertEquals(
+            R.string.external_privacy_blocked,
+            checkNotNull(
+                externalNavigationFailure(
+                    ExternalNavigationTarget.PRIVACY_POLICY,
+                    ExternalLaunchOutcome.SECURITY_BLOCKED,
+                ),
+            ).messageRes(),
+        )
+    }
+
+    @Test
+    fun `external launcher builds exact settings and privacy intents`() {
+        val recording = RecordingContext(context)
+
+        assertEquals(
+            ExternalLaunchOutcome.LAUNCHED,
+            launchExternal(recording, ExternalNavigationTarget.APP_SETTINGS),
+        )
+        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, recording.launchedIntent.action)
+        assertEquals("package:${context.packageName}", recording.launchedIntent.data.toString())
+        assertTrue(recording.launchedIntent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+
+        assertEquals(
+            ExternalLaunchOutcome.LAUNCHED,
+            launchExternal(recording, ExternalNavigationTarget.PRIVACY_POLICY),
+        )
+        assertEquals(Intent.ACTION_VIEW, recording.launchedIntent.action)
+        assertEquals(PRIVACY_POLICY_URL, recording.launchedIntent.data.toString())
+        assertTrue(recording.launchedIntent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
     }
 
     @Test
