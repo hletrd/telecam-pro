@@ -1,90 +1,62 @@
-# Performance review — cycle 35
+# Performance review — cycle 36
 
 Date: 2026-08-24
-Reviewed revision: `87e4ac4a0de23a309b810a0076945a6b44430518` (`origin/main`)
-Workspace: clean detached worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
+Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
+Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
 
 ## Scope and inventory
 
-I read `CLAUDE.md` completely, then the committed current authorities
-`docs/ARCHITECTURE.md` and `docs/FIELD_CHECKS.md`. I inventoried all 471 repository paths and
-reviewed the complete production/runtime surface under `app/src/main`, the Android/debug entry
-points, build configuration, Python release/verification tools, and the host/instrumented tests
-that define their contracts. I treated the historical `.context/reviews/*` and completed
-`docs/plans/*` as resolved provenance, not a source of current findings.
+I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` first, then inventoried all
+486 tracked paths. I reviewed the complete production/runtime surface under `app/src/main`, the
+debug and instrumentation entry points, Gradle/release configuration, Python host/release tools,
+device-harness code, tests, the current aggregate, and completed plans through cycle 35. Historical
+reviews and plans were used to distinguish already-fixed findings from current behavior.
 
-The performance pass followed every standing thread and queue named by the architecture: main/UI
-handlers and Compose state, Camera2 handler, setup and still-I/O executors, GL/frame-notification
-and analysis generations, audio capture and codec drains, recorder allocation/finalization/storage
-owners, launch recovery, family deletion/retirement, review decode/player lanes, timers, and
-process-lifetime bounded dispatchers. I also swept the entire source inventory for executors,
-blocking waits/joins, monitors, atomics, queues/collections, native/provider I/O, per-frame/per-sample
-allocation, repeated logging, and self-rescheduling work. The cycle-34 diff was inspected
-separately so a newly introduced hot-path regression could not hide behind the repository's
-extensive resolved history.
+The performance pass covered every documented execution lane and its cross-file consumers:
+Compose/root-StateFlow publication and main-handler tickers; Camera2 setup, callback, request, ZSL,
+and teardown paths; GL notification coalescing, preview/encoder draws, analysis readback and its
+generation executor; still snapshot/encoding/publication/deletion/recovery; recording allocation,
+audio/codec drains, native finalization, and storage; review decode/player work; and all process-wide
+finite dispatchers. A repository-wide sweep checked executor construction and submission, queues,
+scheduled work, waits/joins, loops, provider/native calls, per-frame/per-buffer allocation, logging,
+collection bounds, shutdown, and retry/backoff behavior. I separately reviewed every cycle-35
+production delta so a newly introduced regression could not hide in previously reviewed code.
 
-## Finding
+## Findings
 
-### PERF35-01 — raw held peaks defeat the audio meter's root-state dedup even when nothing visible or accessible changes
+No new performance finding survived validation.
 
-- **Severity / confidence:** Low / High.
-- **Status:** Confirmed performance mechanism; device profiling would quantify the exact frame-time
-  cost, but is not required to establish the redundant publications.
-- **Exact evidence:**
-  - Both producers deliberately emit at about 10 Hz and carry a new held peak snapshot:
-    `app/src/main/kotlin/me/hletrd/telecampro/camera/StandbyAudioController.kt:494-541` and
-    `app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt:771-812`.
-  - `CameraViewModel` quantizes both RMS and peak arrays to 1/256, then includes both lists in the
-    equality gate for the root `CameraUiState` at
-    `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:1008-1027`.
-  - The bar pixels consume only `audioLevels`; `audioPeakLevels` is passed alongside it at
-    `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:1173-1180`, and `AudioMeter`
-    consumes peaks only to select the coarse accessibility categories at
-    `app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt:608-624,660-679`.
-  - `CameraUiState` nevertheless stores the raw quantized peak list as ordinary root state at
-    `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:1324-1332`.
-- **Why this is a problem:** The preceding RMS optimization explicitly exists because sensor-rate
-  float jitter caused ten whole-state publications/recompositions per second for an unchanged
-  120×8 dp meter. The new peak list reopens the same door. Two frames can have identical quantized
-  RMS and the same accessibility category while their sub-threshold peaks differ (for example RMS
-  `0.50`, peaks `0.20` then `0.25`). The Canvas is bit-identical and both semantic results are
-  `SIGNAL`, yet `audioPeakLevels` differs, so `_state.update` copies/publishes the entire
-  `CameraUiState`. A maximum over thousands of live PCM samples naturally varies between emission
-  windows, making this a standing 10 Hz invalidation source while the standby meter is visible and
-  while recording.
-- **Concrete failure scenario:** Arm Video with the detailed meter visible in a steady room. RMS
-  remains inside one 1/256 bucket, but successive held maxima move among sub-threshold buckets.
-  Compose observes a new root state and recomposes the camera screen even though neither the drawn
-  RMS bar nor TalkBack's coarse state changed. Multi-channel inputs multiply the chance that at
-  least one peak bucket changes, directly undoing the rationale documented at
-  `CameraViewModel.kt:1009-1016`.
-- **Suggested fix:** Reduce peak truth to the information the consumer actually renders before it
-  enters root state: a per-channel overload enum/bitset (`NORMAL`, `NEAR_CLIPPING`, `CLIPPING`),
-  with threshold-preserving classification performed on the unquantized producer peak. Equality-gate
-  that coarse value together with quantized RMS. Alternatively keep exact peaks outside the broad
-  `CameraUiState` and expose a separately scoped meter state whose equality is based on RMS buckets
-  plus overload categories. Add a ViewModel-level test proving sub-threshold peak variation with
-  stable RMS/category does not publish a replacement state, while threshold crossings do.
+## Verified behavior and final missed-issues sweep
 
-## Verified non-findings and final sweep
-
-- The prior stale dual-open setup-lane wait is fixed: the new 20 ms ownership slices retain the
-  absolute two-second HAL deadline and let newer optics/lifecycle state retire the wait. Late device
-  cleanup remains in the existing exact-owner branches.
-- Frame notifications remain latest-frame coalesced; analysis stays generation-owned, single-flight,
-  and bounded to a 256 px long edge. Preview-only redraws still cannot enter encoder/analysis work.
-- Process-wide provider/native lanes retain fixed worker and backlog ceilings; review decode/player
-  work retains its two-worker latest-wins ownership and five-second first-wins UI terminals.
-- Still SINGLE admission remains bounded, while burst/AEB/timelapse chain the next capture from the
-  preceding terminal rather than enqueueing full-resolution work eagerly.
-- Recorder joins, Camera2 close proof, GL stop, launch recovery, standby AudioRecord recreation,
-  and retained-family retry paths remain bounded or deliberately quarantine a native owner rather
-  than multiplying workers/resources.
-- No new unbounded collection, per-frame diagnostic flood, main-thread CameraService/MediaProvider
-  call, or unresolved CPU/memory growth path survived the missed-file sweep.
+- The cycle-35 audio change now quantizes only RMS geometry and reduces raw held peaks to
+  threshold-preserving overload categories before broad `CameraUiState` equality. Sub-threshold
+  peak jitter no longer republishes the whole state, while exact clipping boundaries remain intact.
+- The complete EXIF-orientation path still decodes at a bounded sample size before allocating one
+  transformed bitmap. Normal orientation stays allocation-free at this stage, unpublished results
+  retain exact disposal ownership, and published bitmaps remain Compose/GC-owned by design.
+- Frame delivery remains coalesced to one latest-frame drain; analysis is single-flight,
+  generation-isolated, and capped to a 256 px long edge. Encoder and analysis continue to run only
+  for real camera frames, never preview-only self-redraws.
+- Pseudo-ZSL retains its measured three-frame bound and exact timestamp pairing. Burst, AEB, and
+  timelapse continue save-completion chaining, while SINGLE processed capture and RAW-only
+  publication retain their explicit finite admission paths.
+- Camera setup, Camera2 close proof, GL retirement, recorder detach/finalization, standby mic
+  recreation, launch recovery, retained-still retirement, recording storage, family-marker work,
+  media deletion, and review work all retain bounded waits, worker counts, queues, or a deliberate
+  terminal quarantine instead of multiplying resources after a native/provider wedge.
+- Main-thread work remains limited to state/lifecycle/UI operations and the explicitly accepted tiny
+  synchronous settings commit. CameraService, MediaProvider, bitmap/HEIF, codec finalization, and
+  review acquisition work stay off main.
+- The cycle-35 dual-open changes add no hot-loop cost; the pointer-state correctness defect found by
+  the causal pass is recorded in `tracer.md`, not misclassified as a throughput issue.
+- The final sweep found no new unbounded queue/collection, repeated executor creation, busy-spin,
+  per-frame diagnostic flood, main-thread blocking native/provider call, or reproducible CPU/memory
+  growth path. All relevant tracked files were accounted for; no production package, tool, or
+  cross-file execution lane was sampled out.
 
 ## Totals
 
-- New findings: 1
-- Severity: 1 Low
-- Confidence: 1 High
+- New findings: 0
+- Severity: none
+- Confidence: High that no additional current performance defect was established from repository
+  evidence; device-only cost claims remain limited to the field checks already recorded by the repo.

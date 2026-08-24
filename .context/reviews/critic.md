@@ -1,87 +1,84 @@
-# Critic report — cycle 35
+# Critic review — cycle 36
 
 Date: 2026-08-24
-Reviewed revision: `87e4ac4a0de23a309b810a0076945a6b44430518` (`origin/main`)
-Workspace: clean detached worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
 
-## Review frame
+Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
 
-I read the complete project instructions and required architecture/field authorities, inventoried all
-471 tracked paths, and examined the full implementation/test/tool/document surface from product,
-operator, maintainer, correctness, and evidence perspectives. I specifically challenged recent
-cycle-34 “complete/green” claims against current executable behavior and did a final pass for issues
-that remain invisible to compile, lint, ordinary unit tests, or one-off documentation assertions.
+Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+
+## Scope and inventory
+
+I read the complete `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` authorities
+first, then inventoried all 486 tracked paths. I examined the complete production/debug Android
+surface, resources and manifests, host and instrumented tests, build/release tooling, device harness,
+privacy/Play material, all current review provenance, and completed plans through cycle 35. The
+review challenged the repository from operator, maintainer, evidence, accessibility, failure-mode,
+and release-readiness perspectives. No device behavior is inferred from host evidence.
 
 ## Findings
 
-### CRIT35-01 — the green documentation gate gives false confidence about governing-authority consistency
+### CRIT36-01 — the new dual-open cleanup's Boolean state model is not total for a null outgoing owner
 
-- **Severity:** Medium
-- **Confidence:** High
-- **Status:** Confirmed.
-- **Exact regions:** `tools/check_docs.py:310-339`; stale AGP reference at
-  `docs/ARCHITECTURE.md:1246-1253` versus `gradle/libs.versions.toml:1-8` and `CLAUDE.md:61-68`;
-  stale ZSL references at `CLAUDE.md:210-224`, `docs/ARCHITECTURE.md:68`, and
-  `CameraEngine.kt:4066-4074` versus `ZslAdmission.kt:25-42`.
-- **Problem:** The checker advertises that version facts match the build, but it verifies only the
-  Compose BOM across selected documents. It does not check AGP/Kotlin/Gradle or the ZSL contract.
-  Running `python3 tools/check_docs.py` on this exact HEAD reports `107 checks, 0 failed` while two
-  active governing facts are demonstrably stale.
-- **Concrete failure scenario:** A release/contributor trusts the green gate and uses Architecture's
-  AGP 9.3.1 quick reference when debugging dependency verification, or follows the mandatory 250 ms
-  ZSL promise and “fixes” valid 300–400 ms serves. The formal evidence says green even as the
-  authority gives wrong instructions.
-- **Suggested fix:** Correct the current facts, then make the checker declarative and comprehensive
-  for all duplicated machine-verifiable values. A negative fixture must prove each consumer fails
-  when independently stale.
+- **Severity / confidence / status:** High / High / Confirmed state-model defect; activation is
+  race-timed.
+- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592,
+  3667-3674,3746-3765,7037-7050`; incomplete matrix at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-136`.
+- **Problem:** `reconfigureCamera` explicitly continues when `controller == null`, so `old` may be
+  null. If the candidate native-refusal callback clears `controller` before a newer optics intent
+  supersedes the attempt, the cleanup call computes both `slotVacant = controller == null` and
+  `outgoingOwnsSlot = controller === old` as true: Kotlin's `null === null` is true. The reducer then
+  rejects this production-reachable input with `require(...count { it } <= 1)`. The tests hand-build
+  mutually exclusive booleans and therefore never exercise the nullable identities from which
+  production derives them.
+- **Concrete failure scenario:** During cold recovery with no installed controller, a candidate open
+  is refused and clears the slot. A rapid lens/mode/override change advances the optics generation
+  before the setup task crosses its post-wait boundary. The setup worker throws
+  `IllegalArgumentException` instead of restoring a clean vacant baseline; on Android an uncaught
+  worker exception is process-fatal, and in every environment this abandons the exact setup
+  continuation.
+- **Suggested fix:** Do not represent optional-owner identity as independent booleans. At minimum,
+  derive outgoing ownership as `old != null && controller === old`; preferably pass the nullable
+  identities and outgoing terminal/liveness into one typed cleanup reducer. Add a production-shaped
+  matrix covering `old=null/controller=null`, candidate self-clear, outgoing disconnect/close,
+  pause/release, supersession, and a genuinely newer controller.
 
-### CRIT35-02 — photo refusal tells the operator a file deletion failed
+### CRIT36-02 — active custom-control boundaries are deliberately held below the non-text contrast floor
 
-- **Severity:** Medium
-- **Confidence:** High
-- **Status:** Confirmed.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:4006-4012`,
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/LocalizedStatus.kt:37-40,71-76`, and
-  `app/src/main/res/values/strings.xml:209,247` (with Korean counterparts).
-- **Problem:** A press rejected by the still-admission safety gate emits `COULD_NOT_DELETE_FILE`.
-  This is internally explainable—the gate includes retained/rejected-output cleanup capacity—but it
-  is externally false: the attempted action was capture, and the user did not ask to delete a file.
-  It violates the repository's emphasis on truthful OSD state.
-- **Concrete failure scenario:** A hardware shutter edge lands during cleanup-capacity saturation.
-  No photo is taken, and the OSD says “Could not delete file.” The operator may retry or inspect the
-  gallery rather than wait for capture cleanup, and support logs classify the failure under deletion.
-- **Suggested fix:** Use the existing still-unavailable status or introduce quiet, explicit cleanup
-  copy. Test the status through the real Engine-to-ViewModel localization path.
-
-### CRIT35-03 — cycle-34's dual-open improvement lacks an adversarial terminal test at the real ownership boundary
-
-- **Severity:** High
-- **Confidence:** High
-- **Status:** Likely current race.
-- **Exact regions:** production transition `CameraEngine.kt:3574-3814`; pure helper tests
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:1-72`.
-- **Problem:** Tests prove only that the polling helper returns `SIGNALED`, `SUPERSEDED`, or
-  `TIMED_OUT`. They do not prove the native-owner postcondition after an asynchronous candidate
-  callback. In production, `next`'s refusal callback can null `controller` at 3672-3674; the
-  supersession cleanup at 3746-3757 then fails its `controller === next` guard and abandons local
-  `old` without restore or close.
-- **Concrete failure scenario:** A candidate native refusal races an immediate second route request.
-  The UI benefits from the new 20 ms cancellation but the outgoing CameraDevice becomes unreachable,
-  making the following open fail until process restart.
-- **Suggested fix:** Test and implement the owner terminal, not only wait timing. A deterministic
-  interleaving should pause after candidate self-removal, supersede the transaction, resume cleanup,
-  and assert exact release/restoration of both native owners.
+- **Severity / confidence / status:** Medium / High / Confirmed numeric contrast gap; impact is
+  strongest for low-vision users.
+- **Exact regions:** token and acknowledged ratio at
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt:117-126`; settings-chip application at
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:203-219,340-362,369-400`;
+  additional active uses at `ui/controls/ManualDials.kt:431-458`,
+  `ui/CameraScreen.kt:2832-2891`, and `ui/review/MediaReview.kt:1715-1734`.
+- **Problem:** `AffordanceEdge` is 18% white. Over the opaque `Pill` surface (`#1C1C1E`) its rendered
+  edge is approximately `#454546`, only **1.78:1** against the adjacent surface. The code comment
+  acknowledges roughly 1.8:1 but treats it as a design floor. These are authored, enabled controls,
+  not inactive platform-owned controls: unselected FilterChip outlines, the dial close pill, lens
+  rail circles, and review action buttons. The official WCAG 2.2 / WCAG2ICT 1.4.11 guidance requires
+  3:1 for visual information needed to identify active UI components or their state
+  ([W3C WCAG2ICT 2.2](https://www.w3.org/TR/wcag2ict-22/#non-text-contrast)).
+- **Concrete failure scenario:** In the Shoot tab, a low-vision operator sees several white option
+  labels on one dark panel but cannot reliably distinguish the 1 dp unselected control boundaries;
+  the selected white fill is clear, while the other active choices can read like inert text. The
+  same weak edge is the only circular boundary around the compact close/review affordances.
+- **Suggested fix:** Give active component boundaries at least 3:1 against their actual adjacent
+  surfaces (about 35% white clears 3:1 on `Pill`), or add another high-contrast shape/fill cue while
+  retaining the quiet 1 dp weight. Keep disabled styling separately exempt. Add palette math plus
+  rendered enabled/selected/disabled tests for every token consumer.
 
 ## Balanced assessment and final sweep
 
-The repository has unusually strong identity/generation discipline, finite provider lanes, durable
-media rules, pure policy seams, and extensive regression coverage. Those strengths make the remaining
-issues sharper: the dual-open path is an exception to the established terminal-owner pattern, and the
-documentation gate's green result is stronger-sounding than its actual coverage. I rechecked all
-other recent cycle-34 changes and every major subsystem; no additional current issue cleared the
-evidence bar.
+The repo remains unusually strong in capability-based routing, finite queues, exact native/media
+ownership, EN/KO resource parity, modal focus exclusion, 48 dp target coverage, responsive phone/
+tablet geometry, and truthful host-vs-device evidence. I rechecked the cycle-35 audio, EXIF,
+capture-status, documentation, and dual-open changes specifically; only the nullable dual-open
+state defect survives that pass. The contrast issue is longstanding but was not present in current
+review/plan history as an unresolved finding. No additional current issue cleared the evidence bar.
 
 ## Totals
 
-- New findings: 3
-- Severity: 1 High, 2 Medium
+- New findings: 2
+- Severity: 1 High, 1 Medium
+- Confidence: 2 High

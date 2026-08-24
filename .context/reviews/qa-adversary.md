@@ -1,78 +1,85 @@
-# QA adversary review — cycle 35
+# QA adversary review — cycle 36
 
 Date: 2026-08-24
 
-Reviewed revision: `87e4ac4a0de23a309b810a0076945a6b44430518`
+Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
 
-Workspace: clean detached cycle worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
+Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
 
-## Coverage and method
+Mode: host-only by directive; no install, launch, ADB, capture, deployment, or device mutation
 
-The repository-local `.claude/agents/qa-adversary.md` runbook is absent in this clean worktree, so I
-applied the committed fallback QA contract in `docs/ARCHITECTURE.md` and `device-tests/README.md`.
-Inventoried all 472 repository paths and inspected production UI/resources/media-review flows,
-relevant ViewModel/storage/audio seams, host UI tests, the four instrumented probes, all 24 registered
-device cases, harness contracts/selectors/media parsers, field checks, and current review/plan history.
-Adversarial scenarios emphasized exact thresholds, cross-layer transforms, ownerless/imported bytes,
-locale/RTL, accessibility state, state restoration, failure/timeout paths, and whether tests exercise
-the same representation production consumes. No device run, deployment, media write, settings
-mutation, or destructive action was performed.
+## Gate-first result
 
-## Findings
+The runbook's Gate 1 was run with JDK 21 and the repository-documented conventional SDK at
+`/Users/hletrd/Library/Android/sdk`:
 
-### QA35-01 — the audio-clipping oracle bypasses the lossy production boundary
+`./gradlew :app:assembleDebug :app:testDebugUnitTest`
 
-- **Severity / confidence / status:** Medium / High / Confirmed
-- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/video/AudioLevels.kt:61-99` correctly holds
-  exact peak evidence, and tests prove raw full-scale producer output. Production then rounds peaks
-  through `quantizeLevels` at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:1008-1027` before
-  `audioAccessibilityStates` applies the exact `32767/32768` clipping threshold at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt:658-679`. The tests at
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/overlays/InstrumentAccessibilityComposeTest.kt:32-75`
-  call the classifier with unquantized peaks, skipping
-  this representation change. Numerically, 32704/32768 rounds to 1.0 and is misclassified as
-  clipping; 32766 is likewise false-positive, while only 32767/-32768 should reach the terminal.
-- **Concrete failure:** all producer, reducer, and Compose tests can remain green while the shipping
-  ViewModel emits a false accessibility alarm over a real near-limit PCM buffer.
-- **Fix:** make classification survive the cross-layer boundary exactly, and add an integration
-  oracle over sample values bracketing both near-clipping and clipping thresholds rather than only
-  testing each layer in isolation.
+Result: **PASS** — `BUILD SUCCESSFUL`, 52 actionable tasks (1 executed, 51 up-to-date). I also
+searched production Kotlin for TODO/FIXME/unresolved-reference markers and found none. A first
+attempt without SDK environment failed before compilation with “SDK location not found”; it was
+not treated as product failure and the corrected isolated-worktree run is the result above.
 
-### QA35-02 — review orientation tests cover only the app's rotation-only output subset
+`python3 tools/check_docs.py` additionally passed 112 checks with 24 optional-private skips.
 
-- **Severity / confidence / status:** Medium / High / Confirmed
-- **Evidence:** the review decoder's switch at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:459-480` supports EXIF 1, 3, 6,
-  and 8 but treats 2, 4, 5, and 7 as identity. The restore reducer explicitly acknowledges that an
-  imported other-app file can imitate the public TeleCam directory/name/MIME grammar
-  (`app/src/main/kotlin/me/hletrd/telecampro/storage/LatestCaptureReducer.kt:58-65`;
-  `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:305-316`) and still returns
-  it for display. No review test references the four mirrored EXIF constants.
-- **Concrete failure:** the current suite validates app-authored parity while missing a reachable
-  adversarial input admitted by the production restore query; the accepted file is presented with
-  the wrong handedness/axis in both thumbnail and review.
-- **Fix:** generate a small asymmetric JPEG fixture for each of the eight orientation tags, route it
-  through the actual decode/thumbnail entry points, and assert final corner colors/dimensions. Treat
-  all admitted ownerless bytes as untrusted interoperability inputs, not as guaranteed old app output.
+## Static finding
 
-### QA35-03 — docs gate has no oracle for two active cross-authority drifts
+### QA36-01 — the cycle-35 dual-open test matrix bypasses a production null-alias input
 
-- **Severity / confidence / status:** Low / High / Confirmed
-- **Evidence:** `python3 tools/check_docs.py` passes 107 checks, yet
-  `docs/ARCHITECTURE.md:1250-1253` says AGP 9.3.1 while the catalog is 9.3.2, and
-  `docs/ARCHITECTURE.md:584-587` points to a logical-camera exposure check absent from the exact
-  field dashboard/body (`docs/FIELD_CHECKS.md:9-14,75-103,198-251`). Current checks compare only
-  selected version locations and validate the field ledger internally, not active references into it.
-- **Concrete failure:** a green documentation gate certifies internally consistent subsets while
-  leaving clean-clone operators with both stale build guidance and an unexecutable open validation.
-- **Fix:** mechanically compare every active toolchain reference with the version catalog and resolve
-  every active field-check reference to a body identifier/status.
+- **Severity / confidence / status:** High / High / Confirmed static correctness defect.
+- **Exact regions:** production derivation at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592,3667-3674,
+  3746-3753,7037-7050`; oracle at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-136`.
+- **Problem:** The tests call `dualOpenSupersessionCleanup` with manually exclusive flags. The real
+  call computes them from nullable identities. With no outgoing controller and a candidate-cleared
+  slot, `controller == null` and `controller === old` are both true because `old` is null, so the
+  helper's exclusivity `require` throws. Every current host test remains green because none builds
+  the flags from `(old, controller)`.
+- **Concrete reproducer model:** `old=null`; install `next`; candidate refusal clears the shared
+  slot; advance the optics generation; enter supersession. The production inputs become
+  `(candidate=false, vacant=true, outgoing=true)`, which deterministically raises
+  `IllegalArgumentException`.
+- **Expected:** a total cleanup decision that leaves a clean vacant baseline and lets the newest
+  optics intent proceed. **Observed from source:** assertion failure on the setup worker.
+- **Suggested fix:** make the test own the same nullable identities as production and enumerate all
+  combinations; compute outgoing ownership only for a non-null owner or replace the booleans with a
+  typed owner terminal.
 
-## Final missed-issue sweep
+## Runbook reliability observation (not counted as a repository finding)
 
-Re-ran documentation contracts, checked resource-key parity/non-translatable exceptions, audited
-state-changing device-case approval annotations, reviewed exact media/recording preconditions and
-cleanup ownership, searched current UI/source/tests for stale TODO/FIXME/retired claims, and traced
-the two confirmed data representations end to end. No stale previously-fixed cycle finding was
-re-filed, and no host-only observation was promoted to device evidence.
+The external runbook command at
+`/Users/hletrd/flash-shared/find-x9-ultra-camera/.claude/agents/qa-adversary.md:47-53` pipes Gradle
+to `tail` without `pipefail`. The initial SDK failure therefore returned shell status 0 even though
+Gradle printed `BUILD FAILED`. This review inspected output and retried correctly, so its verdict is
+not affected. The runbook should eventually use `set -o pipefail`, capture `PIPESTATUS`, or avoid the
+pipeline; the shared checkout was not modified as directed.
+
+## Feature matrix
+
+| Feature | Result | Evidence |
+|---|---|---|
+| Gate 1 — debug assembly + JVM/Robolectric/Compose unit tests | PASS | Host command completed `BUILD SUCCESSFUL` after documented SDK environment was supplied. |
+| Static dual-open null-owner path | FAIL | Source-derived `(false, true, true)` reaches `require` in `dualOpenSupersessionCleanup`; current test matrix omits it. |
+| Gate 2 — install, launch, PID, crash scan | BLOCKED BY DIRECTIVE | Task explicitly forbids deployment/device work; no current `ANDROID_SERIAL` was supplied or reused. |
+| Mode-aware route selection / preview / Program exposure | BLOCKED BY DIRECTIVE | Requires current-device observation. |
+| PASM, snapping, focus, tap-AF, format gating | BLOCKED BY DIRECTIVE | Requires current-device UI and Camera2 result evidence. |
+| Photo files, whole-family delete, video/container/audio | BLOCKED BY DIRECTIVE | Requires disposable device capture and pulled-file inspection. |
+| Stabilization, overlays, nine-tab settings, MR restore | BLOCKED BY DIRECTIVE | Requires device interaction and visual/metadata evidence. |
+| Rapid route churn, lifecycle/keyguard, format floor, zoom caps, delete-during-save | BLOCKED BY DIRECTIVE | Gate 4 is device-only and was not attempted. |
+| Field checks A3, A4, D1, E1, E2 | BLOCKED BY DIRECTIVE | They remain explicitly open/partial in `docs/FIELD_CHECKS.md`; host evidence cannot close them. |
+
+## Final sweep and verdict
+
+I inspected all 486 tracked paths, current plans/reviews, build/manifests/resources, production
+subsystems, 326 Kotlin files, 32 Python files, tool/harness tests, and documentation/assets. The
+cycle-35 audio overload and EXIF fixes are covered at their production representation boundaries;
+the dual-open null-owner path is the one new QA gap. No device claim was recycled.
+
+**GATE NOT PASSED — Gate 1 passes, but QA36-01 is a confirmed static failure and all device gates are BLOCKED BY DIRECTIVE.**
+
+## Totals
+
+- New repository findings: 1
+- Severity: 1 High
+- Confidence: 1 High

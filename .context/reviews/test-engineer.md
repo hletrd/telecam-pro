@@ -1,65 +1,57 @@
-# Test-engineer review — cycle 35
+# Test-engineer review — cycle 36
 
 Date: 2026-08-24
-Reviewed revision: `87e4ac4d` (`origin/main`)
-Workspace: clean detached worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
+Reviewed revision: `1f45887` (`origin/main`)
+Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
 
 ## Scope and test inventory
 
-- Read `CLAUDE.md` completely and the required architecture/field-check authorities. Inventoried
-  all 217 JVM/Robolectric tests, four androidTest probes, tool/coverage tests, and the 183-test
-  device harness represented by the authoritative host gate.
-- Compared every cycle-34 production change with its focused tests: dual-open wait ownership,
-  standby/recording PCM peak truth, settings migration, debug manifest protection, review-position
-  accessibility, exact residual ownership, R8 documentation, and AGP verification metadata.
-- Ran `python3 tools/verify_host.py` from the clean detached revision. Gradle build, lint, all Android
-  host tests, and exact coverage passed. The Python tool suite ran 92 tests and failed one; because
-  the gate stops on first failing suite, coverage-tool tests, device-harness self-tests,
-  documentation checks, Python compilation, and the final diff check were not reached by that run.
+- Read the committed project authorities and all prior cycle-35 review/plan evidence before
+  reviewing current tests. Inventoried all 218 JVM/Robolectric/Compose tests, four androidTest
+  probes, 32 Python tool/harness sources, 96 tool tests, nine coverage-tool tests, and 183 host-side
+  device-harness tests; inspected their corresponding production seams rather than trusting test
+  names or comments.
+- Reviewed every tracked path through the all-file inventory and systematic static sweeps, with
+  focused tracing of concurrency gates, media ownership, Camera2 route/session fallbacks, GL/review
+  transforms, settings/localization, release provenance, and device-harness attestation. Checked for
+  ignored/disabled tests, vacuous assertions, random/unseeded inputs, wall-clock sleeps, false-green
+  fallback paths, and missing boundary cases.
+- Ran the complete authoritative host gate successfully. Partition A remains 99.81% with the exact
+  reviewed 15-line residual manifest; all configured host test/tool/doc gates are green. The four
+  androidTest files are compilation/package probes only, as the repository correctly documents.
 
-## Findings
+## Finding
 
-### TEST35-01 — the new negative documentation fixture is stale and makes the authoritative gate red
+### TEST36-01 — the harness has no optimized-interpreter regression despite assert-owned verdicts
 
-- **Severity / confidence / status:** High / High / Confirmed current failure
-- **Evidence:** `tools/tests/test_tool_contracts.py:345-360` hardcodes
-  `docs/plans/2026-08-24-rpf-cycle33.md`, removes `python3 tools/verify_host.py`, and expects the
-  checker to fail. But cycle 34 is now the latest completed plan
-  (`docs/plans/2026-08-24-rpf-cycle34.md:5,77-84,120-125`) and still contains that command.
-  `tools/check_docs.py:978-988` correctly ignores the mutated older plan under its current ordering,
-  returns success, and makes the test fail at line 357. The observed gate ends with
-  `FAILED (failures=1)` and `CalledProcessError`; all preceding Gradle tasks and Partition-A
-  coverage were green.
-- **Failure scenario:** every clean invocation of the repository's authoritative
-  `python3 tools/verify_host.py` fails after roughly 39 seconds even though the checker behaves
-  consistently with the current fixture. A developer cannot produce the required green host gate,
-  and later non-device suites are skipped. The cycle-34 completion note therefore became stale as
-  soon as the new completed plan made cycle 33 cease to be the checker target.
-- **Suggested fix:** make the fixture discover and mutate the same latest completed plan selected by
-  production instead of naming cycle 33. Prefer extracting one parsed plan-order helper shared by
-  checker and tests; at minimum determine the target dynamically inside the exported tree. Assert
-  the unmodified exported baseline succeeds before mutation, then assert removing the command from
-  the selected newest plan fails. Re-run the full authoritative gate after committing/updating a
-  completed plan, not only before its closeout document exists.
+- **Severity / confidence / status:** High / High / Confirmed false-positive test mode
+- **Exact evidence:** `device-tests/cases.py` contains 315 production `assert` statements, including
+  essential device outcomes at `:2005-2011` (process, live preview, OSD, fatal logs) and
+  `:2322-2343` (recording admission, codec, source/encoder raster, bitrate, transfer, exact NTSC FPS).
+  `device-tests/dtest/framework.py:133-168` translates `AssertionError` into FAIL but otherwise
+  reports PASS. `device-tests/run.py:547-566` forks and `runpy`-executes the immutable snapshot in
+  the same interpreter without checking `sys.flags.optimize`. The 183 self-tests contain no
+  optimized-mode test or guard contract.
+- **Concrete failure scenario:** `PYTHONOPTIMIZE=1 python3 device-tests/run.py ...` strips the checks
+  while leaving case setup, taps, captures, notes, report generation, and attestation active. A case
+  can therefore exercise the device, observe an invalid result, return normally, and be counted as
+  PASS. A focused framework reproduction with a body containing only `assert False` produced one
+  pass and exit code 0 under `PYTHONOPTIMIZE=1`.
+- **Why existing coverage is false confidence:** `python3 tools/verify_host.py` runs all 183 harness
+  self-tests in the normal interpreter, so the suite proves behavior only while assertions exist.
+  It does not prove the evidence runner refuses a mode that removes the very checks being tested.
+- **Suggested TDD fix:** first add subprocess tests in `device-tests/tests/test_attestation.py` (or a
+  focused runner-contract test) that launch both `python -O` and an environment-only
+  `PYTHONOPTIMIZE=1` path, inject sentinels proving APK/ADB preflight was not reached, and require a
+  non-green diagnostic. Then add an always-on optimize guard at both outer and inherited child
+  boundaries. Add a small explicit `require(condition, detail)` evidence helper and migrate the 315
+  case verdicts incrementally so correctness does not rely solely on interpreter mode.
 
-### TEST35-02 — no test covers numeric cycle ordering at the supported 100-cycle boundary
+## Final coverage sweep
 
-- **Severity / confidence / status:** Medium / High / Confirmed coverage gap with reachable failure
-- **Evidence:** `tools/check_docs.py:978-983` relies on lexical path order, while the plan filenames
-  use unpadded suffixes. `tools/tests/test_tool_contracts.py:345-360` tests only one hardcoded
-  historical path and has no multi-plan ordering fixture. The concrete ordering
-  `cycle100 < cycle34 < cycle99` demonstrates that the checker selects cycle 99 after cycle 100 on
-  the same date.
-- **Failure scenario:** the supported `/review-plan-fix` maximum reaches cycle 100; a bad cycle-100
-  completion claim is not tested because the gate continues checking cycle 99. Existing tests pass
-  once TEST35-01's stale path is updated unless this boundary is added explicitly.
-- **Suggested fix:** table-test 9/10, 34/35, and 99/100 same-date pairs plus a later-date lower cycle;
-  verify that only the parsed newest completed plan is mutated/checked and that incomplete newer
-  plans are intentionally excluded.
-
-## Final missed-issue sweep
-
-The cycle-34 focused Android tests cover the intended success, boundary, and rollback branches for
-the changed runtime code, and the exact residual manifest remains synchronized. I found no ignored
-tests or stale already-fixed runtime findings worth re-reporting. Device-only behavior remains
-truthfully separated in `docs/FIELD_CHECKS.md`; host tests cannot close those open measurements.
+No ignored/disabled tests, vacuous `assertTrue(true)`/`assertFalse(false)` checks, or unseeded random
+tests were found. The one real `Thread.sleep(1)` in `StandbyAudioControllerTest` is inside a bounded
+deadline loop and the surrounding ownership assertions are latch/terminal based, so it is not a
+standalone current flake finding. Apart from TEST36-01, current cycle-35 behavior has direct focused
+coverage and the full host gate is green; device-only claims remain correctly open in
+`docs/FIELD_CHECKS.md` rather than being promoted by host tests.

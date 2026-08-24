@@ -1,62 +1,59 @@
-# Document specialist review — cycle 35
+# Document specialist review — cycle 36
 
 Date: 2026-08-24
 
-Reviewed revision: `87e4ac4a0de23a309b810a0076945a6b44430518`
+Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
 
-Workspace: clean detached cycle worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
+Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
 
 ## Coverage
 
-Read the committed clean-clone authorities in full: `CLAUDE.md`, `docs/ARCHITECTURE.md`,
-`docs/FIELD_CHECKS.md`, `README.md`, `PRIVACY.md`, the public privacy-policy body,
-`docs/play-console-submit.md`, `docs/play-data-safety.md`, and `device-tests/README.md`. Cross-checked
-their build, permission, release, field-evidence, camera-route, media-review, accessibility, and
-localization claims against the version catalog, Gradle/manifest configuration, production UI and
-storage code, English/Korean resources, current tests, and the latest completed plans. The optional
-private UX/backlog/testing documents and `.claude/agents/qa-adversary.md` are absent in this clean
-worktree, as the committed fallback policy permits. `python3 tools/check_docs.py` reports 107 checks
-green with 24 private checks skipped; the two findings below are gaps in that checker rather than
-already-reported gate failures.
+I read the complete committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`,
+`docs/FIELD_CHECKS.md`), plus `README.md`, `PRIVACY.md`, the bundled privacy policy, Play
+submission/data-safety material, device-harness documentation, every completed plan, current review
+provenance, manifests/build configuration, version catalog, EN/KO resources, and the documentation
+checker and fixtures. `python3 tools/check_docs.py` passed 112 public checks with 24 optional-private
+checks skipped. All 486 tracked paths were inventoried; current claims were checked against code and
+tests rather than accepted from comments. No device evidence was generated or inferred.
 
-## Findings
+## Finding
 
-### DOC35-01 — the current architecture quick reference still advertises AGP 9.3.1
+### DOC36-01 — cycle 35's completion evidence overclaims an exhaustive dual-open matrix
 
-- **Severity / confidence / status:** Low / High / Confirmed
-- **Evidence:** `docs/ARCHITECTURE.md:1247-1253` calls the section a current quick reference and
-  lists AGP 9.3.1. The actual catalog is AGP 9.3.2 at `gradle/libs.versions.toml:1-6`; the primary
-  toolchain authorities already agree at `CLAUDE.md:63-70` and `README.md:137-144`. Cycle 34
-  explicitly upgraded the patch in `docs/plans/2026-08-24-rpf-cycle34.md:60-64`.
-- **Concrete failure:** a clean-clone maintainer following the architecture rather than the catalog
-  receives stale toolchain guidance immediately after the repository's latest-stable upgrade. It
-  also defeats the purpose of the architecture's “current design authority” heading.
-- **Fix:** update the architecture line to 9.3.2 and extend the documentation gate so every active
-  toolchain table/quick reference is compared mechanically with `gradle/libs.versions.toml`, not only
-  the README and CLAUDE Compose entries.
+- **Severity / confidence / status:** Medium / High / Confirmed current evidence mismatch, sharing
+  the code root cause reported as CRIT36-01.
+- **Exact regions:** plan promise and completion claim at
+  `docs/plans/2026-08-24-rpf-cycle35.md:19-27,101-108`; production nullable identities at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592,3746-3753,
+  7037-7050`; test inputs at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-136`.
+- **Problem:** The latest completed plan says the transition matrix covers candidate-current,
+  candidate-cleared, and newer-controller states and proves no outgoing owner is lost. The tests
+  instead pass three already-separated booleans. Production derives those booleans from nullable
+  object identities. For the expressly admitted `old == null` path after candidate self-clear,
+  `slotVacant` and `outgoingOwnsSlot` are both true because `null === null`; the helper throws on the
+  exact state the completion note claims the matrix covers.
+- **Concrete failure scenario:** A maintainer or later review trusts the newest completed plan as
+  proof that candidate-cleared supersession is closed and therefore skips the missing cold/no-old
+  permutation. The authoritative host gate remains green because the fixture never derives the
+  booleans from nullable identities, while production can crash in that permutation.
+- **Suggested fix:** Correct the code and add the production-shaped identity matrix, then append a
+  truthful cycle-36 superseding completion note. Do not rewrite cycle-35 history; explicitly state
+  that its Boolean-only matrix missed the null-alias case. Extend the completion-evidence review
+  discipline so an “exhaustive transition matrix” claim cites a test that constructs the same typed
+  state production consumes.
 
-### DOC35-02 — architecture points to a logical-camera exposure field check that does not exist
+## No additional documentation drift
 
-- **Severity / confidence / status:** Medium / High / Confirmed
-- **Evidence:** `docs/ARCHITECTURE.md:566-587` says a logical-camera 4-second-ceiling bisect
-  “remains open in the committed docs/FIELD_CHECKS.md.” The field ledger's exact dashboard at
-  `docs/FIELD_CHECKS.md:9-14` names only A3, A4, D1, E1, and E2 as remaining, and the body contains
-  no logical-route long-exposure check (`docs/FIELD_CHECKS.md:75-103,198-251`). Its machine check
-  correctly proves dashboard/body parity, but does not reconcile external open-work claims.
-- **Concrete failure:** a clean-clone operator cannot execute or record the architecture's claimed
-  open validation: there is no setup, pass criterion, identifier, or dashboard slot. Conversely,
-  treating the field ledger as exhaustive silently drops the architecture's stated device-evidence
-  obligation.
-- **Fix:** decide the actual status. If the cross-route conservative clamp still needs physical
-  validation, add a uniquely identified field check with safe setup/pass/fail criteria and include it
-  in the dashboard. If the check was retired or closed, correct the architecture without inventing
-  evidence. Add a docs contract that every active “open/remains open in FIELD_CHECKS” reference maps
-  to an open/partial field-check identifier.
+Active AGP/Kotlin/Gradle/Compose/SDK values agree with the catalog and wrapper; pseudo-ZSL truth is
+400 ms everywhere active; every open FIELD_CHECKS reference resolves to A3/A4/D1/E1/E2; privacy
+and Data Safety match the manifest and ownerless-media behavior; release docs consistently reject
+mutable or stale artifacts; the two stale phone screenshots remain explicitly blocking and
+hash-pinned. Architecture names every production Kotlin module and correctly scopes PMA110-specific
+facts, DNG routing, Loupe Overview, large-screen rotation, and host/device evidence.
 
-## Final missed-issue sweep
+## Totals
 
-Rechecked active version claims, min/target/compile SDK values, release-wrapper paths, permissions,
-ownerless-media wording, Loupe Overview honesty, EN/KO resource parity, field-check dashboard
-membership, optional-private-context wording, and current-plan evidence after the main pass. No
-other current documentation contradiction was confirmed; historical artifact and device statements
-in `docs/play-console-submit.md` are explicitly scoped as superseded and were not re-filed.
+- New documentation findings: 1
+- Severity: 1 Medium
+- Confidence: 1 High

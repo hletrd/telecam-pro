@@ -1,73 +1,67 @@
-# Native Android designer review — cycle 35
+# Native Android designer review — cycle 36
 
 Date: 2026-08-24
 
-Reviewed revision: `87e4ac4a0de23a309b810a0076945a6b44430518`
+Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
 
-Workspace: clean detached cycle worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
+Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
 
-## Coverage
+## Scope and method
 
-This is a native Android/Jetpack Compose app, so browser skills are not applicable. Inventoried and
-examined the 30 production UI Kotlin files, 15 main resource files, both 491-entry EN and 473-entry
-KO string sets (the 18 EN-only strings are the declared non-translatable names/abbreviations), 82 UI
-JVM/Robolectric/Compose test files, four instrumented tests, debug preview/snapshot surfaces, and the
-device-harness UI matrix. Reviewed information architecture, camera-body affordances, touch targets,
-TalkBack/state semantics, focus and D-pad paths, modal containment, contrast/non-color cues,
-responsive/large-screen/freeform behavior, loading/error/empty/review states, EN/KO presentation,
-RTL coordinate ownership, system-inset handling, and perceived-performance boundaries using source,
-resource, and test evidence. No device-only visual claim is inferred.
+This is a native Jetpack Compose app, so browser automation is not applicable. I inventoried all 486
+tracked paths and examined every production/debug Compose surface, UI-facing state/action/policy
+seam, resources, manifests/theme, UI/Compose/Robolectric/instrumented tests, deterministic snapshot
+host, device-harness UI contracts, and the checked-in phone/tablet assets (which are historical
+visual references, not current device proof). The pass covered information architecture,
+affordances, focus/keyboard/D-pad/Switch Access, TalkBack semantics, 48 dp targets, WCAG 2.2 via
+WCAG2ICT, phone/large-screen/freeform behavior, loading/empty/error/delete states, validation,
+fixed-dark/system-bar behavior, EN/KO, RTL ownership, and perceived-performance boundaries.
 
-## Findings
+## Finding
 
-### DES35-01 — peak quantization makes TalkBack announce clipping before PCM actually clips
+### DES36-01 — enabled custom-control outlines render at only 1.78:1 contrast
 
-- **Severity / confidence / status:** Medium / High / Confirmed
-- **Evidence:** producer peaks are exact post-gain normalized PCM magnitudes, but
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:1008-1027` sends them through the
-  RMS-oriented round-to-nearest 1/256 `quantizeLevels`.
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt:658-679` then classifies a quantized peak as clipping at
-  the exact 16-bit positive full-scale threshold `32767/32768`. A non-clipped magnitude of
-  `32704/32768 = 0.998046875` rounds to `1.0`, so every peak from 32704 through 32766 is spoken as
-  “clipping” even though no sample reached either signed full-scale endpoint. Existing reducer tests
-  at `app/src/test/kotlin/me/hletrd/telecampro/ui/overlays/InstrumentAccessibilityComposeTest.kt:32-75`
-  pass raw 0.95/full-scale values directly and do
-  not cover the ViewModel quantization boundary.
-- **Concrete failure:** a keyboard/TalkBack operator checking an external mic can receive a false
-  overload warning for near-full but unsaturated audio, undermining the recent change whose explicit
-  purpose is producer-truthful clipping semantics.
-- **Fix:** keep the RMS bar quantization, but preserve overload truth separately (for example an
-  exact held peak, a `clipped` boolean classified before quantization, or a conservative/floor peak
-  bucket). Test real PCM at 32703, 32704, 32766, 32767, and -32768 through producer → ViewModel →
-  composed semantics in both EN and KO.
+- **Severity / confidence / status:** Medium / High / Confirmed WCAG2ICT non-text-contrast gap.
+- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt:62,117-126`;
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:203-219,340-362,369-400`;
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ManualDials.kt:431-458`;
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2832-2891`;
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:1715-1734`.
+- **Problem:** The shared active `AffordanceEdge` is 18% white. Composited over the sheet's
+  `#1C1C1E` Pill it becomes about `#454546`, a measured **1.78:1** contrast ratio. The token comment
+  itself records roughly 1.8:1, but active unselected FilterChip boundaries, a close pill, focal-rail
+  circles, and review action buttons depend on that edge. WCAG 2.2's non-web application guidance
+  requires 3:1 for authored visual information needed to identify active controls or state
+  ([W3C WCAG2ICT 1.4.11](https://www.w3.org/TR/wcag2ict-22/#non-text-contrast)); inactive controls
+  are the exception, not these enabled choices.
+- **Concrete failure scenario:** On the Shoot/Exposure/Image tabs, a low-vision photographer can
+  distinguish the selected white-filled option but the other enabled choices lose their component
+  boundary and read as free-floating labels. On the finder/review, the same token weakens the only
+  circular edge around compact actions over a dark plate.
+- **Suggested fix:** Keep the Sony-style 1 dp quiet geometry, but raise enabled edge contrast to
+  at least 3:1 on each real surface (approximately 35% white on Pill), or introduce a separate
+  high-contrast fill/shape cue. Preserve a quieter disabled token. Add palette and rendered tests
+  for enabled/unselected, selected, disabled, focus, bright-frame, and dark-frame states rather than
+  pinning `0.18f` as intrinsically correct.
 
-### DES35-02 — restored ownerless stills ignore four standard mirrored EXIF orientations
+## Confirmed strengths and missed-issue sweep
 
-- **Severity / confidence / status:** Medium / High / Confirmed
-- **Evidence:** both full review and the gallery thumbnail call `decodeReviewBitmap` at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:436-449,631-640`. Its EXIF
-  transform handles only rotate 90/180/270 and deliberately returns the raw bitmap for all other
-  values at `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:459-480`, omitting
-  `FLIP_HORIZONTAL`, `FLIP_VERTICAL`, `TRANSPOSE`, and `TRANSVERSE`. That assumption holds for the
-  app's own current save lanes, but the restore boundary explicitly admits owner-null imported or
-  other-app lookalikes as displayable legacy-format candidates at
-  `app/src/main/kotlin/me/hletrd/telecampro/storage/LatestCaptureReducer.kt:58-65,319-343` and
-  `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:305-316`.
-- **Concrete failure:** an imported JPEG/HEIF named like a TeleCam capture with EXIF orientation 2,
-  4, 5, or 7 is accepted and labeled “origin unverified,” then appears mirrored or transposed
-  incorrectly in both the shooting-screen thumbnail and full review while standards-compliant
-  gallery apps show it correctly.
-- **Fix:** apply all eight EXIF orientation transforms on the already bounded bitmap (rotation plus
-  the required X/Y reflection), or narrow the restore contract so files the renderer cannot present
-  truthfully are not admitted. Add asymmetric-pixel fixtures for all eight tags and assert thumbnail
-  and full-review parity.
+- The nine-tab IA, Fn/My Menu/MR model, quiet OSD, and explicit loading/empty/error/delete surfaces
+  remain coherent with the Sony/Xperia reference.
+- Keyboard/D-pad/manual-slider and review-pan paths, modal finder exclusion, initial close focus,
+  stable pane titles, localized semantics, and 48 dp hit floors are comprehensively covered.
+- Phone portrait lock and rotatable sw600dp+ layouts share one physical-bottom control layout;
+  reading elements counter-rotate without moving controls. Large-font and narrow-window reflow,
+  independent tab scroll state, insets, and RTL reading-vs-physical geometry are explicit and tested.
+- The app is deliberately dark-only; both system bar icon sets are pinned for that surface. EN/KO
+  resources are paired, while camera abbreviations and trademarks are declared exceptions.
+- High-frequency audio/scopes/level semantics are coarse and non-live, zoom/control updates are
+  coalesced, and review work is bounded/latest-wins. No additional source-proven UI defect survived
+  the final sweep. Hardware pixels, actual TalkBack speech, gesture feel, and field behavior remain
+  unclaimed without device evidence.
 
-## Confirmed strengths and final sweep
+## Totals
 
-The current surface has unusually strong coverage for 48 dp targets, role/selection/state semantics,
-modal focus exclusion, D-pad sliders/review panning, 2x font layouts, compact/freeform settings,
-large-screen window rotation, RTL physical-vs-reading geometry, EN/KO resource parity, HUD contrast,
-non-color AF cues, and loading/error/delete states. A final sweep of hardcoded UI literals,
-modifier ordering, focus requesters, pointer recognizers, scroll containers, live regions, status
-urgency, insets, and resource parity produced no additional current finding. The optional private
-UX policy is absent; review used the committed Sony-style quiet-viewfinder policy.
+- New findings: 1
+- Severity: 1 Medium
+- Confidence: 1 High
