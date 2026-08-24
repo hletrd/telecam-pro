@@ -1,185 +1,107 @@
-# Security + verifier + test + documentation review — cycle 10
+# Security reviewer + verifier review — cycle 32
 
-Date: 2026-08-23  
-Reviewed HEAD: `a714d56` (`main`, equal to `origin/main` at review start)
+Date: 2026-08-24
+Reviewed revision: `64eff08e` (`main`, equal to `origin/main` at review start)
+Workspace: isolated clean clone `/private/tmp/find-x9-rpf32.SEkU6E/repo`
 
-## Scope and coverage
+## Scope and inventory
 
-I read the project authorities in their required order: `CLAUDE.md`, `docs/BACKLOG.md`,
-`docs/ARCHITECTURE.md`, `.context/README.md`, then the testing, field-check, UX, privacy, Play,
-release, and public README authorities. The cycle-9 aggregate and completed plan were checked first
-so that closed historical findings were not re-filed without new current-source evidence.
+I read the repository authority first: `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`, followed by the public README/privacy/Data Safety authorities, the current
+aggregate, and completed plans through cycle 31. The inventory contained 440 tracked paths: 115
+production Android paths, 209 debug/instrumented/host-test paths, 36 tool/device-harness paths, and
+63 documentation/privacy/site paths (the categories overlap where Git pathspecs do). The production
+inventory contains 98 Kotlin files; the host/instrumented inventory contains 205 Kotlin/Java tests;
+and the tool/harness inventory contains 32 Python/shell programs.
 
-The repository inventory contained 351 relevant files outside `.git`, Gradle/build output, and
-generated caches. Every production Kotlin source, manifest/resource/configuration/build input,
-host/instrumented/device-test source, Python/shell tool, and active documentation file was included
-in the inventory and systematic searches. Deep traces covered permissions and exported components,
-intent/URI boundaries, MediaStore publication/recovery/deletion, EXIF identity, Camera2 removable
-routes, native codec/muxer/audio/EGL ownership, release signing/provenance/dependency verification,
-device-evidence locking/attestation, secrets/network/backup posture, and the tests that claim those
-contracts. Cross-file review concentrated on the 39 files changed since the cycle-9 review baseline
-`a552d9f`, then swept the unchanged security-sensitive surfaces for missed interactions.
+The review covered every production source/config/resource through a complete file census and
+systematic API/pattern sweeps, then traced the security-sensitive flows across their concrete
+callers and tests: release/debug manifests and exported components; CAMERA/RECORD_AUDIO/visual-media
+permission decisions; obscured-touch handling; external Intent and URI launches; current-package and
+owner-null MediaStore restore, provenance, review, deletion, pending-row recovery, and exact-family
+tombstones; EXIF/privacy claims; backup/network/secrets posture; Camera2/GL/MediaCodec/AudioRecord
+foreground and terminal ownership; preference/SQLite bounds; Gradle dependency verification and
+signing; immutable debug/release artifacts; device-harness attestation; shell/subprocess/path/symlink
+boundaries; and the tests and documentation that claim those behaviors. I also reviewed every
+cycle-31 source delta separately because it changed deletion, retirement, preview binding, recording
+review admission, and UI state.
 
-No release-manifest network path, committed secret, unprotected release component, backup exposure,
-location/GPS lane, or direct path/command-injection defect was found. The release manifest removes
-`INTERNET`/`ACCESS_NETWORK_STATE`, disables backup, and exports only the launcher; the debug snapshot
-activity is release-absent and protected by signature-level `DUMP`. The app also installs the
-view-level obscured-touch filter before presenting camera/settings/delete surfaces.
+Current source still has no tracked credential/private key, no app network client or release
+`INTERNET`/`ACCESS_NETWORK_STATE` permission, no location permission or GPS-write lane, and no
+release-exported component beyond the launcher. Backup is disabled and both extraction rule sets
+exclude preferences/databases. The debug snapshot activity is release-absent and protected by the
+signature-level `android.permission.DUMP`. The Activity rejects both fully and partially obscured
+touches before Compose. Owner-null media is narrowly filtered by exact directory, filename grammar,
+collection, extension, and MIME and is visibly labeled origin-unverified; the finding below concerns
+only whether the advertised delete action can complete under Android's authorization contract, not
+whether those rows are safely attributed.
 
-Verification performed during this review:
+Focused verification completed during this pass:
 
-- `python3 -m unittest discover -s device-tests/tests -v`: **147/147 passed**.
-- Focused Gradle tests for retained-still deletion, still publication durability, device EXIF
-  labels, and route selection: **passed** (`:app:testDebugUnitTest`).
-- The full configured host/release/device gates were not re-run by this specialist; cycle 9 records
-  the last full green gate, and Prompt 3 must run the repository's authoritative gates again.
+- `CameraPermissionPolicyTest`, `LatestCaptureReducerTest`, `CameraViewModelRobolectricTest`, and
+  `CaptureOutputTrackerTest`: passed under `:app:testDebugUnitTest`.
+- Static secret, symlink/special-file, exported-component, dangerous-permission, network API,
+  WebView/dynamic-code, URI, SQL, subprocess/shell, and native-owner sweeps: no additional actionable
+  result.
+- The full repository gate is intentionally left to Prompt 3; this specialist made no source change.
 
-## Findings
+## Finding
 
-### SECVER10-01 — A deleted still can lose its only tombstone after the Engine's last retry
-
-- **Severity / confidence:** High / High
-- **Classification:** Confirmed privacy/data-integrity defect; the failure branch needs a
-  post-release producer barrier test.
-- **Evidence:**
-  - `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:290-311` returns
-    `UNRESOLVED` when both the durable `DISCARD` commit and immediate row deletion fail. The prior
-    journal state remains `COMPLETE` in that case.
-  - `app/src/main/kotlin/me/hletrd/telecampro/camera/RetainedStillDeletionOwner.kt:46-49,161-196`
-    keeps that outcome only in the Engine-local `unresolvedDiscards` map. It performs bounded inline
-    attempts but owns no timer, process-global handoff, or separate durable family tombstone.
-  - `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5746-5759` makes one final retry
-    **before** calling `shutdown()` on `ioExecutor` and `mediaRecoveryExecutor`; it neither prevents
-    already-accepted still jobs from completing afterward nor awaits those jobs before the retry.
-    `ExecutorService.shutdown()` allows accepted/queued work to continue.
-  - `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:518-539` treats a surviving
-    `COMPLETE` row as valid and publishes it on launch recovery when no `DISCARD` marker exists.
-  - `RetainedStillDeletionOwnerTest.kt:179-188,202-209,229-255` proves recovery only by explicitly
-    calling `retryUnresolvedDiscards()`; no test lets a still producer reach `UNRESOLVED` after the
-    release retry or kills/replaces the Engine while the state is memory-only.
-- **Failure scenario:** the user deletes a capture while its late JPEG/HEIF/DNG save is queued. Engine
-  release reaches its one retry before that save hands over the row. The late job then exhausts the
-  `DISCARD` commit and provider delete attempts, adds the URI to an Engine that has already finished
-  its last retry, and exits. On process death or replacement Engine startup, the row still says
-  `COMPLETE`, so launch recovery adopts and publishes media the user explicitly deleted. The same
-  resurrection is possible without the ordering race if the process dies after an ordinary
-  `UNRESOLVED` result but before `release()`.
-- **Suggested fix:** make deleted-family intent durable before acknowledging family deletion and
-  have launch recovery veto every matching family output, or transfer unresolved outputs to a
-  process-wide retry owner that remains open to late still completions and cannot finish before a
-  durable `DISCARD`/authoritative absence. Do not rely on an Engine-local final sweep. Add a real
-  Engine/pipeline barrier test for `release → late output → commit+delete failure → new Engine
-  recovery`, plus abrupt-process-loss modeling at the unresolved edge.
-
-### SECVER10-02 — Harness attestation has an import-time TOCTOU and silently excludes symlinked code
-
-- **Severity / confidence:** High / High
-- **Classification:** Confirmed evidence-integrity defect; exploitable by concurrent/local source
-  mutation, not by the Android app.
-- **Evidence:**
-  - `device-tests/run.py:37-62` hashes the live harness tree, then `run.py:64-78` imports `dtest` and
-    `cases` from that same mutable tree. There is no atomic read/snapshot binding the bytes hashed at
-    line 62 to the bytes Python opens during those imports.
-  - `device-tests/run.py:683-687,713-720` compares the filesystem only immediately before dispatch
-    and after execution. A file changed after line 62, imported, then restored before line 683 passes
-    both comparisons while different code is resident in `sys.modules`.
-  - Both manifest walkers silently skip symlinks (`device-tests/run.py:40-42` and
-    `device-tests/dtest/contracts.py:356-364`). Python can follow a symlinked `cases.py` or `dtest`
-    module and execute bytes that are absent from the attested manifest.
-  - `device-tests/tests/test_attestation.py:301-363` mutates a fixture only after `run` is already
-    imported and after the expected manifest is captured. It tests the two later checkpoints, not
-    the capture-to-import window or the symlink omission.
-  - `device-tests/README.md:74-79` and `docs/plans/2026-08-23-rpf-cycle9.md:124-127` claim a green
-    attestation names the bytes that registered/executed cases; the current ordering cannot prove
-    that claim.
-- **Failure scenario:** an editor/build process rewrites `cases.py` between the bootstrap walk and
-  import, then restores it before pre-dispatch verification. The modified module registers and runs
-  cases, while the final green attestation names the original bytes. A symlinked executable module
-  bypasses the manifest without even needing the timing window.
-- **Suggested fix:** copy the complete accepted harness into a private digest-qualified snapshot,
-  reject every symlink/special file, import and run only from that snapshot, and attest that snapshot
-  manifest. A single-process open/hash/import protocol is still race-prone. Add subprocess tests that
-  pause between bootstrap and import and that replace an executable module with a symlink.
-
-### SECVER10-03 — External-camera captures are stamped as if the host handset made them
+### SECVER32-01 — restored ownerless media has no platform-authorized delete path
 
 - **Severity / confidence:** Medium / High
-- **Classification:** Confirmed metadata-correctness defect; external-device identity itself may
-  require a deliberately conservative omission policy.
+- **Classification:** Confirmed correctness/platform-authorization defect; the exact system prompt
+  appearance should be device-validated on API 33 and the target API 36 device.
 - **Evidence:**
-  - `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5895-5905,5937-5938` always builds
-    `LensModel`, `Make`, and `Model` from host `Build.MANUFACTURER` / `Build.MODEL`. `ShotOptics`
-    carries the new first-class `CameraRoute`, but `ExifShot` carries only the old `frontFacing`
-    Boolean (`CameraEngine.kt:3900-3926`; `StillCapturePipeline.kt:35-59`).
-  - For an EXTERNAL route `frontFacing=false`, so `DeviceExifLabels.kt:55-61,70-94` labels the USB/
-    external optic as a host wide/tele camera and prefixes it with the handset identity.
-  - `docs/ARCHITECTURE.md:49` says EXIF labels derive from the active enumerated camera and device
-    identity and do not stamp one device's identity onto another. That is true for another handset's
-    built-in camera but false for the newly supported external route.
-  - `DeviceExifLabelsTest.kt:43-83` covers rear/front and blank host identity only; none of the new
-    external-route tests reaches EXIF composition.
-- **Failure scenario:** a PMA110 user connects a USB webcam and captures a still. The file records
-  `Make=OPPO`, `Model=PMA110`, and a LensModel such as `OPPO PMA110 wide camera ...`, falsely
-  identifying the host phone as the imaging device even though the first-class route exists
-  precisely because the camera is external.
-- **Suggested fix:** carry `CameraRoute` into shot/EXIF composition. For EXTERNAL, omit host Make/
-  Model and the host prefix in LensModel unless Camera2 exposes trustworthy external-device identity;
-  keep measured focal/aperture tokens only when they are advertised. Add JPEG/HEIF EXIF tests for
-  BACK, FRONT, and EXTERNAL route matrices.
-
-### SECVER10-04 — Removable-camera lifecycle claims are protected only by a pure set-diff test
-
-- **Severity / confidence:** Medium / Medium
-- **Classification:** Likely hot-plug correctness gap requiring an actual rapid reconnect or an
-  injected CameraManager lifecycle test.
-- **Evidence:**
-  - `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:951-960` coalesces all
-    available/unavailable/removed events and returns early whenever the final `cameraIdList` equals
-    `knownCameraIds`.
-  - Cache invalidation and route convergence occur only after an ID-set difference
-    (`CameraEngine.kt:878-893,924-931`). If remove+reconnect events coalesce before the setup task
-    reads the list and the external provider reuses the same ID, the set is unchanged: old external
-    selection/caps/EXIF caches survive and no generation-owned convergence runs.
-  - The only lifecycle coverage is `CameraSelector2Test.kt:223-250`, which calls the pure
-    `cameraRouteTopologyDecision` directly and models replacement as `usb-old` → `usb-new`. No test
-    invokes the Engine callback, coalescer, cache invalidation, registration/unregistration, or
-    reconfiguration ownership, despite the cycle-9 completion claim of attach/detach/replacement
-    coverage.
-- **Failure scenario:** a USB camera disconnects and reconnects quickly on the same provider ID
-  before the queued refresh samples `cameraIdList`. The callback pair collapses to an unchanged set,
-  so stale characteristics/session assumptions remain installed for a physically new camera and
-  reopening may fail or publish wrong capabilities until process restart.
-- **Suggested fix:** treat `onCameraRemoved` as an identity-invalidating topology epoch even when the
-  later ID set matches, and carry the epoch through the serialized refresh; invalidate removable
-  route caches and reconverge after a removed→available pair. Add an injectable manager/availability
-  seam covering same-ID rapid reconnect, event coalescing, release during callback, and incomplete
-  inventory retries. Device-validate on a real UVC camera if this route is release-supported.
-
-### SECVER10-05 — Three release authorities point to a lint directory the immutable wrapper never copies
-
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed documentation/tool mismatch.
-- **Evidence:** `README.md:132-139`, `docs/BACKLOG.md:1368-1379`, and
-  `docs/play-console-submit.md:776` direct the operator to `$release_root/logs/` for lint output.
-  `tools/build_immutable_release.py:174-177` copies only `snapshot/app/build/outputs` to the immutable
-  root; Gradle lint reports live under `app/build/reports`, so no `logs/` member is exported.
-- **Failure scenario:** a release gate passes or fails, but the operator follows all three
-  authorities and cannot find the promised immutable lint evidence. This encourages consulting a
-  mutable worktree report, undermining the otherwise careful release-evidence boundary.
-- **Suggested fix:** either export the exact lint report directory into `$release_root/logs` and test
-  its contents, or correct all three authorities to state that lint is an exit-status gate and its
-  report is not preserved by the current wrapper. Add a wrapper output-layout contract test.
+  - `storage/LatestCaptureReducer.kt:288-345` admits a matching owner-null row as
+    `LEGACY_FORMAT_UNVERIFIED` and deliberately assigns `FILE_ONLY`; its own comment at lines 331-334
+    acknowledges that, after reinstall, MediaStore cleared ownership and ordinary per-row deletion
+    fails.
+  - `ui/review/MediaReview.kt:1445-1503` nevertheless exposes an enabled destructive confirmation;
+    `values/strings.xml:412-414` and `values-ko/strings.xml:395-397` promise that the file is deleted.
+    `PRIVACY.md:19` and the bundled EN/KO policy likewise describe file-only deletion for these rows.
+  - `ui/CameraViewModel.kt:3348-3471` sends every `FILE_ONLY` plan directly to its background provider
+    delete. It has no Activity result / `IntentSender` boundary and therefore cannot obtain write
+    authorization for an ownerless row.
+  - `storage/MediaStoreWriter.kt:808-812,1786-1825` calls
+    `ContentResolver.delete(uri, null, null)` directly. A thrown `SecurityException` is reduced to a
+    present/unknown survivor and a retry status, so retrying Gallery repeats the same unauthorized
+    operation indefinitely.
+  - No source or test references `RecoverableSecurityException`, `MediaStore.createDeleteRequest`,
+    or an `IntentSender` result. Existing legacy/provenance tests prove `FILE_ONLY` grouping and
+    survivor restoration, not Android write consent.
+  - Android's current scoped-storage contract says apps need user consent to remove media they do
+    not own, and Android 11+ provides `MediaStore.createDeleteRequest()` for the mandatory system
+    confirmation: <https://developer.android.com/training/data-storage/shared/media> and
+    <https://developer.android.com/reference/android/provider/MediaStore#createDeleteRequest(android.content.ContentResolver,%20java.util.Collection)>.
+- **Concrete failure scenario:** A user reinstalls TeleCam Pro, grants the contextual photo/video
+  read permission, and opens a prior-install capture whose `OWNER_PACKAGE_NAME` is now null. Review
+  truthfully labels it unverified and offers **Delete file**. After the app's confirmation, the direct
+  resolver delete is rejected because the new installation does not own the row. The file is restored
+  into review with “retry in Gallery”; every retry follows the same path, so the advertised in-app
+  deletion can never succeed on the spec path.
+- **Suggested fix:** Keep the current provenance and one-file scope, but route
+  `LEGACY_FORMAT_UNVERIFIED` deletion through an Activity-owned
+  `MediaStore.createDeleteRequest(contentResolver, listOf(uri))` launcher. Acquire the existing
+  modal/input owner before the system prompt; on `RESULT_OK`, consume the system-completed deletion
+  and reconcile tracker/UI/provider truth without issuing an unauthorized second delete; on cancel
+  or launch/security failure, restore the exact unverified survivor and show truthful localized
+  status. Leave `APP_OWNED` capture-family deletion on the existing durable background path. Add
+  pure routing tests, Activity-result/Robolectric coverage for approve/cancel/unresolved outcomes,
+  and API-33/API-36 device checks using an actual prior-install/owner-null row.
 
 ## Final missed-issue sweep
 
-The final sweep rechecked every release/debug component, permission and privacy declaration,
-MediaStore owner/path/name filter, external route branch, native-resource terminal owner, build
-credential input, dependency-verification boundary, shell/subprocess call, report-path allocation,
-and current test/plan claim. Historical accepted decisions (no network/telemetry/location,
-contextual visual-media access, no CameraUnit/proprietary HDR, dark ZSL refusal, focus detector
-conservatism) were not reopened. Findings above are current-source residuals: SECVER10-01 and -02
-invalidate cycle-9 completion claims under precise failure interleavings, SECVER10-03 and -04 are
-missed consequences of first-class EXTERNAL support, and SECVER10-05 is an active three-authority
-release-tool mismatch.
+The final sweep rechecked all 440 tracked paths and the ignored-but-present review provenance against
+the current source after tracing SECVER32-01. It revisited release and debug manifest merges,
+permission combinations, app-ops/foreground teardown, every MediaStore query/update/delete entry,
+owner-null spoof boundaries, exact-family deletion races, native resource quarantine, external
+navigation, EXIF/location, logs, backup, secrets, dependency hashes, immutable release/debug seals,
+artifact inspection, device attestation/report ownership, and cycle-31's changed deletion and
+retirement paths. Previously fixed findings and explicit product decisions were not re-filed.
 
-**Finding count:** 5 total — 2 High, 2 Medium, 1 Low. No Critical finding.
+No additional actionable security or verification finding survived evidence checking. The platform
+currently prevents unauthorized ownerless-row deletion; the defect is the missing consent-capable
+route and the resulting false user-facing behavior, not an authorization bypass or data exposure.
+
+**Finding count:** 1 total — 1 Medium. No Critical or High finding.

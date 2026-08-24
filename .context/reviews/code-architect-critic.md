@@ -1,154 +1,132 @@
-# Code reviewer + architect + critic + designer review — cycle 10
+# Code reviewer + architect + critic review — cycle 32
 
-Date: 2026-08-23  
-Repository: `/Users/hletrd/flash-shared/find-x9-ultra-camera`  
-Reviewed HEAD: `a714d56b` (`main`, matching `origin/main` at review start)
+Date: 2026-08-24
+Reviewed revision: `64eff08e` (`main`, matching `origin/main` in the isolated clone)
+Workspace: `/private/tmp/find-x9-rpf32.SEkU6E/repo`
 
-## Scope, authority, and inventory
+## Authority, inventory, and review method
 
-I read the current authorities in the required order: `CLAUDE.md`, `docs/BACKLOG.md`,
-`docs/ARCHITECTURE.md`, `docs/UX_POLICY.md`, `.context/README.md`, and the applicable testing and
-field-evidence rules in `docs/TESTING.md` and `docs/FIELD_CHECKS.md`. Current cycle-9 reviews and
-`docs/plans/2026-08-23-rpf-cycle9.md` were checked before filing anything, so completed findings were
-not reopened under a new name. Historical reviews/plans and binary assets were inventoried as
-provenance, not treated as current executable truth.
+I read `CLAUDE.md` first, then the complete committed `docs/ARCHITECTURE.md` and
+`docs/FIELD_CHECKS.md`. The optional private maintainer files named by `CLAUDE.md`
+(`docs/BACKLOG.md`, `docs/TESTING.md`, and `docs/UX_POLICY.md`) are absent from this clean clone, as
+the committed policy explicitly permits. I also read the cycle-31 aggregate and completed plan
+before reviewing current code, so fixed findings were not reopened merely under new names.
 
-The review inventory came from `git ls-files` and covered every live review-relevant file:
+Every one of the 440 tracked paths was inventoried. The live review surface comprises:
 
-- 86 production Kotlin files (45,497 lines), including the complete Camera2/session/route engine,
-  capture and storage owners, GL/EGL renderer, stabilization, audio/video recorder, ViewModel,
-  Compose camera screen/controls/overlays/review, Activity/Application, and every pure policy/math
-  seam.
-- 170 host Kotlin tests (30,336 lines), four instrumented tests/probes (547 lines), two debug preview
-  sources (560 lines), all manifests/resources (including EN/KO parity), and the baseline profile.
-- All 11 device-harness Python modules (6,174 lines), all eight host/release/coverage tool modules
-  (1,640 lines), their tests, Gradle/version/dependency-verification configuration, ProGuard and
-  Compose stability configuration.
-- Current public/privacy/release/architecture/testing/field/UX documents. Generated build output,
-  archived review snapshots, compressed device evidence, fonts, and Play raster assets were
-  inventoried but were not mistaken for source behavior.
+- 98 production Kotlin files: four application/activity/policy roots; 34 camera/session/ownership
+  files; five capture, two focus, 11 GL/EGL, one stabilization, five storage, 29 UI/controls/review,
+  and seven audio/video files.
+- 205 JVM/Robolectric/Compose/instrumented Kotlin tests, including all 72 camera-owner tests, 36 UI
+  tests, 24 control tests, 18 GL tests, 13 video tests, and the four on-device probes.
+- 32 Python/shell device-harness and host/release/coverage tools together with their tests; all
+  manifests, Gradle/dependency-verification/R8/Compose configuration, EN/KO resources, backup/data
+  extraction policy, privacy/store documents, baseline profile, and public architecture/field
+  authority.
+- Binary fonts, screenshots, wrapper JAR, compressed evidence, and raster Play assets were
+  inventoried as artifacts, not treated as executable source. Historical plans/reviews were used
+  only for provenance and duplicate checking.
 
-Cross-file passes traced route inventory and hot-plug events through Engine optics ownership,
-Camera2 session admission and recording teardown; still completion through durable markers,
-publication, family deletion, and launch recovery; persisted/MR state through capability
-normalization; preview/encoder orientation and zoom scales; and every visible Compose door through
-semantics, modal ownership, responsive layout, localization, and the quiet-viewfinder policy.
+The cross-file review traced Camera2 route and optics ownership; preview-window/GL/encoder lifecycle;
+recording admission, audio, Stop, detach, native finalization, and storage publication; still-family
+producer/publication/deletion journals and process replacement; capture tracker/review pin/delete
+state; settings and MR normalization; Compose modal/input/accessibility state; and host/device/release
+evidence. Because cycle 31 had already reviewed revision `a69c1274` exhaustively, I additionally
+examined every source, test, tool, and authority change from that revision through current HEAD and
+rechecked each changed seam against its unchanged callers and owners.
 
 ## Findings
 
-### CACD10-01 — A topology event during REC permanently strands the camera Not Ready
-
-- **Severity / confidence:** High / High
-- **Status:** Confirmed correctness/lifecycle defect from deterministic control flow
-- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:878-931` treats every
-  camera-ID-set change as topology requiring convergence while `started && !paused`, with no
-  recording guard. `convergeAfterRouteTopologyChange` at `CameraEngine.kt:976-984` immediately
-  calls `beginOpticsTransaction`, whose contract clears `cameraReady`, `readyController`, and
-  `acceptedCameraSession`. `reconfigureCamera` publishes another Not-Ready edge at
-  `CameraEngine.kt:3135-3150`, but its queued task silently returns when `recorder != null` at
-  `CameraEngine.kt:3155-3164` (and again at 3185-3191), without rollback or a deferred retry.
-  `stopRecording` at `CameraEngine.kt:4859-4890` tears down only recorder/EGL ownership; it does not
-  recreate the accepted camera session. The shutter state explicitly remains stoppable during REC
-  but requires `cameraReady` afterward (`camera/CameraState.kt:1476-1486`).
-- **Why this is a problem:** a hot-plug event is allowed to consume the accepted-session token even
-  though the same method then refuses to perform the replacement. This violates the central optics
-  invariant that every Not-Ready generation must finish in commit, rollback, or owned recovery.
-- **Concrete failure scenario:** while recording from the built-in rear camera, connect or remove a
-  USB camera (or otherwise change `cameraIdList`). The availability callback observes the changed ID
-  set and starts topology convergence. REC continues and can still be stopped, but the setup task
-  exits on `recorder != null`. After Stop, the live controller has no accepted-session owner and the
-  shutter remains disabled until another lifecycle/reopen event happens to rebuild it.
-- **Suggested fix:** make topology convergence recording-aware. Update inventory/caches immediately,
-  but either (a) avoid opening an optics transaction while the active route remains valid and defer
-  a required route change until recorder teardown completes, or (b) attach a generation-owned
-  pending-topology action that teardown must run. If the active device itself disappears, let the
-  recorder failure owner terminate REC before convergence. Add production-composition tests for
-  attach, irrelevant detach, and active-route removal during Starting, Recording, and teardown.
-- **Prior-cycle cross-reference:** cycle-9 `AGG9-02` introduced this availability owner and required
-  generation-owned convergence, but neither its plan nor current tests cover the recorder guard.
-
-### CACD10-02 — Same-ID external-camera replacement bypasses cache invalidation
-
-- **Severity / confidence:** Medium / Medium
-- **Status:** Likely correctness defect; same-ID replacement needs manual external-camera validation
-- **Evidence:** `scheduleRouteAvailabilityRefresh` at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:951-960` reduces topology identity
-  to `cameraIdList.toSet()` and returns early whenever it equals `knownCameraIds`. Cache invalidation
-  at `CameraEngine.kt:884-893` is reachable only after that equality gate and similarly keys
-  `topologyChanged` solely on set inequality. Yet the callback receives per-ID available,
-  unavailable, and removed edges at `CameraEngine.kt:964-968`. The replacement regression in
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/CameraSelector2Test.kt:222-258` tests only
-  `{usb-a} -> {usb-b}`; it explicitly classifies `{usb-b} -> {usb-b}` as “busy only,” so it cannot
-  represent a different camera reusing one provider/port ID.
-- **Why this is a problem:** external camera providers may reuse the same Camera2 ID/device node for
-  a different USB camera on the same port. Callback coalescing makes the issue sharper: by the time
-  the setup executor reads `cameraIdList`, removal and replacement may already have completed and
-  the set is unchanged. `cachedExternalSelection`, caps, stream-size, orientation, focal/EXIF, and
-  lens caches then remain those of the removed device.
-- **Concrete failure scenario:** replace USB camera A with camera B on the same adapter/provider ID.
-  The callback runs, sees the old ID set, and returns. Reopen configures B with A's cached sizes and
-  sensor facts; this can reject the session, distort/rotate output, or mislabel focal metadata until
-  process restart.
-- **Suggested fix:** track availability/removal epochs per ID, not only membership. A definite
-  `onCameraRemoved(id)` must invalidate that ID's selection/capability/EXIF state even if a later
-  `onCameraAvailable(id)` restores the same set. Distinguish the app's ordinary open-generated
-  unavailable edge from remove/replace epochs, and add a same-ID A→B fixture with changed caps.
-- **Prior-cycle cross-reference:** this is the untested same-identity half of cycle-9 `AGG9-02`, not
-  a duplicate of its fixed different-ID attach/detach case.
-
-### CACD10-03 — Failed durable deletion defeats both ownership bounds and restart safety
+### CAC32-01 — Stop re-enables review before the recorder and microphone are terminal
 
 - **Severity / confidence:** Medium / High
-- **Status:** Confirmed resource/data-lifecycle defect
-- **Evidence:** `RetainedStillDeletionOwner` declares a bounded tombstone capacity but retains every
-  unresolved URI in an unbounded `LinkedHashMap` at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/RetainedStillDeletionOwner.kt:43-49`.
-  `markCaptureDeleted` deliberately breaks out without eviction whenever all tombstones are active
-  or unresolved (`RetainedStillDeletionOwner.kt:62-74`), so the nominal 32-entry Engine bound
-  (`CameraEngine.kt:5967-5970`) no longer applies. Each failed discard is inserted at
-  `RetainedStillDeletionOwner.kt:161-170`; retries are bounded per call but the retained collection
-  is not (`RetainedStillDeletionOwner.kt:174-196`). The current regression test explicitly proves
-  over-capacity growth (`RetainedStillDeletionOwnerTest.kt:213-240`) but tests only recovery on the
-  next manual retry. Production retries the set again only at Engine release
-  (`CameraEngine.kt:5738-5751`) and merely logs any survivors. An `UNRESOLVED` result means neither
-  the provider delete nor the durable DISCARD journal commit succeeded, so process death loses the
-  in-memory veto and launch recovery may adopt the still.
-- **Why this is a problem:** the implementation cannot simultaneously claim bounded ownership and
-  preserve an unlimited number of failed rows. Under a persistent provider/preferences fault,
-  repeated capture/delete cycles grow URI publications, unresolved rows, and tombstones without a
-  ceiling; memory pressure can kill the process, which then destroys the only remaining record that
-  these otherwise valid rows belonged to deleted families.
-- **Concrete failure scenario:** storage/provider operations and the SharedPreferences journal fail
-  (full/corrupt/unmounted storage), while the operator continues taking and deleting captures after
-  each “could not delete” status. Every output consumes permanent Engine memory beyond the 32-family
-  bound. An eventual OOM or normal process restart loses those vetoes, allowing structurally complete
-  pending rows to be recovered as live media.
-- **Suggested fix:** define an explicit bounded fail-closed state. Once unresolved ownership reaches
-  capacity, block further still capture/deletion admission with persistent actionable status until
-  a retry succeeds, or move ownership to a genuinely durable bounded journal independent of the
-  failing preference path. Schedule bounded background retries while the Engine remains alive, not
-  only at release, and test persistent failure beyond 32 distinct families plus process restart.
-- **Prior-cycle cross-reference:** cycle-9 `AGG9-04` correctly added typed `UNRESOLVED` ownership;
-  this is the missing bounded-capacity/restart disposition in that fix.
+- **Status:** Confirmed lifecycle/state-consistency defect from deterministic control flow
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt:73-76` models review
+  admission with only `isRecordingStarting` and `isRecording`. The ViewModel defense at
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:3308-3317` uses the same two-bit
+  predicate. On Stop, `CameraViewModel.kt:3113-3124` calls `engine.stopRecording()` and immediately
+  publishes both flags false. The Engine does not synchronously stop native capture: it marks
+  `recorderTeardownInFlight = true`, detaches ownership, and starts asynchronous EGL/native
+  finalization at `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5467-5495`.
+  Its own contract says the microphone remains owned throughout that interval
+  (`CameraEngine.kt:5505-5509`), and the flag clears only after checked native release at
+  `CameraEngine.kt:5651-5670`. `VideoRecorder.stopNative` flips `running`, calls
+  `AudioRecord.stop`, joins both drain threads for up to three seconds each, and releases the input
+  only on that asynchronous path (`app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt:375-420,455-458`).
+- **Why this is a problem:** the new review lockout covers admission and active REC but not the
+  third state the recorder architecture already treats as load-bearing: finalization. UI state says
+  review is safe while the encoder may still be accepting the tail of a take and `AudioRecord` may
+  still be live. This reopens the exact speaker-to-microphone overlap the cycle-31 change intended
+  to close, and it can also make MediaPlayer contend with a finalizing audio route. A quarantined or
+  slow native owner makes the interval much longer than an ordinary frame.
+- **Concrete failure scenario:** record a clip with audio, press Stop, then immediately tap the now
+  enabled prior-video thumbnail. The review overlay prepares/autoplays speaker audio while encoder
+  detach has not yet dispatched or completed `stopNative`; that sound can enter the recorded tail
+  after the operator pressed Stop. Under a slow/wedged drain, review remains enabled throughout the
+  multi-second finalization/quarantine transition.
+- **Suggested fix:** publish a distinct ViewModel-visible `recordingFinalizing` state owned by the
+  Engine's exact native-release terminal (including quarantine classification), and include it in
+  both the Compose and defensive ViewModel review gate. Do not keep `isRecording` true merely to
+  reuse the old predicate, because that would keep presenting a second Stop action after Stop has
+  already won. Add a deterministic test in which Stop clears active REC, native release is held,
+  review remains disabled, and release/quarantine enables it exactly once.
+- **Cross-cutting implication:** the UI recording model currently represents user intent, while
+  standby audio and native acquisition correctly use resource ownership. Any future audio/playback
+  door must key on the latter terminal, not infer it from `isRecording == false`.
 
-## Designer / UI and final missed-issue sweep
+### CAC32-02 — the reconciliation bound counts listeners, but the durable bound counts families
 
-The native Compose UI was reviewed directly; browser tooling is inapplicable because there is no web
-surface. The sweep covered information architecture, Sony/Xperia quiet-viewfinder policy, 48 dp hit
-targets, fixed/scrolled chrome ownership, Fn/My Menu/MR organization, settings/Fn/review modal input
-blocking, timer cancellation, keyboard/TalkBack semantics and state descriptions, focus order,
-loading/empty/error states, phone/tablet rotated layouts, dark-only camera theme, EN/KO resources,
-RTL-absolute finder placement, reduced-animation exposure, and perceived-response paths for zoom and
-camera switching. The cycle-9 external-route additions provide both visual OSD identity and
-TalkBack state identity, hide rear-only TELE/focal controls, retain the switch only when both
-destinations exist, and keep local zoom labels consistent. I found no additional designer-specific
-defect beyond CACD10-01's user-visible permanently disabled post-REC shutter.
+- **Severity / confidence:** Medium / High
+- **Status:** Confirmed architectural bound mismatch; the multi-owner overlap is an exceptional but
+  explicitly supported process-replacement case
+- **Evidence:** `RetainedStillRetirementRegistry` stores an `IdentityHashMap` of listeners per
+  family, but applies `maxRegistrations` to the total listener count at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/RetainedStillDiscardDispatcher.kt:198-227`.
+  Production initializes that limit from `MediaStoreWriter.MAX_DELETED_FAMILY_MARKERS` at
+  `RetainedStillDiscardDispatcher.kt:277-285`. The durable journal's corresponding capacity check,
+  however, counts distinct marker keys/families (`app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:494-507`).
+  Multiple listeners for one family are deliberately supported and already tested as two consumed
+  registrations at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/RetainedStillDiscardDispatcherTest.kt:216-239`.
+  When the mismatched listener bound rejects a live-family registration, `CameraEngine.kt:4195-4211`
+  skips the otherwise-available durable commit and reports durability failure; the local owner then
+  permanently closes still admission for that Engine (`RetainedStillDeletionOwner.kt:101-109,243-246`).
+- **Why this is a problem:** “at most 64 durable families” does not imply “at most 64 local owners.”
+  A process-replacement overlap can legitimately require more than one exact Engine listener for a
+  family, so the reconciliation map can reject work while the durable journal still has family
+  capacity. The failure is not just backpressure: it converts a bookkeeping-capacity mismatch into
+  an Engine-lifetime shutter lockout.
+- **Concrete failure scenario:** unresolved retirement work retains 32 family markers while an old
+  and replacement Engine each still own reconciliation for those families. Those 32 keys consume
+  all 64 listener slots. Deleting a 33rd family is refused by the registry even though the durable
+  journal is only half full; for a live still, `completeDeletionDurability(false)` leaves subsequent
+  still capture disabled until Engine/process replacement.
+- **Suggested fix:** bound the registry by distinct families in the same unit as the journal, and
+  define a separate explicit bound for per-family listener fan-out (or use one process relay per
+  family that holds bounded local owner tokens). Registration capacity must not be derived from a
+  differently measured store capacity. Add a matrix with 64 distinct families, multiple listeners
+  per family, rollback, exact retirement, and replacement-Engine notification; assert that only a
+  65th family, not the 65th listener, hits the journal-aligned capacity edge.
+- **Cross-cutting implication:** architecture text currently calls both structures “equally
+  bounded,” but equality of the numeric constant hides unequal units. Capacity invariants should
+  name whether they count families, Engines/listeners, rows, or tasks.
 
-The final missed-issue sweep rechecked every production owner and corresponding test namespace,
-all callback/executor admission and teardown boundaries, Camera2 route/capability caches, still and
-video publication durability, settings/MR normalization, GL/encoder rotation and zoom truth,
-manifest/resource localization parity, suppressions/ignored tests/TODO markers, build/release
-provenance, device-harness mutation ownership, and current-vs-historical documentation. No live
-source, test, build configuration, resource authority, or current policy document was skipped.
-Device/HAL and TalkBack speech behavior were not inferred from host source; the external-camera
-replacement scenario remains explicitly marked for manual validation.
+## Final missed-issue and file-coverage sweep
+
+After the findings above, I rechecked every changed cycle-31 implementation against its tests and
+unchanged consumers: typed provider-vs-marker deletion, cross-Engine retirement publication,
+asynchronous preview binding, optics rollback coverage, callback-drain rendezvous, review semantics,
+responsive toggles, AF non-color cues, focal-rail fade ordering, and documentation contracts. I
+also swept all production namespaces and tool/device sources for silent catches, unchecked nullable
+provider results, executor rejection fallbacks, stale generations, unbounded ownership, unsupported
+suppressions, TODO/FIXME markers, hard-coded localization, and comments/tests that contradicted
+executable behavior.
+
+No additional actionable code-quality, architecture, correctness, or maintainability finding
+survived evidence checking. In particular, the new provider-deletion result correctly keeps absent
+rows out of review while retaining exact cleanup metadata; preview binds now leave main without
+weakening terminal-gate ordering; and the ToggleRow/AF/focal-rail changes preserve their parent
+semantics and production behavior. No device/HAL behavior was inferred from host code. CAC32-01 is
+host-provable as an ownership interval but its audible contamination should still be included in a
+device regression; CAC32-02 is a deterministic unit-level capacity defect whose production trigger
+requires overlapping Engine owners.
