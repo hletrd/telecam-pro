@@ -120,6 +120,20 @@ internal fun launchOwnerlessMediaDeleteRequest(
     },
 )
 
+/**
+ * Pins light system-bar icons over TeleCamPro's unconditionally dark surface.
+ *
+ * [SystemBarStyle.dark] describes the bar background, so it selects light icons. The bare
+ * [enableEdgeToEdge] overload follows the system night setting instead, which can put black icons
+ * over the dark viewfinder and makes debug screenshot evidence depend on device theme state.
+ */
+internal fun ComponentActivity.enableTeleCamEdgeToEdge() {
+    enableEdgeToEdge(
+        statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+    )
+}
+
 class MainActivity : ComponentActivity() {
 
     private val vm: CameraViewModel by viewModels()
@@ -252,10 +266,7 @@ class MainActivity : ComponentActivity() {
         // scene, so the app's own appearance is the only correct input here, never the system's.
         // The theme's android:windowLightStatusBar=false was aimed at exactly this and cannot reach
         // it: it seeds the starting window, and then this call overwrites the appearance flags.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-        )
+        enableTeleCamEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         consumeProtectedDebugCameraCommand()
         // Defense in depth for child Views: dispatchTouchEvent above is the authoritative full +

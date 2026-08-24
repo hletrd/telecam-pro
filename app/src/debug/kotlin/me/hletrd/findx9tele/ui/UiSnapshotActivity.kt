@@ -8,7 +8,6 @@ import android.util.Rational
 import android.util.Size
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
@@ -48,6 +47,7 @@ import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.MicrophonePermissionRationale
 import me.hletrd.telecampro.PermissionGate
 import me.hletrd.telecampro.R
+import me.hletrd.telecampro.enableTeleCamEdgeToEdge
 import me.hletrd.telecampro.ui.controls.ProSheet
 import me.hletrd.telecampro.ui.controls.ProSheetTab
 import me.hletrd.telecampro.ui.review.ReviewCriticalStatus
@@ -66,7 +66,9 @@ class UiSnapshotActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Screenshot evidence must keep the same light-on-dark system chrome as production,
+        // independently of the device's system night setting.
+        enableTeleCamEdgeToEdge()
         acceptSnapshotIntent(intent)
         setContent {
             TeleCamProTheme {
