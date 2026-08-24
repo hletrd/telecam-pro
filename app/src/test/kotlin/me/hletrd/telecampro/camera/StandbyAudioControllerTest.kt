@@ -1035,7 +1035,7 @@ class StandbyAudioControllerTest {
         val input = FakeInput()
         val controller = StandbyAudioController(
             audioGain = { 1f },
-            onLevels = { if (it.isEmpty()) zeroLevels.countDown() },
+            onLevels = { if (it.rms.isEmpty()) zeroLevels.countDown() },
             canStart = { true },
             recorderAbsent = { false },
             isPaused = { false },

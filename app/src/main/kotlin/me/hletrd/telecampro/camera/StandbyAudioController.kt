@@ -14,6 +14,8 @@ import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioReadOutcome
 import me.hletrd.telecampro.video.ColorProfiles
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
+import me.hletrd.telecampro.video.AudioLevelFrame
+import me.hletrd.telecampro.video.accumulateChannelPeaks
 import me.hletrd.telecampro.video.channelRms
 import me.hletrd.telecampro.video.classifyAudioRead
 import me.hletrd.telecampro.video.resolveAudioChannelCount
@@ -307,7 +309,7 @@ private fun createAndroidStandbyAudioInput(
  */
 internal class StandbyAudioController(
     private val audioGain: () -> Float,
-    private val onLevels: (FloatArray) -> Unit,
+    private val onLevels: (AudioLevelFrame) -> Unit,
     private val canStart: () -> Boolean,
     private val recorderAbsent: () -> Boolean,
     private val isPaused: () -> Boolean,
@@ -327,7 +329,7 @@ internal class StandbyAudioController(
     internal constructor(
         context: Context,
         audioGain: () -> Float,
-        onLevels: (FloatArray) -> Unit,
+        onLevels: (AudioLevelFrame) -> Unit,
         /**
          * Read LIVE, never captured: the operator can change the input while video is armed, and
          * each AudioRecord generation must resolve the choice that is current when it opens.
@@ -490,6 +492,7 @@ internal class StandbyAudioController(
                 }
                 if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
                 val samples = ShortArray(2048)
+                val heldPeaks = FloatArray(input.channelCount.coerceAtLeast(1))
                 var lastEmit = 0L
                 while (ownership.ownsAndWants(owner) && recorderAbsent() && canStart()) {
                     val readCount = runCatching { checkNotNull(audioInput).read(samples) }.getOrElse {
@@ -512,19 +515,30 @@ internal class StandbyAudioController(
                         }
                         AudioReadOutcome.Stopped -> break
                     }
+                    accumulateChannelPeaks(
+                        samples,
+                        readCount,
+                        input.channelCount,
+                        audioGain(),
+                        heldPeaks,
+                    )
                     val now = System.nanoTime()
                     if (now - lastEmit < METER_EMIT_INTERVAL_NS) continue
                     lastEmit = now
                     // Per channel, and on the same signed-16-bit full scale VideoRecorder uses, so
                     // the meter does not jump at the standby -> REC handoff.
                     onLevels(
-                        channelRms(
+                        AudioLevelFrame(
+                            rms = channelRms(
                             samples,
                             readCount,
-                            audioInput.channelCount,
+                            input.channelCount,
                             audioGain(),
                         ),
+                            peaks = heldPeaks.copyOf(),
+                        ),
                     )
+                    heldPeaks.fill(0f)
                 }
             } finally {
                 // Count the latch only after release on every path, including early returns.
@@ -550,7 +564,7 @@ internal class StandbyAudioController(
     ) {
         val completion = ownership.complete(owner)
         owner.release.countDown()
-        runCatching { onLevels(FloatArray(0)) }
+        runCatching { onLevels(AudioLevelFrame.EMPTY) }
         if (!completion.completed) return
         if (retryForProcessBusy) {
             scheduleProcessBusyRetry()

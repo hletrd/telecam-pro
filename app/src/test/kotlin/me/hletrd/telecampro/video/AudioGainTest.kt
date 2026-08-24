@@ -156,4 +156,16 @@ class AudioGainTest {
         assertEquals(kotlin.math.sqrt(20_000_000f) / 32768f, levels[0], 1e-4f)
         assertEquals(kotlin.math.sqrt(40_000_000f) / 32768f, levels[1], 1e-4f)
     }
+
+    @Test
+    fun `recording peak accumulator holds an isolated clipped sample across buffers`() {
+        val held = FloatArray(2)
+        val first = pcmBuffer(1_000, 2_000, Short.MAX_VALUE, 3_000)
+        accumulatePcmPeaks(first, byteCount = 8, channelCount = 2, target = held)
+        val second = pcmBuffer(500, 4_000, -500, -4_000)
+        accumulatePcmPeaks(second, byteCount = 8, channelCount = 2, target = held)
+
+        assertEquals(Short.MAX_VALUE.toFloat() / 32768f, held[0], 0f)
+        assertEquals(4_000f / 32768f, held[1], 0f)
+    }
 }

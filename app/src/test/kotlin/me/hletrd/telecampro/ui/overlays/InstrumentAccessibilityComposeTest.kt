@@ -38,11 +38,14 @@ class InstrumentAccessibilityComposeTest {
                 AudioAccessibilityState.NEAR_CLIPPING,
                 AudioAccessibilityState.PENDING,
             ),
-            audioAccessibilityStates(listOf(0f, 0.5f, 0.9f, Float.NaN)),
+            audioAccessibilityStates(
+                levels = listOf(0f, 0.5f, 0.9f, Float.NaN),
+                peaks = listOf(0f, 0.5f, 0.96f, 0f),
+            ),
         )
         assertEquals(
             listOf(AudioAccessibilityState.HIGH, AudioAccessibilityState.CLIPPING),
-            audioAccessibilityStates(listOf(0.7f, 1f)),
+            audioAccessibilityStates(listOf(0.7f, 0.7f), listOf(0.7f, 1f)),
         )
         assertEquals(
             audioAccessibilityStates(listOf(0.20f, 0.86f)),
@@ -55,7 +58,20 @@ class InstrumentAccessibilityComposeTest {
                 AudioAccessibilityState.NEAR_CLIPPING,
                 AudioAccessibilityState.CLIPPING,
             ),
-            audioAccessibilityStates(listOf(0.02f, 0.60f, 0.85f, 0.999f)),
+            audioAccessibilityStates(
+                levels = listOf(0.02f, 0.60f, 0.85f, 0.85f),
+                peaks = listOf(0f, 0f, 0.95f, 32767f / 32768f),
+            ),
+        )
+
+        val clippedSine = me.hletrd.telecampro.video.channelLevelFrame(
+            shortArrayOf(0, Short.MAX_VALUE, 0, Short.MIN_VALUE),
+            readCount = 4,
+            channelCount = 1,
+        )
+        assertEquals(
+            listOf(AudioAccessibilityState.CLIPPING),
+            audioAccessibilityStates(clippedSine.rms.toList(), clippedSine.peaks.toList()),
         )
 
         assertEquals(HistogramAccessibilityState.PENDING, histogramAccessibilityState(null))
@@ -131,7 +147,7 @@ class InstrumentAccessibilityComposeTest {
             CompositionLocalProvider(LocalContext provides localizedContext(language)) {
                 TeleCamProTheme {
                     Column {
-                        AudioMeter(listOf(0f, 0.9f))
+                        AudioMeter(levels = listOf(0f, 0.9f), peaks = listOf(0f, 0.96f))
                         HistogramOverlay(histogram(shadows = 10, midtones = 980, highlights = 10))
                         WaveformOverlay(waveform)
                     }

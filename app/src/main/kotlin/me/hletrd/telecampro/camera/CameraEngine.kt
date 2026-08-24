@@ -1319,9 +1319,8 @@ class CameraEngine internal constructor(
     )?
         get() = callbackSink.function4(EngineCallbackKey.ANALYSIS)
         set(value) = callbackSink.install(EngineCallbackKey.ANALYSIS, value)
-    // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
-    /** Per-channel input levels (0..1), one entry per interleaved channel; empty = meter off. */
-    var onAudioLevel: ((FloatArray) -> Unit)?
+    // Live recording-audio RMS + held peak truth (0..1, post-gain), throttled to ~10 Hz.
+    var onAudioLevel: ((me.hletrd.telecampro.video.AudioLevelFrame) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.AUDIO_LEVEL)
         set(value) = callbackSink.install(EngineCallbackKey.AUDIO_LEVEL, value)
 
@@ -6281,7 +6280,7 @@ class CameraEngine internal constructor(
         standbyAudioController.disable()
         standbyAudioController.finishRecording()
         invalidateCameraReady()
-        runCatching { onAudioLevel?.invoke(FloatArray(0)) }
+        runCatching { onAudioLevel?.invoke(me.hletrd.telecampro.video.AudioLevelFrame.EMPTY) }
         runCatching { onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()) }
         runCatching { onRecordingTerminated?.invoke(failure) }
         android.util.Log.e(

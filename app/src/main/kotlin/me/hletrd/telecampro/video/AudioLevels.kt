@@ -2,9 +2,24 @@ package me.hletrd.telecampro.video
 
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+import kotlin.math.abs
 
 /** Signed 16-bit PCM full scale, shared so the standby meter and REC meter cannot drift apart. */
 internal const val PCM_16_FULL_SCALE = 32768.0
+
+/** One throttled meter frame: RMS drives bar height; peak truth drives overload semantics. */
+data class AudioLevelFrame(
+    val rms: FloatArray,
+    val peaks: FloatArray,
+) {
+    init {
+        require(rms.size == peaks.size) { "RMS/peak channel count mismatch" }
+    }
+
+    companion object {
+        val EMPTY = AudioLevelFrame(FloatArray(0), FloatArray(0))
+    }
+}
 
 /**
  * Per-channel RMS of an INTERLEAVED signed-16-bit PCM buffer, normalized to 0..1 and scaled by
@@ -41,6 +56,45 @@ internal fun channelRms(
         val rms = sqrt(sums[c] / frames) / PCM_16_FULL_SCALE
         (rms * gain).toFloat().coerceIn(0f, 1f)
     }
+}
+
+/** Accumulates post-gain peak magnitude without forgetting a clip between throttled UI emits. */
+internal fun accumulateChannelPeaks(
+    samples: ShortArray,
+    readCount: Int,
+    channelCount: Int,
+    gain: Float,
+    target: FloatArray,
+) {
+    val channels = channelCount.coerceAtLeast(1)
+    require(target.size == channels)
+    val usable = readCount.coerceIn(0, samples.size)
+    val frames = usable / channels
+    val safeGain = gain.takeIf { it.isFinite() }?.coerceAtLeast(0f) ?: 1f
+    var i = 0
+    repeat(frames) {
+        for (channel in 0 until channels) {
+            val peak = (abs(samples[i++].toInt()) / PCM_16_FULL_SCALE * safeGain)
+                .toFloat()
+                .coerceIn(0f, 1f)
+            if (peak > target[channel]) target[channel] = peak
+        }
+    }
+}
+
+internal fun channelLevelFrame(
+    samples: ShortArray,
+    readCount: Int,
+    channelCount: Int,
+    gain: Float = 1f,
+): AudioLevelFrame {
+    val channels = channelCount.coerceAtLeast(1)
+    val peaks = FloatArray(channels)
+    accumulateChannelPeaks(samples, readCount, channels, gain, peaks)
+    return AudioLevelFrame(
+        rms = channelRms(samples, readCount, channels, gain),
+        peaks = peaks,
+    )
 }
 
 /**

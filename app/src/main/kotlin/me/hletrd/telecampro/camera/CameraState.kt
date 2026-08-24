@@ -1328,6 +1328,8 @@ data class CameraUiState(
      * channel, and a single averaged bar hides exactly that (2026-08-02).
      */
     val audioLevels: List<Float> = emptyList(),
+    /** Per-channel held post-gain peak accompanying [audioLevels]; empty while the meter is off. */
+    val audioPeakLevels: List<Float> = emptyList(),
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     // Displayed preview aspect (W/H as shown on the portrait screen; the ~90° sensor orientation
     // already swaps the stream's W/H). The viewfinder TextureView is sized to this and letterboxed,

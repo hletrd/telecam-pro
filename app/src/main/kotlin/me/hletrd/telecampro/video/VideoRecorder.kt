@@ -153,7 +153,7 @@ class VideoRecorder(private val context: Context) {
     // Software input gain applied to recorded PCM (1f = passthrough) and a throttled level-meter
     // callback, both set by [start] and consumed on the audio-encode thread in [runAudio].
     private var audioGain = 1f
-    private var onLevel: ((FloatArray) -> Unit)? = null
+    private var onLevel: ((AudioLevelFrame) -> Unit)? = null
     private var lastLevelEmitNs = 0L
     // Directional-audio scene (Sound Focus / Sound Stage) + the current zoom and device
     // orientation, applied to the audio HAL via AudioManager.setParameters after AudioRecord init.
@@ -214,7 +214,7 @@ class VideoRecorder(private val context: Context) {
         audioZoom: Float = 1f,
         audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
         onRoute: ((AudioRouteStatus) -> Unit)? = null,
-        onLevel: ((FloatArray) -> Unit)? = null,
+        onLevel: ((AudioLevelFrame) -> Unit)? = null,
         onFailure: ((Throwable) -> Unit)? = null,
     ): Surface? {
         val admittedCandidates = encoderCandidates
@@ -768,6 +768,7 @@ class VideoRecorder(private val context: Context) {
         val bytesPerFrame = 2 * audioChannelCount
         var sentEos = false
         var eosAttempts = 0
+        val heldAudioPeaks = FloatArray(audioChannelCount)
 
         while (true) {
             when (audioWorkerLoopDisposition(terminallyQuarantined.get(), audioDegradedMidRec)) {
@@ -790,17 +791,25 @@ class VideoRecorder(private val context: Context) {
                         is AudioReadOutcome.Pcm -> {
                             val pcmBuffer = checkNotNull(buf)
                             // Apply gain in place before this PCM buffer is queued to the AAC encoder.
-                            // RMS measurement is admitted only at the meter cadence: non-emission
-                            // buffers take the allocation-free gain-only path even at non-unity gain.
+                            // Peak evidence is accumulated for EVERY post-gain buffer so a clipped
+                            // transient between throttled UI emits is not lost. RMS and the one
+                            // immutable peak snapshot are allocated only at the meter cadence.
                             val emitDue = onLevel != null && levelEmitDue()
-                            val levels = applyGainAndMaybeMeasureLevel(
-                                pcmBuffer,
-                                readOutcome.byteCount,
-                                audioGain,
-                                audioChannelCount,
-                                measureLevel = emitDue,
+                            applyPcmGain(pcmBuffer, readOutcome.byteCount, audioGain)
+                            accumulatePcmPeaks(
+                                pcmBuffer, readOutcome.byteCount, audioChannelCount, heldAudioPeaks,
                             )
-                            if (levels != null) maybeEmitLevel(levels)
+                            if (emitDue) {
+                                maybeEmitLevel(
+                                    AudioLevelFrame(
+                                        rms = measurePcmLevels(
+                                            pcmBuffer, readOutcome.byteCount, audioChannelCount,
+                                        ),
+                                        peaks = heldAudioPeaks.copyOf(),
+                                    ),
+                                )
+                                heldAudioPeaks.fill(0f)
+                            }
                             codec.queueInputBuffer(inIdx, 0, readOutcome.byteCount, ptsUs, 0)
                             totalSamples += readOutcome.byteCount / bytesPerFrame
                         }
@@ -874,12 +883,12 @@ class VideoRecorder(private val context: Context) {
     /** True when enough time has passed since the last [onLevel] emit for a new one to go out. */
     private fun levelEmitDue(): Boolean = System.nanoTime() - lastLevelEmitNs >= LEVEL_THROTTLE_NS
 
-    /** Forwards per-channel [levels] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS]. */
-    private fun maybeEmitLevel(levels: FloatArray) {
+    /** Forwards one per-channel [frame] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS]. */
+    private fun maybeEmitLevel(frame: AudioLevelFrame) {
         val now = System.nanoTime()
         if (now - lastLevelEmitNs < LEVEL_THROTTLE_NS) return
         lastLevelEmitNs = now
-        onLevel?.invoke(levels)
+        onLevel?.invoke(frame)
     }
 
     private fun maybeStartMuxer() {
@@ -1019,7 +1028,7 @@ class VideoRecorder(private val context: Context) {
         onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
         // Zero the live meter explicitly: the mic is dead, and a meter frozen at its last level
         // would mislead the operator into believing audio is still being captured (CRIT4-6).
-        onLevel?.invoke(FloatArray(0))
+        onLevel?.invoke(AudioLevelFrame.EMPTY)
         muxerLock.withLock {
             expectedTracks = 1
             maybeStartMuxer()
@@ -2063,6 +2072,26 @@ internal fun measurePcmLevels(buf: ByteBuffer, byteCount: Int, channelCount: Int
         sums[sampleIndex % channels] += value * value
     }
     return FloatArray(channels) { c -> (sqrt(sums[c] / frames) / PCM_16_FULL_SCALE).toFloat().coerceIn(0f, 1f) }
+}
+
+/** Allocation-free post-gain peak accumulator for the recording hot path. */
+internal fun accumulatePcmPeaks(
+    buf: ByteBuffer,
+    byteCount: Int,
+    channelCount: Int,
+    target: FloatArray,
+) {
+    require(byteCount in 0..buf.limit())
+    val channels = channelCount.coerceAtLeast(1)
+    require(target.size == channels)
+    val sampleCount = byteCount / Short.SIZE_BYTES
+    val usable = sampleCount / channels * channels
+    for (sampleIndex in 0 until usable) {
+        val peak = (kotlin.math.abs(readPcm16Le(buf, sampleIndex * Short.SIZE_BYTES).toInt()) /
+            PCM_16_FULL_SCALE).toFloat().coerceIn(0f, 1f)
+        val channel = sampleIndex % channels
+        if (peak > target[channel]) target[channel] = peak
+    }
 }
 
 /**

@@ -591,13 +591,15 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
  * Per-channel rather than one averaged bar because that average is exactly what hides the failure an
  * input meter exists to catch: on a stereo or multi-capsule external mic, one dead channel still
  * leaves the average moving (2026-08-02). Fill colour shifts green -> yellow -> red per channel as
- * it approaches clipping, so it doubles as a peak warning while recording.
+ * it approaches clipping. Bar fill remains the stable RMS signal-strength view; the non-live
+ * accessibility state separately consumes held per-channel peaks so “clipping” means a real
+ * full-scale sample rather than an almost-square RMS waveform.
  *
  * The overall footprint is held constant: the bar height splits between channels, so a stereo mic
  * does not push the OSD around relative to a mono one.
  */
 @Composable
-fun AudioMeter(levels: List<Float>, modifier: Modifier = Modifier) {
+fun AudioMeter(levels: List<Float>, peaks: List<Float> = emptyList(), modifier: Modifier = Modifier) {
     // An EMPTY list still draws the empty plate. The meter's own visibility is owned by the caller's
     // gate; blanking the plate here would make it flicker away between AudioRecord generations and
     // on every stop, which is a state the operator would read as "the mic died".
@@ -606,7 +608,7 @@ fun AudioMeter(levels: List<Float>, modifier: Modifier = Modifier) {
     val audioMeterState = if (levels.isEmpty()) {
         stringResource(R.string.a11y_audio_levels_pending)
     } else {
-        audioAccessibilityStates(levels).mapIndexed { index, state ->
+        audioAccessibilityStates(levels, peaks).mapIndexed { index, state ->
             val stateLabel = stringResource(
                 when (state) {
                     AudioAccessibilityState.PENDING -> R.string.a11y_audio_level_pending
@@ -656,18 +658,25 @@ fun AudioMeter(levels: List<Float>, modifier: Modifier = Modifier) {
 internal enum class AudioAccessibilityState { PENDING, SILENT, SIGNAL, HIGH, NEAR_CLIPPING, CLIPPING }
 
 /** Coarse and change-gated by identity: raw 10 Hz meter values do not become sensor-rate speech. */
-internal fun audioAccessibilityStates(levels: List<Float>): List<AudioAccessibilityState> =
-    levels.map { raw ->
-        if (!raw.isFinite()) return@map AudioAccessibilityState.PENDING
+internal fun audioAccessibilityStates(
+    levels: List<Float>,
+    peaks: List<Float> = emptyList(),
+): List<AudioAccessibilityState> =
+    levels.mapIndexed { index, raw ->
+        if (!raw.isFinite()) return@mapIndexed AudioAccessibilityState.PENDING
         val level = raw.coerceIn(0f, 1f)
+        val peak = peaks.getOrNull(index)?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
         when {
+            peak >= PCM_CLIPPING_PEAK -> AudioAccessibilityState.CLIPPING
+            peak >= PCM_NEAR_CLIPPING_PEAK -> AudioAccessibilityState.NEAR_CLIPPING
             level <= 0.02f -> AudioAccessibilityState.SILENT
             level < 0.60f -> AudioAccessibilityState.SIGNAL
-            level < 0.85f -> AudioAccessibilityState.HIGH
-            level < 0.999f -> AudioAccessibilityState.NEAR_CLIPPING
-            else -> AudioAccessibilityState.CLIPPING
+            else -> AudioAccessibilityState.HIGH
         }
     }
+
+private const val PCM_NEAR_CLIPPING_PEAK = 0.95f
+private const val PCM_CLIPPING_PEAK = 32767f / 32768f
 
 /**
  * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the

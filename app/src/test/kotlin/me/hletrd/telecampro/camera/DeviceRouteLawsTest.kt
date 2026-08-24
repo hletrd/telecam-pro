@@ -378,6 +378,17 @@ class ChannelLevelsTest {
         val buf = ShortArray(16) { 1000 }
         assertEquals(1, me.hletrd.telecampro.video.channelRms(buf, buf.size, channelCount = 0).size)
     }
+
+    @Test
+    fun `standby frame retains full-scale peak independently of RMS`() {
+        val pcm = shortArrayOf(0, Short.MAX_VALUE, 0, Short.MIN_VALUE)
+        val frame = me.hletrd.telecampro.video.channelLevelFrame(
+            pcm, pcm.size, channelCount = 1,
+        )
+
+        assertTrue(frame.rms.single() < 0.8f)
+        assertEquals(1f, frame.peaks.single(), 0f)
+    }
 }
 
 /**
