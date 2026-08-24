@@ -170,6 +170,41 @@ class RunAttestationTest(unittest.TestCase):
         self.assertIn("without inherited private-snapshot authority", completed.stderr)
         self.assertNotIn("APK/device preflight must not run", completed.stderr)
 
+    def test_optimized_interpreters_refuse_before_snapshot_or_device_preflight(self) -> None:
+        command_tail = [
+            str(DEVICE_TESTS / "run.py"),
+            "--apk",
+            "/must-not-open/app-debug.apk",
+            "--serial",
+            "must-not-contact",
+            "--tier",
+            "smoke",
+        ]
+        invocations = (
+            ("-O", [sys.executable, "-O", *command_tail], None),
+            ("PYTHONOPTIMIZE", [sys.executable, *command_tail], "1"),
+        )
+
+        for label, command, optimize_env in invocations:
+            with self.subTest(label=label):
+                env = os.environ.copy()
+                env.pop("PYTHONOPTIMIZE", None)
+                if optimize_env is not None:
+                    env["PYTHONOPTIMIZE"] = optimize_env
+                completed = subprocess.run(
+                    command,
+                    cwd=DEVICE_TESTS.parent,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+
+                self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+                self.assertIn(runner._OPTIMIZED_PYTHON_ERROR, completed.stderr)
+                self.assertNotIn("APK not found", completed.stdout + completed.stderr)
+                self.assertNotIn("adb", completed.stdout.lower() + completed.stderr.lower())
+
     def test_frozen_clock_concurrent_report_allocations_are_unique_and_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             reports = Path(temp_dir) / "reports"

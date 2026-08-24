@@ -43,6 +43,9 @@ SOURCE_HARNESS_ROOT = Path(
 _HARNESS_GENERATED_PARTS = {"reports", "__pycache__", ".pytest_cache"}
 _LEGACY_HARNESS_SNAPSHOT_ENV = "TELECAM_HARNESS_SNAPSHOT"
 _FORBIDDEN_SERIALIZED_CHILD_OPTION = "--telecam-internal-harness-child-proof"
+_OPTIMIZED_PYTHON_ERROR = (
+    "device evidence requires assertions: optimized Python (-O/PYTHONOPTIMIZE) is forbidden"
+)
 _MAX_HARNESS_FILE_BYTES = 16 * 1024 * 1024
 _MAX_HARNESS_TOTAL_BYTES = 128 * 1024 * 1024
 _MAX_HARNESS_FILES = 4_096
@@ -580,6 +583,11 @@ def _run_from_immutable_harness_snapshot(
 
 _CHILD_PROOF: _HarnessChildProof | None = None
 if __name__ == "__main__":
+    # cases.py owns device verdicts with assertions. This runs before the outer immutable snapshot
+    # and runs again in the fork/runpy child, so neither boundary can attest with stripped checks.
+    if sys.flags.optimize != 0:
+        print(_OPTIMIZED_PYTHON_ERROR, file=sys.stderr)
+        raise SystemExit(2)
     outer_authority = globals().get("_TELECAM_OUTER_AUTHORITY")
     outer_confirmation = globals().get("_TELECAM_OUTER_AUTHORITY_CONFIRM")
     outer_proof = globals().get("_TELECAM_OUTER_PROOF")
