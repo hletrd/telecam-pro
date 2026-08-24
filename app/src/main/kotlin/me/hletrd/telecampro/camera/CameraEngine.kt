@@ -92,6 +92,18 @@ class CameraEngine internal constructor(
     private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
 ) {
 
+    /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
+    internal data class PreviewReadinessDiagnostic(
+        val surfaceGeneration: Long,
+        val pendingGeneration: Long,
+        val producerFrameGeneration: Long,
+        val pendingOrder: Long,
+        val producerFrameOrder: Long,
+        val lastNotReadyPublicationSequence: Long,
+        val lastReadyPublicationSequence: Long,
+        val cameraReady: Boolean,
+    )
+
     private val callbackSink = EngineCallbackSink()
 
     private val manager = context.getSystemService(CameraManager::class.java)
@@ -268,6 +280,16 @@ class CameraEngine internal constructor(
     @Volatile private var acceptedCameraSession: AcceptedCameraSession? = null
     private val cameraSessionGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val cameraReadyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    // Instrumentation-readable lifecycle evidence. These are observations of production events,
+    // not test-controlled state: Ready publications remain owned by the existing sequence, while
+    // preview orders advance only at accepted pending edges and producer-fed first-frame swaps.
+    private var lastNotReadyPublicationSequence = 0L
+    private var lastReadyPublicationSequence = 0L
+    private var previewDiagnosticOrder = 0L
+    private var lastPreviewPendingOrder = 0L
+    private var lastPreviewProducerFrameOrder = 0L
+    private var lastPreviewPendingGeneration = 0L
+    private var lastPreviewProducerFrameGeneration = 0L
     private val tapFocusPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsCommitGate = OpticsCommitGate(opticsIntentGeneration, this)
@@ -299,13 +321,18 @@ class CameraEngine internal constructor(
         opticsGeneration: Long,
         sessionGeneration: Long,
         photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
-    ): CameraReadyPublication = CameraReadyPublication(
-        sequence = cameraReadyPublicationSequence.incrementAndGet(),
-        ready = ready,
-        opticsGeneration = opticsGeneration,
-        sessionGeneration = sessionGeneration,
-        photoOutputs = photoOutputs,
-    )
+    ): CameraReadyPublication {
+        val sequence = cameraReadyPublicationSequence.incrementAndGet()
+        if (ready) lastReadyPublicationSequence = sequence
+        else lastNotReadyPublicationSequence = sequence
+        return CameraReadyPublication(
+            sequence = sequence,
+            ready = ready,
+            opticsGeneration = opticsGeneration,
+            sessionGeneration = sessionGeneration,
+            photoOutputs = photoOutputs,
+        )
+    }
 
     private fun nextTapFocusPublication(
         held: Boolean,
@@ -776,6 +803,27 @@ class CameraEngine internal constructor(
     @Volatile private var previewSurfaceH = 0
     private val previewSurfaceGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private var previewRecoveryAttempts = 0
+
+    /**
+     * Read-only lifecycle evidence for the on-device instrumentation suite.
+     *
+     * A producer-frame generation advances only from [handlePreviewReady], whose callback is fired
+     * after the exact preview owner completes its first successful real-camera-frame swap. Keeping
+     * this at the Engine boundary avoids reflection and prevents a stale retained ViewModel Boolean
+     * from impersonating a replacement TextureView that really reached pixels.
+     */
+    internal fun previewReadinessDiagnostic(): PreviewReadinessDiagnostic = synchronized(this) {
+        PreviewReadinessDiagnostic(
+            surfaceGeneration = previewSurfaceGeneration.get(),
+            pendingGeneration = lastPreviewPendingGeneration,
+            producerFrameGeneration = lastPreviewProducerFrameGeneration,
+            pendingOrder = lastPreviewPendingOrder,
+            producerFrameOrder = lastPreviewProducerFrameOrder,
+            lastNotReadyPublicationSequence = lastNotReadyPublicationSequence,
+            lastReadyPublicationSequence = lastReadyPublicationSequence,
+            cameraReady = cameraReady,
+        )
+    }
 
     // Static-per-device caches: camera characteristics and focal→id resolution never change at
     // runtime, but re-reading them cost dozens of Binder IPCs on EVERY lens/TC/mode switch — and
@@ -1693,6 +1741,8 @@ class CameraEngine internal constructor(
         val publication = synchronized(this) {
             if (surfaceGeneration != previewSurfaceGeneration.get()) return@synchronized null
             if (requireCurrentSurface && previewSurface !== surface) return@synchronized null
+            lastPreviewPendingGeneration = surfaceGeneration
+            lastPreviewPendingOrder = ++previewDiagnosticOrder
             previewReady = false
             previewRecoveryAttempts = 0
             if (!cameraReady) return@synchronized null
@@ -1721,6 +1771,10 @@ class CameraEngine internal constructor(
                 return@synchronized null
             }
             val wasReady = previewReady && cameraReady
+            if (lastPreviewProducerFrameGeneration != surfaceGeneration) {
+                lastPreviewProducerFrameGeneration = surfaceGeneration
+                lastPreviewProducerFrameOrder = ++previewDiagnosticOrder
+            }
             previewReady = true
             // GlPipeline invokes this only after the generation's first successful real-frame
             // swap. Bind success alone stays Pending, so repeated first-swap failures retain and

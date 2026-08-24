@@ -1996,6 +1996,10 @@ class CameraViewModel @JvmOverloads constructor(
         if (ratio > 0f) applyZoomRatio(ratio)
     }
 
+    /** Read-only on-device lifecycle evidence; production state still flows through [state]. */
+    internal fun previewReadinessDiagnostic(): CameraEngine.PreviewReadinessDiagnostic =
+        engine.previewReadinessDiagnostic()
+
     private fun applyZoomRatio(ratio: Float): Float {
         val s = _state.value
         val range = s.caps?.zoomRatioRange

@@ -138,7 +138,10 @@ internal object PreviewCameraActions : CameraActions {
     override fun onVolumeKeyAction(action: me.hletrd.telecampro.camera.HardwareKeyAction) = Unit
     override fun onHalfPressAction(action: me.hletrd.telecampro.camera.HardwareKeyAction) = Unit
     override fun onQuickButtonAction(action: me.hletrd.telecampro.camera.HardwareKeyAction) = Unit
-    override fun onDeleteLastMedia(uri: android.net.Uri) = Unit
+    override fun onDeleteLastMedia(
+        uri: android.net.Uri,
+        provenance: me.hletrd.telecampro.storage.MediaProvenance,
+    ) = Unit
 }
 
 @Preview(showBackground = true)

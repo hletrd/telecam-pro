@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import me.hletrd.telecampro.camera.CameraEngine.PreviewReadinessDiagnostic
 import me.hletrd.telecampro.ui.CameraViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
@@ -63,15 +64,25 @@ class MainActivitySmokeTest {
     @Test
     fun recreateCycleReturnsToReady() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            awaitCameraReady(viewModelOf(scenario), phase = "pre-recreate")
+            val vm = viewModelOf(scenario)
+            awaitCameraReady(vm, phase = "pre-recreate")
+            val before = vm.previewReadinessDiagnostic()
+            if (
+                !before.cameraReady ||
+                before.surfaceGeneration <= 0L ||
+                before.producerFrameGeneration != before.surfaceGeneration ||
+                before.lastReadyPublicationSequence <= before.lastNotReadyPublicationSequence
+            ) {
+                fail("pre-recreate Ready lacked producer-frame proof: $before")
+            }
             // The activity is portrait-locked with configChanges covering orientation, so a
             // physical rotation never recreates it — recreate() IS the rotation-analog cycle.
             scenario.recreate()
             assertEquals(Lifecycle.State.RESUMED, scenario.state)
-            // The ViewModel is retained across recreate; Ready must come back after the
-            // onStop/onStart → engine pause/resume pair the recreate drives, on the NEW
-            // TextureView surface the recreated activity provides.
-            awaitCameraReady(viewModelOf(scenario), phase = "post-recreate")
+            // The retained ViewModel's old Boolean is insufficient evidence. Require a newer
+            // Surface generation to publish Not-Ready first, then accept a producer-fed first swap
+            // for that exact replacement before a still-newer Ready publication can satisfy us.
+            awaitReplacementPreview(vm, before)
         }
     }
 
@@ -128,6 +139,36 @@ class MainActivitySmokeTest {
             "camera not ready ($phase) within $CAMERA_READY_TIMEOUT_MS ms: " +
                 "cameraReady=${s.cameraReady} facing=${s.facing} mode=${s.mode} " +
                 "status=${s.status}",
+        )
+    }
+
+    private fun awaitReplacementPreview(
+        vm: CameraViewModel,
+        before: PreviewReadinessDiagnostic,
+    ) {
+        val deadline = SystemClock.elapsedRealtime() + CAMERA_READY_TIMEOUT_MS
+        var latest = vm.previewReadinessDiagnostic()
+        while (SystemClock.elapsedRealtime() < deadline) {
+            latest = vm.previewReadinessDiagnostic()
+            val replacementGeneration = latest.surfaceGeneration > before.surfaceGeneration
+            val replacementWasPending =
+                latest.pendingGeneration == latest.surfaceGeneration &&
+                    latest.pendingOrder > before.producerFrameOrder
+            val replacementProducedFrame =
+                latest.producerFrameGeneration == latest.surfaceGeneration &&
+                    latest.producerFrameOrder > latest.pendingOrder
+            val orderedReadyPublications =
+                latest.lastNotReadyPublicationSequence > before.lastReadyPublicationSequence &&
+                    latest.lastReadyPublicationSequence > latest.lastNotReadyPublicationSequence
+            if (
+                latest.cameraReady && replacementGeneration && replacementWasPending &&
+                replacementProducedFrame && orderedReadyPublications
+            ) return
+            SystemClock.sleep(POLL_MS)
+        }
+        fail(
+            "replacement preview lacked ordered Not-Ready/new-generation/producer-frame proof " +
+                "within $CAMERA_READY_TIMEOUT_MS ms: before=$before latest=$latest",
         )
     }
 
