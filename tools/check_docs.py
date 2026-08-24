@@ -578,6 +578,18 @@ for rel in ("docs/play-console-submit.md", "docs/BACKLOG.md", "README.md"):
     check(not running, f"{rel} carries no running count cross-reference", f"{running}")
 
 # ---- referenced repo paths must exist -----------------------------------------------------------
+claude = read("CLAUDE.md")
+private_context_fragments = (
+    "**optional in clean clones**",
+    "its absence must not block work",
+    "self-contained fallback authority",
+)
+check(
+    all(fragment in claude for fragment in private_context_fragments),
+    "CLAUDE marks absent private context optional with committed fallbacks",
+    f"missing {[fragment for fragment in private_context_fragments if fragment not in claude]}",
+)
+
 for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_CHECKS.md"):
     text = read_if_available(rel)
     if text is None:

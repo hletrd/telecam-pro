@@ -1,10 +1,12 @@
 # CLAUDE.md — Find X9 Ultra Teleconverter Camera
 
 Project-level instructions for any agent working in this repo. Read this **first**, then
-`docs/BACKLOG.md` (release status and deferred work) and `docs/ARCHITECTURE.md` (the current as-built
-design authority). This file overrides
-default behavior; user/global `~/.claude/CLAUDE.md` still applies on top (git rules, latest-versions,
-destructive-action safety, look-up-before-answering).
+`docs/ARCHITECTURE.md` (the committed current as-built design authority). Private maintainer context
+such as `docs/BACKLOG.md`, `docs/TESTING.md`, `docs/UX_POLICY.md`, and the historical specification
+is **optional in clean clones**: read it when present, but its absence must not block work. This file,
+the committed architecture, and `docs/FIELD_CHECKS.md` are the self-contained fallback authority.
+This file overrides default behavior; user/global `~/.claude/CLAUDE.md` still applies on top (git
+rules, latest-versions, destructive-action safety, look-up-before-answering).
 
 ## What this is
 
@@ -52,7 +54,9 @@ deprecated APIs, latest stable everything.
 - **UI/UX reference: Sony Alpha / Xperia Pro.** Keep the viewfinder quiet. Use Fn, My Menu, MR banks,
   PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Do not add
   tutorial banners, warning chips, coach marks, marketing copy, or helper overlays unless the user
-  asks. Important states belong in the OSD, Fn, or menu rows. See `docs/UX_POLICY.md`.
+  asks. Important states belong in the OSD, Fn, or menu rows. The optional private
+  `docs/UX_POLICY.md` adds maintainer examples when present; this paragraph is the committed
+  clean-clone policy.
 
 ## Toolchain (all pinned in `gradle/libs.versions.toml`)
 
@@ -1114,9 +1118,11 @@ own threads/executors.
 
 ## Pointers
 
-- `docs/BACKLOG.md` — release status, manual Play steps, residual checks, and deferred work.
+- `docs/BACKLOG.md` — optional private maintainer status, manual Play steps, residual checks, and
+  deferred work. In a clean clone, use this file plus `docs/ARCHITECTURE.md` and
+  `docs/FIELD_CHECKS.md`; do not invent missing backlog state.
 - `docs/ARCHITECTURE.md` — **current as-built design authority**: module map, threading, ownership,
   data flow, and gotchas in depth.
-- `docs/superpowers/specs/2026-07-01-...md` — preserved historical design snapshot. It is superseded
-  wherever it differs from the current architecture/code and must not be treated as current authority.
+- `docs/superpowers/specs/2026-07-01-...md` — optional private historical design snapshot. It is
+  superseded wherever it differs from the current architecture/code and is never current authority.
 - `.context/reviews/` — architecture/code/perf/security review notes (findings already addressed).

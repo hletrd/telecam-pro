@@ -52,6 +52,7 @@ def run_documentation_gate_from_committed_export(
         # and policy under test; no ignored/private document is copied from the maintainer workspace.
         for relative in (
             "tools/check_docs.py",
+            "CLAUDE.md",
             "privacy-policy/index.html",
             "docs/ARCHITECTURE.md",
         ):
@@ -227,7 +228,33 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertIn("PRIVACY.md discloses CAMERA", result.stdout)
         self.assertIn("ownerless legacy candidates without an own-captures-only claim", result.stdout)
         self.assertIn("Architecture Module Map names every production Kotlin module", result.stdout)
+        self.assertIn(
+            "CLAUDE marks absent private context optional with committed fallbacks",
+            result.stdout,
+        )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
+
+    def test_committed_export_rejects_mandatory_absent_private_context(self) -> None:
+        def require_private_context(root: Path) -> None:
+            path = root / "CLAUDE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "**optional in clean clones**"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "**required in clean clones**", 1),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            require_private_context,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  CLAUDE marks absent private context optional with committed fallbacks",
+            result.stdout,
+        )
 
     def test_committed_export_rejects_ready_runbook_for_stale_screenshots(self) -> None:
         def mark_runbook_ready(root: Path) -> None:
