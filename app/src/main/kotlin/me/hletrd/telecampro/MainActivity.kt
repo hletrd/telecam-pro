@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -65,6 +66,12 @@ import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 private const val READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION =
     "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
 
+private const val OBSCURED_TOUCH_FLAGS =
+    MotionEvent.FLAG_WINDOW_IS_OBSCURED or MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED
+
+/** One side-effect-free decision seam for the Activity's full- and partial-overlay boundary. */
+internal fun touchEventIsUnobscured(flags: Int): Boolean = flags and OBSCURED_TOUCH_FLAGS == 0
+
 class MainActivity : ComponentActivity() {
 
     private val vm: CameraViewModel by viewModels()
@@ -113,6 +120,20 @@ class MainActivity : ComponentActivity() {
         applyTimelapseDim(false)
         timelapseDimHandler.removeCallbacks(timelapseDimRunnable)
         timelapseDimHandler.postDelayed(timelapseDimRunnable, TIMELAPSE_DIM_GRACE_MS)
+    }
+
+    /**
+     * Rejects overlay-marked pointer input before it can enter the Compose tree.
+     *
+     * Android's view-level [android.view.View.filterTouchesWhenObscured] covers full obscuration,
+     * but does not reject [MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED]. Keeping the policy here
+     * makes both flags apply uniformly to Shutter, REC, settings/permission, and both delete taps.
+     * Every unflagged event is delegated unchanged, including multi-touch/pinch, stylus/mouse,
+     * accessibility-generated input, and system-gesture negotiation.
+     */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (!touchEventIsUnobscured(event.flags)) return false
+        return super.dispatchTouchEvent(event)
     }
 
     private fun applyTimelapseDim(dim: Boolean) {
@@ -195,8 +216,9 @@ class MainActivity : ComponentActivity() {
         )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         handleDebugIntent(intent)
-        // Drop obscured touches before they reach camera/settings/delete consent surfaces. This is
-        // Android's view-level tapjacking defense and needs no overlay permission or network access.
+        // Defense in depth for child Views: dispatchTouchEvent above is the authoritative full +
+        // partial overlay boundary; this platform flag independently retains the full-obscuration
+        // filter if a child is ever dispatched through another framework path.
         window.decorView.filterTouchesWhenObscured = true
         refreshPermissionState()
         // Timelapse-run edges drive the unattended screen dim. The finally arm covers leaving
