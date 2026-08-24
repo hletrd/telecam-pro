@@ -1426,6 +1426,49 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_validates_truecolor_transparency_sample_range(self) -> None:
+        def chunk(kind: bytes, payload: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(payload))
+                + kind
+                + payload
+                + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+            )
+
+        cases = (
+            ("maximum-8-bit-sample", (255, 255, 255), True),
+            ("first-out-of-range-sample", (256, 0, 0), False),
+            ("maximum-16-bit-storage-sample", (0, 0, 65535), False),
+        )
+        for label, samples, should_pass in cases:
+            with self.subTest(label=label):
+                def mutate(root: Path) -> None:
+                    relative = "docs/assets/play/screenshots/02-pro-settings.png"
+                    asset = root / relative
+                    data = asset.read_bytes()
+                    insertion = 8 + 12 + struct.unpack(">I", data[8:12])[0]
+                    transparency = chunk(b"tRNS", struct.pack(">HHH", *samples))
+                    asset.write_bytes(data[:insertion] + transparency + data[insertion:])
+                    manifest_path = asset.parent / "asset-validity.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+                    manifest_path.write_text(
+                        json.dumps(manifest, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotIn("Traceback", result.stderr)
+                if should_pass:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(
+                        "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+                        result.stdout,
+                    )
+
     def test_committed_export_rejects_release_capture_trace_contract_regressions(self) -> None:
         def mutate_trace(root: Path, force_unwrap: bool) -> None:
             path = root / "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"

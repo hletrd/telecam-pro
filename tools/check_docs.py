@@ -244,12 +244,18 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
                 return None
             seen_ancillary.add(kind)
         elif kind == b"tRNS":
+            samples = struct.unpack(">HHH", payload) if length == 6 else ()
             if (
                 ihdr is None
                 or saw_idat
                 or kind in seen_ancillary
                 or ihdr[3] != 2
                 or length != 6
+                # Truecolor transparency stores three 16-bit samples even when the image has a
+                # smaller bit depth. The unused high bits must be zero; accepting 0x0100 for an
+                # 8-bit channel blesses a PNG that strict consumers may reject or interpret
+                # differently from the release-evidence checker.
+                or any(sample >= (1 << ihdr[2]) for sample in samples)
             ):
                 return None
             seen_ancillary.add(kind)
