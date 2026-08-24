@@ -50,7 +50,11 @@ def run_documentation_gate_from_committed_export(
 
         # The tests must pass before these changes are committed. Overlay only the tracked checker
         # and policy under test; no ignored/private document is copied from the maintainer workspace.
-        for relative in ("tools/check_docs.py", "privacy-policy/index.html"):
+        for relative in (
+            "tools/check_docs.py",
+            "privacy-policy/index.html",
+            "docs/ARCHITECTURE.md",
+        ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
         if mutate is not None:
             mutate(staging)
