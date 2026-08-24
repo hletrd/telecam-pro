@@ -1138,6 +1138,97 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_truncated_phone_png_after_digest_update(self) -> None:
+        def truncate_png(root: Path) -> None:
+            relative = "docs/assets/play/screenshots/01-main-viewfinder.png"
+            asset = root / relative
+            data = asset.read_bytes()
+            asset.write_bytes(data[:-20])
+            manifest_path = root / "docs/assets/play/screenshots/asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(truncate_png)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_bad_png_crc_after_digest_update(self) -> None:
+        def corrupt_crc(root: Path) -> None:
+            relative = "docs/assets/play/screenshots/01-main-viewfinder.png"
+            asset = root / relative
+            data = bytearray(asset.read_bytes())
+            data[-1] ^= 0x01
+            asset.write_bytes(data)
+            manifest_path = root / "docs/assets/play/screenshots/asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(corrupt_crc)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_missing_png_iend_after_digest_update(self) -> None:
+        def remove_iend(root: Path) -> None:
+            relative = "docs/assets/play/screenshots/01-main-viewfinder.png"
+            asset = root / relative
+            data = asset.read_bytes()
+            self.assertEqual(data[-8:-4], b"IEND")
+            asset.write_bytes(data[:-12])
+            manifest_path = root / "docs/assets/play/screenshots/asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(remove_iend)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_invalid_png_ihdr_methods_after_digest_update(self) -> None:
+        for field_offset in (10, 11, 12):
+            with self.subTest(field_offset=field_offset):
+                def invalidate_ihdr(root: Path) -> None:
+                    relative = "docs/assets/play/screenshots/01-main-viewfinder.png"
+                    asset = root / relative
+                    data = bytearray(asset.read_bytes())
+                    self.assertEqual(data[12:16], b"IHDR")
+                    ihdr = bytearray(data[16:29])
+                    ihdr[field_offset] = 1
+                    data[16:29] = ihdr
+                    data[29:33] = struct.pack(
+                        ">I",
+                        zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF,
+                    )
+                    asset.write_bytes(data)
+                    manifest_path = root / "docs/assets/play/screenshots/asset-validity.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+                    manifest_path.write_text(
+                        json.dumps(manifest, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+
+                result, _ = run_documentation_gate_from_committed_export(invalidate_ihdr)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+                    result.stdout,
+                )
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"

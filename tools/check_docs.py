@@ -21,6 +21,7 @@ import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
+import zlib
 
 try:
     from tools.release_permissions import EXPECTED_RELEASE_PERMISSIONS
@@ -107,12 +108,91 @@ def language_fenced(text: str, heading: str, language: str) -> str:
     return m.group(1)
 
 
-def png_ihdr(relative: str) -> tuple[int, int, int, int] | None:
-    """Read the dimensions and pixel encoding that the checked-in PNG bytes actually declare."""
+def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
+    """Fully validate a bounded, non-interlaced screenshot PNG and return its pixel contract."""
     data = (ROOT / relative).read_bytes()
-    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+    if len(data) < 57 or data[:8] != b"\x89PNG\r\n\x1a\n":
         return None
-    width, height, bit_depth, color_type = struct.unpack(">IIBB", data[16:26])
+
+    offset = 8
+    ihdr: tuple[int, int, int, int] | None = None
+    compressed = bytearray()
+    saw_idat = False
+    idat_ended = False
+    saw_iend = False
+    while offset < len(data):
+        if offset + 12 > len(data):
+            return None
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        kind = data[offset + 4 : offset + 8]
+        end = offset + 12 + length
+        if end > len(data):
+            return None
+        payload = data[offset + 8 : offset + 8 + length]
+        expected_crc = struct.unpack(">I", data[offset + 8 + length : end])[0]
+        if zlib.crc32(kind + payload) & 0xFFFFFFFF != expected_crc:
+            return None
+        if offset == 8 and kind != b"IHDR":
+            return None
+        if kind == b"IHDR":
+            if ihdr is not None or length != 13:
+                return None
+            width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB",
+                payload,
+            )
+            if (
+                width <= 0
+                or height <= 0
+                or bit_depth != 8
+                or color_type not in (2, 6)
+                or compression != 0
+                or filtering != 0
+                or interlace != 0
+            ):
+                return None
+            ihdr = width, height, bit_depth, color_type
+        elif kind == b"IDAT":
+            if ihdr is None or idat_ended or saw_iend:
+                return None
+            saw_idat = True
+            compressed.extend(payload)
+        elif kind == b"IEND":
+            if length != 0 or ihdr is None or not saw_idat or saw_iend:
+                return None
+            saw_iend = True
+            offset = end
+            break
+        else:
+            if saw_idat:
+                idat_ended = True
+            # Unknown critical chunks cannot be decoded safely; ancillary chunks are CRC-checked.
+            if kind and kind[0] & 0x20 == 0 and kind != b"PLTE":
+                return None
+        offset = end
+
+    if not saw_iend or offset != len(data) or ihdr is None:
+        return None
+    width, height, bit_depth, color_type = ihdr
+    channels = 3 if color_type == 2 else 4
+    row_bytes = width * channels
+    expected_size = height * (row_bytes + 1)
+    if expected_size > 128 * 1024 * 1024:
+        return None
+    inflater = zlib.decompressobj()
+    try:
+        pixels = inflater.decompress(bytes(compressed), expected_size + 1)
+        pixels += inflater.flush(expected_size + 1 - len(pixels))
+    except zlib.error:
+        return None
+    if (
+        len(pixels) != expected_size
+        or not inflater.eof
+        or inflater.unused_data
+        or inflater.unconsumed_tail
+        or any(pixels[row * (row_bytes + 1)] > 4 for row in range(height))
+    ):
+        return None
     return width, height, bit_depth, color_type
 
 
@@ -152,9 +232,9 @@ phone_png_contract = (
     phone_recapture.get("png_color_type"),
 )
 phone_geometry_mismatches = {
-    relative: png_ihdr(relative)
+    relative: png_metadata(relative)
     for relative in phone_screenshots
-    if png_ihdr(relative) != phone_png_contract
+    if png_metadata(relative) != phone_png_contract
 }
 check(
     phone_png_contract == (1440, 2880, 8, 2) and not phone_geometry_mismatches,
@@ -306,9 +386,9 @@ tablet_png_contract = (
     tablet_recapture.get("png_color_type"),
 )
 tablet_geometry_mismatches = {
-    relative: png_ihdr(relative)
+    relative: png_metadata(relative)
     for relative in tablet_screenshots
-    if png_ihdr(relative) != tablet_png_contract
+    if png_metadata(relative) != tablet_png_contract
 }
 check(
     tablet_png_contract == (1920, 1200, 8, 6) and not tablet_geometry_mismatches,
