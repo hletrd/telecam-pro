@@ -199,6 +199,10 @@ class MainActivity : ComponentActivity() {
     private val ownedShutterKeys = mutableSetOf<Int>()
     private val ownedHalfPressKeys = mutableSetOf<Int>()
     private val ownedQuickKeys = mutableSetOf<Int>()
+    // An obscuration edge after a clean DOWN must terminate the already-delivered child stream.
+    // The tainted remainder stays rejected until a fresh clean DOWN establishes a new stream.
+    private var unobscuredTouchStreamActive = false
+    private var touchStreamTainted = false
 
     // --- Unattended-timelapse screen dim (perf review #10) -------------------------------------
     // FLAG_KEEP_SCREEN_ON stays for the whole activity lifetime (a run killed by screen-off is a
@@ -241,8 +245,30 @@ class MainActivity : ComponentActivity() {
      * accessibility-generated input, and system-gesture negotiation.
      */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (!touchEventIsUnobscured(event.flags)) return false
-        return super.dispatchTouchEvent(event)
+        val action = event.actionMasked
+        if (!touchEventIsUnobscured(event.flags)) {
+            if (unobscuredTouchStreamActive && !touchStreamTainted) {
+                MotionEvent.obtain(event).also { cancel ->
+                    try {
+                        cancel.action = MotionEvent.ACTION_CANCEL
+                        super.dispatchTouchEvent(cancel)
+                    } finally {
+                        cancel.recycle()
+                    }
+                }
+            }
+            unobscuredTouchStreamActive = false
+            touchStreamTainted = true
+            return false
+        }
+        if (touchStreamTainted && action != MotionEvent.ACTION_DOWN) return false
+        if (action == MotionEvent.ACTION_DOWN) touchStreamTainted = false
+        val handled = super.dispatchTouchEvent(event)
+        when (action) {
+            MotionEvent.ACTION_DOWN -> unobscuredTouchStreamActive = handled
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> unobscuredTouchStreamActive = false
+        }
+        return handled
     }
 
     private fun applyTimelapseDim(dim: Boolean) {

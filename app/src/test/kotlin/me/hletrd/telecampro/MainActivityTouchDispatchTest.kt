@@ -63,12 +63,57 @@ class MainActivityTouchDispatchTest {
         }
     }
 
-    private fun installActionTarget(activity: MainActivity, action: () -> Unit) {
-        val target = View(activity).apply {
-            setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_UP) action()
-                true
+    @Test
+    fun `obscuration mid gesture sends one cancel and next clean gesture starts fresh`() {
+        RobolectricEglSentinels.ensure()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        try {
+            val actions = mutableListOf<Int>()
+            installTouchTarget(activity) { actions += it.actionMasked }
+            val cleanDown = event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER)
+            val obscuredMove = event(
+                MotionEvent.ACTION_MOVE,
+                MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED,
+                MotionEvent.TOOL_TYPE_FINGER,
+            )
+            val taintedCleanUp = event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER)
+            val nextDown = event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER)
+            val nextUp = event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER)
+            try {
+                assertTrue(activity.dispatchTouchEvent(cleanDown))
+                assertFalse(activity.dispatchTouchEvent(obscuredMove))
+                assertFalse(activity.dispatchTouchEvent(taintedCleanUp))
+                assertTrue(activity.dispatchTouchEvent(nextDown))
+                assertTrue(activity.dispatchTouchEvent(nextUp))
+            } finally {
+                listOf(cleanDown, obscuredMove, taintedCleanUp, nextDown, nextUp)
+                    .forEach(MotionEvent::recycle)
             }
+
+            assertEquals(
+                listOf(
+                    MotionEvent.ACTION_DOWN,
+                    MotionEvent.ACTION_CANCEL,
+                    MotionEvent.ACTION_DOWN,
+                    MotionEvent.ACTION_UP,
+                ),
+                actions,
+            )
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    private fun installActionTarget(activity: MainActivity, action: () -> Unit) {
+        installTouchTarget(activity) { event ->
+            if (event.actionMasked == MotionEvent.ACTION_UP) action()
+        }
+    }
+
+    private fun installTouchTarget(activity: MainActivity, onEvent: (MotionEvent) -> Unit) {
+        val target = View(activity).apply {
+            setOnTouchListener { _, event -> onEvent(event); true }
         }
         activity.setContentView(target)
         val exact100 = View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY)
