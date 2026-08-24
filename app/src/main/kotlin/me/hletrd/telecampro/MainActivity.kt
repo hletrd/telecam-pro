@@ -379,11 +379,9 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
                     // The system permission dialog has released its full-screen input ownership.
-                    vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
+                    val action = consumePendingAudioRequestOwner()
                     hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
-                    val consumed = consumePendingAudioRequest(pendingAudioRequest)
-                    pendingAudioRequest = consumed.remaining
-                    val action = consumed.action ?: return@rememberLauncherForActivityResult
+                    action ?: return@rememberLauncherForActivityResult
                     if (!granted) {
                         declineMicrophone(action)
                         return@rememberLauncherForActivityResult
@@ -558,10 +556,7 @@ class MainActivity : ComponentActivity() {
                                 microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             },
                             onDismiss = {
-                                vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
-                                val consumed = consumePendingAudioRequest(pendingAudioRequest)
-                                pendingAudioRequest = consumed.remaining
-                                val action = consumed.action
+                                val action = consumePendingAudioRequestOwner()
                                 declineMicrophone(action)
                             },
                         )
@@ -820,6 +815,14 @@ class MainActivity : ComponentActivity() {
         keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
             keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             keyCode == KeyEvent.KEYCODE_CAMERA
+
+    /** Releases and consumes the Activity-owned permission continuation exactly once. */
+    internal fun consumePendingAudioRequestOwner(): PendingAudioAction? {
+        vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
+        val consumed = consumePendingAudioRequest(pendingAudioRequest)
+        pendingAudioRequest = consumed.remaining
+        return consumed.action
+    }
 
     private fun requestMicrophoneThen(action: PendingAudioAction, block: () -> Unit) {
         val s = vm.state.value
