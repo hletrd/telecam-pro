@@ -107,6 +107,9 @@ internal const val HUD_TEXT_SCRIM_ALPHA = 0.82f
  */
 internal val HudPlate: Color = CameraColors.ChromeScrim.copy(alpha = HUD_TEXT_SCRIM_ALPHA)
 
+/** Dark half of every two-tone framing guide; wider than the quiet foreground at each draw site. */
+internal val GuideKeylineInk: Color = Color.Black
+
 /** WCAG contrast of [foregroundRgb] against black [scrimAlpha] composited over white. */
 internal fun contrastRatioOnWhiteScrim(foregroundRgb: Int, scrimAlpha: Float): Double {
     val foregroundLuminance = relativeLuminance(foregroundRgb)
@@ -142,6 +145,12 @@ fun FrameLinesOverlay(type: me.hletrd.telecampro.camera.FrameLineType, modifier:
             w = h * ratio
         }
         drawRect(
+            color = GuideKeylineInk,
+            topLeft = Offset((size.width - w) / 2f, (size.height - h) / 2f),
+            size = androidx.compose.ui.geometry.Size(w, h),
+            style = Stroke(width = 3.2.dp.toPx()),
+        )
+        drawRect(
             color = CameraColors.GuideLine,
             topLeft = Offset((size.width - w) / 2f, (size.height - h) / 2f),
             size = androidx.compose.ui.geometry.Size(w, h),
@@ -160,13 +169,15 @@ fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
     val lineColor = CameraColors.GuideLine
     Canvas(modifier = modifier.fillMaxSize()) {
         val strokeWidth = 1.dp.toPx()
-        when (type) {
-            GridType.THIRDS -> drawThirdsGrid(lineColor, strokeWidth)
-            GridType.GOLDEN -> drawGoldenGrid(lineColor, strokeWidth)
-            GridType.SQUARE -> drawSquareGrid(lineColor, strokeWidth)
-            GridType.CENTER -> drawCenterMark(lineColor, strokeWidth)
+        fun draw(color: Color, width: Float) = when (type) {
+            GridType.THIRDS -> drawThirdsGrid(color, width)
+            GridType.GOLDEN -> drawGoldenGrid(color, width)
+            GridType.SQUARE -> drawSquareGrid(color, width)
+            GridType.CENTER -> drawCenterMark(color, width)
             GridType.NONE -> Unit
         }
+        draw(GuideKeylineInk, 3.dp.toPx())
+        draw(lineColor, strokeWidth)
     }
 }
 
@@ -324,17 +335,30 @@ fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceO
         val cy = size.height / 2f
         val halfSpan = size.width * 0.16f
         drawLine(
+            color = GuideKeylineInk,
+            start = Offset(size.width / 2f - halfSpan, cy),
+            end = Offset(size.width / 2f + halfSpan, cy),
+            strokeWidth = 3.5.dp.toPx(),
+        )
+        drawLine(
             // One-off: the STATIC datum the moving indicator above is read against. It is a part of
             // this gauge and is deliberately quieter than the live line it sits under, so it is not
             // GuideLine (a composition rule the photographer frames to) and not ink.
-            // 0.4 → 0.22 with the 2026-07-28 slimming below: a datum only has to be findable, and at
-            // 0.4 under a lighter indicator it competed with the reading instead of supporting it.
-            color = Color.White.copy(alpha = 0.22f),
+            // The 2026-07-28 visual pass lowered this from 0.4 to 0.22. 0.36 is the quietest white
+            // that still clears 3:1 on black; the keyline supplies the opposite edge on a bright
+            // frame. The old 0.22 disappeared on dark content too.
+            color = Color.White.copy(alpha = 0.36f),
             start = Offset(size.width / 2f - halfSpan, cy),
             end = Offset(size.width / 2f + halfSpan, cy),
             strokeWidth = 1.5.dp.toPx(),
         )
         rotate(degrees = deviation, pivot = Offset(size.width / 2f, cy)) {
+            drawLine(
+                color = GuideKeylineInk,
+                start = Offset(size.width / 2f - halfSpan, cy),
+                end = Offset(size.width / 2f + halfSpan, cy),
+                strokeWidth = 4.dp.toPx(),
+            )
             drawLine(
                 // Slimmed 4 dp → 2 dp and taken off full opacity (user-reported: too bright and
                 // heavy). The gauge is read by its ANGLE, not its mass, and the level state already
@@ -346,6 +370,11 @@ fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceO
                 strokeWidth = 2.dp.toPx(),
             )
         }
+        drawCircle(
+            color = GuideKeylineInk,
+            radius = 3.5.dp.toPx(),
+            center = Offset(size.width / 2f, cy),
+        )
         drawCircle(
             color = indicatorColor.copy(alpha = 0.72f),
             radius = 2.5.dp.toPx(),
@@ -573,12 +602,34 @@ fun AudioMeter(levels: List<Float>, modifier: Modifier = Modifier) {
     // gate; blanking the plate here would make it flicker away between AudioRecord generations and
     // on every stop, which is a state the operator would read as "the mic died".
     val gap = 2.dp
+    val audioMeterLabel = stringResource(R.string.a11y_audio_meter)
+    val audioMeterState = if (levels.isEmpty()) {
+        stringResource(R.string.a11y_audio_levels_pending)
+    } else {
+        audioAccessibilityStates(levels).mapIndexed { index, state ->
+            val stateLabel = stringResource(
+                when (state) {
+                    AudioAccessibilityState.PENDING -> R.string.a11y_audio_level_pending
+                    AudioAccessibilityState.SILENT -> R.string.a11y_audio_level_silent
+                    AudioAccessibilityState.SIGNAL -> R.string.a11y_audio_level_signal
+                    AudioAccessibilityState.HIGH -> R.string.a11y_audio_level_high
+                    AudioAccessibilityState.NEAR_CLIPPING -> R.string.a11y_audio_level_near_clipping
+                    AudioAccessibilityState.CLIPPING -> R.string.a11y_audio_level_clipping
+                },
+            )
+            stringResource(R.string.a11y_audio_channel_state, index + 1, stateLabel)
+        }.joinToString(", ")
+    }
     Box(
         modifier = modifier
             .size(width = 120.dp, height = 8.dp)
             // Rides the tested HUD contrast floor (05486cb) like the OSD pills: the meter reads level
             // against bright scenes, so its scrim can't be the near-transparent 0.45 it was.
-            .background(HudPlate, RoundedCornerShape(4.dp)),
+            .background(HudPlate, RoundedCornerShape(4.dp))
+            .semantics {
+                contentDescription = audioMeterLabel
+                stateDescription = audioMeterState
+            },
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val gapPx = gap.toPx()
@@ -601,6 +652,22 @@ fun AudioMeter(levels: List<Float>, modifier: Modifier = Modifier) {
         }
     }
 }
+
+internal enum class AudioAccessibilityState { PENDING, SILENT, SIGNAL, HIGH, NEAR_CLIPPING, CLIPPING }
+
+/** Coarse and change-gated by identity: raw 10 Hz meter values do not become sensor-rate speech. */
+internal fun audioAccessibilityStates(levels: List<Float>): List<AudioAccessibilityState> =
+    levels.map { raw ->
+        if (!raw.isFinite()) return@map AudioAccessibilityState.PENDING
+        val level = raw.coerceIn(0f, 1f)
+        when {
+            level <= 0.02f -> AudioAccessibilityState.SILENT
+            level < 0.60f -> AudioAccessibilityState.SIGNAL
+            level < 0.85f -> AudioAccessibilityState.HIGH
+            level < 0.999f -> AudioAccessibilityState.NEAR_CLIPPING
+            else -> AudioAccessibilityState.CLIPPING
+        }
+    }
 
 /**
  * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the
@@ -1005,6 +1072,16 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
  */
 @Composable
 fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
+    val histogramLabel = stringResource(R.string.label_histogram)
+    val histogramState = stringResource(
+        when (histogramAccessibilityState(data)) {
+            HistogramAccessibilityState.PENDING -> R.string.a11y_histogram_pending
+            HistogramAccessibilityState.NO_EDGE_CLIPPING -> R.string.a11y_histogram_no_edge_clipping
+            HistogramAccessibilityState.SHADOWS_CLIPPED -> R.string.a11y_histogram_shadows_clipped
+            HistogramAccessibilityState.HIGHLIGHTS_CLIPPED -> R.string.a11y_histogram_highlights_clipped
+            HistogramAccessibilityState.BOTH_CLIPPED -> R.string.a11y_histogram_both_clipped
+        },
+    )
     Box(
         modifier = modifier
             .size(width = 150.dp, height = 84.dp)
@@ -1021,7 +1098,11 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
             // histogram's horizontal axis (the waveform's column axis likewise) to protect nothing.
             // Symmetric because the frame is symmetric: a 12/6 split would visibly seat the drawn
             // border nearer the plate edge top and bottom than left and right.
-            .padding(6.dp),
+            .padding(6.dp)
+            .semantics {
+                contentDescription = histogramLabel
+                stateDescription = histogramState
+            },
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(color = CameraColors.ScopeFrame, style = Stroke(width = 1.dp.toPx()))
@@ -1035,6 +1116,29 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
                 drawHistogramCurve(data.blue, Color(0xFF4C9AFF).copy(alpha = 0.75f))
             }
         }
+    }
+}
+
+internal enum class HistogramAccessibilityState {
+    PENDING,
+    NO_EDGE_CLIPPING,
+    SHADOWS_CLIPPED,
+    HIGHLIGHTS_CLIPPED,
+    BOTH_CLIPPED,
+}
+
+internal fun histogramAccessibilityState(data: HistogramData?): HistogramAccessibilityState {
+    val bins = data?.luma ?: return HistogramAccessibilityState.PENDING
+    val total = bins.sumOf { it.coerceAtLeast(0).toLong() }
+    if (bins.size < 256 || total <= 0L) return HistogramAccessibilityState.PENDING
+    // computeHistogram publishes display-luma bins 0..255; only the exact endpoints prove clipping.
+    val shadowClipped = bins.first() > 0
+    val highlightClipped = bins.last() > 0
+    return when {
+        shadowClipped && highlightClipped -> HistogramAccessibilityState.BOTH_CLIPPED
+        shadowClipped -> HistogramAccessibilityState.SHADOWS_CLIPPED
+        highlightClipped -> HistogramAccessibilityState.HIGHLIGHTS_CLIPPED
+        else -> HistogramAccessibilityState.NO_EDGE_CLIPPING
     }
 }
 
@@ -1062,6 +1166,11 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
     // width, so it has a known extent, stacks cleanly under the histogram, and stays clear of the
     // top-bar settings glyph. Scrim rides the tested HUD contrast floor (05486cb) — same reasoning as
     // the histogram — with a brighter trace (below) so it reads at a glance over bright scenes.
+    val waveformLabel = stringResource(R.string.label_waveform)
+    val waveformRange = waveformAccessibilityRange(data)
+    val waveformState = waveformRange?.let { range ->
+        stringResource(R.string.a11y_waveform_luma_range, range.minimumPercent, range.maximumPercent)
+    } ?: stringResource(R.string.a11y_waveform_pending)
     Box(
         modifier = modifier
             .width(150.dp)
@@ -1071,7 +1180,11 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
             // instrument whose data reaches its own drawn border, so a pill's horizontal inset would
             // narrow the plot rather than protect a glyph. Kept identical to the histogram's on purpose
             // — they stack directly under one another in the same column.
-            .padding(6.dp),
+            .padding(6.dp)
+            .semantics {
+                contentDescription = waveformLabel
+                stateDescription = waveformState
+            },
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             // [CameraColors.ScopeFrame], shared with the histogram above it. This site used to spell
@@ -1083,6 +1196,36 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+internal data class WaveformAccessibilityRange(
+    val minimumPercent: Int,
+    val maximumPercent: Int,
+)
+
+internal fun waveformAccessibilityRange(data: WaveformData?): WaveformAccessibilityRange? {
+    if (
+        data == null || data.columns <= 0 || data.rows <= 1 ||
+        data.bins.size.toLong() != data.columns.toLong() * data.rows.toLong()
+    ) {
+        return null
+    }
+    var brightestRow = Int.MAX_VALUE
+    var darkestRow = Int.MIN_VALUE
+    for (column in 0 until data.columns) {
+        for (row in 0 until data.rows) {
+            if (data.bins[column * data.rows + row] <= 0) continue
+            brightestRow = minOf(brightestRow, row)
+            darkestRow = maxOf(darkestRow, row)
+        }
+    }
+    if (brightestRow == Int.MAX_VALUE) return null
+    fun percent(row: Int): Int =
+        (((data.rows - 1 - row) * 100f / (data.rows - 1)) / 5f).roundToInt().times(5).coerceIn(0, 100)
+    return WaveformAccessibilityRange(
+        minimumPercent = percent(darkestRow),
+        maximumPercent = percent(brightestRow),
+    )
 }
 
 private fun DrawScope.drawWaveform(data: WaveformData) {

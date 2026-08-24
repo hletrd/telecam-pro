@@ -125,7 +125,7 @@ object CameraColors {
      */
     val AffordanceEdge = Color.White.copy(alpha = 0.18f)
     /**
-     * Composition guides drawn straight onto the live image with no plate beneath them: the
+     * Composition-guide foreground drawn straight onto the live image: the
      * FrameLinesOverlay delivery-aspect box and every GridOverlay rule (thirds / golden / square /
      * center). Two consumers, one job — a reference the photographer composes against and then stops
      * seeing — and they must move together or the finder shows two weights of guide at once.
@@ -136,7 +136,8 @@ object CameraColors {
     // 0.55 → 0.40, a DELIBERATE restyle (user-reported 2026-07-28: the grid and level read too
     // bright and heavy). At 0.55 the thirds rules sat ON the finder rather than under it, which is
     // the opposite of "compose against it, then stop seeing it"; a 1 dp line at 0.40 still resolves
-    // over a bright sky, because a guide only has to survive the image, not out-shout it.
+    // over dark detail without out-shouting it. A wider opaque-black keyline now supplies the
+    // complementary bright-frame edge; alpha alone can never make white visible on white.
     //
     // NOT taken nearer [ScopeFrame] (0.30) even though the complaint pulls that way: this file's own
     // measurement found 1 dp strokes 0.05 apart indistinguishable by eye, so a value in the low 0.3s
