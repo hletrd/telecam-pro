@@ -304,12 +304,20 @@ check(
 )
 
 def screenshot_authority_matches_manifest(authority: str) -> bool:
+    section_match = re.search(
+        r"Phone screenshots(.*?)(?=\n(?:#{2,6}\s+)?Tablet screenshots|\n## |\Z)",
+        authority,
+        re.S,
+    )
+    if section_match is None:
+        return False
+    section = section_match.group(1)
     if stale_manifest_valid:
-        return "NOT SUBMISSION-READY" in authority
+        return "NOT SUBMISSION-READY" in section
     if ready_manifest_valid:
         return (
-            "NOT SUBMISSION-READY" not in authority
-            and "SUBMISSION-READY" in authority
+            "NOT SUBMISSION-READY" not in section
+            and "SUBMISSION-READY" in section
         )
     return False
 
