@@ -35,6 +35,8 @@ data class OpticsRollbackPublication(
     val preTeleUnifiedZoom: Float,
     val declaration: TeleconverterDeclaration,
     val generation: Long,
+    /** Exact video-pipeline publication restored or retained by this rollback. */
+    val videoPipelineGeneration: Long,
 )
 
 /** Auxiliary UI state changes only when the desired camera transaction reaches Ready. */

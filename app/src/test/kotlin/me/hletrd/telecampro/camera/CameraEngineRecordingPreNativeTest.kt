@@ -103,6 +103,39 @@ class CameraEngineRecordingPreNativeTest {
     }
 
     @Test
+    fun `real start executes production encoder admission before test native effects`() {
+        val decisions = CopyOnWriteArrayList<RecordingEncoderAdmission>()
+        val statuses = CopyOnWriteArrayList<CameraStatusMessage>()
+        val results = CopyOnWriteArrayList<Boolean>()
+        val done = CountDownLatch(1)
+        val allocationCalls = AtomicInteger(0)
+        val overrides = RecordingPreNativeEngineOverrides(
+            allocatePendingVideo = { _, _ -> allocationCalls.incrementAndGet(); null },
+            dispatchAllocation = { RecordingPreNativeSubmission(RecordingPreNativeDispatch.OVERFLOW) },
+            scheduleDeadline = { _, _ -> null },
+            afterMicrophoneClaim = { _, _, _ -> false },
+            discardPendingOutput = { PendingOutputDiscardResult.RECOVERY_MARKED },
+            useProductionEncoderAdmission = true,
+            onEncoderAdmission = decisions::add,
+        )
+        val engine = engine(overrides)
+        installAcceptedSession(engine)
+        engine.onStatus = { it?.message?.let(statuses::add) }
+
+        engine.startRecording(recordAudio = false) { result ->
+            results += result
+            done.countDown()
+        }
+
+        assertTrue(done.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertEquals(listOf(false), results.toList())
+        assertEquals(1, decisions.size)
+        assertEquals(CameraStatusMessage.SELECTED_FPS_UNAVAILABLE, decisions.single().failure)
+        assertEquals(1, statuses.count { it == CameraStatusMessage.SELECTED_FPS_UNAVAILABLE })
+        assertEquals(0, allocationCalls.get())
+    }
+
+    @Test
     fun `real start timeout retires provider with exactly one result and failure status`() {
         val providerEntered = CountDownLatch(1)
         val providerRelease = trackedRelease()
@@ -727,6 +760,25 @@ class CameraEngineRecordingPreNativeTest {
 
     private fun engine(overrides: RecordingPreNativeEngineOverrides): CameraEngine =
         CameraEngine(app, overrides).also(engines::add)
+
+    private fun installAcceptedSession(engine: CameraEngine) {
+        val controller = CameraController(app)
+        val acceptedType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "AcceptedCameraSession" }
+        val accepted = acceptedType.declaredConstructors
+            .single { it.parameterTypes.size == 4 }
+            .apply { isAccessible = true }
+            .newInstance(controller, 0L, PhotoSessionOutputs(), false)
+        setField(engine, "controller", controller)
+        setField(engine, "readyController", controller)
+        setField(engine, "acceptedCameraSession", accepted)
+        setField(engine, "cameraReady", true)
+        setField(engine, "previewReady", true)
+    }
+
+    private fun setField(target: Any, name: String, value: Any) {
+        target.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(target, value)
+    }
 
     private fun overrides(
         admissionCurrent: () -> Boolean = { true },

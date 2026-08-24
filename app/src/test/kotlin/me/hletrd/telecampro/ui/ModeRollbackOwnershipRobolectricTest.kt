@@ -87,6 +87,59 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals(ColorTransfer.HLG, field(engine, "requestedVideoTransfer"))
     }
 
+    @Test
+    fun `newer disjoint pipeline command survives the queued rollback publication`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        viewModel.onModeChange(CaptureMode.VIDEO)
+        val started = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val pipelineThread: Thread
+
+        synchronized(engine) {
+            pipelineThread = Thread {
+                started.countDown()
+                try {
+                    viewModel.onVideoCodec(VideoCodec.AVC)
+                } finally {
+                    completed.countDown()
+                }
+            }.apply { start() }
+            assertTrue(started.await(2, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (pipelineThread.state != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.yield()
+            }
+            assertEquals(Thread.State.BLOCKED, pipelineThread.state)
+            forceOwnedRollback(
+                engine,
+                acceptedTransfer = ColorTransfer.SDR,
+                requestedTransfer = ColorTransfer.HLG,
+                drainMain = false,
+            )
+        }
+
+        assertTrue(completed.await(2, TimeUnit.SECONDS))
+        pipelineThread.join()
+        assertEquals(VideoCodec.AVC, viewModel.state.value.videoCodec)
+        assertEquals(ColorTransfer.SDR, viewModel.state.value.transfer)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(CaptureMode.PHOTO, viewModel.state.value.mode)
+        assertEquals(VideoCodec.AVC, viewModel.state.value.videoCodec)
+        assertEquals(ColorTransfer.SDR, viewModel.state.value.transfer)
+        assertEquals(VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals(ColorTransfer.SDR, field(engine, "requestedVideoTransfer"))
+        val admitted = recordingEncoderAdmission(
+            frameRateAvailable = true,
+            codec = field(engine, "videoCodec") as VideoCodec,
+            transfer = field(engine, "requestedVideoTransfer") as ColorTransfer,
+            candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+                .filterIsInstance<EncoderSelection>(),
+        )
+        assertEquals(null, admitted.failure)
+        assertEquals(listOf(VideoCodec.AVC), admitted.candidates.map { it.codec })
+    }
+
     private fun createAccepted(
         mode: CaptureMode,
         acceptedTransfer: ColorTransfer = transferFor(mode),
@@ -107,9 +160,17 @@ class ModeRollbackOwnershipRobolectricTest {
             hardwareAccelerated = true,
             main10 = true,
         )
+        val avc = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc-main",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
         engine.setVideoEncoders(listOf(main10))
         setField(viewModel, "encoderInventory", CodecInventory(mapOf(
             VideoCodec.HEVC to listOf(main10),
+            VideoCodec.AVC to listOf(avc),
         )))
         val controller = CameraController(app)
         setField(engine, "controller", controller)
@@ -127,7 +188,7 @@ class ModeRollbackOwnershipRobolectricTest {
             videoCodec = VideoCodec.HEVC,
             tenBitEncodeAvailable = true,
             encoderInventoryLoaded = true,
-            availableVideoCodecs = listOf(VideoCodec.HEVC),
+            availableVideoCodecs = listOf(VideoCodec.HEVC, VideoCodec.AVC),
             recordAudio = true,
         )
         viewModel.onStandbyAudioMeterVisibilityChanged(true)
@@ -138,6 +199,7 @@ class ModeRollbackOwnershipRobolectricTest {
         engine: CameraEngine,
         acceptedTransfer: ColorTransfer,
         requestedTransfer: ColorTransfer = acceptedTransfer,
+        drainMain: Boolean = true,
     ) {
         val generation = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
         val baseline = checkNotNull(field(engine, "opticsRollbackBaseline"))
@@ -156,7 +218,7 @@ class ModeRollbackOwnershipRobolectricTest {
             .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
         assertEquals(acceptedTransfer, engineTransfer(engine))
         assertEquals(requestedTransfer, field(engine, "requestedVideoTransfer"))
-        shadowOf(Looper.getMainLooper()).idle()
+        if (drainMain) shadowOf(Looper.getMainLooper()).idle()
     }
 
     @Test

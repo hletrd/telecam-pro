@@ -72,6 +72,10 @@ internal data class RecordingPreNativeEngineOverrides(
     val onPreviewBindAttempt: (() -> Unit)? = null,
     /** Records full-graph replay selection without replacing the production restart. */
     val onFullGraphReplayAttempt: (() -> Unit)? = null,
+    /** Keep the real accepted-session/codec/FPS admission while replacing later native effects. */
+    val useProductionEncoderAdmission: Boolean = false,
+    /** Observes the immutable production decision after the Engine monitor has been released. */
+    val onEncoderAdmission: ((RecordingEncoderAdmission) -> Unit)? = null,
 )
 
 /** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
@@ -344,6 +348,9 @@ class CameraEngine internal constructor(
     private var lastPreviewProducerFrameGeneration = 0L
     private val tapFocusPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val videoPipelinePublicationGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    /** Pipeline publication owned by the current optics intent after its desired packet was written. */
+    @Volatile private var currentOpticsPipelineGeneration = 0L
     private val opticsCommitGate = OpticsCommitGate(opticsIntentGeneration, this)
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
     // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
@@ -482,6 +489,25 @@ class CameraEngine internal constructor(
         val activeTransfer: ColorTransfer,
     )
 
+    private fun currentVideoPipelineSelection(): VideoPipelineSelection = VideoPipelineSelection(
+        codec = videoCodec,
+        candidates = videoEncoderCandidates,
+        requestedTransfer = requestedVideoTransfer,
+        activeTransfer = transfer,
+    )
+
+    /** Publishes one complete pipeline packet while the caller owns the Engine monitor. */
+    private fun publishVideoPipelineLocked(selection: VideoPipelineSelection): Long {
+        if (selection != currentVideoPipelineSelection()) {
+            videoCodec = selection.codec
+            videoEncoderCandidates = selection.candidates
+            requestedVideoTransfer = selection.requestedTransfer
+            transfer = selection.activeTransfer
+            videoPipelinePublicationGeneration.incrementAndGet()
+        }
+        return videoPipelinePublicationGeneration.get()
+    }
+
     private data class OpticsSnapshot(
         val videoMode: Boolean,
         /** Exact accepted Engine/GL transfer; mode changes derive this optimistically. */
@@ -554,12 +580,7 @@ class CameraEngine internal constructor(
     private fun currentOpticsSnapshot(): OpticsSnapshot = OpticsSnapshot(
         videoMode = videoMode,
         transfer = transfer,
-        videoPipeline = VideoPipelineSelection(
-            codec = videoCodec,
-            candidates = videoEncoderCandidates,
-            requestedTransfer = requestedVideoTransfer,
-            activeTransfer = transfer,
-        ),
+        videoPipeline = currentVideoPipelineSelection(),
         lens = lensChoice,
         teleconverter = teleconverterMode,
         facing = facing,
@@ -592,6 +613,7 @@ class CameraEngine internal constructor(
             // Generation and its complete desired packet share the commit gate's monitor. Resume
             // cannot capture the new token between increment and desired-state publication.
             val desired = publishDesiredOptics()
+            currentOpticsPipelineGeneration = videoPipelinePublicationGeneration.get()
             // Desired optics and Not-Ready are one publication. Capture/REC cannot observe g+1's
             // fields while the outgoing controller still presents itself as Ready.
             val tapPublication = retireTapFocusLocked(rebuildPreview = false)
@@ -630,6 +652,7 @@ class CameraEngine internal constructor(
         // while the optics monitor is held.
         var publication: CameraReadyPublication? = null
         var acceptedDiagnostic: String? = null
+        var publishPolicyUnblocked = false
         val publicationGeneration = opticsCommitGate.commit(
             expectedGeneration = expectedGeneration,
             ownsTerminal = {
@@ -672,7 +695,7 @@ class CameraEngine internal constructor(
                 // same commit that publishes Ready — leaving it up over a live camera would be a
                 // worse lie than the silence this feature replaced.
                 cameraPolicyBlocked = false
-                onCameraPolicyBlocked?.invoke(false)
+                publishPolicyUnblocked = true
             }
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
@@ -680,6 +703,7 @@ class CameraEngine internal constructor(
         // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
         // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
         runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
+        if (publishPolicyUnblocked) onCameraPolicyBlocked?.invoke(false)
         onCameraReadyChange?.invoke(checkNotNull(publication))
         return true
     }
@@ -786,10 +810,17 @@ class CameraEngine internal constructor(
         // The outgoing session is still the accepted owner. Restore its exact curve directly:
         // setTransfer() would interpret this as a fresh session request and could reopen the
         // already-restored controller while rollback is publishing Ready.
-        transfer = before.transfer
-        requestedVideoTransfer = before.videoPipeline.requestedTransfer
-        videoCodec = before.videoPipeline.codec
-        videoEncoderCandidates = before.videoPipeline.candidates
+        // An optics failure restores only the pipeline publication it still owns. A later Photo-mode
+        // codec/curve command does not need a Camera2 generation, but it is still a newer operator
+        // intent and must survive this rollback in both Engine and the queued UI publication.
+        val restoredVideoPipeline = if (
+            videoPipelinePublicationGeneration.get() == currentOpticsPipelineGeneration
+        ) {
+            publishVideoPipelineLocked(before.videoPipeline)
+            before.videoPipeline
+        } else {
+            currentVideoPipelineSelection()
+        }
         if (recorder == null) gl.setTransfer(before.transfer)
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
@@ -819,8 +850,8 @@ class CameraEngine internal constructor(
         onOpticsRollback?.invoke(
             OpticsRollbackPublication(
                 mode = restored.mode,
-                transfer = before.videoPipeline.requestedTransfer,
-                videoCodec = before.videoPipeline.codec,
+                transfer = restoredVideoPipeline.requestedTransfer,
+                videoCodec = restoredVideoPipeline.codec,
                 lens = restored.lens,
                 teleconverter = restored.teleconverter,
                 facing = restored.facing,
@@ -836,6 +867,7 @@ class CameraEngine internal constructor(
                 preTeleUnifiedZoom = before.preTeleUnifiedZoom,
                 declaration = restored.declaration,
                 generation = transaction.generation,
+                videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
             ),
         )
         before.caps?.let { onCapsReady?.invoke(it, transaction.generation) }
@@ -2184,6 +2216,10 @@ class CameraEngine internal constructor(
     fun isOpticsGenerationCurrent(generation: Long): Boolean =
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
 
+    /** Rechecks only the independent codec/candidate/transfer publication after a main-queue hop. */
+    fun isVideoPipelinePublicationCurrent(generation: Long): Boolean =
+        videoPipelinePublicationGeneration.get() == generation
+
     /** Rechecks a queued UI Ready publication after it crosses onto the main thread. */
     fun isCameraReadyPublicationCurrent(publication: CameraReadyPublication): Boolean =
         cameraReadyPublicationIsCurrent(
@@ -2226,8 +2262,12 @@ class CameraEngine internal constructor(
         val transaction = if (changed) {
             beginOpticsTransaction {
                 videoMode = enabled
-                transfer = targetTransfer
-                if (enabled) requestedVideoTransfer = resolvedTransfer
+                publishVideoPipelineLocked(
+                    currentVideoPipelineSelection().copy(
+                        requestedTransfer = if (enabled) resolvedTransfer else requestedVideoTransfer,
+                        activeTransfer = targetTransfer,
+                    ),
+                )
                 lensChoice = resolvedLens
                 controls = modeControls
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
@@ -2238,8 +2278,12 @@ class CameraEngine internal constructor(
         } else {
             synchronized(this) {
                 videoMode = enabled
-                transfer = targetTransfer
-                if (enabled) requestedVideoTransfer = resolvedTransfer
+                publishVideoPipelineLocked(
+                    currentVideoPipelineSelection().copy(
+                        requestedTransfer = if (enabled) resolvedTransfer else requestedVideoTransfer,
+                        activeTransfer = targetTransfer,
+                    ),
+                )
                 lensChoice = resolvedLens
                 controls = modeControls
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
@@ -2382,12 +2426,16 @@ class CameraEngine internal constructor(
         )
         val transaction = beginOpticsTransaction {
             videoMode = enabledVideo
-            requestedVideoTransfer = resolvedTransfer
-            videoCodec = resolvedVideoCodec
-            videoEncoderCandidates = resolvedVideoEncoderCandidates
-                .filter { it.codec == resolvedVideoCodec }
-                .distinctBy { it.codecName }
-            transfer = if (enabledVideo) resolvedTransfer else ColorTransfer.SDR
+            publishVideoPipelineLocked(
+                VideoPipelineSelection(
+                    codec = resolvedVideoCodec,
+                    candidates = resolvedVideoEncoderCandidates
+                        .filter { it.codec == resolvedVideoCodec }
+                        .distinctBy { it.codecName },
+                    requestedTransfer = resolvedTransfer,
+                    activeTransfer = if (enabledVideo) resolvedTransfer else ColorTransfer.SDR,
+                ),
+            )
             lensChoice = resolvedLens
             teleconverterMode = routeTeleconverter
             teleconverterDeclaration = declaration
@@ -2500,6 +2548,7 @@ class CameraEngine internal constructor(
      * curve into the second half, so the GL curve is only pushed when idle (the field still updates
      * for the next recording; stopRecording/pause re-apply it). See docs/reviews record-pipeline #4.
      */
+    @Synchronized
     fun setTransfer(t: ColorTransfer) {
         setVideoPipeline(videoEncoderCandidates, t, fallbackCodec = videoCodec)
     }
@@ -2540,18 +2589,13 @@ class CameraEngine internal constructor(
         )
         val tenBitChanged = tenBitSessionWanted(videoMode, transfer) !=
             tenBitSessionWanted(videoMode, activeTransfer)
-        val publish = {
-            videoCodec = targetPipeline.codec
-            videoEncoderCandidates = targetPipeline.candidates
-            requestedVideoTransfer = targetPipeline.requestedTransfer
-            transfer = targetPipeline.activeTransfer
-        }
+        val publish = { publishVideoPipelineLocked(targetPipeline) }
         if (tenBitChanged && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
             gl.setTransfer(activeTransfer)
             reopenForSession(transaction)
         } else {
-            synchronized(this) { publish() }
+            publish()
             if (recorder == null) gl.setTransfer(activeTransfer)
         }
     }
@@ -2906,6 +2950,7 @@ class CameraEngine internal constructor(
         controller?.setZslServePossible(m == DriveMode.SINGLE)
     }
     fun setIntervalSec(s: Int) { intervalSec = normalizeTimelapseIntervalSeconds(s) }
+    @Synchronized
     fun setVideoCodec(c: VideoCodec) {
         setVideoPipeline(
             candidates = videoEncoderCandidates.filter { it.codec == c },
@@ -2915,6 +2960,7 @@ class CameraEngine internal constructor(
     }
 
     /** Installs every exact component eligible for the selected codec/transfer, in attempt order. */
+    @Synchronized
     fun setVideoEncoders(candidates: List<EncoderSelection>) {
         setVideoPipeline(candidates, requestedVideoTransfer)
     }
@@ -4971,8 +5017,29 @@ class CameraEngine internal constructor(
     private data class RecordingAdmissionSnapshot(
         val acceptedSession: AcceptedCameraSession?,
         val encoderCandidates: List<EncoderSelection>,
+        val failure: CameraStatusMessage? = null,
         val isCurrent: () -> Boolean,
     )
+
+    /**
+     * Freezes accepted Camera2 identity and every codec/FPS/transfer input under one monitor.
+     * Capability filtering is pure and bounded; callbacks and native/provider work stay outside.
+     */
+    private fun currentRecordingAdmissionSnapshot(): RecordingAdmissionSnapshot? = synchronized(this) {
+        val acceptedSession = currentAcceptedRecordingSession() ?: return@synchronized null
+        val encoderAdmission = recordingEncoderAdmission(
+            frameRateAvailable = videoFrameRate in VideoFrameRate.availableFor(caps, videoSize, videoCodec),
+            codec = videoCodec,
+            transfer = transfer,
+            candidates = videoEncoderCandidates,
+        )
+        RecordingAdmissionSnapshot(
+            acceptedSession = acceptedSession,
+            encoderCandidates = encoderAdmission.candidates,
+            failure = encoderAdmission.failure,
+            isCurrent = { currentAcceptedRecordingSession() === acceptedSession },
+        )
+    }
 
     // REC admission runs off main. MediaStore row allocation has its own finite lane because a
     // provider Binder call has no cancellation signal; only after that generation-owned result is
@@ -5034,35 +5101,32 @@ class CameraEngine internal constructor(
         topologyLease: Long,
         completeAttempt: (Boolean) -> Unit,
     ): Boolean {
-        val admission = recordingPreNativeOverrides?.let { overrides ->
+        val admission = recordingPreNativeOverrides
+            ?.takeUnless { it.useProductionEncoderAdmission }
+            ?.let { overrides ->
             RecordingAdmissionSnapshot(
                 acceptedSession = null,
                 encoderCandidates = emptyList(),
                 isCurrent = overrides.admissionCurrent,
             )
         } ?: run {
-            val acceptedSession = currentAcceptedRecordingSession()
-            if (acceptedSession == null) {
+            val snapshot = currentRecordingAdmissionSnapshot()
+            if (snapshot == null) {
                 onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
                 return false
             }
-            val encoderAdmission = recordingEncoderAdmission(
-                frameRateAvailable = videoFrameRate in VideoFrameRate.availableFor(caps, videoSize, videoCodec),
-                codec = videoCodec,
-                transfer = transfer,
-                candidates = videoEncoderCandidates,
+            val observedDecision = RecordingEncoderAdmission(
+                candidates = snapshot.encoderCandidates,
+                failure = snapshot.failure,
             )
-            encoderAdmission.failure?.let { failure ->
+            recordingPreNativeOverrides?.onEncoderAdmission?.invoke(observedDecision)
+            snapshot.failure?.let { failure ->
                 // Bare "<X> unavailable" like every sibling status in this file; the copula was the
                 // one status that read as a sentence in a register of clipped labels.
                 onStatus?.invoke(failure.status())
                 return false
             }
-            RecordingAdmissionSnapshot(
-                acceptedSession = acceptedSession,
-                encoderCandidates = encoderAdmission.candidates,
-                isCurrent = { currentAcceptedRecordingSession() === acceptedSession },
-            )
+            snapshot
         }
         // A just-stopped clip's async teardown still owns the mic (and the encoder pipeline is being
         // finalized) — refuse until finishRecording completes rather than starting a second recorder

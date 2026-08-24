@@ -911,6 +911,9 @@ class CameraViewModel private constructor(
         engine.onOpticsRollback = { rollback ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(rollback.generation)) return@post
+                val pipelineOwned = engine.isVideoPipelinePublicationCurrent(
+                    rollback.videoPipelineGeneration,
+                )
                 // "Camera unchanged": the failed door never closed the outgoing session, so it is
                 // still streaming. Drop the dip now rather than blacking out live picture until the
                 // deadline — and remember this generation, because the rollback's OWN trailing
@@ -934,8 +937,8 @@ class CameraViewModel private constructor(
                 _state.update {
                     it.copy(
                         mode = rollback.mode,
-                        transfer = rollback.transfer,
-                        videoCodec = rollback.videoCodec,
+                        transfer = if (pipelineOwned) rollback.transfer else it.transfer,
+                        videoCodec = if (pipelineOwned) rollback.videoCodec else it.videoCodec,
                         lens = rollback.lens,
                         teleconverterMode = rollback.teleconverter,
                         facing = rollback.facing,
