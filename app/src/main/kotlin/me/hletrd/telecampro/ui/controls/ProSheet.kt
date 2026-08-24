@@ -729,21 +729,33 @@ private fun MemoryPresetRow(
         }
         // DES4-3: the d875eea 48 dp sweep covered the three shared selector components; this
         // standalone action chip (writes an MR bank) was left bare at ~32 dp.
-        MinTouchTarget48 {
-            FilterChip(
-                selected = false,
-                onClick = onSave,
-                enabled = !locked,
-                label = {
-                    Text(
-                        stringResource(if (saved) R.string.action_update else R.string.action_save),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(false, !locked),
-            )
-        }
+        MemoryPresetAction(saved = saved, enabled = !locked, onClick = onSave)
+    }
+}
+
+/** One-shot MR write command; visually a chip, semantically an immediate button action. */
+@Composable
+internal fun MemoryPresetAction(
+    saved: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    MinTouchTarget48 {
+        FilterChip(
+            selected = false,
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier.semantics { role = Role.Button },
+            label = {
+                Text(
+                    stringResource(if (saved) R.string.action_update else R.string.action_save),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            },
+            colors = pixelChipColors(),
+            border = pixelChipBorder(false, enabled),
+        )
     }
 }
 

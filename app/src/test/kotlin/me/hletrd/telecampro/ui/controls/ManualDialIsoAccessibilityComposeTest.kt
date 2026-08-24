@@ -7,6 +7,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -65,10 +66,14 @@ class ManualDialIsoAccessibilityComposeTest {
     }
 
     private fun assertAdjustableIsoState(expected: String) {
+        val adjustable = SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo)
+        val valueBearing = hasStateDescription(expected)
         compose.onNode(
-            hasContentDescription("ISO").and(hasStateDescription(expected)),
+            hasContentDescription("ISO").and(valueBearing).and(adjustable),
             useUnmergedTree = true,
-        ).assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo))
+        ).assert(adjustable)
+        compose.onAllNodes(adjustable, useUnmergedTree = true).assertCountEquals(1)
+        compose.onAllNodes(valueBearing, useUnmergedTree = true).assertCountEquals(1)
     }
 
     @Test

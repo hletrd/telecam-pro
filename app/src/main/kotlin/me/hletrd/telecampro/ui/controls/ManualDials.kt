@@ -886,7 +886,6 @@ internal fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
 
 @Composable
 private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue: Boolean = false) {
-    val spokenValue = if (autoValue) stringResource(R.string.a11y_auto_value, value) else value
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         // The one number the photographer is actively adjusting sits near the TOP of the bottom
         // cluster's gradient, where the scrim is nearly transparent — over sky/snow it competed
@@ -911,9 +910,10 @@ private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue
             color = CameraColors.ManualActive,
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier
-                .clearAndSetSemantics {
-                    contentDescription = spokenValue
-                }
+                // The adjustable ruler immediately below owns the complete stable name, live
+                // value, progress range, and set action. This visible mirror is decorative so the
+                // same changing value is not announced at two consecutive accessibility stops.
+                .clearAndSetSemantics { }
                 .clip(RoundedCornerShape(50))
                 .background(HudPlate)
                 .padding(horizontal = 12.dp, vertical = 6.dp),

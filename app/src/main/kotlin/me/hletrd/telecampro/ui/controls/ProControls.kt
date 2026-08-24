@@ -328,10 +328,16 @@ internal fun <T> SegmentedSelector(
                         onClick = { onSelect(option) },
                         enabled = enabled,
                         // semantics(), not clearAndSetSemantics(): FilterChip's own selectable node
-                        // supplies the selected / not-selected announcement, and only the NAME is
-                        // ours to set here.
+                        // supplies selected / not-selected state while this exclusive selector
+                        // supplies the contextual name and radio-button role.
                         modifier = Modifier
-                            .semantics { contentDescription = optionName }
+                            .semantics {
+                                contentDescription = optionName
+                                // FilterChip supplies checkbox semantics by default, but this row
+                                // is one exclusive choice. Preserve the chip visuals while exposing
+                                // the same radio-button model as the surrounding selectableGroup.
+                                role = Role.RadioButton
+                            }
                             .then(
                                 if (isSelected) {
                                     Modifier.bringIntoViewRequester(selectedIntoView)
@@ -382,6 +388,10 @@ private fun OutputFormatChip(
             enabled = enabled,
             modifier = modifier.semantics {
                 contentDescription = segmentedOptionName(outputLabel, name)
+                // Unlike the exclusive selectors, output formats are genuinely independent and
+                // may be enabled together. Pin that distinction even if Material chip defaults
+                // change later.
+                role = Role.Checkbox
             },
             leadingIcon = if (selected) {
                 {
@@ -953,7 +963,10 @@ internal fun TransferSelector(
                         onClick = { onTransfer(option) },
                         enabled = enabled,
                         modifier = Modifier
-                            .semantics { contentDescription = optionName }
+                            .semantics {
+                                contentDescription = optionName
+                                role = Role.RadioButton
+                            }
                             .then(
                                 if (isSelected) {
                                     Modifier.bringIntoViewRequester(selectedIntoView)
