@@ -46,6 +46,10 @@ def repository_diff_check_command() -> list[str]:
 
 
 def main() -> int:
+    if sys.flags.optimize != 0:
+        print("optimized Python is unsupported for the host verification gate", file=sys.stderr)
+        return 2
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--release",

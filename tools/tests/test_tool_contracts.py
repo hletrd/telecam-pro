@@ -32,6 +32,9 @@ MOTION_SOURCE = (
 
 def run_documentation_gate_from_committed_export(
     mutate: Callable[[Path], None] | None = None,
+    *,
+    interpreter_args: tuple[str, ...] = (),
+    environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], tuple[str, ...]]:
     def extract(payload: bytes, destination: Path) -> None:
         destination.mkdir()
@@ -97,8 +100,9 @@ def run_documentation_gate_from_committed_export(
             relative for relative in PRIVATE_EXPORT_DOCS if (exported / relative).exists()
         )
         result = subprocess.run(
-            [sys.executable, "tools/check_docs.py"],
+            [sys.executable, *interpreter_args, "tools/check_docs.py"],
             cwd=exported,
+            env=environment,
             capture_output=True,
             text=True,
             timeout=30,
@@ -228,6 +232,53 @@ class BackupPolicyContractTest(unittest.TestCase):
 
 
 class ConsolidatedHostGateTest(unittest.TestCase):
+    def test_host_and_documentation_gates_reject_optimized_python(self) -> None:
+        commands = (
+            ("tools/verify_host.py", "host verification gate"),
+            ("tools/check_docs.py", "documentation gate"),
+        )
+        for script, diagnostic in commands:
+            for label, args, environment in (
+                ("flag", ("-O",), os.environ.copy()),
+                ("environment", (), {**os.environ, "PYTHONOPTIMIZE": "1"}),
+            ):
+                with self.subTest(script=script, mode=label):
+                    result = subprocess.run(
+                        [sys.executable, *args, script],
+                        cwd=REPO_ROOT,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn(f"optimized Python is unsupported for the {diagnostic}", result.stderr)
+
+    def test_documentation_gate_keeps_exact_millisecond_verdict_under_all_modes(self) -> None:
+        def make_zsl_age_non_integral(root: Path) -> None:
+            path = root / "app/src/main/kotlin/me/hletrd/telecampro/camera/ZslAdmission.kt"
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("ZSL_MAX_FRAME_AGE_NS = 400_000_000L", text)
+            path.write_text(
+                text.replace(
+                    "ZSL_MAX_FRAME_AGE_NS = 400_000_000L",
+                    "ZSL_MAX_FRAME_AGE_NS = 400_000_001L",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        normal, _ = run_documentation_gate_from_committed_export(make_zsl_age_non_integral)
+        self.assertNotEqual(normal.returncode, 0, normal.stdout + normal.stderr)
+        self.assertIn("ZSL frame age must be an exact millisecond fact", normal.stderr)
+
+        optimized, _ = run_documentation_gate_from_committed_export(
+            make_zsl_age_non_integral,
+            interpreter_args=("-O",),
+        )
+        self.assertEqual(optimized.returncode, 2, optimized.stdout + optimized.stderr)
+        self.assertIn("optimized Python is unsupported", optimized.stderr)
+
     def test_gate_runs_every_non_device_quality_suite(self) -> None:
         source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
         for required in (

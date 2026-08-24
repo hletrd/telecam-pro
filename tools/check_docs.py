@@ -21,6 +21,10 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
+if sys.flags.optimize != 0:
+    print("optimized Python is unsupported for the documentation gate", file=sys.stderr)
+    raise SystemExit(2)
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
 CHECKS = 0
@@ -62,7 +66,8 @@ def read(rel: str) -> str:
 
 
 def read_private(rel: str) -> str | None:
-    assert rel in PRIVATE_DOCS, f"unregistered private document: {rel}"
+    if rel not in PRIVATE_DOCS:
+        raise ValueError(f"unregistered private document: {rel}")
     path = ROOT / rel
     return path.read_text(encoding="utf-8") if path.is_file() else None
 
@@ -82,7 +87,8 @@ def fenced(text: str, heading: str) -> str:
     """The first ``` block after a heading — the copy-paste payload."""
     start = text.index(heading)
     m = re.search(r"```\n(.*?)\n```", text[start:], re.S)
-    assert m, f"no fenced block under {heading!r}"
+    if m is None:
+        raise ValueError(f"no fenced block under {heading!r}")
     return m.group(1)
 
 
@@ -90,7 +96,8 @@ def language_fenced(text: str, heading: str, language: str) -> str:
     """The first language-tagged fence after a heading."""
     start = text.index(heading)
     m = re.search(rf"```{re.escape(language)}\n(.*?)\n```", text[start:], re.S)
-    assert m, f"no {language!r} fenced block under {heading!r}"
+    if m is None:
+        raise ValueError(f"no {language!r} fenced block under {heading!r}")
     return m.group(1)
 
 
@@ -317,10 +324,12 @@ min_sdk = re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)
 # project authority table against it.
 catalog = read("gradle/libs.versions.toml")
 catalog_agp = re.search(r'^agp\s*=\s*"([^"]+)"', catalog, re.MULTILINE)
-assert catalog_agp, "agp missing from version catalog"
+if catalog_agp is None:
+    raise ValueError("agp missing from version catalog")
 agp_version = catalog_agp.group(1)
 catalog_compose = re.search(r'^composeBom\s*=\s*"([^"]+)"', catalog, re.MULTILINE)
-assert catalog_compose, "composeBom missing from version catalog"
+if catalog_compose is None:
+    raise ValueError("composeBom missing from version catalog")
 compose_version = catalog_compose.group(1)
 readme = read("README.md")
 readme_compose_table = re.search(r"^\| Compose BOM \| ([^|]+) \|$", readme, re.MULTILINE)
@@ -359,9 +368,11 @@ check(
 
 zsl_source = read("app/src/main/kotlin/me/hletrd/telecampro/camera/ZslAdmission.kt")
 zsl_age_ns_match = re.search(r"ZSL_MAX_FRAME_AGE_NS\s*=\s*([0-9_]+)L", zsl_source)
-assert zsl_age_ns_match, "ZSL_MAX_FRAME_AGE_NS missing"
+if zsl_age_ns_match is None:
+    raise ValueError("ZSL_MAX_FRAME_AGE_NS missing")
 zsl_age_ns = int(zsl_age_ns_match.group(1).replace("_", ""))
-assert zsl_age_ns % 1_000_000 == 0, "ZSL frame age must be an exact millisecond fact"
+if zsl_age_ns % 1_000_000 != 0:
+    raise ValueError("ZSL frame age must be an exact millisecond fact")
 zsl_age_ms = zsl_age_ns // 1_000_000
 zsl_consumers = {
     "CLAUDE": re.search(r"age < (\d+) ms", read("CLAUDE.md")),
@@ -430,7 +441,8 @@ for rel in (
 # "artifact" names whether immutable upload bytes exist. Conflating those two is how the board
 # called v1.0.2 a candidate while the sheet correctly said there were no current bytes.
 version_name_match = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
-assert version_name_match, "versionName missing from app/build.gradle.kts"
+if version_name_match is None:
+    raise ValueError("versionName missing from app/build.gradle.kts")
 expected_release_target = f"v{version_name_match.group(1)}"
 
 
