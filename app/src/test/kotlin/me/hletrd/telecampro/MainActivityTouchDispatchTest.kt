@@ -146,6 +146,7 @@ class MainActivityTouchDispatchTest {
             var tapFocuses = 0
             var pinchTicks = 0
             var pinchEnds = 0
+            val pinchTrace = mutableListOf<String>()
             lateinit var preview: View
             val actions = Proxy.newProxyInstance(
                 CameraActions::class.java.classLoader,
@@ -153,8 +154,14 @@ class MainActivityTouchDispatchTest {
             ) { _, method, _ ->
                 when (method.name) {
                     "onTapFocus" -> tapFocuses++
-                    "onPinchZoom" -> pinchTicks++
-                    "onPinchEnd" -> pinchEnds++
+                    "onPinchZoom" -> {
+                        pinchTicks++
+                        pinchTrace += "zoom"
+                    }
+                    "onPinchEnd" -> {
+                        pinchEnds++
+                        pinchTrace += "end"
+                    }
                 }
                 if (method.returnType == java.lang.Boolean.TYPE) false else null
             } as CameraActions
@@ -217,7 +224,11 @@ class MainActivityTouchDispatchTest {
                     ),
                     event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
                 )
+                idleMain()
+                assertEquals(1, pinchEnds)
+                assertEquals("end", pinchTrace.last())
                 val ticksAfterCancel = pinchTicks
+                val traceAfterCancel = pinchTrace.toList()
                 dispatchSequence(
                     activity,
                     event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
@@ -246,7 +257,9 @@ class MainActivityTouchDispatchTest {
                 )
                 idleMain()
                 assertTrue(pinchTicks > ticksAfterCancel)
-                assertTrue(pinchEnds >= 1)
+                assertEquals(2, pinchEnds)
+                assertEquals(traceAfterCancel, pinchTrace.take(traceAfterCancel.size))
+                assertEquals("end", pinchTrace.last())
             } finally {
                 controller.destroy()
                 idleMain()
@@ -290,7 +303,10 @@ class MainActivityTouchDispatchTest {
                     event(MotionEvent.ACTION_MOVE, obscurationFlag, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
                     event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
                 )
-                val emissionsAfterCancel = fractions.size
+                idleMain()
+                assertTrue(fractions.isNotEmpty())
+                assertTrue(fractions.all { it < 0.6f })
+                fractions.clear()
                 dispatchSequence(
                     activity,
                     event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
@@ -298,7 +314,7 @@ class MainActivityTouchDispatchTest {
                     event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
                 )
                 idleMain()
-                assertTrue(fractions.size > emissionsAfterCancel)
+                assertTrue(fractions.isNotEmpty())
                 assertTrue(fractions.last() > 0.5f)
             } finally {
                 controller.destroy()
