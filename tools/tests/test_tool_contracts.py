@@ -353,7 +353,10 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertIn("committed submission sheet matches phone screenshot readiness", result.stdout)
         self.assertIn("PRIVACY.md discloses CAMERA", result.stdout)
         self.assertIn("ownerless legacy candidates without an own-captures-only claim", result.stdout)
-        self.assertIn("Architecture Module Map names every production Kotlin module", result.stdout)
+        self.assertIn(
+            "Architecture Module Map names every production Kotlin and Java module",
+            result.stdout,
+        )
         self.assertIn(
             "CLAUDE marks absent private context optional with committed fallbacks",
             result.stdout,
@@ -413,6 +416,24 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
+
+    def test_documentation_gate_rejects_an_omitted_java_production_module(self) -> None:
+        def add_undocumented_java_owner(root: Path) -> None:
+            owner = root / "app/src/main/java/me/hletrd/telecampro/storage/OmittedOwner.java"
+            owner.parent.mkdir(parents=True, exist_ok=True)
+            owner.write_text(
+                "package me.hletrd.telecampro.storage;\nfinal class OmittedOwner {}\n",
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(add_undocumented_java_owner)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  Architecture Module Map names every production Kotlin and Java module",
+            result.stdout,
+        )
+        self.assertIn("OmittedOwner.java", result.stdout)
 
     def test_committed_export_rejects_stale_agp_zsl_and_field_reference_facts(self) -> None:
         fixtures = (

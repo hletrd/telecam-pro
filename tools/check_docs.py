@@ -860,10 +860,14 @@ check(
 )
 
 # The as-built Module Map omitted two central concurrency owners while still naming every other
-# production Kotlin file. Treat filenames as the explicit inventory: grouped leaf rows remain fine,
-# but adding a production module without naming it in the map is now a checked documentation defect.
+# production Kotlin or Java file. Treat filenames as the explicit inventory: grouped leaf rows
+# remain fine, but adding a production module without naming it in the map is a checked defect.
 module_map = architecture.split("## Module Map", 1)[1].split("\n---", 1)[0]
-production_modules = sorted((ROOT / "app/src/main/kotlin").rglob("*.kt"))
+production_modules = sorted(
+    path
+    for source_root, extension in (("kotlin", "*.kt"), ("java", "*.java"))
+    for path in (ROOT / "app/src/main" / source_root).rglob(extension)
+)
 missing_module_rows = [
     path.relative_to(ROOT).as_posix()
     for path in production_modules
@@ -871,7 +875,7 @@ missing_module_rows = [
 ]
 check(
     not missing_module_rows,
-    "Architecture Module Map names every production Kotlin module",
+    "Architecture Module Map names every production Kotlin and Java module",
     str(missing_module_rows),
 )
 
