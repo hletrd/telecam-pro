@@ -619,6 +619,18 @@ for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
 # ---- current camera/architecture ownership must not revive retired seams ------------------------
 architecture = read("docs/ARCHITECTURE.md")
 
+# Optional private context may be linked from committed authorities only when the rendered prose
+# says it is optional and identifies the committed fallback. Otherwise a permitted clean clone
+# presents a dead normative link and tells contributors to block on a file they cannot have.
+architecture_overview = architecture.split("## Overview", 1)[1].split("\n---", 1)[0]
+check(
+    "committed clean-clone authority" in architecture_overview
+    and "[`CLAUDE.md`](../CLAUDE.md)" in architecture_overview
+    and "optional private" in architecture_overview
+    and "[`UX_POLICY.md`](UX_POLICY.md) adds maintainer examples when present" in architecture_overview,
+    "Architecture qualifies the optional private UX policy and names committed fallbacks",
+)
+
 # The as-built Module Map omitted two central concurrency owners while still naming every other
 # production Kotlin file. Treat filenames as the explicit inventory: grouped leaf rows remain fine,
 # but adding a production module without naming it in the map is now a checked documentation defect.
@@ -980,6 +992,11 @@ architecture_ui_layout = architecture.split("**UI layout (ProSheet.kt):**", 1)[1
     "**Quick Fn controls (ManualDials.kt):**",
     1,
 )[0]
+check(
+    "device-enumerated lens presets (0.6x/1x/3x/10x on PMA110)" in architecture_ui_layout
+    and "5. **Lens** — 0.6x/1x/3x/10x selection" not in architecture_ui_layout,
+    "Architecture scopes the fixed lens list to PMA110 and documents enumeration",
+)
 ux_policy_path = ROOT / "docs/UX_POLICY.md"
 # Like the local QA runbook, UX_POLICY is intentionally ignored as internal working context. Enforce
 # it when present without making a clean public checkout depend on an untracked file.

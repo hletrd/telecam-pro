@@ -283,6 +283,14 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "CLAUDE marks absent private context optional with committed fallbacks",
             result.stdout,
         )
+        self.assertIn(
+            "Architecture qualifies the optional private UX policy and names committed fallbacks",
+            result.stdout,
+        )
+        self.assertIn(
+            "Architecture scopes the fixed lens list to PMA110 and documents enumeration",
+            result.stdout,
+        )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
 
     def test_committed_export_rejects_mandatory_absent_private_context(self) -> None:
@@ -304,6 +312,59 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  CLAUDE marks absent private context optional with committed fallbacks",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_an_unqualified_optional_ux_policy_link(self) -> None:
+        def remove_optional_qualifier(root: Path) -> None:
+            path = root / "docs/ARCHITECTURE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = (
+                "This paragraph plus\n[`CLAUDE.md`](../CLAUDE.md) is the committed clean-clone "
+                "authority; the optional private\n[`UX_POLICY.md`](UX_POLICY.md) adds maintainer "
+                "examples when present."
+            )
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "See [`UX_POLICY.md`](UX_POLICY.md).", 1),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            remove_optional_qualifier,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  Architecture qualifies the optional private UX policy and names committed fallbacks",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_an_unqualified_fixed_lens_tab_list(self) -> None:
+        def restore_fixed_list(root: Path) -> None:
+            path = root / "docs/ARCHITECTURE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = (
+                "5. **Lens** — device-enumerated lens presets (0.6x/1x/3x/10x on PMA110), TELE mode,\n"
+                "   stabilization mode, and OIS."
+            )
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(
+                    marker,
+                    "5. **Lens** — 0.6x/1x/3x/10x selection, TELE mode, stabilization mode, and OIS.",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(restore_fixed_list)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  Architecture scopes the fixed lens list to PMA110 and documents enumeration",
             result.stdout,
         )
 
