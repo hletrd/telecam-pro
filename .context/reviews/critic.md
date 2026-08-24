@@ -1,84 +1,61 @@
-# Critic review — cycle 36
+# Critic review — cycle 37
 
 Date: 2026-08-24
 
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
 
-Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
 ## Scope and inventory
 
-I read the complete `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` authorities
-first, then inventoried all 486 tracked paths. I examined the complete production/debug Android
-surface, resources and manifests, host and instrumented tests, build/release tooling, device harness,
-privacy/Play material, all current review provenance, and completed plans through cycle 35. The
-review challenged the repository from operator, maintainer, evidence, accessibility, failure-mode,
-and release-readiness perspectives. No device behavior is inferred from host evidence.
+I read the committed project authorities and inventoried all 489 tracked paths, then examined the
+production/debug Android surfaces, UI-facing state/actions/capability reducers, EN/KO resources,
+manifests/theme, relevant JVM/Robolectric/Compose tests, privacy/Play documentation, current review
+history, and completed plans through cycle 36. I treated cycle 36's dual-open, optimized-harness,
+and affordance-contrast findings as resolved history. No device-only behavior is claimed.
 
 ## Findings
 
-### CRIT36-01 — the new dual-open cleanup's Boolean state model is not total for a null outgoing owner
+### CRIT37-01 — Gamma quick controls advertise an impossible choice and silently snap every tap back to SDR
 
-- **Severity / confidence / status:** High / High / Confirmed state-model defect; activation is
-  race-timed.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592,
-  3667-3674,3746-3765,7037-7050`; incomplete matrix at
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-136`.
-- **Problem:** `reconfigureCamera` explicitly continues when `controller == null`, so `old` may be
-  null. If the candidate native-refusal callback clears `controller` before a newer optics intent
-  supersedes the attempt, the cleanup call computes both `slotVacant = controller == null` and
-  `outgoingOwnsSlot = controller === old` as true: Kotlin's `null === null` is true. The reducer then
-  rejects this production-reachable input with `require(...count { it } <= 1)`. The tests hand-build
-  mutually exclusive booleans and therefore never exercise the nullable identities from which
-  production derives them.
-- **Concrete failure scenario:** During cold recovery with no installed controller, a candidate open
-  is refused and clears the slot. A rapid lens/mode/override change advances the optics generation
-  before the setup task crosses its post-wait boundary. The setup worker throws
-  `IllegalArgumentException` instead of restoring a clean vacant baseline; on Android an uncaught
-  worker exception is process-fatal, and in every environment this abandons the exact setup
-  continuation.
-- **Suggested fix:** Do not represent optional-owner identity as independent booleans. At minimum,
-  derive outgoing ownership as `old != null && controller === old`; preferably pass the nullable
-  identities and outgoing terminal/liveness into one typed cleanup reducer. Add a production-shaped
-  matrix covering `old=null/controller=null`, candidate self-clear, outgoing disconnect/close,
-  pause/release, supersession, and a genuinely newer controller.
+- **Severity / confidence:** Medium / High.
+- **Exact regions:** capability truth at `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:1164-1187,1495-1501`; correct menu filtering at `ui/controls/ProControls.kt:919-975`; divergent quick paths at `ui/controls/ControlCycles.kt:230-244`, `ui/controls/FnQuickActions.kt:98-143`, and `ui/controls/ManualDials.kt:621-632`; normalization at `ui/CameraViewModel.kt:2283-2299`; tests preserving the gap at `ui/controls/QuickFnEnabledTest.kt:20-23,80-84` and `ui/controls/PerformQuickFnTest.kt:197-214`.
+- **Problem:** `availableTransfers(HEVC, false)` intentionally exposes only SDR on an encoder with no Main10 profile. `TransferSelector` consumes that list, but `quickFnEnabled(TRANSFER)` checks only HEVC/REC state and both quick dispatchers call the global five-value `nextTransfer`. The ViewModel normalizes the unsupported request back to SDR. The default test fixture has `tenBitEncodeAvailable=false` yet asserts Gamma is enabled and dispatches S-Log3.
+- **Failure scenario:** On a TB336ZU-class 8-bit HEVC encoder, Fn overlay, My Menu, and expanded DISP show `Gamma / SDR` enabled. Repeated taps provide feedback but never change the value or explain why; the same false affordance exists during conservative pre-inventory state.
+- **Suggested fix:** Give every Gamma surface one `availableTransfers(videoCodec, tenBitEncodeAvailable)` projection. Enable cycling only when the projected list has multiple entries and inventory truth is ready; advance with `nextAvailable`. Keep ViewModel normalization as defense in depth and test no-Main10/pre-inventory behavior on all quick surfaces.
 
-### CRIT36-02 — active custom-control boundaries are deliberately held below the non-text contrast floor
+### CRIT37-02 — stabilization UI publishes requested labels when the camera applies a different or OFF HAL mode
 
-- **Severity / confidence / status:** Medium / High / Confirmed numeric contrast gap; impact is
-  strongest for low-vision users.
-- **Exact regions:** token and acknowledged ratio at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt:117-126`; settings-chip application at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:203-219,340-362,369-400`;
-  additional active uses at `ui/controls/ManualDials.kt:431-458`,
-  `ui/CameraScreen.kt:2832-2891`, and `ui/review/MediaReview.kt:1715-1734`.
-- **Problem:** `AffordanceEdge` is 18% white. Over the opaque `Pill` surface (`#1C1C1E`) its rendered
-  edge is approximately `#454546`, only **1.78:1** against the adjacent surface. The code comment
-  acknowledges roughly 1.8:1 but treats it as a design floor. These are authored, enabled controls,
-  not inactive platform-owned controls: unselected FilterChip outlines, the dial close pill, lens
-  rail circles, and review action buttons. The official WCAG 2.2 / WCAG2ICT 1.4.11 guidance requires
-  3:1 for visual information needed to identify active UI components or their state
-  ([W3C WCAG2ICT 2.2](https://www.w3.org/TR/wcag2ict-22/#non-text-contrast)).
-- **Concrete failure scenario:** In the Shoot tab, a low-vision operator sees several white option
-  labels on one dark panel but cannot reliably distinguish the 1 dp unselected control boundaries;
-  the selected white fill is clear, while the other active choices can read like inert text. The
-  same weak edge is the only circular boundary around the compact close/review affordances.
-- **Suggested fix:** Give active component boundaries at least 3:1 against their actual adjacent
-  surfaces (about 35% white clears 3:1 on `Pill`), or add another high-contrast shape/fill cue while
-  retaining the quiet 1 dp weight. Keep disabled styling separately exempt. Add palette math plus
-  rendered enabled/selected/disabled tests for every token consumer.
+- **Severity / confidence:** Medium / High.
+- **Exact regions:** contract at `camera/CameraState.kt:145-169`; advertised modes/fallback at `camera/CaptureCapabilities.kt:195-201,244-250,551-562`; unfiltered menu at `ui/controls/ProSheet.kt:1246-1269`; global quick cycles at `ui/controls/FnQuickActions.kt:122` and `ui/controls/ManualDials.kt:574-587`; optimistic state at `ui/CameraViewModel.kt:2943-2952`; OSD at `ui/overlays/Overlays.kt:962-970`; fallback-only tests at `camera/CaptureCapabilitiesTest.kt:7-31`.
+- **Problem:** `videoStabModes` can map STANDARD/ENHANCED to OFF and ENHANCED to ordinary ON when preview stabilization is absent. Nevertheless the menu/quick controls offer all values, state persists the requested enum, and captions/OSD render it (`STAB STD`, `STEADY`, `OIS+EIS · crop`) rather than the applied mode.
+- **Failure scenario:** OFF-only hardware can show Standard/Active while sending OFF. OFF+ON hardware can show Active plus extra crop while sending ordinary ON. At 300 mm the operator may depend on that false state when choosing exposure/framing.
+- **Suggested fix:** Derive one exact advertised stabilization list; normalize restored/live state when target caps arrive; make menu, quick cycles, and OSD consume the applied value. Test OFF-only, OFF+ON, and OFF+ON+PREVIEW matrices.
 
-## Balanced assessment and final sweep
+### CRIT37-03 — cycle 36's stronger affordance edge is also painted on disabled focal-rail choices
 
-The repo remains unusually strong in capability-based routing, finite queues, exact native/media
-ownership, EN/KO resource parity, modal focus exclusion, 48 dp target coverage, responsive phone/
-tablet geometry, and truthful host-vs-device evidence. I rechecked the cycle-35 audio, EXIF,
-capture-status, documentation, and dual-open changes specifically; only the nullable dual-open
-state defect survives that pass. The contrast issue is longstanding but was not present in current
-review/plan history as an unresolved finding. No additional current issue cleared the evidence bar.
+- **Severity / confidence:** Low / High.
+- **Exact regions:** enabled token contract at `ui/theme/Theme.kt:115-127`; disabled rail states at `ui/CameraScreenPolicy.kt:644-680`; unconditional border/text-only dim at `ui/CameraScreen.kt:2827-2905`; FilterChip-only coverage at `ui/controls/AffordanceEdgeComposeTest.kt:33-68`.
+- **Problem:** `RailChip` always paints the 36%-white enabled edge even when `presentation.enabled=false`; only its text drops to 38%. Disabled lens/zoom choices therefore retain the same strong structural cue as tappable choices.
+- **Failure scenario:** During recording or reconfiguration a sighted user sees fully outlined targets and attempts a control that semantics correctly marks unavailable.
+- **Suggested fix:** Resolve a quiet disabled rail edge and coherent selected-disabled fill; retain the enabled 3:1 token. Render the full rail state matrix on bright/dark frames.
+
+### CRIT37-04 — the two same-date privacy policies disclose different facts
+
+- **Severity / confidence:** Low / High.
+- **Exact regions:** `PRIVACY.md:1-38`; `privacy-policy/index.html:225-247`; in-app fallback at `app/src/main/res/values/strings.xml:125`; incomplete parity coverage in `tools/check_docs.py`.
+- **Problem:** all copies say updated 2026-08-24, but Markdown omits camera make/model, lens, exposure, shot-time metadata, the explicit no-GPS statement, and the broad-library read/no-transmission explanation present in HTML and in-app copy.
+- **Failure scenario:** GitHub and browser/in-app readers receive materially different disclosure depth from documents presenting themselves as the current policy.
+- **Suggested fix:** Synchronize the key facts across Markdown, HTML, and EN/KO resources and enforce parity, or generate all presentations from one canonical source.
+
+## Final sweep and validation
+
+- `python3 tools/check_docs.py`: 112 checks passed, 24 optional-private skips; it does not detect CRIT37-04.
+- Focused `QuickFnEnabledTest` and `PerformQuickFnTest`: passed, confirming current expectations encode CRIT37-01.
+- Cycle-36 findings are fixed and not re-reported. No further source-proven critic issue survived the final accessibility/responsive/loading/error/dark/i18n/perceived-performance/privacy sweep.
 
 ## Totals
 
-- New findings: 2
-- Severity: 1 High, 1 Medium
-- Confidence: 2 High
+- New findings: 4
+- Severity: 2 Medium, 2 Low
+- Confidence: 4 High

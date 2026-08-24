@@ -1,62 +1,70 @@
-# Performance review — cycle 36
+# Performance review — cycle 37
 
 Date: 2026-08-24
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
-Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
 ## Scope and inventory
 
-I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` first, then inventoried all
-486 tracked paths. I reviewed the complete production/runtime surface under `app/src/main`, the
-debug and instrumentation entry points, Gradle/release configuration, Python host/release tools,
-device-harness code, tests, the current aggregate, and completed plans through cycle 35. Historical
-reviews and plans were used to distinguish already-fixed findings from current behavior.
+I read `CLAUDE.md`, the complete as-built authority in `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`, then inventoried all 489 tracked paths. The review covered all 101 production
+Kotlin files, 220 JVM/Robolectric/Compose tests, Android instrumentation/debug sources, resources and
+manifests, Gradle/release inputs, Python and shell tooling, the device harness and its tests, and the
+committed documentation/review/plan history through completed cycle 36. Prior review findings were
+used as regression oracles rather than repeated as current issues.
 
-The performance pass covered every documented execution lane and its cross-file consumers:
-Compose/root-StateFlow publication and main-handler tickers; Camera2 setup, callback, request, ZSL,
-and teardown paths; GL notification coalescing, preview/encoder draws, analysis readback and its
-generation executor; still snapshot/encoding/publication/deletion/recovery; recording allocation,
-audio/codec drains, native finalization, and storage; review decode/player work; and all process-wide
-finite dispatchers. A repository-wide sweep checked executor construction and submission, queues,
-scheduled work, waits/joins, loops, provider/native calls, per-frame/per-buffer allocation, logging,
-collection bounds, shutdown, and retry/backoff behavior. I separately reviewed every cycle-35
-production delta so a newly introduced regression could not hide in previously reviewed code.
+The runtime pass followed every performance-sensitive lane and cross-file consumer: Camera2 route
+enumeration, dual/sequential open, request updates, pseudo-ZSL, capture delivery, and teardown; GL
+frame notification coalescing, preview/encoder drawing, bounded analysis readback, and generation
+retirement; processed/RAW still snapshot, encoding, publication, deletion, and recovery; recording
+allocation, microphone/codec/muxer work, native finalization, and storage tails; ViewModel tickers,
+StateFlow publication, zoom/control throttles, and Compose consumers; review decode/player lanes; and
+every process-wide provider/native dispatcher. Repository-wide searches covered executor/thread
+construction, queue cardinality, waits/joins, retry/backoff loops, per-frame/per-buffer allocation,
+logging, caches/collections, lifecycle shutdown, subprocess timeouts, and long-lived helper tools.
 
 ## Findings
 
 No new performance finding survived validation.
 
-## Verified behavior and final missed-issues sweep
+## Resolved findings distinguished from current behavior
 
-- The cycle-35 audio change now quantizes only RMS geometry and reduces raw held peaks to
-  threshold-preserving overload categories before broad `CameraUiState` equality. Sub-threshold
-  peak jitter no longer republishes the whole state, while exact clipping boundaries remain intact.
-- The complete EXIF-orientation path still decodes at a bounded sample size before allocating one
-  transformed bitmap. Normal orientation stays allocation-free at this stage, unpublished results
-  retain exact disposal ownership, and published bitmaps remain Compose/GC-owned by design.
-- Frame delivery remains coalesced to one latest-frame drain; analysis is single-flight,
-  generation-isolated, and capped to a 256 px long edge. Encoder and analysis continue to run only
-  for real camera frames, never preview-only self-redraws.
-- Pseudo-ZSL retains its measured three-frame bound and exact timestamp pairing. Burst, AEB, and
-  timelapse continue save-completion chaining, while SINGLE processed capture and RAW-only
-  publication retain their explicit finite admission paths.
-- Camera setup, Camera2 close proof, GL retirement, recorder detach/finalization, standby mic
-  recreation, launch recovery, retained-still retirement, recording storage, family-marker work,
-  media deletion, and review work all retain bounded waits, worker counts, queues, or a deliberate
-  terminal quarantine instead of multiplying resources after a native/provider wedge.
-- Main-thread work remains limited to state/lifecycle/UI operations and the explicitly accepted tiny
-  synchronous settings commit. CameraService, MediaProvider, bitmap/HEIF, codec finalization, and
-  review acquisition work stay off main.
-- The cycle-35 dual-open changes add no hot-loop cost; the pointer-state correctness defect found by
-  the causal pass is recorded in `tracer.md`, not misclassified as a throughput issue.
-- The final sweep found no new unbounded queue/collection, repeated executor creation, busy-spin,
-  per-frame diagnostic flood, main-thread blocking native/provider call, or reproducible CPU/memory
-  growth path. All relevant tracked files were accounted for; no production package, tool, or
-  cross-file execution lane was sampled out.
+- Cycle 34's stale dual-open wait is resolved: the sole setup lane polls ownership every 20 ms while
+  retaining the absolute two-second HAL deadline, so a superseded attempt yields promptly.
+- Cycle 35's audio-meter churn is resolved: post-gain peaks become threshold-preserving overload
+  categories before root state, while RMS alone is quantized; sub-threshold peak jitter no longer
+  republishes the whole `CameraUiState`.
+- Cycle 32's retained-family retry/Engine-retention defect is resolved: accepted retryable retirement
+  results arm one process-owned conflated exponential retry, live-row results wait for a mutation edge,
+  and Engine release unregisters its listener.
+- Cycle 36's dual-open correction adds only a lock-free monotonic liveness read at the supersession
+  boundary; it introduces no hot-loop, queue, or recurring allocation cost.
+
+## Final missed-issues sweep
+
+- Camera frame delivery remains latest-edge coalesced. Analysis is single-flight per GL generation,
+  reads at most a 256-pixel long edge, reuses its direct/byte buffers, and cannot queue work per frame.
+- Live zoom submits no Camera2 requests while the gesture moves; ViewModel zoom updates are coalesced
+  near 60 Hz, full controls are throttled, and the controller's sensor fast path retains one trailing
+  request rather than a per-event queue.
+- The pseudo-ZSL ring and result cache remain fixed at three images and six results. Processed SINGLE
+  snapshots are capped at two process-wide; burst, AEB, and timelapse advance only after the preceding
+  save completes; RAW-only publication uses a fixed two-worker/two-backlog owner.
+- Camera setup/close proof, GL stop, recorder setup/detach/finalization, standby microphone recreation,
+  launch recovery, family-marker work, retained-still cleanup, recording allocation/storage, review
+  deletion, and media review all retain explicit worker/queue/deadline bounds or irreversible native
+  quarantine. Engine/ViewModel replacement does not multiply those process owners.
+- Main-thread work remains state/UI/lifecycle work plus the explicitly accepted small synchronous
+  settings commit. CameraService, MediaProvider, bitmap/HEIF, codec finalization, recovery, and review
+  acquisition remain off main in normal operation.
+- No additional unbounded production queue or collection, repeated worker creation under a hot path,
+  busy-spin, per-frame log flood, main-thread provider/native call, or reproducible CPU/memory growth
+  path survived the final repository-wide check. Device-only cost claims remain limited to the
+  measurements and open checks already recorded by the repository.
 
 ## Totals
 
 - New findings: 0
 - Severity: none
-- Confidence: High that no additional current performance defect was established from repository
-  evidence; device-only cost claims remain limited to the field checks already recorded by the repo.
+- Confidence: High that no additional current performance defect is established by repository
+  evidence at this revision.

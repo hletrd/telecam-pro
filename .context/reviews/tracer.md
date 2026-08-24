@@ -1,120 +1,76 @@
-# Causal-tracing review — cycle 36
+# Causal-tracing review — cycle 37
 
 Date: 2026-08-24
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
-Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
 ## Scope and method
 
-I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` first and inventoried all
-486 tracked paths. I traced the full production graph rather than isolated functions: route
-enumeration and optics generations, cold start and dual/sequential Camera2 replacement, controller
-and session terminals, preview/encoder/analysis generations, ZSL and still correlation, still
-publication/deletion/recovery, recording admission/native/storage ownership, standby/recording mic
-handoff, review work, lifecycle/topology transitions, and main-thread state publication. Tests,
-current reviews, and completed plans through cycle 35 were checked as competing oracles so resolved
-findings were not repeated. The final sweep covered every tracked production package plus the
-build/release tools and device harness that assert cross-file behavior.
+I read the full committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`) and inventoried all 489 tracked paths before tracing the production graph.
+The trace covered route discovery/topology epochs, optics generations and rollback baselines,
+dual/sequential camera replacement, controller/session terminals, preview/encoder/analysis owners,
+tap/custom-WB/result correlation, ZSL and still-capture timestamps, still-family producer/publication/
+delete/recovery authority, REC allocation/native/storage ownership, standby/recording microphone
+handoff, review decode/player identities, ownerless delete consent, lifecycle replacement, and final
+UI publication. Tests, historical reviews, and completed plans through cycle 36 were checked as
+competing oracles. Build/release tools and device-harness evidence flow were included in the final
+cross-file sweep.
 
-## Finding
+## Findings
 
-### TRACE36-01 — dual-open supersession confuses a null outgoing owner with slot ownership and can restore a closed owner
+No new causal-tracing finding survived validation.
 
-- **Severity / confidence:** High / High.
-- **Status:** Confirmed state-model defect; activation is race-timed but requires no undocumented HAL
-  behavior. The null-alias failure follows directly from Kotlin reference equality and the
-  production call arguments.
-- **Exact evidence:**
-  - `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592` explicitly admits
-    cold-start/recovery with `controller == null`, snapshots that nullable value as `old`, then
-    installs `next`.
-  - A candidate native refusal clears the shared slot at
-    `CameraEngine.kt:3667-3674` before the setup task evaluates supersession.
-  - The supersession call derives `slotVacant = controller == null` and
-    `outgoingOwnsSlot = controller === old` independently at `CameraEngine.kt:3746-3753`.
-    When the attempt started with `old == null` and the candidate cleared the slot, both expressions
-    are true because `null === null` is true.
-  - `dualOpenSupersessionCleanup` then rejects more than one true predicate with `require(...)` at
-    `CameraEngine.kt:7037-7050`, so the setup executor throws `IllegalArgumentException` instead of
-    completing cleanup. An uncaught executor-task exception is process-fatal under Android's default
-    uncaught-exception handling and, at minimum, abandons the exact setup continuation.
-  - `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-133` tests only manually
-    supplied mutually exclusive booleans. It never derives them from nullable `old`/`controller`
-    identities and therefore misses the production `old=null, controller=null` alias.
-  - Supersession while Not-Ready is a supported production input, not only a synthetic debug call:
-    the Lens settings rows gate on rear route and recording, not `cameraReady`, at
-    `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProSheet.kt:1104-1155`, and route/mode
-    setters intentionally advance optics generations while older setup work is pending.
-  - The same model omits outgoing liveness. `CameraController.kt:331-370` begins closing a device on
-    disconnect/error. During dual-open, the old callback is intentionally identity-inert because the
-    slot contains `next` (`CameraEngine.kt:2913-2921`), yet the supersession branch restores `old`
-    solely from pointer layout at `CameraEngine.kt:3753-3760`. The comment at
-    `CameraEngine.kt:3578-3579` acknowledges that concurrent old-device eviction is legal, but no
-    closed/terminal state reaches the cleanup decision.
-- **Causal trace — null alias:** Start a cold recovery with no installed controller (`old=null`). The
-  task publishes `next`; its open fails and `onError` sets the shared controller to null. Before the
-  setup task reaches its post-wait boundary, a newer optics intent advances the generation. The stale
-  task enters supersession with `candidateOwnsSlot=false`, `slotVacant=true`, and
-  `outgoingOwnsSlot=true`; the helper's invariant throws. The newer intent is left behind a failed
-  setup edge rather than receiving a clean vacant baseline.
-- **Causal trace — closed outgoing competing hypothesis:** Start from a Ready `old`, install `next`,
-  and let the OS disconnect `old` while the candidate is opening. The old controller begins close,
-  while its Engine failure callback no-ops because it no longer owns the slot. If a newer optics
-  generation then supersedes the attempt, the cleanup sees `next` in the slot and restores the
-  already-closing/closed `old` plus its old selection/caps. A later preflight failure now sees a
-  non-null controller and takes rollback rather than cold-start recovery, which can leave a dead
-  controller as the only engine pointer and a permanently Not-Ready/black preview until another
-  lifecycle reopen.
-- **Concrete failure scenario:** Open after a transient CameraService refusal while an asynchronous
-  setting/debug optics command supersedes the cold attempt, or rapidly change route while another
-  camera client evicts the outgoing device. Depending on which case wins, the app either crashes on
-  the cleanup `require` or republishes a controller that has already entered teardown and can fail to
-  schedule the cold-recovery path.
-- **Suggested fix:** Stop encoding exact-owner state as three independently derived nullable-pointer
-  booleans. At minimum compute outgoing slot ownership only when an outgoing owner exists
-  (`old != null && controller === old`) and make the vacant/no-outgoing case a tested total outcome.
-  Prefer a typed dual-open terminal that carries candidate identity, optional outgoing identity, and
-  outgoing close/liveness state, so `RESTORE_OUTGOING` is impossible once that owner has begun
-  teardown. Add an exhaustive production-derived matrix including `old=null/controller=null`,
-  candidate self-clear, outgoing disconnect/close, supersession, pause/release, and a newer
-  controller occupying the slot. Prove every local controller is either installed live or closed
-  exactly once and that no state combination throws.
+## Cycle 36 regression trace
 
-## Competing hypotheses checked
+The prior `TRACE36-01`/`AGG36-01` dual-open defect is resolved in current HEAD and is not re-filed.
+The production branch now passes the actual nullable candidate/outgoing/current identities to
+`dualOpenSupersessionCleanup` and carries `CameraControllerRestorability` as monotonic terminal truth.
+The resulting state machine totalizes all relevant layouts:
 
-1. **Cold paths never enter dual-open:** rejected. `reconfigureCamera` computes
-   `recoverColdPreflight = startup || controller == null` but continues into the same dual-open body;
-   startup and topology convergence call it with `startup = true` or `controller == null` at
-   `CameraEngine.kt:1226-1233,1469-1479`.
-2. **The UI cannot supersede a Not-Ready cold attempt:** rejected. Lens settings remain enabled while
-   the camera is reconfiguring as long as the route is rear and REC is idle.
-3. **The candidate error cannot clear before supersession:** rejected. Its callback clears the slot
-   and counts down the exact wait latch before the setup task's ownership checks.
-4. **Nullable reference equality distinguishes absence from ownership:** rejected by language
-   semantics; two null references are referentially equal, which is exactly why both production
-   predicates become true.
-5. **A disconnected outgoing controller remains restorable:** rejected. `CameraController` begins
-   close after emitting the error, while the Engine's identity gate deliberately ignores a replaced
-   controller. No later code reopens that same controller object.
+- no outgoing owner plus a candidate-cleared vacant slot restores a truthful null baseline;
+- a live outgoing owner is restored or kept only when no genuinely newer controller occupies the
+  shared slot;
+- terminal outgoing owners produce a vacant baseline and are closed, never republished;
+- a different newer controller keeps the slot and forces release of the stale outgoing owner.
 
-## Final causal sweep and coverage confirmation
+Terminality is published before the controller's external failure callback and also when close begins.
+The Engine's monitor serializes the shared-slot mutation against identity-owned failure handling, so
+the liveness read cannot create the old callback-no-op/restore gap. The focused tests now consume
+production-shaped identities and cover absent, live, terminal, candidate, vacant, outgoing, and newer
+slot states.
 
-- The cycle-35 audio path now preserves raw peak thresholds before RMS quantization and coarse root
-  state, with no stale producer/consumer representation crossing left.
-- All eight EXIF transforms are applied after bounded decode and their disposal/publication ownership
-  remains exact; no late bitmap from a retired review identity can publish.
-- Ready/Not-Ready publication sequences, accepted-session generation checks, tap/custom-WB ownership,
-  ZSL timestamp correlation, still-family leases, deletion tombstones, recording setup/finalization,
-  ownerless system-delete terminals, launch recovery, and review player/decode owners retain their
-  identity rechecks at final publication boundaries.
-- Preview, encoder, and analysis failures remain separated by exact output ownership. Provider/native
-  wedges retain finite queues or quarantine and cannot silently authorize replacement resources.
-- No additional current wrong-clock correlation, stale rollback, double terminal, lost callback,
-  or cross-file invariant failure survived the missed-issues sweep. All 486 tracked paths were
-  inventoried and every relevant runtime/tooling subsystem was examined.
+## Competing hypotheses and final completeness sweep
+
+1. **A second rapid optics intent can snapshot an in-flight candidate as rollback truth:** rejected.
+   `beginOpticsTransaction` retains one `opticsRollbackBaseline` from the last Ready state, so later
+   intents do not adopt candidate selection/caps/controls as their rollback baseline.
+2. **A candidate/open timeout can orphan either CameraController:** rejected. Every post-wait branch
+   restores a live outgoing owner or closes local candidate/outgoing handles; sequential fallback is
+   admitted only after strict candidate/outgoing release proof.
+3. **REC topology change can reopen under a live recorder:** rejected. One lease spans provider
+   allocation, recorder publication, native teardown, and quarantine; route convergence can claim its
+   latest revision only after the exact admission/recorder lease terminates.
+4. **A late still sibling can escape a family delete:** rejected. Producer leases are registered before
+   Camera2 dispatch, publication claims share exact-family authority, delete intent is durable before
+   provider mutation, and the terminal producer edge always rechecks retirement. Retryable uncertainty
+   transfers to process-owned bounded rescan rather than disappearing with an Engine.
+5. **Old worker results can publish through replacement UI/native owners:** rejected. Ready events carry
+   monotonic publication sequences; optics/session/controller identities are rechecked at commit;
+   Engine callbacks share one close-and-drain lease; GL analysis, review decode/player, ownerless delete,
+   and provider tasks each use exact generation or owner checks at their terminal publication boundary.
+6. **Optimized Python can still turn assertion failures into green device evidence:** rejected as a
+   resolved Cycle 36 finding. Both outer and immutable-child entry boundaries fail closed before
+   snapshot/APK/ADB/report work when `sys.flags.optimize != 0`.
+
+The final sweep found no additional current wrong-clock comparison, nullable-identity alias, stale
+rollback, double terminal, lost completion, use-after-retire publication, or cross-file ownership gap.
+All production packages and repository evidence/tooling lanes were accounted for. Device-only behavior
+was not inferred beyond the committed field ledger.
 
 ## Totals
 
-- New findings: 1
-- Severity: 1 High
-- Confidence: 1 High
+- New findings: 0
+- Severity: none
+- Confidence: High that no additional current causal/ownership defect is established by repository
+  evidence at this revision.

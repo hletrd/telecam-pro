@@ -1,87 +1,127 @@
-# Aggregated deep review — cycle 36
+# Aggregated deep review — cycle 37
 
 Date: 2026-08-24
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
-Workspace: clean detached worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
+Workspace: clean detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
 ## Coverage and aggregation
 
 Five parallel specialist groups covered code-reviewer, architect, performance, tracer, security,
-debugger, verifier, test engineer, critic, document specialist, native Android designer, and the
-repository-local QA-adversary role. Every group inventoried all 486 tracked paths, read the complete
-committed project authorities, examined the relevant implementation/tests/tooling and cross-file
-interactions, and performed a final missed-issue sweep. The Compose UI was reviewed from native
-source, semantics, resources, and tests; browser automation is not applicable. Device-only behavior
-was not run or inferred because deployment and device mutation were outside this invocation.
+debugger, verifier, test engineer, critic, document specialist, and native Android designer. No
+additional repository-local reviewer agent was registered. Every group inventoried all 489 tracked
+paths, read the complete committed authorities, examined its relevant implementation, tests,
+tooling, resources, and cross-file interactions, and completed a final missed-issue sweep. The native
+Compose UI was reviewed from source, semantics, resources, and tests; browser automation is not
+applicable. No device behavior was run or inferred.
 
-The 10 raw specialist findings deduplicate to three current root causes. The nullable dual-open
-state defect had broad agreement across six roles; the optimized-Python evidence failure had verifier
-and test-engineer agreement plus a concrete subprocess reproduction; the active-control contrast
-gap had critic/designer agreement and exact palette math. Highest severity/confidence is preserved.
+The 16 raw specialist findings deduplicate to seven current root causes. Optimized-Python host-gate
+integrity and ZSL boundary drift each have cross-agent agreement and concrete reproductions. Gamma,
+stabilization, disabled-rail styling, and privacy drift have cross-role critic/document/designer
+agreement. The stale source comment is independently confirmed. Highest severity and confidence are
+preserved.
 
 ## Findings
 
-### AGG36-01 — dual-open supersession is not total for absent or terminal outgoing owners
-
-- **Severity / confidence:** High / High
-- **Sources:** code-reviewer, architect, tracer, critic, document-specialist, QA-adversary
-  (**broad cross-agent agreement**)
-- **Status:** confirmed state-model defect; triggering interleavings are race-timed but legal.
-- **Evidence:** `camera/CameraEngine.kt:3545,3580-3592,3667-3674,3746-3765,7037-7050` admits a
-  controller-less dual-open attempt, derives `slotVacant = controller == null` and
-  `outgoingOwnsSlot = controller === old` independently, then requires at most one flag. When
-  `old == null && controller == null`, Kotlin makes both flags true and the helper throws.
-  `camera/CameraController.kt:337-374` also begins closing an evicted outgoing device after its
-  Engine callback; because the replaced controller's callback is identity-inert, the current
-  pointer-only cleanup can restore that already-terminal owner. The Boolean-only matrix in
-  `DualOpenWaitTest.kt:102-135` omits both production-shaped cases, while cycle 35's plan claims
-  exhaustive coverage.
-- **Failure:** a candidate open refusal plus a newer optics intent can crash/abort the setup lane;
-  outgoing eviction during the same window can instead republish a closing CameraController and
-  leave a black, permanently Not-Ready preview until another lifecycle reopen.
-- **Plan direction:** make cleanup consume production identities plus explicit outgoing
-  restorability, totalize the absent-owner state, refuse restoration after terminal failure/close,
-  and add an exhaustive identity-derived matrix. Supersede the cycle-35 evidence claim without
-  rewriting its history.
-
-### AGG36-02 — optimized Python can attest failed device checks as PASS
-
-- **Severity / confidence:** High / High
-- **Sources:** verifier, test-engineer (**cross-agent agreement**)
-- **Status:** confirmed with a focused optimized-interpreter reproduction.
-- **Evidence:** `device-tests/cases.py` owns device verdicts with 315 plain `assert` statements;
-  `device-tests/dtest/framework.py:132-168` treats normal return as PASS and only converts
-  `AssertionError` to failure. `device-tests/run.py:547-566` forks and `runpy`-executes the immutable
-  child in the same interpreter without rejecting `sys.flags.optimize != 0`, so `python -O` and
-  `PYTHONOPTIMIZE=1` strip those checks in both outer and child execution. The current 183 harness
-  self-tests have no optimized-mode contract. A smoke case containing only `assert False` returned
-  PASS and exit 0 under `PYTHONOPTIMIZE=1`.
-- **Failure:** CI/operator optimization can produce a green report and attestation for a frozen
-  preview, fatal camera log, wrong container/codec/raster/FPS, or missing output because the checks
-  vanish while report generation continues.
-- **Plan direction:** fail closed before snapshot/APK/ADB work whenever Python optimization is
-  enabled, repeat the guard at the inherited child boundary, and add subprocess regressions for both
-  `python -O` and environment-only `PYTHONOPTIMIZE=1`. Keep the guard even if assertions are later
-  migrated to an always-on check helper.
-
-### AGG36-03 — enabled custom-control outlines miss the 3:1 non-text contrast floor
+### AGG37-01 — optimized Python can false-green the authoritative host documentation gate
 
 - **Severity / confidence:** Medium / High
+- **Sources:** verifier, test-engineer, security-reviewer (**cross-agent agreement**)
+- **Status:** confirmed with normal-versus-optimized evidence.
+- **Evidence:** `tools/verify_host.py:50-98` accepts `-O` and inherited `PYTHONOPTIMIZE`, then invokes
+  `tools/check_docs.py` through the same interpreter. `tools/check_docs.py:320,323,362,364,433`
+  uses removable assertions for operational invariants, including exact-millisecond ZSL authority.
+  With `ZSL_MAX_FRAME_AGE_NS` changed in memory to `400_000_001L`, normal execution fails while
+  optimized execution reports all 112 checks green. The cycle-36 device-runner guard protects only
+  `device-tests/run.py`.
+- **Failure:** CI or a maintainer can receive a green authoritative host result after Python has
+  deleted correctness-bearing documentation checks.
+- **Plan direction:** reject optimized execution at the outer host verifier and documentation-tool
+  entries, migrate operational assertions to always-on verdicts, and add `-O` plus environment-only
+  optimization regressions.
+
+### AGG37-02 — Gamma quick controls stay enabled for a singleton SDR projection
+
+- **Severity / confidence:** Medium / High
+- **Sources:** critic, document-specialist, designer (**cross-agent agreement**)
+- **Status:** confirmed capability-projection and interaction defect.
+- **Evidence:** `camera/CameraState.kt:1164-1187,1495-1501` projects no-Main10 HEVC to `[SDR]`, and
+  `ui/controls/ProControls.kt:919-975` correctly filters the menu. In contrast,
+  `ui/controls/ControlCycles.kt:230-244`, `FnQuickActions.kt:98-143`, and
+  `ManualDials.kt:621-632` keep Gamma hot and cycle the global list; `CameraViewModel.kt:2283-2299`
+  normalizes every unsupported request back to SDR. Existing quick-action tests encode that gap.
+- **Failure:** on an 8-bit HEVC encoder or before inventory truth arrives, Fn overlay, My Menu, and
+  expanded DISP provide tap feedback but never change Gamma, reading as a broken control.
+- **Plan direction:** derive value, enablement, and cycling from one advertised transfer projection;
+  disable singleton/loading states and test every quick surface.
+
+### AGG37-03 — stabilization UI reports requested labels instead of the HAL mode available
+
+- **Severity / confidence:** Medium / High
+- **Sources:** critic, document-specialist, designer (**cross-agent agreement**)
+- **Status:** confirmed capability/state/OSD truth defect.
+- **Evidence:** `camera/CaptureCapabilities.kt:195-201,244-250,551-562` can resolve requested
+  STANDARD/ENHANCED to OFF or ordinary ON, but `ui/controls/ProSheet.kt:1246-1269`,
+  `FnQuickActions.kt:122`, `ManualDials.kt:574-587`, `CameraViewModel.kt:2943-2952`, and
+  `ui/overlays/Overlays.kt:962-970` expose and retain the unfiltered request.
+- **Failure:** OFF-only hardware can show `STAB STD`/`STEADY`; OFF+ON hardware can claim Active and
+  extra crop while only ordinary stabilization is applied.
+- **Plan direction:** single-source exact advertised choices, normalize state when route capabilities
+  arrive, and make menu, quick controls, captions, and OSD consume applied truth with capability
+  matrix coverage.
+
+### AGG37-04 — disabled focal-rail choices paint the full enabled-strength outline
+
+- **Severity / confidence:** Low / High
 - **Sources:** critic, designer (**cross-agent agreement**)
-- **Status:** confirmed numeric WCAG2ICT non-text-contrast gap.
-- **Evidence:** `ui/theme/Theme.kt:117-126` defines active `AffordanceEdge` as 18% white and
-  explicitly records its approximately 1.8:1 result. Over opaque `Pill` (`#1C1C1E`) it composites
-  to approximately `#454546`, only 1.78:1. Enabled unselected FilterChip boundaries and compact
-  close/lens/review buttons consume this edge in `ui/controls/ProControls.kt:203-219,340-400`,
-  `ui/controls/ManualDials.kt:431-458`, `ui/CameraScreen.kt:2827-2891`, and
-  `ui/review/MediaReview.kt:1715-1734`. These authored active component boundaries are subject to
-  the WCAG 2.2 / WCAG2ICT 1.4.11 3:1 floor; disabled controls remain a separate exception.
-- **Failure:** low-vision operators can see selected white fills but lose the only boundary that
-  identifies other enabled choices/actions, making live controls read as inert labels or glyphs.
-- **Plan direction:** raise only the enabled affordance edge to at least 3:1 on its dark plates while
-  preserving the quiet 1 dp Sony-style geometry and separate disabled styling. Add palette math and
-  rendered/state coverage so enabled, selected, disabled, focus, bright-frame, and dark-frame
-  presentations cannot regress.
+- **Status:** confirmed visual-state regression after the cycle-36 enabled-edge correction.
+- **Evidence:** `ui/theme/Theme.kt:115-127` defines the 36%-white enabled edge, while
+  `ui/CameraScreen.kt:2827-2905` paints it unconditionally for `RailChip`; disabled policy at
+  `ui/CameraScreenPolicy.kt:644-680` dims only text. Existing Compose coverage exercises FilterChip,
+  not the focal rail.
+- **Failure:** recording/reconfiguration states visually advertise unavailable lens choices as
+  strongly as tappable choices even though semantics correctly disable them.
+- **Plan direction:** add a quiet disabled rail edge and coherent selected-disabled fill while
+  retaining the enabled 3:1 edge; cover the full rail state matrix over bright and dark frames.
+
+### AGG37-05 — ZSL freshness prose excludes a boundary production admits
+
+- **Severity / confidence:** Low / High
+- **Sources:** verifier, test-engineer (**cross-agent agreement**)
+- **Status:** confirmed documentation/behavior mismatch.
+- **Evidence:** `camera/ZslAdmission.kt:87-90` rejects only ages greater than 400 ms, and
+  `camera/ZslAdmissionTest.kt:93-98` explicitly admits exactly 400 ms. `CLAUDE.md:219-221` and
+  `docs/ARCHITECTURE.md:68` promise `< 400 ms`; `tools/check_docs.py:366-375` checks only the numeral,
+  not comparator parity.
+- **Failure:** the green contract checker permits code/tests and both top-level authorities to define
+  different admissible sets.
+- **Plan direction:** align the authorities with the inclusive code/test evidence and make the docs
+  gate validate comparator as well as number.
+
+### AGG37-06 — same-date privacy-policy presentations disclose different facts
+
+- **Severity / confidence:** Low / High
+- **Sources:** critic, document-specialist (**cross-agent agreement**)
+- **Status:** confirmed current-policy drift.
+- **Evidence:** `PRIVACY.md:1-38` omits capture metadata, the explicit no-location/GPS statement, and
+  broad on-device library-read/no-transmission facts present in `privacy-policy/index.html:225-247`
+  and the EN/KO in-app policy strings. All presentations carry the same update date, and
+  `tools/check_docs.py` does not enforce these facts.
+- **Failure:** repository readers receive a materially less complete policy than browser and in-app
+  readers while every copy presents itself as current.
+- **Plan direction:** synchronize all active copies and add parity checks for metadata, no location,
+  and on-device library access.
+
+### AGG37-07 — the MR-row comment falsely equates its 0.18 tint with `AffordanceEdge`
+
+- **Severity / confidence:** Low / High
+- **Sources:** code-reviewer
+- **Status:** confirmed source-documentation drift.
+- **Evidence:** `ui/controls/ProSheet.kt:695-698` calls the independent amber
+  `ManualActive.copy(alpha = 0.18f)` wash “the white AffordanceEdge — same number,” but cycle 36
+  raised `AffordanceEdge` to 0.36 in `ui/theme/Theme.kt:115-127`.
+- **Failure:** a later palette cleanup can mistakenly couple the quiet amber MR selection wash to
+  the stronger interactive-boundary token.
+- **Plan direction:** correct the comment without changing either pixel value.
 
 ## Agent failures
 
@@ -89,8 +129,8 @@ None. Every available reviewer returned and wrote its provenance report.
 
 ## Totals
 
-- Raw specialist findings: 10
-- Deduplicated current findings: 3
-- Severity: 2 High, 1 Medium
-- Confidence: 3 High
+- Raw specialist findings: 16
+- Deduplicated current findings: 7
+- Severity: 3 Medium, 4 Low
+- Confidence: 7 High
 - Deferred findings: none at review stage; Prompt 2 must schedule or explicitly defer every item.

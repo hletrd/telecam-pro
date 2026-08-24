@@ -1,67 +1,55 @@
-# Native Android designer review — cycle 36
+# Native Android designer review — cycle 37
 
 Date: 2026-08-24
 
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
 
-Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
 ## Scope and method
 
-This is a native Jetpack Compose app, so browser automation is not applicable. I inventoried all 486
-tracked paths and examined every production/debug Compose surface, UI-facing state/action/policy
-seam, resources, manifests/theme, UI/Compose/Robolectric/instrumented tests, deterministic snapshot
-host, device-harness UI contracts, and the checked-in phone/tablet assets (which are historical
-visual references, not current device proof). The pass covered information architecture,
-affordances, focus/keyboard/D-pad/Switch Access, TalkBack semantics, 48 dp targets, WCAG 2.2 via
-WCAG2ICT, phone/large-screen/freeform behavior, loading/empty/error/delete states, validation,
-fixed-dark/system-bar behavior, EN/KO, RTL ownership, and perceived-performance boundaries.
+This is native Compose, so browser automation is not applicable. I inventoried all 489 tracked paths
+and reviewed production/debug Compose, semantics, resources, manifests/theme, UI state/actions,
+relevant tests, and historical assets (history only; their manifest marks blockers). Coverage included
+IA, affordances, non-touch/TalkBack/Switch Access, target size/contrast, phone/large-screen/freeform,
+font scale/insets, EN/KO/RTL, dark-only UI, loading/error/delete states, and perceived performance.
 
-## Finding
+## Findings
 
-### DES36-01 — enabled custom-control outlines render at only 1.78:1 contrast
+### DES37-01 — Gamma is a hot no-op on no-Main10 hardware and while encoder truth is loading
 
-- **Severity / confidence / status:** Medium / High / Confirmed WCAG2ICT non-text-contrast gap.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt:62,117-126`;
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:203-219,340-362,369-400`;
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ManualDials.kt:431-458`;
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2832-2891`;
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:1715-1734`.
-- **Problem:** The shared active `AffordanceEdge` is 18% white. Composited over the sheet's
-  `#1C1C1E` Pill it becomes about `#454546`, a measured **1.78:1** contrast ratio. The token comment
-  itself records roughly 1.8:1, but active unselected FilterChip boundaries, a close pill, focal-rail
-  circles, and review action buttons depend on that edge. WCAG 2.2's non-web application guidance
-  requires 3:1 for authored visual information needed to identify active controls or state
-  ([W3C WCAG2ICT 1.4.11](https://www.w3.org/TR/wcag2ict-22/#non-text-contrast)); inactive controls
-  are the exception, not these enabled choices.
-- **Concrete failure scenario:** On the Shoot/Exposure/Image tabs, a low-vision photographer can
-  distinguish the selected white-filled option but the other enabled choices lose their component
-  boundary and read as free-floating labels. On the finder/review, the same token weakens the only
-  circular edge around compact actions over a dark plate.
-- **Suggested fix:** Keep the Sony-style 1 dp quiet geometry, but raise enabled edge contrast to
-  at least 3:1 on each real surface (approximately 35% white on Pill), or introduce a separate
-  high-contrast fill/shape cue. Preserve a quieter disabled token. Add palette and rendered tests
-  for enabled/unselected, selected, disabled, focus, bright-frame, and dark-frame states rather than
-  pinning `0.18f` as intrinsically correct.
+- **Severity / confidence:** Medium / High.
+- **Exact regions:** `camera/CameraState.kt:1164-1187,1495-1501`; `ui/controls/ProControls.kt:919-975`; `ui/controls/ControlCycles.kt:230-244`; `ui/controls/FnQuickActions.kt:98-143`; `ui/controls/ManualDials.kt:621-632`; `ui/CameraViewModel.kt:2283-2299`.
+- **Problem:** the menu withholds unsupported non-SDR options, but Fn overlay, My Menu/Recent, and expanded DISP keep Gamma enabled. A tap requests an unsupported curve and normalizes back to SDR, with press feedback but no change, unavailable/loading state, or explanation.
+- **Failure scenario:** a TB336ZU-class user repeatedly taps `Gamma / SDR`, reads the lack of response as broken touch, and cannot reconcile it with the singleton settings row.
+- **Suggested fix:** derive value, enablement, and next action from one projected list; dim singleton/pre-inventory state with truthful semantics. Test all quick surfaces in EN/KO and non-touch activation.
 
-## Confirmed strengths and missed-issue sweep
+### DES37-02 — stabilization can claim OIS+EIS/extra crop while applied mode is OFF or Standard
 
-- The nine-tab IA, Fn/My Menu/MR model, quiet OSD, and explicit loading/empty/error/delete surfaces
-  remain coherent with the Sony/Xperia reference.
-- Keyboard/D-pad/manual-slider and review-pan paths, modal finder exclusion, initial close focus,
-  stable pane titles, localized semantics, and 48 dp hit floors are comprehensively covered.
-- Phone portrait lock and rotatable sw600dp+ layouts share one physical-bottom control layout;
-  reading elements counter-rotate without moving controls. Large-font and narrow-window reflow,
-  independent tab scroll state, insets, and RTL reading-vs-physical geometry are explicit and tested.
-- The app is deliberately dark-only; both system bar icon sets are pinned for that surface. EN/KO
-  resources are paired, while camera abbreviations and trademarks are declared exceptions.
-- High-frequency audio/scopes/level semantics are coarse and non-live, zoom/control updates are
-  coalesced, and review work is bounded/latest-wins. No additional source-proven UI defect survived
-  the final sweep. Hardware pixels, actual TalkBack speech, gesture feel, and field behavior remain
-  unclaimed without device evidence.
+- **Severity / confidence:** Medium / High.
+- **Exact regions:** `camera/CaptureCapabilities.kt:195-201,244-250,551-562`; `camera/CameraState.kt:145-169`; `ui/controls/ProSheet.kt:1246-1269`; `ui/controls/FnQuickActions.kt:122`; `ui/controls/ManualDials.kt:574-587`; `ui/CameraViewModel.kt:2943-2952`; `ui/overlays/Overlays.kt:962-970`.
+- **Problem:** every device sees Off/Standard/Active and global quick cycling regardless of advertised HAL modes. Controller fallback changes the wire value, but chip, Fn value, caption, and OSD retain the request. This is false live instrument feedback, not merely an unavailable option.
+- **Failure scenario:** OFF-only hardware displays `STAB STD`/`STEADY`; OFF+ON hardware displays Active plus `OIS+EIS · crop`, though no distinct active-crop profile is applied.
+- **Suggested fix:** show exact profiles, normalize unsupported restored state at caps acceptance, and make menu/Fn/OSD consume applied truth. Cover route changes and capability matrices visually and semantically.
+
+### DES37-03 — disabled focal-rail controls keep the full enabled-strength outline
+
+- **Severity / confidence:** Low / High.
+- **Exact regions:** `ui/theme/Theme.kt:115-127`; `ui/CameraScreenPolicy.kt:644-680`; `ui/CameraScreen.kt:2827-2905`; missing rail coverage at `ui/controls/AffordanceEdgeComposeTest.kt:33-68`.
+- **Problem:** cycle 36's 36%-white enabled edge is unconditional in `RailChip`; only disabled text dims. Recording/reconfiguring choices retain the same boundary cue as tappable choices.
+- **Failure scenario:** visual presentation invites a lens change while TalkBack correctly calls it unavailable.
+- **Suggested fix:** use a quiet disabled rail edge and coherent selected-disabled treatment without weakening the enabled edge; render all states over bright/dark frames.
+
+## Confirmed strengths and final sweep
+
+The nine-tab IA, preview-first OSD, Fn/My Menu/MR model, critical/error/delete surfaces, modal focus,
+review non-touch controls, primary 48 dp targets, responsive physical geometry, EN/KO pairing,
+dark-system-bar contract, consumer-gated telemetry, and bounded review work remain coherent. Apart from
+the three findings, no additional source-proven accessibility, responsive, localization,
+loading/error, or perceived-performance issue survived.
 
 ## Totals
 
-- New findings: 1
-- Severity: 1 Medium
-- Confidence: 1 High
+- New findings: 3
+- Severity: 2 Medium, 1 Low
+- Confidence: 3 High

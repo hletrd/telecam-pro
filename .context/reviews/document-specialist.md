@@ -1,59 +1,52 @@
-# Document specialist review — cycle 36
+# Document specialist review — cycle 37
 
 Date: 2026-08-24
 
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
 
-Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
 ## Coverage
 
-I read the complete committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`,
-`docs/FIELD_CHECKS.md`), plus `README.md`, `PRIVACY.md`, the bundled privacy policy, Play
-submission/data-safety material, device-harness documentation, every completed plan, current review
-provenance, manifests/build configuration, version catalog, EN/KO resources, and the documentation
-checker and fixtures. `python3 tools/check_docs.py` passed 112 public checks with 24 optional-private
-checks skipped. All 486 tracked paths were inventoried; current claims were checked against code and
-tests rather than accepted from comments. No device evidence was generated or inferred.
+I inventoried all 489 tracked paths and read the current authorities, README, field ledger,
+privacy/data-safety/Play material, release plans, resources/manifests, relevant implementation/tests,
+and prior reviews. Cycle-36 history is resolved. `tools/check_docs.py` passes 112 checks with 24
+optional-private skips; its current contracts do not cover the mismatches below.
 
-## Finding
+## Findings
 
-### DOC36-01 — cycle 35's completion evidence overclaims an exhaustive dual-open matrix
+### DOC37-01 — the documented shared capability projection is false for Gamma quick controls
 
-- **Severity / confidence / status:** Medium / High / Confirmed current evidence mismatch, sharing
-  the code root cause reported as CRIT36-01.
-- **Exact regions:** plan promise and completion claim at
-  `docs/plans/2026-08-24-rpf-cycle35.md:19-27,101-108`; production nullable identities at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592,3746-3753,
-  7037-7050`; test inputs at
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-136`.
-- **Problem:** The latest completed plan says the transition matrix covers candidate-current,
-  candidate-cleared, and newer-controller states and proves no outgoing owner is lost. The tests
-  instead pass three already-separated booleans. Production derives those booleans from nullable
-  object identities. For the expressly admitted `old == null` path after candidate self-clear,
-  `slotVacant` and `outgoingOwnsSlot` are both true because `null === null`; the helper throws on the
-  exact state the completion note claims the matrix covers.
-- **Concrete failure scenario:** A maintainer or later review trusts the newest completed plan as
-  proof that candidate-cleared supersession is closed and therefore skips the missing cold/no-old
-  permutation. The authoritative host gate remains green because the fixture never derives the
-  booleans from nullable identities, while production can crash in that permutation.
-- **Suggested fix:** Correct the code and add the production-shaped identity matrix, then append a
-  truthful cycle-36 superseding completion note. Do not rewrite cycle-35 history; explicitly state
-  that its Boolean-only matrix missed the null-alias case. Extend the completion-evidence review
-  discipline so an “exhaustive transition matrix” claim cites a test that constructs the same typed
-  state production consumes.
+- **Severity / confidence:** Medium / High.
+- **Exact regions:** authority at `CLAUDE.md:916-934` and `docs/ARCHITECTURE.md:1201-1206`; transfer projection at `camera/CameraState.kt:1164-1187`; correct menu filtering at `ui/controls/ProControls.kt:919-975`; contrary quick paths at `ui/controls/ControlCycles.kt:230-244`, `ui/controls/FnQuickActions.kt:129`, and `ui/controls/ManualDials.kt:621-632`.
+- **Mismatch:** authorities say settings/Fn share a capability projection and cycle only advertised choices. A no-Main10 HEVC encoder has `[SDR]`, but quick Gamma stays enabled, requests the global next value, and `ui/CameraViewModel.kt:2283-2299` normalizes it back to SDR.
+- **Failure scenario:** maintainers treat Fn parity as enforced while a user sees a hot silent no-op across three quick surfaces.
+- **Suggested fix:** make every surface consume `availableTransfers`; add a docs/test contract for singleton lists; retain the authority once executable parity is restored.
 
-## No additional documentation drift
+### DOC37-02 — stabilization is documented as capability-gated while UI/OSD expose requested fiction
 
-Active AGP/Kotlin/Gradle/Compose/SDK values agree with the catalog and wrapper; pseudo-ZSL truth is
-400 ms everywhere active; every open FIELD_CHECKS reference resolves to A3/A4/D1/E1/E2; privacy
-and Data Safety match the manifest and ownerless-media behavior; release docs consistently reject
-mutable or stale artifacts; the two stale phone screenshots remain explicitly blocking and
-hash-pinned. Architecture names every production Kotlin module and correctly scopes PMA110-specific
-facts, DNG routing, Loupe Overview, large-screen rotation, and host/device evidence.
+- **Severity / confidence:** Medium / High.
+- **Exact regions:** `camera/CameraState.kt:145-169`; `CLAUDE.md:916-929`; `docs/ARCHITECTURE.md:1201-1206`; fallback at `camera/CaptureCapabilities.kt:244-250,551-562`; unfiltered UI at `ui/controls/ProSheet.kt:1246-1269`, `ui/controls/FnQuickActions.kt:122`, `ui/controls/ManualDials.kt:574-587`, and `ui/overlays/Overlays.kt:962-970`.
+- **Mismatch:** OFF-only hardware can be labeled Standard/Active while the request is OFF; without PREVIEW_STABILIZATION the UI can claim Active/extra crop while the request is Standard ON. The clean-clone authority overstates as-built UI truth.
+- **Failure scenario:** a maintainer or reviewer trusts OSD as accepted session truth even though acceptance remains private to controller fallback and never reconciles UI state.
+- **Suggested fix:** project exact choices into menu/Fn/state/OSD and reconcile restore on target caps. Add a docs contract tying UI projection to `videoStabModes`.
+
+### DOC37-03 — `PRIVACY.md` is less complete than the same-date published and in-app policies
+
+- **Severity / confidence:** Low / High.
+- **Exact regions:** `PRIVACY.md:1-38`; `privacy-policy/index.html:225-247`; `app/src/main/res/values/strings.xml:125`; Korean counterpart `app/src/main/res/values-ko/strings.xml:112`.
+- **Mismatch:** HTML and EN/KO fallback disclose ordinary camera/lens/exposure/time metadata, no location/GPS, and local library read without transmission. Markdown, with the identical update date, omits those facts.
+- **Failure scenario:** repository and published/in-app readers receive different current-policy disclosures; the green docs checker gives no drift signal.
+- **Suggested fix:** synchronize Markdown, preferably generate presentations from one fact set, and require metadata/no-location/on-device-read facts in all active copies.
+
+## Final sweep
+
+Toolchain versions, Android floor, release readiness, stale screenshot blockers, field status,
+permissions, ownerless-media caveats, Loupe exception, DNG routing, and cycle-36 evidence agree with
+current source. Historical evidence is clearly labeled superseded. No additional drift survived.
 
 ## Totals
 
-- New documentation findings: 1
-- Severity: 1 Medium
-- Confidence: 1 High
+- New findings: 3
+- Severity: 2 Medium, 1 Low
+- Confidence: 3 High

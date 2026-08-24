@@ -1,75 +1,69 @@
-# Debugger review — cycle 36
+# Debugger review — cycle 37
 
 Date: 2026-08-24
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54`
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle36.TOpdQ8`
+Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082`
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
-## Scope, complete inventory, and method
+## Scope, inventory, and method
 
-I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` before the
-review, then used the retained reviews and completed cycle-35 plan only to identify fixed regression
-hypotheses. Findings were required to survive current-HEAD source and cross-file validation.
+I reviewed only the detached `origin/main` worktree. `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md` were read as current authority. Retained reviews and the completed cycle-36
+plan were used as regression hypotheses, not current findings.
 
-All 486 tracked paths were inventoried: 101 production Kotlin files, three debug Kotlin files, four
-instrumented-test files, 218 JVM/Robolectric/Compose tests, 32 Python files, 68 Markdown documents,
-38 configuration/resource/script files, 16 binary assets, and the remaining repository metadata,
-licenses, and wrapper inputs. Every path was included in the type/no-follow and SHA-256 inventories;
-all source/configuration/text paths were included in repository-wide risk and contract searches.
+All 489 tracked paths were inventoried: 101 production Kotlin files, three debug Kotlin files, four
+instrumented-test files, 220 JVM/Robolectric/Compose tests, 32 Python files, 69 Markdown documents,
+16 binary assets, and 44 other tracked inputs. The whole tracked tree was included in file-type,
+Git-mode/no-symlink, digest, suspicious-token, concurrency, exception, and subprocess searches. The
+causal pass then traced the executable cross-file graphs most likely to conceal latent failures:
 
-The causal debugger pass traced the full executable graph and its test/tool counterparts:
+- Camera2 inventory/selection, optics transactions, dual-open/sequential replacement, callback and
+  teardown terminals, session fallback, request fast paths, capture correlation/ZSL, watchdogs,
+  recovery, pause, and release;
+- GL/EGL generations, frame coalescing, analysis/motion buffers, preview replacement, encoder
+  attachment, and exact resource retirement;
+- still snapshot budgets, HEIF/JPEG/DNG publication, capture-family leases, recording pre-native
+  allocation, standby microphone handoff, codec/muxer finalization, and post-native storage;
+- MediaStore restoration, tombstones, pending/discard journals, process retries, ownerless delete
+  ActivityResult ownership, review decoding/playback, and provider timeout behavior;
+- Activity/ViewModel permissions and lifecycle, settings restore, modal/hardware input ownership,
+  timers/tickers, and immutable build/device-evidence tooling.
 
-- camera inventory/selection, capability normalization, dual-open and sequential replacement,
-  optics generations, callback dispatch, session fallback, request updates, capture correlation,
-  pseudo-ZSL, watchdogs, pause/release, and terminal native quarantine;
-- GL/EGL input and output generations, frame coalescing, analysis buffers, motion history, preview
-  replacement, encoder attachment, and exact resource retirement;
-- processed still, HEIF/JPEG/DNG, snapshot budgets, family-producer leases, recording allocation,
-  standby microphone handoff, audio read/gain/peak publication, codec/muxer drain/finalization, and
-  storage publication/discard terminals;
-- capture-family tracking, tombstone reservation, durable deletion, exact-family retirement,
-  ownerless system-consent lifecycle, launch recovery, provider timeout/overflow, and late outputs;
-- Activity/ViewModel permission and lifecycle edges, settings restoration, optics recall, modal and
-  hardware-key ownership, timers/tickers, review decoding/playback, EXIF transforms, and heavy-work
-  lane replacement;
-- immutable debug/release builders, dependency/source/output evidence, release checker, device-test
-  parser/retry/report paths, subprocess and filesystem boundaries, and documentation gates.
-
-The final cycle-35 changes were re-traced under competing interleavings rather than accepted from
-their tests: candidate callback-clear versus transaction supersession, vacant/outgoing/newer shared
-camera slots, still-capacity refusal, exact PCM threshold boundaries, all eight EXIF orientations,
-and completed-plan date/numeric-cycle ordering.
+The cycle-36 dual-open fix received a separate interleaving review. I checked candidate self-clear,
+vacant/current/outgoing/newer shared slots, null outgoing, terminal outgoing, callback-before-close,
+and pause/newer-intent ownership. Terminality is published before the Engine callback, close also
+revokes restoration, newer non-null owners are not overwritten, and an absent/terminal outgoing
+controller converges to vacancy while its native owner is released. The new state remains coherent
+under the setup executor and callback-lane ordering; no current-HEAD race survived.
 
 ## Verification evidence
 
-- Forty-two focused current-HEAD tests passed with zero failures or errors. The selected suite covers
-  `DualOpenWaitTest`, `StillCaptureAdmissionStatusTest`, `AudioGainTest`,
-  `ReviewExifOrientationTest`, `DebugCameraControlSecurityTest`, and both ownerless-media delete
-  lifecycle/operation suites.
-- The complete cycle-35 delta and current production call sites were checked against prior review
-  findings. Candidate self-removal no longer loses the outgoing controller; a genuinely newer
-  non-null controller prevents stale restoration and causes exact outgoing release.
-- Audio display state retains quantized RMS only for geometry while classifying raw held peaks before
-  lossy representation; channel-count equality is enforced at `AudioLevelFrame` construction.
-- EXIF transformation is performed only after bounded decode, covers all mirrored/rotated standard
-  orientations, and has asymmetric-pixel/dimension tests. Failure retains the original usable decode.
-- The worktree was clean before report creation. No source, plan, deployment, or device state was
-  changed by this review.
+- Six focused current-HEAD suites passed with zero failures: `DualOpenWaitTest`,
+  `CameraControllerRestorabilityTest`, `DebugCameraControlSecurityTest`, both ownerless-media delete
+  suites, and `ReviewExifOrientationTest`.
+- Current source revalidation confirms the cycle-36 device harness rejects optimized Python at both
+  its outer and fork/runpy child boundaries. The separate documentation-checker weakness is recorded
+  once as SEC37-01 in `security-reviewer.md`; it is not duplicated here as a second debugger count.
+- No tracked symlink or abnormal Git mode exists. No device or deployment action was taken. The
+  first attempted focused Gradle invocation failed cleanly at SDK preflight because the isolated
+  worktree has no `local.properties`; rerunning with the existing SDK path in `ANDROID_HOME` passed.
+  This changed no tracked source or configuration.
 
 ## Findings
 
-No actionable latent bug, correctness regression, resource leak, race, or failure-mode defect
-survives current-HEAD validation.
+No additional actionable production bug, correctness regression, deadlock, race, resource leak, or
+failure-mode defect survives current-HEAD validation in the debugger scope.
 
-The open manual checks in `docs/FIELD_CHECKS.md` remain explicit device-evidence obligations rather
-than inferred failures or successes; this review performed no device action.
+The five open items in `docs/FIELD_CHECKS.md` remain explicitly classified physical/device evidence
+obligations. This host-only review did not infer either passes or failures for them.
 
-## Final missed-issue sweep and coverage confirmation
+## Final missed-issue sweep and count
 
-The final sweep revisited every native handle terminal, thread/queue owner, callback-generation
-boundary, provider mutation, deletion/recovery state machine, bitmap/media parser bound, settings
-corruption seam, Activity/ViewModel lifecycle edge, and build/device evidence boundary. It then
-checked all review-relevant files against current tests and the previously fixed issue ledger. No
-new reproducible or legally interleavable defect remained, no source/configuration file was sampled
-instead of inventoried, and no review-relevant tracked path was skipped.
+The final sweep revisited every native terminal, queue/admission owner, callback-generation edge,
+provider mutation and recovery state, deletion family, bitmap/media parser bound, settings-corruption
+seam, Activity/ViewModel lifecycle transition, and build/device evidence boundary. It replayed the
+complete cycle-36 implementation delta against its current callers and tests and rechecked older
+resolved findings for regression. No review-relevant current path was skipped or sampled as a
+substitute for the inventory.
 
-**New finding count: 0.**
+**New debugger finding count: 0.** SEC37-01 is the one cross-scope tooling finding and is counted only
+in the security report.
