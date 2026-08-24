@@ -306,6 +306,26 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun load_migratesMissingLensPreservationKeyToTheCurrentDefault() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "lens" to LensChoice.TELE3X.name,
+                // A pre-preserve-policy blob has no preserveLensSelection key.
+            ),
+        )
+
+        val extras = requireNotNull(SettingsStore(prefs).load()).extras
+
+        assertEquals(LensChoice.TELE3X, extras.lens)
+        assertTrue(extras.preserveLensSelection)
+
+        // An explicit current-schema OFF remains the operator's durable choice.
+        prefs.edit().putBoolean("preserveLensSelection", false).commit()
+        assertFalse(requireNotNull(SettingsStore(prefs).load()).extras.preserveLensSelection)
+    }
+
+    @Test
     fun enumOr_defaultsOnUnknownOrNull_roundTripsValid() {
         assertEquals(WbMode.MANUAL, enumOr("MANUAL", WbMode.AUTO))
         assertEquals(WbMode.AUTO, enumOr("NOT_A_MODE", WbMode.AUTO))

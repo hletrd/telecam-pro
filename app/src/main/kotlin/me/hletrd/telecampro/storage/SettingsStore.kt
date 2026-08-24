@@ -100,10 +100,10 @@ data class ExtraSettings(
     val quickButtonAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val gammaAssist: Boolean = false,
     val frameLines: FrameLineType = FrameLineType.OFF,
-    // Default OFF so every launch opens at the 1x main lens. Preserving the last pick made
-    // the app reopen at whatever zoom the previous session ended on, which reads as a wrong
-    // default rather than a restored preference.
-    val preserveLensSelection: Boolean = false,
+    // Default ON, matching CameraUiState and the menu contract. This value is also the schema
+    // migration fallback for saved blobs written before the key existed, so it must not silently
+    // turn an older operator's remembered non-main lens into the 1x default.
+    val preserveLensSelection: Boolean = true,
     val preserveTeleconverter: Boolean = true,
 )
 
