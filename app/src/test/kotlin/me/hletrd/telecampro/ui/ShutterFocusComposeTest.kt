@@ -95,6 +95,38 @@ class ShutterFocusComposeTest {
         }
     }
 
+    @Test
+    fun `running timelapse paints a stop shape on the production shutter`() {
+        compose.setContent {
+            TeleCamProTheme {
+                Column(Modifier.background(Color.Black)) {
+                    ShutterButton(
+                        mode = CaptureMode.PHOTO,
+                        isRecording = false,
+                        timerCountdownSec = 0,
+                        timelapseRunning = false,
+                        onClick = {},
+                        modifier = Modifier.testTag("idle-timelapse"),
+                    )
+                    ShutterButton(
+                        mode = CaptureMode.PHOTO,
+                        isRecording = false,
+                        timerCountdownSec = 0,
+                        timelapseRunning = true,
+                        onClick = {},
+                        modifier = Modifier.testTag("running-timelapse"),
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val idle = compose.onNodeWithTag("idle-timelapse").captureToImage().toPixelMap()
+        val running = compose.onNodeWithTag("running-timelapse").captureToImage().toPixelMap()
+        val center = idle.width / 2 to idle.height / 2
+        assertTrue("running stop paint must replace the idle photo disc", idle[center.first, center.second] != running[center.first, center.second])
+        assertTrue("running stop center must use non-text record red", contrast(running[center.first, center.second], Color.Black) >= 3.0)
+    }
+
     private fun contrast(first: Color, second: Color): Double {
         fun luminance(color: Color): Double {
             fun channel(value: Float): Double =

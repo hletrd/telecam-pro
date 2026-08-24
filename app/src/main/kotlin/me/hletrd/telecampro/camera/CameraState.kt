@@ -1565,12 +1565,14 @@ data class CameraUiState(
     val stillCaptureReady: Boolean
         get() = cameraReady && photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable
     val primaryShutterHealthy: Boolean
-        get() = cameraReady && (
+        get() = timelapseRunning || cameraReady && (
             mode == CaptureMode.VIDEO ||
                 (photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable)
         )
     val primaryShutterEnabled: Boolean
         get() = when {
+            // Stopping an already-running interval sequence does not need a live still target.
+            timelapseRunning -> true
             // A running self-timer is itself a primary-shutter action: tapping the shutter again
             // cancels it even if camera readiness changes during the countdown.
             mode == CaptureMode.PHOTO -> timerCountdownSec > 0 || stillCaptureReady

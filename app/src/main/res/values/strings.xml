@@ -153,6 +153,7 @@
     <string name="a11y_take_photo">Take photo</string>
     <string name="a11y_start_recording">Start recording</string>
     <string name="a11y_stop_recording">Stop recording</string>
+    <string name="a11y_stop_timelapse">Stop timelapse</string>
     <string name="a11y_state_ready">Ready</string>
     <string name="a11y_state_unavailable">Unavailable</string>
     <string name="a11y_unavailable_while_recording">Unavailable while recording</string>

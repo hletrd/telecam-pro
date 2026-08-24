@@ -187,6 +187,19 @@ class CameraStateTest {
     }
 
     @Test
+    fun `timelapse stop remains healthy and enabled through camera recovery`() {
+        val running = CameraUiState(
+            mode = CaptureMode.PHOTO,
+            cameraReady = false,
+            timelapseRunning = true,
+            photoSessionOutputs = PhotoSessionOutputs(),
+        )
+
+        assertTrue(running.primaryShutterHealthy)
+        assertTrue(running.primaryShutterEnabled)
+    }
+
+    @Test
     fun `AF indication maps every HAL state and treats unknown as idle`() {
         assertEquals(
             AfIndication.SCANNING,

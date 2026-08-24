@@ -3140,12 +3140,14 @@ class CameraViewModel @JvmOverloads constructor(
         val state = _state.value
         if (state.isRecordingStarting) return
         dispatchPhotoShutter(
+            timelapseRunning = state.timelapseRunning,
             countdownSeconds = state.timerCountdownSec,
             stillCaptureReady = state.stillCaptureReady,
             configuredDelaySeconds = photoShutterDelaySeconds(
                 configuredDelaySeconds = state.timer.seconds,
                 recording = state.isRecording,
             ),
+            stopTimelapse = engine::stopTimelapse,
             cancelCountdown = ::cancelCountdown,
             // The engine's decline path surfaces the authoritative session status when a
             // preview-only session has no still target; no impossible countdown is started.

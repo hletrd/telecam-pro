@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.SemanticsMatcher
@@ -48,12 +49,14 @@ class CameraAdmissionPresentationComposeTest {
         val admissionRefused = healthy.copy(stillCaptureAdmissionAvailable = false)
         val countdown = unhealthy.copy(timerCountdownSec = 2)
         val recordingStop = unhealthy.copy(mode = CaptureMode.VIDEO, isRecording = true)
+        val timelapseStop = unhealthy.copy(timelapseRunning = true)
         val states = listOf(
             "healthy" to healthy,
             "unhealthy" to unhealthy,
             "admission-refused" to admissionRefused,
             "countdown" to countdown,
             "recording-stop" to recordingStop,
+            "timelapse-stop" to timelapseStop,
         )
 
         compose.setContent {
@@ -63,6 +66,7 @@ class CameraAdmissionPresentationComposeTest {
                         ShutterButton(
                             mode = state.mode,
                             isRecording = state.isRecording,
+                            timelapseRunning = state.timelapseRunning,
                             timerCountdownSec = state.timerCountdownSec,
                             cameraHealthy = state.primaryShutterHealthy,
                             enabled = state.primaryShutterEnabled,
@@ -80,6 +84,7 @@ class CameraAdmissionPresentationComposeTest {
         compose.onNodeWithTag("admission-refused").assertIsNotEnabled()
         compose.onNodeWithTag("countdown").assertIsEnabled()
         compose.onNodeWithTag("recording-stop").assertIsEnabled()
+        compose.onNodeWithTag("timelapse-stop").assertIsEnabled()
 
         compose.onNodeWithTag("healthy").assert(
             SemanticsMatcher.expectValue(ShutterVisualAlpha, 1f),
@@ -98,6 +103,9 @@ class CameraAdmissionPresentationComposeTest {
         compose.onNodeWithTag("recording-stop").assert(
             SemanticsMatcher.expectValue(ShutterVisualAlpha, 0.35f),
         )
+        compose.onNodeWithTag("timelapse-stop")
+            .assertContentDescriptionEquals("Stop timelapse")
+            .assert(SemanticsMatcher.expectValue(ShutterVisualAlpha, 1f))
     }
 
     @Test

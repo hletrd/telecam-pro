@@ -1380,6 +1380,7 @@ fun CameraScreen(
                     mode = state.mode,
                     isRecording = state.isRecording,
                     isRecordingStarting = state.isRecordingStarting,
+                    timelapseRunning = state.timelapseRunning,
                     timerCountdownSec = state.timerCountdownSec,
                     lastMediaUri = state.lastMediaUri,
                     lastMediaProvenance = state.lastMediaProvenance,
@@ -3054,6 +3055,7 @@ private fun ShutterRow(
     mode: CaptureMode,
     isRecording: Boolean,
     isRecordingStarting: Boolean,
+    timelapseRunning: Boolean,
     timerCountdownSec: Int,
     lastMediaUri: android.net.Uri?,
     lastMediaProvenance: MediaProvenance,
@@ -3103,6 +3105,7 @@ private fun ShutterRow(
         ShutterButton(
             mode = mode,
             isRecording = isRecording,
+            timelapseRunning = timelapseRunning,
             timerCountdownSec = timerCountdownSec,
             onClick = onShutter,
             cameraHealthy = cameraHealthy,
@@ -3140,6 +3143,7 @@ internal fun shutterVisualAlpha(cameraHealthy: Boolean): Float = if (cameraHealt
 internal fun ShutterButton(
     mode: CaptureMode,
     isRecording: Boolean,
+    timelapseRunning: Boolean = false,
     timerCountdownSec: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -3149,6 +3153,7 @@ internal fun ShutterButton(
     val cancelSelfTimerDesc = stringResource(R.string.a11y_cancel_self_timer)
     val takePhotoDesc = stringResource(R.string.a11y_take_photo)
     val stopRecordingDesc = stringResource(R.string.a11y_stop_recording)
+    val stopTimelapseDesc = stringResource(R.string.a11y_stop_timelapse)
     val startRecordingDesc = stringResource(R.string.a11y_start_recording)
     val readyDesc = stringResource(R.string.a11y_state_ready)
     val unavailableDesc = stringResource(R.string.a11y_state_unavailable)
@@ -3188,6 +3193,7 @@ internal fun ShutterButton(
             )
             .clearAndSetSemantics {
                 contentDescription = when {
+                    timelapseRunning -> stopTimelapseDesc
                     timerCountdownSec > 0 -> cancelSelfTimerDesc
                     mode == CaptureMode.PHOTO -> takePhotoDesc
                     isRecording -> stopRecordingDesc
@@ -3220,9 +3226,7 @@ internal fun ShutterButton(
             val ringStroke = 4.dp.toPx()
             drawCircle(color = CameraColors.TextPrimary, radius = (size.minDimension - ringStroke) / 2f, style = Stroke(width = ringStroke))
             when {
-                mode == CaptureMode.PHOTO -> drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension * 0.38f)
-                mode == CaptureMode.VIDEO && !isRecording -> drawCircle(color = CameraColors.Record, radius = size.minDimension * 0.38f)
-                else -> {
+                timelapseRunning || mode == CaptureMode.VIDEO && isRecording -> {
                     val rectSize = size.minDimension * 0.42f
                     drawRoundRect(
                         color = CameraColors.Record,
@@ -3231,6 +3235,8 @@ internal fun ShutterButton(
                         cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
                     )
                 }
+                mode == CaptureMode.PHOTO -> drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension * 0.38f)
+                mode == CaptureMode.VIDEO && !isRecording -> drawCircle(color = CameraColors.Record, radius = size.minDimension * 0.38f)
             }
         }
         ShutterFocusIndicator(keyboardFocused, Modifier.fillMaxSize())

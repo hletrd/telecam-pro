@@ -167,6 +167,22 @@ class CameraUiPolicyTest {
     }
 
     @Test
+    fun `running timelapse stops before countdown and still admission`() {
+        var stops = 0
+        dispatchPhotoShutter(
+            timelapseRunning = true,
+            countdownSeconds = 2,
+            stillCaptureReady = false,
+            configuredDelaySeconds = 3,
+            stopTimelapse = { stops += 1 },
+            cancelCountdown = { error("Timelapse stop owns the press") },
+            fireShutter = { error("Stopping must not enter capture admission") },
+            startCountdown = { error("Stopping must not start a countdown") },
+        )
+        assertEquals(1, stops)
+    }
+
+    @Test
     fun `photo shutter dispatches immediate unavailable and delayed paths exactly once`() {
         var fireCalls = 0
         var startedAt: Int? = null
