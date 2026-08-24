@@ -1,118 +1,122 @@
-# Aggregated deep review — cycle 42
+# Aggregated deep review — cycle 43
 
 Date: 2026-08-24
-Reviewed revision: `70ebb8759b567dcd2ee13bd51b226da2568ff6d7` (`origin/main`)
-Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle42.rPLjyN`
+Reviewed revision: `b3f82463d4d116b4ee7af3ac7c8925a4ab21357e` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle43.q4Rs33`
 
 ## Coverage and aggregation
 
 Five parallel specialist groups covered every required role: code-reviewer, critic, architect,
 performance-reviewer, tracer, security-reviewer, debugger, verifier, test-engineer,
 document-specialist, and native Android designer. No repository-local reviewer agents were
-registered. Each group inventoried all 504 tracked paths and examined relevant production, test,
-tooling, resource, documentation, and cross-file interactions. Browser automation was inapplicable
+registered. Each group inventoried all 506 tracked paths and examined relevant production, test,
+tooling, resource, documentation, asset, and cross-file interactions. Browser automation was inapplicable
 to this native Compose app. No device behavior was run or inferred.
 
-Eight raw specialist findings deduplicate to five current root causes. The disabled command paint
-defect has agreement across code/architecture, verifier/testing, and document/design. The zoom
-authority defect has agreement across code/architecture and document/design and intersects with the
-verifier's independently confirmed redundant end submission; these remain separate findings because
-one is a current runtime request defect and the other is a test/ownership defect that would survive
-fixing that request. Highest severity and confidence are preserved. Performance/tracing and
-security/debugging found no additional actionable defect.
+Six raw specialist findings remain six distinct current root causes. The microphone-permission
+continuation, zoom lifecycle authority, Korean privacy route, shutter focus visibility, command-chip
+rendered coverage, and brand-asset consistency findings affect separate owners and failure modes.
+Highest severity and confidence are preserved. Code/architecture and performance/tracing found no
+additional current defect.
 
 ## Findings
 
-### AGG42-01 — disabled immediate commands retain enabled-strength paint
+### AGG43-01 — Activity recreation loses the pending microphone-permission command
 
 - **Severity / confidence:** Medium / High
-- **Sources:** code-reviewer/critic/architect, verifier/test-engineer,
-  document-specialist/designer (**cross-agent agreement**)
-- **Status:** confirmed visual-affordance and false-positive-test defect.
-- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProSheet.kt:755-785` passes
-  `enabled` to click admission and the inactive border, but derives container/content paint only
-  from `active`. Consequently a disabled inactive MR write keeps full-strength label ink, while an
-  active disabled Custom-WB command is pixel-identical to an enabled active command. The latter is
-  a normal state because Custom WB is active only for `wbMode == CUSTOM` but measurement admission
-  requires `wbMode == AUTO` (`camera/ControlAvailability.kt:144-150`; `ProSheet.kt:1037-1057`).
-  `SelectorRoleSemanticsComposeTest.kt:68-115` checks semantics, constructs the production-impossible
-  `active=true, enabled=true` Custom-WB combination, and never validates reachable disabled paint.
-- **Failure:** after capturing Custom WB, the strongest filled-white command is unavailable and
-  silently ignores taps; locked MR writes likewise look enabled even though accessibility correctly
-  reports Disabled.
-- **Plan direction:** resolve container/content/border colors from both `active` and `enabled`, keep
-  click-only semantics, and test the reachable inactive-enabled, inactive-disabled, and
-  active-disabled visual/token states without treating active-enabled as Custom-WB evidence.
+- **Source:** security-reviewer/debugger
+- **Status:** confirmed lifecycle correctness defect; no privilege bypass or data loss.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt:148-149,325-341,756-772`
+  stores `pendingAudioAction` only in ordinary Activity memory and uses its current value as the
+  sole owner when the registered permission result arrives. There is no Saved State Registry,
+  `onSaveInstanceState`, or `SavedStateHandle` owner. `CameraPermissionPolicy.kt:50-60` promises
+  that a denied `START_RECORDING` continues as video-only, while existing tests keep the action
+  supplied and never recreate the Activity.
+- **Failure:** if Android recreates the Activity or process while the microphone permission UI is
+  open, a grant starts neither the requested recording nor audio enablement; denial can disable
+  audio without starting the promised video-only take.
+- **Plan direction:** persist both the pending action and rationale ownership before launching UI,
+  restore them exactly once, clear only after a terminal continuation, and add recreation tests for
+  enable-audio and start-recording grant/denial paths.
 
-### AGG42-02 — dropdown radio options lack selectable-group semantics
+### AGG43-02 — zoom re-pinch tests model a different lifecycle than production
+
+- **Severity / confidence:** Medium / High
+- **Source:** verifier/test-engineer
+- **Status:** confirmed test/authority mismatch; current runtime still reaches exact framing.
+- **Evidence:** `camera/ZoomSubmitPlan.kt:59-73` says quiet landing is once-only and models re-pinch
+  through `startZoomInteraction()`, as does `ZoomSubmitPlanTest.kt:132-139`. Production
+  `ui/CameraViewModel.kt:2085-2109` starts a new Engine interaction inside the 700 ms tail only for
+  a fresh outward edge. An inward/same-direction re-pinch retains `exactLanded=true`, suppresses
+  moving Camera2 ticks, and relies on a second quiet callback, which happens to submit because
+  `landQuietZoom` ignores `exactLanded`.
+- **Failure:** a maintainer making the implementation match its "once only" KDoc would suppress the
+  second quiet landing and the end submit, leaving the HAL at the first landed ratio while the
+  finder shows the second.
+- **Plan direction:** record movement after a landing in the interaction state, make duplicate quiet
+  calls truly idempotent only when no movement intervened, test inward re-pinch, duplicate quiet,
+  and outward re-pinch sequences, and align KDoc/architecture.
+
+### AGG43-03 — the normal Korean Privacy action opens an English-only policy
 
 - **Severity / confidence:** Medium / High
 - **Source:** document-specialist/designer
-- **Status:** confirmed accessibility-structure defect.
-- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:785-875` exports
-  `Role.RadioButton` and `Selected` on each Phone/Converter option, but the containing
-  `DropdownMenu` has no `selectableGroup()` modifier. `DropdownSemanticsComposeTest.kt:66-104`
-  proves radio leaves but never requires their shared group.
-- **Failure:** TalkBack/Switch Access receives individually selected/not-selected radio buttons
-  without the semantic relationship and reliable position/count context that explains one choice
-  replaces another.
-- **Plan direction:** apply `selectableGroup()` to the popup option container while retaining
-  bounded scrolling and leaf semantics, then assert exactly one selectable-group ancestor for the
-  radio options before and after selection.
+- **Status:** confirmed localization and user-facing documentation defect.
+- **Evidence:** the bilingual rule is `CLAUDE.md:44-51`; `ui/ExternalNavigation.kt:50-65,95`
+  exposes one external privacy URL; `privacy-policy/index.html:2,161-278` declares English and has
+  English-only prose. Korean policy copy exists only in the exceptional in-app fallback at
+  `ui/ExternalNavigationUi.kt:56-78` and `res/values-ko/strings.xml:105-112`.
+- **Failure:** on a Korean device with a browser, tapping `개인정보처리방침` succeeds externally and
+  displays only English, while the Korean copy is paradoxically available only when launch fails.
+- **Plan direction:** publish and locale-route a Korean policy or make the public document properly
+  bilingual, keep external and bundled claims under one checked inventory, and test locale routing.
 
-### AGG42-03 — quiet zoom completion redundantly submits a third Camera2 request
+### AGG43-04 — the primary shutter has no visible keyboard-focus treatment
 
 - **Severity / confidence:** Medium / High
-- **Source:** verifier/test-engineer
-- **Status:** confirmed runtime call-sequence/performance defect; device stall duration was not
-  remeasured this cycle.
-- **Evidence:** a gesture submits its wide start edge, schedules `landExactZoom()` at 250 ms, and
-  ends interaction at 700 ms (`ui/CameraViewModel.kt:368-383,2078-2111`). The quiet landing
-  unconditionally submits exact framing (`camera/CameraEngine.kt:3966-3977`). Boost-off then calls
-  `setSmoothPreviewBoost` again (`CameraEngine.kt:3875-3894`), whose no-FPS-change branch still
-  calls `submitZoomFastPath(wire)` (`camera/CameraController.kt:1747-1760`) with the same exact
-  ratio; routes that restore FPS also issue an end rebuild for a distinct reason.
-- **Failure:** on the common no-FPS-change route, the already-landed exact framing is resubmitted
-  roughly 450 ms later, causing an avoidable late request swap/hitch under the repository's measured
-  Camera2 swap behavior.
-- **Plan direction:** make the complete zoom transition explicitly track whether quiet landing
-  already put exact framing on the wire; clear interaction state without an identical end fast-path
-  submit when FPS is unchanged, retain end rebuilds that genuinely restore FPS, and test full
-  start/move/quiet/repinch/end request sequences.
+- **Source:** document-specialist/designer
+- **Status:** confirmed source-level focus-visible defect; final pixels need snapshot/device validation.
+- **Evidence:** `ui/CameraScreen.kt:3154-3208` makes the custom Canvas shutter clickable/focusable,
+  disables indication, and observes press but not focus. `CameraControlKeyboardComposeTest.kt:114-129,163-192`
+  proves keyboard activation only. Existing controls show the established contrast-aware focus
+  pattern at `ui/controls/ProControls.kt:495-506,614-624` and
+  `ui/controls/ManualDials.kt:1343-1360`.
+- **Failure:** a tablet, ChromeOS, D-pad, or keyboard user can focus and fire the shutter without any
+  visible indication that it owns Enter/Space.
+- **Plan direction:** observe focus and draw a persistent high-contrast halo/keyline without adding
+  a touch ripple; test focused/unfocused pixels over bright and dark finder backgrounds while
+  preserving disabled non-focusability and activation behavior.
 
-### AGG42-04 — zoom tests and authority model a dead wide-aim owner and retired throttle
-
-- **Severity / confidence:** Low / High
-- **Sources:** code-reviewer/critic/architect, document-specialist/designer
-  (**cross-agent agreement**)
-- **Status:** confirmed test-authority and documentation defect; current edge arithmetic is correct.
-- **Evidence:** the actual start-edge wide target is independently calculated and submitted by
-  `CameraEngine.setZoomInteraction` (`camera/CameraEngine.kt:3875-3894`). The parallel wide target
-  in `ZoomSubmitPlan.kt:39-53` is produced only for moving `setZoomRatio` calls whose
-  `submitNow=false`, so runtime discards it. `ZoomSubmitPlanTest.kt:23-109` tests that dead value and
-  never exercises the real edge submission. `docs/ARCHITECTURE.md:71,718-727`,
-  `camera/CameraController.kt:530-535`, `ui/ZoomGlideState.kt:41-50`, and nearby ViewModel/KDoc text
-  still describe a removed throttle, malformed fixed swap count, or ownership the pure plan does
-  not have.
-- **Failure:** the real start-edge clamp can regress while all wide-aim tests stay green, or a
-  maintainer can restore periodic submissions/remove quiet landing by following stale authority.
-- **Plan direction:** extract one pure start-edge target resolver used by the real submission path,
-  remove dead plan outputs/inputs, directly test edge margin/clamping, and align source/docs with
-  moving-tick suppression plus route-specific start, optional quiet landing, and end behavior.
-
-### AGG42-05 — cycle-41 completion evidence records the wrong tooling-test count
+### AGG43-05 — disabled-command paint coverage does not render the command chip
 
 - **Severity / confidence:** Low / High
 - **Source:** verifier/test-engineer
-- **Status:** confirmed archived evidence mismatch.
-- **Evidence:** cycle 41 added two documentation-gate tests in
-  `tools/tests/test_tool_contracts.py:423-475`, making the committed suite 106 tests. Its later
-  completion record still says 104 at `docs/plans/2026-08-24-rpf-cycle41.md:77-78`; a current
-  warnings-as-errors run passes 106/106.
-- **Failure:** the durable closeout cannot be reconciled with the test inventory present in the
-  commit it describes, while the documentation gate remains green.
-- **Plan direction:** correct the archived count to 106, or record the exact successful command and
-  exit status without a mutable total.
+- **Status:** confirmed false-assurance gap.
+- **Evidence:** `ui/controls/SelectorRoleSemanticsComposeTest.kt:121-147` tests only the
+  `immediateActionChipColors` result. Its rendered `ImmediateActionChip` checks at lines 83-119
+  assert semantics and click admission, never the `Surface` paint wired in
+  `ui/controls/ProSheet.kt:792-817`.
+- **Failure:** disconnecting container/content/border mapping from `Surface` would restore the
+  visible disabled-state defect while all current tests remained green.
+- **Plan direction:** add stable rendered coverage for all active/enabled combinations, retaining
+  the pure mapping test as mapping-only evidence; use the existing snapshot harness if host
+  rasterization cannot provide a stable assertion.
+
+### AGG43-06 — launcher and public-brand assets use unrelated icon systems
+
+- **Severity / confidence:** Low / High
+- **Source:** document-specialist/designer
+- **Status:** confirmed asset/metadata consistency defect; OEM masks need manual validation.
+- **Evidence:** installed assets `res/drawable/ic_launcher_foreground.xml:2-44` and
+  `ic_launcher_background.xml:2-20` use a white lens/chevron on an azure-cyan gradient, while
+  `docs/assets/play/icon-512.svg:1-16`, `docs/assets/play/feature-graphic.svg:13-43`, and
+  `docs/assets/logo.svg:1-13` use a black telescope/barrel mark with blue aperture/base. The README
+  SVG also retains the obsolete `Find X9 Ultra Tele Camera logo` identity and `300mm tick marks`
+  comment.
+- **Failure:** the Play listing mark does not visually identify the installed launcher entry, and
+  future inline reuse of the README SVG restores stale single-device accessible branding.
+- **Plan direction:** choose one core mark across launcher/monochrome/store/feature/README variants,
+  update stale SVG metadata, regenerate raster assets, and validate adaptive/themed masks.
 
 ## Agent failures
 
@@ -120,9 +124,9 @@ None.
 
 ## Totals
 
-- Raw specialist findings: 8
-- Deduplicated new findings: 5
-- Severity: 3 Medium, 2 Low
-- Confidence: 5 High
+- Raw specialist findings: 6
+- Deduplicated new findings: 6
+- Severity: 4 Medium, 2 Low
+- Confidence: 6 High
 - Device/manual-only residuals: A3, A4, D1, E1, and E2 remain correctly open in
   `docs/FIELD_CHECKS.md`; none was reclassified as a code defect.
