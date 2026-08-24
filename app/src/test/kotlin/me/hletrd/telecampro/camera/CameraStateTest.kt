@@ -166,19 +166,47 @@ class CameraStateTest {
     fun `capture family traces are bounded to harness owned single shots`() {
         assertEquals(
             CaptureFamilyTraceAdmission(registration = true, settlement = true),
-            captureFamilyTraceAdmission(DriveMode.SINGLE, recordingSnapshot = false),
+            captureFamilyTraceAdmission(
+                DriveMode.SINGLE,
+                recordingSnapshot = false,
+                debugEnabled = true,
+            ),
         )
         DriveMode.entries.forEach { selected ->
             assertEquals(
                 CaptureFamilyTraceAdmission(settlement = true),
-                captureFamilyTraceAdmission(selected, recordingSnapshot = true),
+                captureFamilyTraceAdmission(
+                    selected,
+                    recordingSnapshot = true,
+                    debugEnabled = true,
+                ),
             )
         }
         listOf(DriveMode.BURST, DriveMode.AEB, DriveMode.TIMELAPSE).forEach { selected ->
             assertEquals(
                 CaptureFamilyTraceAdmission(),
-                captureFamilyTraceAdmission(selected, recordingSnapshot = false),
+                captureFamilyTraceAdmission(
+                    selected,
+                    recordingSnapshot = false,
+                    debugEnabled = true,
+                ),
             )
+        }
+    }
+
+    @Test
+    fun `capture family traces are inert in release for every drive and snapshot mode`() {
+        DriveMode.entries.forEach { selected ->
+            listOf(false, true).forEach { recordingSnapshot ->
+                assertEquals(
+                    CaptureFamilyTraceAdmission(),
+                    captureFamilyTraceAdmission(
+                        selected,
+                        recordingSnapshot = recordingSnapshot,
+                        debugEnabled = false,
+                    ),
+                )
+            }
         }
     }
 

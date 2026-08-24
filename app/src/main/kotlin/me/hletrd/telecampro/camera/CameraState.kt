@@ -980,7 +980,9 @@ internal data class CaptureFamilyTraceAdmission(
 internal fun captureFamilyTraceAdmission(
     selected: DriveMode,
     recordingSnapshot: Boolean,
+    debugEnabled: Boolean,
 ): CaptureFamilyTraceAdmission = when {
+    !debugEnabled -> CaptureFamilyTraceAdmission()
     recordingSnapshot -> CaptureFamilyTraceAdmission(settlement = true)
     selected == DriveMode.SINGLE -> CaptureFamilyTraceAdmission(registration = true, settlement = true)
     else -> CaptureFamilyTraceAdmission()

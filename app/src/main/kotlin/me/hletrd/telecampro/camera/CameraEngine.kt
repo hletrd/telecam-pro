@@ -4169,7 +4169,11 @@ class CameraEngine internal constructor(
                         optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
                         processOwnedDngTail = usesProcessStillPublicationTail(effectiveDrive, effFormats),
-                        traceAdmission = captureFamilyTraceAdmission(driveMode, singleShot),
+                        traceAdmission = captureFamilyTraceAdmission(
+                            driveMode,
+                            singleShot,
+                            me.hletrd.telecampro.BuildConfig.DEBUG,
+                        ),
                     )
                 }.getOrElse { failure ->
                     snapshotLease?.release()
@@ -4710,10 +4714,7 @@ class CameraEngine internal constructor(
         val registeredShot = shotSpec(shotControls, hiRes, optics)
         val requestSpec = registeredShot.spec
         val familyProducerLease = registeredShot.producerLease
-        val traceText = if (
-            me.hletrd.telecampro.BuildConfig.DEBUG &&
-            (traceAdmission.registration || traceAdmission.settlement)
-        ) {
+        val traceText = if (traceAdmission.registration || traceAdmission.settlement) {
             val expectedOutputExtensions = buildList {
                 if (formats.heif) add("heic")
                 if (formats.jpeg) add("jpg")
@@ -4724,10 +4725,10 @@ class CameraEngine internal constructor(
         } else {
             null
         }
-        if (traceAdmission.registration) {
+        traceText?.takeIf { traceAdmission.registration }?.let { (stem, outputs) ->
             android.util.Log.i(
                 "CameraEngine",
-                "CaptureFamily: registered stem=${traceText!!.first} outputs=${traceText.second}",
+                "CaptureFamily: registered stem=$stem outputs=$outputs",
             )
         }
         val remainingSaveLanes = java.util.concurrent.atomic.AtomicInteger(
@@ -4736,10 +4737,10 @@ class CameraEngine internal constructor(
         val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
         val finishSequence = {
             if (remainingSaveLanes.get() == 0 && completionDelivered.compareAndSet(false, true)) {
-                if (traceAdmission.settlement) {
+                traceText?.takeIf { traceAdmission.settlement }?.let { (stem, outputs) ->
                     android.util.Log.i(
                         "CameraEngine",
-                        "CaptureFamily: settled stem=${traceText!!.first} outputs=${traceText.second}",
+                        "CaptureFamily: settled stem=$stem outputs=$outputs",
                     )
                 }
                 retainedStillDeletionOwner.markCaptureProducersTerminal(
