@@ -475,6 +475,8 @@ class CameraEngine internal constructor(
 
     private data class OpticsSnapshot(
         val videoMode: Boolean,
+        /** Exact accepted Engine/GL transfer; mode changes derive this optimistically. */
+        val transfer: ColorTransfer,
         val lens: LensChoice,
         val teleconverter: Boolean,
         val facing: CameraFacing,
@@ -541,6 +543,7 @@ class CameraEngine internal constructor(
 
     private fun currentOpticsSnapshot(): OpticsSnapshot = OpticsSnapshot(
         videoMode = videoMode,
+        transfer = transfer,
         lens = lensChoice,
         teleconverter = teleconverterMode,
         facing = facing,
@@ -760,6 +763,11 @@ class CameraEngine internal constructor(
         ) ?: return
         opticsRollbackBaseline = null
         videoMode = restored.mode == CaptureMode.VIDEO
+        // The outgoing session is still the accepted owner. Restore its exact curve directly:
+        // setTransfer() would interpret this as a fresh session request and could reopen the
+        // already-restored controller while rollback is publishing Ready.
+        transfer = before.transfer
+        if (recorder == null) gl.setTransfer(before.transfer)
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
         // A failed FRONT open (or a failed exit) restores the exact prior facing with the rest of

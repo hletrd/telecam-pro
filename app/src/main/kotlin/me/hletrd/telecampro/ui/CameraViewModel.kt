@@ -948,6 +948,10 @@ class CameraViewModel private constructor(
                         cameraOverrideId = rollback.userPin,
                     )
                 }
+                // Mode-derived owners were applied optimistically with the rejected packet. The
+                // Engine transaction restores its exact accepted transfer/GL snapshot; replay the
+                // UI-owned visible standby AudioRecord after this generation restores the mode.
+                refreshStandbyAudioMeter()
                 refreshProgramAppSide()
                 scheduleSettingsSave()
             }
