@@ -1,43 +1,54 @@
-# Architect report — cycle 37
+# Architecture review — cycle 38
 
 Date: 2026-08-24
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
+Reviewed revision: `fa95299` (`origin/main`)
+Workspace: `/private/tmp/find-x9-cycle38.FKvYBP`
 
-## Scope and architecture inventory
+## Coverage and architecture inventory
 
-I read the complete committed authorities and inventoried all 489 tracked paths. I examined the
-application graph from `MainActivity` through `CameraViewModel`/Compose into `CameraEngine`, Camera2,
-GL/EGL, codecs/audio, MediaStore, settings, process-lifetime dispatchers, review owners, build
-provenance, and the immutable device harness. I also compared every cycle-36 change with its tests,
-governing ownership contracts, prior aggregate, and completed plan.
+Examined the full 490-path repository and its cross-file boundaries: Activity/ViewModel unidirectional
+state, CameraEngine orchestration, CameraController session fallback and Camera2 ownership,
+RendererAssists/GlPipeline/EGL generations, VideoRecorder and process-native quarantine,
+StillCapturePipeline and process-finite publication owners, MediaStore durability/recovery/delete,
+capability normalization, settings/recall, Compose control projections, debug/device harnesses, and
+immutable build/release evidence tooling. The committed design authorities (`CLAUDE.md`,
+`docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`) were read in full; optional `docs/BACKLOG.md` is
+not present. I compared current code to the architecture rather than inheriting historical review
+conclusions.
 
-The cycle-36 dual-open repair closes its prior architectural defect rather than moving it: controller
-terminality is monotonic and visible before an external failure publication; the Engine reducer now
-consumes the same nullable identities production owns; candidate, vacant, live-outgoing,
-terminal-outgoing, and newer-slot results all converge without republishing a terminal controller.
-The optimized-interpreter guard is correctly repeated at both executable boundaries, and the color
-token change does not collapse the existing semantic palette roles. The broad `CameraEngine` facade
-decomposition remains an explicitly deferred historical structural item from cycle 35 and is not a
-new cycle-37 finding.
+## Finding
 
-## Findings
+### ARCH38-01 — finder placement retains two configuration models, but one is a phantom seam
 
-No new architectural finding met the evidence threshold at current HEAD. The stale inline palette
-comment is reported as `CODE37-01` in the code-reviewer report; it does not change dependency
-direction, ownership, state flow, or runtime behavior and is therefore not duplicated here.
+- **Severity:** Low
+- **Confidence:** High
+- **Status:** Confirmed
+- **Evidence:** The old bottom-relative model is explicitly declared replaced at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:363-369`, yet the shared geometry
+  authority still exposes and documents `bottomMargin` at `CameraState.kt:671-686`. Its actual
+  vertical policy at `CameraState.kt:722-730` is top-relative plus a minimum and measured bottom
+  clearance; `bottomMargin` cannot affect the result. The shared-contract tests continue to pass the
+  phantom input at `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:17-35,70-88`.
+- **Architectural impact:** `finderRect` is intentionally the single geometry authority shared by
+  GL pixels and Compose dp. Leaving an inert alternative policy on that boundary weakens the single-
+  authority design: callers cannot tell which parameters are state and which are compatibility
+  debris, and tests validate an API shape that the renderer does not consume.
+- **Concrete failure scenario:** A future large-screen or chrome-layout adjustment chooses the
+  documented bottom-inset seam. Both GL and Compose still agree with each other, so alignment tests
+  remain green, but they agree on the unchanged and still-overlapping rectangle. The architectural
+  invariant "one shared function" therefore masks the fact that its advertised configuration was
+  never part of the function's policy.
+- **Suggested fix:** Collapse the boundary to one vertical-placement vocabulary: remove the obsolete
+  constant/parameter and make `topAnchor`, `FINDER_MIN_BOTTOM_CLEARANCE`, and measured
+  `bottomClearance` the only documented inputs. Pin behavioral laws for each live input. If source or
+  binary compatibility outside this application is required, isolate the old signature in an
+  explicitly deprecated adapter rather than the core geometry authority.
 
-## Final architecture sweep
+## Known debt and final sweep
 
-The final sweep rechecked module direction, optics and session transaction boundaries, nullable
-native identities, terminal admission, callback/executor ownership, process-wide bounded queues,
-lifecycle and generation ordering, route/profile isolation, Camera2/GL/recorder teardown, capture
-family durability, ownerless review deletion, settings restoration, and immutable build/evidence
-authority. Current code and architecture remain aligned aside from the non-architectural comment
-drift recorded by the code reviewer.
-
-## Totals
-
-- New findings: 0
-- Severity: none
-- Confidence: n/a
+The 7,693-line `CameraEngine` facade remains the explicit deferred item from cycle 35, with its
+existing exit criterion; I found no new concrete ownership defect spanning its responsibility
+regions, so refiling the same broad decomposition request would violate the repository's deferred-
+work rules. A final sweep of layering directions, duplicated policy derivations, process-lifetime
+owners, lifecycle/reconfiguration transitions, route/capability truth, storage recovery, and
+build-evidence boundaries found no other new actionable architecture issue.

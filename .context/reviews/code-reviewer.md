@@ -1,59 +1,57 @@
-# Code-reviewer report — cycle 37
+# Code review — cycle 38
 
 Date: 2026-08-24
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
+Reviewed revision: `fa95299` (`origin/main`)
+Workspace: `/private/tmp/find-x9-cycle38.FKvYBP`
 
-## Scope and inventory
+## Coverage
 
-I read the committed project authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`), inventoried all 489 tracked paths, and examined the production, test,
-tooling, resource, build, privacy, and device-harness surfaces. The tracked implementation includes
-101 production Kotlin files (53,757 lines), 220 host-test Kotlin files (42,824 lines), four
-instrumented-test files, three debug Kotlin files, and 32 Python files (22,268 lines). Cross-file
-tracing covered Activity/permission/hardware ingress, ViewModel and Compose state, Camera2 selection,
-session/capture/reconfiguration/teardown, GL/EGL, still/video/audio processing, MediaStore durability
-and review deletion, settings, build provenance, and immutable device evidence.
-
-I compared current HEAD with the cycle-36 review and every cycle-36 implementation delta. The prior
-nullable/terminal dual-open defect is resolved: terminality is published before external failure
-callbacks, close is monotonic, and the cleanup reducer now derives its answer from nullable owner
-identities. The optimized-Python harness guard and enabled-edge contrast correction also work as
-implemented. I did not re-report those completed findings or the already-deferred broad
-`CameraEngine` decomposition.
+Inventoried all 490 tracked paths: 101 production Kotlin files, 220 JVM/Robolectric/Compose test
+files, four instrumented-test files, three debug Kotlin files, 32 Python files across host tooling
+and the device harness, build/version/signing configuration, Android resources/manifests, and the
+committed documentation/review/plan corpus. I read the complete `CLAUDE.md`, current
+`docs/ARCHITECTURE.md`, `docs/FIELD_CHECKS.md`, and `README.md`; `docs/BACKLOG.md` is absent, as the
+clean-clone policy permits. Review emphasis covered state normalization, Camera2/GL/native-owner
+lifetimes, recording and still-publication terminals, MediaStore recovery/delete ownership,
+capability projections, UI action admission, persistence, release wrappers, and test/tool contracts.
+Historical reviews were used only as leads and every retained claim below was checked against the
+current source.
 
 ## Finding
 
-### CODE37-01 — the MR-row comment still says its 0.18 tint equals `AffordanceEdge`
+### CR38-01 — `finderRect` advertises a vertical-margin input that is guaranteed to do nothing
 
 - **Severity:** Low
 - **Confidence:** High
-- **Exact region:**
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProSheet.kt:695-698`; changed token at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt:115-127`.
-- **Problem:** Cycle 36 raised `CameraColors.AffordanceEdge` from 0.18 to 0.36, but the MR-bank row
-  comment still calls its independent amber `ManualActive.copy(alpha = 0.18f)` tint “the white
-  AffordanceEdge — same number.” The two values are no longer the same. This is current source
-  documentation attached directly to the styling expression, not a preserved historical plan.
-- **Failure scenario:** A later palette cleanup following the comment can incorrectly couple the
-  deliberately quiet amber selection wash to the 0.36 interactive-boundary token, doubling the MR
-  row tint, or can mistake the intentional 0.18 amber value for a missed cycle-36 contrast fix.
-  Either path changes the active-row visual hierarchy the adjacent comment says is deliberate.
-- **Suggested fix:** Reword the comment to state that 0.18 is an independent amber active-row wash
-  and is unrelated to the current white `AffordanceEdge` alpha; do not change either pixel value.
+- **Status:** Confirmed
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:363-369` says
+  `FINDER_BOTTOM_MARGIN` was replaced and is retained only as an unused default. Nevertheless,
+  `CameraState.kt:671-686` still documents `bottomMargin` as the bottom inset and exposes it as a
+  normal argument, while the returned y coordinate at `CameraState.kt:722-730` consults only
+  `topAnchor`, `FINDER_MIN_BOTTOM_CLEARANCE`, and `bottomClearance`. The parameter requires an
+  `UNUSED_PARAMETER` suppression. `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:17-35`
+  passes a non-default value under a test whose description promises independent short-edge insets,
+  but never checks that value's effect; lines 70-88 vary the value only to prove size is unchanged,
+  so the inert position control is not exposed by the suite.
+- **Why this is a problem:** The public shape and KDoc lie about the function's behavior and keep two
+  mutually exclusive vertical-placement concepts alive. A maintainer adapting the overview for a
+  new device can reasonably tune `bottomMargin`, get a green test/build, and ship no geometry change.
+- **Concrete failure scenario:** A device's focal rail overlaps the overview. The maintainer raises
+  `bottomMargin` from `0.10f` to `0.16f`, or passes `bottomMargin = 0.16f` at a caller, and verifies
+  the existing geometry tests. Nothing moves because the argument is discarded; the overlap remains
+  while source and tests imply that the attempted fix is active.
+- **Suggested fix:** Remove `FINDER_BOTTOM_MARGIN` and the `bottomMargin` parameter (there are no
+  production call sites that pass it), rewrite the KDoc and geometry-test names around the actual
+  `topAnchor` plus measured/fallback `bottomClearance` policy, and add assertions that each live
+  vertical input moves or bounds `y` as documented. If binary compatibility is genuinely required,
+  retain a deprecated forwarding overload whose documentation explicitly says the old argument is
+  ignored rather than presenting it as an effective control.
 
-## Verification and final sweep
+## Final missed-issue sweep
 
-`git diff --check` passed. All 184 device-harness host tests passed, and all 112 committed
-documentation checks passed (24 optional private-context checks skipped because those files are not
-present in the clean clone). The final sweep rechecked all production modules and their test seams
-for nullable identity mistakes, callback/close ordering, stale-generation publication, resource
-terminal ownership, unbounded work, blocking UI/provider calls, route/profile leakage, unsafe
-numeric and clock boundaries, hardcoded user text, and current-authority drift. No other current
-code-review finding met the evidence threshold.
-
-## Totals
-
-- New findings: 1
-- Severity: 1 Low
-- Confidence: 1 High
+I rechecked suppressed/ignored parameters, dormant/legacy compatibility seams, capability lists
+against every quick-control consumer, callback-lock boundaries, error-swallowing sites, asynchronous
+owner retirement, TODO/FIXME markers, and the cycle-37 implementation diff. No additional current,
+actionable code-quality or correctness finding survived evidence checking. The owner-approved
+owner-null media provenance behavior and previously recorded broad `CameraEngine` decomposition debt
+remain existing policy/deferred items, not new cycle-38 findings.

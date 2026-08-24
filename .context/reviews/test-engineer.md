@@ -1,78 +1,75 @@
-# Test-engineer review — cycle 37
+# Test-engineer review — cycle 38
 
 Date: 2026-08-24
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
-Workspace: clean detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
-## Scope and test inventory
+Reviewed revision: `fa95299` (`origin/main`)
 
-- Inventoried all 220 JVM/Robolectric/Compose test files, four androidTest probes, 32 Python
-  tool/harness sources, 96 tooling tests, nine coverage-tool tests, and 184 host-side device-harness
-  tests. Reviewed the corresponding production seams rather than treating names or line coverage as
-  behavioral proof.
-- Ran the complete `python3 tools/verify_host.py` gate successfully. The Android test APK was
-  compiled/packaged but not run; Partition A remains 99.81% (8030/8045) with the exact reviewed
-  15-line residual manifest. No device-only result is claimed.
-- Rechecked the cycle-36 fixes: `CameraControllerRestorabilityTest` plus the identity-derived
-  `DualOpenWaitTest` cases cover the absent and terminal outgoing-owner states, and
-  `RunAttestationTest.test_optimized_interpreters_refuse_before_snapshot_or_device_preflight`
-  covers both `-O` and `PYTHONOPTIMIZE` for device evidence. Those tests match current production
-  behavior.
+Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
+
+## Scope and evidence
+
+- Inventoried all 490 tracked paths, including 101 production Kotlin files, 220 JVM/Robolectric/
+  Compose test files, four androidTest probes, and 38 Python tooling/device-harness files. Reviewed
+  the matching production seams rather than treating coverage or test names as behavioral proof.
+- Read the complete committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+  `docs/FIELD_CHECKS.md`), the current plan/review history, resources/manifests, and release/privacy
+  material. Optional private `docs/BACKLOG.md` and `docs/UX_POLICY.md` are absent in this clean
+  worktree, as the committed authority permits.
+- `tools/check_docs.py` passed all 120 available checks (24 optional-private skips); 99 Python tool
+  tests and 184 device-harness self-tests passed. No device was connected or used.
+- A whole `tools/verify_host.py` attempt overlapped other Cycle 38 reviewers using the same Gradle
+  output directory and hit a transient missing `in-progress-results-generic.bin` while Gradle was
+  replacing test results. That concurrent-run artifact is not counted as a repository failure; the
+  Python portions were rerun independently as above.
 
 ## Findings
 
-### TEST37-01 — no test prevents optimized execution from weakening the consolidated host gate
+### TEST38-01 — the focal-rail test never renders the vulnerable selected-disabled state or a bright frame
 
-- **Severity / confidence / status:** Medium / High / Confirmed false-positive test mode
-- **Exact evidence:** `tools/verify_host.py:79-82` runs Python suites and `tools/check_docs.py` with
-  the same `sys.executable` and inherited environment, but the entry point has no optimized-mode
-  refusal. `tools/check_docs.py:360-365` uses a removable plain `assert` for the exact-millisecond ZSL
-  source invariant. The only optimized-interpreter regression is device-specific at
-  `device-tests/tests/test_attestation.py:173-207`. The closest documentation regression,
-  `tools/tests/test_tool_contracts.py:331-367`, mutates only displayed document text and always
-  launches the checker normally; it does not mutate the source constant's precision or run the host
-  gate/checker under optimization.
-- **Concrete reproduction:** with an in-memory source substitution of
-  `ZSL_MAX_FRAME_AGE_NS = 400_000_001L`, normal `check_docs.py` compilation raised the intended
-  exact-millisecond assertion, while `optimize=2` exited 0 and printed `112 checks, 0 failed, 24
-  private checks skipped`. No repository files were changed for this proof.
-- **Why existing green coverage is insufficient:** the normal authoritative gate proves only that
-  the assertion exists in the normal interpreter. It does not prove the gate refuses an interpreter
-  mode that deletes that check. Cycle 36 fixed this class only at `device-tests/run.py`; the broader
-  gate remains independently callable under `-O`/`PYTHONOPTIMIZE`.
-- **Suggested TDD fix:** add subprocess tests around `tools/verify_host.py` and the committed-export
-  documentation fixture for both optimization entry paths, with a non-millisecond source constant
-  that must remain non-green. Then add an outer optimization guard and migrate tool invariants from
-  `assert` to explicit always-on validation.
+- **Severity / confidence / status:** Low / High / Confirmed coverage gap over a current visual defect.
+- **Exact evidence:** production selects a translucent-white-only treatment at
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855`, and applies it directly
+  over the live preview at `CameraScreen.kt:2912-2924`. Selected-disabled is a normal state during
+  reconfiguration/recording by `CameraScreenPolicy.kt:659-708`. The Cycle 37 test merely checks
+  three alpha numbers for that state at
+  `app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:65-72`; its
+  rendered fixture at `:74-107` includes only enabled and **unselected** disabled chips, both over
+  the single dark `CameraColors.Pill` background.
+- **Why the green test is insufficient:** unlike the unselected-disabled branch, selected-disabled
+  replaces `HudPlate` with `Color.White.copy(alpha = 0.12f)`. On a white/sky/snow frame, that fill,
+  its 12%-white border, and its 38%-white label all composite back to white. The selected lens/zoom
+  mark can therefore become visually absent precisely while controls are locked. The test's token
+  equality assertions encode the faulty recipe rather than testing its rendered outcome.
+- **Suggested TDD fix:** first render all four `(selected, enabled)` states over opaque near-black and
+  near-white frame fixtures and assert the selected-disabled label/boundary remains distinguishable.
+  Then preserve `HudPlate` as the contrast floor and layer a quiet selected tint instead of replacing
+  the plate with translucent white.
 
-### TEST37-02 — the docs test checks the ZSL number but misses its contradictory comparator
+### TEST38-02 — finder geometry tests pass an inert `bottomMargin` and never assert that it moves the box
 
-- **Severity / confidence / status:** Low / High / Confirmed coverage gap over a current mismatch
-- **Exact evidence:** the production boundary test at
-  `camera/ZslAdmissionTest.kt:93-98` proves the maximum-age frame is admitted. Production implements
-  that inclusive set at `camera/ZslAdmission.kt:87-90`. In contrast, `CLAUDE.md:219-221` and
-  `docs/ARCHITECTURE.md:68` specify strict `< 400 ms`. `tools/check_docs.py:366-375` extracts only
-  the integer from a hard-coded `age < (\d+) ms` regex, and
-  `tools/tests/test_tool_contracts.py:339-367` proves only that changing `400` to `250` fails. There
-  is no test comparing the predicate's inclusive/exclusive boundary with the prose operator.
-- **Failure scenario:** the test suite is green while code/tests admit exactly 400 ms and both
-  authorities exclude it. A future comparator edit can likewise retain the same numeral and evade
-  the documentation gate completely.
-- **Suggested TDD fix:** make the source/doc contract expose or parse both maximum and inclusivity,
-  add a fixture that changes `<=`/`<` without changing `400`, and require the documentation gate to
-  fail. Align current prose to the existing inclusive production test unless product intent says to
-  tighten the runtime predicate.
+- **Severity / confidence / status:** Low / High / Confirmed contract-test gap.
+- **Exact evidence:** `finderRect` documents `bottomMargin` as the bottom inset at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:671-678`, but marks the parameter
+  unused at `:680-691`; vertical placement is owned by `topAnchor`/`bottomClearance`. The first test
+  passes `bottomMargin = 0.10f` at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:18-35` without comparing it
+  with another value. The margin-pair test at `:70-88` asserts only width/height equality, so it also
+  passes whether the documented bottom inset works or not.
+- **Failure scenario:** a future caller tunes the apparently supported `bottomMargin` to clear new
+  chrome and receives bit-identical geometry; the suite remains green and the overlay can overlap.
+- **Suggested TDD fix:** choose one contract. If the obsolete parameter is removed, update KDoc and
+  tests to name `topAnchor`/`bottomClearance` as the only vertical controls. If it remains supported,
+  add a metamorphic test proving changing it changes only `y`, then implement that behavior.
 
-## Final coverage and flake sweep
+## Final coverage/flake sweep
 
-No ignored/disabled tests, vacuous `assertTrue(true)`/`assertFalse(false)` checks, unseeded behavioral
-randomness, or new race-dependent failures were found. The suite's UUID use is isolation-only; the
-remaining bounded waits are terminal/latch-based, and repeated device-harness self-tests remained
-green. The androidTest tier is packaging-only here, exactly as the repository documents.
+No ignored/disabled tests, vacuous always-true assertions, unseeded behavioral randomness, or new
+device-evidence overclaims survived the final sweep. The Android test APK remains packaging evidence
+only. Apart from the two gaps above, the current host suites and documentation contracts align with
+their production seams.
 
 ## Totals
 
-- Current findings: 2
-- Severity: 1 Medium, 1 Low
+- New findings: 2
+- Severity: 2 Low
 - Confidence: 2 High
-- Authoritative host gate: PASS (device execution not run)

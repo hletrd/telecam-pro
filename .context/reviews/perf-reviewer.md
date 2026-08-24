@@ -1,70 +1,75 @@
-# Performance review — cycle 37
+# Performance review — cycle 38
 
 Date: 2026-08-24
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
+Reviewed revision: `fa95299562d52f6b4ddd200f6d410ebd00a54c1d`
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle38.FKvYBP`
 
 ## Scope and inventory
 
 I read `CLAUDE.md`, the complete as-built authority in `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`, then inventoried all 489 tracked paths. The review covered all 101 production
+`docs/FIELD_CHECKS.md`, then inventoried all 490 tracked paths. The pass covered all 101 production
 Kotlin files, 220 JVM/Robolectric/Compose tests, Android instrumentation/debug sources, resources and
 manifests, Gradle/release inputs, Python and shell tooling, the device harness and its tests, and the
-committed documentation/review/plan history through completed cycle 36. Prior review findings were
-used as regression oracles rather than repeated as current issues.
+review/plan history through completed cycle 37. Prior performance reports were used as regression
+oracles rather than copied forward as current findings.
 
-The runtime pass followed every performance-sensitive lane and cross-file consumer: Camera2 route
-enumeration, dual/sequential open, request updates, pseudo-ZSL, capture delivery, and teardown; GL
-frame notification coalescing, preview/encoder drawing, bounded analysis readback, and generation
-retirement; processed/RAW still snapshot, encoding, publication, deletion, and recovery; recording
-allocation, microphone/codec/muxer work, native finalization, and storage tails; ViewModel tickers,
-StateFlow publication, zoom/control throttles, and Compose consumers; review decode/player lanes; and
-every process-wide provider/native dispatcher. Repository-wide searches covered executor/thread
-construction, queue cardinality, waits/joins, retry/backoff loops, per-frame/per-buffer allocation,
-logging, caches/collections, lifecycle shutdown, subprocess timeouts, and long-lived helper tools.
+The runtime trace covered Camera2 discovery/open/session/repeating-request/teardown paths; GL frame
+coalescing, preview/encoder/analysis work and generation retirement; ZSL and still snapshot/encode/
+publication lanes; recording allocation, microphone, codec/muxer, finalization and storage tails;
+ViewModel timers, StateFlow and Compose hot paths; media review; and every process-wide provider
+dispatcher. Repository-wide searches checked executor/thread construction and shutdown, queue and
+collection bounds, blocking waits, retry loops, per-frame/per-buffer allocation and logging, and the
+cycle-37 change surface. The focused stabilization capability and quick-Fn tests pass, but they cover
+the value projection only, not the Engine side effect described below.
 
 ## Findings
 
-No new performance finding survived validation.
+### PERF38-01 — capability-only stabilization normalization performs an unchanged request rebuild and a full camera reopen
 
-## Resolved findings distinguished from current behavior
-
-- Cycle 34's stale dual-open wait is resolved: the sole setup lane polls ownership every 20 ms while
-  retaining the absolute two-second HAL deadline, so a superseded attempt yields promptly.
-- Cycle 35's audio-meter churn is resolved: post-gain peaks become threshold-preserving overload
-  categories before root state, while RMS alone is quantized; sub-threshold peak jitter no longer
-  republishes the whole `CameraUiState`.
-- Cycle 32's retained-family retry/Engine-retention defect is resolved: accepted retryable retirement
-  results arm one process-owned conflated exponential retry, live-row results wait for a mutation edge,
-  and Engine release unregisters its listener.
-- Cycle 36's dual-open correction adds only a lock-free monotonic liveness read at the supersession
-  boundary; it introduces no hot-loop, queue, or recurring allocation cost.
+- **Severity:** Medium
+- **Confidence:** High
+- **Status:** Confirmed call path; user-visible duration requires device validation on a route that
+  lacks `PREVIEW_STABILIZATION`.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:2878-2925`
+  normalizes the current label when route caps arrive, then calls the ordinary user-change setter.
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CaptureCapabilities.kt:551-583` proves the relevant
+  cases are wire-equivalent: requested `ENHANCED` already maps to HAL `ON` on an OFF+ON route and to
+  HAL `OFF` on an OFF-only route; normalizing the label to `STANDARD`/`OFF` does not change that HAL
+  value. Nevertheless `CameraEngine.setVideoStabMode` at `CameraEngine.kt:1587-1594` invokes
+  `applyStabilization`, whose controller call at `CameraEngine.kt:1561-1564` posts a complete
+  `startPreview()` request rebuild, and then calls `reopenForSession()`. That path invalidates Ready
+  and queues another full `reconfigureCamera` on the sole setup executor
+  (`CameraEngine.kt:2844-2885`). Caps are deliberately published before the candidate's deferred
+  session is started (`CameraEngine.kt:3782-3810`), so the normalization callback can enqueue this
+  second pass while the first route transition is still completing.
+- **Failure scenario:** launch or switch from an Active-capable camera to a generic camera that
+  advertises only OFF+ON. The first transition already configures HAL `ON`; the caps callback changes
+  only the UI/persisted label from Active to Standard, yet it pays a repeating-request swap and then
+  closes/reopens the camera again. On this project's measured HAL a repeating-request swap stalls
+  preview and a full route reconfiguration is a visible blackout; on another device the exact delay
+  is unmeasured, but the redundant native work is unconditional.
+- **Suggested fix:** normalize stabilization inside the generation-owned Engine caps/route commit
+  before session configuration, and publish the resolved label/choice list back to the ViewModel; or
+  add a side-effect-free reconciliation setter that updates the desired enum only when old and new
+  `videoStabControlMode` are identical. Keep the existing reopen behavior for an operator change that
+  genuinely changes the HAL mode/session class. Add a test with an Engine spy proving an OFF+ON caps
+  callback maps Active→Standard with zero request rebuilds and zero extra reconfigure submissions.
 
 ## Final missed-issues sweep
 
-- Camera frame delivery remains latest-edge coalesced. Analysis is single-flight per GL generation,
-  reads at most a 256-pixel long edge, reuses its direct/byte buffers, and cannot queue work per frame.
-- Live zoom submits no Camera2 requests while the gesture moves; ViewModel zoom updates are coalesced
-  near 60 Hz, full controls are throttled, and the controller's sensor fast path retains one trailing
-  request rather than a per-event queue.
-- The pseudo-ZSL ring and result cache remain fixed at three images and six results. Processed SINGLE
-  snapshots are capped at two process-wide; burst, AEB, and timelapse advance only after the preceding
-  save completes; RAW-only publication uses a fixed two-worker/two-backlog owner.
-- Camera setup/close proof, GL stop, recorder setup/detach/finalization, standby microphone recreation,
-  launch recovery, family-marker work, retained-still cleanup, recording allocation/storage, review
-  deletion, and media review all retain explicit worker/queue/deadline bounds or irreversible native
-  quarantine. Engine/ViewModel replacement does not multiply those process owners.
-- Main-thread work remains state/UI/lifecycle work plus the explicitly accepted small synchronous
-  settings commit. CameraService, MediaProvider, bitmap/HEIF, codec finalization, recovery, and review
-  acquisition remain off main in normal operation.
-- No additional unbounded production queue or collection, repeated worker creation under a hot path,
-  busy-spin, per-frame log flood, main-thread provider/native call, or reproducible CPU/memory growth
-  path survived the final repository-wide check. Device-only cost claims remain limited to the
-  measurements and open checks already recorded by the repository.
+- Frame notification and analysis work remain coalesced/single-flight and generation-owned; the
+  analysis readback remains bounded to a 256-pixel long edge with reused buffers.
+- Zoom/control input remains coalesced or throttled, and moving pinch gestures still submit no
+  repeating requests. ZSL rings, capture snapshot admission, provider queues, review lanes, and
+  recording storage remain explicitly bounded.
+- Camera/GL/recorder teardown retains deadlines or irreversible quarantine; no new unbounded worker,
+  busy-spin, per-frame log flood, main-thread provider/native call, or growing production collection
+  survived the repository-wide sweep.
+- The remaining cycle-37 changes are small capability projections, rendering-token selection, docs,
+  and host-gate checks; no second CPU, memory, responsiveness, or queueing defect survived validation.
 
 ## Totals
 
-- New findings: 0
-- Severity: none
-- Confidence: High that no additional current performance defect is established by repository
-  evidence at this revision.
+- New findings: 1
+- Severity: 1 Medium
+- Confidence: High in the redundant-work path; device timing intentionally unclaimed.

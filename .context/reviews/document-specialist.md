@@ -1,52 +1,60 @@
-# Document specialist review — cycle 37
+# Document-specialist review — cycle 38
 
 Date: 2026-08-24
 
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
+Reviewed revision: `fa95299` (`origin/main`)
 
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
+Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
 
-## Coverage
+## Scope
 
-I inventoried all 489 tracked paths and read the current authorities, README, field ledger,
-privacy/data-safety/Play material, release plans, resources/manifests, relevant implementation/tests,
-and prior reviews. Cycle-36 history is resolved. `tools/check_docs.py` passes 112 checks with 24
-optional-private skips; its current contracts do not cover the mismatches below.
+Inventoried all 490 tracked paths and read the committed authorities, field ledger, README, privacy
+and Play material, current/historical plans, resources/manifests, relevant implementation/tests, and
+prior review records. Optional private `docs/BACKLOG.md` and `docs/UX_POLICY.md` are absent, so no
+private state is inferred. `tools/check_docs.py` passes 120 checks with 24 optional-private skips.
 
 ## Findings
 
-### DOC37-01 — the documented shared capability projection is false for Gamma quick controls
-
-- **Severity / confidence:** Medium / High.
-- **Exact regions:** authority at `CLAUDE.md:916-934` and `docs/ARCHITECTURE.md:1201-1206`; transfer projection at `camera/CameraState.kt:1164-1187`; correct menu filtering at `ui/controls/ProControls.kt:919-975`; contrary quick paths at `ui/controls/ControlCycles.kt:230-244`, `ui/controls/FnQuickActions.kt:129`, and `ui/controls/ManualDials.kt:621-632`.
-- **Mismatch:** authorities say settings/Fn share a capability projection and cycle only advertised choices. A no-Main10 HEVC encoder has `[SDR]`, but quick Gamma stays enabled, requests the global next value, and `ui/CameraViewModel.kt:2283-2299` normalizes it back to SDR.
-- **Failure scenario:** maintainers treat Fn parity as enforced while a user sees a hot silent no-op across three quick surfaces.
-- **Suggested fix:** make every surface consume `availableTransfers`; add a docs/test contract for singleton lists; retain the authority once executable parity is restored.
-
-### DOC37-02 — stabilization is documented as capability-gated while UI/OSD expose requested fiction
-
-- **Severity / confidence:** Medium / High.
-- **Exact regions:** `camera/CameraState.kt:145-169`; `CLAUDE.md:916-929`; `docs/ARCHITECTURE.md:1201-1206`; fallback at `camera/CaptureCapabilities.kt:244-250,551-562`; unfiltered UI at `ui/controls/ProSheet.kt:1246-1269`, `ui/controls/FnQuickActions.kt:122`, `ui/controls/ManualDials.kt:574-587`, and `ui/overlays/Overlays.kt:962-970`.
-- **Mismatch:** OFF-only hardware can be labeled Standard/Active while the request is OFF; without PREVIEW_STABILIZATION the UI can claim Active/extra crop while the request is Standard ON. The clean-clone authority overstates as-built UI truth.
-- **Failure scenario:** a maintainer or reviewer trusts OSD as accepted session truth even though acceptance remains private to controller fallback and never reconciles UI state.
-- **Suggested fix:** project exact choices into menu/Fn/state/OSD and reconcile restore on target caps. Add a docs contract tying UI projection to `videoStabModes`.
-
-### DOC37-03 — `PRIVACY.md` is less complete than the same-date published and in-app policies
+### DOC38-01 — the completed Cycle 37 plan claims bright-frame selected-disabled coverage that does not exist
 
 - **Severity / confidence:** Low / High.
-- **Exact regions:** `PRIVACY.md:1-38`; `privacy-policy/index.html:225-247`; `app/src/main/res/values/strings.xml:125`; Korean counterpart `app/src/main/res/values-ko/strings.xml:112`.
-- **Mismatch:** HTML and EN/KO fallback disclose ordinary camera/lens/exposure/time metadata, no location/GPS, and local library read without transmission. Markdown, with the identical update date, omits those facts.
-- **Failure scenario:** repository and published/in-app readers receive different current-policy disclosures; the green docs checker gives no drift signal.
-- **Suggested fix:** synchronize Markdown, preferably generate presentations from one fact set, and require metadata/no-location/on-device-read facts in all active copies.
+- **Exact regions:** `docs/plans/2026-08-24-rpf-cycle37.md:47-52,88-100` marks a coherent
+  selected-disabled fill plus native Compose coverage over bright and dark frames complete. The
+  implementation at
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855,2912-2924` replaces the
+  dark `HudPlate` with a 12%-white translucent fill for selected-disabled. The test at
+  `app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:65-107` checks
+  only that state's token alpha; it renders no selected-disabled chip and uses only the dark
+  `CameraColors.Pill` background.
+- **Mismatch:** the durable completion record says the exact missing bright/dark state matrix was
+  exercised, while the checked-in evidence neither renders nor protects it. On a bright live frame,
+  the 12%-white container/border and 38%-white label all blend into the white scene because this
+  branch has no dark contrast plate.
+- **Suggested fix:** correct the selected-disabled composition and add the promised bright/dark
+  render matrix. Keep the historical plan complete only once its concrete evidence is true.
+
+### DOC38-02 — `finderRect` documentation advertises a bottom-inset control the implementation suppresses
+
+- **Severity / confidence:** Low / High.
+- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:671-691` says
+  `bottomMargin` insets the PIP from the bottom, then marks that parameter
+  `@Suppress("UNUSED_PARAMETER")`; `:693-719` derives `y` from `topAnchor` and
+  `bottomClearance` instead. `FinderGeometryTest.kt:8-13,18-35,70-88` repeats the old independent
+  bottom-clearance story while never asserting that changing `bottomMargin` changes position.
+- **Mismatch:** maintainers are told they can tune a bottom margin, but it is an inert argument. The
+  comments later in the function correctly explain that the top anchor/current clearance replaced
+  the old approximation, making the opening KDoc and test header stale.
+- **Suggested fix:** remove the dead parameter and rewrite the KDoc/test vocabulary around
+  `topAnchor` plus measured `bottomClearance`, or restore an explicit and tested semantic for it.
 
 ## Final sweep
 
-Toolchain versions, Android floor, release readiness, stale screenshot blockers, field status,
-permissions, ownerless-media caveats, Loupe exception, DNG routing, and cycle-36 evidence agree with
-current source. Historical evidence is clearly labeled superseded. No additional drift survived.
+Toolchain versions, Android floor, ZSL inclusivity, stabilization/Gamma capability wording, privacy
+facts, release status, Loupe exception, DNG routing, and open field checks agree with current source.
+No additional current-authority drift survived.
 
 ## Totals
 
-- New findings: 3
-- Severity: 2 Medium, 1 Low
-- Confidence: 3 High
+- New findings: 2
+- Severity: 2 Low
+- Confidence: 2 High

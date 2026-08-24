@@ -1,85 +1,71 @@
-# QA adversary review — cycle 36
+# QA adversary review — cycle 38
 
 Date: 2026-08-24
 
-Reviewed revision: `1f4588744084f1623ad017df1945d7c72a426c54` (`origin/main`)
+Reviewed revision: `fa95299` (`origin/main`)
 
-Workspace: isolated worktree `/tmp/find-x9-cycle36.TOpdQ8`
+Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
 
 Mode: host-only by directive; no install, launch, ADB, capture, deployment, or device mutation
 
-## Gate-first result
+## Host evidence
 
-The runbook's Gate 1 was run with JDK 21 and the repository-documented conventional SDK at
-`/Users/hletrd/Library/Android/sdk`:
+- `tools/check_docs.py`: **PASS**, 120 checks, 24 optional-private skips.
+- Python tool suites: **PASS**, 99 tests.
+- Device-harness self-tests with fake ADB: **PASS**, 184 tests. These validate the harness, not the
+  app on hardware.
+- A combined `tools/verify_host.py` invocation collided with other Cycle 38 reviewers concurrently
+  replacing the shared Gradle test-results directory and ended at a missing transient
+  `in-progress-results-generic.bin`. This is not treated as app evidence or a repository failure;
+  the orchestrating implementation phase must run the authoritative gate once without concurrent
+  Gradle writers.
 
-`./gradlew :app:assembleDebug :app:testDebugUnitTest`
+## Findings
 
-Result: **PASS** — `BUILD SUCCESSFUL`, 52 actionable tasks (1 executed, 51 up-to-date). I also
-searched production Kotlin for TODO/FIXME/unresolved-reference markers and found none. A first
-attempt without SDK environment failed before compilation with “SDK location not found”; it was
-not treated as product failure and the corrected isolated-worktree run is the result above.
+### QA38-01 — bright-scene recording hides the active focal-rail state by construction
 
-`python3 tools/check_docs.py` additionally passed 112 checks with 24 optional-private skips.
+- **Severity / confidence / status:** Low / High / Confirmed static UI failure.
+- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt:659-708` and
+  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855,2912-2924`.
+- **Adversarial scenario:** aim at a white wall/sky, select a lens, and begin recording. Recording
+  makes the selected chip disabled. Its branch discards `HudPlate` and paints white at 12% (fill and
+  edge) plus white at 38% (label) directly over the white frame, making the active choice
+  effectively absent. Unselected disabled siblings keep the dark plate and remain visible.
+- **Why tests miss it:** `AffordanceEdgeComposeTest.kt:65-107` does not render selected-disabled and
+  never uses a bright frame; its alpha assertions merely confirm the faulty constants.
+- **Suggested fix/proof:** retain a dark contrast foundation, then run a native Compose bright/dark
+  four-state matrix and a target-device recording check before claiming closure.
 
-## Static finding
+### QA38-02 — the advertised finder bottom-margin knob is a no-op that green tests exercise without verifying
 
-### QA36-01 — the cycle-35 dual-open test matrix bypasses a production null-alias input
-
-- **Severity / confidence / status:** High / High / Confirmed static correctness defect.
-- **Exact regions:** production derivation at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3545,3580-3592,3667-3674,
-  3746-3753,7037-7050`; oracle at
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/DualOpenWaitTest.kt:101-136`.
-- **Problem:** The tests call `dualOpenSupersessionCleanup` with manually exclusive flags. The real
-  call computes them from nullable identities. With no outgoing controller and a candidate-cleared
-  slot, `controller == null` and `controller === old` are both true because `old` is null, so the
-  helper's exclusivity `require` throws. Every current host test remains green because none builds
-  the flags from `(old, controller)`.
-- **Concrete reproducer model:** `old=null`; install `next`; candidate refusal clears the shared
-  slot; advance the optics generation; enter supersession. The production inputs become
-  `(candidate=false, vacant=true, outgoing=true)`, which deterministically raises
-  `IllegalArgumentException`.
-- **Expected:** a total cleanup decision that leaves a clean vacant baseline and lets the newest
-  optics intent proceed. **Observed from source:** assertion failure on the setup worker.
-- **Suggested fix:** make the test own the same nullable identities as production and enumerate all
-  combinations; compute outgoing ownership only for a non-null owner or replace the booleans with a
-  typed owner terminal.
-
-## Runbook reliability observation (not counted as a repository finding)
-
-The external runbook command at
-`/Users/hletrd/flash-shared/find-x9-ultra-camera/.claude/agents/qa-adversary.md:47-53` pipes Gradle
-to `tail` without `pipefail`. The initial SDK failure therefore returned shell status 0 even though
-Gradle printed `BUILD FAILED`. This review inspected output and retried correctly, so its verdict is
-not affected. The runbook should eventually use `set -o pipefail`, capture `PIPESTATUS`, or avoid the
-pipeline; the shared checkout was not modified as directed.
+- **Severity / confidence / status:** Low / High / Confirmed static contract failure.
+- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:671-719` and
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:18-35,70-96`.
+- **Adversarial scenario:** set `bottomMargin` to 0 and then an extreme value while leaving
+  `topAnchor`/`bottomClearance` fixed. The box is bit-identical because the parameter is explicitly
+  unused, although the KDoc promises a different bottom inset. Existing tests stay green because
+  they never compare `y` across bottom-margin values.
+- **Suggested fix/proof:** remove the false knob and stale docs/tests, or make it affect only `y` and
+  add a metamorphic assertion that would fail on the current code.
 
 ## Feature matrix
 
-| Feature | Result | Evidence |
+| Surface | Result | Evidence |
 |---|---|---|
-| Gate 1 — debug assembly + JVM/Robolectric/Compose unit tests | PASS | Host command completed `BUILD SUCCESSFUL` after documented SDK environment was supplied. |
-| Static dual-open null-owner path | FAIL | Source-derived `(false, true, true)` reaches `require` in `dualOpenSupersessionCleanup`; current test matrix omits it. |
-| Gate 2 — install, launch, PID, crash scan | BLOCKED BY DIRECTIVE | Task explicitly forbids deployment/device work; no current `ANDROID_SERIAL` was supplied or reused. |
-| Mode-aware route selection / preview / Program exposure | BLOCKED BY DIRECTIVE | Requires current-device observation. |
-| PASM, snapping, focus, tap-AF, format gating | BLOCKED BY DIRECTIVE | Requires current-device UI and Camera2 result evidence. |
-| Photo files, whole-family delete, video/container/audio | BLOCKED BY DIRECTIVE | Requires disposable device capture and pulled-file inspection. |
-| Stabilization, overlays, nine-tab settings, MR restore | BLOCKED BY DIRECTIVE | Requires device interaction and visual/metadata evidence. |
-| Rapid route churn, lifecycle/keyguard, format floor, zoom caps, delete-during-save | BLOCKED BY DIRECTIVE | Gate 4 is device-only and was not attempted. |
-| Field checks A3, A4, D1, E1, E2 | BLOCKED BY DIRECTIVE | They remain explicitly open/partial in `docs/FIELD_CHECKS.md`; host evidence cannot close them. |
+| Documentation, privacy, release contracts | PASS | 120 available checks pass; optional private docs absent by policy. |
+| Python release/tool logic | PASS | 99 host tests pass. |
+| Device harness safety/contracts | PASS (harness only) | 184 self-tests pass with fake ADB. |
+| Selected-disabled focal rail over bright scene | FAIL (static) | QA38-01. |
+| Finder `bottomMargin` behavior | FAIL (static contract) | QA38-02. |
+| Real camera, recording, storage, orientation, field checks | BLOCKED BY DIRECTIVE | No device use was authorized or attempted. |
 
-## Final sweep and verdict
+## Final verdict
 
-I inspected all 486 tracked paths, current plans/reviews, build/manifests/resources, production
-subsystems, 326 Kotlin files, 32 Python files, tool/harness tests, and documentation/assets. The
-cycle-35 audio overload and EXIF fixes are covered at their production representation boundaries;
-the dual-open null-owner path is the one new QA gap. No device claim was recycled.
-
-**GATE NOT PASSED — Gate 1 passes, but QA36-01 is a confirmed static failure and all device gates are BLOCKED BY DIRECTIVE.**
+**HOST EVIDENCE PARTIAL; STATIC QA NOT PASSED.** The independently runnable Python gates are green,
+but QA38-01 and QA38-02 are current failures, and hardware behavior remains untested by directive.
 
 ## Totals
 
-- New repository findings: 1
-- Severity: 1 High
-- Confidence: 1 High
+- New repository findings: 2
+- Severity: 2 Low
+- Confidence: 2 High

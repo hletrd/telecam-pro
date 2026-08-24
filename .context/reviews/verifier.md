@@ -1,83 +1,56 @@
-# Verifier review — cycle 37
+# Verifier review — cycle 38
 
 Date: 2026-08-24
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
-Workspace: clean detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
 
-## Scope and evidence
+Reviewed revision: `fa95299`
 
-- Read the committed authorities `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-  `docs/FIELD_CHECKS.md`; inventoried all 489 tracked paths: 101 production Kotlin files, 220
-  JVM/Robolectric/Compose test files, four instrumented-test files, 32 Python files, 69 Markdown
-  files, and the remaining Android resources/build metadata/assets. Historical review and plan
-  records were used only to distinguish resolved findings from current behavior.
-- Traced the cycle-36 dual-open, optimized device-runner, and active-affordance fixes through their
-  production callers and focused tests. The nullable/terminal dual-open matrix is now total, and
-  `device-tests/run.py` rejects optimized execution before both outer snapshot work and child
-  imports; those cycle-36 findings are resolved and are not repeated below.
-- Ran `python3 tools/verify_host.py`: Android debug assembly, androidTest packaging, all
-  JVM/Robolectric/Compose tests, lint, exact Partition-A coverage, 96 tooling tests, nine
-  coverage-tool tests, 184 device-harness self-tests, 112 documentation checks, Python compilation,
-  and the final diff check all passed. Partition A is 8030/8045 lines (99.81%); all 15 misses match
-  the reviewed residual manifest. No device behavior is inferred from this host result.
-- Reproduced VER37-01 without changing the tree by executing `tools/check_docs.py` from its exact
-  source while substituting `ZSL_MAX_FRAME_AGE_NS = 400_000_001L` in the read stream. Normal
-  compilation failed with `AssertionError: ZSL frame age must be an exact millisecond fact`;
-  optimized compilation (`optimize=2`, the semantics of `-O`) exited 0 with `112 checks, 0 failed`.
+Role: evidence-based contract verification
 
-## Findings
+## Verification scope
 
-### VER37-01 — optimized Python can false-green the authoritative host documentation gate
+Built a complete tracked-file inventory and verified the committed behavioral authorities against
+production call sites, tests, resources, and tooling. Particular attention went to Camera2/GL
+generation ownership, accepted output and capability truth, exposure/zoom/rotation invariants,
+capture-family durability, recording admission/finalization, UI action guards, localization, and
+release/debug provenance. Python evidence was green: 99 tool tests, nine coverage-tool tests, 184
+device-harness tests, and 120 documentation checks. Android compile/lint tasks reached green cached
+outputs, but a concurrent review build removed the shared unit-test class directory while Gradle
+considered compilation up to date; that workspace collision was not treated as repository evidence.
+No device behavior was run or inferred.
 
-- **Severity / confidence / status:** Medium / High / Confirmed
-- **Exact evidence:** `tools/verify_host.py:50-98` has no `sys.flags.optimize` guard and forwards the
-  current environment while invoking every Python suite and `tools/check_docs.py` through
-  `sys.executable` (`:79-82`). `tools/check_docs.py:360-365` enforces the source freshness constant's
-  exact-millisecond representation with a plain `assert`, then integer-divides it before comparing
-  the resulting `400` token with the authorities. Python removes that assertion under `-O` or
-  `PYTHONOPTIMIZE`. The repository has an optimized-mode guard/regression for the *device runner*,
-  but no corresponding host-gate/tool guard.
-- **Failure scenario:** CI or an operator runs `python -O tools/verify_host.py` or inherits
-  `PYTHONOPTIMIZE=1`. A source edit from `400_000_000L` to `400_000_001L` (or any non-millisecond
-  value that still floors to 400) violates the explicit documentation contract, but the checker
-  reports all 112 checks green and the authoritative host gate can complete successfully. This is
-  distinct from resolved cycle-36 finding VER36-01: device evidence is now protected, while the
-  consolidated host authority is not.
-- **Suggested fix:** reject `sys.flags.optimize != 0` at the outer `verify_host.py` entry and replace
-  correctness-bearing `assert` statements in `check_docs.py` with always-on checks/exceptions. Add
-  subprocess regressions for both `python -O` and environment-only `PYTHONOPTIMIZE=1` using a
-  committed-export fixture whose ZSL constant is deliberately non-millisecond; require refusal
-  before a green documentation summary.
+## Finding
 
-### VER37-02 — the committed ZSL freshness contract excludes a boundary the implementation admits
+### VER38-01 — tests do not verify the advertised `bottomMargin` postcondition because it is inert
 
-- **Severity / confidence / status:** Low / High / Confirmed documentation/behavior mismatch
-- **Exact evidence:** `camera/ZslAdmission.kt:87-90` rejects only `ageNs >
-  ZSL_MAX_FRAME_AGE_NS`, so the 400,000,000 ns boundary is admitted. The focused production test
-  explicitly pins that behavior at `camera/ZslAdmissionTest.kt:93-98`: exactly the maximum is true,
-  maximum plus one nanosecond is false. `CLAUDE.md:219-221` and
-  `docs/ARCHITECTURE.md:68` instead promise `age < 400 ms`. The implementation's own comment at
-  `ZslAdmission.kt:28-34` says `<=0.4 s-old`, and `CameraEngine.kt:4088` says “up to 400 ms,” so the
-  inclusive code/test contract has stronger internal evidence.
-- **Failure scenario:** a frame exactly 400 ms old is served although both top-level authorities say
-  it is outside the admissible set. The one-nanosecond boundary has negligible photographic impact,
-  but it is a real current contract error and makes exact verification claims internally
-  contradictory.
-- **Suggested fix:** align the authorities to `age <= 400 ms` (the measured/code/test intent), then
-  make `check_docs.py` validate the comparator as well as the number. If strict exclusion is instead
-  intended, change the predicate to reject `>=` and reverse the existing boundary assertion; do not
-  leave code and authority with different sets.
+- **Severity:** Low
+- **Confidence:** High
+- **Status:** Confirmed
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:680-731` accepts
+  `bottomMargin` but never reads it; `y` is computed exclusively from `topAnchor`, the minimum
+  frame-height clearance, and the measured `bottomClearance`. In
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:17-35`, the test passes
+  `bottomMargin = 0.10f` but expects the unrelated minimum-clearance floor. The margin-variation test
+  at lines 70-88 changes `bottomMargin` from `0f` to `0.14f` and asserts only width/height, never
+  `y`; therefore it passes whether the margin works or not. Runtime consumers at
+  `gl/GlPipeline.kt:855-862` and `ui/CameraScreen.kt:908-912` use the separate measured
+  `bottomClearance`, confirming that the named margin is legacy surface rather than hidden runtime
+  input.
+- **Why this is a problem:** The test suite appears to pin “independent side and bottom clearances”
+  while proving no bottom-margin behavior. This creates a false verification claim and permits a
+  documented parameter plus its constant to remain dead indefinitely.
+- **Concrete failure scenario:** Mutating or deleting every use of the `bottomMargin` argument does
+  not fail `FinderGeometryTest`; a future caller can rely on the parameter to clear bottom chrome,
+  receive unchanged geometry, and still see a green geometry suite.
+- **Suggested fix:** Choose one truthful contract. Prefer deleting the superseded parameter/default
+  and updating the test names/comments to the actual top-anchor/minimum/measured-clearance model. If
+  the parameter is retained, assert that changing only `bottomMargin` changes `y` by the documented
+  amount while leaving `x`, width, and height unchanged, and implement that lower bound in
+  `finderRect`.
 
-## Final missed-issue sweep
+## Final verification sweep
 
-No ignored/disabled tests, vacuous constant assertions, unresolved TODO/FIXME markers, unexpected
-Partition-A misses, or additional current dual-open/device-runner regressions were found. The five
-physical checks A3/A4/D1/E1/E2 remain explicitly open in `docs/FIELD_CHECKS.md`; they are not host
-failures and were not promoted to findings. No source, plan, Git, or device state was changed.
-
-## Totals
-
-- Current findings: 2
-- Severity: 1 Medium, 1 Low
-- Confidence: 2 High
-- Resolved historical findings rechecked and not repeated: 3 cycle-36 root causes
+Verified that the latest stabilization projection normalizes requested state to advertised HAL
+modes and that Gamma quick actions consume encoder capability truth across menu/Fn/DISP paths.
+Checked the remaining authorities and high-risk cross-file flows for contradictory claims or an
+evidence-backed failure. Apart from VER38-01, no new confirmed correctness, security, data-loss, or
+maintainability defect was found.

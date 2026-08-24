@@ -1,127 +1,100 @@
-# Aggregated deep review — cycle 37
+# Aggregated deep review — cycle 38
 
 Date: 2026-08-24
-Reviewed revision: `4e4a3b0515d8926482cf6f5d7d2798d019d4c082` (`origin/main`)
-Workspace: clean detached worktree `/private/tmp/find-x9-cycle37.AoQoKx`
+Reviewed revision: `fa95299562d52f6b4ddd200f6d410ebd00a54c1d` (`origin/main`)
+Workspace: clean detached worktree `/private/tmp/find-x9-cycle38.FKvYBP`
 
 ## Coverage and aggregation
 
 Five parallel specialist groups covered code-reviewer, architect, performance, tracer, security,
-debugger, verifier, test engineer, critic, document specialist, and native Android designer. No
-additional repository-local reviewer agent was registered. Every group inventoried all 489 tracked
-paths, read the complete committed authorities, examined its relevant implementation, tests,
-tooling, resources, and cross-file interactions, and completed a final missed-issue sweep. The native
-Compose UI was reviewed from source, semantics, resources, and tests; browser automation is not
-applicable. No device behavior was run or inferred.
+debugger, critic, verifier, test engineer, document specialist, native Android designer,
+feature-development code reviewer, and QA adversary. No additional repository-local reviewer agent
+was registered. Every group inventoried all 490 tracked paths, read the complete committed
+authorities, examined its relevant implementation, tests, tooling, resources, and cross-file
+interactions, and completed a final missed-issue sweep. The native Compose UI was reviewed from
+source, semantics, resources, and host tests; browser automation is not applicable. No device
+behavior was run or inferred.
 
-The 16 raw specialist findings deduplicate to seven current root causes. Optimized-Python host-gate
-integrity and ZSL boundary drift each have cross-agent agreement and concrete reproductions. Gamma,
-stabilization, disabled-rail styling, and privacy drift have cross-role critic/document/designer
-agreement. The stale source comment is independently confirmed. Highest severity and confidence are
-preserved.
+The 15 raw specialist findings deduplicate to four current root causes. The dead finder-geometry
+input has agreement across eight roles; the selected-disabled focal-chip contrast loss has agreement
+across five roles. Performance and tracing independently confirmed the redundant stabilization
+reconfiguration, while the debugger reproduced the scheduler-dependent gate flake. Highest
+severity and confidence are preserved.
 
 ## Findings
 
-### AGG37-01 — optimized Python can false-green the authoritative host documentation gate
+### AGG38-01 — stabilization label normalization triggers redundant camera reconfiguration
 
 - **Severity / confidence:** Medium / High
-- **Sources:** verifier, test-engineer, security-reviewer (**cross-agent agreement**)
-- **Status:** confirmed with normal-versus-optimized evidence.
-- **Evidence:** `tools/verify_host.py:50-98` accepts `-O` and inherited `PYTHONOPTIMIZE`, then invokes
-  `tools/check_docs.py` through the same interpreter. `tools/check_docs.py:320,323,362,364,433`
-  uses removable assertions for operational invariants, including exact-millisecond ZSL authority.
-  With `ZSL_MAX_FRAME_AGE_NS` changed in memory to `400_000_001L`, normal execution fails while
-  optimized execution reports all 112 checks green. The cycle-36 device-runner guard protects only
-  `device-tests/run.py`.
-- **Failure:** CI or a maintainer can receive a green authoritative host result after Python has
-  deleted correctness-bearing documentation checks.
-- **Plan direction:** reject optimized execution at the outer host verifier and documentation-tool
-  entries, migrate operational assertions to always-on verdicts, and add `-O` plus environment-only
-  optimization regressions.
+- **Sources:** perf-reviewer, tracer (**cross-agent agreement**)
+- **Status:** confirmed control-flow defect; device timing intentionally unclaimed.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:2878-2925`
+  normalizes a requested stabilization label after capability arrival and calls
+  `CameraEngine.setVideoStabMode`. `camera/CaptureCapabilities.kt:551-583` can map both the old and
+  normalized labels to the same HAL mode. `camera/CameraEngine.kt:1561-1594,2844-2885,3782-3810`
+  nevertheless performs an unchanged request rebuild and then a full reopen under the same optics
+  generation. Existing capability and quick-control tests validate projected labels but not Engine
+  side effects.
+- **Failure:** capability-only state reconciliation such as Active→Standard or Active→Off can pay
+  two camera disruptions without changing the accepted Camera2 request, producing avoidable preview
+  interruption and thermal/battery work.
+- **Plan direction:** separate requested-label reconciliation from effective HAL changes, avoid the
+  Engine command when old and new resolve identically, and add a side-effect regression that proves
+  capability-only normalization does not rebuild/reopen the camera.
 
-### AGG37-02 — Gamma quick controls stay enabled for a singleton SDR projection
-
-- **Severity / confidence:** Medium / High
-- **Sources:** critic, document-specialist, designer (**cross-agent agreement**)
-- **Status:** confirmed capability-projection and interaction defect.
-- **Evidence:** `camera/CameraState.kt:1164-1187,1495-1501` projects no-Main10 HEVC to `[SDR]`, and
-  `ui/controls/ProControls.kt:919-975` correctly filters the menu. In contrast,
-  `ui/controls/ControlCycles.kt:230-244`, `FnQuickActions.kt:98-143`, and
-  `ManualDials.kt:621-632` keep Gamma hot and cycle the global list; `CameraViewModel.kt:2283-2299`
-  normalizes every unsupported request back to SDR. Existing quick-action tests encode that gap.
-- **Failure:** on an 8-bit HEVC encoder or before inventory truth arrives, Fn overlay, My Menu, and
-  expanded DISP provide tap feedback but never change Gamma, reading as a broken control.
-- **Plan direction:** derive value, enablement, and cycling from one advertised transfer projection;
-  disable singleton/loading states and test every quick surface.
-
-### AGG37-03 — stabilization UI reports requested labels instead of the HAL mode available
+### AGG38-02 — shared-pool capacity test races the latest-wins contract it is testing
 
 - **Severity / confidence:** Medium / High
-- **Sources:** critic, document-specialist, designer (**cross-agent agreement**)
-- **Status:** confirmed capability/state/OSD truth defect.
-- **Evidence:** `camera/CaptureCapabilities.kt:195-201,244-250,551-562` can resolve requested
-  STANDARD/ENHANCED to OFF or ordinary ON, but `ui/controls/ProSheet.kt:1246-1269`,
-  `FnQuickActions.kt:122`, `ManualDials.kt:574-587`, `CameraViewModel.kt:2943-2952`, and
-  `ui/overlays/Overlays.kt:962-970` expose and retain the unfiltered request.
-- **Failure:** OFF-only hardware can show `STAB STD`/`STEADY`; OFF+ON hardware can claim Active and
-  extra crop while only ordinary stabilization is applied.
-- **Plan direction:** single-source exact advertised choices, normalize state when route capabilities
-  arrive, and make menu, quick controls, captions, and OSD consume applied truth with capability
-  matrix coverage.
+- **Source:** debugger
+- **Status:** confirmed scheduler-dependent quality-gate failure; not a production-app defect.
+- **Evidence:** `app/src/test/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLaneTest.kt:418-450`
+  submits two requests back-to-back on each of two latest-wins lanes and then expects all four
+  callbacks to start. `app/src/main/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLane.kt:163-171,242-254`
+  intentionally replaces a lane's predecessor through a conflated latest-request channel. The
+  authoritative host gate failed once after 2,011 tests at the start latch; a clean full rerun and
+  eight focused reruns passed.
+- **Failure:** under host load, a successor legally retires its predecessor before the predecessor
+  starts, so the four-start latch can never complete and a correct tree intermittently fails its
+  blocking quality gate.
+- **Plan direction:** saturate the pool with one blocking request on each of four independent lanes
+  (or add exact predecessor-start handshakes) before testing the healthy lane's bounded exhaustion;
+  do not mask the missing happens-before edge with a longer timeout.
 
-### AGG37-04 — disabled focal-rail choices paint the full enabled-strength outline
-
-- **Severity / confidence:** Low / High
-- **Sources:** critic, designer (**cross-agent agreement**)
-- **Status:** confirmed visual-state regression after the cycle-36 enabled-edge correction.
-- **Evidence:** `ui/theme/Theme.kt:115-127` defines the 36%-white enabled edge, while
-  `ui/CameraScreen.kt:2827-2905` paints it unconditionally for `RailChip`; disabled policy at
-  `ui/CameraScreenPolicy.kt:644-680` dims only text. Existing Compose coverage exercises FilterChip,
-  not the focal rail.
-- **Failure:** recording/reconfiguration states visually advertise unavailable lens choices as
-  strongly as tappable choices even though semantics correctly disable them.
-- **Plan direction:** add a quiet disabled rail edge and coherent selected-disabled fill while
-  retaining the enabled 3:1 edge; cover the full rail state matrix over bright and dark frames.
-
-### AGG37-05 — ZSL freshness prose excludes a boundary production admits
+### AGG38-03 — selected-disabled focal chips lose their contrast floor on bright preview content
 
 - **Severity / confidence:** Low / High
-- **Sources:** verifier, test-engineer (**cross-agent agreement**)
-- **Status:** confirmed documentation/behavior mismatch.
-- **Evidence:** `camera/ZslAdmission.kt:87-90` rejects only ages greater than 400 ms, and
-  `camera/ZslAdmissionTest.kt:93-98` explicitly admits exactly 400 ms. `CLAUDE.md:219-221` and
-  `docs/ARCHITECTURE.md:68` promise `< 400 ms`; `tools/check_docs.py:366-375` checks only the numeral,
-  not comparator parity.
-- **Failure:** the green contract checker permits code/tests and both top-level authorities to define
-  different admissible sets.
-- **Plan direction:** align the authorities with the inclusive code/test evidence and make the docs
-  gate validate comparator as well as number.
+- **Sources:** test-engineer, document-specialist, designer, feature-dev-code-reviewer, QA adversary
+  (**cross-agent agreement**)
+- **Status:** confirmed compositing and coverage defect; target-device visual confirmation remains
+  appropriate after the fix.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt:659-708` produces
+  `selected=true, enabled=false` for the current focal choice throughout recording and optics
+  reconfiguration. `ui/CameraScreen.kt:2835-2855,2912-2924` uniquely replaces the dark `HudPlate`
+  foundation with translucent white container, border, and label layers. Over sky, snow, a white
+  wall, or an overexposed frame, those layers converge toward the frame and can erase the active
+  label and boundary. `AffordanceEdgeComposeTest.kt:65-107` renders neither selected-disabled nor a
+  bright background, although `docs/plans/2026-08-24-rpf-cycle37.md:47-52` claims that matrix.
+- **Failure:** while the focal rail is locked during REC or camera reconfiguration, the operator can
+  lose the only visible indication of the active lens/zoom on common bright scenes.
+- **Plan direction:** retain a dark live-preview contrast foundation beneath the quiet disabled
+  selection treatment, cover all four selected/enabled states on near-white and near-black frame
+  fixtures, and correct the completed-plan evidence without rewriting history.
 
-### AGG37-06 — same-date privacy-policy presentations disclose different facts
-
-- **Severity / confidence:** Low / High
-- **Sources:** critic, document-specialist (**cross-agent agreement**)
-- **Status:** confirmed current-policy drift.
-- **Evidence:** `PRIVACY.md:1-38` omits capture metadata, the explicit no-location/GPS statement, and
-  broad on-device library-read/no-transmission facts present in `privacy-policy/index.html:225-247`
-  and the EN/KO in-app policy strings. All presentations carry the same update date, and
-  `tools/check_docs.py` does not enforce these facts.
-- **Failure:** repository readers receive a materially less complete policy than browser and in-app
-  readers while every copy presents itself as current.
-- **Plan direction:** synchronize all active copies and add parity checks for metadata, no location,
-  and on-device library access.
-
-### AGG37-07 — the MR-row comment falsely equates its 0.18 tint with `AffordanceEdge`
+### AGG38-04 — `finderRect.bottomMargin` is a documented and tested no-op
 
 - **Severity / confidence:** Low / High
-- **Sources:** code-reviewer
-- **Status:** confirmed source-documentation drift.
-- **Evidence:** `ui/controls/ProSheet.kt:695-698` calls the independent amber
-  `ManualActive.copy(alpha = 0.18f)` wash “the white AffordanceEdge — same number,” but cycle 36
-  raised `AffordanceEdge` to 0.36 in `ui/theme/Theme.kt:115-127`.
-- **Failure:** a later palette cleanup can mistakenly couple the quiet amber MR selection wash to
-  the stronger interactive-boundary token.
-- **Plan direction:** correct the comment without changing either pixel value.
+- **Sources:** code-reviewer, architect, critic, verifier, test-engineer, document-specialist,
+  feature-dev-code-reviewer, QA adversary (**cross-agent agreement**)
+- **Status:** confirmed API/documentation/test-contract defect.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:363-369,671-730`
+  exposes `FINDER_BOTTOM_MARGIN` and documents `bottomMargin`, then suppresses the unused parameter;
+  vertical placement is derived only from `topAnchor` and `bottomClearance`.
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:8-35,70-96` passes the
+  phantom input without asserting that it affects position.
+- **Failure:** callers and maintainers see two apparent vertical-placement models, and future code
+  can tune the inert margin with green tests while the overlay does not move.
+- **Plan direction:** remove the obsolete parameter and constant, update every caller/KDoc, and pin
+  the real top-anchor/bottom-clearance laws with position-sensitive tests.
 
 ## Agent failures
 
@@ -129,8 +102,8 @@ None. Every available reviewer returned and wrote its provenance report.
 
 ## Totals
 
-- Raw specialist findings: 16
-- Deduplicated current findings: 7
-- Severity: 3 Medium, 4 Low
-- Confidence: 7 High
+- Raw specialist findings: 15
+- Deduplicated current findings: 4
+- Severity: 2 Medium, 2 Low
+- Confidence: 4 High
 - Deferred findings: none at review stage; Prompt 2 must schedule or explicitly defer every item.
