@@ -2,6 +2,7 @@ package me.hletrd.telecampro.camera
 
 import android.app.Application
 import android.graphics.SurfaceTexture
+import android.media.MediaFormat
 import android.net.Uri
 import android.view.Surface
 import androidx.test.core.app.ApplicationProvider
@@ -14,6 +15,7 @@ import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
+import me.hletrd.telecampro.video.EncoderSelection
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -133,6 +135,69 @@ class CameraEngineRecordingPreNativeTest {
         assertEquals(CameraStatusMessage.SELECTED_FPS_UNAVAILABLE, decisions.single().failure)
         assertEquals(1, statuses.count { it == CameraStatusMessage.SELECTED_FPS_UNAVAILABLE })
         assertEquals(0, allocationCalls.get())
+    }
+
+    @Test
+    fun `production REC snapshot excludes a concurrent pipeline packet`() {
+        val snapshotEntered = CountDownLatch(1)
+        val releaseSnapshot = CountDownLatch(1)
+        val inputs = CopyOnWriteArrayList<RecordingAdmissionInputs>()
+        val resultDone = CountDownLatch(1)
+        val pipelineDone = CountDownLatch(1)
+        val overrides = RecordingPreNativeEngineOverrides(
+            allocatePendingVideo = { _, _ -> null },
+            dispatchAllocation = { RecordingPreNativeSubmission(RecordingPreNativeDispatch.OVERFLOW) },
+            scheduleDeadline = { _, _ -> null },
+            afterMicrophoneClaim = { _, _, _ -> false },
+            discardPendingOutput = { PendingOutputDiscardResult.RECOVERY_MARKED },
+            useProductionEncoderAdmission = true,
+            beforeEncoderAdmissionSnapshot = {
+                snapshotEntered.countDown()
+                releaseSnapshot.await(WAIT_SECONDS, TimeUnit.SECONDS)
+            },
+            onEncoderAdmissionInputs = inputs::add,
+        )
+        val engine = engine(overrides)
+        installAcceptedSession(engine)
+        val hevc = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-main10",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val avc = EncoderSelection(
+            VideoCodec.AVC,
+            "test-main",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
+        engine.setVideoPipeline(listOf(hevc), ColorTransfer.HLG, VideoCodec.HEVC)
+
+        engine.startRecording(recordAudio = false) { resultDone.countDown() }
+        assertTrue(snapshotEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        val pipelineThread = Thread {
+            try {
+                engine.setVideoPipeline(listOf(avc), ColorTransfer.SDR, VideoCodec.AVC)
+            } finally {
+                pipelineDone.countDown()
+            }
+        }.apply { start() }
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (pipelineThread.state != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+            Thread.yield()
+        }
+        assertEquals(Thread.State.BLOCKED, pipelineThread.state)
+        releaseSnapshot.countDown()
+
+        assertTrue(resultDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        assertTrue(pipelineDone.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        pipelineThread.join()
+        assertEquals(1, inputs.size)
+        assertEquals(VideoCodec.HEVC, inputs.single().codec)
+        assertEquals(listOf(VideoCodec.HEVC), inputs.single().candidates.map { it.codec })
+        assertEquals(VideoCodec.AVC, field(engine, "videoCodec"))
     }
 
     @Test
@@ -779,6 +844,9 @@ class CameraEngineRecordingPreNativeTest {
     private fun setField(target: Any, name: String, value: Any) {
         target.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(target, value)
     }
+
+    private fun field(target: Any, name: String): Any? =
+        target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
 
     private fun overrides(
         admissionCurrent: () -> Boolean = { true },

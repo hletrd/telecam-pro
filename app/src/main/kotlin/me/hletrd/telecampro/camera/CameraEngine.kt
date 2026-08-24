@@ -76,6 +76,17 @@ internal data class RecordingPreNativeEngineOverrides(
     val useProductionEncoderAdmission: Boolean = false,
     /** Observes the immutable production decision after the Engine monitor has been released. */
     val onEncoderAdmission: ((RecordingEncoderAdmission) -> Unit)? = null,
+    /** Test-only barrier while the immutable production inputs still own the Engine monitor. */
+    val beforeEncoderAdmissionSnapshot: (() -> Unit)? = null,
+    /** Observes the exact pre-policy packet after the Engine monitor has been released. */
+    val onEncoderAdmissionInputs: ((RecordingAdmissionInputs) -> Unit)? = null,
+)
+
+internal data class RecordingAdmissionInputs(
+    val frameRateAvailable: Boolean,
+    val codec: VideoCodec,
+    val transfer: ColorTransfer,
+    val candidates: List<EncoderSelection>,
 )
 
 /** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
@@ -5016,6 +5027,7 @@ class CameraEngine internal constructor(
     /** Frozen pre-native admission facts; production carries an exact Camera2 session identity. */
     private data class RecordingAdmissionSnapshot(
         val acceptedSession: AcceptedCameraSession?,
+        val inputs: RecordingAdmissionInputs? = null,
         val encoderCandidates: List<EncoderSelection>,
         val failure: CameraStatusMessage? = null,
         val isCurrent: () -> Boolean,
@@ -5027,14 +5039,22 @@ class CameraEngine internal constructor(
      */
     private fun currentRecordingAdmissionSnapshot(): RecordingAdmissionSnapshot? = synchronized(this) {
         val acceptedSession = currentAcceptedRecordingSession() ?: return@synchronized null
-        val encoderAdmission = recordingEncoderAdmission(
+        recordingPreNativeOverrides?.beforeEncoderAdmissionSnapshot?.invoke()
+        val inputs = RecordingAdmissionInputs(
             frameRateAvailable = videoFrameRate in VideoFrameRate.availableFor(caps, videoSize, videoCodec),
             codec = videoCodec,
             transfer = transfer,
             candidates = videoEncoderCandidates,
         )
+        val encoderAdmission = recordingEncoderAdmission(
+            frameRateAvailable = inputs.frameRateAvailable,
+            codec = inputs.codec,
+            transfer = inputs.transfer,
+            candidates = inputs.candidates,
+        )
         RecordingAdmissionSnapshot(
             acceptedSession = acceptedSession,
+            inputs = inputs,
             encoderCandidates = encoderAdmission.candidates,
             failure = encoderAdmission.failure,
             isCurrent = { currentAcceptedRecordingSession() === acceptedSession },
@@ -5119,6 +5139,7 @@ class CameraEngine internal constructor(
                 candidates = snapshot.encoderCandidates,
                 failure = snapshot.failure,
             )
+            snapshot.inputs?.let { recordingPreNativeOverrides?.onEncoderAdmissionInputs?.invoke(it) }
             recordingPreNativeOverrides?.onEncoderAdmission?.invoke(observedDecision)
             snapshot.failure?.let { failure ->
                 // Bare "<X> unavailable" like every sibling status in this file; the copula was the
