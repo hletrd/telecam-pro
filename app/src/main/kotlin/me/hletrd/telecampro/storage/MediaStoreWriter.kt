@@ -76,6 +76,10 @@ object MediaStoreWriter {
 
     private class FamilyJournalAuthority(
         val monitor: Any = Any(),
+        // Claims register here BEFORE waiting for [monitor]. Retirement takes this exact-family
+        // lock for its final claim recheck plus marker removal, so slow preference I/O never owns
+        // the global registry while a queued same-family producer/publication remains visible.
+        val claimMonitor: Any = Any(),
         var users: Int = 0,
         // Registered before Camera2 receives the still request and retained until every possible
         // HEIF/JPEG/DNG continuation is terminal. Unlike an Engine-local capture id, this survives
@@ -97,15 +101,20 @@ object MediaStoreWriter {
         val authority = synchronized(familyAuthorityRegistryLock) {
             familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
                 it.users += 1
-                if (publication) it.publicationClaims += 1
             }
+        }
+        if (publication) synchronized(authority.claimMonitor) {
+            authority.publicationClaims += 1
         }
         return try {
             onRegistered()
             synchronized(authority.monitor) { block(authority) }
         } finally {
+            if (publication) synchronized(authority.claimMonitor) {
+                check(authority.publicationClaims > 0) { "family publication claim underflow" }
+                authority.publicationClaims -= 1
+            }
             synchronized(familyAuthorityRegistryLock) {
-                if (publication) authority.publicationClaims -= 1
                 authority.users -= 1
                 if (authority.users == 0 && familyAuthorities[key] === authority) {
                     familyAuthorities.remove(key)
@@ -124,13 +133,15 @@ object MediaStoreWriter {
         val authority = synchronized(familyAuthorityRegistryLock) {
             familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
                 it.users += 1
-                it.producerLeases += 1
             }
         }
+        synchronized(authority.claimMonitor) { authority.producerLeases += 1 }
         return CaptureFamilyProducerLease {
-            synchronized(familyAuthorityRegistryLock) {
+            synchronized(authority.claimMonitor) {
                 check(authority.producerLeases > 0) { "family producer lease underflow" }
                 authority.producerLeases -= 1
+            }
+            synchronized(familyAuthorityRegistryLock) {
                 authority.users -= 1
                 if (authority.users == 0 && familyAuthorities[key] === authority) {
                     familyAuthorities.remove(key)
@@ -494,7 +505,7 @@ object MediaStoreWriter {
         if (!producersTerminal) return FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
         val key = deletedFamilyJournalKey(family)
         return withFamilyJournalAuthority(key) { authority ->
-            if (synchronized(familyAuthorityRegistryLock) { authority.producerLeases > 0 }) {
+            if (synchronized(authority.claimMonitor) { authority.producerLeases > 0 }) {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
             }
             // SharedPreferences reads are thread-safe. Exact-family authority supplies the required
@@ -513,7 +524,7 @@ object MediaStoreWriter {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
             }
 
-            synchronized(familyAuthorityRegistryLock) {
+            synchronized(authority.claimMonitor) {
                 if (authority.producerLeases > 0) {
                     return@synchronized FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
                 }
@@ -523,6 +534,8 @@ object MediaStoreWriter {
                 if (authority.publicationClaims > 0) {
                     FamilyDeletionRetirementResult.RETAINED
                 } else {
+                    // Capacity-changing removal still uses the metadata RMW lock, but both locks
+                    // are family-local or metadata-only: neither is the global registry lock.
                     synchronized(familyJournalMetadataLock) {
                         if (!markerStore.contains(key)) {
                             FamilyDeletionRetirementResult.ALREADY_ABSENT
