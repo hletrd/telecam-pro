@@ -107,6 +107,7 @@ import me.hletrd.telecampro.focus.focusConfidenceCandidate
 import me.hletrd.telecampro.focus.frameDefocusCandidate
 import me.hletrd.telecampro.focus.macroTooCloseCandidate
 import me.hletrd.telecampro.storage.ExtraSettings
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.video.AudioInputInspector
@@ -1086,7 +1087,11 @@ class CameraViewModel @JvmOverloads constructor(
                 val deleteScope = captureOutputs.deleteScopeFor(preferred)
                 _state.update {
                     if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
-                        it.copy(lastMediaUri = preferred, lastMediaDeleteScope = deleteScope)
+                        it.copy(
+                            lastMediaUri = preferred,
+                            lastMediaProvenance = restored.preferred.provenance,
+                            lastMediaDeleteScope = deleteScope,
+                        )
                     } else {
                         it
                     }
@@ -3408,6 +3413,7 @@ class CameraViewModel @JvmOverloads constructor(
                     if (captureOutputs.isCurrentReviewOutput(uri)) {
                         it.copy(
                             lastMediaUri = uri,
+                            lastMediaProvenance = MediaProvenance.APP_OWNED,
                             lastMediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
                         )
                     } else {

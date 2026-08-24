@@ -50,6 +50,7 @@ import me.hletrd.telecampro.ui.controls.DialType
 import me.hletrd.telecampro.ui.controls.manualDialTransition
 import me.hletrd.telecampro.ui.review.MediaReviewOverlay
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+import me.hletrd.telecampro.storage.MediaProvenance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -217,6 +218,7 @@ class ModalFocusComposeTest {
                     MediaReviewOverlay(
                         uri = Uri.parse("content://telecam.invalid/missing"),
                         deleteScope = MediaDeleteScope.FILE_ONLY,
+                        provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
                         onClose = { closes++ },
                         onDelete = {},
                     )
@@ -224,6 +226,10 @@ class ModalFocusComposeTest {
             }
         }
         compose.waitForIdle()
+
+        compose.onNodeWithText(
+            context.getString(R.string.review_legacy_unverified_provenance),
+        ).assertExists()
 
         val close = compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_review))
         close.assertIsFocused()

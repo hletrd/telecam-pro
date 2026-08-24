@@ -1,6 +1,6 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-08-03_
+_Last updated: 2026-08-24_
 
 TeleCam Pro is a camera app for Android phones and tablets. This policy covers its permissions, captured
 media, and data handling.
@@ -16,11 +16,15 @@ cloud sync, or `INTERNET` permission.
 |---|---|
 | **Camera** | Shows the viewfinder and captures photos and videos. |
 | **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. Before recording, it is also used while the input level meter is visible in armed Video mode. |
-| **Photos and videos** (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`) | Lets the in-app gallery show captures this app saved before a reinstall. Asked only when you tap the gallery button with nothing to review; declining keeps the app working with only the captures made since installation. Reading happens on this device only. |
+| **Photos and videos** (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`) | Lets the in-app gallery find package-owned media and ownerless files in `DCIM/TeleCamPro` whose path, TeleCam filename format, media collection, extension, and MIME type all match. Those checks recognize a legacy TeleCam-format file but cannot verify who created it; the review labels its origin unverified and limits deletion to that file. Asked only when you tap the gallery button with nothing to review; declining keeps the app working with media from the current installation. Reading happens on this device only. |
 
 Microphone input is processed locally. The visible standby meter reduces its input to a level reading
 and does not save that audio; recorded audio remains in the video file on your device. Neither is
 uploaded, collected by the developer, or shared with third parties.
+
+TeleCam Pro rejects touch events that Android marks as fully or partially obscured by another
+window before they reach camera, settings, permission, or delete controls. Ordinary unmarked touch,
+stylus, mouse, accessibility, and system input continues through Android normally.
 
 ## Photos and videos you capture
 

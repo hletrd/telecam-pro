@@ -15,6 +15,18 @@ internal enum class StoredMediaOutputKind {
     RAW,
 }
 
+/** How strongly MediaStore can establish the authorship of a restored review file. */
+enum class MediaProvenance {
+    /** MediaStore still attributes this row to the current TeleCam package. */
+    APP_OWNED,
+
+    /**
+     * The owner is null and only the directory/name/collection/extension/MIME contract matches.
+     * This recognizes a legacy TeleCam-format candidate; it does not prove who authored the bytes.
+     */
+    LEGACY_FORMAT_UNVERIFIED,
+}
+
 /** What the app can truthfully promise when deleting a restored review item. */
 internal enum class RestoredDeleteScope {
     /** Every extant row with the exact, versioned capture-family key is known. */
@@ -29,7 +41,7 @@ internal enum class RestoredDeleteScope {
     FILE_ONLY,
 }
 
-/** Android-free projection of one owned MediaStore row. */
+/** Android-free projection of one MediaStore row admitted by the restore boundary. */
 internal data class StoredMediaRow<T>(
     val output: T,
     val collection: StoredMediaCollection,
@@ -45,13 +57,12 @@ internal data class StoredMediaRow<T>(
     /**
      * Whether MediaStore still credits THIS package as the row's owner.
      *
-     * False is the normal state for a file this app really did write in a PREVIOUS install:
-     * Android clears `OWNER_PACKAGE_NAME` when the owning package is uninstalled, so every
-     * reinstall or debug/release swap orphans that build's rows permanently. Such a row is still
-     * considered ours only when its filename, collection, extension, and MIME match an explicit
-     * historical/current save contract. Such a row is restorable for DISPLAY, but it can no longer
-     * be deleted without a system consent flow, so it may never carry a capture-family delete
-     * promise (see [restoreLatestCapture]).
+     * Android can clear `OWNER_PACKAGE_NAME` when an owning package is uninstalled, so a previous
+     * TeleCam install is one legitimate source of a false value. It is not the only possible source:
+     * an imported or other-app file can imitate the public directory/name/MIME contract. Therefore
+     * false means recognized legacy TeleCam FORMAT, never verified TeleCam authorship. Such a row is
+     * restorable for display, carries [MediaProvenance.LEGACY_FORMAT_UNVERIFIED], and may never carry
+     * a capture-family delete promise (see [restoreLatestCapture]).
      */
     val isOwned: Boolean = true,
 )
@@ -60,6 +71,7 @@ internal data class RestoredCaptureOutput<T>(
     val output: T,
     val kind: StoredMediaOutputKind,
     val displayName: String?,
+    val provenance: MediaProvenance,
 )
 
 /** The newest capture, with review preference applied only among that capture's siblings. */
@@ -170,11 +182,12 @@ private val legacyTimestamp = DateTimeFormatter
     .withResolverStyle(ResolverStyle.STRICT)
 
 /**
- * Trust boundary for rows whose MediaStore owner was cleared by uninstall.
+ * Trust boundary for rows whose MediaStore owner is null.
  *
  * Current-package rows are admitted without a filename restriction because MediaStore ownership is
- * authoritative. Owner-cleared rows need a current or historical TeleCam filename AND a collection,
- * extension, and MIME combination that the corresponding save lane could actually have emitted.
+ * authoritative. Owner-null rows need a current or historical TeleCam filename AND a collection,
+ * extension, and MIME combination that a save lane could have emitted. That is a recognition rule,
+ * not proof that TeleCam authored the bytes.
  */
 internal fun <T> isRestorableStoredMediaRow(row: StoredMediaRow<T>): Boolean {
     if (row.isOwned) return true
@@ -308,6 +321,11 @@ internal fun <T> restoreLatestCapture(rows: Iterable<StoredMediaRow<T>>): Restor
                 output = candidate.row.output,
                 kind = candidate.kind,
                 displayName = candidate.row.displayName,
+                provenance = if (candidate.row.isOwned) {
+                    MediaProvenance.APP_OWNED
+                } else {
+                    MediaProvenance.LEGACY_FORMAT_UNVERIFIED
+                },
             )
         }
     // A proven family key normally earns capture-level deletion — but only while we still OWN every

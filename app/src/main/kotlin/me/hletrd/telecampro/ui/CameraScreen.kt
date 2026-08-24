@@ -153,6 +153,7 @@ import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.teleDisplayBase
 import me.hletrd.telecampro.camera.viewfinderFocusActionAvailability
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.ui.controls.formatZoomMark
 import me.hletrd.telecampro.ui.controls.CompactFnButton
 import me.hletrd.telecampro.ui.controls.DialType
@@ -396,6 +397,7 @@ fun CameraScreen(
         ),
     ) { mutableStateOf<android.net.Uri?>(null) }
     var reviewDeleteScope by rememberSaveable { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
+    var reviewProvenance by rememberSaveable { mutableStateOf(MediaProvenance.APP_OWNED) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     // A programmatic open is an EVENT, not just a tab value. My Menu's non-manual WB row dismisses
@@ -1274,11 +1276,13 @@ fun CameraScreen(
                 // recomposition-stable holders, safe inside the remembered closure.
                 val reviewOpenUri = state.lastMediaUri
                 val reviewOpenScope = state.lastMediaDeleteScope
-                val onOpenReview = remember(reviewOpenUri, reviewOpenScope) {
+                val reviewOpenProvenance = state.lastMediaProvenance
+                val onOpenReview = remember(reviewOpenUri, reviewOpenScope, reviewOpenProvenance) {
                     {
                         if (reviewOpenUri != null) {
                             val familyPinned = currentActions.value.onReviewOpenChange(true, reviewOpenUri)
                             reviewUri = reviewOpenUri
+                            reviewProvenance = reviewOpenProvenance
                             reviewDeleteScope = if (familyPinned) {
                                 reviewOpenScope
                             } else {
@@ -1298,6 +1302,7 @@ fun CameraScreen(
                     isRecordingStarting = state.isRecordingStarting,
                     timerCountdownSec = state.timerCountdownSec,
                     lastMediaUri = state.lastMediaUri,
+                    lastMediaProvenance = state.lastMediaProvenance,
                     onOpenReview = onOpenReview,
                     onShutter = onShutter,
                     onSnapshot = actions::onCapturePhoto,
@@ -1383,6 +1388,7 @@ fun CameraScreen(
         MediaReviewOverlay(
             uri = frozenReviewUri,
             deleteScope = reviewDeleteScope,
+            provenance = reviewProvenance,
             overlayRotation = overlayRotation,
             onClose = {
                 actions.onReviewOpenChange(false, frozenReviewUri)
@@ -2928,6 +2934,7 @@ private fun ShutterRow(
     isRecordingStarting: Boolean,
     timerCountdownSec: Int,
     lastMediaUri: android.net.Uri?,
+    lastMediaProvenance: MediaProvenance,
     onOpenReview: () -> Unit,
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
@@ -2947,6 +2954,7 @@ private fun ShutterRow(
         // Counter-rotate the review thumbnail so its image reads upright as the phone turns.
         GalleryThumb(
             uri = lastMediaUri,
+            provenance = lastMediaProvenance,
             onClick = onOpenReview,
             modifier = Modifier.align(Alignment.CenterStart).rotate(glyphRotation),
         )

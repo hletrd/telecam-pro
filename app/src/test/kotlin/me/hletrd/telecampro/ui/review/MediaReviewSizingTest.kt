@@ -3,6 +3,7 @@ package me.hletrd.telecampro.ui.review
 import me.hletrd.telecampro.R
 
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.storage.MediaProvenance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -108,6 +109,23 @@ class MediaReviewSizingTest {
         assertEquals(R.string.a11y_review_last_raw, galleryReviewContentDescription(true, ReviewMediaKind.RAW))
         assertEquals(R.string.a11y_review_last_photo, galleryReviewContentDescription(true, ReviewMediaKind.STILL))
         assertEquals(R.string.a11y_review_last_video, galleryReviewContentDescription(true, ReviewMediaKind.VIDEO))
+        assertEquals(
+            R.string.a11y_review_legacy_unverified_media,
+            galleryReviewContentDescription(
+                hasMedia = true,
+                kind = ReviewMediaKind.STILL,
+                provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            ),
+        )
+    }
+
+    @Test
+    fun `review provenance copy appears only for unverifiable legacy format media`() {
+        assertNull(reviewProvenanceLabel(MediaProvenance.APP_OWNED))
+        assertEquals(
+            R.string.review_legacy_unverified_provenance,
+            reviewProvenanceLabel(MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
+        )
     }
 
     @Test

@@ -3,6 +3,7 @@ package me.hletrd.telecampro.camera
 import android.util.Size
 import androidx.compose.runtime.Immutable
 import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.video.AudioRouteAvailability
 import me.hletrd.telecampro.video.AudioRouteStatus
 
@@ -1509,6 +1510,8 @@ data class CameraUiState(
     val status: CameraStatus? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
     val lastMediaUri: android.net.Uri? = null,
+    // Owner-null restore candidates match a TeleCam format but cannot claim TeleCam authorship.
+    val lastMediaProvenance: MediaProvenance = MediaProvenance.APP_OWNED,
     // Canonical live/restored families can delete every known sibling; legacy filenames cannot.
     val lastMediaDeleteScope: MediaDeleteScope = MediaDeleteScope.FILE_ONLY,
     /** False only for a genuine fail-closed still-output ownership condition. */

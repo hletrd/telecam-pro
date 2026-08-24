@@ -82,6 +82,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.ui.controls.MinTouchTarget48
 import me.hletrd.telecampro.ui.controls.formatShutterSpeed
 import me.hletrd.telecampro.ui.modalFocusBoundary
@@ -138,12 +139,22 @@ internal fun reviewMediaKind(mimeType: String?): ReviewMediaKind {
 internal fun galleryReviewContentDescription(
     hasMedia: Boolean,
     kind: ReviewMediaKind?,
+    provenance: MediaProvenance = MediaProvenance.APP_OWNED,
 ): Int = when {
     !hasMedia -> R.string.a11y_no_capture_to_review
+    provenance == MediaProvenance.LEGACY_FORMAT_UNVERIFIED ->
+        R.string.a11y_review_legacy_unverified_media
     kind == ReviewMediaKind.RAW -> R.string.a11y_review_last_raw
     kind == ReviewMediaKind.VIDEO -> R.string.a11y_review_last_video
     kind == ReviewMediaKind.STILL -> R.string.a11y_review_last_photo
     else -> R.string.a11y_review_last_capture
+}
+
+/** Quiet review-plate disclosure; verified package-owned media needs no extra provenance copy. */
+@StringRes
+internal fun reviewProvenanceLabel(provenance: MediaProvenance): Int? = when (provenance) {
+    MediaProvenance.APP_OWNED -> null
+    MediaProvenance.LEGACY_FORMAT_UNVERIFIED -> R.string.review_legacy_unverified_provenance
 }
 
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
@@ -624,9 +635,14 @@ private val galleryThumbLane = LatestReviewSetupLane<ReviewDescriptorRequest, Ga
     release = GalleryThumbContent::dispose,
 )
 
-/** Tappable thumbnail of the last capture; RAW uses a labeled tile rather than a fake/failed image. */
+/** Tappable thumbnail of the last review item; RAW uses a label rather than a fake/failed image. */
 @Composable
-fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun GalleryThumb(
+    uri: Uri?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    provenance: MediaProvenance = MediaProvenance.APP_OWNED,
+) {
     val context = LocalContext.current
     val thumbOwner = remember(uri) { Any() }
     val contentHolder = remember(uri) { mutableStateOf(GalleryThumbContent()) }
@@ -647,7 +663,9 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
             contentHolder.value.dispose()
         }
     }
-    val galleryDesc = stringResource(galleryReviewContentDescription(uri != null, content.kind))
+    val galleryDesc = stringResource(
+        galleryReviewContentDescription(uri != null, content.kind, provenance),
+    )
     Box(
         modifier = modifier
             .size(52.dp)
@@ -728,6 +746,7 @@ fun MediaReviewOverlay(
     onClose: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
+    provenance: MediaProvenance = MediaProvenance.APP_OWNED,
     // Shooting-screen glyph rule applied to review: compact/short labels counter-rotate so they
     // read upright in the landscape hold the 300 mm rig encourages; wide boxes (the metadata
     // block) stay screen-fixed — Modifier.rotate is a draw transform, not a re-layout, and a
@@ -780,6 +799,7 @@ fun MediaReviewOverlay(
     val rawReady = mediaState is ReviewMediaState.Ready.Raw
     val deleteCopy = mediaDeleteConfirmationCopy(deleteScope, rawReady)
     val deleteTitle = stringResource(deleteCopy.title)
+    val provenanceLabel = reviewProvenanceLabel(provenance)?.let { stringResource(it) }
     val zoom4Action = stringResource(R.string.a11y_zoom_4x)
     val zoom8Action = stringResource(R.string.a11y_zoom_8x)
     val resetZoomAction = stringResource(R.string.a11y_reset_zoom)
@@ -1241,7 +1261,7 @@ fun MediaReviewOverlay(
         }
         }
 
-        metadata?.let { meta ->
+        if (metadata != null || provenanceLabel != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -1266,14 +1286,19 @@ fun MediaReviewOverlay(
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                Text(meta.name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    reviewMetadataLine(rawReady, meta.width, meta.height, meta.sizeBytes),
-                    color = CameraColors.TextSecondary,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                meta.exifLine?.let {
-                    Text(it, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                metadata?.let { meta ->
+                    Text(meta.name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        reviewMetadataLine(rawReady, meta.width, meta.height, meta.sizeBytes),
+                        color = CameraColors.TextSecondary,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    meta.exifLine?.let {
+                        Text(it, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                provenanceLabel?.let { label ->
+                    Text(label, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

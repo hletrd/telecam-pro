@@ -53,6 +53,7 @@ import me.hletrd.telecampro.ui.controls.PhotoFormatToggles
 import me.hletrd.telecampro.ui.controls.SpeedAngleToggle
 import me.hletrd.telecampro.ui.overlays.FocusResultLiveRegion
 import me.hletrd.telecampro.ui.review.GalleryThumb
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Rule
 import org.junit.Assert.assertTrue
@@ -103,6 +104,24 @@ class BilingualPresentationComposeTest {
             .assertIsEnabled()
             .performClick()
         assertEquals(1, requests)
+    }
+
+    @Test
+    fun `owner-null legacy format gallery item announces unverifiable origin in Korean`() {
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides localizedContext("ko")) {
+                TeleCamProTheme {
+                    GalleryThumb(
+                        uri = android.net.Uri.parse("content://telecam.invalid/lookalike"),
+                        provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                        onClick = {},
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithContentDescription("출처가 확인되지 않은 이전 TeleCam 형식 미디어 보기")
+            .assertIsEnabled()
     }
 
     @Test

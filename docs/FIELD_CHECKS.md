@@ -6,10 +6,10 @@ these are the ones that need a real scene, real light, the physical converter, o
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-07-29):** A1 ✅ · A2 ✅ · A3 ◐ (brightness half) · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐.
-Two remain, ~4 minutes: **A3** needs the rear camera pointed at a lit room, **D1** needs an off-axis
-sound source. B1 closed the rotation work end to end; C1 confirmed the afocal correction against real
-converter glass.
+**Status (2026-08-24):** A1 ✅ · A2 ✅ · A3 ◐ (brightness half) · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐.
+Three remain: **A3** needs the rear camera pointed at a lit room, **D1** needs an off-axis sound
+source, and **E1** needs real MediaProvider ownership behavior. B1 closed the rotation work end to
+end; C1 confirmed the afocal correction against real converter glass.
 
 Install the exact immutable debug build first (the release strips the diagnostic logs these rely
 on). The ordinary Gradle APK is developer-only and cannot support a field-evidence claim:
@@ -184,6 +184,30 @@ Parameter acceptance is verified; the acoustic effect has never been heard.
 
 **Pass:** the off-axis source is more suppressed with it on. If indistinguishable, record that — the
 feature would then be advertising something it doesn't deliver here.
+
+---
+
+## E. MediaProvider provenance — disposable test media
+
+### E1. Owner-null legacy-format restore boundary
+
+Host fakes prove the reducer contract, but cannot prove when a real Android MediaProvider clears
+`OWNER_PACKAGE_NAME` after uninstall/reinstall or import. Use disposable media only; do not delete an
+operator's existing capture to set this up.
+
+- Save one disposable TeleCam image, record its MediaStore URI and owner column, then use the normal
+  uninstall/reinstall path (or import a copied lookalike through a second package) that produces a
+  real owner-null row on the test device.
+- Confirm the row remains under `DCIM/TeleCamPro` with a valid TeleCam filename and matching MIME.
+  Grant contextual visual-media access, then open the in-app review.
+- Repeat with an owner-null control whose filename or MIME does not match the save contract.
+
+**Pass:** the valid owner-null candidate is shown with the quiet “origin unverified” descriptor and
+file-only delete copy; the mismatched control is not restored. A row still owned by the current
+package has no unverified descriptor and retains its normal capture-family deletion scope.
+
+Record the Android build, provider package/version, row owner before/after, import/reinstall path, and
+observed UI/delete scope. This check establishes provider semantics only for that measured build.
 
 ---
 

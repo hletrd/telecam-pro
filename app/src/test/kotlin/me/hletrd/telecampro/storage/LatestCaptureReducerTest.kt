@@ -359,10 +359,9 @@ class LatestCaptureReducerTest {
 
     @Test
     fun `a capture whose ownership was cleared still restores, but only file-only`() {
-        // Android clears OWNER_PACKAGE_NAME when the owning package is uninstalled, so every
-        // reinstall orphans that build's rows. The file is still ours by directory and filename and
-        // the user must still see it in the gallery button — but the family delete it used to
-        // promise would now fail per row, so the scope has to degrade.
+        // A previous install is one legitimate source of an owner-null row, but public naming
+        // syntax cannot distinguish it from an imported lookalike. Restore recognizes the format
+        // without claiming authorship, and the delete scope degrades with that uncertainty.
         val key = stillKey(at = 1_700_000_000_000L, sequence = 7L)
         val restored = restoreLatestCapture(
             listOf(
@@ -375,6 +374,9 @@ class LatestCaptureReducerTest {
         assertEquals(2, restored?.outputs?.size)
         assertEquals(key, restored?.familyKey)
         assertEquals(RestoredDeleteScope.FILE_ONLY, restored?.deleteScope)
+        assertTrue(restored?.outputs?.all {
+            it.provenance == MediaProvenance.LEGACY_FORMAT_UNVERIFIED
+        } == true)
     }
 
     @Test
@@ -406,6 +408,24 @@ class LatestCaptureReducerTest {
         )
 
         assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
+        assertEquals(MediaProvenance.APP_OWNED, restored?.preferred?.provenance)
+    }
+
+    @Test
+    fun `owner-null lookalike is recognized as format but never verified as app-authored`() {
+        val lookalike = contractRow(
+            output = "imported-lookalike",
+            name = stillKey(1_700_001_000_000L, 2L).displayName("jpg"),
+            collection = StoredMediaCollection.IMAGE,
+            mime = "image/jpeg",
+            owned = false,
+        )
+
+        val restored = restoreLatestCapture(listOf(lookalike))
+
+        assertEquals("imported-lookalike", restored?.preferred?.output)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, restored?.preferred?.provenance)
+        assertEquals(RestoredDeleteScope.FILE_ONLY, restored?.deleteScope)
     }
 
     @Test
