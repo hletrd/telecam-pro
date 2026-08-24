@@ -53,6 +53,7 @@ import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.ui.controls.ProSheet
 import me.hletrd.telecampro.ui.controls.ProSheetTab
 import me.hletrd.telecampro.ui.controls.DialType
+import me.hletrd.telecampro.ui.controls.ManualDialCluster
 import me.hletrd.telecampro.ui.controls.manualDialTransition
 import me.hletrd.telecampro.ui.review.MediaReviewOverlay
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
@@ -180,6 +181,82 @@ class ModalFocusComposeTest {
     }
 
     @Test
+    fun `settings close has one keyboard owner and every tab is one traversal edge`() {
+        val visible = mutableStateOf(true)
+        val requestId = mutableLongStateOf(1L)
+        var dismissals = 0
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    if (visible.value) {
+                        ProSheet(
+                            state = CameraUiState(),
+                            actions = actions,
+                            onDismiss = {
+                                dismissals++
+                                visible.value = false
+                            },
+                            openRequestId = requestId.longValue,
+                        )
+                    }
+                }
+            }
+        }
+
+        val closeDescription = context.getString(R.string.a11y_close_settings)
+        listOf(Key.Enter, Key.DirectionCenter).forEachIndexed { index, key ->
+            if (index > 0) {
+                compose.runOnIdle {
+                    requestId.longValue++
+                    visible.value = true
+                }
+            }
+            compose.waitForIdle()
+            compose.onNodeWithContentDescription(closeDescription)
+                .assertIsFocused()
+                .performKeyInput { pressKey(key) }
+            compose.waitForIdle()
+            compose.onNodeWithContentDescription(closeDescription).assertDoesNotExist()
+            assertEquals(index + 1, dismissals)
+        }
+
+        compose.runOnIdle {
+            requestId.longValue++
+            visible.value = true
+        }
+        compose.waitForIdle()
+
+        val close = compose.onNodeWithContentDescription(closeDescription).assertIsFocused()
+        val tabs = listOf(
+            R.string.settings_tab_my,
+            R.string.settings_tab_shoot,
+            R.string.settings_tab_exposure,
+            R.string.settings_tab_focus,
+            R.string.settings_tab_lens,
+            R.string.settings_tab_video,
+            R.string.settings_tab_image,
+            R.string.settings_tab_assist,
+            R.string.settings_tab_setup,
+        ).map { compose.onNodeWithContentDescription(context.getString(it)) }
+
+        var current = close
+        tabs.forEach { next ->
+            current.performKeyInput { pressKey(Key.Tab) }
+            next.assertIsFocused()
+            current = next
+        }
+        (tabs.dropLast(1).asReversed() + close).forEach { previous ->
+            current.performKeyInput {
+                keyDown(Key.ShiftLeft)
+                pressKey(Key.Tab)
+                keyUp(Key.ShiftLeft)
+            }
+            previous.assertIsFocused()
+            current = previous
+        }
+    }
+
+    @Test
     fun `Fn starts on visible close and cannot focus a disabled finder sibling`() {
         compose.setContent {
             KeyboardMode {
@@ -213,6 +290,93 @@ class ModalFocusComposeTest {
         compose.onNodeWithTag("fn-hidden-finder").assertIsNotFocused()
         close.requestFocus().performKeyInput { pressKey(Key.DirectionUp) }
         compose.onNodeWithTag("fn-hidden-finder").assertIsNotFocused()
+    }
+
+    @Test
+    fun `production compact Fn and its initial close activate from both center keys`() {
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    CameraScreen(
+                        state = CameraUiState(),
+                        actions = actions,
+                        previewViewFactory = { View(it) },
+                        windowRotationOverrideDeg = 0,
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val openDescription = context.getString(R.string.a11y_open_function_menu)
+        val closeDescription = context.getString(R.string.a11y_close_function_menu)
+        listOf(
+            Key.Enter to Key.DirectionCenter,
+            Key.DirectionCenter to Key.Enter,
+        ).forEach { (openKey, closeKey) ->
+            compose.onNodeWithContentDescription(openDescription)
+                .requestFocus()
+                .performKeyInput { pressKey(openKey) }
+            compose.waitForIdle()
+            compose.onNodeWithContentDescription(closeDescription)
+                .assertIsFocused()
+                .performKeyInput { pressKey(closeKey) }
+            compose.waitForIdle()
+            compose.onNodeWithContentDescription(closeDescription).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun `compact ruler close and tap focus reset activate from both center keys`() {
+        var dialCloseCalls = 0
+        var resetCalls = 0
+        val resetActions = Proxy.newProxyInstance(
+            CameraActions::class.java.classLoader,
+            arrayOf(CameraActions::class.java),
+        ) { _, method, _ ->
+            if (method.name == "onResetFocusPoint") resetCalls++
+            if (method.returnType == java.lang.Boolean.TYPE) false else null
+        } as CameraActions
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    Column {
+                        ManualDialCluster(
+                            state = CameraUiState(),
+                            actions = actions,
+                            openDial = DialType.ZOOM,
+                            onSelectDial = {},
+                            onCloseDial = { dialCloseCalls++ },
+                            glyphRotation = 0f,
+                            onOpenFnMenu = {},
+                            compact = true,
+                        )
+                        CameraScreen(
+                            state = CameraUiState(tapFocusHeld = true),
+                            actions = resetActions,
+                            previewViewFactory = { View(it) },
+                            windowRotationOverrideDeg = 0,
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val dialClose = compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_close_adjustment),
+        )
+        val baselineCloseCalls = dialCloseCalls
+        dialClose.requestFocus().performKeyInput { pressKey(Key.Enter) }
+        dialClose.performKeyInput { pressKey(Key.DirectionCenter) }
+        assertEquals(baselineCloseCalls + 2, dialCloseCalls)
+
+        val reset = compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_reset_focus_point),
+        )
+        reset.requestFocus().performKeyInput { pressKey(Key.Enter) }
+        reset.performKeyInput { pressKey(Key.DirectionCenter) }
+        assertEquals(2, resetCalls)
     }
 
     @Test
