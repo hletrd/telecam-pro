@@ -194,6 +194,27 @@ class MediaReviewGestureTest {
         assertOffset(0f, 0f, invalid.panBounds(12f))
         assertOffset(0f, 0f, invalid.clampOffset(Offset(Float.NaN, 2f), 12f))
         assertOffset(0f, 0f, invalid.centerOn(Offset(Float.POSITIVE_INFINITY, 2f), 12f))
+
+        val geometry = reviewStillGeometry(1200, 800, 1600, 900)
+        val invalidZoom = geometry.transformGesture(
+            currentScale = 4f,
+            currentOffset = Offset(100f, -50f),
+            centroid = Offset(600f, 400f),
+            pan = Offset.Zero,
+            zoomChange = Float.NaN,
+        )
+        assertEquals(4f, invalidZoom.scale, 0f)
+        assertOffset(100f, -50f, invalidZoom.offset)
+
+        val invalidPoint = geometry.transformGesture(
+            currentScale = 4f,
+            currentOffset = Offset(100f, -50f),
+            centroid = Offset(Float.NaN, 400f),
+            pan = Offset.Zero,
+            zoomChange = 2f,
+        )
+        assertEquals(4f, invalidPoint.scale, 0f)
+        assertOffset(100f, -50f, invalidPoint.offset)
     }
 
     private val firstTap = ReviewTapCandidate(

@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DualOpenWaitTest {
@@ -16,6 +17,17 @@ class DualOpenWaitTest {
 
         assertEquals(DualOpenWaitResult.SIGNALED, result)
         assertEquals(1, waits)
+    }
+
+    @Test
+    fun `production clock default is exercised by an immediate signal`() {
+        assertEquals(
+            DualOpenWaitResult.SIGNALED,
+            waitForDualOpenBoundary(
+                awaitSlice = { true },
+                shouldContinue = { true },
+            ),
+        )
     }
 
     @Test
@@ -68,5 +80,21 @@ class DualOpenWaitTest {
 
         assertEquals(DualOpenWaitResult.TIMED_OUT, result)
         assertEquals(timeout, waited)
+    }
+
+    @Test
+    fun `interruption retires the wait and preserves the thread signal`() {
+        try {
+            val result = waitForDualOpenBoundary(
+                awaitSlice = { throw InterruptedException("test") },
+                shouldContinue = { true },
+                nowNanos = { 0L },
+            )
+
+            assertEquals(DualOpenWaitResult.SUPERSEDED, result)
+            assertTrue(Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
     }
 }
