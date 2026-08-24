@@ -1,3 +1,170 @@
+# Aggregated deep review — cycle 52
+
+Date: 2026-08-25
+Reviewed revision: `96732cc97ce8ff7f333478084eb365333ac505b6` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle52.868ovy/repo`
+
+## Coverage and aggregation
+
+Four parallel specialist lanes covered every required perspective: code-reviewer, performance-
+reviewer, security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. Thread capacity initially required combined role
+coverage; a dedicated document/designer lane was added as soon as a slot became available. Each
+lane read the complete repository authorities, inventoried all 540 tracked paths, examined its full
+specialist surface and cross-file interactions, and performed a final missed-file sweep. Browser
+automation was not applicable to this native Jetpack Compose app, and device/deployment action was
+forbidden. Every reviewer returned; there were no agent failures.
+
+The reports produced eleven raw findings. The MediaStore DISCARD identity-reset risk was reported
+independently by security/test and documentation/design reviewers and is merged below at the highest
+reported signal. The deduplicated result is ten findings: one High, five Medium, and four Low; seven
+are High confidence and three are Medium confidence.
+
+## Deduplicated findings
+
+### AGG52-01 — camera-policy sequence admission is split from its StateFlow write
+
+- **Severity / confidence:** Medium / High
+- **Source:** code-reviewer/architect; independently reproduced during aggregation.
+- **Evidence:** `CameraViewModel.kt:1082-1091` advances the atomic publication sequence before
+  entering `_state.update` and never rechecks ownership inside the reducer. The existing test at
+  `CameraViewModelRobolectricTest.kt:920-927` is sequential and cannot force the check-to-write gap.
+- **Failure:** seq1 can pass admission and pause, seq2 can commit unblocked truth, then seq1 can
+  resume and repaint the camera-policy gate over a healthy replacement session.
+- **Fix direction:** recheck exact sequence ownership inside every StateFlow reducer retry (or use
+  one serialized gate) and force the old-admitted/new-committed/old-resumed interleave in a test.
+
+### AGG52-02 — the review spool's 64 MiB ceiling rejects a supported valid hi-res still
+
+- **Severity / confidence:** Medium / Medium
+- **Source:** code-reviewer/architect.
+- **Evidence:** `LatestHeavyWorkLane.kt:103-154` refuses compressed sources above 64 MiB, while
+  `StillCapturePipeline.kt:144-164` deliberately publishes Camera2 hi-res JPEG bytes without a
+  corresponding encoded-size ceiling. `MediaReview.kt:453-471,649-669,729-737` maps this to failed
+  thumbnail/fullscreen review.
+- **Failure:** a capable non-PMA110 device can save a valid >64 MiB approximately-200 MP JPEG that
+  TeleCam itself cannot review.
+- **Fix direction:** use a stable direct source for trusted app-owned published media while keeping
+  bounded immutable spooling for owner-unverified rows; add above/below-bound coverage and preserve
+  decoded-pixel bounds. Device measurement remains required before claiming concrete output sizes.
+
+### AGG52-03 — review spool files have no crash/restart reclamation owner
+
+- **Severity / confidence:** Low / High
+- **Source:** code-reviewer/architect.
+- **Evidence:** `LatestHeavyWorkLane.kt:82-100,123-155` creates `review-source-*.bin` directly under
+  cache and only attempts deletion from the live in-memory owner. No startup/process owner reclaims
+  files left by process death, and normal deletion success is unchecked.
+- **Failure:** repeated kills during large review work can accumulate orphan compressed sources
+  until cache/storage pressure breaks later review or capture work.
+- **Fix direction:** use a dedicated private spool directory with bounded, no-follow stale cleanup
+  before first admission; test restart fixtures and failed cleanup without touching unrelated cache.
+
+### AGG52-04 — screenshot PNG validation accepts out-of-range 8-bit `tRNS` samples
+
+- **Severity / confidence:** Low / High
+- **Source:** code-reviewer/architect; production parser reproduction confirmed.
+- **Evidence:** `tools/check_docs.py:246-255` validates truecolor `tRNS` placement/length but never
+  bounds its three 16-bit samples to the IHDR bit depth. A CRC-correct 8-bit PNG with sample 256 was
+  accepted.
+- **Failure:** malformed Play/release screenshot evidence can pass after digest refresh and render
+  differently or fail in stricter PNG consumers.
+- **Fix direction:** unpack `>HHH`, require each sample `< (1 << bit_depth)`, and mutation-test 255,
+  256, and 65535 with clean diagnostics.
+
+### AGG52-05 — optics rollback executes external publications while holding the Engine monitor
+
+- **Severity / confidence:** Low / High
+- **Source:** code-reviewer/architect.
+- **Evidence:** synchronized `CameraEngine.rollbackOptics` at `CameraEngine.kt:849-977` performs GL/
+  controller work and invokes `onOpticsRollback`, `onCapsReady`, `onVideoSizeChosen`,
+  `onPreviewAspect`, `onCameraReadyChange`, and `onStatus` while holding the Engine monitor, contrary
+  to the post-monitor publication authority in `docs/ARCHITECTURE.md:301-307`.
+- **Failure:** slow or reverse-locking UI/component callbacks can stall camera/REC/control ownership
+  or create an ABBA deadlock surface during rollback.
+- **Fix direction:** commit an immutable rollback/effects packet under the monitor, then execute
+  exact controller/GL/publication commands after unlock with identity checks and lock-state tests.
+
+### AGG52-06 — durable DISCARD replay can delete a replacement row after MediaStore identity reset
+
+- **Severity / confidence:** Medium / Medium
+- **Sources / agreement:** security/test and document/designer.
+- **Evidence:** `PendingDiscardJournal.kt:9-46,107-149,215-244` persists only a raw URI; recovery at
+  `MediaStoreWriter.kt:1200-1224` deletes whatever now occupies that URI without version or row-
+  identity validation. Android's current `MediaStore.getVersion` contract requires resynchronization
+  after substantial provider changes.
+- **Failure:** after a provider reset/reindex reuses `_ID=417`, an old marker for URI 417 can delete
+  a different app-owned capture and then clear itself.
+- **Fix direction:** persist provider volume/version plus expected row/family identity, validate it
+  before destructive replay, migrate URI-only records fail-closed, and test URI reassignment. A
+  disposable device check is required before claiming specific OEM reuse behavior.
+
+### AGG52-07 — quarantine revocation can drop or ordinarily clean a standby `AudioRecord`
+
+- **Severity / confidence:** Medium / High
+- **Source:** performance/concurrency/tracer/debugger.
+- **Evidence:** `StandbyAudioController.kt:454-491` collapses pre-entry refusal and returned-after-
+  revocation into one Boolean from `runNativeAcquisition`. A revoked successful create is never
+  deliberately retained; a revoked start reaches ordinary stop/release at `:543-548`, violating the
+  process native-quarantine contract in `VideoRecorder.kt:1170-1213,1392-1412`.
+- **Failure:** Camera/recorder quarantine racing standby mic create/start makes native lifetime depend
+  on GC or post-terminal cleanup rather than exact process retention.
+- **Fix direction:** return a typed acquisition outcome and quarantine-retain the exact input/owner
+  after returned-but-revoked create/start; test both interleavings and forbid publication/cleanup.
+
+### AGG52-08 — blocked standby `AudioRecord.stop()` has no deadline or quarantine terminal
+
+- **Severity / confidence:** High / High
+- **Source:** performance/concurrency/tracer/debugger.
+- **Evidence:** `StandbyInputTerminationOwner.finishAndRelease` at
+  `StandbyAudioController.kt:140-177` waits forever once an accepted stop task blocks; no elapsed
+  deadline closes process admission. The stranded terminal blocks input release, the process token,
+  ownership completion, and the REC handoff latch behind `:543-566`. The 400 ms REC wait at
+  `CameraEngine.kt:5522-5529` only aborts that take.
+- **Failure:** a vendor `AudioRecord.stop()` hang permanently locks out REC and replacement standby
+  generations without restart-required truth, while the microphone owner may remain live.
+- **Fix direction:** add an independent hard deadline that atomically quarantines and strongly
+  retains the exact input/termination owner, releases only the logical handoff, makes late return
+  inert, and surfaces restart-required status; fault-test stop hang and late return.
+
+### AGG52-09 — six Compose control families install duplicate focus owners
+
+- **Severity / confidence:** Medium / Medium
+- **Source:** document-specialist/native designer.
+- **Evidence:** explicit `Modifier.focusable()` precedes already-focusable `clickable`/`selectable`
+  at `ProSheet.kt:409-425,470-499`, `ManualDials.kt:395-416,442-458`, and
+  `CameraScreen.kt:1816-1838,2516-2530`. Existing modal focus tests prove initial focus but never
+  activate it or count traversal edges.
+- **Failure:** keyboard/D-pad users can land on an invisible duplicate target, need an extra step,
+  or fail to activate the visually focused Close/control.
+- **Fix direction:** remove redundant explicit focus owners, keep manual semantics, and test Enter/
+  DirectionCenter plus one-edge traversal for Close and all settings tabs.
+
+### AGG52-10 — the v1.0.1 localization record reports two incompatible counts
+
+- **Severity / confidence:** Low / High
+- **Source:** document-specialist/native designer.
+- **Evidence:** `CLAUDE.md:44-46` says v1.0.1 shipped 126 Korean strings, while
+  `docs/play-console-submit.md:197-203` says 131. The named versionCode-3 source contains 126 Korean
+  `<string>` entries.
+- **Failure:** retained release provenance can produce an irreproducible localization claim.
+- **Fix direction:** correct the submission record to 126 (or document a reproducible alternative
+  metric) and add a historical-source contract assertion.
+
+## Verified non-findings and limits
+
+- The full host gate was green before implementation, but it does not cover policy check-to-write,
+  native create/start revocation, blocked mic stop, process-death spool cleanup, valid >64 MiB
+  trusted review, URI reassignment, duplicate Compose focus activation, or PNG sample bounds.
+- Interactive REC size/FPS writes do not tear the cycle-51 frozen packet under current main-thread
+  ViewModel ordering; both code and performance reviewers independently rejected that hypothesis.
+- A false `File.delete()` on a gracefully closed spool was not separately counted; the material
+  defect is missing abnormal-termination reclamation.
+- No device, deploy, Camera2/Audio HAL fault injection, MediaProvider reset, physical converter,
+  microphone, or browser action ran. A3/A4/A5/D1/E1/E2 remain manual evidence obligations.
+
+---
+
 # Aggregated deep review — cycle 51
 
 Date: 2026-08-25
