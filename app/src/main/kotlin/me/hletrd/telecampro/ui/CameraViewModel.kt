@@ -33,6 +33,7 @@ import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.CameraUiState
@@ -1421,7 +1422,8 @@ class CameraViewModel private constructor(
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
         engine.setDriveMode(e.driveMode)
-        engine.setIntervalSec(e.intervalSec)
+        val restoredIntervalSec = normalizeTimelapseIntervalSeconds(e.intervalSec)
+        engine.setIntervalSec(restoredIntervalSec)
         engine.setPeaking(e.focusPeaking)
         engine.setPeakingLevel(e.peakingLevel)
         engine.setPeakingColor(e.peakingColor)
@@ -1477,7 +1479,7 @@ class CameraViewModel private constructor(
                 aspectRatio = e.aspectRatio,
                 timer = e.timer,
                 driveMode = e.driveMode,
-                intervalSec = e.intervalSec,
+                intervalSec = restoredIntervalSec,
                 focusPeaking = e.focusPeaking,
                 peakingLevel = e.peakingLevel,
                 peakingColor = e.peakingColor,
@@ -3135,8 +3137,9 @@ class CameraViewModel private constructor(
     }
     override fun onIntervalSec(sec: Int) {
         cancelCountdown()
-        engine.setIntervalSec(sec)
-        _state.update { it.copy(intervalSec = sec) }
+        val normalized = normalizeTimelapseIntervalSeconds(sec)
+        engine.setIntervalSec(normalized)
+        _state.update { it.copy(intervalSec = normalized) }
         markChanged(FnSlot.DRIVE)
         scheduleSettingsSave()
     }

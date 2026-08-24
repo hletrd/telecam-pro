@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.isNotFocusable
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -203,6 +204,18 @@ class SliderKeyboardComposeTest {
         compose.waitForIdle()
         assertEquals(30, interval.intValue)
         assertEquals(atHighEndpoint, emissions)
+    }
+
+    @Test
+    fun `timelapse presentation normalizes an out-of-domain restored value`() {
+        compose.setContent {
+            TeleCamProTheme {
+                TimelapseIntervalSlider(300) { }
+            }
+        }
+
+        compose.onNodeWithContentDescription("Interval")
+            .assert(hasStateDescription("30s"))
     }
 
     @Test

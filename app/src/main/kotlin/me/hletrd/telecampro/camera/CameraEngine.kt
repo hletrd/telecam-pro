@@ -2835,7 +2835,7 @@ class CameraEngine internal constructor(
         // controller change-gates and resubmits itself (~180 ms, once per drive change).
         controller?.setZslServePossible(m == DriveMode.SINGLE)
     }
-    fun setIntervalSec(s: Int) { intervalSec = s }
+    fun setIntervalSec(s: Int) { intervalSec = normalizeTimelapseIntervalSeconds(s) }
     fun setVideoCodec(c: VideoCodec) {
         videoCodec = c
         if (videoEncoderCandidates.any { it.codec != c }) videoEncoderCandidates = emptyList()
@@ -4327,7 +4327,8 @@ class CameraEngine internal constructor(
         }
     }
 
-    private fun currentTimelapseIntervalSeconds(): Long = intervalSec.coerceAtLeast(1).toLong()
+    private fun currentTimelapseIntervalSeconds(): Long =
+        normalizeTimelapseIntervalSeconds(intervalSec).toLong()
 
 
     /**

@@ -38,6 +38,14 @@ class CameraEngineTimelapseIntervalTest {
             scheduler.fire(1)
             assertEquals(listOf(0L, 30L, 7L), scheduler.delays())
 
+            engine.setIntervalSec(300)
+            scheduler.fire(2)
+            assertEquals(listOf(0L, 30L, 7L, 30L), scheduler.delays())
+
+            engine.setIntervalSec(-4)
+            scheduler.fire(3)
+            assertEquals(listOf(0L, 30L, 7L, 30L, 1L), scheduler.delays())
+
             engine.stopTimelapse()
             assertTrue(scheduler.tasks.last().cancelled.get())
         } finally {

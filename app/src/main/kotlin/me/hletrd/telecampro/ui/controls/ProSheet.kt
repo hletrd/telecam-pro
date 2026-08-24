@@ -1,6 +1,9 @@
 package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.R
+import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MAX_SECONDS
+import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MIN_SECONDS
+import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 
 import android.util.Range
 import androidx.activity.compose.BackHandler
@@ -1001,12 +1004,13 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
 /** Integer production domain for the Timelapse Interval row, shared with its Compose contract test. */
 @Composable
 internal fun TimelapseIntervalSlider(intervalSec: Int, onIntervalSec: (Int) -> Unit) {
+    val normalized = normalizeTimelapseIntervalSeconds(intervalSec)
     LabeledSlider(
         label = stringResource(R.string.label_interval),
-        valueLabel = "${intervalSec}s",
-        value = intervalSec.toFloat().coerceIn(1f, 30f),
+        valueLabel = "${normalized}s",
+        value = normalized.toFloat(),
         onValueChange = { onIntervalSec(it.roundToInt()) },
-        valueRange = 1f..30f,
+        valueRange = TIMELAPSE_INTERVAL_MIN_SECONDS.toFloat()..TIMELAPSE_INTERVAL_MAX_SECONDS.toFloat(),
         keyboardStep = 1f,
     )
 }

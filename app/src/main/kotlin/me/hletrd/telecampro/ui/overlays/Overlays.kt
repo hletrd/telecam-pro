@@ -41,6 +41,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.hletrd.telecampro.camera.unifiedZoom
+import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.camera.AfIndication
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.BitrateLevel
@@ -839,7 +840,8 @@ internal fun statusBarPriorityResetKey(
         driveTag = state.driveMode.takeIf { photoMode && it != DriveMode.SINGLE }?.let { driveMode ->
             StatusBarDriveIdentity(
                 mode = driveMode,
-                intervalSec = state.intervalSec.takeIf { driveMode == DriveMode.TIMELAPSE },
+                intervalSec = normalizeTimelapseIntervalSeconds(state.intervalSec)
+                    .takeIf { driveMode == DriveMode.TIMELAPSE },
             )
         },
         oisOffTagVisible = oisOffTagVisible(
@@ -1004,7 +1006,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 val driveLabel = when (state.driveMode) {
                     DriveMode.BURST -> stringResource(R.string.osd_drive_burst)
                     DriveMode.AEB -> "AEB±2"
-                    DriveMode.TIMELAPSE -> "TL${state.intervalSec}s" // no space: the compound-tag family (T3s, AEB±2) writes tight (UI #30)
+                    DriveMode.TIMELAPSE -> "TL${normalizeTimelapseIntervalSeconds(state.intervalSec)}s" // no space: the compound-tag family (T3s, AEB±2) writes tight (UI #30)
                     DriveMode.SINGLE -> ""
                 }
                 // A LIVE interval run reads in the tally red (review 2026-08-01: running vs armed

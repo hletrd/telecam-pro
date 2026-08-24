@@ -27,6 +27,7 @@ import me.hletrd.telecampro.camera.normalizeMagnification
 import me.hletrd.telecampro.camera.ZebraLevel
 import me.hletrd.telecampro.camera.normalizeAudioGain
 import me.hletrd.telecampro.camera.normalizeFnSlots
+import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
@@ -304,7 +305,9 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 aspectRatio = enumOr(safeString("${prefix}aspectRatio", null), ed.aspectRatio),
                 timer = enumOr(safeString("${prefix}timer", null), ed.timer),
                 driveMode = enumOr(safeString("${prefix}driveMode", null), ed.driveMode),
-                intervalSec = safeInt("${prefix}intervalSec", ed.intervalSec).coerceAtLeast(1),
+                intervalSec = normalizeTimelapseIntervalSeconds(
+                    safeInt("${prefix}intervalSec", ed.intervalSec),
+                ),
                 focusPeaking = safeBoolean("${prefix}focusPeaking", ed.focusPeaking),
                 peakingLevel = enumOr(safeString("${prefix}peakingLevel", null), ed.peakingLevel),
                 peakingColor = enumOr(safeString("${prefix}peakingColor", null), ed.peakingColor),

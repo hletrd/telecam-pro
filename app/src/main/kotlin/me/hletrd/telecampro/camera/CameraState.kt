@@ -957,6 +957,13 @@ enum class LensChoice(val targetEquivMm: Float, val zoomPreset: Float) {
 /** Shutter drive mode. */
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
 
+const val TIMELAPSE_INTERVAL_MIN_SECONDS = 1
+const val TIMELAPSE_INTERVAL_MAX_SECONDS = 30
+
+/** One domain authority shared by persistence, Engine scheduling, and every presentation writer. */
+fun normalizeTimelapseIntervalSeconds(seconds: Int): Int =
+    seconds.coerceIn(TIMELAPSE_INTERVAL_MIN_SECONDS, TIMELAPSE_INTERVAL_MAX_SECONDS)
+
 /** A requested single shot ignores the saved Photo drive mode. */
 internal fun captureDriveMode(selected: DriveMode, singleShot: Boolean): DriveMode =
     if (singleShot) DriveMode.SINGLE else selected

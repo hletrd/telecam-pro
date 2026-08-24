@@ -282,6 +282,25 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun `main settings and MR intervals normalize to the shared domain`() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "intervalSec" to 300,
+                "preset_MR1_hasSaved" to true,
+                "preset_MR1_intervalSec" to -8,
+                "preset_MR2_hasSaved" to true,
+                "preset_MR2_intervalSec" to 17,
+            ),
+        )
+        val store = SettingsStore(prefs)
+
+        assertEquals(30, store.load()?.extras?.intervalSec)
+        assertEquals(1, store.loadPreset(MemorySlot.MR1)?.extras?.intervalSec)
+        assertEquals(17, store.loadPreset(MemorySlot.MR2)?.extras?.intervalSec)
+    }
+
+    @Test
     fun load_migratesLegacySharedShutterIntoPhotoExposureMemory() {
         val legacyExposureNs = 500_000_000L
         val prefs = FakePrefs(
