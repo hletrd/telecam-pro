@@ -15,6 +15,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -30,6 +31,19 @@ import org.robolectric.annotation.GraphicsMode
 class GalleryThumbComposeTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun `ready thumbnail requires pixels exactly for displayable media`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            GalleryThumbState.Ready(ReviewMediaKind.STILL)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            GalleryThumbState.Ready(
+                ReviewMediaKind.RAW,
+                ReviewBitmap(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)),
+            )
+        }
+    }
 
     @Test
     fun `production gallery surface paints and names every thumbnail state truthfully`() {
