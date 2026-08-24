@@ -83,6 +83,104 @@ internal fun releasePendingGlObjects(
     pending.texture = 0
 }
 
+/** Narrow injectable GLES surface for transactional renderer initialization and release. */
+internal interface FlipRendererGlApi {
+    fun getError(): Int
+    fun createShader(type: Int): Int
+    fun shaderSource(shader: Int, source: String)
+    fun compileShader(shader: Int)
+    fun shaderCompileStatus(shader: Int): Int
+    fun shaderInfoLog(shader: Int): String
+    fun createProgram(): Int
+    fun attachShader(program: Int, shader: Int)
+    fun linkProgram(program: Int)
+    fun programLinkStatus(program: Int): Int
+    fun programInfoLog(program: Int): String
+    fun attributeLocation(program: Int, name: String): Int
+    fun uniformLocation(program: Int, name: String): Int
+    fun generateBuffer(): Int
+    fun bindBuffer(id: Int)
+    fun uploadBuffer(data: FloatBuffer)
+    fun generateTexture(): Int
+    fun bindExternalTexture(id: Int)
+    fun setExternalTextureParameter(name: Int, value: Int)
+    fun deleteShader(id: Int)
+    fun deleteProgram(id: Int)
+    fun deleteBuffer(id: Int)
+    fun deleteTexture(id: Int)
+}
+
+private object AndroidFlipRendererGlApi : FlipRendererGlApi {
+    override fun getError(): Int = GLES20.glGetError()
+    override fun createShader(type: Int): Int = GLES20.glCreateShader(type)
+    override fun shaderSource(shader: Int, source: String) = GLES20.glShaderSource(shader, source)
+    override fun compileShader(shader: Int) = GLES20.glCompileShader(shader)
+    override fun shaderCompileStatus(shader: Int): Int = IntArray(1).also {
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, it, 0)
+    }[0]
+    override fun shaderInfoLog(shader: Int): String = GLES20.glGetShaderInfoLog(shader)
+    override fun createProgram(): Int = GLES20.glCreateProgram()
+    override fun attachShader(program: Int, shader: Int) = GLES20.glAttachShader(program, shader)
+    override fun linkProgram(program: Int) = GLES20.glLinkProgram(program)
+    override fun programLinkStatus(program: Int): Int = IntArray(1).also {
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, it, 0)
+    }[0]
+    override fun programInfoLog(program: Int): String = GLES20.glGetProgramInfoLog(program)
+    override fun attributeLocation(program: Int, name: String): Int =
+        GLES20.glGetAttribLocation(program, name)
+    override fun uniformLocation(program: Int, name: String): Int =
+        GLES20.glGetUniformLocation(program, name)
+    override fun generateBuffer(): Int = IntArray(1).also { GLES20.glGenBuffers(1, it, 0) }[0]
+    override fun bindBuffer(id: Int) = GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, id)
+    override fun uploadBuffer(data: FloatBuffer) = GLES20.glBufferData(
+        GLES20.GL_ARRAY_BUFFER,
+        data.capacity() * 4,
+        data,
+        GLES20.GL_STATIC_DRAW,
+    )
+    override fun generateTexture(): Int = IntArray(1).also { GLES20.glGenTextures(1, it, 0) }[0]
+    override fun bindExternalTexture(id: Int) =
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, id)
+    override fun setExternalTextureParameter(name: Int, value: Int) =
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, name, value)
+    override fun deleteShader(id: Int) = GLES20.glDeleteShader(id)
+    override fun deleteProgram(id: Int) = GLES20.glDeleteProgram(id)
+    override fun deleteBuffer(id: Int) = GLES20.glDeleteBuffers(1, intArrayOf(id), 0)
+    override fun deleteTexture(id: Int) = GLES20.glDeleteTextures(1, intArrayOf(id), 0)
+}
+
+/**
+ * Clears inherited error state once, then attributes every later non-throwing GLES failure to the
+ * exact initialization operation that produced it. GLES exposes allocation failure through this
+ * flag, not through Kotlin exceptions, and a generated object name may still be non-zero.
+ */
+internal class GlOperationErrorBoundary(private val errorSource: () -> Int) {
+    fun begin() {
+        drainErrors()
+    }
+
+    fun check(operation: String) {
+        val errors = drainErrors()
+        check(errors.isEmpty()) {
+            "$operation failed with GLES error(s) ${errors.joinToString { "0x%04x".format(it) }}"
+        }
+    }
+
+    private fun drainErrors(): List<Int> {
+        val errors = ArrayList<Int>(2)
+        repeat(MAX_ERROR_DRAIN) {
+            val error = errorSource()
+            if (error == GLES20.GL_NO_ERROR) return errors
+            errors += error
+        }
+        error("GLES error state did not clear after $MAX_ERROR_DRAIN reads")
+    }
+
+    private companion object {
+        const val MAX_ERROR_DRAIN = 16
+    }
+}
+
 /**
  * Draws the camera external-OES texture to whatever GL surface is current.
  *
@@ -93,7 +191,11 @@ internal fun releasePendingGlObjects(
  *  - the quad geometry is scaled (center-crop "cover") so the content aspect fills the target
  *    without distortion, for whatever target (preview view or encoder) is being drawn.
  */
-class FlipRenderer {
+class FlipRenderer internal constructor(
+    private val initializationGl: FlipRendererGlApi,
+) {
+    constructor() : this(AndroidFlipRendererGlApi)
+
     private var program = 0
     private var oesTextureId = 0
 
@@ -145,18 +247,20 @@ class FlipRenderer {
             "FlipRenderer.init requires released resource fields"
         }
         val pending = PendingGlObjects()
+        val errors = GlOperationErrorBoundary(initializationGl::getError)
+        errors.begin()
         try {
             pending.program = buildProgram(Shaders.VERTEX, Shaders.FRAGMENT)
             val locations = resolveShaderLocations(
-                attributeLookup = { GLES20.glGetAttribLocation(pending.program, it) },
-                uniformLookup = { GLES20.glGetUniformLocation(pending.program, it) },
+                attributeLookup = { initializationGl.attributeLocation(pending.program, it) },
+                uniformLookup = { initializationGl.uniformLocation(pending.program, it) },
             )
+            errors.check("shader program initialization")
 
             // Fresh VBO per GL generation (same replay discipline as RendererConfigStore: init()
             // fully re-seeds everything a replacement context needs; release() deletes it).
-            val vboIds = IntArray(1)
-            GLES20.glGenBuffers(1, vboIds, 0)
-            pending.buffer = vboIds[0]
+            pending.buffer = initializationGl.generateBuffer()
+            errors.check("glGenBuffers")
             check(pending.buffer != 0) { "VBO allocation failed" }
             val staging = floatBuffer(
                 // x, y  (triangle strip)       | tex u,v (plain)      | tex u,v (mirrored x)
@@ -164,24 +268,28 @@ class FlipRenderer {
                     texCoordQuad(mirrorX = false) +
                     texCoordQuad(mirrorX = true),
             )
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, pending.buffer)
-            GLES20.glBufferData(
-                GLES20.GL_ARRAY_BUFFER,
-                staging.capacity() * 4,
-                staging,
-                GLES20.GL_STATIC_DRAW,
-            )
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            initializationGl.bindBuffer(pending.buffer)
+            errors.check("glBindBuffer(VBO)")
+            initializationGl.uploadBuffer(staging)
+            errors.check("glBufferData")
+            initializationGl.bindBuffer(0)
+            errors.check("glBindBuffer(0)")
 
-            val ids = IntArray(1)
-            GLES20.glGenTextures(1, ids, 0)
-            pending.texture = ids[0]
+            pending.texture = initializationGl.generateTexture()
+            errors.check("glGenTextures")
             check(pending.texture != 0) { "External texture allocation failed" }
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, pending.texture)
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            initializationGl.bindExternalTexture(pending.texture)
+            errors.check("glBindTexture(GL_TEXTURE_EXTERNAL_OES)")
+            initializationGl.setExternalTextureParameter(GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            errors.check("glTexParameteri(GL_TEXTURE_MIN_FILTER)")
+            initializationGl.setExternalTextureParameter(GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            errors.check("glTexParameteri(GL_TEXTURE_MAG_FILTER)")
+            initializationGl.setExternalTextureParameter(GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            errors.check("glTexParameteri(GL_TEXTURE_WRAP_S)")
+            initializationGl.setExternalTextureParameter(GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            errors.check("glTexParameteri(GL_TEXTURE_WRAP_T)")
+            initializationGl.bindExternalTexture(0)
+            errors.check("glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0)")
 
             // Transfer all ids only after every location and GL object is ready. A retry therefore
             // starts from zero fields and cannot overwrite an unreachable object from this attempt.
@@ -208,14 +316,14 @@ class FlipRenderer {
             pending.texture = 0
             return oesTextureId
         } finally {
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+            initializationGl.bindBuffer(0)
+            initializationGl.bindExternalTexture(0)
             releasePendingGlObjects(
                 pending = pending,
-                deleteShader = GLES20::glDeleteShader,
-                deleteProgram = GLES20::glDeleteProgram,
-                deleteBuffer = { GLES20.glDeleteBuffers(1, intArrayOf(it), 0) },
-                deleteTexture = { GLES20.glDeleteTextures(1, intArrayOf(it), 0) },
+                deleteShader = initializationGl::deleteShader,
+                deleteProgram = initializationGl::deleteProgram,
+                deleteBuffer = initializationGl::deleteBuffer,
+                deleteTexture = initializationGl::deleteTexture,
             )
         }
     }
@@ -291,11 +399,12 @@ class FlipRenderer {
         mirrorX: Boolean = false,
         // Per-draw content-rotation override, in place of the shared [rotationDeg] field.
         //
-        // Exists for ONE caller: the TELE corner overview, which the operator wants UPRIGHT while
-        // the magnified main view carries the afocal 180° (user-specified 2026-07-28). Rotation is
-        // otherwise renderer STATE precisely so every draw role agrees, so this is deliberately an
-        // explicit opt-in per call rather than a settable field — null keeps the shared value, and
-        // the encoder/analysis/preview roles never pass it.
+        // Exists for ONE caller: the TELE corner overview deliberately omits the afocal 180° that
+        // corrects the magnified main view. Today's overview re-draws the same converter-fed stream,
+        // making it raw and inverted relative to the main view; only a
+        // future true-wide source can be genuinely upright. Rotation is otherwise renderer STATE,
+        // so this stays an explicit per-call opt-in rather than a settable field — null keeps the
+        // shared value, and encoder/analysis/main-preview roles never pass it.
         rotationOverrideDeg: Int? = null,
     ) {
         val contentRotationDeg = rotationOverrideDeg ?: rotationDeg
@@ -360,9 +469,9 @@ class FlipRenderer {
     }
 
     fun release() {
-        if (program != 0) GLES20.glDeleteProgram(program)
-        if (oesTextureId != 0) GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
-        if (quadVbo != 0) GLES20.glDeleteBuffers(1, intArrayOf(quadVbo), 0)
+        if (program != 0) initializationGl.deleteProgram(program)
+        if (oesTextureId != 0) initializationGl.deleteTexture(oesTextureId)
+        if (quadVbo != 0) initializationGl.deleteBuffer(quadVbo)
         program = 0
         oesTextureId = 0
         quadVbo = 0
@@ -379,15 +488,13 @@ class FlipRenderer {
         try {
             pending.vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
             pending.fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSrc)
-            pending.program = GLES20.glCreateProgram()
+            pending.program = initializationGl.createProgram()
             check(pending.program != 0) { "Program allocation failed" }
-            GLES20.glAttachShader(pending.program, pending.vertexShader)
-            GLES20.glAttachShader(pending.program, pending.fragmentShader)
-            GLES20.glLinkProgram(pending.program)
-            val status = IntArray(1)
-            GLES20.glGetProgramiv(pending.program, GLES20.GL_LINK_STATUS, status, 0)
-            check(status[0] == GLES20.GL_TRUE) {
-                "Program link failed: ${GLES20.glGetProgramInfoLog(pending.program)}"
+            initializationGl.attachShader(pending.program, pending.vertexShader)
+            initializationGl.attachShader(pending.program, pending.fragmentShader)
+            initializationGl.linkProgram(pending.program)
+            check(initializationGl.programLinkStatus(pending.program) == GLES20.GL_TRUE) {
+                "Program link failed: ${initializationGl.programInfoLog(pending.program)}"
             }
             val transferred = pending.program
             pending.program = 0
@@ -395,24 +502,22 @@ class FlipRenderer {
         } finally {
             releasePendingGlObjects(
                 pending = pending,
-                deleteShader = GLES20::glDeleteShader,
-                deleteProgram = GLES20::glDeleteProgram,
-                deleteBuffer = { GLES20.glDeleteBuffers(1, intArrayOf(it), 0) },
-                deleteTexture = { GLES20.glDeleteTextures(1, intArrayOf(it), 0) },
+                deleteShader = initializationGl::deleteShader,
+                deleteProgram = initializationGl::deleteProgram,
+                deleteBuffer = initializationGl::deleteBuffer,
+                deleteTexture = initializationGl::deleteTexture,
             )
         }
     }
 
     private fun compileShader(type: Int, src: String): Int {
-        val pending = PendingGlObjects(vertexShader = GLES20.glCreateShader(type))
+        val pending = PendingGlObjects(vertexShader = initializationGl.createShader(type))
         check(pending.vertexShader != 0) { "Shader allocation failed" }
         try {
-            GLES20.glShaderSource(pending.vertexShader, src)
-            GLES20.glCompileShader(pending.vertexShader)
-            val status = IntArray(1)
-            GLES20.glGetShaderiv(pending.vertexShader, GLES20.GL_COMPILE_STATUS, status, 0)
-            check(status[0] == GLES20.GL_TRUE) {
-                "Shader compile failed: ${GLES20.glGetShaderInfoLog(pending.vertexShader)}"
+            initializationGl.shaderSource(pending.vertexShader, src)
+            initializationGl.compileShader(pending.vertexShader)
+            check(initializationGl.shaderCompileStatus(pending.vertexShader) == GLES20.GL_TRUE) {
+                "Shader compile failed: ${initializationGl.shaderInfoLog(pending.vertexShader)}"
             }
             val transferred = pending.vertexShader
             pending.vertexShader = 0
@@ -420,10 +525,10 @@ class FlipRenderer {
         } finally {
             releasePendingGlObjects(
                 pending = pending,
-                deleteShader = GLES20::glDeleteShader,
-                deleteProgram = GLES20::glDeleteProgram,
-                deleteBuffer = { GLES20.glDeleteBuffers(1, intArrayOf(it), 0) },
-                deleteTexture = { GLES20.glDeleteTextures(1, intArrayOf(it), 0) },
+                deleteShader = initializationGl::deleteShader,
+                deleteProgram = initializationGl::deleteProgram,
+                deleteBuffer = initializationGl::deleteBuffer,
+                deleteTexture = initializationGl::deleteTexture,
             )
         }
     }
