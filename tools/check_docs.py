@@ -86,6 +86,7 @@ def language_fenced(text: str, heading: str, language: str) -> str:
 
 # ---- store copy: Play's hard limits, and the wrapping trap -------------------------------------
 listing = read_private("docs/play-store-listing.md")
+submit = read("docs/play-console-submit.md")
 
 # The phone screenshot set is device evidence, not generic artwork. Its manifest pins the exact
 # checked-in bytes and the source copy those frames must show. A changed PNG or resource string must
@@ -161,35 +162,47 @@ check(
     "phone screenshot manifest records a valid fail-closed recapture state",
 )
 
+def screenshot_authority_matches_manifest(authority: str) -> bool:
+    if stale_manifest_valid:
+        return "NOT SUBMISSION-READY" in authority
+    if ready_manifest_valid:
+        return (
+            "NOT SUBMISSION-READY" not in authority
+            and "SUBMISSION-READY" in authority
+        )
+    return False
+
+
+def stale_screenshot_semantics_are_explicit(authority: str) -> bool:
+    authority = re.sub(r"\s+", " ", authority)
+    return ready or all(
+        obsolete in authority
+        for values in obsolete_visible_copy.values()
+        for obsolete in values
+    )
+
+
+# The console sheet is tracked and is the operator's upload authority, so its fail-closed state must
+# remain checked in a clean committed export even though the unrelated store listing is private.
+check(
+    screenshot_authority_matches_manifest(submit),
+    "committed submission sheet matches phone screenshot readiness",
+)
+check(
+    stale_screenshot_semantics_are_explicit(submit),
+    "committed submission sheet explains every stale phone screenshot",
+)
+
 if listing is None:
     skip_private("Play listing copy and screenshot-authority checks", "docs/play-store-listing.md")
 else:
-    asset_authorities = re.sub(
-        r"\s+",
-        " ",
-        listing + "\n" + read("docs/play-console-submit.md"),
-    )
-    stale_state_valid = (
-        stale_manifest_valid
-        and "NOT SUBMISSION-READY" in listing
-        and "NOT SUBMISSION-READY" in read("docs/play-console-submit.md")
-    )
-    ready_state_valid = (
-        ready_manifest_valid
-        and "NOT SUBMISSION-READY" not in asset_authorities
-        and "SUBMISSION-READY" in asset_authorities
+    check(
+        screenshot_authority_matches_manifest(listing),
+        "private Play listing matches phone screenshot readiness",
     )
     check(
-        stale_state_valid or ready_state_valid,
-        "stale phone screenshots fail closed pending immutable PMA110 recapture",
-    )
-    check(
-        ready or all(
-            obsolete in asset_authorities
-            for values in obsolete_visible_copy.values()
-            for obsolete in values
-        ),
-        "stale phone screenshot semantics are explicit in both submission authorities",
+        stale_screenshot_semantics_are_explicit(listing),
+        "private Play listing explains every stale phone screenshot",
     )
 
     short = fenced(listing, "## Short description")
@@ -261,6 +274,30 @@ privacy_scope = "Android phones and tablets"
 for doc_label, doc in (("PRIVACY.md", privacy_md), ("privacy-policy/index.html", privacy_html)):
     check(privacy_scope in doc, f"{doc_label} covers Android phones and tablets")
 
+# Owner-null MediaStore rows are deliberately restorable as unverified legacy-format candidates.
+# Both privacy authorities must retain that boundary and must not revive the contradictory promise
+# that the gallery reads only captures the current installation saved itself.
+owner_null_disclosure = (
+    "package-owned",
+    "ownerless",
+    "cannot verify who created it",
+    "origin unverified",
+    "limits deletion to that file",
+)
+own_captures_only = "looks only for captures it saved itself"
+normalized_privacy_docs = tuple(
+    re.sub(r"\s+", " ", doc).casefold()
+    for doc in (privacy_md, privacy_html)
+)
+check(
+    all(
+        all(phrase in doc for phrase in owner_null_disclosure)
+        and own_captures_only not in doc
+        for doc in normalized_privacy_docs
+    ),
+    "privacy docs disclose ownerless legacy candidates without an own-captures-only claim",
+)
+
 # ---- version facts must match the build, not a memory of it ------------------------------------
 gradle = read("app/build.gradle.kts")
 min_sdk = re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)
@@ -321,8 +358,6 @@ for rel in (
 # ---- the upload instruction must not name a superseded artifact -------------------------------
 # It did: step 1 hard-coded a hash that went stale while the pin above it moved, so the sheet told
 # the operator to upload a bundle its own superseded list forbids — caught mid-upload.
-submit = read("docs/play-console-submit.md")
-
 # The release board and operator sheet are independent prose authorities, so bind their current
 # state with one deliberately boring machine-readable marker. "Target" names source intent;
 # "artifact" names whether immutable upload bytes exist. Conflating those two is how the board

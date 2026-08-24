@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -10,14 +11,83 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PRIVATE_EXPORT_DOCS = (
+    "docs/play-store-listing.md",
+    "docs/BACKLOG.md",
+    "docs/TESTING.md",
+    "docs/UX_POLICY.md",
+)
 MOTION_SOURCE = (
     REPO_ROOT
     / "app/src/main/kotlin/me/hletrd/telecampro/gl/MotionInversion.kt"
 )
+
+
+def run_documentation_gate_from_committed_export(
+    mutate: Callable[[Path], None] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], tuple[str, ...]]:
+    def extract(payload: bytes, destination: Path) -> None:
+        destination.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
+            archive.extractall(destination, filter="data")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        staging = root / "staging"
+        exported = root / "exported"
+        baseline = subprocess.run(
+            ["git", "archive", "HEAD"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        extract(baseline, staging)
+
+        # The tests must pass before these changes are committed. Overlay only the tracked checker
+        # and policy under test; no ignored/private document is copied from the maintainer workspace.
+        for relative in ("tools/check_docs.py", "privacy-policy/index.html"):
+            shutil.copy2(REPO_ROOT / relative, staging / relative)
+        if mutate is not None:
+            mutate(staging)
+
+        subprocess.run(["git", "init", "-b", "main"], cwd=staging, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Docs Export Test"], cwd=staging, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "docs@example.invalid"],
+            cwd=staging,
+            check=True,
+        )
+        subprocess.run(["git", "add", "-f", "."], cwd=staging, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "fixture"],
+            cwd=staging,
+            check=True,
+            capture_output=True,
+        )
+
+        committed = subprocess.run(
+            ["git", "archive", "HEAD"],
+            cwd=staging,
+            check=True,
+            capture_output=True,
+        ).stdout
+        extract(committed, exported)
+        private_docs_present = tuple(
+            relative for relative in PRIVATE_EXPORT_DOCS if (exported / relative).exists()
+        )
+        result = subprocess.run(
+            [sys.executable, "tools/check_docs.py"],
+            cwd=exported,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result, private_docs_present
 
 
 def load_verify_host():
@@ -144,61 +214,53 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             self.assertIn("trailing whitespace", unstaged.stdout + unstaged.stderr)
 
     def test_documentation_gate_runs_from_committed_export_without_private_docs(self) -> None:
-        def extract(payload: bytes, destination: Path) -> None:
-            destination.mkdir()
-            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
-                archive.extractall(destination, filter="data")
+        result, private_docs_present = run_documentation_gate_from_committed_export()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            staging = root / "staging"
-            exported = root / "exported"
-            baseline = subprocess.run(
-                ["git", "archive", "HEAD"],
-                cwd=REPO_ROOT,
-                check=True,
-                capture_output=True,
-            ).stdout
-            extract(baseline, staging)
+        self.assertEqual(private_docs_present, ())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("phone screenshot bytes match the validity manifest", result.stdout)
+        self.assertIn("committed submission sheet matches phone screenshot readiness", result.stdout)
+        self.assertIn("PRIVACY.md discloses CAMERA", result.stdout)
+        self.assertIn("ownerless legacy candidates without an own-captures-only claim", result.stdout)
+        self.assertIn("Architecture Module Map names every production Kotlin module", result.stdout)
+        self.assertRegex(result.stdout, r"\d+ private checks skipped")
 
-            # The test must pass before this change itself is committed. Overlay only the tracked
-            # checker under test, commit that complete public tree, and test a second export. No
-            # ignored/private document is copied from the maintainer workspace.
-            shutil.copy2(REPO_ROOT / "tools/check_docs.py", staging / "tools/check_docs.py")
-            subprocess.run(["git", "init", "-b", "main"], cwd=staging, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Docs Export Test"], cwd=staging, check=True)
-            subprocess.run(["git", "config", "user.email", "docs@example.invalid"], cwd=staging, check=True)
-            subprocess.run(["git", "add", "-f", "."], cwd=staging, check=True)
-            subprocess.run(["git", "commit", "-m", "fixture"], cwd=staging, check=True, capture_output=True)
+    def test_committed_export_rejects_ready_runbook_for_stale_screenshots(self) -> None:
+        def mark_runbook_ready(root: Path) -> None:
+            path = root / "docs/play-console-submit.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "**NOT SUBMISSION-READY**"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, "**SUBMISSION-READY**", 1), encoding="utf-8")
 
-            committed = subprocess.run(
-                ["git", "archive", "HEAD"],
-                cwd=staging,
-                check=True,
-                capture_output=True,
-            ).stdout
-            extract(committed, exported)
-            for private_doc in (
-                "docs/play-store-listing.md",
-                "docs/BACKLOG.md",
-                "docs/TESTING.md",
-                "docs/UX_POLICY.md",
-            ):
-                self.assertFalse((exported / private_doc).exists(), private_doc)
+        result, private_docs_present = run_documentation_gate_from_committed_export(mark_runbook_ready)
 
-            result = subprocess.run(
-                [sys.executable, "tools/check_docs.py"],
-                cwd=exported,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  committed submission sheet matches phone screenshot readiness",
+            result.stdout,
+        )
 
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("phone screenshot bytes match the validity manifest", result.stdout)
-            self.assertIn("PRIVACY.md discloses CAMERA", result.stdout)
-            self.assertIn("Architecture Module Map names every production Kotlin module", result.stdout)
-            self.assertRegex(result.stdout, r"\d+ private checks skipped")
+    def test_committed_export_rejects_stale_runbook_for_ready_screenshots(self) -> None:
+        def mark_manifest_ready(root: Path) -> None:
+            path = root / "docs/assets/play/screenshots/asset-validity.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["submission_ready"] = True
+            manifest["blocking_assets"] = []
+            manifest["obsolete_visible_copy"] = {}
+            manifest["required_recapture"]["immutable_source_manifest_digest"] = "0" * 64
+            manifest["required_recapture"]["apk_sha256"] = "1" * 64
+            path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(mark_manifest_ready)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  committed submission sheet matches phone screenshot readiness",
+            result.stdout,
+        )
 
 
 if __name__ == "__main__":

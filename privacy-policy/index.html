@@ -242,7 +242,9 @@
     <p>
       Granting photo and video access lets the app READ your library on this device; it does not send
       anything anywhere. The app has no Internet permission at all, so it has no way to transmit what
-      it reads — and it looks only for captures it saved itself.
+      it reads. The gallery looks for package-owned media and matching ownerless legacy TeleCam-format
+      candidates in DCIM/TeleCamPro. It cannot verify who created an ownerless match, so the review
+      labels its origin unverified and limits deletion to that file.
     </p>
 
     <h2>Children</h2>
