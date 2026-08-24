@@ -1,128 +1,154 @@
-# Cycle 30 aggregate review
+# Cycle 31 aggregate review
 
 Date: 2026-08-24
-Reviewed revision: `3abf6221d42b7275502cfd5872963aa83c18d80f`
-Workspace: clean isolated clone `/tmp/find-x9-ultra-cycle30.vpagVN/repo`
+Reviewed revision: `a69c12743383a5f3f98cc73bb6cb4ec5877c1cea`
+Workspace: clean isolated clone `/private/tmp/rpf-cycle31.Bwz2Ov/repo`
 
 ## Review coverage
 
-All required perspectives returned: code-reviewer, architect, perf-reviewer, tracer,
-security-reviewer, critic, verifier, debugger, test-engineer, document-specialist, and native
-Android designer. The reviewers inventoried all 427 tracked files and examined the complete
+All required perspectives returned: code-reviewer, architect, critic, perf-reviewer, tracer,
+debugger, security-reviewer, verifier, test-engineer, document-specialist, and native Android
+designer/accessibility reviewer. Reviewers inventoried all 435 tracked paths and examined the full
 Camera2/GL, capture/storage/deletion, ViewModel/UI, audio, settings/MR, documentation, build,
-release, privacy, and test surfaces. The designer pass used Compose/resource/Robolectric evidence;
-browser automation was not applicable to this native non-web UI.
+release, privacy, and test surfaces. Browser automation was not applicable to this native Compose
+application. Existing reviews and completed plans through cycle 30 were cross-checked first.
 
 ## Deduplicated findings
 
-### AGG30-01 — device transfer can replay destructive MediaStore URIs on another device
-
-- **Severity / confidence:** High / High
-- **Agreement:** security-reviewer and critic.
-- **Evidence:** `app/src/main/res/xml/data_extraction_rules.xml:2-8` excludes only shared
-  preferences, while `PendingDiscardJournal.kt:9-46,215-245` stores exact MediaStore URIs in a
-  database and `MediaStoreWriter.kt:1133-1157` replays every restored row through deletion at
-  launch. Android 12+ OEM device-to-device transfer may still run when `allowBackup=false`.
-- **Failure:** a source URI such as `content://media/.../42` can name a different row after device
-  migration; destination launch recovery can attempt to delete media never marked on that device.
-- **Fix:** exclude database/private state from both cloud and D2D schemas (and legacy backup rules),
-  enforce the policy with a parsed-resource host contract, and retain defense-in-depth provenance.
-
-### AGG30-02 — retirement-lane overflow drops the only in-process retry
+### AGG31-01 — process-wide retirement rescan can retire a replacement Engine through a stale owner
 
 - **Severity / confidence:** Medium / High
-- **Agreement:** perf-reviewer and tracer; code-reviewer/architect agreed bounded dispatch is safe
-  for data integrity but did not classify its in-process liveness consequence as actionable.
-- **Evidence:** `CameraEngine.kt:4179-4209` emits the sole terminal retirement continuation;
-  `RetainedStillDiscardDispatcher.kt:95-101` drops `OVERFLOW`; `MediaStoreWriter.kt:1062-1128`
-  intentionally retains markers owned by the current process, and the journal is capped at 64.
-- **Failure:** repeated saturation strands current-process markers until restart and can eventually
-  make ordinary family deletion fail closed with `CAPACITY_EXHAUSTED`.
-- **Fix:** add a bounded/conflated retry owner re-armed after worker completion and prove eventual
-  retirement after saturation without inline provider work or unbounded admission.
+- **Agreement:** code-reviewer, architect, and critic.
+- **Evidence:** `RetainedStillDiscardDispatcher.kt:76-78,101-116,140-157` keeps one accepted and
+  one pending process-wide rescan, while `CameraEngine.kt:4229-4237` captures one Engine-local
+  `RetainedStillDeletionOwner`. `MediaStoreWriter.retireCurrentProcessFamilyDeletions` may remove
+  every process-owned marker, but `RetainedStillDeletionOwner.kt:127-149,243-282` can reconcile
+  only that captured Engine's local families.
+- **Failure:** Engine A's accepted rescan removes Engine B's marker and reports the retirement only
+  to A. B retains unresolved output bookkeeping, the queued B rescan sees no marker, and repeated
+  misses can fill B's fail-closed ceiling and disable still capture until replacement/restart.
+- **Fix:** make rescan completion process-owned and route each retired family to its exact local
+  owner, or notify all registered owners, with a deterministic two-Engine overflow regression.
 
-### AGG30-03 — ViewModel deletion work still has an unbounded provider queue
-
-- **Severity / confidence:** Medium / High
-- **Agreement:** perf-reviewer and tracer.
-- **Evidence:** `CameraViewModel.kt:637-643` creates an unbounded single-thread executor;
-  whole-family deletes at `:3315-3391` and rejected late-sibling discards at `:3395-3432` enqueue
-  provider work without a capacity or conflation owner, and shutdown drains accepted tasks.
-- **Failure:** one wedged Binder call permits unbounded closure and obsolete ViewModel retention
-  across continued captures/deletes and ViewModel replacement.
-- **Fix:** use process-finite provider capacity with durable exact-family continuation and truthful
-  overflow status; test the active-plus-backlog ceiling and lack of inline work.
-
-### AGG30-04 — unresolved untracked sibling deletion is falsely reported as complete
+### AGG31-02 — successful provider deletion plus marker-cleanup failure restores a phantom survivor
 
 - **Severity / confidence:** Medium / High
-- **Agreement:** verifier and debugger.
-- **Evidence:** `MediaStoreWriter.kt:812-843` collapses query failure, undeletable rows, and an empty
-  sweep into an integer; `CameraViewModel.kt:3356-3367` discards the count and builds survivors only
-  from tracker-known outputs, then reports `DELETED` at `:3385-3388` when that narrower set is empty.
-- **Failure:** an old Engine's newly published but untracked JPEG can survive provider rejection
-  while the app says “Deleted.”
-- **Fix:** return a typed sweep result, merge unresolved/query-failed state into the terminal
-  outcome, keep Gallery retry copy and the durable marker, and cover all provider outcomes.
+- **Agreement:** code-reviewer, architect, and critic.
+- **Evidence:** `MediaStoreWriter.kt:805-817,1231-1235` returns one Boolean for both provider-row
+  disposition and exact DISCARD-marker cleanup. `CameraViewModel.kt:3388-3396` treats every false
+  result as a surviving URI, and `CaptureOutputTracker.kt:321-352` restores it without rechecking
+  provider existence.
+- **Failure:** the provider deletes a JPEG, SQLite marker removal transiently fails, and review is
+  rebuilt around the now-absent URI even though retaining retry metadata was the only required
+  action.
+- **Fix:** return typed provider and marker-cleanup dispositions; restore only authoritatively
+  present rows while preserving cleanup retry for already-absent rows.
 
-### AGG30-05 — recalled phone identity and Engine host focal come from different packets
-
-- **Severity / confidence:** Medium / High
-- **Agreement:** verifier and debugger.
-- **Evidence:** `CameraViewModel.kt:1191-1199` derives the recalled converter from the loaded phone,
-  but `:1262-1265` sends the outgoing state's host focal to the Engine before `:1338-1358` publishes
-  the recalled phone. `CameraEngine.kt:4325-4329,6614` then uses the mismatched host for shot EXIF.
-- **Failure:** recalling a 70 mm OPPO bank while the outgoing declaration is an 85 mm body can show
-  300 mm in UI but save approximately 364 mm in metadata.
-- **Fix:** make phone/converter/host one atomic recall packet and add a same-route cross-phone
-  regression asserting UI, Engine, memory row, and shot metadata agree.
-
-### AGG30-06 — asynchronous optics rollback cannot restore converter and host focal
+### AGG31-03 — preview surface callbacks can block the main thread behind CameraManager/HAL work
 
 - **Severity / confidence:** Medium / High
-- **Agreement:** verifier and debugger.
-- **Evidence:** `CameraViewModel.kt:1262-1279` applies converter state before the generation-owned
-  optics transaction, while `CameraEngine.kt:392-413,457-470,657-715` snapshots/rolls back neither
-  converter magnification nor host focal and the ViewModel rollback reducer restores no declaration.
-- **Failure:** an asynchronously rejected MR recall can restore lens/controls but leave rejected
-  converter, zoom/finder geometry, UI declaration, and later EXIF behind.
-- **Fix:** include the complete phone/converter/host packet in transaction snapshots and terminal
-  rollback publication (or delay commit), with synchronous, async, and supersession regressions.
+- **Agreement:** perf-reviewer, tracer, and debugger.
+- **Evidence:** `CameraScreen.kt:748-768` forwards TextureView availability/resize callbacks on the
+  UI thread; `CameraEngine.kt:1327-1348,1542-1558,1634-1657` enters the blocking
+  `TerminalAcquisitionGate`, whose monitor spans native acquisition at `:7158-7187`, including
+  `CameraController.kt:292-304` CameraManager Binder calls.
+- **Failure:** a split-screen resize during camera replacement parks main behind an already
+  measured ~192 ms gate hold; a wedged vendor call can extend the freeze toward ANR territory.
+- **Fix:** synchronously record surface/generation identity, then perform blocking admission on the
+  serialized setup lane and recheck surface, generation, terminal state, and GL owner before bind.
 
-### AGG30-07 — responsive settings rows can hide their trailing action at 200% font
-
-- **Severity / confidence:** Medium / High
-- **Agreement:** test-engineer, document-specialist, and designer.
-- **Evidence:** `ProControls.kt:667-700` lays out two unconstrained unweighted Text children in a
-  `SpaceBetween` row. At the tested 212 dp content lane, long Korean labels such as the Privacy row
-  at `ProSheet.kt:1593-1604` can consume the trailing `보기` action.
-- **Failure:** at 320 dp split-screen and 2x font, a tappable navigation row appears inert because
-  its value/action affordance is clipped.
-- **Fix:** reserve trailing width or stack responsively; add EN/KO compact 2x-font bounds and click
-  tests for action, dynamic-value, and disabled rows.
-
-### AGG30-08 — compact permission recovery can clip the only in-app fallback
+### AGG31-04 — current HEAD fails the exact Partition-A coverage gate
 
 - **Severity / confidence:** Medium / High
-- **Agreement:** test-engineer, document-specialist, and designer.
-- **Evidence:** `MainActivity.kt:837-906` vertically centers a non-scrollable permission Column;
-  `ExternalNavigationUi.kt:24-53` appends a wrapping error and recovery action below the existing
-  message, actions, and spacers. No compact/font-scale test constrains reachability.
-- **Failure:** in a 320x340 dp, 2x-font window, browser failure can put `View in app` below the
-  viewport precisely when it is the only working privacy route.
-- **Fix:** make the bounded permission content vertically scrollable or adapt its arrangement, and
-  test EN/KO failure recovery at compact dimensions and 2x font.
+- **Agreement:** test-engineer and document-specialist.
+- **Evidence:** authoritative `verifyPartitionACoverage` reports unexpected uncovered lines at
+  `RetainedStillDiscardDispatcher.kt:54,186`, `Teleconverter.kt:149`, and
+  `ViewModelMediaDeleteDispatcher.kt:47,49,110`; these are absent from the exact reviewed residual
+  manifest despite the aggregate percentage remaining 99.75%.
+- **Failure:** `python3 tools/verify_host.py` cannot pass on current HEAD.
+- **Fix:** cover the closed-facade/process fallback, invalid OTHER-host fallback, facade counters,
+  and production thread factory; record only genuinely unexecutable residuals with rationale.
 
-### AGG30-09 — the authoritative host gate does not compile androidTest sources
+### AGG31-05 — optics rollback integration test bypasses production rollback
+
+- **Severity / confidence:** Medium / High
+- **Agreement:** test-engineer and document-specialist.
+- **Evidence:** production rollback is `CameraEngine.kt:658-724`; the test at
+  `OpticsRecallTransactionRobolectricTest.kt:176-212` pre-restores the Engine and manually invokes
+  the downstream callback. JaCoCo shows the production rollback body uncovered.
+- **Failure:** removing the Engine declaration/controller restoration could leave rejected EXIF/OSD
+  optics state while the purported asynchronous-failure regression still passes.
+- **Fix:** drive a deterministic owned failure through the real rollback boundary and assert
+  Engine, controller input, UI packet, and supersession from that one transition.
+
+### AGG31-06 — callback-drain race test can pass before the closer attempts the drain
 
 - **Severity / confidence:** Low / High
 - **Agreement:** test-engineer and document-specialist.
-- **Evidence:** `tools/verify_host.py:58-72` runs debug assembly, JVM tests, lint, and coverage but
-  not `:app:assembleDebugAndroidTest`; the four tracked smoke/probe classes compile only when the
-  extra task is requested. The explicit task passed on the reviewed revision.
-- **Failure:** instrumented smoke call sites can bit-rot while every required host gate stays green.
-- **Fix:** add Android-test assembly to the host gate, pin it in the consolidated-gate test, and
-  document that this proves source-set compilation rather than device behavior.
+- **Evidence:** `EngineCallbackSinkTest.kt:51-77` uses a fixed 25 ms sleep without proving the closer
+  reached `closeAndDrain()` in `EngineCallbackSink.kt:35-38,75-80`.
+- **Failure:** on a loaded runner, a broken immediately-returning drain can be scheduled only after
+  the negative assertion and still let the test pass.
+- **Fix:** add a bounded rendezvous/test seam proving the closer is blocked on the admitted lease
+  before releasing the callback.
+
+### AGG31-07 — device-harness known-noncoverage documentation contradicts committed evidence
+
+- **Severity / confidence:** Low / High
+- **Agreement:** test-engineer and document-specialist.
+- **Evidence:** `device-tests/README.md:186-199` calls a multitouch instrumented test future work
+  despite `PinchGestureProbeTest.kt:43-136`, and calls front signs pending despite the device-verified
+  authorities in `FIELD_CHECKS.md:59-65` and `ARCHITECTURE.md:518-532`.
+- **Failure:** contributors can duplicate existing probes or reopen closed device work instead of
+  addressing the remaining assertion/automation and subjective-feel gaps.
+- **Fix:** distinguish automated harness coverage, diagnostic probes, human/device evidence, and
+  genuinely open checks; pin the wording in the docs contract.
+
+### AGG31-08 — review remains actionable while video recording is starting or active
+
+- **Severity / confidence:** Medium / High
+- **Agreement:** native Android designer/accessibility reviewer.
+- **Evidence:** `CameraScreen.kt:1277-1306,2952-2960` and `MediaReview.kt:669-681` keep review
+  actionable; `CameraViewModel.kt:3304-3324` has no defensive refusal; prior video autoplay begins
+  at `MediaReview.kt:1114-1122`.
+- **Failure:** review hides REC/Stop during a live take and prior-video speaker audio can contaminate
+  the still-running AudioRecord capture.
+- **Fix:** disable review visually/semantically while starting or recording and refuse it again in
+  the ViewModel; preserve timelapse behavior and test idle/starting/active states.
+
+### AGG31-09 — ToggleRow can clip its trailing Switch at compact 2x font
+
+- **Severity / confidence:** Medium / High
+- **Agreement:** native Android designer/accessibility reviewer.
+- **Evidence:** `ProControls.kt:623-646` measures an unconstrained label before a trailing Switch,
+  unlike responsive `LabelValueRow` at `:695-724`; long production labels occur in
+  `ProSheet.kt:1498-1503,1664-1669`.
+- **Failure:** a 320 dp / 200% font window can leave a clickable row without a visible state/control
+  affordance.
+- **Fix:** reserve Switch width or adaptively stack, with EN/KO compact checked/unchecked and
+  enabled/disabled bounds/activation tests.
+
+### AGG31-10 — AF focused and failed reticles differ only by color
+
+- **Severity / confidence:** Medium / High
+- **Agreement:** native Android designer/accessibility reviewer.
+- **Evidence:** `Overlays.kt:332-365` changes yellow/green/red but draws identical bracket geometry
+  and stroke for scanning, focused, and failed states.
+- **Failure:** color-vision-deficient operators cannot reliably distinguish a successful lock from
+  failure over arbitrary live imagery.
+- **Fix:** retain color but add a non-color terminal cue and contrast outline; add deterministic
+  state-presentation coverage.
+
+### AGG31-11 — focal-rail overflow fade uses the wrong modifier order
+
+- **Severity / confidence:** Low / High
+- **Agreement:** native Android designer/accessibility reviewer.
+- **Evidence:** `ProControls.kt:240-245,298-308` requires the fade before `horizontalScroll`, while
+  `CameraScreen.kt:2665-2669` reverses them.
+- **Failure:** the fade moves with content instead of staying at the viewport edge, making clipped
+  device-derived zoom marks look like a layout bug.
+- **Fix:** swap modifiers and add a constrained overflowing-rail assertion for fade presence and
+  disappearance at the end.
 
 ## Agent failures
 
@@ -130,5 +156,7 @@ None. Every spawned reviewer returned and wrote its provenance report.
 
 ## Final sweep result
 
-No additional actionable security, correctness, performance, architecture, documentation, or
-UI/UX finding survived evidence checking. No physical-device behavior was inferred from host tests.
+No additional actionable security, correctness, performance, architecture, documentation, test, or
+UI/UX finding survived evidence checking. The security/verifier pass reported zero new findings and
+confirmed release manifest, backup, permission, immutable-build, and attestation boundaries. No
+physical-device behavior was inferred from host source or tests.
