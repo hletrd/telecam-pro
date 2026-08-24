@@ -22,6 +22,11 @@ import struct
 import sys
 import xml.etree.ElementTree as ET
 
+try:
+    from tools.release_permissions import EXPECTED_RELEASE_PERMISSIONS
+except ModuleNotFoundError:  # Direct `python3 tools/check_docs.py` execution.
+    from release_permissions import EXPECTED_RELEASE_PERMISSIONS
+
 if sys.flags.optimize != 0:
     print("optimized Python is unsupported for the documentation gate", file=sys.stderr)
     raise SystemExit(2)
@@ -531,6 +536,15 @@ check('hreflang="en"' in privacy_html and 'hreflang="ko"' in privacy_html,
 
 declared = set(re.findall(r"android\.permission\.([A-Z_]+)", manifest))
 declared -= {"INTERNET", "ACCESS_NETWORK_STATE"}  # removed at merge by tools:node="remove"
+expected_declared = {
+    permission.removeprefix("android.permission.")
+    for permission in EXPECTED_RELEASE_PERMISSIONS
+}
+check(
+    declared == expected_declared,
+    "source manifest permissions match the closed release and privacy authority",
+    str(sorted(declared ^ expected_declared)),
+)
 
 # Both documents describe permissions in prose, so match on the user-facing groups they name.
 GROUPS = {

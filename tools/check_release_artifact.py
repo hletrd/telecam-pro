@@ -24,6 +24,11 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+try:
+    from tools.release_permissions import EXPECTED_RELEASE_PERMISSIONS, packaged_permissions
+except ModuleNotFoundError:  # Direct `python3 tools/check_release_artifact.py` execution.
+    from release_permissions import EXPECTED_RELEASE_PERMISSIONS, packaged_permissions
+
 
 EXPECTED_UPLOAD_CERT_SHA256 = (
     "9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584"
@@ -736,6 +741,14 @@ def check_release_identity(
         assert packaged_name is not None
         assert packaged_min_sdk is not None
         assert packaged_target_sdk is not None
+        effective_permissions = packaged_permissions(manifest)
+        if effective_permissions != EXPECTED_RELEASE_PERMISSIONS:
+            unexpected = sorted(effective_permissions - EXPECTED_RELEASE_PERMISSIONS)
+            missing = sorted(EXPECTED_RELEASE_PERMISSIONS - effective_permissions)
+            failures.append(
+                "packaged permission set does not match privacy authority "
+                f"(unexpected={unexpected}, missing={missing})"
+            )
         if int(packaged_code.group(1)) != document["version_code"]:
             failures.append("packaged versionCode does not match attestation")
         if packaged_name.group(1) != document["version_name"]:

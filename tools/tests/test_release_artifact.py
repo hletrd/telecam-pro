@@ -168,6 +168,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         *,
         additional_signer: str | None = None,
         strict_returncode: int = 0,
+        manifest_permissions: frozenset[str] = release.EXPECTED_RELEASE_PERMISSIONS,
     ):
         def run(command, cwd):
             del cwd
@@ -213,6 +214,11 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                     '<manifest package="me.hletrd.telecampro" android:versionCode="4" '
                     'android:versionName="1.0.2">\n'
                     '  <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />\n'
+                    + "".join(
+                        f'  <uses-permission android:name="{permission}" />\n'
+                        for permission in sorted(manifest_permissions)
+                    )
+                    +
                     '</manifest>\n'
                 )
                 return subprocess.CompletedProcess(command, 0, manifest, "")
@@ -226,6 +232,41 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             attestation, _, commit = self.fixture(root)
             self.assertEqual(
                 [], release.check_release_identity(root, attestation, run=self.runner(commit))
+            )
+
+    def test_packaged_manifest_rejects_extra_and_network_permissions(self) -> None:
+        for permission in ("android.permission.POST_NOTIFICATIONS", "android.permission.INTERNET"):
+            with self.subTest(permission=permission), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                permissions = release.EXPECTED_RELEASE_PERMISSIONS | {permission}
+
+                failures = release.check_release_identity(
+                    root,
+                    attestation,
+                    run=self.runner(commit, manifest_permissions=permissions),
+                )
+
+                self.assertTrue(
+                    any("packaged permission set does not match privacy authority" in item for item in failures),
+                    failures,
+                )
+
+    def test_packaged_manifest_rejects_missing_disclosed_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, _, commit = self.fixture(root)
+            permissions = release.EXPECTED_RELEASE_PERMISSIONS - {"android.permission.CAMERA"}
+
+            failures = release.check_release_identity(
+                root,
+                attestation,
+                run=self.runner(commit, manifest_permissions=permissions),
+            )
+
+            self.assertTrue(
+                any("packaged permission set does not match privacy authority" in item for item in failures),
+                failures,
             )
 
     def test_mutable_output_and_changed_bytes_fail_closed(self) -> None:
