@@ -1341,6 +1341,77 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_illegal_png_chunk_types_and_ancillary_order(self) -> None:
+        def chunk(kind: bytes, payload: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(payload))
+                + kind
+                + payload
+                + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+            )
+
+        cases = (
+            ("non-letter", chunk(b"12x4", b""), False),
+            ("reserved-bit", chunk(b"abcd", b""), False),
+            ("late-trns", chunk(b"tRNS", b"\0" * 6), False),
+            ("late-srgb", chunk(b"sRGB", b"\0"), False),
+            ("late-iccp", chunk(b"iCCP", b"test\0\0" + zlib.compress(b"profile")), False),
+            ("malformed-srgb", chunk(b"sRGB", b"\4"), True),
+            ("malformed-iccp", chunk(b"iCCP", b"test\0\1" + zlib.compress(b"profile")), True),
+        )
+        for label, injected, after_ihdr in cases:
+            with self.subTest(label=label):
+                def mutate(root: Path) -> None:
+                    relative = "docs/assets/play/screenshots/02-pro-settings.png"
+                    asset = root / relative
+                    data = asset.read_bytes()
+                    insertion = (
+                        8 + 12 + struct.unpack(">I", data[8:12])[0]
+                        if after_ihdr
+                        else data.rfind(b"\0\0\0\0IEND")
+                    )
+                    self.assertGreaterEqual(insertion, 8)
+                    asset.write_bytes(data[:insertion] + injected + data[insertion:])
+                    manifest_path = asset.parent / "asset-validity.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+                    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIn(
+                    "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+                    result.stdout,
+                )
+
+    def test_committed_export_rejects_release_capture_trace_contract_regressions(self) -> None:
+        def mutate_trace(root: Path, force_unwrap: bool) -> None:
+            path = root / "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
+            text = path.read_text(encoding="utf-8")
+            if force_unwrap:
+                needle = "traceText?.takeIf { traceAdmission.registration }"
+                self.assertIn(needle, text)
+                text = text.replace(needle, "traceText!!.takeIf { traceAdmission.registration }", 1)
+            else:
+                needle = "me.hletrd.telecampro.BuildConfig.DEBUG,"
+                self.assertIn(needle, text)
+                text = text.replace(needle, "true,", 1)
+            path.write_text(text, encoding="utf-8")
+
+        for force_unwrap in (False, True):
+            with self.subTest(force_unwrap=force_unwrap):
+                result, _ = run_documentation_gate_from_committed_export(
+                    lambda root: mutate_trace(root, force_unwrap),
+                )
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  release capture tracing is build-gated and nullable-safe at the production callback",
+                    result.stdout,
+                )
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"

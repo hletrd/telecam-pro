@@ -109,7 +109,7 @@ def language_fenced(text: str, heading: str, language: str) -> str:
 
 
 def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
-    """Fully validate a bounded, non-interlaced screenshot PNG and return its pixel contract."""
+    """Validate the bounded screenshot PNG profile and return its pixel contract."""
     data = (ROOT / relative).read_bytes()
     if len(data) < 57 or data[:8] != b"\x89PNG\r\n\x1a\n":
         return None
@@ -121,6 +121,7 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
     saw_idat = False
     idat_ended = False
     saw_iend = False
+    seen_ancillary: set[bytes] = set()
     while offset < len(data):
         if offset + 12 > len(data):
             return None
@@ -132,6 +133,11 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
         payload = data[offset + 8 : offset + 8 + length]
         expected_crc = struct.unpack(">I", data[offset + 8 + length : end])[0]
         if zlib.crc32(kind + payload) & 0xFFFFFFFF != expected_crc:
+            return None
+        if any(not (ord("A") <= byte <= ord("Z") or ord("a") <= byte <= ord("z")) for byte in kind):
+            return None
+        # PNG reserves bit 5 of the third type byte for future standardization; it must be zero.
+        if kind[2] & 0x20:
             return None
         if offset == 8 and kind != b"IHDR":
             return None
@@ -177,12 +183,79 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
             saw_iend = True
             offset = end
             break
+        elif kind == b"iCCP":
+            separator = payload.find(b"\0")
+            profile_name = payload[:separator] if separator >= 0 else b""
+            compressed_profile = payload[separator + 2 :] if separator >= 0 else b""
+            if (
+                ihdr is None
+                or saw_plte
+                or saw_idat
+                or kind in seen_ancillary
+                or b"sRGB" in seen_ancillary
+                or not 1 <= len(profile_name) <= 79
+                or profile_name[:1] == b" "
+                or profile_name[-1:] == b" "
+                or b"  " in profile_name
+                or any(byte < 32 or 126 < byte < 161 for byte in profile_name)
+                or separator + 1 >= len(payload)
+                or payload[separator + 1] != 0
+                or not compressed_profile
+            ):
+                return None
+            profile_inflater = zlib.decompressobj()
+            try:
+                profile = profile_inflater.decompress(compressed_profile, 4 * 1024 * 1024 + 1)
+            except zlib.error:
+                return None
+            if (
+                len(profile) > 4 * 1024 * 1024
+                or not profile_inflater.eof
+                or profile_inflater.unused_data
+                or profile_inflater.unconsumed_tail
+            ):
+                return None
+            seen_ancillary.add(kind)
+        elif kind == b"sRGB":
+            if (
+                ihdr is None
+                or saw_plte
+                or saw_idat
+                or kind in seen_ancillary
+                or b"iCCP" in seen_ancillary
+                or length != 1
+                or payload[0] > 3
+            ):
+                return None
+            seen_ancillary.add(kind)
+        elif kind == b"sBIT":
+            expected_length = 3 if ihdr is not None and ihdr[3] == 2 else 4
+            if (
+                ihdr is None
+                or saw_plte
+                or saw_idat
+                or kind in seen_ancillary
+                or length != expected_length
+                or any(value == 0 or value > ihdr[2] for value in payload)
+            ):
+                return None
+            seen_ancillary.add(kind)
+        elif kind == b"tRNS":
+            if (
+                ihdr is None
+                or saw_idat
+                or kind in seen_ancillary
+                or ihdr[3] != 2
+                or length != 6
+            ):
+                return None
+            seen_ancillary.add(kind)
         else:
             if saw_idat:
                 idat_ended = True
-            # Unknown critical chunks cannot be decoded safely; ancillary chunks are CRC-checked.
-            if kind and kind[0] & 0x20 == 0:
-                return None
+            # The release screenshot profile deliberately rejects every unvalidated extension,
+            # critical or ancillary, rather than blessing bytes a stricter consumer may reject.
+            return None
         offset = end
 
     if not saw_iend or offset != len(data) or ihdr is None:
@@ -1502,6 +1575,21 @@ check(
 )
 zoom_submit_plan = read("app/src/main/kotlin/me/hletrd/telecampro/camera/ZoomSubmitPlan.kt")
 camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
+trace_admission_call = re.search(
+    r"traceAdmission\s*=\s*captureFamilyTraceAdmission\((.*?)\)",
+    camera_engine,
+    re.S,
+)
+check(
+    bool(
+        trace_admission_call
+        and "BuildConfig.DEBUG" in trace_admission_call.group(1)
+        and "traceText!!" not in camera_engine
+        and "traceText?.takeIf { traceAdmission.registration }" in camera_engine
+        and "traceText?.takeIf { traceAdmission.settlement }" in camera_engine
+    ),
+    "release capture tracing is build-gated and nullable-safe at the production callback",
+)
 camera_controller = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt")
 camera_view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
 zoom_glide_state = read("app/src/main/kotlin/me/hletrd/telecampro/ui/ZoomGlideState.kt")
