@@ -651,31 +651,78 @@ private suspend fun loadReviewMedia(
     return LoadedReview(state, loaded.metadata)
 }
 
-private data class GalleryThumbContent(
-    val kind: ReviewMediaKind? = null,
-    val bitmap: ReviewBitmap? = null,
-) {
-    fun transferToComposition(): GalleryThumbContent = also { bitmap?.transferToComposition() }
-    fun dispose() = bitmap?.dispose()
+/**
+ * Exact visual truth for the last-capture tile.
+ *
+ * A non-null URI is never represented by [Empty]: while MIME and pixels are acquired it is
+ * [Loading], and a missing/invalid thumbnail becomes [Failed] without pretending the capture
+ * itself disappeared. [kind] is nullable only before the bounded MIME lookup completes.
+ */
+internal sealed interface GalleryThumbState {
+    val kind: ReviewMediaKind?
+
+    data object Empty : GalleryThumbState {
+        override val kind: ReviewMediaKind? = null
+    }
+
+    data class Loading(override val kind: ReviewMediaKind? = null) : GalleryThumbState
+
+    data class Ready(
+        override val kind: ReviewMediaKind,
+        val bitmap: ReviewBitmap? = null,
+    ) : GalleryThumbState {
+        init {
+            require((kind == ReviewMediaKind.RAW) == (bitmap == null)) {
+                "Only RAW gallery content may be ready without pixels"
+            }
+        }
+    }
+
+    data class Failed(override val kind: ReviewMediaKind?) : GalleryThumbState
+}
+
+private fun GalleryThumbState.transferToComposition(): GalleryThumbState = also {
+    (it as? GalleryThumbState.Ready)?.bitmap?.transferToComposition()
+}
+
+private fun GalleryThumbState.dispose() {
+    (this as? GalleryThumbState.Ready)?.bitmap?.dispose()
 }
 
 private const val GALLERY_THUMB_MAX_DIM = 240
 
-private fun loadGalleryThumb(request: ReviewDescriptorRequest): GalleryThumbContent {
-    val kind = reviewMediaKind(
+private fun loadGalleryThumbKind(request: ReviewDescriptorRequest): ReviewMediaKind =
+    reviewMediaKind(
         runCatching { request.context.contentResolver.getType(request.uri) }.getOrNull(),
     )
-    val bitmap = when (kind) {
-        ReviewMediaKind.RAW -> null
+
+private class GalleryThumbRequest(
+    context: Context,
+    val uri: Uri,
+    val kind: ReviewMediaKind,
+) {
+    val context: Context = processReviewContext(context)
+}
+
+private fun loadGalleryThumb(request: GalleryThumbRequest): GalleryThumbState {
+    val bitmap = when (request.kind) {
+        ReviewMediaKind.RAW -> return GalleryThumbState.Ready(ReviewMediaKind.RAW)
         ReviewMediaKind.VIDEO -> loadVideoThumbnail(request.context, request.uri, GALLERY_THUMB_MAX_DIM)
         ReviewMediaKind.STILL -> decodeReviewBitmap(request.context, request.uri, GALLERY_THUMB_MAX_DIM)
     }
-    return GalleryThumbContent(kind, bitmap?.let(::ReviewBitmap))
+    return bitmap
+        ?.let { GalleryThumbState.Ready(request.kind, ReviewBitmap(it)) }
+        ?: GalleryThumbState.Failed(request.kind)
 }
 
-private val galleryThumbLane = LatestReviewSetupLane<ReviewDescriptorRequest, GalleryThumbContent>(
+private val galleryThumbKindLane = LatestReviewSetupLane<ReviewDescriptorRequest, ReviewMediaKind>(
+    work = ::loadGalleryThumbKind,
+    release = {},
+)
+
+private val galleryThumbLane = LatestReviewSetupLane<GalleryThumbRequest, GalleryThumbState>(
     work = ::loadGalleryThumb,
-    release = GalleryThumbContent::dispose,
+    release = GalleryThumbState::dispose,
 )
 
 /** Tappable thumbnail of the last review item; RAW uses a label rather than a fake/failed image. */
@@ -689,26 +736,74 @@ fun GalleryThumb(
 ) {
     val context = LocalContext.current
     val thumbOwner = remember(uri) { Any() }
-    val contentHolder = remember(uri) { mutableStateOf(GalleryThumbContent()) }
-    val content by contentHolder
-    fun replaceContent(next: GalleryThumbContent) {
-        val previous = contentHolder.value
-        contentHolder.value = next.transferToComposition()
+    val stateHolder = remember(uri) {
+        mutableStateOf<GalleryThumbState>(
+            if (uri == null) GalleryThumbState.Empty else GalleryThumbState.Loading(),
+        )
+    }
+    val state by stateHolder
+    fun replaceState(next: GalleryThumbState) {
+        val previous = stateHolder.value
+        stateHolder.value = next.transferToComposition()
         if (previous !== next) previous.dispose()
     }
     LaunchedEffect(uri) {
         if (uri != null) {
-            galleryThumbLane.run(thumbOwner, ReviewDescriptorRequest(context, uri), ::replaceContent)
+            var kind: ReviewMediaKind? = null
+            when (galleryThumbKindLane.run(
+                thumbOwner,
+                ReviewDescriptorRequest(context, uri),
+            ) { kind = it }) {
+                LatestReviewSetupLane.Outcome.RETIRED -> return@LaunchedEffect
+                LatestReviewSetupLane.Outcome.TIMED_OUT,
+                LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED,
+                -> replaceState(GalleryThumbState.Failed(null))
+                LatestReviewSetupLane.Outcome.PUBLISHED -> {
+                    val resolvedKind = checkNotNull(kind)
+                    replaceState(GalleryThumbState.Loading(resolvedKind))
+                    galleryThumbLane.run(
+                        thumbOwner,
+                        GalleryThumbRequest(context, uri, resolvedKind),
+                        ::replaceState,
+                    ).let { outcome ->
+                        if (
+                            outcome == LatestReviewSetupLane.Outcome.TIMED_OUT ||
+                            outcome == LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED
+                        ) {
+                            replaceState(GalleryThumbState.Failed(resolvedKind))
+                        }
+                    }
+                }
+            }
         }
     }
     DisposableEffect(thumbOwner) {
         onDispose {
+            galleryThumbKindLane.invalidate(thumbOwner)
             galleryThumbLane.invalidate(thumbOwner)
-            contentHolder.value.dispose()
+            stateHolder.value.dispose()
         }
     }
+    GalleryThumbSurface(
+        state = state,
+        onClick = onClick,
+        modifier = modifier,
+        provenance = provenance,
+        enabled = enabled,
+    )
+}
+
+/** Production gallery-tile composition, split out so every real visual branch is render-tested. */
+@Composable
+internal fun GalleryThumbSurface(
+    state: GalleryThumbState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    provenance: MediaProvenance = MediaProvenance.APP_OWNED,
+    enabled: Boolean = true,
+) {
     val galleryDesc = stringResource(
-        galleryReviewContentDescription(uri != null, content.kind, provenance),
+        galleryReviewContentDescription(state != GalleryThumbState.Empty, state.kind, provenance),
     )
     Box(
         modifier = modifier
@@ -730,57 +825,143 @@ fun GalleryThumb(
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        val t = content.bitmap
-        if (t != null) {
-            Image(
-                bitmap = t.image,
-                // The parent is the one semantic Button; the pixels are decorative and must not
-                // produce a duplicate TalkBack announcement.
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else if (content.kind == ReviewMediaKind.RAW) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = stringResource(R.string.format_raw),
-                    color = CameraColors.TextPrimary,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = stringResource(R.string.format_dng),
-                    color = CameraColors.TextSecondary,
-                    style = MaterialTheme.typography.labelSmall,
+        when (state) {
+            GalleryThumbState.Empty -> EmptyGalleryPictogram()
+            is GalleryThumbState.Loading -> GalleryMediaPlaceholder(state.kind, loading = true)
+            is GalleryThumbState.Failed -> GalleryMediaPlaceholder(state.kind, loading = false)
+            is GalleryThumbState.Ready -> if (state.kind == ReviewMediaKind.RAW) {
+                RawGalleryPlaceholder(loading = false, failed = false)
+            } else {
+                Image(
+                    bitmap = checkNotNull(state.bitmap).image,
+                    // The parent is the one semantic Button; the pixels are decorative and must not
+                    // produce a duplicate TalkBack announcement.
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
-        } else {
-            // "No capture yet" pictograph: frame + sun-dot + mountain path — a complete photo
-            // glyph like the app's other multi-primitive hand-drawn icons (the lone off-center
-            // dot it used to draw read as a rendering artifact, not an empty state).
-            Canvas(Modifier.size(22.dp)) {
-                val color = CameraColors.TextSecondary
-                val stroke = Stroke(width = size.minDimension * 0.07f)
+        }
+    }
+}
+
+@Composable
+private fun EmptyGalleryPictogram() {
+    // Reserved for "no capture yet": a complete photo glyph, matching the app's other
+    // multi-primitive hand-drawn icons. Real captures never take this branch.
+    Canvas(Modifier.size(22.dp)) {
+        val color = CameraColors.TextSecondary
+        val stroke = Stroke(width = size.minDimension * 0.07f)
+        drawRoundRect(
+            color = color,
+            cornerRadius = CornerRadius(size.minDimension * 0.12f),
+            style = stroke,
+        )
+        drawCircle(
+            color,
+            radius = size.minDimension * 0.10f,
+            center = Offset(size.width * 0.32f, size.height * 0.34f),
+        )
+        val mountains = Path().apply {
+            moveTo(size.width * 0.12f, size.height * 0.78f)
+            lineTo(size.width * 0.40f, size.height * 0.50f)
+            lineTo(size.width * 0.58f, size.height * 0.66f)
+            lineTo(size.width * 0.72f, size.height * 0.54f)
+            lineTo(size.width * 0.88f, size.height * 0.78f)
+        }
+        drawPath(mountains, color, style = stroke)
+    }
+}
+
+@Composable
+private fun GalleryMediaPlaceholder(kind: ReviewMediaKind?, loading: Boolean) {
+    if (kind == ReviewMediaKind.RAW) {
+        RawGalleryPlaceholder(loading = loading, failed = !loading)
+        return
+    }
+    Canvas(Modifier.size(26.dp)) {
+        val color = CameraColors.TextSecondary
+        val stroke = Stroke(width = size.minDimension * 0.07f)
+        when (kind) {
+            ReviewMediaKind.STILL -> {
                 drawRoundRect(
                     color = color,
-                    cornerRadius = CornerRadius(size.minDimension * 0.12f),
+                    cornerRadius = CornerRadius(size.minDimension * 0.10f),
                     style = stroke,
                 )
                 drawCircle(
                     color,
-                    radius = size.minDimension * 0.10f,
-                    center = Offset(size.width * 0.32f, size.height * 0.34f),
+                    radius = size.minDimension * 0.08f,
+                    center = Offset(size.width * 0.30f, size.height * 0.30f),
                 )
-                val mountains = Path().apply {
-                    moveTo(size.width * 0.12f, size.height * 0.78f)
-                    lineTo(size.width * 0.40f, size.height * 0.50f)
-                    lineTo(size.width * 0.58f, size.height * 0.66f)
-                    lineTo(size.width * 0.72f, size.height * 0.54f)
-                    lineTo(size.width * 0.88f, size.height * 0.78f)
-                }
-                drawPath(mountains, color, style = stroke)
             }
+            ReviewMediaKind.VIDEO -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(0f, size.height * 0.10f),
+                    size = androidx.compose.ui.geometry.Size(size.width, size.height * 0.70f),
+                    cornerRadius = CornerRadius(size.minDimension * 0.10f),
+                    style = stroke,
+                )
+                val play = Path().apply {
+                    moveTo(size.width * 0.40f, size.height * 0.28f)
+                    lineTo(size.width * 0.68f, size.height * 0.45f)
+                    lineTo(size.width * 0.40f, size.height * 0.62f)
+                    close()
+                }
+                drawPath(play, color)
+            }
+            null -> drawCircle(
+                color = color,
+                radius = size.minDimension * 0.28f,
+                center = Offset(size.width * 0.50f, size.height * 0.40f),
+                style = stroke,
+            )
+            ReviewMediaKind.RAW -> Unit
         }
+        if (loading) {
+            repeat(3) { index ->
+                drawCircle(
+                    color = color,
+                    radius = size.minDimension * 0.045f,
+                    center = Offset(size.width * (0.38f + index * 0.12f), size.height * 0.92f),
+                )
+            }
+        } else {
+            drawLine(
+                color,
+                Offset(size.width * 0.34f, size.height * 0.78f),
+                Offset(size.width * 0.66f, size.height),
+                strokeWidth = stroke.width,
+            )
+            drawLine(
+                color,
+                Offset(size.width * 0.66f, size.height * 0.78f),
+                Offset(size.width * 0.34f, size.height),
+                strokeWidth = stroke.width,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RawGalleryPlaceholder(loading: Boolean, failed: Boolean) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = stringResource(R.string.format_raw),
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = when {
+                loading -> "…"
+                failed -> "×"
+                else -> stringResource(R.string.format_dng)
+            },
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
 }
 
