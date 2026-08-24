@@ -1,123 +1,65 @@
-# Cycle 34 test-engineer review
+# Test-engineer review — cycle 35
 
 Date: 2026-08-24
+Reviewed revision: `87e4ac4d` (`origin/main`)
+Workspace: clean detached worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
 
-Reviewed revision: `56602a2f` (`origin/main`)
+## Scope and test inventory
 
-Workspace: clean detached worktree `/tmp/find-x9-ultra-cycle34.EZe8ao`
-
-Mode: host-only review; no deployment, device mutation, or physical-device claim
-
-## Inventory and method
-
-I read `CLAUDE.md`, all 1,351 lines of `docs/ARCHITECTURE.md`, `docs/FIELD_CHECKS.md`, the public
-README/privacy/Play/device-harness authorities, and every committed plan through cycle 33. The
-private `docs/BACKLOG.md`, `docs/TESTING.md`, and `docs/UX_POLICY.md` files are absent, which the
-committed clean-clone contract explicitly permits.
-
-The current inventory has 469 tracked paths: 101 production Kotlin files (53,454 lines), 215 JVM/
-Robolectric/Compose test files (42,203 lines), four instrumented Android test files (588 lines), 32
-Python files spanning the device harness and build/release/coverage tools, three tracked shell
-entry points, 54 Markdown documents, and 22 Gradle/TOML/properties/XML configuration files. I
-inspected every file in those review-relevant inventories, mapped production owners to host,
-Robolectric/Compose, instrumented, adb-harness, and field evidence, and swept for skipped tests,
-diagnostic-only probes, timing oracles, weak assertions, coverage exclusions, warning suppression,
-and documentation/code drift. Historical findings were checked against the current source before
-being considered.
-
-Evidence run from the exact clean checkout:
-
-- `python3 tools/check_docs.py`: 106 checks passed; 24 optional-private checks skipped as designed.
-- Tool/release tests: 90 passed.
-- Coverage-tool tests: 9 passed.
-- Device-harness self-tests: 183 passed.
-- Kotlin JVM/Robolectric/Compose suite: passed when forcibly regenerated.
-- `python3 tools/verify_host.py`: failed at `:app:verifyPartitionACoverage`.
-- `:app:testDebugUnitTest :app:createDebugUnitTestCoverageReport :app:verifyPartitionACoverage
-  --rerun-tasks`: reproduced the same failure from newly compiled classes and a newly generated
-  report, ruling out stale or concurrently replaced coverage evidence.
-- Python compilation, shell syntax checks, documentation checks, and `git diff --check`: passed.
+- Read `CLAUDE.md` completely and the required architecture/field-check authorities. Inventoried
+  all 217 JVM/Robolectric tests, four androidTest probes, tool/coverage tests, and the 183-test
+  device harness represented by the authoritative host gate.
+- Compared every cycle-34 production change with its focused tests: dual-open wait ownership,
+  standby/recording PCM peak truth, settings migration, debug manifest protection, review-position
+  accessibility, exact residual ownership, R8 documentation, and AGP verification metadata.
+- Ran `python3 tools/verify_host.py` from the clean detached revision. Gradle build, lint, all Android
+  host tests, and exact coverage passed. The Python tool suite ran 92 tests and failed one; because
+  the gate stops on first failing suite, coverage-tool tests, device-harness self-tests,
+  documentation checks, Python compilation, and the final diff check were not reached by that run.
 
 ## Findings
 
-### TEST34-01 — current HEAD fails the repository's authoritative exact-coverage gate
+### TEST35-01 — the new negative documentation fixture is stale and makes the authoritative gate red
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed quality-gate regression; not a stale build artifact.
-- **Exact regions:** gate definition `app/build.gradle.kts:654-669`; authoritative runner
-  `tools/verify_host.py:68-82`; reviewed residual authority
-  `tools/coverage/partition-a-residuals.txt:1-12`; unreviewed misses in
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/FamilyDeletionMarkerDispatcher.kt:178-182`,
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt:73-77`,
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:132-143`, and
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:1853-1958`.
-- **Problem:** A fresh JaCoCo report measures Partition A at 7,922/7,947 lines (99.69%, above the
-  numeric threshold) but finds 12 missed lines outside the exact reviewed residual manifest:
-  `FamilyDeletionMarkerCapacityOwner` (1), `CameraScreenPolicyKt` (2),
-  `OwnerlessMediaDeleteOverrides` (2), and `ReviewStillGeometry` (7). The contract intentionally
-  rejects even above-threshold drift, because every miss must be either executed or explicitly
-  justified as framework-bound, proven-unreachable, or race-only. Current HEAD therefore cannot
-  pass `python3 tools/verify_host.py` or Gradle `check`.
-- **Concrete failure scenario:** CI or a release operator follows the documented authoritative host
-  command and stops before the Python/tool/harness/doc phases. If a maintainer instead runs only the
-  ordinary assemble/test/lint trio, the build appears green while new untested branches bypass the
-  repository's exact residual review.
-- **Suggested fix:** Exercise the testable review geometry/position and default-argument paths.
-  Review the framework-bound MediaStore default lambdas and the double-release invariant separately;
-  either extract their pure/framework owners or record only genuinely unreachable/framework-bound
-  lines in the exact residual manifest with valid rationales. Regenerate the full report and require
-  `python3 tools/verify_host.py` to pass; do not merely lower the threshold or bulk-accept all misses.
+- **Severity / confidence / status:** High / High / Confirmed current failure
+- **Evidence:** `tools/tests/test_tool_contracts.py:345-360` hardcodes
+  `docs/plans/2026-08-24-rpf-cycle33.md`, removes `python3 tools/verify_host.py`, and expects the
+  checker to fail. But cycle 34 is now the latest completed plan
+  (`docs/plans/2026-08-24-rpf-cycle34.md:5,77-84,120-125`) and still contains that command.
+  `tools/check_docs.py:978-988` correctly ignores the mutated older plan under its current ordering,
+  returns success, and makes the test fail at line 357. The observed gate ends with
+  `FAILED (failures=1)` and `CalledProcessError`; all preceding Gradle tasks and Partition-A
+  coverage were green.
+- **Failure scenario:** every clean invocation of the repository's authoritative
+  `python3 tools/verify_host.py` fails after roughly 39 seconds even though the checker behaves
+  consistently with the current fixture. A developer cannot produce the required green host gate,
+  and later non-device suites are skipped. The cycle-34 completion note therefore became stale as
+  soon as the new completed plan made cycle 33 cease to be the checker target.
+- **Suggested fix:** make the fixture discover and mutate the same latest completed plan selected by
+  production instead of naming cycle 33. Prefer extracting one parsed plan-order helper shared by
+  checker and tests; at minimum determine the target dynamically inside the exported tree. Assert
+  the unmodified exported baseline succeeds before mutation, then assert removing the command from
+  the selected newest plan fails. Re-run the full authoritative gate after committing/updating a
+  completed plan, not only before its closeout document exists.
 
-### TEST34-02 — seven accessible still-review position outcomes lack an oracle
+### TEST35-02 — no test covers numeric cycle ordering at the supported 100-cycle boundary
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed functional test gap; production behavior is likely but not fully
-  verified.
-- **Exact regions:** nine-way classifier
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:1915-1938`; pure test
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/review/MediaReviewGestureTest.kt:121-152`; Compose
-  assertion `app/src/test/kotlin/me/hletrd/telecampro/ui/review/MediaReviewNonTouchComposeTest.kt:47-91`;
-  EN/KO labels `app/src/main/res/values/strings.xml:444-452` and
-  `app/src/main/res/values-ko/strings.xml:427-435`.
-- **Problem:** `ReviewStillGeometry.position` has CENTER, four cardinal, and four corner outcomes.
-  Tests assert only CENTER and TOP_LEFT. They move away from the top-left bound but never re-run the
-  position classifier on those results, and the Compose test checks only TOP_LEFT. The regenerated
-  class report confirms five entirely missed source lines in `position`, corresponding to unvisited
-  result branches. Thus the cycle-33 claim that coarse non-live position state is tested does not
-  cover most states users can hear.
-- **Concrete failure scenario:** A sign inversion or enum-label wiring error makes rightward or
-  downward D-pad navigation announce “Image left/top,” or a bottom-right edge fall through to the
-  wrong corner. Pointer behavior and the current CENTER/TOP_LEFT tests remain green, but TalkBack or
-  Switch Access receives misleading spatial state.
-- **Suggested fix:** Table-test all nine positions from representative bounded offsets, include the
-  one-third transition boundaries, and assert the Compose `stateDescription` after navigation in
-  all four directions. Keep image geometry RTL-independent while separately checking EN/KO labels.
+- **Severity / confidence / status:** Medium / High / Confirmed coverage gap with reachable failure
+- **Evidence:** `tools/check_docs.py:978-983` relies on lexical path order, while the plan filenames
+  use unpadded suffixes. `tools/tests/test_tool_contracts.py:345-360` tests only one hardcoded
+  historical path and has no multi-plan ordering fixture. The concrete ordering
+  `cycle100 < cycle34 < cycle99` demonstrates that the checker selects cycle 99 after cycle 100 on
+  the same date.
+- **Failure scenario:** the supported `/review-plan-fix` maximum reaches cycle 100; a bad cycle-100
+  completion claim is not tested because the gate continues checking cycle 99. Existing tests pass
+  once TEST35-01's stale path is updated unless this boundary is added explicitly.
+- **Suggested fix:** table-test 9/10, 34/35, and 99/100 same-date pairs plus a later-date lower cycle;
+  verify that only the parsed newest completed plan is mutated/checked and that incomplete newer
+  plans are intentionally excluded.
 
-### TEST34-03 — the newly added queue fixture emits an actionable Kotlin compiler warning
+## Final missed-issue sweep
 
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed test-code warning; no production behavior failure.
-- **Exact region:**
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/OwnerlessMediaDeleteLifecycleTest.kt:121-124`.
-- **Problem:** Recompiling the full test source reports `Expression is unused` at
-  `dispatcher.dispatch(Runnable { Unit })`. The lambda's `Unit` expression has no effect; an empty
-  `Runnable {}` expresses the queue-filler intent without warning. This warning was hidden when the
-  task was up-to-date and is not lint-enforced.
-- **Concrete failure scenario:** Normal test edits repeatedly surface a known warning, reducing the
-  signal of new compiler diagnostics and contradicting the repository rule to fix actionable
-  warnings before delivery.
-- **Suggested fix:** Replace the body with `Runnable {}` (or an explicit synchronization side effect
-  if the test needs execution evidence), then force a full test recompilation and keep the compiler
-  output warning-free.
-
-## Final missed-file and issue sweep
-
-I re-inventoried every production/test/tool/config path, checked every cycle-33 change against its
-new regression tests, inspected all coverage buckets and generated class reports, reconciled the adb
-case registry with its exact README table, and reran every non-device suite that could proceed after
-the authoritative gate failure. No additional current test defect met the evidence threshold.
-Instrumented tests are correctly described as compiled/packaged rather than executed, deliberate
-device/human gaps remain explicit in `device-tests/README.md` and `docs/FIELD_CHECKS.md`, and no
-ignored/flaky test annotation silently converts required evidence to green.
-
-**Finding count: 3 total — 2 Medium, 1 Low; all High confidence.**
+The cycle-34 focused Android tests cover the intended success, boundary, and rollback branches for
+the changed runtime code, and the exact residual manifest remains synchronized. I found no ignored
+tests or stale already-fixed runtime findings worth re-reporting. Device-only behavior remains
+truthfully separated in `docs/FIELD_CHECKS.md`; host tests cannot close those open measurements.

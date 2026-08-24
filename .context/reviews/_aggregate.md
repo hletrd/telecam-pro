@@ -1,163 +1,133 @@
-# Aggregated deep review — cycle 34
+# Aggregated deep review — cycle 35
 
-Date: 2026-08-24  
-Reviewed revision: `56602a2dc38a17712bbc10760b74f31262ca87cb` (`origin/main`)  
-Workspace: clean detached worktree `/tmp/find-x9-ultra-cycle34.EZe8ao`
+Date: 2026-08-24
+Reviewed revision: `87e4ac4a0de23a309b810a0076945a6b44430518` (`origin/main`)
+Workspace: clean detached worktree `/tmp/find-x9-ultra-rpf35.0PSzsb`
 
 ## Coverage and aggregation
 
-Five parallel specialist groups plus the cycle agent covered all required roles: code-reviewer,
-architect, performance, tracer, security, critic, verifier, debugger, test engineer, document
-specialist, and native Android designer. No repository-local reviewer definitions were present.
-Every group inventoried the complete 469–470-path clean-clone surface and read the committed project
-authorities. UI review used Compose/resource/semantics evidence because this is a native app, not a
-web app. No device-only behavior was inferred.
+Five parallel specialist groups covered code-reviewer, architect, critic, performance, tracer,
+security, debugger, verifier, test engineer, document specialist, native Android designer, and the
+repository-local QA-adversary role. Every group inventoried the complete 471-path clean-clone
+surface, read the project authorities, examined all relevant files and cross-file interactions, and
+performed a final missed-issue sweep. Native Compose UI was assessed from source, semantics,
+resources, and tests; browser tooling is not applicable. No device-only behavior was inferred.
 
-The 19 raw specialist findings deduplicate to 11 current findings. The clean-host coverage failure
-had the strongest cross-agent agreement (seven specialist roles); the stale dual-open wait and audio
-meter mismatch were each independently confirmed twice. Highest reported severity is preserved.
-All findings have High confidence.
+The 21 raw specialist findings deduplicate to eight current root causes. Native dual-open ownership,
+audio peak representation, and documentation-gate drift each had broad independent agreement. The
+highest severity/confidence reported for each duplicate is preserved.
 
 ## Findings
 
-### AGG34-01 — authoritative clean-host coverage gate is red
+### AGG35-01 — dual-open supersession can orphan the outgoing CameraDevice
 
 - **Severity / confidence:** High / High
-- **Sources:** code-reviewer, architect, tracer, verifier, debugger, test-engineer,
-  document-specialist (**broad cross-agent agreement**)
-- **Evidence:** `tools/verify_host.py:68-83`, `app/build.gradle.kts:643-669`, and
-  `tools/coverage/partition-a-residuals.txt:1-12`. Fresh regenerated reports pass tests and measure
-  Partition A at 99.69%, then fail exact residual ownership for
-  `FamilyDeletionMarkerCapacityOwner` (1 line), `CameraScreenPolicyKt` (2),
-  `OwnerlessMediaDeleteOverrides` (2), and `ReviewStillGeometry` (7), in
-  `camera/FamilyDeletionMarkerDispatcher.kt:178-182`, `ui/CameraScreenPolicy.kt:73-77`,
-  `ui/CameraViewModel.kt:132-143`, and `ui/review/MediaReview.kt:1853-1958`.
-- **Failure:** the documented authoritative command exits 1 and never reaches later Python,
-  harness, and documentation phases. Ordinary assemble/test/lint can misleadingly remain green.
-- **Plan direction:** exercise every reachable branch, classify only genuinely framework-bound or
-  proven-unreachable residuals with exact rationales, retain the threshold/fail-closed checker, and
-  prove the full host gate from regenerated outputs.
+- **Sources:** code-reviewer, architect, critic (**broad cross-agent agreement**)
+- **Status:** likely race; legal interleaving established, deterministic boundary reproduction needed.
+- **Evidence:** `camera/CameraEngine.kt:3574-3624` stores outgoing `old` locally and publishes
+  candidate `next`; its native-refusal callback can clear `controller` at lines 3667-3674; the
+  supersession branch at lines 3746-3757 restores `old` only if `controller === next`.
+- **Failure:** a candidate refusal can null the shared slot before a newer transaction ends the
+  polling wait. Cleanup then closes `next` but neither restores nor closes `old`, leaving a live HAL
+  owner unreachable and causing later `CAMERA_IN_USE`/black-preview failures until process death.
+- **Plan direction:** make dual-open cleanup decide old-owner restoration/release independently of
+  whether the candidate callback already vacated the shared slot, and add an exhaustive transition
+  seam/test proving no outgoing owner is lost across callback-clear × supersession permutations.
 
-### AGG34-02 — lens-preservation migration default contradicts live/default authority
+### AGG35-02 — the authoritative host gate is red after cycle-34 plan closeout
 
-- **Severity / confidence:** Medium / High
-- **Sources:** code-reviewer, architect (**cross-agent agreement**)
-- **Evidence:** `storage/SettingsStore.kt:40-44,103-107,215-354` defaults
-  `ExtraSettings.preserveLensSelection` false, while `camera/CameraState.kt:1460-1465`,
-  `ui/CameraViewModel.kt:1185-1192,1456-1462`, `CLAUDE.md:717-721`, and
-  `docs/ARCHITECTURE.md:112,1168-1174` make the policy default-on.
-- **Failure:** an older saved blob lacking the key resets its remembered lens to MAIN, publishes the
-  toggle off, and persists that unintended migration policy, unlike a clean install.
-- **Plan direction:** make one shared default-on policy authority and test no-blob, legacy-blob, and
-  current-blob parity with a non-main saved lens.
+- **Severity / confidence:** High / High
+- **Sources:** verifier, test-engineer (**cross-agent agreement**)
+- **Evidence:** `tools/tests/test_tool_contracts.py:345-360` mutates hardcoded cycle 33, but
+  `docs/plans/2026-08-24-rpf-cycle34.md` is now the latest completed plan. The documentation checker
+  therefore correctly ignores the older mutation and the negative test fails. `python3
+  tools/verify_host.py` exits after one of 92 tool tests fails; preceding Android build/test/lint and
+  exact 99.81% Partition-A coverage are green.
+- **Failure:** every clean authoritative host verification is red and later coverage-tool, device
+  harness, documentation, compile, and clean-diff phases do not run.
+- **Plan direction:** share the production plan-selection rule with the fixture, validate the clean
+  exported baseline before mutation, and make the negative test target the actual latest completed
+  plan dynamically.
 
-### AGG34-03 — superseded camera switch blocks on the stale dual-open wait
-
-- **Severity / confidence:** Medium / High
-- **Sources:** performance, tracer (**cross-agent agreement**)
-- **Evidence:** the sole setup lane begins dual-open and invalidates accepted readiness at
-  `camera/CameraEngine.kt:3529-3688`, then unconditionally blocks on a private two-second latch at
-  `CameraEngine.kt:3703-3705`; generation/lifecycle rejection occurs only afterward at lines
-  3706-3744. A newer optics transaction can enqueue but cannot wake that latch.
-- **Failure:** a slow/silent stale open holds the only setup worker and Not-Ready UI for the full
-  timeout before the latest user-selected lens/mode can begin.
-- **Plan direction:** add a transaction-owned supersession/pause/release terminal to the wait while
-  preserving the absolute HAL deadline and exact late-callback cleanup; deterministically test a
-  silent candidate A superseded by B.
-
-### AGG34-04 — accessible audio meter claims clipping from RMS-only input
+### AGG35-03 — audio peak truth is corrupted and over-published at the ViewModel boundary
 
 - **Severity / confidence:** Medium / High
-- **Sources:** verifier, debugger (**cross-agent agreement**)
-- **Evidence:** standby and recording producers publish RMS only at `video/AudioLevels.kt:9-43` and
-  `video/VideoRecorder.kt:2038-2065`; `ui/overlays/Overlays.kt:605-669` calls RMS `>=0.999`
-  “clipping.” Scalar-only tests do not cover the producer/consumer contract.
-- **Failure:** ordinary clipped speech or a full-scale sine contains saturated samples but RMS far
-  below 0.999, so TalkBack reports only high/near-clipping and misses the advertised terminal.
-- **Plan direction:** carry per-channel peak/overload evidence alongside RMS, hold it at the coarse
-  accessibility cadence, and test real interleaved PCM fixtures across standby and recording.
+- **Sources:** performance, tracer, designer, QA-adversary (**broad cross-agent agreement**)
+- **Evidence:** producers retain exact peaks, but `ui/CameraViewModel.kt:1008-1027` applies the
+  RMS-oriented round-to-nearest 1/256 quantizer before `ui/overlays/Overlays.kt:658-679` compares
+  exact 0.95 and `32767/32768` thresholds. The quantizer downgrades 31130/32768 below near-clipping,
+  rounds 32704..32766/32768 to 1.0 and falsely calls them clipping, and republishes root
+  `CameraUiState` for sub-threshold peak changes that affect neither pixels nor semantics.
+- **Failure:** TalkBack misses the lower overload boundary, announces saturation for non-clipped
+  input, and the 10 Hz held maxima undo meter recomposition dedup.
+- **Plan direction:** classify raw producer peaks into coarse threshold-preserving overload states
+  before root state, retain 1/256 quantization only for RMS geometry, and test PCM boundary samples
+  through producer → ViewModel → semantics plus state-equality behavior.
 
-### AGG34-05 — seven accessible still-review positions lack an oracle
-
-- **Severity / confidence:** Medium / High
-- **Source:** test-engineer
-- **Evidence:** the nine-way classifier at `ui/review/MediaReview.kt:1915-1938` is tested only for
-  CENTER and TOP_LEFT by `MediaReviewGestureTest.kt:121-152` and
-  `MediaReviewNonTouchComposeTest.kt:47-91`; five classifier lines remain uncovered.
-- **Failure:** a sign or label-wiring regression can announce the wrong right/down/corner position
-  to TalkBack or Switch Access while existing pointer and two-position tests pass.
-- **Plan direction:** table-test all nine states and transition boundaries, then assert Compose
-  state descriptions after navigation in all four directions, including EN/KO and RTL-independent
-  image geometry.
-
-### AGG34-06 — transitive debug activities are exported without protection
-
-- **Severity / confidence:** Low / High
-- **Source:** security-reviewer
-- **Evidence:** debug dependencies at `app/build.gradle.kts:726-743` merge exported, unprotected
-  `androidx.compose.ui.tooling.PreviewActivity` and `androidx.activity.ComponentActivity`; the
-  repository-owned debug activities are DUMP-protected in `app/src/debug/AndroidManifest.xml:5-26`.
-- **Failure:** another app can launch a reflective preview or blank test host under the debug app's
-  identity and interrupt/confuse device evidence sessions. Release is unaffected.
-- **Plan direction:** DUMP-protect PreviewActivity, make the test ComponentActivity non-exported,
-  and assert every merged-debug exported component is protected.
-
-### AGG34-07 — AGP 9.3.1 is behind stable 9.3.2
-
-- **Severity / confidence:** Low / High
-- **Source:** critic
-- **Evidence:** `gradle/libs.versions.toml:2-8` and `CLAUDE.md` pin 9.3.1; Google Maven metadata on
-  2026-08-24 lists 9.3.2 as the newest stable patch. Dependency verification is fail-closed.
-- **Failure:** the repository violates its latest-stable toolchain policy and misses patch fixes;
-  a catalog-only bump would fail verified dependency resolution.
-- **Plan direction:** bump AGP and its verified artifacts to 9.3.2, update version authorities, and
-  run complete debug/release gates.
-
-### AGG34-08 — unused experimental aggregation flag warns on every Gradle run
-
-- **Severity / confidence:** Low / High
-- **Source:** critic
-- **Evidence:** `gradle.properties:25-29` enables
-  `android.experimental.reportAggregationSupport=true`, but no unified aggregation task is consumed;
-  current coverage uses the per-debug-unit path. AGP warns on every invocation.
-- **Failure:** permanent noise normalizes the warning channel and hides future actionable diagnostics.
-- **Plan direction:** remove the unused opt-in and obsolete comment; do not suppress the warning.
-
-### AGG34-09 — ownerless-delete queue fixture emits a compiler warning
-
-- **Severity / confidence:** Low / High
-- **Sources:** verifier, debugger, test-engineer
-- **Evidence:** `ui/OwnerlessMediaDeleteLifecycleTest.kt:121-124` uses
-  `dispatcher.dispatch(Runnable { Unit })`; forced test compilation reports “Expression is unused.”
-- **Failure:** a known warning dilutes new compiler diagnostics and violates the warning-free gate
-  contract.
-- **Plan direction:** use an empty runnable (or a meaningful synchronization effect) and force
-  recompilation to prove warning-free output.
-
-### AGG34-10 — debug preview comment states release minification is off
-
-- **Severity / confidence:** Low / High
-- **Source:** critic
-- **Evidence:** `app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt:27-30` says release
-  has `isMinifyEnabled = false`; `app/build.gradle.kts:557-569` enables full-mode R8 and all current
-  authorities agree.
-- **Failure:** maintainers receive contradictory guidance when deciding whether helpers survive or
-  belong in production source.
-- **Plan direction:** correct the comment without changing runtime behavior and extend the source/doc
-  check to reject affirmative stale release-minification claims.
-
-### AGG34-11 — latest completion evidence claims a green authoritative gate that is red
+### AGG35-04 — restored ownerless stills mishandle four standard mirrored EXIF orientations
 
 - **Severity / confidence:** Medium / High
-- **Source:** document-specialist
-- **Evidence:** `docs/plans/2026-08-24-rpf-cycle33.md:114-123,142-150` claims configured gates and
-  warnings green, while the current authoritative command named by `CLAUDE.md:83-94` and
-  `docs/ARCHITECTURE.md:1259-1270` fails as AGG34-01 and compilation warns as AGG34-09.
-- **Failure:** a maintainer can trust a narrower recorded Gradle trio and advance toward release
-  without running the repository-wide verifier.
-- **Plan direction:** after fixing the gate, append a truthful superseding cycle-34 evidence note
-  without erasing historical provenance, and enforce that repository-wide green claims name
-  `tools/verify_host.py`.
+- **Sources:** designer, QA-adversary (**cross-agent agreement**)
+- **Evidence:** `ui/review/MediaReview.kt:459-480` handles only EXIF 1/3/6/8 and returns identity for
+  mirrored 2/4/5/7, while `storage/LatestCaptureReducer.kt:58-65,319-343` and
+  `storage/MediaStoreWriter.kt:305-316` deliberately admit ownerless imported lookalikes for review.
+- **Failure:** a reachable imported JPEG/HEIF displays with wrong handedness/axis in both thumbnail
+  and full review despite standards-compliant galleries showing it correctly.
+- **Plan direction:** implement all eight EXIF transforms on the already bounded bitmap and add
+  asymmetric fixtures/pure matrix tests for dimensions and corner mapping.
+
+### AGG35-05 — capture admission refusal reports a deletion failure
+
+- **Severity / confidence:** Medium / High
+- **Sources:** code-reviewer, architect, critic (**broad cross-agent agreement**)
+- **Evidence:** `camera/CameraEngine.kt:4006-4012` returns false from a photo request when still-output
+  capacity is unavailable but emits `COULD_NOT_DELETE_FILE`; the existing truthful identity
+  `STILL_CAPTURE_UNAVAILABLE` is used nearby and localized separately.
+- **Failure:** a shutter press during output cleanup says “Could not delete file” although no delete
+  was requested, sending the operator and diagnostics toward the wrong subsystem.
+- **Plan direction:** emit the truthful still-unavailable identity and prove the branch with a pure
+  admission/status seam or Engine integration test.
+
+### AGG35-06 — completed-plan ordering fails open at the supported cycle-100 boundary
+
+- **Severity / confidence:** Medium / High
+- **Sources:** verifier, test-engineer (**cross-agent agreement**)
+- **Evidence:** `tools/check_docs.py:978-988` selects the last lexicographically sorted completed plan.
+  Unpadded same-date names sort `cycle100` before `cycle99`, so cycle 99 is treated as newest.
+- **Failure:** the documented 100-cycle loop can close cycle 100 without authoritative host evidence
+  while the checker validates stale cycle 99 and remains green.
+- **Plan direction:** parse `(date, numeric cycle)` and select by that key; cover 9/10, 99/100,
+  later-date lower-cycle, incomplete-plan, malformed, and ambiguous cases.
+
+### AGG35-07 — governing facts drift while the documentation gate stays green
+
+- **Severity / confidence:** Medium / High
+- **Sources:** code-reviewer, architect, critic, document-specialist, QA-adversary
+  (**broad cross-agent agreement**)
+- **Evidence:** `docs/ARCHITECTURE.md:1246-1253` says AGP 9.3.1 while the catalog/primary authorities
+  say 9.3.2; `CLAUDE.md:210-224`, `docs/ARCHITECTURE.md:68`, and a CameraEngine hot-path comment say
+  pseudo-ZSL freshness is 250 ms while `ZslAdmission.kt:25-42` executes/tests 400 ms; Architecture
+  claims a logical-camera 4-second field check remains in `docs/FIELD_CHECKS.md`, but no such
+  dashboard/body entry exists. `tools/check_docs.py` nevertheless reports all 107 checks green.
+- **Failure:** clean-clone maintainers receive wrong current build/behavior guidance and an
+  unexecutable field obligation under a passing gate.
+- **Plan direction:** correct AGP and ZSL facts; resolve the field-check status from committed
+  evidence without inventing device proof; add declarative/negative contracts for each duplicated
+  machine fact and every active “open in FIELD_CHECKS” reference.
+
+### AGG35-08 — CameraEngine keeps native transaction invariants non-local
+
+- **Severity / confidence:** Medium / High
+- **Source:** architect
+- **Status:** confirmed maintainability risk evidenced by AGG35-01 and AGG35-05.
+- **Evidence:** `camera/CameraEngine.kt` is 7,647 lines with 233 functions, 82 volatile sites, 72
+  synchronized blocks, and 23 callbacks spanning camera, GL, capture/storage, recorder, and recovery
+  ownership. Dual-open terminal ownership and capture admission/status are still performed inline.
+- **Failure:** local timing or policy changes can violate native exact-release/status invariants far
+  from the helper tests, as the current race and cross-subsystem status demonstrate.
+- **Plan direction:** address the concrete defects with extracted typed state/policy seams now;
+  record the broader facade decomposition as deferred architecture work with exact trigger and
+  repository-policy constraints rather than expanding this corrective cycle into a rewrite.
 
 ## Agent failures
 
@@ -165,8 +135,8 @@ None. Every available reviewer returned and wrote its provenance report.
 
 ## Totals
 
-- Raw specialist findings: 19
-- Deduplicated current findings: 11
-- Severity: 1 High, 5 Medium, 5 Low
-- Confidence: 11 High
-- Deferred findings: none at review stage; Prompt 2 must schedule every item.
+- Raw specialist findings: 21
+- Deduplicated current findings: 8
+- Severity: 2 High, 6 Medium
+- Confidence: 8 High
+- Deferred findings: none at review stage; Prompt 2 must schedule or explicitly defer every item.
