@@ -412,6 +412,7 @@ private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .size(48.dp)
+            .clickable(role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = a11yCloseSettings
                 role = Role.Button
@@ -419,8 +420,7 @@ private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
                     activate()
                     true
                 }
-            }
-            .clickable(role = Role.Button, onClick = onClick),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -482,6 +482,7 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
             // Keep the visible icon/label and the Tab action on one accessibility node. Without
             // this merge Android exported an unnamed focusable parent plus a separate inert Text,
             // so switch/TalkBack users could focus a tab without hearing which tab it was.
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = tabLabel
                 stateDescription = selectedState
@@ -492,7 +493,6 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
                     true
                 }
             }
-            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

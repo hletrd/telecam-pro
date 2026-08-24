@@ -404,6 +404,7 @@ internal fun CompactFnButton(
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = a11yOpenFunctionMenu
                 role = Role.Button
@@ -411,8 +412,7 @@ internal fun CompactFnButton(
                     activate()
                     true
                 }
-            }
-            .clickable(role = Role.Button, onClick = onClick),
+            },
         // CenterStart, not Center (UI review #37): the rail-mates (OSD plate, exposure meter,
         // gallery thumb) put their VISIBLE plate edge on the shared 12 dp inset, but centring the
         // 36 dp circle inside its 48 dp touch box pushed the visible edge ~6 dp further in — the
@@ -445,6 +445,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
     Box(
         modifier = modifier
             .size(48.dp)
+            .clickable(role = Role.Button, onClick = onClick)
             .clearAndSetSemantics {
                 contentDescription = a11yCloseAdjustment
                 role = Role.Button
@@ -452,8 +453,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
                     activate()
                     true
                 }
-            }
-            .clickable(role = Role.Button, onClick = onClick),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Box(

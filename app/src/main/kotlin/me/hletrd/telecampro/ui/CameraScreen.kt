@@ -1825,6 +1825,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(role = Role.Button, onClickLabel = a11yResetFocusPoint, onClick = onReset)
             .clearAndSetSemantics {
                 contentDescription = a11yResetFocusPoint
                 stateDescription = a11yTapFocusHeld
@@ -1833,8 +1834,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
                     activate()
                     true
                 }
-            }
-            .clickable(role = Role.Button, onClickLabel = a11yResetFocusPoint, onClick = onReset),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -2517,6 +2517,7 @@ internal fun FnOverlay(
                             .focusRequester(closeFocusRequester)
                             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                             .clip(RoundedCornerShape(50))
+                            .clickable(role = Role.Button, onClick = onDismiss)
                             .clearAndSetSemantics {
                                 contentDescription = a11yCloseFunctionMenu
                                 role = Role.Button
@@ -2524,8 +2525,7 @@ internal fun FnOverlay(
                                     dismiss()
                                     true
                                 }
-                            }
-                            .clickable(role = Role.Button, onClick = onDismiss),
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
