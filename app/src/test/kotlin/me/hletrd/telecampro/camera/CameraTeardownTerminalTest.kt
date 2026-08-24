@@ -89,4 +89,23 @@ class CameraTeardownTerminalTest {
         assertFalse(cameraReplacementMayAcquire(lateCompletion))
         assertTrue(cameraReplacementMayAcquire(null))
     }
+
+    @Test
+    fun `interrupted teardown wait preserves interruption and quarantines`() {
+        val quarantineCalls = AtomicInteger(0)
+        val terminal = CameraTeardownTerminal { quarantineCalls.incrementAndGet() }
+
+        Thread.currentThread().interrupt()
+        try {
+            assertEquals(
+                CameraControllerCloseResult.QUARANTINED,
+                terminal.await(1, TimeUnit.SECONDS),
+            )
+            assertTrue(Thread.currentThread().isInterrupted)
+            assertEquals(1, quarantineCalls.get())
+            assertFalse(cameraReplacementMayAcquire(terminal.strictlyReleased()))
+        } finally {
+            Thread.interrupted()
+        }
+    }
 }

@@ -296,4 +296,35 @@ class StillPublicationDurabilityTest {
             events,
         )
     }
+
+    @Test
+    fun `unavailable family authority keeps non durable output under recovery ownership`() {
+        val events = mutableListOf<String>()
+        val result = completeStillPublication(
+            kind = "JPEG",
+            output = "private-jpeg-row",
+            captureId = 94,
+            markerDurable = false,
+            effects = StillPublicationEffects(
+                withFamilyPublicationAuthority = { _, unavailable, _ -> unavailable() },
+                publishOwned = { _, _ -> error("unavailable family must not publish") },
+                finishPublished = { _, _ -> error("not published") },
+                emitSaved = { _, _ -> error("not saved") },
+                emitRetained = { output, id ->
+                    events += "retained:$output:$id"
+                    RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                },
+                emitStatus = { events += "status:${it.message}" },
+            ),
+        )
+
+        assertEquals(StillOutputPublication.RETAINED_MARKER_UNAVAILABLE, result)
+        assertEquals(
+            listOf(
+                "status:${CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY}",
+                "retained:private-jpeg-row:94",
+            ),
+            events,
+        )
+    }
 }
