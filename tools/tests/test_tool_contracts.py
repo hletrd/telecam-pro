@@ -69,6 +69,8 @@ def run_documentation_gate_from_committed_export(
             "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
             "app/src/main/res/values/strings.xml",
             "app/src/main/res/values-ko/strings.xml",
@@ -377,6 +379,10 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertIn("all active AGP references match the version catalog", result.stdout)
         self.assertIn("active pseudo-ZSL freshness references match executable truth", result.stdout)
         self.assertIn(
+            "Loupe Overview authorities match the executable right-inset corner",
+            result.stdout,
+        )
+        self.assertIn(
             "active open FIELD_CHECKS references name a runnable field-check identity",
             result.stdout,
         )
@@ -425,6 +431,25 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 result, _ = run_documentation_gate_from_committed_export(make_stale)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(failure, result.stdout)
+
+    def test_committed_export_rejects_stale_loupe_corner_authority(self) -> None:
+        def restore_bottom_left(root: Path) -> None:
+            path = root / "CLAUDE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "bottom-right corner viewport"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, "bottom-left corner viewport", 1), encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            restore_bottom_left,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  Loupe Overview authorities match the executable right-inset corner",
+            result.stdout,
+        )
 
     def test_committed_export_rejects_privacy_fact_drift(self) -> None:
         fixtures = (

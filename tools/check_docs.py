@@ -1482,6 +1482,14 @@ check(
     and "video shows the finder for ANY photo aspect" in finder_tests,
     "Loupe Overview authorities preserve video and converterless 3x admission",
 )
+check(
+    "bottom-right corner viewport" in claude
+    and "bottom-right corner viewport" in architecture
+    and "Bottom-right corner in GL's bottom-left-origin pixel space" in gl_pipeline
+    and "inset from the right" in camera_state
+    and "x = boxWidth - width - shortEdge * sideMargin" in camera_state,
+    "Loupe Overview authorities match the executable right-inset corner",
+)
 obsolete_finder_contracts = (
     "TELE + Photo + 4:3 + loupe",
     "toggle && TELE && PHOTO && 4:3",

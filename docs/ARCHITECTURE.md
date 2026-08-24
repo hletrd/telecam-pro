@@ -744,7 +744,7 @@ landing on drag end; the ruler's own canvas still follows the finger per event).
 
 ### Loupe Overview (same-stream assist)
 
-The `Loupe Overview` Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL
+The `Loupe Overview` Assist toggle (default OFF, persisted) draws a bottom-right corner viewport re-drawing the FULL
 current camera frame while the main view is magnified, with an iPhone-style rectangle inside it
 marking WHERE the magnified view is pointing (`loupeHintRect` in `CameraState.kt`, pure and
 unit-tested; drawn as four scissored clears so the hint needs no shader, no VBO and no texture unit

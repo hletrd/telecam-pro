@@ -1066,7 +1066,7 @@ class GlPipeline(
                 // the one case the single stream makes it genuinely wider than the main view.
                 if (teleFinder && punchIn && previewW > 0 && previewH > 0) {
                     val rect = finderRectFor(previewW.toFloat(), previewH.toFloat())
-                    // Bottom-left corner in GL's bottom-left-origin pixel space (the Compose border
+                    // Bottom-right corner in GL's bottom-left-origin pixel space (the Compose border
                     // mirrors the same rect from its top-left-origin space via the shared seam).
                     val fx = rect.x.toInt()
                     val fy = rect.y.toInt()

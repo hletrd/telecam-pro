@@ -249,7 +249,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   wide finder on the BACKLOG, which comes off a lens the converter is not clamped to and is upright
   for real rather than by declining a rotation.
 - **Loupe Overview is HONEST about the single stream (gate corrected 2026-07-29).**
-  The Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the
+  The Assist toggle (default OFF, persisted) draws a bottom-right corner viewport re-drawing the
   FULL current camera frame while the PUNCH-IN LOUPE is active at either TELE or unified zoom >= 3x.
   Photo additionally requires 4:3; Video deliberately ignores the unrelated still-aspect setting,
   which once made the overlay appear or vanish mid-clip. It can NEVER show an unzoomed/wide field:
