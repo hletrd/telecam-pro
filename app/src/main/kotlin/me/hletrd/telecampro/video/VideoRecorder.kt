@@ -27,7 +27,6 @@ import me.hletrd.telecampro.storage.CompletedOutputPublication
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.publishCompletedOutput
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.Collections
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
@@ -790,14 +789,18 @@ class VideoRecorder(private val context: Context) {
                     when (readOutcome) {
                         is AudioReadOutcome.Pcm -> {
                             val pcmBuffer = checkNotNull(buf)
-                            // Apply gain in place and emit a throttled level update before this PCM
-                            // buffer is queued to the AAC encoder below. At unity gain the rewrite is
-                            // a no-op, so the RMS pass is skipped entirely unless a level emit is due.
-                            val emitDue = levelEmitDue()
-                            if (audioGain != 1f || emitDue) {
-                                val levels = applyGainAndLevel(pcmBuffer, readOutcome.byteCount, audioGain, audioChannelCount)
-                                if (emitDue) maybeEmitLevel(levels)
-                            }
+                            // Apply gain in place before this PCM buffer is queued to the AAC encoder.
+                            // RMS measurement is admitted only at the meter cadence: non-emission
+                            // buffers take the allocation-free gain-only path even at non-unity gain.
+                            val emitDue = onLevel != null && levelEmitDue()
+                            val levels = applyGainAndMaybeMeasureLevel(
+                                pcmBuffer,
+                                readOutcome.byteCount,
+                                audioGain,
+                                audioChannelCount,
+                                measureLevel = emitDue,
+                            )
+                            if (levels != null) maybeEmitLevel(levels)
                             codec.queueInputBuffer(inIdx, 0, readOutcome.byteCount, ptsUs, 0)
                             totalSamples += readOutcome.byteCount / bytesPerFrame
                         }
@@ -2021,53 +2024,70 @@ internal fun resolveAudioChannelCount(channelCounts: IntArray?, isBluetooth: Boo
 internal fun audioUnavailableLabel(preferenceLabel: String): String = "$preferenceLabel unavailable"
 
 /**
- * Applies [gain] to every 16-bit PCM sample in `buf[0, byteCount)` IN PLACE (clamped to the
- * Short range so it can't wrap), then returns the post-gain RMS level normalized to 0..1.
- * The short view shares [buf]'s backing memory, so writes here are visible to the caller
- * before the buffer is queued to the encoder. Top-level (pure java.nio) so it is unit-testable.
+ * Applies [gain] to every whole little-endian 16-bit PCM sample in `buf[0, byteCount)` IN PLACE,
+ * clamped to the Short range so it cannot wrap. Absolute byte access preserves the caller's buffer
+ * position, limit, and byte order and creates no per-buffer view objects. A trailing odd byte is
+ * intentionally untouched. Top-level (pure java.nio) so it is unit-testable.
  */
-internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float, channelCount: Int = 1): FloatArray {
+internal fun applyPcmGain(buf: ByteBuffer, byteCount: Int, gain: Float) {
+    require(byteCount in 0..buf.limit())
     val safeGain = normalizeAudioGain(gain)
+    if (safeGain == 1f) return
+    val sampleCount = byteCount / Short.SIZE_BYTES
+    for (sampleIndex in 0 until sampleCount) {
+        val byteIndex = sampleIndex * Short.SIZE_BYTES
+        val amplified = (readPcm16Le(buf, byteIndex) * safeGain).roundToInt()
+            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            .toShort()
+        writePcm16Le(buf, byteIndex, amplified)
+    }
+}
+
+/**
+ * Measures post-gain per-channel RMS for whole PCM frames in `buf[0, byteCount)`, normalized to
+ * 0..1. A trailing partial frame remains real encoded audio but is excluded from every channel's
+ * average so it cannot be attributed to the wrong channel.
+ */
+internal fun measurePcmLevels(buf: ByteBuffer, byteCount: Int, channelCount: Int = 1): FloatArray {
+    require(byteCount in 0..buf.limit())
     val channels = channelCount.coerceAtLeast(1)
-    val samples = buf.duplicate().apply {
-        order(ByteOrder.LITTLE_ENDIAN)
-        position(0)
-        limit(byteCount)
-    }.asShortBuffer()
-    val count = samples.remaining()
-    if (count == 0) return FloatArray(channels)
+    val sampleCount = byteCount / Short.SIZE_BYTES
+    val frames = sampleCount / channels
+    if (frames == 0) return FloatArray(channels)
     // Per channel, not one number for the buffer: on a stereo or multi-capsule external mic a dead
     // channel is invisible behind a healthy one, and catching that is what an input meter is for.
     val sums = DoubleArray(channels)
-    // Whole frames only, so a trailing partial frame cannot land in the wrong channel's accumulator.
-    val frames = count / channels
     val usable = frames * channels
-    if (safeGain == 1f) {
-        // Unity gain (the default): the rewrite loop is a no-op transform — skip the per-sample
-        // put() and only accumulate the RMS the level meter needs.
-        for (i in 0 until usable) {
-            val v = samples[i].toDouble()
-            sums[i % channels] += v * v
-        }
-    } else {
-        for (i in 0 until usable) {
-            val amplified = (samples[i] * safeGain).roundToInt()
-                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                .toShort()
-            samples.put(i, amplified)
-            sums[i % channels] += amplified.toDouble() * amplified.toDouble()
-        }
+    for (sampleIndex in 0 until usable) {
+        val value = readPcm16Le(buf, sampleIndex * Short.SIZE_BYTES).toDouble()
+        sums[sampleIndex % channels] += value * value
     }
-    // The gain rewrite must still cover a trailing partial frame — it is real audio the encoder
-    // gets — even though it is excluded from the metering average above.
-    if (safeGain != 1f) {
-        for (i in usable until count) {
-            val amplified = (samples[i] * safeGain).roundToInt()
-                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                .toShort()
-            samples.put(i, amplified)
-        }
-    }
-    if (frames == 0) return FloatArray(channels)
     return FloatArray(channels) { c -> (sqrt(sums[c] / frames) / PCM_16_FULL_SCALE).toFloat().coerceIn(0f, 1f) }
+}
+
+/**
+ * Recording hot-path seam: gain is always applied when needed, while a level result is constructed
+ * only for a buffer admitted by the caller's meter throttle. `null` is the explicit gain-only result.
+ */
+internal fun applyGainAndMaybeMeasureLevel(
+    buf: ByteBuffer,
+    byteCount: Int,
+    gain: Float,
+    channelCount: Int = 1,
+    measureLevel: Boolean,
+): FloatArray? {
+    applyPcmGain(buf, byteCount, gain)
+    return if (measureLevel) measurePcmLevels(buf, byteCount, channelCount) else null
+}
+
+private fun readPcm16Le(buf: ByteBuffer, byteIndex: Int): Short {
+    val low = buf[byteIndex].toInt() and 0xff
+    val high = buf[byteIndex + 1].toInt() shl 8
+    return (high or low).toShort()
+}
+
+private fun writePcm16Le(buf: ByteBuffer, byteIndex: Int, sample: Short) {
+    val value = sample.toInt()
+    buf.put(byteIndex, (value and 0xff).toByte())
+    buf.put(byteIndex + 1, (value shr 8).toByte())
 }

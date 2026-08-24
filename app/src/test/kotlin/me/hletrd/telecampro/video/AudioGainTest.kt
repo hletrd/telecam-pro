@@ -4,10 +4,11 @@ import me.hletrd.telecampro.camera.normalizeAudioGain
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pins the recording-audio gain/level math ([applyGainAndLevel]) — pure java.nio, JVM-testable. */
+/** Pins recording-audio gain/level math — pure java.nio, JVM-testable. */
 class AudioGainTest {
 
     private fun pcmBuffer(vararg samples: Short): ByteBuffer {
@@ -18,14 +19,17 @@ class AudioGainTest {
     }
 
     private fun samplesOf(buf: ByteBuffer, count: Int): ShortArray {
-        val view = buf.duplicate().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val view = buf.duplicate().apply {
+            clear()
+            order(ByteOrder.LITTLE_ENDIAN)
+        }.asShortBuffer()
         return ShortArray(count) { view.get(it) }
     }
 
     @Test
     fun `unity gain leaves samples untouched and reports RMS`() {
         val buf = pcmBuffer(1000, -1000, 1000, -1000)
-        val level = applyGainAndLevel(buf, 8, 1f).single()
+        val level = applyGainAndMaybeMeasureLevel(buf, 8, 1f, measureLevel = true)!!.single()
         assertEquals(listOf<Short>(1000, -1000, 1000, -1000), samplesOf(buf, 4).toList())
         // RMS of |1000| normalized by 32768.
         assertEquals(1000f / 32768f, level, 1e-4f)
@@ -34,7 +38,7 @@ class AudioGainTest {
     @Test
     fun `gain amplifies in place`() {
         val buf = pcmBuffer(1000, -2000)
-        val level = applyGainAndLevel(buf, 4, 2f).single()
+        val level = applyGainAndMaybeMeasureLevel(buf, 4, 2f, measureLevel = true)!!.single()
         assertEquals(listOf<Short>(2000, -4000), samplesOf(buf, 2).toList())
         assertTrue(level > 0f)
     }
@@ -42,19 +46,19 @@ class AudioGainTest {
     @Test
     fun `gain clamps at the Short range instead of wrapping`() {
         val buf = pcmBuffer(30000, -30000)
-        applyGainAndLevel(buf, 4, 4f)
+        applyPcmGain(buf, 4, 4f)
         assertEquals(listOf(Short.MAX_VALUE, Short.MIN_VALUE), samplesOf(buf, 2).toList())
     }
 
     @Test
     fun `empty buffer reports zero level`() {
-        assertEquals(0f, applyGainAndLevel(pcmBuffer(), 0, 1.5f).single(), 0f)
+        assertEquals(0f, measurePcmLevels(pcmBuffer(), 0).single(), 0f)
     }
 
     @Test
     fun `level is normalized into 0-1`() {
         val buf = pcmBuffer(Short.MAX_VALUE, Short.MIN_VALUE, Short.MAX_VALUE, Short.MIN_VALUE)
-        val level = applyGainAndLevel(buf, 8, 8f).single()
+        val level = applyGainAndMaybeMeasureLevel(buf, 8, 8f, measureLevel = true)!!.single()
         assertTrue(level in 0f..1f)
     }
 
@@ -63,7 +67,7 @@ class AudioGainTest {
         // A non-frame-aligned byteCount (5 bytes = 2 whole 16-bit frames + 1 trailing byte): the short
         // view exposes only the 2 complete frames, so the third sample is never read or written.
         val buf = pcmBuffer(1000, -1000, 2000)
-        val level = applyGainAndLevel(buf, 5, 2f).single()
+        val level = applyGainAndMaybeMeasureLevel(buf, 5, 2f, measureLevel = true)!!.single()
         assertEquals(listOf<Short>(2000, -2000, 2000), samplesOf(buf, 3).toList())
         assertTrue(level.isFinite())
         assertTrue(level in 0f..1f)
@@ -73,7 +77,13 @@ class AudioGainTest {
     fun `partial multichannel frame is rewritten but excluded from channel meters`() {
         val buf = pcmBuffer(1_000)
 
-        val levels = applyGainAndLevel(buf, byteCount = 2, gain = 2f, channelCount = 2)
+        val levels = applyGainAndMaybeMeasureLevel(
+            buf,
+            byteCount = 2,
+            gain = 2f,
+            channelCount = 2,
+            measureLevel = true,
+        )!!
 
         assertEquals(listOf<Short>(2_000), samplesOf(buf, 1).toList())
         assertEquals(listOf(0f, 0f), levels.toList())
@@ -87,8 +97,63 @@ class AudioGainTest {
         assertEquals(2f, normalizeAudioGain(3f), 0f)
 
         val buf = pcmBuffer(1000, -1000)
-        val level = applyGainAndLevel(buf, 4, Float.NaN).single()
+        val level = applyGainAndMaybeMeasureLevel(buf, 4, Float.NaN, measureLevel = true)!!.single()
         assertEquals(listOf<Short>(1000, -1000), samplesOf(buf, 2).toList())
         assertTrue(level.isFinite())
+    }
+
+    @Test
+    fun `non-emission path applies gain with no level result`() {
+        val buf = pcmBuffer(1_000, -2_000, 3_000)
+
+        val level = applyGainAndMaybeMeasureLevel(
+            buf,
+            byteCount = 6,
+            gain = 2f,
+            channelCount = 2,
+            measureLevel = false,
+        )
+
+        assertNull(level)
+        assertEquals(listOf<Short>(2_000, -4_000, 6_000), samplesOf(buf, 3).toList())
+    }
+
+    @Test
+    fun `gain and measurement preserve buffer position limit and byte order`() {
+        val buf = pcmBuffer(1_000, -2_000, 3_000).apply {
+            position(2)
+            limit(5)
+            order(ByteOrder.BIG_ENDIAN)
+        }
+
+        val level = applyGainAndMaybeMeasureLevel(
+            buf,
+            byteCount = 5,
+            gain = 2f,
+            channelCount = 1,
+            measureLevel = true,
+        )!!.single()
+
+        assertEquals(2, buf.position())
+        assertEquals(5, buf.limit())
+        assertEquals(ByteOrder.BIG_ENDIAN, buf.order())
+        assertEquals(listOf<Short>(2_000, -4_000, 3_000), samplesOf(buf, 3).toList())
+        assertEquals(kotlin.math.sqrt(10_000_000f) / 32768f, level, 1e-4f)
+    }
+
+    @Test
+    fun `stereo measurement keeps exact per-channel post-gain RMS`() {
+        val buf = pcmBuffer(1_000, 2_000, -3_000, -4_000)
+
+        val levels = applyGainAndMaybeMeasureLevel(
+            buf,
+            byteCount = 8,
+            gain = 2f,
+            channelCount = 2,
+            measureLevel = true,
+        )!!
+
+        assertEquals(kotlin.math.sqrt(20_000_000f) / 32768f, levels[0], 1e-4f)
+        assertEquals(kotlin.math.sqrt(40_000_000f) / 32768f, levels[1], 1e-4f)
     }
 }
