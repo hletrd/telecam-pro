@@ -459,6 +459,16 @@ class PendingDiscardJournalTest {
         assertEquals(1, migrated.recordVersion)
         assertEquals(null, migrated.identity)
         assertEquals(DiscardReplayIdentity.LEGACY, journal.replayIdentity(migrated))
+        context.openOrCreateDatabase(databaseName, Context.MODE_PRIVATE, null).use { database ->
+            database.execSQL(
+                "UPDATE pending_discards SET record_version = ? WHERE uri = ?",
+                arrayOf<Any>(PendingDiscardJournal.IDENTITY_RECORD_VERSION, uri),
+            )
+        }
+        val incomplete = journal.page(afterKey = null, batchLimit = 8).records.single()
+        assertEquals(PendingDiscardJournal.IDENTITY_RECORD_VERSION, incomplete.recordVersion)
+        assertEquals(null, incomplete.identity)
+        assertEquals(DiscardReplayIdentity.UNAVAILABLE, journal.replayIdentity(incomplete))
         assertTrue(journal.mark(uri))
         val upgraded = journal.page(afterKey = null, batchLimit = 8).records.single()
         assertEquals(PendingDiscardJournal.IDENTITY_RECORD_VERSION, upgraded.recordVersion)

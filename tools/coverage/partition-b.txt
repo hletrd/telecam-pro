@@ -68,6 +68,10 @@ me/hletrd/telecampro/capture/PendingDngPublication
 
 # ---- storage: ContentResolver/MediaStore glue (decision fns in MediaStoreWriterKt stay A) ---
 me/hletrd/telecampro/storage/MediaStoreWriter
+# Concrete identity reader calls static MediaStore volume/version APIs and exact ContentResolver
+# queries. Replay comparison, fail-closed classification, schema migration, and journal ownership
+# remain separate host-tested Partition-A classes.
+me/hletrd/telecampro/storage/MediaStorePendingDiscardIdentityReader
 me/hletrd/telecampro/storage/SettingsStore
 
 # ---- video: MediaCodec/MediaMuxer/AudioRecord glue ------------------------------------------
