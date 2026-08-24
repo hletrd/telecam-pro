@@ -6,7 +6,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.MediaStore
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -67,7 +66,9 @@ import me.hletrd.telecampro.ui.ExternalNavigationFailure
 import me.hletrd.telecampro.ui.ExternalNavigationRecovery
 import me.hletrd.telecampro.ui.ExternalNavigationTarget
 import me.hletrd.telecampro.ui.OwnerlessMediaDeleteConsentResult
+import me.hletrd.telecampro.ui.OwnerlessMediaDeleteLaunch
 import me.hletrd.telecampro.ui.OwnerlessMediaDeletePreparation
+import me.hletrd.telecampro.ui.OwnerlessMediaDeleteRequest
 import me.hletrd.telecampro.ui.PrivacyPolicyFallbackDialog
 import me.hletrd.telecampro.ui.externalNavigationFailure
 import me.hletrd.telecampro.ui.launchExternal
@@ -83,6 +84,41 @@ private const val OBSCURED_TOUCH_FLAGS =
 
 /** One side-effect-free decision seam for the Activity's full- and partial-overlay boundary. */
 internal fun touchEventIsUnobscured(flags: Int): Boolean = flags and OBSCURED_TOUCH_FLAGS == 0
+
+/** AndroidX turns a synchronous SendIntentException into a canceled result carrying this marker. */
+internal fun convertedSendIntentExceptionMarker(
+    action: String?,
+    hasExceptionExtra: Boolean,
+): Boolean = action ==
+    ActivityResultContracts.StartIntentSenderForResult.ACTION_INTENT_SENDER_REQUEST &&
+    hasExceptionExtra
+
+/** Pure classification keeps a framework launch failure distinct from an operator cancellation. */
+internal fun classifyOwnerlessMediaDeleteActivityResult(
+    resultCode: Int,
+    dataAction: String?,
+    hasConvertedExceptionExtra: Boolean,
+): OwnerlessMediaDeleteConsentResult = when {
+    resultCode == android.app.Activity.RESULT_OK -> OwnerlessMediaDeleteConsentResult.APPROVED
+    convertedSendIntentExceptionMarker(dataAction, hasConvertedExceptionExtra) ->
+        OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED
+    else -> OwnerlessMediaDeleteConsentResult.CANCELED
+}
+
+/** Builds and launches only the exact request already claimed from ViewModel ownership. */
+internal fun launchOwnerlessMediaDeleteRequest(
+    ready: OwnerlessMediaDeleteLaunch,
+    launch: (IntentSenderRequest) -> Unit,
+    onFailure: (OwnerlessMediaDeleteRequest) -> Unit,
+): Boolean = runCatching {
+    launch(IntentSenderRequest.Builder(ready.pendingIntent.intentSender).build())
+}.fold(
+    onSuccess = { true },
+    onFailure = {
+        onFailure(ready.request)
+        false
+    },
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -160,25 +196,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * DEBUG-only shell hook: API 36 rejects adb-shell broadcasts to NOT_EXPORTED receivers
-     * (device-confirmed 2026-07-25 — result=0, enqueued, never delivered), so shell-driven debug
-     * toggles ride intent extras on this exported launcher activity instead. Deliver to the
-     * RUNNING instance with FLAG_ACTIVITY_SINGLE_TOP:
-     *   adb shell am start -n me.hletrd.telecampro.debug/me.hletrd.telecampro.MainActivity \
-     *       -f 0x20000000 --ez zsl_spike true        # cycle-8 S4a streaming spike on/off
-     *   ... -f 0x20000000 --ef debug_zoom 3.0         # zoom injection (device-test hook)
-     * Inert in release builds (the ViewModel methods re-check BuildConfig.DEBUG).
-     */
-    private fun handleDebugIntent(intent: Intent?) {
-        if (!BuildConfig.DEBUG || intent == null) return
-        if (intent.hasExtra("zsl_spike")) vm.debugSetZslSpike(intent.getBooleanExtra("zsl_spike", false))
-        if (intent.hasExtra("debug_zoom")) vm.debugApplyZoom(intent.getFloatExtra("debug_zoom", -1f))
+    /** Consumes only commands admitted by the debug manifest's DUMP-protected component. */
+    private fun consumeProtectedDebugCameraCommand() {
+        if (!BuildConfig.DEBUG) return
+        val command = DebugCameraControlMailbox.consume() ?: return
+        command.zslSpike?.let(vm::debugSetZslSpike)
+        command.zoomRatio?.let(vm::debugApplyZoom)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleDebugIntent(intent)
+        // Intent extras on this ordinary exported launcher are deliberately inert. The protected
+        // debug component publishes through the process-local mailbox before delivering this edge.
+        consumeProtectedDebugCameraCommand()
     }
 
     /**
@@ -227,7 +257,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        handleDebugIntent(intent)
+        consumeProtectedDebugCameraCommand()
         // Defense in depth for child Views: dispatchTouchEvent above is the authoritative full +
         // partial overlay boundary; this platform flag independently retains the full-obscuration
         // filter if a child is ever dispatched through another framework path.
@@ -303,12 +333,38 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.StartIntentSenderForResult(),
                 ) { result ->
                     vm.onOwnerlessMediaDeleteConsentResult(
-                        if (result.resultCode == android.app.Activity.RESULT_OK) {
-                            OwnerlessMediaDeleteConsentResult.APPROVED
-                        } else {
-                            OwnerlessMediaDeleteConsentResult.CANCELED
-                        },
+                        classifyOwnerlessMediaDeleteActivityResult(
+                            resultCode = result.resultCode,
+                            dataAction = result.data?.action,
+                            hasConvertedExceptionExtra = result.data?.hasExtra(
+                                ActivityResultContracts.StartIntentSenderForResult
+                                    .EXTRA_SEND_INTENT_EXCEPTION,
+                            ) == true,
+                        ),
                     )
+                }
+
+                // StateFlow replays a request created before Activity recreation. Claiming the
+                // exact generation immediately before launch prevents an old provider completion
+                // from opening a system surface for a replacement review.
+                LaunchedEffect(ownerlessDeleteLauncher) {
+                    lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        vm.ownerlessMediaDeleteLaunch.collect { launch ->
+                            if (launch == null || !vm.claimOwnerlessMediaDeleteLaunch(launch)) {
+                                return@collect
+                            }
+                            launchOwnerlessMediaDeleteRequest(
+                                ready = launch,
+                                launch = ownerlessDeleteLauncher::launch,
+                                onFailure = { request ->
+                                    vm.onOwnerlessMediaDeleteConsentResult(
+                                        request,
+                                        OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
+                                    )
+                                },
+                            )
+                        }
+                    }
                 }
 
                 LaunchedEffect(Unit) {
@@ -353,29 +409,12 @@ class MainActivity : ComponentActivity() {
                                 uri: android.net.Uri,
                                 provenance: me.hletrd.telecampro.storage.MediaProvenance,
                             ) {
-                                when (vm.prepareOwnerlessMediaDelete(uri, provenance)) {
-                                    OwnerlessMediaDeletePreparation.DIRECT_APP_OWNED ->
+                                when (val preparation = vm.prepareOwnerlessMediaDelete(uri, provenance)) {
+                                    OwnerlessMediaDeletePreparation.DirectAppOwned ->
                                         vm.onDeleteLastMedia(uri, provenance)
-                                    OwnerlessMediaDeletePreparation.REJECTED -> Unit
-                                    OwnerlessMediaDeletePreparation.CONSENT_REQUIRED -> {
-                                        val request = runCatching {
-                                            val pendingIntent = MediaStore.createDeleteRequest(
-                                                contentResolver,
-                                                listOf(uri),
-                                            )
-                                            IntentSenderRequest.Builder(pendingIntent.intentSender).build()
-                                        }.getOrElse {
-                                            vm.onOwnerlessMediaDeleteConsentResult(
-                                                OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
-                                            )
-                                            return
-                                        }
-                                        if (runCatching { ownerlessDeleteLauncher.launch(request) }.isFailure) {
-                                            vm.onOwnerlessMediaDeleteConsentResult(
-                                                OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
-                                            )
-                                        }
-                                    }
+                                    OwnerlessMediaDeletePreparation.Rejected -> Unit
+                                    is OwnerlessMediaDeletePreparation.ConsentRequired ->
+                                        vm.beginOwnerlessMediaDeleteRequestCreation(preparation.request)
                                 }
                             }
 

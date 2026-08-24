@@ -1,10 +1,14 @@
 package me.hletrd.telecampro.ui
 
 import android.app.Application
+import android.app.PendingIntent
+import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
 import android.view.Surface
@@ -125,6 +129,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
+internal data class OwnerlessMediaDeleteOverrides(
+    val createDeleteRequest: (ContentResolver, Uri) -> PendingIntent = { resolver, uri ->
+        MediaStore.createDeleteRequest(resolver, listOf(uri))
+    },
+    val queryPresence: (Context, Uri) -> KnownOutputProviderDisposition = { context, uri ->
+        MediaStoreWriter.knownOutputPresence(context, uri)
+    },
+    val dispatcher: ViewModelMediaDeleteDispatcher = ViewModelMediaDeleteDispatcher(
+        VIEW_MODEL_MEDIA_DELETE_WORKER_COUNT,
+        VIEW_MODEL_MEDIA_DELETE_BACKLOG_CAPACITY,
+    ),
+)
+
 /** Holds [CameraUiState] and turns [CameraActions] into [CameraEngine] calls. UI-thread only. */
 // The engine is a defaulted constructor parameter (the ONE test seam this class exposes): host
 // tests inject or observe it while production behavior is unchanged. @JvmOverloads emits the
@@ -134,6 +151,18 @@ class CameraViewModel @JvmOverloads constructor(
     app: Application,
     private val engine: CameraEngine = CameraEngine(app),
 ) : AndroidViewModel(app), CameraActions {
+
+    internal constructor(
+        app: Application,
+        engine: CameraEngine,
+        ownerlessMediaDeleteOverrides: OwnerlessMediaDeleteOverrides,
+    ) : this(app, engine) {
+        // Construction/init performs no review deletion. Retire the unused default facade, then
+        // install the deterministic provider seams before a test can freeze its first review.
+        mediaDeleteDispatcher.shutdown()
+        this.ownerlessMediaDeleteOverrides = ownerlessMediaDeleteOverrides
+        mediaDeleteDispatcher = ownerlessMediaDeleteOverrides.dispatcher
+    }
 
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
 
@@ -148,6 +177,9 @@ class CameraViewModel @JvmOverloads constructor(
     private val settingsStore = SettingsStore(app)
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
+    private val _ownerlessMediaDeleteLaunch = MutableStateFlow<OwnerlessMediaDeleteLaunch?>(null)
+    internal val ownerlessMediaDeleteLaunch: StateFlow<OwnerlessMediaDeleteLaunch?> =
+        _ownerlessMediaDeleteLaunch.asStateFlow()
     // Video must clamp its live/request shutter to one frame, but that derived value must not erase
     // the photographer's Photo shutter (including ANGLE's dormant SPEED value). Persisted through
     // ExtraSettings so a process death while Video is selected still restores Photo faithfully.
@@ -289,10 +321,12 @@ class CameraViewModel @JvmOverloads constructor(
     // active. The provider result may arrive after a newer capture, so completion always rechecks
     // this object identity before restoring or publishing UI state.
     private var pendingOwnerlessMediaDelete: PendingOwnerlessMediaDelete? = null
+    private var ownerlessMediaDeleteGeneration = 0L
 
     private data class PendingOwnerlessMediaDelete(
-        val uri: Uri,
+        val request: OwnerlessMediaDeleteRequest,
         val plan: CaptureDeletePlan<Uri>,
+        var reconciliationStarted: Boolean = false,
     )
 
     // The plain zoom-glide state (pending / ease / interacting / flush-scheduled) as one tested holder
@@ -653,10 +687,8 @@ class CameraViewModel @JvmOverloads constructor(
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "vm-io").apply { isDaemon = true }
     }
-    private val mediaDeleteDispatcher = ViewModelMediaDeleteDispatcher(
-        VIEW_MODEL_MEDIA_DELETE_WORKER_COUNT,
-        VIEW_MODEL_MEDIA_DELETE_BACKLOG_CAPACITY,
-    )
+    private var ownerlessMediaDeleteOverrides = OwnerlessMediaDeleteOverrides()
+    private var mediaDeleteDispatcher = ownerlessMediaDeleteOverrides.dispatcher
     @Volatile private var cleared = false
     private var encoderInventory: CodecInventory = CodecInventory.EMPTY
     private var pendingCodecUntilInventory: VideoCodec? = null
@@ -885,9 +917,8 @@ class CameraViewModel @JvmOverloads constructor(
         // unregisters it; NOT_EXPORTED prevents arbitrary apps/shell broadcasts from controlling
         // camera framing while the process is alive. NOTE (device-confirmed 2026-07-25): on API 36
         // NOT_EXPORTED also rejects adb-shell broadcasts (result=0, enqueued, never delivered), so
-        // shell-driven debugging goes through MainActivity's DEBUG intent-extra hook instead
-        // (`am start ... -f 0x20000000 --ez/-e ...` → debugSetZslSpike/debugApplyZoom below); these
-        // receivers remain for app-internal senders.
+        // Shell-driven debugging goes through the debug-only DUMP-protected activity and its
+        // process-local mailbox; these non-exported receivers remain for app-internal senders.
         if (me.hletrd.telecampro.BuildConfig.DEBUG) {
             val receiver = object : android.content.BroadcastReceiver() {
                 override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
@@ -1991,10 +2022,9 @@ class CameraViewModel @JvmOverloads constructor(
     // door invalidates it through the single invalidateOpticsDerivedState() owner (AGG3-51).
 
 
-    // DEBUG shell hooks (called from MainActivity's intent-extra path — the exported launcher
-    // activity is the one component adb `am start` can reach; API 36 blocks shell broadcasts to
-    // the NOT_EXPORTED debug receivers above). Both no-op in release via the callers' DEBUG gate;
-    // the spike additionally re-checks BuildConfig.DEBUG inside CameraController.setZslSpike.
+    // DEBUG shell hooks. Only the debug manifest's DUMP-protected control Activity can publish the
+    // process-local commands MainActivity consumes; ordinary launcher extras are inert. Both no-op
+    // in release via this DEBUG gate, and the spike re-checks inside CameraController too.
     internal fun debugSetZslSpike(enabled: Boolean) {
         if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
         engine.setZslSpike(enabled)
@@ -3384,10 +3414,10 @@ class CameraViewModel @JvmOverloads constructor(
             presentedProvenance = presentedProvenance,
         )
         if (route == MediaDeleteAuthorizationRoute.DIRECT_APP_OWNED) {
-            return OwnerlessMediaDeletePreparation.DIRECT_APP_OWNED
+            return OwnerlessMediaDeletePreparation.DirectAppOwned
         }
         if (pendingOwnerlessMediaDelete != null) {
-            return OwnerlessMediaDeletePreparation.REJECTED
+            return OwnerlessMediaDeletePreparation.Rejected
         }
 
         val rawPlan = captureOutputs.beginDelete(uri)
@@ -3399,7 +3429,11 @@ class CameraViewModel @JvmOverloads constructor(
             deleteScope = MediaDeleteScope.FILE_ONLY,
             outputs = setOf(uri),
         )
-        pendingOwnerlessMediaDelete = PendingOwnerlessMediaDelete(uri, plan)
+        val request = OwnerlessMediaDeleteRequest(
+            uri = uri,
+            generation = ++ownerlessMediaDeleteGeneration,
+        )
+        pendingOwnerlessMediaDelete = PendingOwnerlessMediaDelete(request, plan)
         _state.update { current ->
             current.copy(
                 lastMediaUri = current.lastMediaUri.takeUnless { it == uri },
@@ -3408,12 +3442,83 @@ class CameraViewModel @JvmOverloads constructor(
                 cameraInputBlocked = true,
             )
         }
-        return OwnerlessMediaDeletePreparation.CONSENT_REQUIRED
+        return OwnerlessMediaDeletePreparation.ConsentRequired(request)
+    }
+
+    /** Starts finite, deadlined request construction without retaining an Activity in provider work. */
+    internal fun beginOwnerlessMediaDeleteRequestCreation(request: OwnerlessMediaDeleteRequest) {
+        val pending = pendingOwnerlessMediaDelete?.takeIf { it.request == request } ?: return
+        val terminal = FirstWinsTerminal<OwnerlessMediaDeleteRequestCreation> { outcome ->
+            mainHandler.post {
+                if (cleared || pendingOwnerlessMediaDelete !== pending) return@post
+                when (outcome) {
+                    is OwnerlessMediaDeleteRequestCreation.Ready -> {
+                        _ownerlessMediaDeleteLaunch.value = OwnerlessMediaDeleteLaunch(
+                            request = request,
+                            pendingIntent = outcome.pendingIntent,
+                        )
+                    }
+                    OwnerlessMediaDeleteRequestCreation.Failed,
+                    OwnerlessMediaDeleteRequestCreation.Rejected,
+                    OwnerlessMediaDeleteRequestCreation.TimedOut,
+                    -> completeOwnerlessMediaDelete(
+                        pending,
+                        ownerlessMediaDeleteResolution(
+                            OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
+                            KnownOutputProviderDisposition.UNKNOWN,
+                        ),
+                    )
+                }
+            }
+        }
+        armFirstWinsTimeout(
+            terminal = terminal,
+            timeoutValue = OwnerlessMediaDeleteRequestCreation.TimedOut,
+            timeoutMs = OWNERLESS_MEDIA_DELETE_PROVIDER_TIMEOUT_MS,
+            postDelayed = mainHandler::postDelayed,
+        )
+        if (!terminal.isPending()) return
+
+        // Capture only process-safe values. If Binder wedges past the timeout, FirstWinsTerminal has
+        // already dropped the callback that owns this ViewModel and the replacement Activity.
+        val resolver = getApplication<Application>().contentResolver
+        val createRequest = ownerlessMediaDeleteOverrides.createDeleteRequest
+        val dispatch = mediaDeleteDispatcher.dispatch(
+            Runnable {
+                val result = runCatching { createRequest(resolver, request.uri) }
+                terminal.complete(
+                    result.fold(
+                        onSuccess = OwnerlessMediaDeleteRequestCreation::Ready,
+                        onFailure = { OwnerlessMediaDeleteRequestCreation.Failed },
+                    ),
+                )
+            },
+        )
+        if (dispatch != ViewModelMediaDeleteDispatch.ACCEPTED) {
+            terminal.complete(OwnerlessMediaDeleteRequestCreation.Rejected)
+        }
+    }
+
+    /** Claims a launch event only while it still belongs to the exact frozen review generation. */
+    internal fun claimOwnerlessMediaDeleteLaunch(launch: OwnerlessMediaDeleteLaunch): Boolean {
+        if (_ownerlessMediaDeleteLaunch.value != launch) return false
+        if (pendingOwnerlessMediaDelete?.request != launch.request) return false
+        _ownerlessMediaDeleteLaunch.value = null
+        return true
     }
 
     /** Activity result edge. Approval is already terminal provider work; never delete a second time. */
     internal fun onOwnerlessMediaDeleteConsentResult(result: OwnerlessMediaDeleteConsentResult) {
-        val pending = pendingOwnerlessMediaDelete ?: return
+        val request = pendingOwnerlessMediaDelete?.request ?: return
+        onOwnerlessMediaDeleteConsentResult(request, result)
+    }
+
+    /** Exact request form used when request launch itself fails after a newer generation could exist. */
+    internal fun onOwnerlessMediaDeleteConsentResult(
+        request: OwnerlessMediaDeleteRequest,
+        result: OwnerlessMediaDeleteConsentResult,
+    ) {
+        val pending = pendingOwnerlessMediaDelete?.takeIf { it.request == request } ?: return
         if (result == OwnerlessMediaDeleteConsentResult.APPROVED) {
             completeOwnerlessMediaDelete(
                 pending,
@@ -3424,28 +3529,37 @@ class CameraViewModel @JvmOverloads constructor(
             )
             return
         }
+        if (pending.reconciliationStarted) return
+        pending.reconciliationStarted = true
 
         val application = getApplication<Application>()
+        val queryPresence = ownerlessMediaDeleteOverrides.queryPresence
+        val terminal = FirstWinsTerminal<KnownOutputProviderDisposition> { presence ->
+            mainHandler.post {
+                if (!cleared && pendingOwnerlessMediaDelete === pending) {
+                    completeOwnerlessMediaDelete(
+                        pending,
+                        ownerlessMediaDeleteResolution(result, presence),
+                    )
+                }
+            }
+        }
+        armFirstWinsTimeout(
+            terminal = terminal,
+            timeoutValue = KnownOutputProviderDisposition.UNKNOWN,
+            timeoutMs = OWNERLESS_MEDIA_DELETE_PROVIDER_TIMEOUT_MS,
+            postDelayed = mainHandler::postDelayed,
+        )
+        if (!terminal.isPending()) return
         val dispatch = mediaDeleteDispatcher.dispatch(
             Runnable {
-                val presence = MediaStoreWriter.knownOutputPresence(application, pending.uri)
-                mainHandler.post {
-                    if (!cleared && pendingOwnerlessMediaDelete === pending) {
-                        completeOwnerlessMediaDelete(
-                            pending,
-                            ownerlessMediaDeleteResolution(result, presence),
-                        )
-                    }
-                }
+                terminal.complete(queryPresence(application, request.uri))
             },
         )
         if (dispatch != ViewModelMediaDeleteDispatch.ACCEPTED) {
             // No provider worker was available. UNKNOWN preserves the exact review handle for a
             // later attempt; it never guesses that cancellation/failure deleted the row.
-            completeOwnerlessMediaDelete(
-                pending,
-                ownerlessMediaDeleteResolution(result, KnownOutputProviderDisposition.UNKNOWN),
-            )
+            terminal.complete(KnownOutputProviderDisposition.UNKNOWN)
         }
     }
 
@@ -3455,12 +3569,16 @@ class CameraViewModel @JvmOverloads constructor(
     ) {
         if (pendingOwnerlessMediaDelete !== pending) return
         pendingOwnerlessMediaDelete = null
+        _ownerlessMediaDeleteLaunch.value = null
         val restored = captureOutputs.restoreDeleteSurvivors(
             pending.plan,
-            if (resolution.restoreExactFile) setOf(pending.uri) else emptySet(),
+            if (resolution.restoreExactFile) setOf(pending.request.uri) else emptySet(),
         )
         _state.update { current ->
-            val terminal = current.copy(ownerlessDeleteConsentPending = false)
+            val terminal = current.copy(
+                ownerlessDeleteConsentPending = false,
+                cameraInputBlocked = false,
+            )
             if (restored != null && captureOutputs.isCurrentReviewOutput(restored.output)) {
                 terminal.withDeleteSurvivor(restored)
             } else {
@@ -3906,10 +4024,12 @@ internal fun mediaDeleteAuthorizationRoute(
     MediaDeleteAuthorizationRoute.DIRECT_APP_OWNED
 }
 
-internal enum class OwnerlessMediaDeletePreparation {
-    DIRECT_APP_OWNED,
-    CONSENT_REQUIRED,
-    REJECTED,
+internal sealed interface OwnerlessMediaDeletePreparation {
+    data object DirectAppOwned : OwnerlessMediaDeletePreparation
+    data class ConsentRequired(
+        val request: OwnerlessMediaDeleteRequest,
+    ) : OwnerlessMediaDeletePreparation
+    data object Rejected : OwnerlessMediaDeletePreparation
 }
 
 internal enum class OwnerlessMediaDeleteConsentResult {

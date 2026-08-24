@@ -14,6 +14,15 @@
             android:screenOrientation="unspecified"
             android:theme="@style/Theme.TeleCamPro"
             tools:ignore="DiscouragedApi,LockedOrientationActivity" />
+
+        <!-- Shell-only camera measurement ingress. MainActivity intentionally ignores command
+             extras; this signature-protected debug component is their sole exported producer. -->
+        <activity
+            android:name="me.hletrd.telecampro.DebugCameraControlActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@android:style/Theme.NoDisplay" />
     </application>
 
 </manifest>

@@ -228,21 +228,22 @@ class CameraViewModelRobolectricTest {
         }
 
         assertEquals(
-            OwnerlessMediaDeletePreparation.CONSENT_REQUIRED,
+            OwnerlessMediaDeletePreparation.ConsentRequired::class.java,
+            v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED)::class.java,
+        )
+        assertEquals(
+            OwnerlessMediaDeletePreparation.Rejected,
             v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
         )
         assertTrue(v.state.value.ownerlessDeleteConsentPending)
         assertTrue(v.state.value.cameraInputBlocked)
         assertNull(v.state.value.lastMediaUri)
-        assertEquals(
-            OwnerlessMediaDeletePreparation.REJECTED,
-            v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
-        )
 
         // RESULT_OK means MediaStore's PendingIntent already completed deletion. This edge clears
         // tracker/UI ownership synchronously and performs no ContentResolver.delete call.
         v.onOwnerlessMediaDeleteConsentResult(OwnerlessMediaDeleteConsentResult.APPROVED)
         assertFalse(v.state.value.ownerlessDeleteConsentPending)
+        assertFalse(v.state.value.cameraInputBlocked)
         assertNull(v.state.value.lastMediaUri)
         assertEquals(CameraStatusMessage.DELETED, v.state.value.status?.message)
     }
@@ -273,7 +274,7 @@ class CameraViewModelRobolectricTest {
         val owned = Uri.parse("content://media/external/images/media/42")
         captureTracker(v).record(42, owned, CaptureOutputKind.DISPLAYABLE)
         assertEquals(
-            OwnerlessMediaDeletePreparation.DIRECT_APP_OWNED,
+            OwnerlessMediaDeletePreparation.DirectAppOwned,
             v.prepareOwnerlessMediaDelete(owned, MediaProvenance.APP_OWNED),
         )
         assertFalse(v.state.value.ownerlessDeleteConsentPending)
