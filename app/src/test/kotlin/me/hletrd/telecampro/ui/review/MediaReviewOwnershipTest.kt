@@ -119,13 +119,17 @@ class MediaReviewOwnershipTest {
         val dispatcher = executor.asCoroutineDispatcher()
         val release = CountDownLatch(1)
         try {
-            val started = CountDownLatch(2)
+            val firstStarted = CountDownLatch(1)
+            val secondStarted = CountDownLatch(1)
             val lane = LatestReviewSetupLane<String, String>(
                 dispatcher = dispatcher,
                 workerCount = 2,
                 terminalTimeoutMs = 100,
                 work = {
-                    started.countDown()
+                    when (it) {
+                        "A" -> firstStarted.countDown()
+                        "B" -> secondStarted.countDown()
+                    }
                     release.await()
                     it
                 },
@@ -136,10 +140,11 @@ class MediaReviewOwnershipTest {
                 val first = async(start = CoroutineStart.UNDISPATCHED) {
                     lane.run(Any(), "A") {}
                 }
+                assertTrue(firstStarted.await(2, TimeUnit.SECONDS))
                 val second = async(start = CoroutineStart.UNDISPATCHED) {
                     lane.run(Any(), "B") {}
                 }
-                assertTrue(started.await(2, TimeUnit.SECONDS))
+                assertTrue(secondStarted.await(2, TimeUnit.SECONDS))
 
                 assertSame(
                     LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED,
