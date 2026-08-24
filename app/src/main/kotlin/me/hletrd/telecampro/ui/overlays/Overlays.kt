@@ -852,6 +852,31 @@ internal fun statusBarPriorityResetKey(
 }
 
 @Composable
+internal fun localizedStatusBarFocalLabel(
+    focalMm: Float,
+    zoomRatio: Float,
+    teleconverterMode: Boolean,
+    teleconverterFocalMm: Float,
+): String {
+    val teleLabel = stringResource(R.string.osd_tele)
+    return remember(focalMm, zoomRatio, teleconverterMode, teleconverterFocalMm, teleLabel) {
+        // The afocal teleconverter multiplies the ~70 mm periscope into the selected converter's
+        // effective focal. Round to the nearest 10 mm so the readout says a clean "300 mm" rather
+        // than 296 mm. The localized suffix is part of the key: a runtime locale change must not
+        // retain the previous language's OSD from this performance cache.
+        val effectiveTeleFocal =
+            ((teleconverterFocalMm * zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
+        when {
+            focalMm <= 0f -> "--"
+            teleconverterMode -> "$effectiveTeleFocal mm $teleLabel"
+            // Seamless zoom: the logical camera's equivalent is the main lens and zoom is
+            // main-relative. FRONT reaches this branch with its own lens-local equivalent.
+            else -> "%.0f mm".format(Locale.US, focalMm * zoomRatio.coerceAtLeast(0.01f))
+        }
+    }
+}
+
+@Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
     if (compact && !compactShootingStatusVisible(state)) return
     // PERF: StatusBar takes the WHOLE CameraUiState, so it recomposes at telemetry rate (audio
@@ -861,27 +886,12 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
     val focalLabel = if (compact) {
         null
     } else {
-        val focal = state.caps?.equivalentFocalMm ?: 0f
-        val teleFocal = state.teleconverterFocalMm
-        remember(focal, state.controls.zoomRatio, state.teleconverterMode, teleFocal) {
-            // The afocal teleconverter multiplies the ~70 mm periscope → the SELECTED converter's
-            // effective focal (~300 mm on the kit optic). Round to the nearest 10 mm so the readout
-            // reads a clean "300 mm" rather than 296 mm. TELE effective focal follows the digital
-            // zoom on that NOMINAL base (constant scale, matching the 13/30/60× pill marks): on the
-            // kit optic 300 mm at 13×, 690 at 30×, 1380 at 60×.
-            val effFocal = ((teleFocal * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
-            when {
-                focal <= 0f -> "--"
-                state.teleconverterMode -> "$effFocal mm TELE"
-                // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the
-                // unified zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at
-                // 0.6×, 230 mm at 10× — tracking the lens the HAL actually has active, like the TELE
-                // readout does. FRONT rides this same seam unchanged: its caps equiv is the front
-                // lens's own and its zoom is lens-local, so the product is the honest selfie focal
-                // (no TELE multiplier possible — teleconverterMode is forced off on the front route).
-                else -> "%.0f mm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
-            }
-        }
+        localizedStatusBarFocalLabel(
+            focalMm = state.caps?.equivalentFocalMm ?: 0f,
+            zoomRatio = state.controls.zoomRatio,
+            teleconverterMode = state.teleconverterMode,
+            teleconverterFocalMm = state.teleconverterFocalMm,
+        )
     }
     val scrollState = rememberScrollState()
     // Reset to logical Start only when the ordered leading identity/output truth changes. Volatile

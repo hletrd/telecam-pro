@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
@@ -52,6 +53,7 @@ import me.hletrd.telecampro.ui.controls.focusDialStateDescription
 import me.hletrd.telecampro.ui.controls.PhotoFormatToggles
 import me.hletrd.telecampro.ui.controls.SpeedAngleToggle
 import me.hletrd.telecampro.ui.overlays.FocusResultLiveRegion
+import me.hletrd.telecampro.ui.overlays.localizedStatusBarFocalLabel
 import me.hletrd.telecampro.ui.review.GalleryThumb
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
@@ -146,6 +148,25 @@ class BilingualPresentationComposeTest {
             "매크로, ∞",
             focusDialStateDescription(FocusMode.MACRO, "∞", "매크로"),
         )
+    }
+
+    @Test
+    fun `converter focal OSD uses the active English and Korean locale`() {
+        compose.setContent {
+            TeleCamProTheme {
+                Column {
+                    CompositionLocalProvider(LocalContext provides localizedContext("en")) {
+                        Text(localizedStatusBarFocalLabel(70f, 1f, true, 300f))
+                    }
+                    CompositionLocalProvider(LocalContext provides localizedContext("ko")) {
+                        Text(localizedStatusBarFocalLabel(70f, 1f, true, 300f))
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithText("300 mm TELE").fetchSemanticsNode()
+        compose.onNodeWithText("300 mm 텔레").fetchSemanticsNode()
     }
 
     @Test
