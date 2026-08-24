@@ -7,12 +7,14 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1048,6 +1050,42 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_wrong_phone_png_geometry_after_digest_update(self) -> None:
+        def replace_with_valid_wrong_geometry(root: Path) -> None:
+            asset = root / "docs/assets/play/screenshots/01-main-viewfinder.png"
+            signature = b"\x89PNG\r\n\x1a\n"
+
+            def chunk(kind: bytes, data: bytes) -> bytes:
+                return (
+                    struct.pack(">I", len(data))
+                    + kind
+                    + data
+                    + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+                )
+
+            asset.write_bytes(
+                signature
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+                + chunk(b"IEND", b"")
+            )
+            manifest_path = root / "docs/assets/play/screenshots/asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            relative = "docs/assets/play/screenshots/01-main-viewfinder.png"
+            manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            replace_with_valid_wrong_geometry,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
@@ -1081,6 +1119,42 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("FAIL  tablet screenshot bytes match the validity manifest", result.stdout)
         self.assertIn("03-focus.png", result.stdout)
+
+    def test_committed_export_rejects_wrong_tablet_png_geometry_after_digest_update(self) -> None:
+        def replace_with_valid_wrong_geometry(root: Path) -> None:
+            asset = root / "docs/assets/play/screenshots/tablet/03-focus.png"
+            signature = b"\x89PNG\r\n\x1a\n"
+
+            def chunk(kind: bytes, data: bytes) -> bytes:
+                return (
+                    struct.pack(">I", len(data))
+                    + kind
+                    + data
+                    + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+                )
+
+            asset.write_bytes(
+                signature
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00\x00"))
+                + chunk(b"IEND", b"")
+            )
+            manifest_path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            relative = "docs/assets/play/screenshots/tablet/03-focus.png"
+            manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            replace_with_valid_wrong_geometry,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  tablet screenshot PNG bytes match the declared geometry and encoding",
+            result.stdout,
+        )
 
     def test_committed_export_rejects_stale_tablet_screenshot_copy(self) -> None:
         def drift_copy(root: Path) -> None:

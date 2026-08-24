@@ -53,6 +53,8 @@
     "pixel_size": [
       1440,
       2880
-    ]
+    ],
+    "png_bit_depth": 8,
+    "png_color_type": 2
   }
 }

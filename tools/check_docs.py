@@ -18,6 +18,7 @@ import datetime
 import json
 import pathlib
 import re
+import struct
 import sys
 import xml.etree.ElementTree as ET
 
@@ -101,6 +102,15 @@ def language_fenced(text: str, heading: str, language: str) -> str:
     return m.group(1)
 
 
+def png_ihdr(relative: str) -> tuple[int, int, int, int] | None:
+    """Read the dimensions and pixel encoding that the checked-in PNG bytes actually declare."""
+    data = (ROOT / relative).read_bytes()
+    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    width, height, bit_depth, color_type = struct.unpack(">IIBB", data[16:26])
+    return width, height, bit_depth, color_type
+
+
 # ---- store copy: Play's hard limits, and the wrapping trap -------------------------------------
 listing = read_private("docs/play-store-listing.md")
 submit = read("docs/play-console-submit.md")
@@ -130,6 +140,22 @@ check(
     "phone screenshot bytes match the validity manifest",
     str(digest_mismatches),
 )
+phone_recapture = screenshot_manifest.get("required_recapture", {})
+phone_png_contract = (
+    *(phone_recapture.get("pixel_size") or []),
+    phone_recapture.get("png_bit_depth"),
+    phone_recapture.get("png_color_type"),
+)
+phone_geometry_mismatches = {
+    relative: png_ihdr(relative)
+    for relative in phone_screenshots
+    if png_ihdr(relative) != phone_png_contract
+}
+check(
+    phone_png_contract == (1440, 2880, 8, 2) and not phone_geometry_mismatches,
+    "phone screenshot PNG bytes match the declared geometry and encoding",
+    str(phone_geometry_mismatches),
+)
 
 default_strings = {
     element.attrib["name"]: "".join(element.itertext())
@@ -150,7 +176,7 @@ copy_mismatches = {
 check(not copy_mismatches, "phone screenshot recapture copy matches current resources", str(copy_mismatches))
 
 blocking_assets = screenshot_manifest.get("blocking_assets", [])
-required_recapture = screenshot_manifest.get("required_recapture", {})
+required_recapture = phone_recapture
 obsolete_visible_copy = screenshot_manifest.get("obsolete_visible_copy", {})
 ready = screenshot_manifest.get("submission_ready") is True
 provenance_ready = (
@@ -180,7 +206,12 @@ ready_manifest_valid = (
 check(
     (stale_manifest_valid or ready_manifest_valid)
     and required_recapture.get("source_owner") == "immutable-debug-worktree-v1"
-    and required_recapture.get("source_manifest_schema") == 2,
+    and required_recapture.get("source_manifest_schema") == 2
+    and required_recapture.get("device_model") == "PMA110"
+    and required_recapture.get("locale") == "en-US"
+    and required_recapture.get("orientation") == "portrait"
+    and required_recapture.get("crop_box") == [0, 168, 1440, 3048]
+    and phone_png_contract == (1440, 2880, 8, 2),
     "phone screenshot manifest records a valid fail-closed recapture state",
 )
 
@@ -213,6 +244,22 @@ check(
     "tablet screenshot bytes match the validity manifest",
     str(tablet_digest_mismatches),
 )
+tablet_recapture = tablet_manifest.get("required_recapture", {})
+tablet_png_contract = (
+    *(tablet_recapture.get("pixel_size") or []),
+    tablet_recapture.get("png_bit_depth"),
+    tablet_recapture.get("png_color_type"),
+)
+tablet_geometry_mismatches = {
+    relative: png_ihdr(relative)
+    for relative in tablet_screenshots
+    if png_ihdr(relative) != tablet_png_contract
+}
+check(
+    tablet_png_contract == (1920, 1200, 8, 6) and not tablet_geometry_mismatches,
+    "tablet screenshot PNG bytes match the declared geometry and encoding",
+    str(tablet_geometry_mismatches),
+)
 
 tablet_required_current_copy = tablet_manifest.get("required_current_copy", {})
 tablet_copy_mismatches = {
@@ -227,7 +274,6 @@ check(
 )
 
 tablet_blocking_assets = tablet_manifest.get("blocking_assets", [])
-tablet_recapture = tablet_manifest.get("required_recapture", {})
 tablet_ready = tablet_manifest.get("submission_ready") is True
 tablet_provenance_ready = all(
     re.fullmatch(pattern, tablet_recapture.get(field) or "")
@@ -260,8 +306,10 @@ check(
     and tablet_history_is_honest
     and tablet_recapture.get("source_owner") == "immutable-debug-worktree-v1"
     and tablet_recapture.get("source_manifest_schema") == 2
+    and tablet_recapture.get("device_class") == "sw600dp+ Android tablet"
+    and tablet_recapture.get("locale") == "en-US"
     and tablet_recapture.get("orientation") == "landscape"
-    and tablet_recapture.get("pixel_size") == [1920, 1200],
+    and tablet_png_contract == (1920, 1200, 8, 6),
     "tablet screenshot manifest records a valid fail-closed provenance state",
 )
 

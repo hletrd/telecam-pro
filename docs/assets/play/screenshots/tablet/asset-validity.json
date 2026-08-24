@@ -58,6 +58,8 @@
     "pixel_size": [
       1920,
       1200
-    ]
+    ],
+    "png_bit_depth": 8,
+    "png_color_type": 6
   }
 }
