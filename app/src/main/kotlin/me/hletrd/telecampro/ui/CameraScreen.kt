@@ -3242,11 +3242,19 @@ internal fun ShutterButton(
 internal fun ShutterFocusIndicator(focused: Boolean, modifier: Modifier = Modifier) {
     Box(modifier) {
         if (focused) {
-            // Black survives bright finder frames; Accent identifies focus on dark frames.
+            // Separate rings instead of chained borders: chained border modifiers overdraw one
+            // another at the same edge and diluted Accent to ~50% (#455060) on black, only 2.57:1.
+            // Black survives bright finder frames; the inset full-opacity Accent identifies focus
+            // on dark frames.
             Box(
                 Modifier
                     .fillMaxSize()
-                    .border(5.dp, Color.Black, CircleShape)
+                    .border(5.dp, Color.Black, CircleShape),
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(5.dp)
                     .border(2.dp, CameraColors.Accent, CircleShape),
             )
         }

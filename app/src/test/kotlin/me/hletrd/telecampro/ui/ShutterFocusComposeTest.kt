@@ -3,11 +3,12 @@ package me.hletrd.telecampro.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalInputModeManager
@@ -20,7 +21,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.CaptureMode
-import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -43,7 +43,7 @@ class ShutterFocusComposeTest {
         compose.setContent {
             LocalInputModeManager.current.requestInputMode(InputMode.Keyboard)
             TeleCamProTheme {
-                Row {
+                Column {
                     Box(Modifier.size(1.dp).focusable().testTag("focus-sink"))
                     frames.forEach { (name, frame) ->
                         Box(Modifier.background(frame).padding(8.dp)) {
@@ -53,18 +53,6 @@ class ShutterFocusComposeTest {
                                 timerCountdownSec = 0,
                                 onClick = {},
                                 modifier = Modifier.testTag("shutter-$name"),
-                            )
-                        }
-                        Box(Modifier.background(frame).padding(8.dp)) {
-                            ShutterFocusIndicator(
-                                focused = false,
-                                modifier = Modifier.size(76.dp).testTag("indicator-$name-off"),
-                            )
-                        }
-                        Box(Modifier.background(frame).padding(8.dp)) {
-                            ShutterFocusIndicator(
-                                focused = true,
-                                modifier = Modifier.size(76.dp).testTag("indicator-$name-on"),
                             )
                         }
                     }
@@ -77,25 +65,32 @@ class ShutterFocusComposeTest {
             val tag = "shutter-$name"
             compose.onNodeWithTag("focus-sink").requestFocus()
             compose.waitForIdle()
+            val before = compose.onNodeWithTag(tag).captureToImage().toPixelMap()
             compose.onNodeWithTag(tag).requestFocus()
             compose.waitForIdle()
             compose.onNodeWithTag(tag).assert(
                 SemanticsMatcher.expectValue(ShutterKeyboardFocused, true),
             )
-            val before = compose.onNodeWithTag("indicator-$name-off").captureToImage().toPixelMap()
-            val focused = compose.onNodeWithTag("indicator-$name-on").captureToImage().toPixelMap()
+            val focused = compose.onNodeWithTag(tag).captureToImage().toPixelMap()
 
             val edge = buildList {
                 for (x in 0 until focused.width) {
-                    for (y in 0 until minOf(7, focused.height)) add(x to y)
+                    for (y in 0 until focused.height) {
+                        if (x < 7 || x >= focused.width - 7 || y < 7 || y >= focused.height - 7) {
+                            add(x to y)
+                        }
+                    }
                 }
             }
             val changedEdge = edge.filter { (x, y) -> before[x, y] != focused[x, y] }
-            assertTrue("$name focus must change rendered edge pixels", changedEdge.isNotEmpty())
-            val contrastColor = if (frame == Color.Black) CameraColors.Accent else Color.Black
+            assertTrue("$name production shutter focus must change rendered edge pixels", changedEdge.isNotEmpty())
+            val strongest = changedEdge.maxBy { (x, y) -> contrast(focused[x, y], frame) }
+            val renderedColor = focused[strongest.first, strongest.second]
+            val renderedContrast = contrast(renderedColor, frame)
             assertTrue(
-                "$name focus keyline must reach 3 to 1 against its finder frame",
-                contrast(contrastColor, frame) >= 3.0,
+                "$name rendered production keyline contrast was $renderedContrast " +
+                    "at #${renderedColor.toArgb().toUInt().toString(16)}",
+                renderedContrast >= 3.0,
             )
         }
     }
