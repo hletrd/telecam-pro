@@ -107,6 +107,7 @@ import me.hletrd.telecampro.focus.focusConfidenceCandidate
 import me.hletrd.telecampro.focus.frameDefocusCandidate
 import me.hletrd.telecampro.focus.macroTooCloseCandidate
 import me.hletrd.telecampro.storage.ExtraSettings
+import me.hletrd.telecampro.storage.DeletedFamilySweepResult
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.SettingsStore
@@ -634,13 +635,16 @@ class CameraViewModel @JvmOverloads constructor(
         }
     }
 
-    // One shared background lane for the ViewModel's own MediaStore/StatFs work (PERF4-6/PERF4-9):
-    // the restore, whole-family delete, and late-sibling delete paths each spawned a bare
-    // unpooled Thread per invocation. Single-threaded so deletes stay ordered; shut down in
-    // onCleared after the engine release completes.
+    // One ViewModel-local background lane for bounded/coalesced telemetry plus one-shot restore and
+    // codec inventory work. Provider deletion has its own process-finite ordered lane below, so a
+    // wedged Binder call cannot grow this executor through repeated capture/delete callbacks.
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "vm-io").apply { isDaemon = true }
     }
+    private val mediaDeleteDispatcher = ViewModelMediaDeleteDispatcher(
+        VIEW_MODEL_MEDIA_DELETE_WORKER_COUNT,
+        VIEW_MODEL_MEDIA_DELETE_BACKLOG_CAPACITY,
+    )
     @Volatile private var cleared = false
     private var encoderInventory: CodecInventory = CodecInventory.EMPTY
     private var pendingCodecUntilInventory: VideoCodec? = null
@@ -3348,47 +3352,79 @@ class CameraViewModel @JvmOverloads constructor(
                     it
                 }
             }
-            val accepted = runCatching { ioExecutor.execute {
-            // BEFORE the known outputs go, sweep exact-family siblings the tracker never learned
-            // about. This includes a publish-failed pending row and the cross-Engine ordering where
-            // an old publication completed immediately before this Delete committed its marker.
-            // The tracker's frozen rows stay excluded so survivor accounting below remains exact.
-            if (deletePlan.deleteScope == MediaDeleteScope.CAPTURE_FAMILY) {
-                deletePlan.familyKey?.let { family ->
-                    MediaStoreWriter.deleteUntrackedFamilySiblings(
-                        context = getApplication(),
-                        family = family,
-                        excluded = deletePlan.outputs,
-                    )
-                }
-            }
-            val survivors = outputs.filterTo(linkedSetOf()) { output ->
-                !MediaStoreWriter.delete(getApplication(), output)
-            }
-            val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, survivors)
-            deletePlan.familyKey?.let { family ->
-                engine.reconcileDeletedFamilyAfterProviderMutation(
-                    family = family,
-                    liveStillCaptureId = deletePlan.liveStillCaptureId,
-                )
-            }
-            mainHandler.post {
-                if (restored != null) {
-                    _state.update { current ->
-                        resolveDeleteSurvivorState(
-                            current = current,
-                            survivor = restored,
-                            captureOutputs = captureOutputs,
+            val application = getApplication<Application>()
+            val dispatch = mediaDeleteDispatcher.dispatch(
+                Runnable {
+                    // BEFORE the known outputs go, sweep exact-family siblings the tracker never
+                    // learned about. This includes a publish-failed pending row and the cross-Engine
+                    // ordering where an old publication completed immediately before Delete won.
+                    // The frozen tracker rows stay excluded so survivor accounting remains exact.
+                    var sweep = DeletedFamilySweepResult()
+                    val providerWork = runCatching {
+                        if (deletePlan.deleteScope == MediaDeleteScope.CAPTURE_FAMILY) {
+                            sweep = deletePlan.familyKey?.let { family ->
+                                MediaStoreWriter.deleteUntrackedFamilySiblings(
+                                    context = application,
+                                    family = family,
+                                    excluded = deletePlan.outputs,
+                                )
+                            } ?: DeletedFamilySweepResult.QUERY_FAILED
+                        }
+                        outputs.filterTo(linkedSetOf()) { output ->
+                            !MediaStoreWriter.delete(application, output)
+                        }
+                    }
+                    val survivors = providerWork.getOrElse {
+                        sweep = DeletedFamilySweepResult.QUERY_FAILED
+                        outputs
+                    }
+                    val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, survivors)
+                    deletePlan.familyKey?.let { family ->
+                        engine.reconcileDeletedFamilyAfterProviderMutation(
+                            family = family,
+                            liveStillCaptureId = deletePlan.liveStillCaptureId,
                         )
                     }
+                    mainHandler.post {
+                        if (cleared) return@post
+                        if (restored != null) {
+                            _state.update { current ->
+                                resolveDeleteSurvivorState(
+                                    current = current,
+                                    survivor = restored,
+                                    captureOutputs = captureOutputs,
+                                )
+                            }
+                        }
+                        // A later capture can replace review ownership immediately after the survivor
+                        // decision. Gallery is the one retry route that stays truthful across that
+                        // race and across an uncertain exact-family sweep.
+                        showStatus(deleteResultStatus(survivors.isEmpty(), sweep).status())
+                    }
+                },
+            )
+            if (dispatch != ViewModelMediaDeleteDispatch.ACCEPTED) {
+                val restored = if (deletePlan.deleteScope == MediaDeleteScope.FILE_ONLY) {
+                    // No durable family marker exists for a legacy/file-only row. Keep that exact
+                    // file reviewable so the operator can retry instead of losing the in-app handle.
+                    captureOutputs.restoreDeleteSurvivors(deletePlan, outputs)
+                } else {
+                    null
                 }
-                // A later capture can replace review ownership immediately after the survivor
-                // decision. Gallery is the one retry route that stays truthful across that race;
-                // capture-specific copy would point at whichever newer thumbnail won.
-                showStatus(deleteResultStatus(survivors.isEmpty()).status())
+                // A family delete retains its durable marker; a file-only delete restores the exact
+                // review handle above. Provider work was not started or run inline, so terminal
+                // success would be false in either case. Gallery is the race-safe retry route.
+                mainHandler.post {
+                    if (!cleared) {
+                        if (restored != null) {
+                            _state.update { current ->
+                                resolveDeleteSurvivorState(current, restored, captureOutputs)
+                            }
+                        }
+                        showStatus(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY)
+                    }
+                }
             }
-            } }.isSuccess
-            if (!accepted) mainHandler.post { showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE) }
         }
     }
 
@@ -3416,18 +3452,26 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun deleteLateCaptureOutput(uri: Uri) {
-        runCatching {
-            ioExecutor.execute {
+        val application = getApplication<Application>()
+        val dispatch = mediaDeleteDispatcher.dispatch(
+            Runnable {
                 // This is not a newly rejected output: the durable whole-family marker already owns
                 // restart recovery, so it must not consume the process rejected-output headroom.
-                if (MediaStoreWriter.discardPendingOutput(getApplication(), uri) ==
+                if (MediaStoreWriter.discardPendingOutput(application, uri) ==
                     me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
                 ) {
                     mainHandler.post {
+                        if (cleared) return@post
                         _state.update { it.copy(stillCaptureAdmissionAvailable = false) }
                         showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
                     }
                 }
+            },
+        )
+        if (dispatch != ViewModelMediaDeleteDispatch.ACCEPTED) {
+            // No inline fallback. The capture-family marker remains the durable restart owner.
+            mainHandler.post {
+                if (!cleared) showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
             }
         }
     }
@@ -3605,8 +3649,10 @@ class CameraViewModel @JvmOverloads constructor(
             // Thread creation failure is exceptional; preserve resource correctness as the fallback.
             ownedEngine.release()
         }
-        // Let already-queued MediaStore deletes finish, then retire the lane (daemon thread, so a
-        // shutdown that never drains cannot block process exit).
+        // Refuse new work from this stale ViewModel facade. Accepted provider tasks keep their exact
+        // identity on the finite process owner; neither teardown nor replacement multiplies lanes.
+        mediaDeleteDispatcher.shutdown()
+        // Let the remaining one-shot/coalesced ViewModel work finish, then retire its daemon lane.
         runCatching { ioExecutor.shutdown() }
         // ViewModel.onCleared() is @EmptySuper (empty base impl) — do not call super (lint EmptySuperCall).
     }
@@ -3641,8 +3687,11 @@ internal fun resolveDeleteSurvivorState(
 } else current
 
 /** Gallery remains valid even if a newer capture replaces the in-app review owner. */
-internal fun deleteResultStatus(survivorsEmpty: Boolean): CameraStatusMessage =
-    if (survivorsEmpty) CameraStatusMessage.DELETED
+internal fun deleteResultStatus(
+    knownSurvivorsEmpty: Boolean,
+    untrackedSweep: DeletedFamilySweepResult,
+): CameraStatusMessage =
+    if (knownSurvivorsEmpty && untrackedSweep.complete) CameraStatusMessage.DELETED
     else CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY
 
 /** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */

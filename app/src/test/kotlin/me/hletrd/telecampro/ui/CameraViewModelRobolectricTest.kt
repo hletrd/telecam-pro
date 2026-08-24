@@ -31,6 +31,7 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.DeletedFamilySweepResult
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.video.CodecComponent
@@ -158,7 +159,10 @@ class CameraViewModelRobolectricTest {
             captureOutputs = tracker,
         )
 
-        assertEquals(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY, deleteResultStatus(false))
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(false, DeletedFamilySweepResult()),
+        )
         assertEquals(survivorUri, state.lastMediaUri)
         assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, state.lastMediaProvenance)
         assertEquals(MediaDeleteScope.FILE_ONLY, state.lastMediaDeleteScope)
@@ -186,7 +190,10 @@ class CameraViewModelRobolectricTest {
             captureOutputs = tracker,
         )
 
-        assertEquals(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY, deleteResultStatus(false))
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(false, DeletedFamilySweepResult()),
+        )
         assertEquals(newerState, state)
         assertEquals(newerUri, state.lastMediaUri)
         assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, state.lastMediaProvenance)
@@ -194,8 +201,25 @@ class CameraViewModelRobolectricTest {
     }
 
     @Test fun `delete result reports success only when no survivor remains`() {
-        assertEquals(CameraStatusMessage.DELETED, deleteResultStatus(true))
-        assertEquals(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY, deleteResultStatus(false))
+        assertEquals(
+            CameraStatusMessage.DELETED,
+            deleteResultStatus(true, DeletedFamilySweepResult()),
+        )
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(false, DeletedFamilySweepResult()),
+        )
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(
+                true,
+                DeletedFamilySweepResult(discovered = 1, unresolved = 1),
+            ),
+        )
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(true, DeletedFamilySweepResult.QUERY_FAILED),
+        )
     }
 
     @Test fun `engine route publication installs explicit external truth without hidden tele`() {

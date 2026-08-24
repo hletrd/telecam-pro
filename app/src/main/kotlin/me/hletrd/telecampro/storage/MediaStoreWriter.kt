@@ -842,40 +842,43 @@ object MediaStoreWriter {
      * here so that winner is still discovered and deleted instead of remaining Gallery-visible.
      * [excluded] is the tracker's frozen set; its caller keeps exact survivor accounting for those
      * rows. Exact F1 names, package ownership, and capture directories prevent proximity or foreign
-     * media deletion. Best-effort; unresolved rows remain owned by the durable family marker.
+     * media deletion. Every provider outcome is preserved in [DeletedFamilySweepResult]; unresolved
+     * rows and query uncertainty remain owned by the durable family marker.
      */
     internal fun deleteUntrackedFamilySiblings(
         context: Context,
         family: CaptureFamilyKey,
         excluded: Set<Uri>,
-    ): Int {
+    ): DeletedFamilySweepResult {
         val base = when (family.media) {
             CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         }
-        var swept = 0
-        runCatching {
-            val queryArgs = Bundle().apply {
-                val query = deletedFamilyQuery(family, CAPTURE_SUBDIRS, context.packageName)
-                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
-                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
-                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
-            }
-            context.contentResolver.query(
-                base,
-                arrayOf(MediaStore.MediaColumns._ID),
-                queryArgs,
-                null,
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                while (cursor.moveToNext()) {
-                    val rowUri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
-                    if (rowUri in excluded) continue
-                    if (delete(context, rowUri)) swept++
+        return sweepDeletedFamilySiblings(
+            excluded = excluded,
+            discover = {
+                val queryArgs = Bundle().apply {
+                    val query = deletedFamilyQuery(family, CAPTURE_SUBDIRS, context.packageName)
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
                 }
-            }
-        }
-        return swept
+                context.contentResolver.query(
+                    base,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    queryArgs,
+                    null,
+                )?.use { cursor ->
+                    buildList {
+                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                        while (cursor.moveToNext()) {
+                            add(ContentUris.withAppendedId(base, cursor.getLong(idCol)))
+                        }
+                    }
+                } ?: error("MediaProvider returned no cursor for exact-family delete sweep")
+            },
+            delete = { rowUri -> delete(context, rowUri) },
+        )
     }
 
     /**
@@ -1391,6 +1394,59 @@ internal enum class FamilyDeletionRetirementResult {
 }
 
 internal data class DeletedFamilyQuery(val selection: String, val args: Array<String>)
+
+/** Exact terminal accounting for the untracked portion of a capture-family delete. */
+internal data class DeletedFamilySweepResult(
+    val discovered: Int = 0,
+    val deleted: Int = 0,
+    val unresolved: Int = 0,
+    val queryFailed: Boolean = false,
+) {
+    init {
+        require(discovered >= 0)
+        require(deleted >= 0)
+        require(unresolved >= 0)
+        require(deleted + unresolved == discovered)
+    }
+
+    val complete: Boolean get() = !queryFailed && unresolved == 0
+
+    companion object {
+        val QUERY_FAILED = DeletedFamilySweepResult(queryFailed = true)
+    }
+}
+
+/**
+ * Provider seam for exact-family discovery and deletion.
+ *
+ * Query failure is distinct from an authoritative empty result. A row whose delete reports success
+ * includes the already-absent case because [MediaStoreWriter.delete] probes an ambiguous zero count
+ * before returning; every false result remains an explicit unresolved sibling.
+ */
+internal fun <T> sweepDeletedFamilySiblings(
+    excluded: Set<T>,
+    discover: () -> List<T>,
+    delete: (T) -> Boolean,
+): DeletedFamilySweepResult {
+    val rows = runCatching(discover).getOrElse { return DeletedFamilySweepResult.QUERY_FAILED }
+    var discovered = 0
+    var deleted = 0
+    var unresolved = 0
+    rows.forEach { row ->
+        if (row in excluded) return@forEach
+        discovered += 1
+        if (runCatching { delete(row) }.getOrDefault(false)) {
+            deleted += 1
+        } else {
+            unresolved += 1
+        }
+    }
+    return DeletedFamilySweepResult(
+        discovered = discovered,
+        deleted = deleted,
+        unresolved = unresolved,
+    )
+}
 
 internal data class DeletedFamilyBatch<K, V>(
     val entries: List<Map.Entry<K, V>>,
