@@ -339,13 +339,16 @@ Accessed from GL + audio/video threads:
   when it opened. The same controller remains authoritative through fast commits; callbacks from a
   replaced controller are inert. An owned failure atomically invalidates Ready/outputs, advances the
   session generation, claims any recorder, reports termination, and enters bounded recovery.
-- **Controller-teardown ownership**: `CameraController.close()` publishes one identity-owned terminal
-  shared by concurrent callers: `STRICTLY_RELEASED` only after its camera-handler cleanup completes,
-  or `QUARANTINED` after the bounded deadline or a cleanup failure. Quarantine closes the process-wide
-  native-admission gate before it is observable and is irreversible until process restart; a late
-  handler completion is inert. Sequential replacement requires strict release. The dual-open path may
-  open the candidate device while the outgoing preview remains live, but cannot start its deferred
-  session (or enter sequential fallback) unless outgoing teardown returns strict release.
+- **Controller-teardown ownership**: `CameraController.close()` publishes one exact-device terminal
+  shared by concurrent callers: `STRICTLY_RELEASED` only after `StateCallback.onClosed` reports the
+  first callback-supplied `CameraDevice` identity, or `QUARANTINED` after the bounded deadline or a
+  queue-shutdown failure. A returned `CameraDevice.close()` and local handler cleanup are not release
+  proof. Error/disconnect-before-open claims and retires its callback handle exactly once. Camera-lane
+  close initiation returns pending without waiting for its own queue; only non-camera Engine lanes
+  await terminal proof. Quarantine closes process native admission before it is observable and is
+  irreversible until process restart; a late callback is inert. Sequential replacement requires
+  strict release. The dual-open path may open the candidate device while the outgoing preview remains
+  live, but cannot start its deferred session (or enter sequential fallback) without exact proof.
 - **Lifecycle guards**: `MainActivity.onStart` → `CameraViewModel.onStart` → `CameraEngine.resume`, and
   `MainActivity.onStop` → `CameraViewModel.onStop` → `CameraEngine.pause`. The paused flag prevents
   reconfigure/open work during app backgrounding; every queued boundary rechecks ownership, and
