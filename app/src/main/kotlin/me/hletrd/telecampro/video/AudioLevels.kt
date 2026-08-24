@@ -21,6 +21,30 @@ data class AudioLevelFrame(
     }
 }
 
+/** Coarse peak truth retained in root UI state; exact maxima do not affect meter geometry. */
+enum class AudioOverloadState { NORMAL, NEAR_CLIPPING, CLIPPING }
+
+internal const val PCM_NEAR_CLIPPING_PEAK = 0.95f
+internal const val PCM_CLIPPING_PEAK = 32767f / 32768f
+
+internal fun audioOverloadState(rawPeak: Float): AudioOverloadState = when {
+    !rawPeak.isFinite() -> AudioOverloadState.NORMAL
+    rawPeak >= PCM_CLIPPING_PEAK -> AudioOverloadState.CLIPPING
+    rawPeak >= PCM_NEAR_CLIPPING_PEAK -> AudioOverloadState.NEAR_CLIPPING
+    else -> AudioOverloadState.NORMAL
+}
+
+internal data class AudioDisplayFrame(
+    val rms: List<Float>,
+    val overloads: List<AudioOverloadState>,
+)
+
+/** RMS is pixel-quantized; peak evidence is thresholded before any lossy representation change. */
+internal fun audioDisplayFrame(frame: AudioLevelFrame): AudioDisplayFrame = AudioDisplayFrame(
+    rms = quantizeLevels(frame.rms),
+    overloads = frame.peaks.map(::audioOverloadState),
+)
+
 /**
  * Per-channel RMS of an INTERLEAVED signed-16-bit PCM buffer, normalized to 0..1 and scaled by
  * [gain].

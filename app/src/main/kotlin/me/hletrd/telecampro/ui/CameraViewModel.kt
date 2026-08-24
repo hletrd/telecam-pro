@@ -1014,17 +1014,16 @@ class CameraViewModel @JvmOverloads constructor(
             // threshold for a smoothly-moving meter, and the emission it saves is a whole-tree
             // recomposition. Per CHANNEL, and before the list compare: N channels are N chances
             // for a jittering low bit to defeat the dedup.
-            val q = me.hletrd.telecampro.video.quantizeLevels(frame.rms)
-            val peaks = me.hletrd.telecampro.video.quantizeLevels(frame.peaks)
-            if (me.hletrd.telecampro.BuildConfig.DEBUG && q.size != lastLoggedLevelChannels) {
-                lastLoggedLevelChannels = q.size
+            val display = me.hletrd.telecampro.video.audioDisplayFrame(frame)
+            if (me.hletrd.telecampro.BuildConfig.DEBUG && display.rms.size != lastLoggedLevelChannels) {
+                lastLoggedLevelChannels = display.rms.size
                 // Change-gated on the CHANNEL COUNT only — a per-emission line at ~10 Hz would
                 // spend the ColorOS 300-row process quota in half a minute.
-                android.util.Log.i("AudioLevels", "meter channels=${q.size}")
+                android.util.Log.i("AudioLevels", "meter channels=${display.rms.size}")
             }
             _state.update {
-                if (it.audioLevels == q && it.audioPeakLevels == peaks) it
-                else it.copy(audioLevels = q, audioPeakLevels = peaks)
+                if (it.audioLevels == display.rms && it.audioOverloadStates == display.overloads) it
+                else it.copy(audioLevels = display.rms, audioOverloadStates = display.overloads)
             }
         }
         // Run-state edges only (engine is edge-gated); may arrive from the timelapse scheduler

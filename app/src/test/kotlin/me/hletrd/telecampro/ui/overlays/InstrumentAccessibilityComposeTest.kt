@@ -15,6 +15,8 @@ import java.util.Locale
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.WaveformData
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+import me.hletrd.telecampro.video.AudioOverloadState
+import me.hletrd.telecampro.video.audioOverloadState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Rule
@@ -40,12 +42,20 @@ class InstrumentAccessibilityComposeTest {
             ),
             audioAccessibilityStates(
                 levels = listOf(0f, 0.5f, 0.9f, Float.NaN),
-                peaks = listOf(0f, 0.5f, 0.96f, 0f),
+                overloads = listOf(
+                    AudioOverloadState.NORMAL,
+                    AudioOverloadState.NORMAL,
+                    AudioOverloadState.NEAR_CLIPPING,
+                    AudioOverloadState.NORMAL,
+                ),
             ),
         )
         assertEquals(
             listOf(AudioAccessibilityState.HIGH, AudioAccessibilityState.CLIPPING),
-            audioAccessibilityStates(listOf(0.7f, 0.7f), listOf(0.7f, 1f)),
+            audioAccessibilityStates(
+                listOf(0.7f, 0.7f),
+                listOf(AudioOverloadState.NORMAL, AudioOverloadState.CLIPPING),
+            ),
         )
         assertEquals(
             audioAccessibilityStates(listOf(0.20f, 0.86f)),
@@ -60,7 +70,12 @@ class InstrumentAccessibilityComposeTest {
             ),
             audioAccessibilityStates(
                 levels = listOf(0.02f, 0.60f, 0.85f, 0.85f),
-                peaks = listOf(0f, 0f, 0.95f, 32767f / 32768f),
+                overloads = listOf(
+                    AudioOverloadState.NORMAL,
+                    AudioOverloadState.NORMAL,
+                    AudioOverloadState.NEAR_CLIPPING,
+                    AudioOverloadState.CLIPPING,
+                ),
             ),
         )
 
@@ -71,7 +86,10 @@ class InstrumentAccessibilityComposeTest {
         )
         assertEquals(
             listOf(AudioAccessibilityState.CLIPPING),
-            audioAccessibilityStates(clippedSine.rms.toList(), clippedSine.peaks.toList()),
+            audioAccessibilityStates(
+                clippedSine.rms.toList(),
+                clippedSine.peaks.map(::audioOverloadState),
+            ),
         )
 
         assertEquals(HistogramAccessibilityState.PENDING, histogramAccessibilityState(null))
@@ -147,7 +165,13 @@ class InstrumentAccessibilityComposeTest {
             CompositionLocalProvider(LocalContext provides localizedContext(language)) {
                 TeleCamProTheme {
                     Column {
-                        AudioMeter(levels = listOf(0f, 0.9f), peaks = listOf(0f, 0.96f))
+                        AudioMeter(
+                            levels = listOf(0f, 0.9f),
+                            overloads = listOf(
+                                AudioOverloadState.NORMAL,
+                                AudioOverloadState.NEAR_CLIPPING,
+                            ),
+                        )
                         HistogramOverlay(histogram(shadows = 10, midtones = 980, highlights = 10))
                         WaveformOverlay(waveform)
                     }

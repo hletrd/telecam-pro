@@ -599,7 +599,11 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
  * does not push the OSD around relative to a mono one.
  */
 @Composable
-fun AudioMeter(levels: List<Float>, peaks: List<Float> = emptyList(), modifier: Modifier = Modifier) {
+fun AudioMeter(
+    levels: List<Float>,
+    overloads: List<me.hletrd.telecampro.video.AudioOverloadState> = emptyList(),
+    modifier: Modifier = Modifier,
+) {
     // An EMPTY list still draws the empty plate. The meter's own visibility is owned by the caller's
     // gate; blanking the plate here would make it flicker away between AudioRecord generations and
     // on every stop, which is a state the operator would read as "the mic died".
@@ -608,7 +612,7 @@ fun AudioMeter(levels: List<Float>, peaks: List<Float> = emptyList(), modifier: 
     val audioMeterState = if (levels.isEmpty()) {
         stringResource(R.string.a11y_audio_levels_pending)
     } else {
-        audioAccessibilityStates(levels, peaks).mapIndexed { index, state ->
+        audioAccessibilityStates(levels, overloads).mapIndexed { index, state ->
             val stateLabel = stringResource(
                 when (state) {
                     AudioAccessibilityState.PENDING -> R.string.a11y_audio_level_pending
@@ -660,23 +664,22 @@ internal enum class AudioAccessibilityState { PENDING, SILENT, SIGNAL, HIGH, NEA
 /** Coarse and change-gated by identity: raw 10 Hz meter values do not become sensor-rate speech. */
 internal fun audioAccessibilityStates(
     levels: List<Float>,
-    peaks: List<Float> = emptyList(),
+    overloads: List<me.hletrd.telecampro.video.AudioOverloadState> = emptyList(),
 ): List<AudioAccessibilityState> =
     levels.mapIndexed { index, raw ->
         if (!raw.isFinite()) return@mapIndexed AudioAccessibilityState.PENDING
         val level = raw.coerceIn(0f, 1f)
-        val peak = peaks.getOrNull(index)?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
+        val overload = overloads.getOrNull(index) ?: me.hletrd.telecampro.video.AudioOverloadState.NORMAL
         when {
-            peak >= PCM_CLIPPING_PEAK -> AudioAccessibilityState.CLIPPING
-            peak >= PCM_NEAR_CLIPPING_PEAK -> AudioAccessibilityState.NEAR_CLIPPING
+            overload == me.hletrd.telecampro.video.AudioOverloadState.CLIPPING ->
+                AudioAccessibilityState.CLIPPING
+            overload == me.hletrd.telecampro.video.AudioOverloadState.NEAR_CLIPPING ->
+                AudioAccessibilityState.NEAR_CLIPPING
             level <= 0.02f -> AudioAccessibilityState.SILENT
             level < 0.60f -> AudioAccessibilityState.SIGNAL
             else -> AudioAccessibilityState.HIGH
         }
     }
-
-private const val PCM_NEAR_CLIPPING_PEAK = 0.95f
-private const val PCM_CLIPPING_PEAK = 32767f / 32768f
 
 /**
  * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the

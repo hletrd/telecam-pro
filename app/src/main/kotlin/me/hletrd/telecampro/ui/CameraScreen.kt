@@ -1175,7 +1175,7 @@ fun CameraScreen(
             if (state.mode == CaptureMode.VIDEO && state.recordAudio && (detailsVisible || state.isRecording)) {
                 AudioMeter(
                     levels = state.audioLevels,
-                    peaks = state.audioPeakLevels,
+                    overloads = state.audioOverloadStates,
                     modifier = Modifier.rotateLayout(overlayRotation),
                 )
             }

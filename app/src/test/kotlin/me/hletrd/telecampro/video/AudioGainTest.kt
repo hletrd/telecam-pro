@@ -168,4 +168,33 @@ class AudioGainTest {
         assertEquals(Short.MAX_VALUE.toFloat() / 32768f, held[0], 0f)
         assertEquals(4_000f / 32768f, held[1], 0f)
     }
+
+    @Test
+    fun `overload classifier preserves exact PCM threshold sides`() {
+        assertEquals(AudioOverloadState.NORMAL, audioOverloadState(31_129f / 32768f))
+        assertEquals(AudioOverloadState.NEAR_CLIPPING, audioOverloadState(31_130f / 32768f))
+        assertEquals(AudioOverloadState.NEAR_CLIPPING, audioOverloadState(32_703f / 32768f))
+        assertEquals(AudioOverloadState.NEAR_CLIPPING, audioOverloadState(32_704f / 32768f))
+        assertEquals(AudioOverloadState.NEAR_CLIPPING, audioOverloadState(32_766f / 32768f))
+        assertEquals(AudioOverloadState.CLIPPING, audioOverloadState(Short.MAX_VALUE.toFloat() / 32768f))
+        assertEquals(AudioOverloadState.CLIPPING, audioOverloadState(Short.MIN_VALUE.toInt().let { -it } / 32768f))
+    }
+
+    @Test
+    fun `display reducer ignores peak jitter inside one overload category`() {
+        val first = audioDisplayFrame(
+            AudioLevelFrame(floatArrayOf(0.5f), floatArrayOf(0.2f)),
+        )
+        val second = audioDisplayFrame(
+            AudioLevelFrame(floatArrayOf(0.5f), floatArrayOf(0.8f)),
+        )
+
+        assertEquals(first, second)
+        assertEquals(
+            AudioOverloadState.NEAR_CLIPPING,
+            audioDisplayFrame(
+                AudioLevelFrame(floatArrayOf(0.5f), floatArrayOf(31_130f / 32768f)),
+            ).overloads.single(),
+        )
+    }
 }
