@@ -968,6 +968,10 @@ fun normalizeTimelapseIntervalSeconds(seconds: Int): Int =
 internal fun captureDriveMode(selected: DriveMode, singleShot: Boolean): DriveMode =
     if (singleShot) DriveMode.SINGLE else selected
 
+/** The pre-kill family trace is consumed only by the ordinary SINGLE device-harness case. */
+internal fun captureRegistrationTraceAdmitted(selected: DriveMode, recordingSnapshot: Boolean): Boolean =
+    selected == DriveMode.SINGLE && !recordingSnapshot
+
 /**
  * Video codec. HEVC exposes Main10 HLG/Log profiles; AVC is 8-bit SDR only. APV is the professional
  * intra-frame codec (`c2.qti.apv.encoder`, ISO/IEC 21794) — HW-accelerated up to ~2 Gbps, the

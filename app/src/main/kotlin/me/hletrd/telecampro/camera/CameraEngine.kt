@@ -4112,6 +4112,7 @@ class CameraEngine internal constructor(
                         optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
                         processOwnedDngTail = usesProcessStillPublicationTail(effectiveDrive, effFormats),
+                        traceRegistration = captureRegistrationTraceAdmitted(driveMode, singleShot),
                     )
                 }.getOrElse { failure ->
                     snapshotLease?.release()
@@ -4642,6 +4643,9 @@ class CameraEngine internal constructor(
         // Only RAW-only SINGLE bypasses both the processed budget and sequence-drive chaining.
         // Its publication tail therefore needs the process-wide finite owner.
         processOwnedDngTail: Boolean = false,
+        // Bounded to the ordinary SINGLE case consumed by the kill-window harness. Sequence drives
+        // and in-REC snapshots must not spend ColorOS's finite per-process diagnostic quota.
+        traceRegistration: Boolean = false,
         onDone: (() -> Unit)? = null,
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
@@ -4655,7 +4659,7 @@ class CameraEngine internal constructor(
             if (formats.dngRaw) add("dng")
         }
         val familyStem = requestSpec.familyKey.displayName("complete").substringBeforeLast('.')
-        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+        if (me.hletrd.telecampro.BuildConfig.DEBUG && traceRegistration) {
             android.util.Log.i(
                 "CameraEngine",
                 "CaptureFamily: registered stem=$familyStem " +
