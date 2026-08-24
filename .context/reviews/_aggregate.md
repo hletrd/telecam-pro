@@ -1,4 +1,48 @@
-# Aggregate deep review — cycle 23
+# Aggregate deep review — cycle 24
+
+Date: 2026-08-24
+Reviewed HEAD: `d04df18`
+
+## Current-cycle review provenance
+
+The global agent pool exposed one child-reviewer slot because earlier cycle agents still occupied
+the remaining slots. The available reviewer performed the required full-repository inventory once
+and applied every specialist perspective, writing separate `code-reviewer`, `architect`,
+`perf-reviewer`, `tracer`, `security-reviewer`, `debugger`, `critic`, `verifier`, `test-engineer`,
+`document-specialist`, `designer`, and repository-specific `qa-adversary` artifacts.
+
+Coverage included all 417 tracked paths: all 95 production Kotlin modules, 189 host tests, four
+instrumented probes, two debug hosts, 30 Python files, two shell files, manifests, resources,
+Gradle/release inputs, and active documentation. The final sweep re-traced the cycle-23 Camera2
+teardown, process-wide still-family ownership, independent-family publication, obscured-input
+rejection, sealed release provenance, and legacy-media disclosure changes. There were no agent
+failures.
+
+## Current-cycle deduplicated findings
+
+No new confirmed, likely, or actionable manual-validation finding survived aggregation. All twelve
+review perspectives reported a clean current HEAD. Existing device-only residuals and accepted
+structural debt remain explicitly governed by `docs/BACKLOG.md` and `docs/FIELD_CHECKS.md`; they
+were not relabeled as new findings or silently treated as passed.
+
+## Current-cycle verification evidence
+
+- `:app:assembleDebug`, `:app:testDebugUnitTest`, and `:app:lintDebug`: passed.
+- 1,854 JVM/Robolectric/Compose tests: passed with zero failures/errors.
+- 73 tool/release tests, 182 device-harness self-tests, and 111 documentation checks: passed.
+- Python compilation, XML parsing, tracked-secret/network/model-seam scans, and
+  `git diff --check`: passed.
+- Device gates were blocked by directive (`DEPLOY_MODE=none`) and the absence of a current
+  `ANDROID_SERIAL`; no historical device result was promoted to current evidence.
+
+## Current-cycle accounting
+
+- New review findings: **0**
+- Deduplicated root causes: **0**
+- Agent failures: **0**
+- Deferred findings: **0**
+
+## Archived cycle-23 aggregate
 
 Date: 2026-08-24
 Reviewed HEAD: `b5a433169b3fbdfdd52a8012937dd7a18efc12ee`
