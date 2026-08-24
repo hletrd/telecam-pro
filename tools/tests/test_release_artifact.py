@@ -61,8 +61,9 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         evidence.write_text(
             json.dumps(
                 {
-                    "schema": 1,
+                    "schema": release.RELEASE_EVIDENCE_SCHEMA,
                     "boundary": release.RELEASE_EVIDENCE_BOUNDARY,
+                    "source_authority": release.RELEASE_SOURCE_AUTHORITY,
                     "commit": commit,
                     "tree": self.TREE,
                     "outputs": [
@@ -99,6 +100,24 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             f"{release.sha256_file(attestation)}  {attestation.name}\n"
         )
         return attestation, aab, commit
+
+    def test_receipt_requires_sealed_wrapper_source_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, _, commit = self.fixture(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            evidence = root / document["release_evidence_path"]
+            receipt = json.loads(evidence.read_text(encoding="utf-8"))
+            receipt["source_authority"] = "live-git-status-scan"
+            evidence.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+
+            failures = release.check_release_identity(
+                root,
+                attestation,
+                run=self.runner(commit),
+            )
+
+            self.assertIn("release evidence identity does not match the attestation", failures)
 
     def refresh_attestation(self, attestation: Path, aab: Path) -> Path:
         document = json.loads(attestation.read_text())
@@ -776,7 +795,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 failures = release.check_release_identity(root, attestation, run=run)
 
                 self.assertTrue(
-                    any("coherent initial repository state" in failure for failure in failures),
+                    any("initial repository drift state" in failure for failure in failures),
                     failures,
                 )
 

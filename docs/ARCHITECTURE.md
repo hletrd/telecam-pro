@@ -1248,16 +1248,19 @@ The outer wrapper is the evidence boundary. It no-follow exports the exact clean
 seals the normalized repository-relative signing inputs, verifies source and owner identity again
 after Gradle returns, freezes every allowlisted output, and atomically publishes exactly one direct,
 non-empty child of
-`app/build/immutable-release`. Its `release-evidence.json` records the verified commit/tree and exact
-output size/hash set. Upload attestation schema 2 must name that receipt; the checker requires the
+`app/build/immutable-release`. Its release-evidence schema 2 names
+`source_authority=sealed-wrapper-export-v1` and records the verified commit/tree and exact output
+size/hash set. Upload attestation schema 2 must name that receipt; the checker requires the
 candidate AAB to be the receipt's unique matching bundle output, so copying an ordinary mutable
 Gradle artifact cannot accidentally become upload evidence. The checker no-follow snapshots the
 attestation and its checksum sidecar once, hashes and parses those captured bytes, and revalidates
-both source identities before success, matching the AAB/evidence mutation boundary. It removes its
-private inspection files before one terminal NUL-delimited porcelain-v2 Git status process supplies
-HEAD plus tracked, untracked, and ignored protected-source truth; no external command or file cleanup
-extends a stale-success interval afterward. This is mutation and operator-path protection, not
-authentication against a malicious process already running as the same OS user.
+both source identities before success, matching the AAB/evidence mutation boundary. The signed AAB's
+packaged commit/tree plus that exact sealed-wrapper receipt are the release source authority. The
+checker also compares initial and terminal NUL-delimited porcelain-v2 Git status observations as a
+fail-closed operator-drift signal, after removing private inspection files. A status walk does not
+freeze the live worktree and is deliberately not described as an atomic source snapshot. This is
+mutation and operator-path protection, not authentication against a malicious process already
+running as the same OS user.
 `TELECAMPRO_STORE_FILE` is cleared and unsupported; environment values remain valid only for
 alias/password fields, which cannot redirect Gradle to another file.
 

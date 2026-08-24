@@ -144,10 +144,20 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 {
                     "boundary": "sealed-export-frozen-outputs-v1",
                     "commit": commit,
-                    "schema": 1,
+                    "schema": release.RELEASE_EVIDENCE_SCHEMA,
+                    "source_authority": release.RELEASE_SOURCE_AUTHORITY,
                     "tree": tree,
                 },
-                {key: evidence[key] for key in ("boundary", "commit", "schema", "tree")},
+                {
+                    key: evidence[key]
+                    for key in (
+                        "boundary",
+                        "commit",
+                        "schema",
+                        "source_authority",
+                        "tree",
+                    )
+                },
             )
             self.assertEqual(
                 [

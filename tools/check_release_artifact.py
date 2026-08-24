@@ -31,6 +31,8 @@ EXPECTED_UPLOAD_CERT_SHA256 = (
 ATTESTATION_SCHEMA = 2
 RELEASE_EVIDENCE_NAME = "release-evidence.json"
 RELEASE_EVIDENCE_BOUNDARY = "sealed-export-frozen-outputs-v1"
+RELEASE_EVIDENCE_SCHEMA = 2
+RELEASE_SOURCE_AUTHORITY = "sealed-wrapper-export-v1"
 PROVENANCE_NAMESPACE = "base/assets/telecam-release-provenance/"
 PROVENANCE_MEMBER = PROVENANCE_NAMESPACE + "source.properties"
 SOURCE_VERSION_PATH = pathlib.PurePath("app/build.gradle.kts")
@@ -78,7 +80,7 @@ class PrivateArtifactSeal:
 
 @dataclass(frozen=True)
 class RepositorySnapshot:
-    """One Git-owned view of HEAD plus ordinary and protected ignored source state."""
+    """One best-effort Git observation of live checkout drift, not source authority."""
 
     head: str
     dirty_records: tuple[str, ...]
@@ -417,7 +419,7 @@ def repository_snapshot(
     run: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]],
     root: pathlib.Path,
 ) -> RepositorySnapshot:
-    """Obtain all release-relevant repository truth from one coordinated Git process."""
+    """Observe live checkout drift in one Git process without claiming filesystem atomicity."""
     try:
         result = run(
             [
@@ -525,7 +527,7 @@ def check_release_identity(
     try:
         initial_repository = repository_snapshot(run, root)
     except ValueError as error:
-        failures.append(f"could not snapshot coherent initial repository state: {error}")
+        failures.append(f"could not observe initial repository drift state: {error}")
         initial_repository = None
     head = initial_repository.head if initial_repository is not None else ""
     attested_commit = str(document["git_commit"]).casefold()
@@ -619,8 +621,9 @@ def check_release_identity(
             failures.append("release evidence root must be an object")
         else:
             if (
-                evidence.get("schema") != 1
+                evidence.get("schema") != RELEASE_EVIDENCE_SCHEMA
                 or evidence.get("boundary") != RELEASE_EVIDENCE_BOUNDARY
+                or evidence.get("source_authority") != RELEASE_SOURCE_AUTHORITY
                 or evidence.get("commit") != attested_commit
             ):
                 failures.append("release evidence identity does not match the attestation")
@@ -786,9 +789,9 @@ def check_release_identity(
         else:
             if final_identity != identity:
                 failures.append(f"{label} source identity or digest changed during verification")
-    # All file revalidation and private-file cleanup must finish before this boundary. The one
-    # NUL-delimited porcelain-v2 process owns HEAD plus tracked, untracked, and ignored protected
-    # source truth together; no external command or filesystem cleanup may follow a successful read.
+    # The signed AAB plus matching sealed-wrapper receipt above is the source authority. Finish file
+    # revalidation and private cleanup before this last best-effort live-checkout drift observation
+    # only to minimize its inevitable scan interval; Git status does not freeze the worktree.
     try:
         cleanup_private_artifact(artifact_temp)
     except OSError as error:
@@ -796,7 +799,7 @@ def check_release_identity(
     try:
         final_repository = repository_snapshot(run, root)
     except ValueError as error:
-        return failures + [f"could not snapshot coherent terminal repository state: {error}"]
+        return failures + [f"could not observe terminal repository drift state: {error}"]
     if initial_repository is not None:
         if final_repository.dirty_records != initial_repository.dirty_records:
             failures.append("working-tree status changed during verification")

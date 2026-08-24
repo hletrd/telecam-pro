@@ -38,6 +38,8 @@ RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
 RELEASE_REPORT_PREFIXES = ("resources_config_map_file/release/",)
 STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"
 RELEASE_EVIDENCE_NAME = "release-evidence.json"
+RELEASE_EVIDENCE_SCHEMA = 2
+RELEASE_SOURCE_AUTHORITY = "sealed-wrapper-export-v1"
 
 
 class _SealedPath(NamedTuple):
@@ -306,8 +308,9 @@ def write_release_evidence(
             })
     outputs.sort(key=lambda item: str(item["path"]))
     document = {
-        "schema": 1,
+        "schema": RELEASE_EVIDENCE_SCHEMA,
         "boundary": "sealed-export-frozen-outputs-v1",
+        "source_authority": RELEASE_SOURCE_AUTHORITY,
         "commit": commit,
         "tree": tree,
         "outputs": outputs,
