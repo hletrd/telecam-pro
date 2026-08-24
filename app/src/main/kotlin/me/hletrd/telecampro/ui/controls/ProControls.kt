@@ -20,6 +20,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
@@ -72,6 +74,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -671,7 +674,7 @@ internal fun LabelValueRow(
     enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
 ) {
-    Row(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
             .then(
@@ -682,21 +685,59 @@ internal fun LabelValueRow(
                 } else {
                     Modifier
                 },
-            ),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+            )
+            .semantics { if (!enabled) disabled() },
     ) {
         val alpha = if (enabled) 1f else DISABLED_ROW_ALPHA
-        SettingsRowLabel(label, enabled = enabled)
-        // Accent marks an AFFORDANCE, not just a value: three rows here are pure readouts
-        // ("Recording / Settings locked", "Encoder / …", "Route / …") and rendered in the same blue
-        // as the tappable "Privacy Policy → View" / "Tap Focus → Reset" / "… → Add" rows. TextPrimary
-        // on Pill is ~15:1, so contrast rises.
-        Text(
-            valueLabel,
-            color = (if (onClick != null) CameraColors.Accent else CameraColors.TextPrimary).copy(alpha = alpha),
-            style = MaterialTheme.typography.labelMedium,
-        )
+        val availableWidth = maxWidth
+        val valueColor = (if (onClick != null) CameraColors.Accent else CameraColors.TextPrimary)
+            .copy(alpha = alpha)
+        // The compact ProSheet lane is 212 dp on a 320 dp window. At large font scale a horizontal
+        // pair cannot reserve a trustworthy trailing affordance (the Korean Privacy label used to
+        // consume the visible "View" action), so reflow instead of shrinking or clipping either
+        // semantic value. End alignment is logical and therefore mirrors correctly in RTL.
+        val stacked = LocalDensity.current.fontScale >= 1.5f || availableWidth < 240.dp
+        if (stacked) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                SettingsRowLabel(label, enabled = enabled)
+                Box(
+                    contentAlignment = Alignment.CenterEnd,
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                ) {
+                    Text(
+                        valueLabel,
+                        color = valueColor,
+                        style = MaterialTheme.typography.labelMedium,
+                        textAlign = TextAlign.End,
+                    )
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SettingsRowLabel(
+                    label,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f).padding(end = 12.dp),
+                )
+                // Accent marks an AFFORDANCE, not just a value: three rows here are pure readouts
+                // ("Recording / Settings locked", "Encoder / …", "Route / …") and rendered in the same blue
+                // as the tappable "Privacy Policy → View" / "Tap Focus → Reset" / "… → Add" rows. TextPrimary
+                // on Pill is ~15:1, so contrast rises. Cap unusually long values to preserve a
+                // leading-label budget; the compact branch above shows both values without clipping.
+                Text(
+                    valueLabel,
+                    color = valueColor,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.widthIn(max = availableWidth * 0.5f),
+                )
+            }
+        }
     }
 }
 
