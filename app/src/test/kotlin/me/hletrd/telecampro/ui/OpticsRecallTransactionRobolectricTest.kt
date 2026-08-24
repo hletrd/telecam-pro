@@ -4,20 +4,21 @@ import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
+import me.hletrd.telecampro.camera.CameraController
 import me.hletrd.telecampro.camera.CameraEngine
-import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraRouteInventory
+import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MemorySlot
-import me.hletrd.telecampro.camera.OpticsRollbackPublication
 import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TeleconverterDeclaration
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.effectiveFocalMm
+import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.SettingsStore
 import org.junit.After
@@ -76,6 +77,50 @@ class OpticsRecallTransactionRobolectricTest {
         (CameraEngine::class.java.getDeclaredField("opticsIntentGeneration")
             .apply { isAccessible = true }
             .get(engine) as AtomicLong).get()
+
+    private data class RollbackAttempt(val generation: Long, val transaction: Any)
+
+    /** Captures the real generation-owned transaction shape consumed by CameraEngine.rollbackOptics. */
+    private fun currentRollbackAttempt(engine: CameraEngine): RollbackAttempt {
+        val generation = currentGeneration(engine)
+        val baseline = checkNotNull(
+            CameraEngine::class.java.getDeclaredField("opticsRollbackBaseline")
+                .apply { isAccessible = true }
+                .get(engine),
+        )
+        val transactionType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "OpticsTransaction" }
+        val constructor = transactionType.declaredConstructors.single()
+            .apply { isAccessible = true }
+        return RollbackAttempt(generation, constructor.newInstance(generation, baseline))
+    }
+
+    /** Invokes the production rollback body; no Engine field or UI callback is pre-restored here. */
+    private fun invokeRollback(engine: CameraEngine, attempt: RollbackAttempt) {
+        CameraEngine::class.java.declaredMethods
+            .single { it.name == "rollbackOptics" }
+            .apply { isAccessible = true }
+            .invoke(
+                engine,
+                attempt.transaction,
+                CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status(),
+            )
+    }
+
+    private fun installController(
+        engine: CameraEngine,
+        declaration: TeleconverterDeclaration,
+    ): CameraController = CameraController(app).also { controller ->
+        controller.setTeleconverterMagnification(declaration.magnification)
+        CameraEngine::class.java.getDeclaredField("controller")
+            .apply { isAccessible = true }
+            .set(engine, controller)
+    }
+
+    private fun currentControllerMagnification(controller: CameraController): Float =
+        CameraController::class.java.getDeclaredField("teleconverterMagnification")
+            .apply { isAccessible = true }
+            .getFloat(controller)
 
     private fun setRecordingState(vm: CameraViewModel, recording: Boolean) {
         @Suppress("UNCHECKED_CAST")
@@ -182,25 +227,18 @@ class OpticsRecallTransactionRobolectricTest {
         setAcceptedTeleBaseline(vm, engine)
         val before = vm.state.value
         val beforeDeclaration = currentDeclaration(engine)
+        val controller = installController(engine, beforeDeclaration)
 
         vm.onRecallMemorySlot(MemorySlot.MR1)
-        val generation = currentGeneration(engine)
-        engine.setTeleconverterDeclaration(beforeDeclaration)
-        engine.onOpticsRollback?.invoke(
-            OpticsRollbackPublication(
-                mode = before.mode,
-                lens = before.lens,
-                teleconverter = before.teleconverterMode,
-                facing = CameraFacing.BACK,
-                route = CameraRoute.BACK,
-                controls = before.controls,
-                photoExposureTimeNs = before.controls.exposureTimeNs,
-                userPin = null,
-                preTeleUnifiedZoom = Float.NaN,
-                declaration = beforeDeclaration,
-                generation = generation,
-            ),
+        val attempt = currentRollbackAttempt(engine)
+        assertEquals(PhoneModel.FIND_X9_ULTRA, currentDeclaration(engine).phone)
+        assertEquals(
+            currentDeclaration(engine).magnification,
+            currentControllerMagnification(controller),
+            0f,
         )
+
+        invokeRollback(engine, attempt)
         shadowOf(Looper.getMainLooper()).idle()
 
         val restored = vm.state.value
@@ -209,6 +247,13 @@ class OpticsRecallTransactionRobolectricTest {
         assertEquals(85f, restored.teleconverterHostEquivMm, 0f)
         assertEquals(200f, restored.teleconverterFocalMm, 0.001f)
         assertEquals(beforeDeclaration, currentDeclaration(engine))
+        assertEquals(
+            beforeDeclaration.magnification,
+            currentControllerMagnification(controller),
+            0f,
+        )
+        assertEquals(before.mode, restored.mode)
+        assertEquals(before.controls, restored.controls)
     }
 
     @Test
@@ -220,33 +265,25 @@ class OpticsRecallTransactionRobolectricTest {
         vm.onTeleconverterProfile(TeleconverterProfile.GENERIC_2)
         setAcceptedTeleBaseline(vm, engine)
         val oldDeclaration = currentDeclaration(engine)
-        val oldState = vm.state.value
+        val controller = installController(engine, oldDeclaration)
 
         vm.onRecallMemorySlot(MemorySlot.MR2)
-        val supersededGeneration = currentGeneration(engine)
+        val superseded = currentRollbackAttempt(engine)
         vm.onRecallMemorySlot(MemorySlot.MR3)
-        engine.onOpticsRollback?.invoke(
-            OpticsRollbackPublication(
-                mode = oldState.mode,
-                lens = oldState.lens,
-                teleconverter = oldState.teleconverterMode,
-                facing = oldState.facing,
-                route = oldState.activeCameraRoute,
-                controls = oldState.controls,
-                photoExposureTimeNs = oldState.controls.exposureTimeNs,
-                userPin = null,
-                preTeleUnifiedZoom = Float.NaN,
-                declaration = oldDeclaration,
-                generation = supersededGeneration,
-            ),
-        )
+        val newestDeclaration = currentDeclaration(engine)
+        invokeRollback(engine, superseded)
         shadowOf(Looper.getMainLooper()).idle()
 
         val newest = vm.state.value
-        assertFalse(engine.isOpticsGenerationCurrent(supersededGeneration))
+        assertFalse(engine.isOpticsGenerationCurrent(superseded.generation))
         assertEquals(PhoneModel.FIND_X9_ULTRA, newest.phoneModel)
         assertEquals(TeleconverterProfile.EXPLORER_300, newest.teleconverterProfile)
         assertEquals(300f, newest.teleconverterFocalMm, 0.001f)
-        assertEquals(PhoneModel.FIND_X9_ULTRA, currentDeclaration(engine).phone)
+        assertEquals(newestDeclaration, currentDeclaration(engine))
+        assertEquals(
+            newestDeclaration.magnification,
+            currentControllerMagnification(controller),
+            0f,
+        )
     }
 }

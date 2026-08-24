@@ -1644,24 +1644,40 @@ class CameraEngine internal constructor(
         height: Int,
         surfaceGeneration: Long,
     ) {
-        recordingPreNativeOverrides?.onPreviewBindAttempt?.invoke()
         val ownedGl = glOwners.current()
-        terminalAcquisitionGate.runIfOpen {
-            if (UnsafeRecorderQuarantine.isActive()) return@runIfOpen
-            ownedGl.setPreviewOutput(
-                surface = surface,
-                width = width,
-                height = height,
-                onReady = {
-                    if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
-                    handlePreviewReady(ownedGl, surface, surfaceGeneration)
-                },
-                onFailure = { failure ->
-                    if (BuildConfig.DEBUG) Log.w("CameraEngine", "PreviewSurface: BIND-FAILED ${System.identityHashCode(surface)} gen=$surfaceGeneration: $failure")
-                    handlePreviewFailure(ownedGl, surface, surfaceGeneration, failure)
-                },
-            )
-        }
+        // TextureView availability/size callbacks arrive on main. The terminal gate deliberately
+        // spans CameraManager/HAL acquisition and may be held for hundreds of milliseconds, so the
+        // UI callback must only publish its Surface generation and enqueue this admission. The
+        // setup lane preserves ordering with camera open/release; both sides of the blocking gate
+        // recheck the exact Surface + GL owner so a callback superseded while queued cannot bind a
+        // released native window or a replacement renderer.
+        dispatchGenerationOwnedPreviewBind(
+            submit = { task ->
+                runCatching { setupExecutor.execute(task) }.isSuccess
+            },
+            terminalGate = terminalAcquisitionGate,
+            isCurrent = {
+                glOwners.owns(ownedGl) && started && !paused &&
+                    previewSurfaceGeneration.get() == surfaceGeneration &&
+                    previewSurface === surface && !UnsafeRecorderQuarantine.isActive()
+            },
+            bind = {
+                recordingPreNativeOverrides?.onPreviewBindAttempt?.invoke()
+                ownedGl.setPreviewOutput(
+                    surface = surface,
+                    width = width,
+                    height = height,
+                    onReady = {
+                        if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
+                        handlePreviewReady(ownedGl, surface, surfaceGeneration)
+                    },
+                    onFailure = { failure ->
+                        if (BuildConfig.DEBUG) Log.w("CameraEngine", "PreviewSurface: BIND-FAILED ${System.identityHashCode(surface)} gen=$surfaceGeneration: $failure")
+                        handlePreviewFailure(ownedGl, surface, surfaceGeneration, failure)
+                    },
+                )
+            },
+        )
     }
 
     /** Makes the UI/shutter truthful while a replacement TextureView output is not yet bound. */
@@ -7163,6 +7179,29 @@ internal class CaptureSequenceGeneration {
     fun stop() { current.incrementAndGet() }
     fun owns(generation: Long): Boolean = current.get() == generation
 }
+
+/**
+ * Moves a preview-window bind off its framework callback while retaining terminal ordering.
+ *
+ * [isCurrent] is intentionally checked on both sides of [terminalGate]: a request can be current
+ * when it reaches the serialized lane, wait behind a native acquisition, then become stale while
+ * blocked. Only the second check authorizes publication to the GL handler.
+ */
+internal fun dispatchGenerationOwnedPreviewBind(
+    submit: (Runnable) -> Boolean,
+    terminalGate: TerminalAcquisitionGate,
+    isCurrent: () -> Boolean,
+    bind: () -> Unit,
+): Boolean = runCatching {
+    submit(
+        Runnable {
+            if (!isCurrent()) return@Runnable
+            terminalGate.runIfOpen {
+                if (isCurrent()) bind()
+            }
+        },
+    )
+}.getOrDefault(false)
 
 /**
  * Linearizes terminal shutdown with operations that can acquire a fresh native owner. The block is
