@@ -367,22 +367,40 @@ internal fun Modifier.viewfinderKeyboardActions(
     onResetFocusPoint: () -> Unit,
 ): Modifier = this
     .onPreviewKeyEvent { event ->
-        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        when (event.key) {
+        handleViewfinderKeyboardAction(
+            key = event.key,
+            type = event.type,
+            repeatCount = event.nativeKeyEvent.repeatCount,
+            availability = availability,
+            onFocusAtCenter = onFocusAtCenter,
+            onResetFocusPoint = onResetFocusPoint,
+        )
+    }
+    .focusable(enabled = availability.focusAtCenter || availability.resetFocusPoint)
+
+internal fun handleViewfinderKeyboardAction(
+    key: Key,
+    type: KeyEventType,
+    repeatCount: Int,
+    availability: ViewfinderFocusActionAvailability,
+    onFocusAtCenter: () -> Unit,
+    onResetFocusPoint: () -> Unit,
+): Boolean {
+    if (type != KeyEventType.KeyDown || repeatCount != 0) return false
+    return when (key) {
             Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.DirectionCenter -> {
-                if (!availability.focusAtCenter) return@onPreviewKeyEvent false
+                if (!availability.focusAtCenter) return false
                 onFocusAtCenter()
                 true
             }
             Key.Backspace, Key.Delete -> {
-                if (!availability.resetFocusPoint) return@onPreviewKeyEvent false
+                if (!availability.resetFocusPoint) return false
                 onResetFocusPoint()
                 true
             }
             else -> false
         }
-    }
-    .focusable(enabled = availability.focusAtCenter || availability.resetFocusPoint)
+}
 
 private enum class ModalFocusOrigin { SETTINGS, FUNCTION_MENU, GALLERY }
 

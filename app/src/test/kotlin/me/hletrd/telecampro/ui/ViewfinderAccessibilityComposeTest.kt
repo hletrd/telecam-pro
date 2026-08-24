@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -36,6 +37,7 @@ import me.hletrd.telecampro.ui.overlays.FocusReticle
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -213,6 +215,46 @@ class ViewfinderAccessibilityComposeTest {
         compose.onNodeWithTag("keyboard-viewfinder").assert(isNotFocusable())
         assertEquals(3, focusActions)
         assertEquals(2, resetActions)
+    }
+
+    @Test
+    fun `viewfinder keyboard target ignores held key repeats and admits a fresh press`() {
+        val focusKeys = listOf(Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.DirectionCenter)
+        focusKeys.forEach { key ->
+            var focusActions = 0
+            assertTrue(
+                handleViewfinderKeyboardAction(
+                    key = key,
+                    type = KeyEventType.KeyDown,
+                    repeatCount = 0,
+                    availability = ViewfinderFocusActionAvailability(true, false),
+                    onFocusAtCenter = { focusActions++ },
+                    onResetFocusPoint = {},
+                ),
+            )
+            assertFalse(
+                handleViewfinderKeyboardAction(
+                    key = key,
+                    type = KeyEventType.KeyDown,
+                    repeatCount = 1,
+                    availability = ViewfinderFocusActionAvailability(true, false),
+                    onFocusAtCenter = { focusActions++ },
+                    onResetFocusPoint = {},
+                ),
+            )
+            assertEquals(1, focusActions)
+            assertTrue(
+                handleViewfinderKeyboardAction(
+                    key = key,
+                    type = KeyEventType.KeyDown,
+                    repeatCount = 0,
+                    availability = ViewfinderFocusActionAvailability(true, false),
+                    onFocusAtCenter = { focusActions++ },
+                    onResetFocusPoint = {},
+                ),
+            )
+            assertEquals(2, focusActions)
+        }
     }
 
     @Composable
