@@ -21,6 +21,11 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
@@ -107,9 +112,91 @@ internal class ReviewSourceSpool(
 
 internal const val REVIEW_SOURCE_MAX_BYTES = 64L * 1024L * 1024L
 internal const val REVIEW_SOURCE_PROCESS_MAX_BYTES = 2L * REVIEW_SOURCE_MAX_BYTES
+internal const val REVIEW_SPOOL_DIRECTORY_NAME = "review-sources-v1"
+internal const val REVIEW_STALE_SPOOL_SCAN_LIMIT = 64
+private const val REVIEW_SPOOL_PREFIX = "review-source-"
+private val REVIEW_SPOOL_FILE = Regex("^review-source-[0-9a-f]{16}-[0-9]+\\.bin$")
+
+internal data class ReviewSpoolLocation(
+    val directory: File,
+    val filePrefix: String,
+)
+
+internal data class ReviewSpoolCleanupReport(
+    val examined: Int,
+    val deleted: Int,
+)
+
+/**
+ * Process-generation owner for the one private spool directory.
+ *
+ * Preparation is synchronous and bounded before the first unverified-source admission. Only stale
+ * regular files matching the exact spool schema are deleted without following links; unrelated cache
+ * content, unexpected entry types, and this process generation's live files are never touched.
+ */
+internal class ReviewSpoolDirectoryOwner(
+    private val processToken: String = UUID.randomUUID().toString().replace("-", "").take(16),
+    private val scanLimit: Int = REVIEW_STALE_SPOOL_SCAN_LIMIT,
+) {
+    init {
+        require(processToken.matches(Regex("[0-9a-f]{16}"))) { "review spool token must be 16 hex characters" }
+        require(scanLimit > 0) { "review stale-spool scan limit must be positive" }
+    }
+
+    private var prepared: ReviewSpoolLocation? = null
+    private var cleanupReport = ReviewSpoolCleanupReport(0, 0)
+
+    @Synchronized
+    fun prepare(cacheRoot: File): ReviewSpoolLocation? {
+        prepared?.let { return it }
+        val directory = File(cacheRoot, REVIEW_SPOOL_DIRECTORY_NAME)
+        val path = directory.toPath()
+        val attributes = runCatching {
+            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                Files.createDirectory(path)
+            }
+            Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        }.recoverCatching { failure ->
+            if (failure !is FileAlreadyExistsException) throw failure
+            Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        }.getOrNull() ?: return null
+        if (!attributes.isDirectory || attributes.isSymbolicLink) return null
+
+        val livePrefix = "$REVIEW_SPOOL_PREFIX$processToken-"
+        var examined = 0
+        var deleted = 0
+        runCatching {
+            Files.newDirectoryStream(path).use { entries ->
+                val iterator = entries.iterator()
+                while (examined < scanLimit && iterator.hasNext()) {
+                    val entry = iterator.next()
+                    examined++
+                    val name = entry.fileName.toString()
+                    if (name.startsWith(livePrefix) || !REVIEW_SPOOL_FILE.matches(name)) continue
+                    val entryAttributes = runCatching {
+                        Files.readAttributes(
+                            entry,
+                            BasicFileAttributes::class.java,
+                            LinkOption.NOFOLLOW_LINKS,
+                        )
+                    }.getOrNull() ?: continue
+                    if (!entryAttributes.isRegularFile || entryAttributes.isSymbolicLink) continue
+                    if (runCatching { Files.deleteIfExists(entry) }.getOrDefault(false)) deleted++
+                }
+            }
+        }
+        cleanupReport = ReviewSpoolCleanupReport(examined, deleted)
+        return ReviewSpoolLocation(directory, livePrefix).also { prepared = it }
+    }
+
+    /** Focused diagnostic/test seam; production behavior never branches on this snapshot. */
+    @Synchronized
+    internal fun cleanupReport(): ReviewSpoolCleanupReport = cleanupReport
+}
 
 /** Two maximum-size sources may coexist; smaller thumbnail/full requests share the residual bytes. */
 internal val processReviewSourceBudget = ReviewSourceByteBudget(REVIEW_SOURCE_PROCESS_MAX_BYTES)
+internal val processReviewSpoolDirectoryOwner = ReviewSpoolDirectoryOwner()
 
 /**
  * Copies one provider source into an immutable private spool with per-source and process bounds.
@@ -120,6 +207,7 @@ internal fun spoolReviewSource(
     input: InputStream,
     maxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
     budget: ReviewSourceByteBudget = processReviewSourceBudget,
+    filePrefix: String = REVIEW_SPOOL_PREFIX,
 ): ReviewSourceSpool? {
     if (maxBytes <= 0L) return null
     val lease = budget.openLease()
@@ -127,7 +215,7 @@ internal fun spoolReviewSource(
     var transferred = false
     try {
         if (!cacheDirectory.isDirectory && !cacheDirectory.mkdirs()) return null
-        val file = File.createTempFile("review-source-", ".bin", cacheDirectory)
+        val file = File.createTempFile(filePrefix, ".bin", cacheDirectory)
         spoolFile = file
         var total = 0L
         val buffer = ByteArray(64 * 1024)

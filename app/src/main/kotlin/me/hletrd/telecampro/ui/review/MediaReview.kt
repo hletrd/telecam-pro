@@ -481,10 +481,19 @@ internal fun openReviewDecodeSource(
     openProviderInput: () -> InputStream?,
     unverifiedMaxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
     budget: ReviewSourceByteBudget = processReviewSourceBudget,
+    spoolDirectoryOwner: ReviewSpoolDirectoryOwner = processReviewSpoolDirectoryOwner,
 ): ReviewDecodeSource? = when (provenance) {
     MediaProvenance.APP_OWNED -> FreshProviderReviewSource(openProviderInput)
-    MediaProvenance.LEGACY_FORMAT_UNVERIFIED -> openProviderInput()?.use { stream ->
-        spoolReviewSource(cacheDirectory, stream, unverifiedMaxBytes, budget)
+    MediaProvenance.LEGACY_FORMAT_UNVERIFIED -> spoolDirectoryOwner.prepare(cacheDirectory)?.let { location ->
+        openProviderInput()?.use { stream ->
+            spoolReviewSource(
+                cacheDirectory = location.directory,
+                input = stream,
+                maxBytes = unverifiedMaxBytes,
+                budget = budget,
+                filePrefix = location.filePrefix,
+            )
+        }
     }
 }
 

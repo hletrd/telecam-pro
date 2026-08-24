@@ -1,7 +1,9 @@
 package me.hletrd.telecampro.ui.review
 
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -201,6 +203,132 @@ class ReviewSourceSpoolTest {
             dispatcher.close()
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun `new process generation reclaims a crash orphan before admitting another spool`() {
+        val cacheRoot = temporaryFolder.newFolder("restart-cache")
+        val firstOwner = ReviewSpoolDirectoryOwner("aaaaaaaaaaaaaaaa")
+        val firstLocation = requireNotNull(firstOwner.prepare(cacheRoot))
+        val budget = ReviewSourceByteBudget(32L)
+        val orphan = requireNotNull(
+            spoolReviewSource(
+                cacheDirectory = firstLocation.directory,
+                input = ByteArrayInputStream(ByteArray(8)),
+                maxBytes = 16L,
+                budget = budget,
+                filePrefix = firstLocation.filePrefix,
+            ),
+        )
+        assertTrue(orphan.exists())
+
+        val replacementOwner = ReviewSpoolDirectoryOwner("bbbbbbbbbbbbbbbb")
+        val replacementLocation = requireNotNull(replacementOwner.prepare(cacheRoot))
+
+        assertEquals(firstLocation.directory, replacementLocation.directory)
+        assertFalse("prior-process orphan survived startup reclamation", orphan.exists())
+        assertEquals(ReviewSpoolCleanupReport(examined = 1, deleted = 1), replacementOwner.cleanupReport())
+        orphan.close() // releases the simulated dead process's test-only byte lease
+        assertEquals(0L, budget.usedBytes())
+    }
+
+    @Test
+    fun `cleanup is prefix type and generation safe without touching unrelated cache`() {
+        val cacheRoot = temporaryFolder.newFolder("typed-cleanup-cache")
+        val unrelatedRootFile = File(cacheRoot, "keep-root.txt").apply { writeText("root") }
+        val seedLocation = requireNotNull(
+            ReviewSpoolDirectoryOwner("aaaaaaaaaaaaaaaa").prepare(cacheRoot),
+        )
+        val stale = File(seedLocation.directory, "review-source-cccccccccccccccc-1.bin").apply {
+            writeBytes(byteArrayOf(1))
+        }
+        val unrelated = File(seedLocation.directory, "keep.bin").apply { writeText("keep") }
+        val lookalikeDirectory = File(
+            seedLocation.directory,
+            "review-source-dddddddddddddddd-2.bin",
+        ).apply { mkdir() }
+        val currentGeneration = File(
+            seedLocation.directory,
+            "review-source-bbbbbbbbbbbbbbbb-3.bin",
+        ).apply { writeBytes(byteArrayOf(3)) }
+        val outsideTarget = temporaryFolder.newFile("outside-target.bin").apply { writeText("outside") }
+        val symlink = File(seedLocation.directory, "review-source-eeeeeeeeeeeeeeee-4.bin")
+        val symlinkCreated = runCatching {
+            Files.createSymbolicLink(symlink.toPath(), outsideTarget.toPath())
+            true
+        }.getOrDefault(false)
+
+        val owner = ReviewSpoolDirectoryOwner("bbbbbbbbbbbbbbbb")
+        requireNotNull(owner.prepare(cacheRoot))
+
+        assertFalse(stale.exists())
+        assertTrue(unrelatedRootFile.exists())
+        assertTrue(unrelated.exists())
+        assertTrue(lookalikeDirectory.isDirectory)
+        assertTrue("current process generation was reclaimed", currentGeneration.exists())
+        assertTrue(outsideTarget.exists())
+        if (symlinkCreated) assertTrue("cleanup followed or removed a symlink", Files.isSymbolicLink(symlink.toPath()))
+    }
+
+    @Test
+    fun `stale cleanup examines at most its configured bound`() {
+        val cacheRoot = temporaryFolder.newFolder("bounded-cleanup-cache")
+        val directory = requireNotNull(
+            ReviewSpoolDirectoryOwner("aaaaaaaaaaaaaaaa").prepare(cacheRoot),
+        ).directory
+        repeat(5) { index ->
+            File(directory, "review-source-${(index + 1).toString(16).repeat(16)}-$index.bin")
+                .writeBytes(byteArrayOf(index.toByte()))
+        }
+
+        val owner = ReviewSpoolDirectoryOwner("ffffffffffffffff", scanLimit = 2)
+        requireNotNull(owner.prepare(cacheRoot))
+
+        assertEquals(ReviewSpoolCleanupReport(examined = 2, deleted = 2), owner.cleanupReport())
+        assertEquals(3, directory.listFiles().orEmpty().count { it.isFile })
+    }
+
+    @Test
+    fun `normal spool lives only in dedicated directory and closes exactly`() {
+        val cacheRoot = temporaryFolder.newFolder("normal-dedicated-cache")
+        val owner = ReviewSpoolDirectoryOwner("1234567890abcdef")
+        val location = requireNotNull(owner.prepare(cacheRoot))
+        val budget = ReviewSourceByteBudget(16L)
+        val source = requireNotNull(
+            spoolReviewSource(
+                cacheDirectory = location.directory,
+                input = ByteArrayInputStream(ByteArray(6)),
+                maxBytes = 8L,
+                budget = budget,
+                filePrefix = location.filePrefix,
+            ),
+        )
+
+        assertEquals(REVIEW_SPOOL_DIRECTORY_NAME, location.directory.name)
+        assertEquals(cacheRoot, location.directory.parentFile)
+        assertTrue(source.exists())
+        source.close()
+        assertFalse(source.exists())
+        assertEquals(0L, budget.usedBytes())
+        assertTrue(location.directory.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `dedicated directory symlink is refused without touching its target`() {
+        val cacheRoot = temporaryFolder.newFolder("symlink-cache")
+        val outside = temporaryFolder.newFolder("symlink-outside")
+        val outsideFile = File(outside, "review-source-aaaaaaaaaaaaaaaa-1.bin").apply {
+            writeText("outside")
+        }
+        val link = File(cacheRoot, REVIEW_SPOOL_DIRECTORY_NAME)
+        val created = runCatching {
+            Files.createSymbolicLink(link.toPath(), outside.toPath())
+            true
+        }.getOrDefault(false)
+        if (!created) return
+
+        assertNull(ReviewSpoolDirectoryOwner("bbbbbbbbbbbbbbbb").prepare(cacheRoot))
+        assertTrue(outsideFile.exists())
     }
 
     private class PatternInputStream(private val totalBytes: Int) : InputStream() {

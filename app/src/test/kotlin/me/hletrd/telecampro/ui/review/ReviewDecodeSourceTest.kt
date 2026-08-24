@@ -3,6 +3,7 @@ package me.hletrd.telecampro.ui.review
 import android.graphics.Bitmap
 import android.graphics.Color
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
@@ -75,6 +76,7 @@ class ReviewDecodeSourceTest {
                 },
                 unverifiedMaxBytes = 8L,
                 budget = budget,
+                spoolDirectoryOwner = ReviewSpoolDirectoryOwner("1111111111111111"),
             ),
         )
         providerBytes.fill(99)
@@ -101,11 +103,12 @@ class ReviewDecodeSourceTest {
             },
             unverifiedMaxBytes = 8L,
             budget = budget,
+            spoolDirectoryOwner = ReviewSpoolDirectoryOwner("2222222222222222"),
         )
 
         assertNull(source)
         assertEquals(1, opens)
         assertEquals(0L, budget.usedBytes())
-        assertTrue(cache.listFiles().orEmpty().isEmpty())
+        assertTrue(File(cache, REVIEW_SPOOL_DIRECTORY_NAME).listFiles().orEmpty().isEmpty())
     }
 }
