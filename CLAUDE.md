@@ -943,8 +943,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `audioRestoredByMicrophoneGrant` re-enables audio the moment the permission is observed granted,
   while an operator who switched audio off themselves keeps their silence forever. This mirrors what
   CAMERA already did — a Settings grant there resets the denial history rather than letting an
-  obsolete refusal outlive itself. The recorder's own level emission is fine and always was: at unity
-  gain the RMS pass is skipped only when no emit is due (`audioGain != 1f || emitDue`).
+  obsolete refusal outlive itself. The recorder's own level emission is fine: non-unity gain is
+  applied allocation-free to every PCM buffer that needs it, while RMS construction runs only when
+  a non-null meter callback exists and the 100 ms emission cadence is due. Gain does not imply a
+  discarded per-buffer level pass.
   **The app requests CAMERA, RECORD_AUDIO, and (since 2026-08-01, user decision) the visual-media
   READ trio — READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED — the last
   requested CONTEXTUALLY at an empty-gallery tap only, because a REINSTALL clears MediaStore row
