@@ -798,12 +798,12 @@ class CameraViewModel @JvmOverloads constructor(
             } else {
                 // An owned READY publication is what ENDS "Starting camera…": the message reports a
                 // condition, so an EVENT retires it and it carries no display timer at all (see
-                // statusIsProgress). Retired HERE, on the gate's ordering alone, rather than inside
+                // CameraStatusLifecycle). Retired HERE, on the gate's ordering alone, rather than inside
                 // the post below — that block additionally rechecks engine truth to protect the
                 // ACCEPTED aux state (formats, pre-TELE baseline) from a stale cross-thread post,
                 // and a progress pill has no such hazard: the worst a superseded ready can do is
-                // clear it slightly early, and a genuinely new cold start re-emits it (a reopen
-                // says "Camera reconfiguring…", which is a different message with its own timer).
+                // clear it slightly early, and a genuinely new cold start/reopen re-emits its exact
+                // progress identity.
                 clearProgressStatus()
                 mainHandler.post {
                     // A newer optics intent or pause/session reopen can land while this camera-thread
@@ -3914,6 +3914,10 @@ class CameraViewModel @JvmOverloads constructor(
         infoRefresh.stop()
         recordingAttemptGeneration++
         customWbSampleGeneration++
+        // A backgrounded Activity owns no visible camera condition. Exact terminal/new events will
+        // publish again after resume; leaving untimed recovery copy behind would resurrect a stale
+        // pill over the next generation.
+        clearProgressStatus()
         cancelCountdown()
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
         // to a phantom "recording" state with the timer still ticking.

@@ -1067,11 +1067,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `am start` 412 ms, session configured ~950 ms, yet the `"Starting camera…"` pill was still on
   screen 5.2 s later because `statusDisplayDurationMs` classifies by wording and this message fell
   into the neutral 2.5 s bucket. **A PROGRESS status must carry no timer** — it reports a condition,
-  so an EVENT ends it (`statusIsProgress` → null duration; the owned Ready publication clears it,
+  so an EVENT ends it (`CameraStatusLifecycle.PROGRESS` → null duration; the owned Ready publication clears it,
   guarded on the message still being that status so a message published during bring-up is not
-  swallowed). A timer is wrong both ways: too long makes a fast start read slow, too short claims
-  ready before it is. Measure the pipeline before believing a latency report, and measure the pill
-  too.
+  swallowed). The same rule covers reconfiguration, preview/camera recovery, and bounded retry
+  conditions: Ready, rollback/exhaustion, pause, or a newer status ends them. A timer is wrong both
+  ways: too long makes a fast transition read slow, too short claims ready before it is. Measure the
+  pipeline before believing a latency report, and measure the pill too.
 - **`FLASH_STATE` LIES about the torch, and preview LUMA is not a light meter in any AE-active mode
   (2026-07-25).** This HAL reports `flashState = 3` (FIRED) on frames where the lamp is physically
   dark, so "state != 3" is NOT a torch discriminator — only a human eye, or a luma read taken under

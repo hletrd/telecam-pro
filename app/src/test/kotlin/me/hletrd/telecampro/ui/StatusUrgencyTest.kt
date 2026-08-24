@@ -72,15 +72,23 @@ class StatusUrgencyTest {
     }
 
     @Test
-    fun `the cold-start progress status is cleared by an event, never by a timer`() {
-        val starting = CameraStatusMessage.STARTING_CAMERA.status()
-        assertEquals(null, starting.durationMs)
-        assertEquals(CameraStatusLifecycle.PROGRESS, starting.lifecycle)
-        assertEquals(CameraStatusLivePriority.POLITE, starting.livePriority)
-        assertEquals(CameraStatusLifecycle.EVENT, CameraStatusMessage.CAMERA_RECONFIGURING.status().lifecycle)
-        assertEquals(2_500L, CameraStatusMessage.CAMERA_RECONFIGURING.status().durationMs)
+    fun `camera conditions are cleared by terminal events never timers`() {
+        val conditions = setOf(
+            CameraStatusMessage.STARTING_CAMERA,
+            CameraStatusMessage.CAMERA_RECONFIGURING,
+            CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
+            CameraStatusMessage.CAMERA_ERROR_RECOVERING,
+            CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+        )
+        conditions.forEach { message ->
+            val status = message.status()
+            assertEquals(message.name, null, status.durationMs)
+            assertEquals(message.name, CameraStatusLifecycle.PROGRESS, status.lifecycle)
+        }
+        assertEquals(CameraStatusLivePriority.POLITE, CameraStatusMessage.STARTING_CAMERA.status().livePriority)
         assertTrue(CameraStatusMessage.entries
-            .filterNot { it == CameraStatusMessage.STARTING_CAMERA }
+            .filterNot(conditions::contains)
             .all { it.status().lifecycle == CameraStatusLifecycle.EVENT })
     }
 }

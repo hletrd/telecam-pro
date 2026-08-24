@@ -172,10 +172,16 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.COULD_NOT_DELETE_FILE,
         -> CameraStatusSeverity.ERROR
     }
-    val lifecycle = if (this == CameraStatusMessage.STARTING_CAMERA) {
-        CameraStatusLifecycle.PROGRESS
-    } else {
-        CameraStatusLifecycle.EVENT
+    val lifecycle = when (this) {
+        CameraStatusMessage.STARTING_CAMERA,
+        CameraStatusMessage.CAMERA_RECONFIGURING,
+        CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
+        CameraStatusMessage.CAMERA_ERROR_RECOVERING,
+        CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+        CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+        -> CameraStatusLifecycle.PROGRESS
+
+        else -> CameraStatusLifecycle.EVENT
     }
     val duration = when {
         lifecycle == CameraStatusLifecycle.PROGRESS -> null

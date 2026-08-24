@@ -650,15 +650,24 @@ class CameraViewModelRobolectricTest {
         assertNull(v.state.value.status)
     }
 
-    @Test fun `the cold-start progress status waits for Ready, not for a timer`() {
+    @Test fun `camera condition progress waits for Ready not a timer`() {
         val (v, e) = createViewModel()
-        val starting = CameraStatusMessage.STARTING_CAMERA.status()
-        e.onStatus!!.invoke(starting)
-        // Deliberately far past every display duration in the policy (the longest is 6 s). Before
-        // this fix the pill cleared at 2.5 s regardless of the camera, which is what made a ~950 ms
-        // bring-up read as a multi-second wait: the user was watching the timer, not the camera.
-        idleFor(10_000)
-        assertEquals(starting, v.state.value.status)
+        val conditions = listOf(
+            CameraStatusMessage.STARTING_CAMERA,
+            CameraStatusMessage.CAMERA_RECONFIGURING,
+            CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
+            CameraStatusMessage.CAMERA_ERROR_RECOVERING,
+            CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+        )
+        conditions.forEach { message ->
+            val status = message.status()
+            e.onStatus!!.invoke(status)
+            // Deliberately farther than the former longest timer: a condition remains until an
+            // exact terminal/new event, however fast or slow the Camera2 path is.
+            idleFor(10_000)
+            assertEquals(message.name, status, v.state.value.status)
+        }
 
         e.onCameraReadyChange!!.invoke(
             CameraReadyPublication(
