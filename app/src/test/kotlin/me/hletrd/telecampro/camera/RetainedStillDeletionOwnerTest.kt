@@ -372,6 +372,24 @@ class RetainedStillDeletionOwnerTest {
     }
 
     @Test
+    fun `process rescan retires every matching terminal local family`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_778L, 778L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { true },
+        )
+        owner.registerCaptureFamily(778, family)
+        owner.markCaptureDeleted(778)
+
+        assertEquals(0, owner.retireDeletedFamily(family))
+        assertEquals(family, owner.markCaptureProducersTerminal(778))
+        assertEquals(1, owner.retireDeletedFamily(family))
+        assertEquals(null, owner.deletedFamilyIfProducersTerminal(778))
+        assertEquals(0, owner.retireDeletedFamily(family))
+    }
+
+    @Test
     fun `in-memory tombstone performs no persistence until ordered completion`() {
         var persistenceCalls = 0
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_777L, 77L)

@@ -139,6 +139,16 @@ internal class RetainedStillDeletionOwner<T>(
         true
     }
 
+    /** Applies a process-wide marker rescan result to every matching local capture generation. */
+    fun retireDeletedFamily(family: CaptureFamilyKey): Int = synchronized(lock) {
+        val captureIds = familiesByCapture.entries
+            .filter { (captureId, candidate) ->
+                candidate == family && captureId in producerTerminalCaptures
+            }
+            .map { it.key }
+        captureIds.count { captureId -> retireDeletedCapture(captureId, family) }
+    }
+
     /**
      * Owns the full check→publish→recheck interval. A delete racing native/provider publication either
      * wins before [publish] or is observed immediately after it; the brief post-publication callback

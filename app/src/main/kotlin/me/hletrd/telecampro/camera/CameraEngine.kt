@@ -4200,13 +4200,23 @@ class CameraEngine internal constructor(
             }
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         }
+        val overflowRescan = Runnable {
+            MediaStoreWriter.retireCurrentProcessFamilyDeletions(context).forEach { (candidate, result) ->
+                if (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETIRED ||
+                    result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.ALREADY_ABSENT
+                ) {
+                    retainedStillDeletionOwner.retireDeletedFamily(candidate)
+                }
+            }
+            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+        }
         // Retirement is provider/journal work, not still encoding. Keep every continuation on the
         // existing finite process lane even while this Engine is live; a blocked ioExecutor must
         // not accumulate one closure per independently completed RAW-only shot. Shutdown retries
         // through the process owner because the producer lease predates the stale facade. Overflow
-        // is safe: a durable marker remains launch recovery's veto, and an absent marker needs no
-        // work.
-        dispatchDeletedFamilyRetirement(retainedStillDiscardDispatcher, task)
+        // requests one process-conflated bounded journal rescan; a worker completion re-arms it, and
+        // the rescan repeats producer/claim and exact-family provider checks off the caller thread.
+        dispatchDeletedFamilyRetirement(retainedStillDiscardDispatcher, task, overflowRescan)
     }
 
     /**

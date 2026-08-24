@@ -634,6 +634,41 @@ object MediaStoreWriter {
         },
     )
 
+    /**
+     * Bounded same-process retry for retirement submissions lost to finite-lane saturation.
+     *
+     * The journal itself is capped at [MAX_DELETED_FAMILY_MARKERS], so the snapshot cannot grow
+     * without bound. Each entry goes back through [retireFamilyDeletionIfAbsent]: producer leases,
+     * publication claims, marker ownership, and exact pending+published provider absence are all
+     * re-evaluated at retry execution time. Query/removal failure therefore retains the marker.
+     */
+    internal fun retireCurrentProcessFamilyDeletions(
+        context: Context,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): Map<CaptureFamilyKey, FamilyDeletionRetirementResult> {
+        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+        val ownedEntries = runCatching {
+            preferences.all
+                .filterValues { owner -> owner == processJournalOwner }
+                .toSortedMap()
+        }.getOrElse { return emptyMap() }
+        val batch = boundedDeletedFamilyBatch(ownedEntries, MAX_DELETED_FAMILY_MARKERS)
+        return buildMap {
+            batch.entries.forEach { (rawKey, _) ->
+                val family = parseDeletedFamilyJournalKey(rawKey) ?: return@forEach
+                put(
+                    family,
+                    retireFamilyDeletionIfAbsent(
+                        context = context,
+                        family = family,
+                        producersTerminal = true,
+                        subDirs = subDirs,
+                    ),
+                )
+            }
+        }
+    }
+
     /** Fast shared-preference read used by launch restoration and recovery. */
     internal fun isFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
         context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)

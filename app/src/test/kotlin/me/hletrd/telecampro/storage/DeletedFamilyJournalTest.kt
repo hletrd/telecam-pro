@@ -120,6 +120,30 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
+    fun `process rescan rechecks producer leases and recovers marker capacity`() {
+        val leased = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_010_100_000L, 201L)
+        val terminal = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_010_100_001L, 202L)
+        assertEquals(FamilyDeletionMarkResult.DURABLE, MediaStoreWriter.markFamilyDeletedResult(context, leased))
+        assertEquals(FamilyDeletionMarkResult.DURABLE, MediaStoreWriter.markFamilyDeletedResult(context, terminal))
+        val producer = MediaStoreWriter.registerStillFamilyProducer(leased)
+
+        val first = MediaStoreWriter.retireCurrentProcessFamilyDeletions(context)
+
+        assertEquals(FamilyDeletionRetirementResult.PRODUCERS_ACTIVE, first[leased])
+        assertEquals(FamilyDeletionRetirementResult.RETIRED, first[terminal])
+        assertTrue(MediaStoreWriter.isFamilyDeleted(context, leased))
+        assertFalse(MediaStoreWriter.isFamilyDeleted(context, terminal))
+        assertEquals(1, context.getSharedPreferences("deleted_capture_family_journal", Context.MODE_PRIVATE).all.size)
+
+        producer.close()
+        val second = MediaStoreWriter.retireCurrentProcessFamilyDeletions(context)
+
+        assertEquals(FamilyDeletionRetirementResult.RETIRED, second[leased])
+        assertFalse(MediaStoreWriter.isFamilyDeleted(context, leased))
+        assertTrue(context.getSharedPreferences("deleted_capture_family_journal", Context.MODE_PRIVATE).all.isEmpty())
+    }
+
+    @Test
     fun `retirement retains marker until producers terminal and exact absence is authoritative`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_020_000_000L, 20L)
         assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))

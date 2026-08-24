@@ -6,6 +6,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -55,6 +56,7 @@ class RetainedStillDiscardDispatcherTest {
             RetainedStillDiscardDispatch.ACCEPTED,
             ProcessRetainedStillDiscardOwner.dispatchRegisteredProducerTerminal(
                 Runnable { terminalFinished.countDown() },
+                Runnable { error("accepted terminal task must not request overflow rescan") },
             ),
         )
         assertTrue(terminalFinished.await(5, TimeUnit.SECONDS))
@@ -121,10 +123,15 @@ class RetainedStillDiscardDispatcherTest {
     }
 
     @Test
-    fun `live family retirement submissions stay inside finite process capacity`() {
+    fun `overflowed family retirement conflates and rearms after finite lane drains`() {
         val releaseWorker = CountDownLatch(1)
         val workerEntered = CountDownLatch(1)
+        val queuedFinished = CountDownLatch(1)
+        val rescanFinished = CountDownLatch(1)
         val overflowRan = AtomicBoolean()
+        val rescans = AtomicInteger()
+        val caller = Thread.currentThread()
+        val rescanThread = AtomicReference<Thread>()
         val capacity = RetainedStillDiscardCapacityOwner(
             workerCount = 1,
             backlogCapacity = 1,
@@ -142,12 +149,17 @@ class RetainedStillDiscardDispatcherTest {
                         workerEntered.countDown()
                         releaseWorker.await()
                     },
+                    Runnable { error("initial task was accepted") },
                 ),
             )
             assertTrue(workerEntered.await(5, TimeUnit.SECONDS))
             assertEquals(
                 RetainedStillDiscardDispatch.ACCEPTED,
-                dispatchDeletedFamilyRetirement(facade, Runnable {}),
+                dispatchDeletedFamilyRetirement(
+                    facade,
+                    Runnable { queuedFinished.countDown() },
+                    Runnable { error("queued task was accepted") },
+                ),
             )
 
             repeat(32) {
@@ -156,12 +168,26 @@ class RetainedStillDiscardDispatcherTest {
                     dispatchDeletedFamilyRetirement(
                         facade,
                         Runnable { overflowRan.set(true) },
+                        Runnable {
+                            rescanThread.set(Thread.currentThread())
+                            rescans.incrementAndGet()
+                            rescanFinished.countDown()
+                        },
                     ),
                 )
             }
 
             assertEquals(1, capacity.activeTaskCount())
             assertEquals(1, capacity.queuedTaskCount())
+            assertEquals(1, capacity.retirementRescanCount())
+            assertFalse(overflowRan.get())
+            assertEquals(0, rescans.get())
+
+            releaseWorker.countDown()
+            assertTrue(queuedFinished.await(5, TimeUnit.SECONDS))
+            assertTrue(rescanFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(1, rescans.get())
+            assertFalse(rescanThread.get() === caller)
             assertFalse(overflowRan.get())
         } finally {
             releaseWorker.countDown()
