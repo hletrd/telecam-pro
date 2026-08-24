@@ -67,7 +67,7 @@
     <string name="a11y_histogram_highlights_clipped">명부 클리핑</string>
     <string name="a11y_histogram_both_clipped">암부 및 명부 클리핑</string>
     <string name="a11y_waveform_pending">파형 데이터를 기다리는 중</string>
-    <string name="a11y_waveform_luma_range">휘도 범위 %1$d~%2$d퍼센트</string>
+    <string name="a11y_waveform_luma_range">휘도 %1$d%%~%2$d%%</string>
     <string name="label_zebra">제브라</string>
     <string name="label_zebra_level">제브라 레벨</string>
     <string name="label_color">색상</string>

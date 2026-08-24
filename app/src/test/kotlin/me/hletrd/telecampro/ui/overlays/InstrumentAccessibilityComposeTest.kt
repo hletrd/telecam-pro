@@ -144,7 +144,7 @@ class InstrumentAccessibilityComposeTest {
 
         assertNonLive("Audio level meter", "Channel 1 silent, Channel 2 near clipping")
         assertNonLive("Histogram", "Shadows and highlights clipped")
-        assertNonLive("Waveform", "Luma range 20 to 80 percent")
+        assertNonLive("Waveform", "Luma from 20% to 80%")
     }
 
     @Test
@@ -153,7 +153,7 @@ class InstrumentAccessibilityComposeTest {
 
         assertNonLive("오디오 레벨 미터", "채널 1 무음, 채널 2 클리핑에 가까움")
         assertNonLive("히스토그램", "암부 및 명부 클리핑")
-        assertNonLive("파형", "휘도 범위 20~80퍼센트")
+        assertNonLive("파형", "휘도 20%~80%")
     }
 
     private fun show(language: String) {

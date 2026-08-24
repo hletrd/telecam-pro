@@ -78,6 +78,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.core.graphics.createBitmap
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.disabled
@@ -505,7 +506,7 @@ internal fun applyReviewExifTransform(decoded: Bitmap, transform: ReviewExifTran
         if (transform.flipHorizontal) postScale(-1f, 1f)
         postTranslate(outputWidth / 2f, outputHeight / 2f)
     }
-    val output = Bitmap.createBitmap(
+    val output = createBitmap(
         outputWidth,
         outputHeight,
         decoded.config ?: Bitmap.Config.ARGB_8888,

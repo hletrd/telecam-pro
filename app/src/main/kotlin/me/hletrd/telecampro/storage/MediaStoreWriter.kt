@@ -430,10 +430,11 @@ object MediaStoreWriter {
         markCompletionWithRetry(
             maxAttempts = COMPLETION_MARK_ATTEMPTS,
             commit = {
-                context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
-                    .edit()
-                    .putString(uri.toString(), PENDING_COMPLETE)
-                    .commit()
+                SharedPreferencesDurableEdit.putString(
+                    context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+                    uri.toString(),
+                    PENDING_COMPLETE,
+                )
             },
             backoff = { attempt ->
                 runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
@@ -1224,10 +1225,11 @@ object MediaStoreWriter {
     }
 
     private fun registerPending(context: Context, uri: Uri): Uri? {
-        val registered = context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
-            .edit()
-            .putString(uri.toString(), PENDING_REGISTERED)
-            .commit()
+        val registered = SharedPreferencesDurableEdit.putString(
+            context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+            uri.toString(),
+            PENDING_REGISTERED,
+        )
         if (registered) return uri
         runCatching { context.contentResolver.delete(uri, null, null) }
         return null
@@ -1407,9 +1409,9 @@ private class SharedPreferencesFamilyMarkerStore(
     override fun size(): Int = preferences.all.size
 
     override fun put(key: String, owner: String): Boolean =
-        preferences.edit().putString(key, owner).commit()
+        SharedPreferencesDurableEdit.putString(preferences, key, owner)
 
-    override fun remove(key: String): Boolean = preferences.edit().remove(key).commit()
+    override fun remove(key: String): Boolean = SharedPreferencesDurableEdit.remove(preferences, key)
 }
 
 internal enum class FamilyDeletionMarkResult { DURABLE, CAPACITY_EXHAUSTED, UNAVAILABLE }

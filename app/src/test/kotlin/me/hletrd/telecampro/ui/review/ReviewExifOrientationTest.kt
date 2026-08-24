@@ -50,6 +50,22 @@ class ReviewExifOrientationTest {
         assertNull(reviewExifTransform(99))
     }
 
+    @Test
+    fun `review transform preserves source bitmap config and rotated dimensions`() {
+        val source = Bitmap.createBitmap(2, 3, Bitmap.Config.RGB_565)
+
+        val transformed = applyReviewExifTransform(
+            source,
+            requireNotNull(reviewExifTransform(ExifInterface.ORIENTATION_ROTATE_90)),
+        )
+
+        assertEquals(3, transformed.width)
+        assertEquals(2, transformed.height)
+        assertEquals(Bitmap.Config.RGB_565, transformed.config)
+        source.recycle()
+        transformed.recycle()
+    }
+
     private fun asymmetricBitmap(): Bitmap = Bitmap.createBitmap(2, 3, Bitmap.Config.ARGB_8888).apply {
         setPixels(IntArray(6) { index -> color(index + 1) }, 0, 2, 0, 0, 2, 3)
     }

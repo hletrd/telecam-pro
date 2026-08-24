@@ -601,8 +601,8 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
 @Composable
 fun AudioMeter(
     levels: List<Float>,
-    overloads: List<me.hletrd.telecampro.video.AudioOverloadState> = emptyList(),
     modifier: Modifier = Modifier,
+    overloads: List<me.hletrd.telecampro.video.AudioOverloadState> = emptyList(),
 ) {
     // An EMPTY list still draws the empty plate. The meter's own visibility is owned by the caller's
     // gate; blanking the plate here would make it flicker away between AudioRecord generations and

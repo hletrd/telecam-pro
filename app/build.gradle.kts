@@ -560,10 +560,11 @@ android {
             // removal on 2026-07-25, and the name-persisted enum keep rule in proguard-rules.pro is
             // now live rather than staged. R8 runs in FULL mode — android.enableR8.fullMode defaults
             // true on AGP 8+ and gradle.properties does not override it.
-            // isShrinkResources stays OFF: it is a separate concern from Play's ask (R8 shrinks
-            // CODE), and the audit for it is already done — no Resources.getIdentifier anywhere in
-            // app/src/main/kotlin, so it can be flipped whenever the size win is wanted.
             isMinifyEnabled = true
+            // Resource shrinking shares R8's reachability graph. The dynamic-resource audit remains
+            // clean (no Resources.getIdentifier in production), so release can safely remove both
+            // unreachable bytecode and the resources reachable only from it.
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
