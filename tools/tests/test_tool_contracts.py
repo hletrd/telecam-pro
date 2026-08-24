@@ -64,6 +64,7 @@ def run_documentation_gate_from_committed_export(
             "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
+            "docs/plans/2026-08-24-rpf-cycle33.md",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
         if mutate is not None:
@@ -338,6 +339,24 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  current comments describe maximum-resolution discovery and enabled R8",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_a_completed_plan_without_authoritative_host_evidence(self) -> None:
+        def remove_authoritative_command(root: Path) -> None:
+            path = root / "docs/plans/2026-08-24-rpf-cycle33.md"
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("python3 tools/verify_host.py", text)
+            path.write_text(
+                text.replace("python3 tools/verify_host.py", "the narrower Gradle gate"),
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(remove_authoritative_command)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  latest completed implementation plan names the authoritative host gate",
             result.stdout,
         )
 

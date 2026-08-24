@@ -975,6 +975,18 @@ check(
     and "device-harness self-tests" in architecture,
     "committed host-gate authorities document the consolidated non-device suite",
 )
+completed_plans = []
+for plan_path in sorted((ROOT / "docs/plans").glob("*.md")):
+    plan_text = plan_path.read_text(encoding="utf-8")
+    if re.search(r"^Status:\s*complete\b", plan_text, re.M):
+        completed_plans.append((plan_path, plan_text))
+latest_completed_plan = completed_plans[-1] if completed_plans else None
+check(
+    latest_completed_plan is not None
+    and "python3 tools/verify_host.py" in latest_completed_plan[1],
+    "latest completed implementation plan names the authoritative host gate",
+    latest_completed_plan[0].relative_to(ROOT).as_posix() if latest_completed_plan else "none",
+)
 sdk_authority = read("tools/android_sdk.py")
 verify_host_source = read("tools/verify_host.py")
 debug_wrapper_source = read("tools/build_immutable_debug.py")
