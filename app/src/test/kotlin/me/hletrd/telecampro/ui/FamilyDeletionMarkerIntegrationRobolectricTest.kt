@@ -173,6 +173,13 @@ class FamilyDeletionMarkerIntegrationRobolectricTest {
             assertTrue(markerFinished.await(5, TimeUnit.SECONDS))
             assertEquals(CaptureFamilyDeleteDurability.DURABLE, markerResult.get())
             assertEquals("engine-family-marker-test", markerThread.get())
+            // The completion callback runs inside task.run(); the executor wrapper returns the
+            // finite permit in its finally *after* task.run() returns. Await that post-task edge
+            // instead of racing the worker's finally immediately after the callback latch opens.
+            val releaseDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (capacity.admittedFamilyCount() != 0 && System.nanoTime() < releaseDeadline) {
+                Thread.sleep(1)
+            }
             assertEquals(0, capacity.admittedFamilyCount())
         } finally {
             ioRelease.countDown()
