@@ -1,103 +1,118 @@
-# Aggregated deep review — cycle 41
+# Aggregated deep review — cycle 42
 
 Date: 2026-08-24
-Reviewed revision: `4e4c9dfbce294fb2965a56ea63d74d6096744836` (`origin/main`)
-Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle41.nWoiMj`
+Reviewed revision: `70ebb8759b567dcd2ee13bd51b226da2568ff6d7` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle42.rPLjyN`
 
 ## Coverage and aggregation
 
-Five parallel specialist groups covered all required roles: code-reviewer, architect,
-performance-reviewer, tracer, security-reviewer, debugger, critic, verifier, test-engineer,
+Five parallel specialist groups covered every required role: code-reviewer, critic, architect,
+performance-reviewer, tracer, security-reviewer, debugger, verifier, test-engineer,
 document-specialist, and native Android designer. No repository-local reviewer agents were
-registered. Every group inventoried the full 499-path repository, examined relevant production,
-test, tooling, resource, documentation, and cross-file interactions, and completed a final
-missed-issue sweep. Browser review was inapplicable to this native Compose app. No device behavior
-was run or inferred.
+registered. Each group inventoried all 504 tracked paths and examined relevant production, test,
+tooling, resource, documentation, and cross-file interactions. Browser automation was inapplicable
+to this native Compose app. No device behavior was run or inferred.
 
-Seven raw specialist findings deduplicate to five current root causes. The immediate-command
-semantics defect has agreement across code/architecture, critic/verifier/test, and
-document/design reviewers. Highest severity and confidence are preserved. Performance/tracing and
-security/debugging found no additional actionable defects after focused validation.
+Eight raw specialist findings deduplicate to five current root causes. The disabled command paint
+defect has agreement across code/architecture, verifier/testing, and document/design. The zoom
+authority defect has agreement across code/architecture and document/design and intersects with the
+verifier's independently confirmed redundant end submission; these remain separate findings because
+one is a current runtime request defect and the other is a test/ownership defect that would survive
+fixing that request. Highest severity and confidence are preserved. Performance/tracing and
+security/debugging found no additional actionable defect.
 
 ## Findings
 
-### AGG41-01 — immediate command chips retain selectable state semantics
+### AGG42-01 — disabled immediate commands retain enabled-strength paint
 
 - **Severity / confidence:** Medium / High
-- **Sources:** code-reviewer/architect, critic/verifier/test-engineer, document-specialist/designer
+- **Sources:** code-reviewer/critic/architect, verifier/test-engineer,
+  document-specialist/designer (**cross-agent agreement**)
+- **Status:** confirmed visual-affordance and false-positive-test defect.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProSheet.kt:755-785` passes
+  `enabled` to click admission and the inactive border, but derives container/content paint only
+  from `active`. Consequently a disabled inactive MR write keeps full-strength label ink, while an
+  active disabled Custom-WB command is pixel-identical to an enabled active command. The latter is
+  a normal state because Custom WB is active only for `wbMode == CUSTOM` but measurement admission
+  requires `wbMode == AUTO` (`camera/ControlAvailability.kt:144-150`; `ProSheet.kt:1037-1057`).
+  `SelectorRoleSemanticsComposeTest.kt:68-115` checks semantics, constructs the production-impossible
+  `active=true, enabled=true` Custom-WB combination, and never validates reachable disabled paint.
+- **Failure:** after capturing Custom WB, the strongest filled-white command is unavailable and
+  silently ignores taps; locked MR writes likewise look enabled even though accessibility correctly
+  reports Disabled.
+- **Plan direction:** resolve container/content/border colors from both `active` and `enabled`, keep
+  click-only semantics, and test the reachable inactive-enabled, inactive-disabled, and
+  active-disabled visual/token states without treating active-enabled as Custom-WB evidence.
+
+### AGG42-02 — dropdown radio options lack selectable-group semantics
+
+- **Severity / confidence:** Medium / High
+- **Source:** document-specialist/designer
+- **Status:** confirmed accessibility-structure defect.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:785-875` exports
+  `Role.RadioButton` and `Selected` on each Phone/Converter option, but the containing
+  `DropdownMenu` has no `selectableGroup()` modifier. `DropdownSemanticsComposeTest.kt:66-104`
+  proves radio leaves but never requires their shared group.
+- **Failure:** TalkBack/Switch Access receives individually selected/not-selected radio buttons
+  without the semantic relationship and reliable position/count context that explains one choice
+  replaces another.
+- **Plan direction:** apply `selectableGroup()` to the popup option container while retaining
+  bounded scrolling and leaf semantics, then assert exactly one selectable-group ancestor for the
+  radio options before and after selection.
+
+### AGG42-03 — quiet zoom completion redundantly submits a third Camera2 request
+
+- **Severity / confidence:** Medium / High
+- **Source:** verifier/test-engineer
+- **Status:** confirmed runtime call-sequence/performance defect; device stall duration was not
+  remeasured this cycle.
+- **Evidence:** a gesture submits its wide start edge, schedules `landExactZoom()` at 250 ms, and
+  ends interaction at 700 ms (`ui/CameraViewModel.kt:368-383,2078-2111`). The quiet landing
+  unconditionally submits exact framing (`camera/CameraEngine.kt:3966-3977`). Boost-off then calls
+  `setSmoothPreviewBoost` again (`CameraEngine.kt:3875-3894`), whose no-FPS-change branch still
+  calls `submitZoomFastPath(wire)` (`camera/CameraController.kt:1747-1760`) with the same exact
+  ratio; routes that restore FPS also issue an end rebuild for a distinct reason.
+- **Failure:** on the common no-FPS-change route, the already-landed exact framing is resubmitted
+  roughly 450 ms later, causing an avoidable late request swap/hitch under the repository's measured
+  Camera2 swap behavior.
+- **Plan direction:** make the complete zoom transition explicitly track whether quiet landing
+  already put exact framing on the wire; clear interaction state without an identical end fast-path
+  submit when FPS is unchanged, retain end rebuilds that genuinely restore FPS, and test full
+  start/move/quiet/repinch/end request sequences.
+
+### AGG42-04 — zoom tests and authority model a dead wide-aim owner and retired throttle
+
+- **Severity / confidence:** Low / High
+- **Sources:** code-reviewer/critic/architect, document-specialist/designer
   (**cross-agent agreement**)
-- **Status:** confirmed accessibility interaction-model defect.
-- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProSheet.kt:734-759` renders MR
-  Save/Update as `FilterChip(selected = false)` and overlays only `Role.Button`; the underlying
-  selectable surface still exports `Selected=false`. The adjacent Custom WB measurement action at
-  `ProSheet.kt:1019-1034` also uses a FilterChip whose selected state reflects WB mode even though
-  activation performs a fresh one-shot measurement. The role-only regression at
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/controls/SelectorRoleSemanticsComposeTest.kt:65-94`
-  does not reject selected/toggle state or cover the Custom WB command.
-- **Failure:** TalkBack/Switch Access can model Save/Update as an always-unselected button and
-  Custom WB capture as a checked/unchecked choice, misrepresenting immediate writes as persistent
-  selection.
-- **Plan direction:** use a genuinely click-only chip/button primitive, keep visual active tint
-  independent from accessibility state, and test Button role, click, disabled behavior, and absence
-  of Selected/toggle state for both commands.
+- **Status:** confirmed test-authority and documentation defect; current edge arithmetic is correct.
+- **Evidence:** the actual start-edge wide target is independently calculated and submitted by
+  `CameraEngine.setZoomInteraction` (`camera/CameraEngine.kt:3875-3894`). The parallel wide target
+  in `ZoomSubmitPlan.kt:39-53` is produced only for moving `setZoomRatio` calls whose
+  `submitNow=false`, so runtime discards it. `ZoomSubmitPlanTest.kt:23-109` tests that dead value and
+  never exercises the real edge submission. `docs/ARCHITECTURE.md:71,718-727`,
+  `camera/CameraController.kt:530-535`, `ui/ZoomGlideState.kt:41-50`, and nearby ViewModel/KDoc text
+  still describe a removed throttle, malformed fixed swap count, or ownership the pure plan does
+  not have.
+- **Failure:** the real start-edge clamp can regress while all wide-aim tests stay green, or a
+  maintainer can restore periodic submissions/remove quiet landing by following stale authority.
+- **Plan direction:** extract one pure start-edge target resolver used by the real submission path,
+  remove dead plan outputs/inputs, directly test edge margin/clamping, and align source/docs with
+  moving-tick suppression plus route-specific start, optional quiet landing, and end behavior.
 
-### AGG41-02 — zoom authority and tests still describe a retired throttle path
-
-- **Severity / confidence:** Low / High
-- **Source:** critic/verifier/test-engineer
-- **Status:** confirmed test-authority and maintainability defect; runtime suppression is correct.
-- **Evidence:** `camera/ZoomSubmitPlan.kt:20-57` suppresses every moving-gesture HAL submit, while
-  live comments in `camera/CameraEngine.kt:3946-3954,6958-6965` and
-  `ui/CameraViewModel.kt:2063-2117` still describe throttled periodic ticks. `ZoomSubmitPlan` accepts
-  dead `nowMs`, `lastSubmitMs`, and `throttleMs` inputs; `lastHalZoomSubmitMs` is write-only except
-  for that inert call. `ZoomSubmitPlanTest.kt:8-109` varies those dead inputs under "throttled"
-  names, creating false threshold-coverage signal.
-- **Failure:** a maintainer can tune or restore periodic mid-gesture Camera2 submissions, reviving
-  measured stalls while the misleading threshold tests stay green.
-- **Plan direction:** remove dead timing inputs/state, rename tests around start-edge/moving
-  suppression/quiet landing/end-edge ownership, and align all live comments with executable truth.
-
-### AGG41-03 — duplicate-ZIP fixtures leak unowned Python warnings
+### AGG42-05 — cycle-41 completion evidence records the wrong tooling-test count
 
 - **Severity / confidence:** Low / High
-- **Source:** critic/verifier/test-engineer
-- **Status:** confirmed test-hygiene defect.
-- **Evidence:** `tools/tests/test_release_artifact.py:466-478,498-518` deliberately writes duplicate
-  ZIP members. Python 3.14 emits `UserWarning: Duplicate name` for both, but the tests neither own
-  nor assert the warnings; `tools/verify_host.py:83-85` runs the noisy suite directly.
-- **Failure:** permanent expected-warning noise obscures new warnings, and warning-as-error runs
-  fail despite otherwise-correct tests.
-- **Plan direction:** wrap each deliberate duplicate write with `assertWarnsRegex` and verify the
-  complete suite has no unowned warnings without global suppression.
-
-### AGG41-04 — architecture inventory omits the Java durability owner
-
-- **Severity / confidence:** Low / High
-- **Source:** document-specialist/designer
-- **Status:** confirmed current-authority/code mismatch.
-- **Evidence:** `app/src/main/java/me/hletrd/telecampro/storage/SharedPreferencesDurableEdit.java:5-21`
-  now owns Boolean-returning synchronous preference commits used by
-  `storage/MediaStoreWriter.kt:429-438,1228-1233,1407-1415`, but the storage map in
-  `docs/ARCHITECTURE.md:107-112` omits it. `tools/check_docs.py:862-875` inventories only
-  `app/src/main/kotlin/**/*.kt`, so the completeness gate cannot detect the omission.
-- **Failure:** a maintainer can remove or incorrectly replace the seemingly undocumented Java
-  bridge and lose fail-closed commit results while the architecture gate remains green.
-- **Plan direction:** document the Java owner and make production module-map checking cover both
-  Kotlin and Java roots, with a negative Java omission fixture.
-
-### AGG41-05 — live UI comments cite the retired 0.55 guide alpha
-
-- **Severity / confidence:** Low / High
-- **Source:** document-specialist/designer
-- **Status:** confirmed source-documentation drift; executable token/tests are correct.
-- **Evidence:** `ui/theme/Theme.kt:128-162`, `ui/CameraScreen.kt:919-924`, and
-  `ui/overlays/Overlays.kt:943-954` compare visual roles against a 0.55 GuideLine even though the
-  token and `HudContrastTest.kt:258-271` deliberately pin 0.40. The theme comment also calls the
-  0.30-to-0.35 difference one hundredth instead of five hundredths.
-- **Failure:** future tuning can restore the rejected heavier guide hierarchy by following the
-  nearest live rationale even though the token regression currently remains green.
-- **Plan direction:** correct every comparison and arithmetic claim, and add a source/doc contract
-  rejecting active 0.55 GuideLine guidance while the token stays 0.40.
+- **Source:** verifier/test-engineer
+- **Status:** confirmed archived evidence mismatch.
+- **Evidence:** cycle 41 added two documentation-gate tests in
+  `tools/tests/test_tool_contracts.py:423-475`, making the committed suite 106 tests. Its later
+  completion record still says 104 at `docs/plans/2026-08-24-rpf-cycle41.md:77-78`; a current
+  warnings-as-errors run passes 106/106.
+- **Failure:** the durable closeout cannot be reconciled with the test inventory present in the
+  commit it describes, while the documentation gate remains green.
+- **Plan direction:** correct the archived count to 106, or record the exact successful command and
+  exit status without a mutable total.
 
 ## Agent failures
 
@@ -105,9 +120,9 @@ None.
 
 ## Totals
 
-- Raw specialist findings: 7
+- Raw specialist findings: 8
 - Deduplicated new findings: 5
-- Severity: 1 Medium, 4 Low
+- Severity: 3 Medium, 2 Low
 - Confidence: 5 High
 - Device/manual-only residuals: A3, A4, D1, E1, and E2 remain correctly open in
   `docs/FIELD_CHECKS.md`; none was reclassified as a code defect.

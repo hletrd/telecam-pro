@@ -1,15 +1,15 @@
-# Performance and causal-tracing review — cycle 41
+# Performance and causal-tracing review — cycle 42
 
 Date: 2026-08-24
-Reviewed revision: `4e4c9dfbce294fb2965a56ea63d74d6096744836` (`origin/main`)
-Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle41.nWoiMj`
+Reviewed revision: `70ebb8759b567dcd2ee13bd51b226da2568ff6d7` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle42.rPLjyN`
 
 ## Scope, inventory, and method
 
 I read the repository authority in `CLAUDE.md`, the complete as-built map in
 `docs/ARCHITECTURE.md`, and the committed device-evidence boundary in `docs/FIELD_CHECKS.md`.
 `docs/BACKLOG.md` is absent from this clean clone and is explicitly optional under the repository
-rules. I inventoried all 499 tracked paths, including all 102 production Kotlin/Java files, 232
+rules. I inventoried all 504 tracked paths, including all 102 production Kotlin/Java files, 232
 test/debug/instrumentation files, Android resources and build inputs, host/device tooling, current
 plans, and retained review provenance. Historical reviews were used as regression oracles rather
 than copied forward.
@@ -27,7 +27,7 @@ checked against callers and tests.
 The causal pass followed optics/session generations and rollback, preview-window/GL identity,
 Camera2 capture-result-to-image correlation, ZSL image/result pairing, still-family producer and
 delete-marker ownership, recorder admission and native quarantine, provider recovery, exact review
-handle publication, standby-microphone handoff, and lifecycle callback detachment. The cycle-40
+handle publication, standby-microphone handoff, and lifecycle callback detachment. The cycle-41
 change surface was separately inspected for hot-path or ownership regressions.
 
 ## Findings
@@ -35,12 +35,16 @@ change surface was separately inspected for hot-path or ownership regressions.
 No new performance, concurrency, lifecycle/resource-leak, or causal state-consistency defect
 survived validation at current HEAD.
 
-The cycle-40 warning cleanup does not add runtime work to the camera/GL/encoder paths. The new
-`SharedPreferencesDurableEdit` bridge preserves the existing synchronous Boolean-returning commits
-on their established provider/storage workers (`storage/MediaStoreWriter.kt:430-440,1225-1236,
-1409-1413`); the KTX bitmap construction remains one review-only allocation; the accessibility and
-system-bar changes are event/composition setup work; and release resource shrinking affects only
-packaging.
+The cycle-41 changes do not add runtime work to the camera/GL/encoder paths. Removing the dead zoom
+timestamp/throttle arguments and field leaves the established behavior intact: a moving gesture is
+GL/still-truth only, while start/quiet/end edges own Camera2 submissions
+(`camera/ZoomSubmitPlan.kt:15-54`; `camera/CameraEngine.kt:3875-4012`;
+`ui/CameraViewModel.kt:2047-2137`). The immediate-action chip change is composition/event work only;
+the remaining changes affect tests, documentation contracts, coverage manifests, or comments.
+
+Focused regression verification passed for `ZoomSubmitPlanTest`, `ZoomGlideStateTest`, and
+`SelectorRoleSemanticsComposeTest` under JDK 21 with the configured Android SDK. No device behavior
+was run or inferred.
 
 ## Competing hypotheses checked
 
@@ -49,8 +53,9 @@ packaging.
    (`gl/FrameNotificationCoalescer.kt:17-50`); analysis is single-flight per immutable GL generation
    with reused direct/heap buffers and a bounded 256-pixel target
    (`gl/GlPipeline.kt:213-261,1410-1545`); logical/front ZSL owns a three-image ring and six recent
-   results (`camera/CameraController.kt:1360-1475`). Zoom and controls keep their 16 ms/40 ms/200 ms
-   leading-plus-trailing pacing rather than enqueueing each input event.
+   results (`camera/CameraController.kt:1360-1475`). Zoom and controls keep bounded 16 ms/40 ms
+   UI coalescing plus exact quiet/end landings rather than enqueueing each input event; moving zoom
+   ticks make no periodic Camera2 submissions.
 2. **Provider or native wedges multiply workers across Engine/ViewModel recreation:** rejected.
    Recording pre-allocation, still publication, deletion marking/discard, recording storage,
    ViewModel deletion, launch recovery, and review-media blocking work all use fixed process-wide
