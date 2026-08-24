@@ -111,8 +111,16 @@ best-effort basis.
 Repository CLI entry points resolve one Android SDK authority in this order: an ignored
 `local.properties` `sdk.dir`, agreeing `ANDROID_HOME` / `ANDROID_SDK_ROOT` values, then the
 conventional macOS (`$HOME/Library/Android/sdk`) or Linux (`$HOME/Android/Sdk`) path. The selected
-SDK must contain Platform 37 and Build Tools 36.0.0. For a non-conventional installation, configure
-it before any build:
+SDK must contain Platform 37, Build Tools 36.0.0, and the latest stable Android Emulator package.
+The host test suite uses the Emulator package's `glslangValidator` to compile and link the exact
+shipping GLES shader strings. Install/update the stable-channel packages with the current
+`sdkmanager` syntax (`--channel=0` is the stable channel):
+
+```bash
+sdkmanager --channel=0 "platforms;android-37" "build-tools;36.0.0" "emulator"
+```
+
+For a non-conventional installation, configure it before any build:
 
 ```bash
 export ANDROID_HOME="/absolute/path/to/Android/sdk"
@@ -130,7 +138,8 @@ For local development only (these mutable Gradle outputs are not device-evidence
 ./gradlew installDebug         # install to a connected device
 ```
 
-Requires JDK 21, Android SDK Platform 37, and Build Tools 36.0.0. Platform 37 is a compile-time
+Requires JDK 21, Android SDK Platform 37, Build Tools 36.0.0, and the stable Emulator package.
+Platform 37 is a compile-time
 requirement only; the runtime target stays API 36 and the install floor is API 33. AGP 9 bundles Kotlin, so the
 `kotlin.android` plugin is not applied.
 

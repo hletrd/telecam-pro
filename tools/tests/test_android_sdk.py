@@ -10,7 +10,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 
-from android_sdk import BUILD_TOOLS, COMPILE_SDK, android_sdk_environment  # noqa: E402
+from android_sdk import BUILD_TOOLS, COMPILE_SDK, GLSL_VALIDATORS, android_sdk_environment  # noqa: E402
 
 
 def complete_sdk(path: Path) -> Path:
@@ -18,6 +18,9 @@ def complete_sdk(path: Path) -> Path:
     platform.mkdir(parents=True)
     (platform / "android.jar").write_bytes(b"fixture")
     (path / f"build-tools/{BUILD_TOOLS}").mkdir(parents=True)
+    validator = path / GLSL_VALIDATORS[0]
+    validator.parent.mkdir(parents=True)
+    validator.write_bytes(b"fixture")
     return path.resolve()
 
 
@@ -73,6 +76,7 @@ class AndroidSdkAuthorityTest(unittest.TestCase):
             self.assertIn("export ANDROID_HOME", message)
             self.assertIn(f"SDK Platform {COMPILE_SDK}", message)
             self.assertIn(f"Build Tools {BUILD_TOOLS}", message)
+            self.assertIn("stable Emulator package", message)
 
     def test_conflicting_environment_authorities_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

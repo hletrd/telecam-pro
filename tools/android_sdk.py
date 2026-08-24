@@ -10,6 +10,10 @@ from pathlib import Path
 
 COMPILE_SDK = 37
 BUILD_TOOLS = "36.0.0"
+GLSL_VALIDATORS = (
+    "emulator/lib64/vulkan/glslangValidator",
+    "emulator/lib64/vulkan/glslangValidator.exe",
+)
 
 
 def _local_sdk_path(root: Path) -> Path | None:
@@ -41,6 +45,8 @@ def _missing_components(path: Path) -> tuple[str, ...]:
         missing.append(f"SDK Platform {COMPILE_SDK}")
     if not (path / f"build-tools/{BUILD_TOOLS}").is_dir():
         missing.append(f"Build Tools {BUILD_TOOLS}")
+    if not any((path / relative).is_file() for relative in GLSL_VALIDATORS):
+        missing.append("Android Emulator glslangValidator")
     return tuple(missing)
 
 
@@ -96,6 +102,6 @@ def android_sdk_environment(
     raise RuntimeError(
         "Android SDK not found. Add sdk.dir=<absolute-sdk-path> to the ignored local.properties "
         "or export ANDROID_HOME (and ANDROID_SDK_ROOT) before running the command. "
-        f"Required: SDK Platform {COMPILE_SDK} and Build Tools {BUILD_TOOLS}. "
+        f"Required: SDK Platform {COMPILE_SDK}, Build Tools {BUILD_TOOLS}, and the stable Emulator package. "
         f"Conventional paths checked: {searched}"
     )
