@@ -1449,8 +1449,9 @@ class CameraViewModel private constructor(
         // silently — the engine re-picked the largest size on every launch). The engine re-validates
         // the request against the live caps once the camera opens and falls back to auto if the
         // size is no longer offered (lens change, aspect mismatch with openGate).
-        _state.update {
-            it.copy(
+        cameraReadyPublicationGate.serializedStatus { statusOwner ->
+            _state.update {
+                it.copy(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
                 controls = cSynced,
                 // Normalized for the SAME reason photoFormats is on the next line: the seed at
@@ -1515,11 +1516,12 @@ class CameraViewModel private constructor(
                 preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
                 activeMemorySlot = activeSlot,
                 status = status,
-            )
+                )
+            }
+            armStatusTimer(status, statusOwner)
         }
         mainHandler.removeCallbacks(levelTicker)
         if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
-        armStatusTimer(status)
         // NOTE deliberately NO refreshProgramAppSide() here: the flag is already derived into
         // cSynced above, and calling the refresher would route the recalled packet back through
         // updateControls' whole-packet normalization against the outgoing route's caps (the
@@ -1675,9 +1677,9 @@ class CameraViewModel private constructor(
     }
 
     private fun publishStatus(status: CameraStatus?) {
-        cameraReadyPublicationGate.serialized {
+        cameraReadyPublicationGate.serializedStatus { statusOwner ->
             _state.update { it.copy(status = status) }
-            armStatusTimer(status)
+            armStatusTimer(status, statusOwner)
         }
     }
 
@@ -1686,7 +1688,11 @@ class CameraViewModel private constructor(
 
     private fun showStatus(status: CameraStatus) = publishStatus(status)
 
-    private fun armStatusTimer(status: CameraStatus?) {
+    private fun armStatusTimer(
+        status: CameraStatus?,
+        owner: CameraReadyPublicationGate.StatusOwner,
+    ) {
+        owner.requireHeld()
         clearStatusRunnable?.let(mainHandler::removeCallbacks)
         clearStatusRunnable = null
         val sequence = ++statusSequence

@@ -1238,7 +1238,15 @@ data class OpenReviewPresentation(
 internal class CameraReadyPublicationGate(
     private val monitor: Any = Any(),
 ) {
+    /** Runtime/compile-time fence for operations that publish a status and arm its timer. */
+    internal class StatusOwner internal constructor(private val monitor: Any) {
+        fun requireHeld() {
+            check(Thread.holdsLock(monitor)) { "Status timer arm escaped its publication gate" }
+        }
+    }
+
     private val latestSequence = java.util.concurrent.atomic.AtomicLong(0)
+    private val statusOwner = StatusOwner(monitor)
 
     fun observe(publication: CameraReadyPublication): Boolean = synchronized(monitor) {
         latestSequence.accumulateAndGet(publication.sequence, ::maxOf) == publication.sequence
@@ -1250,6 +1258,15 @@ internal class CameraReadyPublicationGate(
 
     /** Runs arbitrary status-owner work in the same order as Ready/Not-Ready observations. */
     fun <T> serialized(block: () -> T): T = synchronized(monitor) { block() }
+
+    /**
+     * Publishes a status and its dismissal owner under one monitor acquisition. The supplied token
+     * is valid only while [block] is running; timer-arm helpers call [StatusOwner.requireHeld] so a
+     * new production call site cannot accidentally split visible state from timer ownership.
+     */
+    fun <T> serializedStatus(block: (StatusOwner) -> T): T = synchronized(monitor) {
+        block(statusOwner)
+    }
 
     /** Runs [block] only while [publication] still owns the exact retirement boundary. */
     fun runIfOwned(publication: CameraReadyPublication, block: () -> Unit): Boolean =
