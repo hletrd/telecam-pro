@@ -4014,9 +4014,9 @@ class CameraEngine internal constructor(
 
     /** Returns true only when this press was admitted to a real still target. */
     fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
-        if (!stillOutputAdmissionAvailable()) {
+        stillCaptureAdmissionFailureStatus(stillOutputAdmissionAvailable())?.let { status ->
             onStillCaptureAdmissionChanged?.invoke(false)
-            onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+            onStatus?.invoke(status.status())
             return false
         }
         // Same gate startRecording has: during a session-key reopen (cameraReady=false) the
@@ -7027,6 +7027,10 @@ internal fun previewRecoveryDecision(
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */
 internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
     currentGeneration == expectedGeneration
+
+/** A rejected shutter press is capture state, never evidence that a deletion failed. */
+internal fun stillCaptureAdmissionFailureStatus(admissionAvailable: Boolean): CameraStatusMessage? =
+    if (admissionAvailable) null else CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE
 
 internal enum class DualOpenWaitResult { SIGNALED, SUPERSEDED, TIMED_OUT }
 
