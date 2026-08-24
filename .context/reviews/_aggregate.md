@@ -1,152 +1,138 @@
-# Aggregated deep review — cycle 45
+# Aggregated deep review — cycle 46
 
-Date: 2026-08-24
-Reviewed revision: `ed2a2faf69aa418545dfaa9f083444d9f63d2915` (`origin/main`)
-Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle45.4l2DdI/repo`
+Date: 2026-08-25
+Reviewed revision: `f03f40c563c3f8dd2ecadf48e4d41f064a4433bd` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle46.qsEwxz`
 
 ## Coverage and aggregation
 
-Five parallel specialist groups covered all required roles: code-reviewer, architect,
+Five parallel specialist groups covered every required role: code-reviewer, architect,
 performance-reviewer, tracer, security-reviewer, debugger, critic, verifier, test-engineer,
 document-specialist, and native Android designer. No repository-local reviewer agents were
-registered. Each group inventoried all 513 tracked files, examined its complete specialist surface
-and cross-file interactions, and completed a final missed-issue sweep. Browser automation was not
+registered. Each group inventoried all 517 tracked paths, examined its full specialist surface and
+cross-file interactions, and completed a final missed-issue sweep. Browser automation was not
 applicable to this native Jetpack Compose app. No device behavior was run or inferred.
 
-The reviewers produced ten raw findings. Cross-report comparison found no true duplicates: the two
-camera-status findings have different causal owners (stale Ready retirement versus hardware-input
-admission), and the two microphone/focus items are test-assurance gaps distinct from the underlying
-runtime fixes. All ten therefore remain as deduplicated current findings. Security/debugger found
-no actionable issue. The authoritative host gate passed after one transient, non-reproducing Gradle
-results-file failure was task-forced and rerun successfully.
+The reviewers produced nine raw findings. Cross-report comparison found no duplicates: the two
+rollback findings affect distinct derived owners, the status finding is a separate timer-publication
+race, the two device-harness findings concern independent completeness and identity boundaries, and
+the three presentation/documentation items have different user or release surfaces. All nine remain
+as deduplicated current findings. No finding was supported by more than one specialist group, and no
+agent failed.
 
 ## Findings
 
-### AGG45-01 — policy-gate replacement can strand an invisible review and input owner
+### AGG46-01 — failed mode rollback leaves target transfer and microphone owners active
+
+- **Severity / confidence:** High / High
+- **Source:** code-reviewer/architect
+- **Evidence:** `CameraViewModel.kt:2313-2324` applies target-mode transfer and standby-meter
+  ownership immediately; `CameraEngine.kt:742-846` restores mode/session without transfer;
+  `CameraViewModel.kt:910-953` handles rollback without replaying transfer or microphone ownership.
+- **Failure:** a failed Video↔Photo route change restores the accepted mode while GL/Engine transfer
+  and standby `AudioRecord` remain owned by the rejected mode, risking wrong HLG/SDR presentation or
+  hidden microphone ownership.
+- **Plan direction:** make mode-derived effects part of rollback ownership and add forced rollback
+  coverage in both directions, including recording configuration after Ready returns.
+
+### AGG46-02 — facing rollback leaves punch-in resolved for the rejected route
 
 - **Severity / confidence:** Medium / High
 - **Source:** code-reviewer/architect
-- **Evidence:** `MainActivity.kt:440-447,535-553` removes `CameraScreen` while policy-blocked;
-  `CameraScreen.kt:442-459,470-493,1468-1485` owns the exact review URI only in
-  `rememberSaveable`; `CameraViewModel.kt:3381-3407,3414-3427` separately retains `reviewOpen`, the
-  family pin, and `CameraInputBlockOwner.REVIEW`.
-- **Failure:** after policy recovery, the replacement screen has no review URI, so the overlay and
-  close control disappear while hardware input remains blocked and the capture family remains
-  pinned indefinitely.
-- **Plan direction:** give the frozen review identity one lifecycle owner, preferably ViewModel
-  state that can reconstruct the overlay, and test policy replacement preserves or atomically
-  retires the exact review, pin, and input owner.
+- **Evidence:** `CameraEngine.kt:3408-3453` resolves punch-in for the optimistic route;
+  `CameraEngine.kt:742-809` restores the route without `pushPunchIn()`; the route-resolution contract
+  is documented at `CameraEngine.kt:6554-6567`.
+- **Failure:** a rejected front entry can leave rear loupe intent visually off, while a rejected
+  front exit can leave the rear-only crop active on the restored front route; the stale value also
+  survives GL-generation replay.
+- **Plan direction:** replay punch-in after owned route rollback or centralize all route-derived
+  renderer state, with entry/exit failure and replacement-GL tests.
 
-### AGG45-02 — stale Ready can clear a newer untimed progress condition
+### AGG46-03 — MR recall can detach the visible status from timer ownership
 
 - **Severity / confidence:** Medium / High
-- **Source:** code-reviewer/architect
-- **Evidence:** `CameraViewModel.kt:782-811,1628-1673` admits a Ready publication once, then clears
-  progress synchronously without rechecking ownership; only the later posted camera-state reducer
-  rechecks the publication generation. `CameraReadyPublicationGate.owns()` already distinguishes
-  admission from current ownership.
-- **Failure:** Ready N admits, NotReady N+1 plus a newer recovery status publishes, then Ready N
-  resumes and erases the newer untimed condition even though its state publication is rejected.
-- **Plan direction:** bind progress retirement to the latest Ready identity/generation and add a
-  latch-controlled interleaving test.
+- **Source:** security-reviewer/debugger
+- **Evidence:** `CameraViewModel.kt:1459-1516` writes the recall status and later arms its timer
+  outside the serialized status gate, while ordinary publications use the atomic boundary at
+  `CameraViewModel.kt:1671-1720,3396-3412`.
+- **Failure:** an Engine event can publish between those steps; the stale recall timer then removes
+  the current event's timer, refuses to clear its different identity, and leaves the current status
+  stuck indefinitely.
+- **Plan direction:** publish recalled state and timer through one gate-owned operation and add a
+  latch-controlled interleaving regression plus an audit fence for timer callers.
 
-### AGG45-03 — empty-gallery taps can enqueue unbounded MediaProvider restores
-
-- **Severity / confidence:** Medium / High
-- **Source:** performance-reviewer/tracer
-- **Evidence:** `CameraViewModel.kt:686-691,1146-1167,1603-1609` submits every restore request to an
-  unbounded single-thread executor; `CameraScreen.kt:1360-1376` and `MediaReview.kt:683-730` leave
-  the empty thumbnail repeatedly enabled. Each task can run multiple provider queries and captures
-  the ViewModel; `onCleared()` uses `shutdown()`, which drains accepted work.
-- **Failure:** one wedged provider query lets repeated taps grow a stale ViewModel-retaining queue,
-  starve telemetry/codec work on the same lane, and later replay redundant queries.
-- **Plan direction:** add a ViewModel-local one-active plus one-conflated-pending restore owner,
-  generation-safe publication, teardown rejection, and deterministic saturation coverage.
-
-### AGG45-04 — hardware shutter can replace an exhausted-camera verdict with permanent progress
+### AGG46-04 — strict full/reliability device runs can exit green with runtime skips
 
 - **Severity / confidence:** Medium / High
 - **Source:** critic/verifier/test-engineer
-- **Evidence:** `HardwareInputPolicy.kt:12-32` and `MainActivity.kt:614-665` admit a camera-key edge
-  without camera-health policy; `CameraViewModel.kt:3093-3135` invokes the action despite disabled
-  primary-shutter state; `CameraEngine.kt:4046-4060,4929-4937` publishes the now-untimed
-  `CAMERA_RECONFIGURING` even when no session/reconfiguration exists.
-- **Failure:** after bounded recovery exhausts with actionable terminal guidance, a physical shutter
-  key overwrites it with “Camera reconfiguring…” although no operation can emit a terminal event.
-- **Plan direction:** apply the same action-admission policy to hardware actions while preserving
-  active REC/timelapse stop, or preserve the terminal Engine verdict when no reconfiguration owns
-  the request; cover PHOTO and VIDEO exhausted states.
+- **Evidence:** `device-tests/dtest/framework.py:122-139,156-166` records caught runtime `Skip` as a
+  skip and ignores it after any pass, despite the strict `--allow-partial` contract in
+  `device-tests/README.md:50-54`; a pass-plus-runtime-skip reproduction exited 0.
+- **Failure:** a full run can lose foreground, skip required later cases, and emit a green
+  attestation that downstream users mistake for complete feature evidence.
+- **Plan direction:** classify runtime skips as incomplete for strict full/reliability tiers while
+  preserving ordinary smoke behavior, and test strict versus explicitly partial runs.
 
-### AGG45-05 — live timelapse interval edits do not affect the active run
+### AGG46-05 — kill-window durability cases do not join recovered media to the attempted operation
 
 - **Severity / confidence:** Medium / High
 - **Source:** critic/verifier/test-engineer
-- **Evidence:** `ProSheet.kt:941-964` leaves the interval row enabled during a run and
-  `CameraViewModel.kt:3084-3089` plus `CameraEngine.kt:2816` publish/persist the edit, but
-  `CameraEngine.kt:4223-4267` snapshots one period at start and closes every later schedule over it.
-- **Failure:** changing a running 1-second interval to 30 seconds updates UI and persisted state
-  while captures continue every second.
-- **Plan direction:** define the contract and preferably read the current synchronized interval at
-  every next-shot/recovery schedule boundary; test edit, recovery, stop, and restart behavior.
+- **Evidence:** `device-tests/cases.py:4731-4764` accepts unkeyed post-relaunch rows for stills, and
+  `device-tests/cases.py:4826-4854` chooses the last new MP4 without a `RecordingSpec` identity,
+  unlike the exact joins at `device-tests/cases.py:1166-1200,4778-4800`.
+- **Failure:** a delayed prior save, unrelated MP4, missing still sibling, or wrong recording stem
+  can satisfy a durability case while the operation actually initiated by the case was lost.
+- **Plan direction:** freeze Single drive/requested formats and exact capture/recording identity,
+  require the exact expected delta, and add negative fake-harness cases.
 
-### AGG45-06 — microphone “Activity recreation” tests do not recreate MainActivity
-
-- **Severity / confidence:** Medium / High
-- **Source:** critic/verifier/test-engineer
-- **Evidence:** production restore/result/save wiring is in
-  `MainActivity.kt:303-310,358-394,805-813`, but `MainActivityPendingAudioStateTest.kt:10-70`
-  exercises only Bundle serializers and
-  pure transitions; `CameraViewModelRobolectricTest.kt:744-755` manually owns the microphone token.
-- **Failure:** disconnecting production restore, saved-state, owner acquisition, or exactly-once
-  launcher continuation leaves the claimed recreation coverage green.
-- **Plan direction:** add real Robolectric/ActivityScenario saved-state recreation coverage for both
-  pending actions/phases and grant/denial, including input-owner and exactly-once behavior.
-
-### AGG45-07 — focus-ring contrast passes on one strongest changed pixel
+### AGG46-06 — restored timelapse intervals can escape the 1–30 second UI domain
 
 - **Severity / confidence:** Low / High
 - **Source:** critic/verifier/test-engineer
-- **Evidence:** `ShutterFocusComposeTest.kt:64-94` filters changed edge pixels and asserts only the
-  maximum contrast, while `CameraScreen.kt:3248-3265` renders two distributed circular rings.
-- **Failure:** a clipped or nearly invisible ring passes if one antialiased pixel remains above 3:1.
-- **Plan direction:** require a substantial connected annular coverage/percentile at compliant
-  contrast on bright and dark fixtures, with negative one-pixel/short-arc mutations.
+- **Evidence:** `SettingsStore.kt:303-308` lower-bounds only; `ProSheet.kt:954-964` clamps only the
+  slider thumb; `CameraEngine.kt:2826,4318` schedules the raw restored value.
+- **Failure:** a corrupt or legacy `intervalSec=300` displays an irreproducible 300-second setting
+  with the thumb at 30 and makes the running sequence wait five minutes.
+- **Plan direction:** define one shared interval domain, normalize at storage and Engine ingress,
+  and test below/in/above-domain settings and MR values.
 
-### AGG45-08 — enabled recording Stop is dimmed to disabled-strength during Not-Ready
+### AGG46-07 — a real capture reuses the no-capture pictogram while loading or without pixels
 
 - **Severity / confidence:** Medium / High
 - **Source:** document-specialist/designer
-- **Evidence:** `CameraState.kt:1565-1581` keeps Stop actionable while recording but does not keep it
-  healthy; `CameraScreen.kt:3167-3184,3221-3242` applies 0.35 alpha to the entire control, and
-  `CameraAdmissionPresentationComposeTest.kt:48-59,82-108` pins that mismatch.
-- **Failure:** during REC recovery the only stop control remains active but its stop mark, ring, and
-  focus indicator appear unavailable and fall below the app's non-text contrast convention.
-- **Plan direction:** model Stop/Cancel as full-strength owned actions independent of new-capture
-  readiness, correct the stale comment/test, and add rendered recovery/terminal/focus coverage.
+- **Evidence:** `MediaReview.kt:654-709` resets each non-null URI to a nullable empty holder;
+  `MediaReview.kt:710-779` draws the same no-capture glyph for loading and failed still/video
+  thumbnails while semantics announce a real review action.
+- **Failure:** immediately after capture, or permanently after a null thumbnail result, the tile
+  visually claims no capture exists even though tapping it opens the real photo/video.
+- **Plan direction:** model Empty/Loading/Ready/Failed explicitly, reserve the empty glyph for null
+  URI, add quiet media-specific fallbacks, and cover every rendered branch.
 
-### AGG45-09 — Korean converter focal OSD bypasses the existing translation
+### AGG46-08 — tracked tablet Play screenshots have no committed validity authority
 
 - **Severity / confidence:** Low / High
 - **Source:** document-specialist/designer
-- **Evidence:** `Overlays.kt:861-883` hardcodes `TELE`, while `CameraScreen.kt:1979-2025` and
-  `values/strings.xml:469` / `values-ko/strings.xml:452` use the localized `osd_tele` identity.
-- **Failure:** Korean converter mode displays `텔레` in one chip and `300 mm TELE` in the adjacent
-  focal readout.
-- **Plan direction:** resolve `osd_tele` in the focal presentation or use a localized formatted
-  resource, then extend bilingual Compose coverage.
+- **Evidence:** `docs/assets/play/screenshots/asset-validity.json:1-21` and
+  `docs/play-console-submit.md:587-639` govern phone files only; four tracked `tablet/*.png` assets
+  have no committed provenance/readiness or do-not-upload verdict; `tools/check_docs.py:1462-1477`
+  skips the only tablet check when optional private documentation is absent.
+- **Failure:** a clean-clone release operator can upload plausible but unauthenticated tablet assets
+  while all committed checks remain green.
+- **Plan direction:** commit tablet digest/provenance/readiness authority and submission guidance,
+  then validate it even without optional private listing state.
 
-### AGG45-10 — compact/high-font dropdowns can hide the selected optics identity
+### AGG46-09 — cycle 45 overclaims converter-specific responsive coverage
 
-- **Severity / confidence:** Medium / Medium
+- **Severity / confidence:** Low / High
 - **Source:** document-specialist/designer
-- **Evidence:** `ProControls.kt:785-881` forces dropdown triggers/options to single-line ellipsis;
-  `ProSheet.kt:1246-1298` supplies long Phone/Converter values inside the roughly 212 dp compact
-  lane; unlike the responsive sibling at `ProControls.kt:697-769`, there is no narrow/high-font
-  stacked policy or matching test.
-- **Failure:** at 2x text, `OPPO Find X9 Ultra` and `OPPO Find X9 Pro` can both present as the same
-  `OPPO Find…`, hiding the identity that controls compatible kit and focal arithmetic.
-- **Plan direction:** share the sibling row's compact stacking breakpoint, allow bounded popup
-  wrapping, and test 212 dp/fontScale 2.0 EN/KO plus RTL without losing radio semantics.
+- **Evidence:** `docs/plans/2026-08-24-rpf-cycle45.md:93-100,128-134` claims Phone and Converter
+  EN/KO/RTL coverage, but `DropdownResponsiveComposeTest.kt:50-87,129-167` emits only hard-coded
+  English phone options and never composes the converter consumer/localized values at
+  `ProSheet.kt:1250-1297`.
+- **Failure:** a converter-specific localization or wrapper regression can pass while the durable
+  completion record is treated as proof it was tested.
+- **Plan direction:** add the promised production-facing Phone/Converter EN/KO/RTL matrix and append
+  a dated correction to the historical plan record.
 
 ## Agent failures
 
@@ -154,9 +140,9 @@ None.
 
 ## Totals
 
-- Raw specialist findings: 10
-- Deduplicated new findings: 10
-- Severity: 8 Medium, 2 Low
-- Confidence: 9 High, 1 Medium
-- Security/debugger findings: 0
+- Raw specialist findings: 9
+- Deduplicated new findings: 9
+- Severity: 1 High, 5 Medium, 3 Low
+- Confidence: 9 High
+- Cross-agent duplicates/agreement: none
 - Device/manual evidence was not inferred from host behavior.
