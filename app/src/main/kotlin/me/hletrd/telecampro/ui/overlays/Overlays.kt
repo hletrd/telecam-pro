@@ -1002,7 +1002,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // dim, and the shutter's stop role needs a visible state to act on). Same
                 // state-belongs-in-the-OSD rule as REC/HR.
                 val driveColor = if (state.driveMode == DriveMode.TIMELAPSE && state.timelapseRunning) {
-                    CameraColors.Record
+                    CameraColors.AlarmText
                 } else {
                     CameraColors.ManualActive
                 }

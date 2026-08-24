@@ -2230,7 +2230,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
         if (state.batteryPct >= 0) {
             Text(
                 "${state.batteryPct}%",
-                color = if (state.batteryPct <= 15) CameraColors.Record else CameraColors.TextPrimary,
+                color = if (state.batteryPct <= 15) CameraColors.AlarmText else CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelSmall,
             )
         }

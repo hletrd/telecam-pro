@@ -66,8 +66,9 @@ object CameraColors {
     val Accent = Color(0xFF8AB4F8)
     /**
      * Recording state and the record affordance: the REC tally border, the REC dot, the video-mode
-     * shutter disc. Plus exactly two HARDWARE alarms that are not UI state and are red on camera
-     * bodies too — the ≤15% battery numeral and the audio meter's clipping bucket. Plus one indirect
+     * shutter disc. Plus one non-text HARDWARE alarm that is red on camera bodies too — the audio
+     * meter's clipping bucket. Small alarm/live-state TEXT uses [AlarmText], because this recording
+     * red clears the 3:1 non-text floor but not the 4.5:1 small-text floor on [HudPlate]. Plus one indirect
      * route: this token is also the scheme's `error` slot below. Nothing reads `colorScheme.error`
      * today, and that is the point of naming it here — it is the one way a Material component could
      * re-acquire the recording red without ever spelling this token, which is exactly how ChromeScrim
@@ -81,6 +82,8 @@ object CameraColors {
      * destructive GLYPH uses the lighter [Alert], not this.
      */
     val Record = Color(0xFFFF3B30)
+    /** Small critical HUD text: 4.89:1 on the canonical worst-case live-frame plate. */
+    val AlarmText = Color(0xFFFF6B6B)
     /**
      * Destructive-action glyph red: the review trash icon and its confirm button. Lighter than
      * [Record] on purpose — HudContrastTest pins this exact value at the shared scrim because at the

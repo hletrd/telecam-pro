@@ -28,6 +28,7 @@ class HudContrastTest {
             "primary" to rgbOf(CameraColors.TextPrimary),
             "secondary" to rgbOf(CameraColors.TextSecondary),
             "blue status accent" to rgbOf(CameraColors.Accent),
+            "low-battery and running-timelapse alarm text" to rgbOf(CameraColors.AlarmText),
         )
 
         foregrounds.forEach { (label, rgb) ->
@@ -88,6 +89,15 @@ class HudContrastTest {
         // documents history and keeps its literal on purpose.
         val ratio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.Alert), HUD_TEXT_SCRIM_ALPHA)
         assertTrue("delete-red contrast was $ratio", ratio >= 4.5)
+    }
+
+    @Test
+    fun `record shapes and critical text keep separate contrast contracts`() {
+        val shapeRatio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.Record), HUD_TEXT_SCRIM_ALPHA)
+        val textRatio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.AlarmText), HUD_TEXT_SCRIM_ALPHA)
+        assertTrue("record shape contrast was $shapeRatio", shapeRatio >= 3.0)
+        assertTrue("record red must not be reused as small text", shapeRatio < 4.5)
+        assertTrue("alarm text contrast was $textRatio", textRatio >= 4.5)
     }
 
     @Test
