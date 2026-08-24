@@ -117,6 +117,7 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
     offset = 8
     ihdr: tuple[int, int, int, int] | None = None
     compressed = bytearray()
+    saw_plte = False
     saw_idat = False
     idat_ended = False
     saw_iend = False
@@ -152,6 +153,19 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
             ):
                 return None
             ihdr = width, height, bit_depth, color_type
+        elif kind == b"PLTE":
+            if (
+                ihdr is None
+                or saw_plte
+                or saw_idat
+                or saw_iend
+                or ihdr[3] == 6
+                or length == 0
+                or length > 256 * 3
+                or length % 3 != 0
+            ):
+                return None
+            saw_plte = True
         elif kind == b"IDAT":
             if ihdr is None or idat_ended or saw_iend:
                 return None
@@ -167,7 +181,7 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
             if saw_idat:
                 idat_ended = True
             # Unknown critical chunks cannot be decoded safely; ancillary chunks are CRC-checked.
-            if kind and kind[0] & 0x20 == 0 and kind != b"PLTE":
+            if kind and kind[0] & 0x20 == 0:
                 return None
         offset = end
 
@@ -181,9 +195,12 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
         return None
     inflater = zlib.decompressobj()
     try:
-        pixels = inflater.decompress(bytes(compressed), expected_size + 1)
-        pixels += inflater.flush(expected_size + 1 - len(pixels))
-    except zlib.error:
+        output_limit = expected_size + 1
+        pixels = inflater.decompress(bytes(compressed), output_limit)
+        remaining = output_limit - len(pixels)
+        if remaining > 0:
+            pixels += inflater.flush(remaining)
+    except (ValueError, zlib.error):
         return None
     if (
         len(pixels) != expected_size

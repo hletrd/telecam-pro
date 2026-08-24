@@ -1248,6 +1248,80 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_rejects_illegal_png_palettes_after_digest_update(self) -> None:
+        def chunk(kind: bytes, payload: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(payload))
+                + kind
+                + payload
+                + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+            )
+
+        cases = (
+            ("post-idat", "docs/assets/play/screenshots/01-main-viewfinder.png", False, chunk(b"PLTE", b"\0\0\0")),
+            ("duplicate", "docs/assets/play/screenshots/01-main-viewfinder.png", True, chunk(b"PLTE", b"\0\0\0") * 2),
+            ("malformed", "docs/assets/play/screenshots/01-main-viewfinder.png", True, chunk(b"PLTE", b"\0\0")),
+            ("forbidden-rgba", "docs/assets/play/screenshots/tablet/02-shooting.png", True, chunk(b"PLTE", b"\0\0\0")),
+        )
+        for label, relative, after_ihdr, palette_chunks in cases:
+            with self.subTest(label=label):
+                def mutate(root: Path) -> None:
+                    asset = root / relative
+                    data = asset.read_bytes()
+                    if after_ihdr:
+                        insertion = 8 + 12 + struct.unpack(">I", data[8:12])[0]
+                    else:
+                        insertion = data.rfind(b"\0\0\0\0IEND")
+                    self.assertGreaterEqual(insertion, 8)
+                    asset.write_bytes(data[:insertion] + palette_chunks + data[insertion:])
+                    manifest_path = asset.parent / "asset-validity.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+                    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                expected_label = "tablet" if "tablet/" in relative else "phone"
+                self.assertIn(
+                    f"FAIL  {expected_label} screenshot PNG bytes match the declared geometry and encoding",
+                    result.stdout,
+                )
+
+    def test_committed_export_rejects_one_byte_overlong_png_without_traceback(self) -> None:
+        def replace_with_overlong_raster(root: Path) -> None:
+            relative = "docs/assets/play/screenshots/01-main-viewfinder.png"
+            asset = root / relative
+
+            def chunk(kind: bytes, payload: bytes) -> bytes:
+                return (
+                    struct.pack(">I", len(payload))
+                    + kind
+                    + payload
+                    + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+                )
+
+            asset.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00\x00"))
+                + chunk(b"IEND", b"")
+            )
+            manifest_path = asset.parent / "asset-validity.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["assets"][relative] = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(replace_with_overlong_raster)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn(
+            "FAIL  phone screenshot PNG bytes match the declared geometry and encoding",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
