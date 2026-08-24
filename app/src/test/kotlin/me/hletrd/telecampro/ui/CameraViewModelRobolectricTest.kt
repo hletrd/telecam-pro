@@ -741,6 +741,19 @@ class CameraViewModelRobolectricTest {
         }
     }
 
+    @Test fun `replacement Compose release preserves restored microphone permission ownership`() {
+        val (v, _) = createViewModel()
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, true)
+        assertTrue(v.state.value.cameraInputBlocked)
+
+        // Fresh CameraScreen composition publishes modalVisible=false. It owns only COMPOSE_MODAL.
+        v.onCameraInputBlockedChange(false)
+        assertTrue(v.state.value.cameraInputBlocked)
+
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
+        assertFalse(v.state.value.cameraInputBlocked)
+    }
+
     @Test fun `review ownership cancels a one-shot timer before pinning and never fires later`() {
         val (v, _) = createViewModel()
         armCountdown(v)

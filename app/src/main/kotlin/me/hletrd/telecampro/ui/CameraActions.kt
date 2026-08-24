@@ -208,9 +208,10 @@ interface CameraActions {
     /**
      * The full-screen media-review overlay opened/closed for its frozen [uri]. Returns true only
      * when opening pinned that exact capture family; the UI must otherwise use file-only copy.
-     * [onCameraInputBlockedChange] owns the broader gate shared with settings and Fn modals.
+     * [onCameraInputBlockedChange] owns the Compose-modal token shared with settings and Fn modals.
      */
     fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean
+    /** Acquires/releases only CameraScreen's Compose-modal token. */
     fun onCameraInputBlockedChange(blocked: Boolean)
     /** True only while the standby Video level meter is actually visible and unobscured. */
     fun onStandbyAudioMeterVisibilityChanged(visible: Boolean)

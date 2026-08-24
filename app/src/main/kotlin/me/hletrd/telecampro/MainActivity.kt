@@ -60,6 +60,7 @@ import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.ui.CameraActions
+import me.hletrd.telecampro.ui.CameraInputBlockOwner
 import me.hletrd.telecampro.ui.CameraScreen
 import me.hletrd.telecampro.ui.CameraViewModel
 import me.hletrd.telecampro.ui.ExternalNavigationFailure
@@ -89,6 +90,19 @@ internal data class PendingAudioRequestState(
     val action: PendingAudioAction,
     val rationaleVisible: Boolean,
 )
+
+internal data class PendingAudioRequestConsumption(
+    val action: PendingAudioAction?,
+    val remaining: PendingAudioRequestState?,
+)
+
+/** Rationale Continue preserves the command and moves its one owner to the system-dialog phase. */
+internal fun continuePendingAudioRequest(state: PendingAudioRequestState?): PendingAudioRequestState? =
+    state?.copy(rationaleVisible = false)
+
+/** Terminal grant/denial/dismiss consumes the command before any side effect can re-enter. */
+internal fun consumePendingAudioRequest(state: PendingAudioRequestState?): PendingAudioRequestConsumption =
+    PendingAudioRequestConsumption(action = state?.action, remaining = null)
 
 /** Activity Result restores its callback after recreation; this restores the command it consumes. */
 internal fun restorePendingAudioRequestState(state: Bundle?): PendingAudioRequestState? {
@@ -177,8 +191,9 @@ class MainActivity : ComponentActivity() {
     // True once the user has denied with "don't ask again": the runtime dialog no longer appears, so
     // the CTA must deep-link into App Settings instead of a dead re-request (designer UX-6 / M8).
     private var cameraPermanentlyDenied by mutableStateOf(false)
-    private var pendingAudioAction by mutableStateOf<PendingAudioAction?>(null)
-    private var showMicrophoneRationale by mutableStateOf(false)
+    // One state object owns both the command and its rationale/system phase. Terminal consumers
+    // clear it before invoking side effects, making grant/denial exactly-once across recreation.
+    private var pendingAudioRequest by mutableStateOf<PendingAudioRequestState?>(null)
     // Edge ownership is Activity-local: if a modal opens between DOWN and UP, the matching release
     // still reaches the ViewModel and both edges stay consumed instead of wedging a press state.
     private val ownedShutterKeys = mutableSetOf<Int>()
@@ -288,11 +303,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         restorePendingAudioRequestState(savedInstanceState)?.let { restored ->
-            pendingAudioAction = restored.action
-            showMicrophoneRationale = restored.rationaleVisible
+            pendingAudioRequest = restored
             // The restored rationale or system permission surface still owns camera input until
             // its exact continuation terminates.
-            vm.onCameraInputBlockedChange(true)
+            vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, true)
         }
         lockPortraitOnHandsets()
         // Both bars are pinned DARK — meaning "this bar sits on a dark background", which is how
@@ -353,7 +367,7 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { _ ->
                     // The visual-media picker/dialog has released its full-screen input ownership.
-                    vm.onCameraInputBlockedChange(false)
+                    vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, false)
                     // Re-check LIVE state instead of the result map: Android 14+'s "Select photos"
                     // choice reports the full permissions denied while granting USER_SELECTED, and
                     // that partial grant is access (hasVisualMediaAccess). On any access, re-run
@@ -365,10 +379,11 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
                     // The system permission dialog has released its full-screen input ownership.
-                    vm.onCameraInputBlockedChange(false)
+                    vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
                     hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
-                    val action = pendingAudioAction ?: return@rememberLauncherForActivityResult
-                    pendingAudioAction = null
+                    val consumed = consumePendingAudioRequest(pendingAudioRequest)
+                    pendingAudioRequest = consumed.remaining
+                    val action = consumed.action ?: return@rememberLauncherForActivityResult
                     if (!granted) {
                         declineMicrophone(action)
                         return@rememberLauncherForActivityResult
@@ -426,7 +441,10 @@ class MainActivity : ComponentActivity() {
                 // Acquire the same input owner so a pending one-shot timer cannot survive a policy
                 // transition and fire behind the permission surface.
                 LaunchedEffect(state.cameraPolicyBlocked) {
-                    if (state.cameraPolicyBlocked) vm.onCameraInputBlockedChange(true)
+                    vm.onCameraInputBlockOwnerChange(
+                        CameraInputBlockOwner.CAMERA_POLICY,
+                        state.cameraPolicyBlocked,
+                    )
                 }
 
                 if (hasCameraPermission) {
@@ -491,7 +509,7 @@ class MainActivity : ComponentActivity() {
                                 // re-restore (it covers a grant made in Settings mid-session, and
                                 // there is nothing further to ask for).
                                 if (shouldRequestVisualMediaAccess(visualMediaAccess())) {
-                                    vm.onCameraInputBlockedChange(true)
+                                    vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, true)
                                     val permissions = visualMediaPermissionsToRequest(
                                         imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
                                         videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
@@ -533,17 +551,17 @@ class MainActivity : ComponentActivity() {
                     } else {
                     CameraScreen(state = state, actions = permissionAwareActions, modifier = Modifier.fillMaxSize())
                     }
-                    if (showMicrophoneRationale && !state.cameraPolicyBlocked) {
+                    if (pendingAudioRequest?.rationaleVisible == true && !state.cameraPolicyBlocked) {
                         MicrophonePermissionRationale(
                             onContinue = {
-                                showMicrophoneRationale = false
+                                pendingAudioRequest = continuePendingAudioRequest(pendingAudioRequest)
                                 microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             },
                             onDismiss = {
-                                showMicrophoneRationale = false
-                                vm.onCameraInputBlockedChange(false)
-                                val action = pendingAudioAction
-                                pendingAudioAction = null
+                                vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
+                                val consumed = consumePendingAudioRequest(pendingAudioRequest)
+                                pendingAudioRequest = consumed.remaining
+                                val action = consumed.action
                                 declineMicrophone(action)
                             },
                         )
@@ -603,7 +621,7 @@ class MainActivity : ComponentActivity() {
         if (isShutterKey(keyCode)) {
             val decision = cameraKeyDecision(
                 hasCameraPermission = hasCameraPermission,
-                cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
+                cameraInputBlocked = vm.state.value.cameraInputBlocked,
                 alreadyOwned = keyCode in ownedShutterKeys,
                 edge = if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT,
             )
@@ -647,7 +665,7 @@ class MainActivity : ComponentActivity() {
         if (isShutterKey(keyCode)) {
             val decision = cameraKeyDecision(
                 hasCameraPermission = hasCameraPermission,
-                cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
+                cameraInputBlocked = vm.state.value.cameraInputBlocked,
                 alreadyOwned = keyCode in ownedShutterKeys,
                 edge = CameraKeyEdge.UP,
             )
@@ -689,7 +707,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val decision = cameraKeyDecision(
                     hasCameraPermission = hasCameraPermission,
-                    cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
+                    cameraInputBlocked = vm.state.value.cameraInputBlocked,
                     alreadyOwned = event.keyCode in ownedHalfPressKeys,
                     edge = edge,
                 )
@@ -732,7 +750,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val decision = cameraKeyDecision(
                     hasCameraPermission = hasCameraPermission,
-                    cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
+                    cameraInputBlocked = vm.state.value.cameraInputBlocked,
                     alreadyOwned = event.keyCode in ownedQuickKeys,
                     edge = edge,
                 )
@@ -764,7 +782,7 @@ class MainActivity : ComponentActivity() {
                 }
                 if (decision.consume) return true
             }
-            else -> if (hasCameraPermission && !vm.state.value.cameraInputBlocked && !showMicrophoneRationale) {
+            else -> if (hasCameraPermission && !vm.state.value.cameraInputBlocked) {
                 when (event.keyCode) {
                     // Live-captured 2026-07-09: the camera-control button's slide arrives as the
                     // STANDARD KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger
@@ -787,7 +805,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        savePendingAudioRequestState(outState, pendingAudioAction, showMicrophoneRationale)
+        savePendingAudioRequestState(
+            outState,
+            pendingAudioRequest?.action,
+            pendingAudioRequest?.rationaleVisible == true,
+        )
         super.onSaveInstanceState(outState)
     }
 
@@ -808,11 +830,10 @@ class MainActivity : ComponentActivity() {
             block()
             return
         }
-        pendingAudioAction = action
+        pendingAudioRequest = PendingAudioRequestState(action, rationaleVisible = true)
         // Acquire before Compose can draw the rationale. Besides blocking physical keys, this
         // synchronously cancels any pending one-shot timer through the ViewModel ownership seam.
-        vm.onCameraInputBlockedChange(true)
-        showMicrophoneRationale = true
+        vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, true)
     }
 
     /**
@@ -855,7 +876,7 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshPermissionState() {
         hasCameraPermission = hasPermission(Manifest.permission.CAMERA)
-        if (!hasCameraPermission) vm.onCameraInputBlockedChange(true)
+        vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_PERMISSION, !hasCameraPermission)
         hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
         val requestedBefore = permissionPreferences.getBoolean(CAMERA_REQUESTED_BEFORE_KEY, false)
         if (hasCameraPermission && requestedBefore) {

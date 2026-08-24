@@ -42,6 +42,23 @@ class MainActivityPendingAudioStateTest {
     }
 
     @Test
+    fun `rationale continuation preserves action and terminal result consumes exactly once`() {
+        PendingAudioAction.entries.forEach { action ->
+            val rationale = PendingAudioRequestState(action, rationaleVisible = true)
+            val system = continuePendingAudioRequest(rationale)
+            assertEquals(PendingAudioRequestState(action, rationaleVisible = false), system)
+
+            val first = consumePendingAudioRequest(system)
+            assertEquals(action, first.action)
+            assertNull(first.remaining)
+
+            val duplicate = consumePendingAudioRequest(first.remaining)
+            assertNull(duplicate.action)
+            assertNull(duplicate.remaining)
+        }
+    }
+
+    @Test
     fun `terminal continuation clears saved owner and corrupt action fails closed`() {
         val saved = Bundle()
         savePendingAudioRequestState(saved, PendingAudioAction.ENABLE_AUDIO, rationaleVisible = true)

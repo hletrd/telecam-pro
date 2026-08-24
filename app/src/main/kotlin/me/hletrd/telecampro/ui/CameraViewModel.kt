@@ -3402,22 +3402,29 @@ class CameraViewModel @JvmOverloads constructor(
             captureOutputs.releaseReviewPin(uri)
             false
         }
-        _state.update {
-            it.copy(
-                reviewOpen = open,
-                // Block immediately on open; Compose clears the shared gate after the last modal
-                // closes, so review dismissal cannot briefly unblock a still-visible sheet/Fn menu.
-                cameraInputBlocked = if (open) true else it.cameraInputBlocked,
-            )
-        }
+        onCameraInputBlockOwnerChange(CameraInputBlockOwner.REVIEW, open)
+        _state.update { it.copy(reviewOpen = open) }
         return familyPinned
     }
 
     override fun onCameraInputBlockedChange(blocked: Boolean) {
-        // Settings, Fn, permission/dialog gates, and future full-screen modal owners all enter
-        // through this seam. Acquisition cancels synchronously; release never changes timer state.
+        onCameraInputBlockOwnerChange(CameraInputBlockOwner.COMPOSE_MODAL, blocked)
+    }
+
+    private val cameraInputBlockOwnerLock = Any()
+    private var cameraInputBlockOwners: Set<CameraInputBlockOwner> = emptySet()
+
+    internal fun onCameraInputBlockOwnerChange(owner: CameraInputBlockOwner, blocked: Boolean) {
+        // Acquisition cancels synchronously; release never changes timer state. Owner identity is
+        // the important part: a newly composed CameraScreen may release COMPOSE_MODAL without
+        // releasing an Activity-owned permission surface restored across recreation.
         if (blocked) cancelCountdown()
-        _state.update { it.copy(cameraInputBlocked = blocked) }
+        synchronized(cameraInputBlockOwnerLock) {
+            val updated = cameraInputBlockOwnersAfter(cameraInputBlockOwners, owner, blocked)
+            if (updated == cameraInputBlockOwners) return
+            cameraInputBlockOwners = updated
+            _state.update { it.copy(cameraInputBlocked = updated.isNotEmpty()) }
+        }
     }
 
     /**
@@ -3457,12 +3464,12 @@ class CameraViewModel @JvmOverloads constructor(
             generation = ++ownerlessMediaDeleteGeneration,
         )
         pendingOwnerlessMediaDelete = PendingOwnerlessMediaDelete(request, plan)
+        onCameraInputBlockOwnerChange(CameraInputBlockOwner.OWNERLESS_DELETE, true)
         _state.update { current ->
             current.copy(
                 lastMediaUri = current.lastMediaUri.takeUnless { it == uri },
                 lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
                 ownerlessDeleteConsentPending = true,
-                cameraInputBlocked = true,
             )
         }
         return OwnerlessMediaDeletePreparation.ConsentRequired(request)
@@ -3600,7 +3607,6 @@ class CameraViewModel @JvmOverloads constructor(
         _state.update { current ->
             val terminal = current.copy(
                 ownerlessDeleteConsentPending = false,
-                cameraInputBlocked = false,
             )
             if (restored != null && captureOutputs.isCurrentReviewOutput(restored.output)) {
                 terminal.withDeleteSurvivor(restored)
@@ -3608,6 +3614,7 @@ class CameraViewModel @JvmOverloads constructor(
                 terminal
             }
         }
+        onCameraInputBlockOwnerChange(CameraInputBlockOwner.OWNERLESS_DELETE, false)
         showStatus(resolution.status)
     }
 
