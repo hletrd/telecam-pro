@@ -80,3 +80,30 @@ assurance but were not treated as runtime authority.
 - A host review cannot validate current Camera2/HAL pixels, physical converter orientation, HDR
   appearance, acoustic Sound Focus, or MediaProvider consent semantics. A3/A4/A5/D1/E1/E2 remain
   explicitly open manual checks.
+
+---
+
+# Verifier review — cycle 51 (current)
+
+Date/identity: 2026-08-25, `7eb4ee95`, isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`; no device/deploy/source implementation.
+
+## Complete inventory
+
+Exhaustive `rg --files` inventory: 634 non-build files. Verified all 120 main files, 240 JVM/Robolectric/Compose test files, 4 androidTests, 4 debug-host files, 47 tooling files, 27 device-harness files, 65 docs/assets, and root build/legal/privacy authorities. Cross-checked each production package against tests, architecture, field ledger, resources, and release/tool contracts. Visually inspected every committed phone/tablet/Play bitmap.
+
+## Evidence
+
+- `python3 tools/check_docs.py`: 153 passed, 0 failed, 24 declared optional-private skips.
+- coverage-tool tests: 9/9 passed; device-harness self-tests: 195/195 passed.
+- tool tests: 125 passed, 7 errored solely at the explicit Android SDK preflight because Emulator `glslangValidator` is absent; `verify_host.py` stops at the same boundary.
+- Gradle ran 2,112 tests and failed one race-sensitive assertion described below. The exact test passed 5/5 alone, confirming order sensitivity rather than a stable functional assertion.
+
+## Findings
+
+1. **C51-CV-01 — Medium / High / confirmed source-path.** `CameraEngine.rollbackOptics` preserves a newer `restoredVideoPipeline` on generation mismatch, then calls `gl.setTransfer(before.transfer)`. A failed Video/HLG→Photo transition with a newer AVC/SDR command can return UI/Engine/REC to AVC/SDR while GL is HLG. Fix the call to use the restored packet's active transfer and test the newer-before-rollback ordering.
+2. **C51-CV-02 — Medium / High / confirmed.** `FamilyDeletionMarkerIntegrationRobolectricTest.kt:167-176` counts down inside the task but asserts semaphore release that occurs only after the task returns. Full-suite evidence produced `expected 0 but was 1`; use a bounded eventual post-release assertion/signal.
+3. **C51-CV-03 — Low / High / confirmed.** Loupe comments in `FlipRenderer.kt` and `GlPipeline.kt` claim an upright same-stream overview although authoritative docs and runtime intentionally show raw inverted orientation; pipeline docs also omit conditional supersession. Correct comments/docs and harden the docs gate.
+
+## Limit
+
+Open A3/A4/A5/D1/E1/E2 checks remain manual. No host result was represented as device, optical, acoustic, HDR-display, or real-MediaProvider evidence. New findings: **3**.

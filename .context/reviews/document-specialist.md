@@ -208,3 +208,27 @@ drift survived the final sweep.
 - New findings: 2
 - Severity: 2 Low
 - Confidence: 2 High
+
+---
+
+# Document-specialist review — cycle 51 (current)
+
+Date/HEAD: 2026-08-25, `7eb4ee95`. Isolated clone only; no implementation/deploy/device work.
+
+## Complete inventory and checks
+
+Read `CLAUDE.md` (1,153 lines), `docs/ARCHITECTURE.md` (1,372), `docs/FIELD_CHECKS.md` (284), README/privacy/legal/notices, all committed plans/submission/data-safety/device-catalog docs, every source KDoc/comment touching stated behavior, both locale resource sets, manifest/build authorities, all tooling/device-harness READMEs and contract tests, and all 15 committed visual/vector Play assets plus validity manifests. `tools/check_docs.py` passed 153/153 checks with 24 explicitly optional private-file skips; locale pairing and screenshot hashes/geometry passed.
+
+## Finding
+
+### C51-CV-03 — orientation and rollback prose is stale despite a green docs gate
+
+- Locations: `FlipRenderer.kt:294-298`, `GlPipeline.kt:1090-1110` and `1127`; `CLAUDE.md:867-871`; `docs/ARCHITECTURE.md:308-315`.
+- Severity: Low. Confidence: High. Classification: **confirmed**.
+- Mismatch: current authorities say the same converter-fed overview deliberately omits afocal correction and is raw/inverted; source comments still call it “UPRIGHT,” “world the right way up,” and a pre-converter-world stand-in. The same architecture section says rollback restores the baseline packet without noting the new independent publication generation that preserves a newer codec/candidate/transfer packet. The docs check's reported Loupe agreement therefore does not cover these contradictory comments.
+- Failure scenario: maintainers reintroduce a superseded rotation or baseline-overwrites-newer-intent behavior using comments presented as design authority.
+- Suggested fix: consistently call the current inset raw/inverted same-stream truth; reserve upright language for a future real wide stream. Document conditional packet restoration, publication-generation recheck, and atomic REC inputs; mutation-test the stale phrases.
+
+## Coverage conclusion
+
+Open A3/A4/A5/D1/E1/E2 remain correctly manual, screenshots explicitly marked stale/non-submission-ready remain so, and no other current-source/doc/resource/i18n mismatch survived. Findings: **1 Low/High**.

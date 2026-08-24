@@ -1,3 +1,134 @@
+# Causal-tracing review — cycle 51
+
+Date: 2026-08-25
+Reviewed revision: `7eb4ee951e769afe884f8115ffbde25c828028a3` (`origin/main`)
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
+Mode: review only; no implementation, commit, push, deployment, device mutation, or shared-main
+access
+
+## Complete inventory and trace method
+
+I inventoried all 538 tracked paths and traced the complete runtime/evidence graph rather than a
+sample: 103 production modules, 240 host test files, four instrumented test files, 14 device-harness
+files, 25 tools, 17 resources/manifests, 11 build inputs, 65 docs/assets, root authorities, and 44
+tracked review-context paths. I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md` completely before tracing Activity/permission/input, ViewModel state/timers,
+optics intent/commit/rollback, route/session/capture correlation, GL preview/encoder/analysis,
+stills/DNG/storage, REC allocation/mic/native teardown, review/delete/recovery, UI, tests, coverage,
+release tools, and device evidence.
+
+The final causal sweep revisited every executor, Handler post, delayed task, retry/backoff,
+volatile/multi-field packet, atomic generation, monitor boundary, callback identity, native owner,
+provider call, and requested-versus-accepted truth. Focused pipeline/REC tests passed and the docs
+gate passed 153 checks (24 declared private skips); no device behavior was run or inferred.
+
+## Findings
+
+### TRACE51-01 — REC’s claimed immutable packet is discarded before setup, allowing torn GL and file transfers
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed data race and encoded-output truth violation; manifestation needs a
+  same-source-precision curve edit during the bounded REC start window.
+- **Exact regions:**
+  - `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5027-5061` snapshots
+    `frameRateAvailable`, codec, transfer, and candidates, but the resulting
+    `RecordingAdmissionSnapshot` retains only filtered candidates plus a session-only
+    `isCurrent` predicate. Size, selected frame rate, and transfer are not carried forward.
+  - `continueRecordingAfterAllocation` forwards only `admission.encoderCandidates` at
+    `CameraEngine.kt:5387-5399`.
+  - `startRecordingClaimed` then reads live `videoSize`, live `videoFrameRate`, and live `transfer`
+    twice at `CameraEngine.kt:5462-5483`: once for `glTransfer`, once for `fileTransfer`.
+    `fileTransfer` configures `VideoRecorder.start` at `:5580-5593`, while the independently frozen
+    `glTransfer` is posted to the admitted GL owner at `:5659-5663`.
+  - `setVideoPipeline` at `CameraEngine.kt:2571-2611` treats HLG/S-Log3/S-Log3.Cine/LogC3 changes as
+    the same HLG10 source-precision class, so those edits update the live transfer without
+    invalidating the accepted Camera2 session used by `admission.isCurrent`.
+- **Concrete causal sequence:**
+  1. Video is Ready under HEVC Main10 + HLG; REC snapshots that accepted session and packet.
+  2. Pending-row allocation or mic handoff delays native setup while `recorder` is still null.
+  3. The operator selects S-Log3. Both HLG and S-Log3 require the already-accepted HLG10 source, so
+     no optics/session generation changes; the old admission remains current.
+  4. Native setup reads `transfer` as HLG for `glTransfer`.
+  5. The main-thread pipeline command publishes S-Log3 before the second volatile read.
+  6. Native setup reads S-Log3 for `fileTransfer`. The shader bakes HLG while the MediaFormat/file
+     path is tagged S-Log3 (the reverse interleave is also possible).
+  7. The take can publish successfully: session identity, codec, candidate, muxer, and storage
+     ownership are all otherwise valid, so no later terminal repairs the semantic mismatch.
+- **Competing hypotheses checked:** session-current checks stop SDR/non-SDR or route/size/FPS
+  reconfiguration races, but not same-precision log-curve changes. Volatile reads guarantee
+  visibility, not equality across two reads. `recorder == null` remains true during the relevant
+  pre-publication window, so transfer changes are allowed and pushed to GL. The new snapshot test
+  observes only the early packet then deliberately takes an injected terminal before
+  `startRecordingClaimed`, so it does not refute the trace.
+- **Suggested fix:** make `RecordingAdmissionSnapshot` the actual native setup contract. Carry exact
+  size, frame-rate/capture-rate, codec, accepted transfer, and ordered candidates and derive both GL
+  and file transfer from its single transfer field. Decide and test an explicit linearization policy
+  for a same-precision edit after REC admission (old complete packet or abort/retry), never live
+  mixing. Add a forced interleave between the former reads through the production setup seam.
+
+### TRACE51-02 — rollback preserves a newer same-precision pipeline in Engine/UI but overwrites GL with the old curve
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed cross-owner divergence; manifestation needs an owned optics failure
+  overlapping a newer HLG/log pipeline command.
+- **Exact regions:**
+  - `CameraEngine.publishVideoPipelineLocked` at
+    `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:505-520` advances one complete
+    codec/candidate/requested/active-transfer publication.
+  - `beginOpticsTransaction` records the pipeline generation owned by that optics intent at
+    `CameraEngine.kt:614-641`.
+  - `rollbackOptics` correctly preserves a newer publication at `CameraEngine.kt:824-834`; its
+    `restoredVideoPipeline` then describes the actual winning Engine/UI packet.
+  - The next statement nevertheless posts `before.transfer` to GL at `CameraEngine.kt:835` rather
+    than `restoredVideoPipeline.activeTransfer`. `GlPipeline.setTransfer` is an asynchronous ordered
+    handler post at `app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt:550`, so the rollback's
+    later stale post wins over the newer curve command on the live GL lane.
+  - ViewModel generation handling at
+    `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:911-955` correctly withholds old
+    codec/transfer fields when the pipeline generation is newer, leaving UI and Engine agreeing
+    while GL alone diverges.
+- **Concrete causal sequence:** Video/HLG starts a lens or other optics transaction. The operator
+  selects S-Log3 while that transaction is pending; because both need HLG10 source precision, the
+  pipeline command publishes without a replacement optics generation and queues S-Log3 to GL. The
+  optics attempt fails. Rollback sees the newer pipeline generation and retains S-Log3 in Engine/UI,
+  then queues its baseline HLG to GL after the S-Log3 command. The viewfinder/encoder renderer ends
+  on HLG despite S-Log3 remaining selected and persisted. No convergence callback is required, so
+  the divergence can persist until another explicit GL replay/restart.
+- **Competing hypotheses checked:** the bug is sign-neutral in Photo because both active transfers
+  are SDR, which is why the existing AVC/SDR test misses it. The pipeline-generation check protects
+  Engine and delayed UI publication only; it does not alter the literal GL argument. `applyStabilization`
+  later in rollback does not reapply transfer. A future GL generation would seed from the correct
+  Engine field, but the active generation is not restarted on a retained-session rollback and is
+  precisely where the stale handler post lands.
+- **Suggested fix:** post `restoredVideoPipeline.activeTransfer` (or one complete winning pipeline
+  packet) to the exact current GL owner after rollback selection. Add a Video-mode HLG versus
+  S-Log3 same-precision interleave with an observable GL sink and assert Engine, UI, persisted
+  settings, GL, and next REC converge on one packet.
+
+## Confirmed flows, limits, and final missed-issue sweep
+
+I separately rechecked Ready/controller/session identity, nested/superseded optics rollback,
+front/rear/DNG route scales, zoom landing/fast paths, ZSL correlation, tap-AF/custom-WB owners,
+preview/EGL replacement, processed/DNG family publication, durable deletion/recovery, recorder
+allocation/stop/quarantine, microphone degradation, post-native storage, latest-capture ordering,
+review deadlines/bitmap ownership, system-delete modality, lifecycle teardown, input security,
+localization, and release provenance. No third causal defect survived competing-hypothesis
+validation.
+
+No Camera2 HAL, GLES fault injection, MediaProvider, microphone, HDR display, physical control,
+converter, or deployment ran. A3/A4/A5/D1/E1/E2 remain explicit field evidence gaps.
+
+## Totals
+
+- Findings: **2**
+- Severity: **2 Medium**
+- Confidence: **2 High**
+- Confirmed causal product defects: **2**
+
+---
+
+## Archived prior review
+
 # Causal-tracing review — cycle 50
 
 Date: 2026-08-25

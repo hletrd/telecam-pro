@@ -1,3 +1,117 @@
+# Test-engineer review — cycle 51
+
+Date: 2026-08-25
+Reviewed revision: `7eb4ee951e769afe884f8115ffbde25c828028a3` (`origin/main`)
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
+Mode: review only; no production implementation, commit, push, deployment, device mutation, or
+shared-main access
+
+## Complete inventory and method
+
+I inventoried all 538 tracked paths before reviewing. The complete executable/evidence inventory was
+all 103 Kotlin/Java production files under `app/src/main`, all 240 JVM/Robolectric/Compose test
+files (2,112 `@Test` methods), all four `androidTest` files (seven tests), all 14 device-harness
+files, all 25 host/coverage/release tools, all 17 main resources/manifests, all 11 Gradle/version/
+wrapper inputs, all 65 committed docs/assets, and the root legal/privacy/build plus 44 tracked
+review-context paths. I read `CLAUDE.md` completely first, then `docs/ARCHITECTURE.md` and
+`docs/FIELD_CHECKS.md` completely, and cross-checked the current cycle-50 plan, prior provenance,
+coverage manifests, README/device-harness authority, implementation, tests, tools, and docs rather
+than trusting any one layer.
+
+The exhaustive test pass inspected every test skip/early return, assertion-light probe,
+source/reflection contract, latch/barrier, delayed callback, mutable packet, effect declaration,
+coverage classification, and production caller. The source-to-test sweep covered lifecycle,
+permissions/input, Camera2 routes/sessions/capture correlation, optics and rollback generations,
+zoom/3A, GL/EGL preview/encoder/analysis, still/DNG/video/storage durability, review/delete/recovery,
+UI/accessibility/localization, and build/release/device tooling. Only the two findings below survived
+the final competing-hypothesis and mutation-sensitivity sweep.
+
+The focused current tests passed:
+
+`./gradlew :app:testDebugUnitTest --tests 'me.hletrd.telecampro.ui.ModeRollbackOwnershipRobolectricTest' --tests 'me.hletrd.telecampro.camera.CameraEngineRecordingPreNativeTest'`
+
+with the documented JDK/SDK environment. `python3 tools/check_docs.py` also passed 153 checks with
+24 declared optional-private skips. Those greens are evidence for the false-positive gaps below,
+not evidence against them.
+
+## Findings
+
+### C51-TEST-01 — the “immutable REC snapshot” test stops before production native setup consumes the packet
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed false-green integration gap shared with `TRACE51-01`; current source
+  has a real torn-transfer race.
+- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/camera/CameraEngineRecordingPreNativeTest.kt:141-201`
+  blocks `beforeEncoderAdmissionSnapshot` and asserts only the observed `RecordingAdmissionInputs`.
+  The installed `RecordingPreNativeEngineOverrides` makes
+  `continueRecordingAfterAllocation` take the injected `afterMicrophoneClaim` terminal at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5367-5386`; it never calls the
+  production `startRecordingClaimed` branch at `:5387-5399`. The snapshot itself stores accepted
+  session, observed inputs, filtered candidates, failure, and a session-only current predicate at
+  `CameraEngine.kt:5027-5061`; it does not carry size, selected frame rate, or the accepted transfer
+  into native setup. Production later re-reads `videoSize`/`videoFrameRate` and reads live `transfer`
+  independently for `glTransfer` and `fileTransfer` at `:5462-5483`; the latter configures
+  `VideoRecorder.start` at `:5580-5593`, while the former reaches GL at `:5659-5663`.
+- **Concrete failure scenario:** REC snapshots HEVC+HLG and then waits on provider/mic setup. While
+  the accepted HLG10 Camera2 session remains current, the operator selects S-Log3 (the same non-SDR
+  source-precision class, so no session generation changes). Native setup can read HLG for the GL
+  curve and S-Log3 for file tags, or the reverse. The test remains green because it proves only the
+  earlier observation callback and short-circuits before either live read.
+- **Suggested fix:** carry one immutable recording packet through `RecordingAdmissionSnapshot` into
+  `startRecordingClaimed`: exact accepted session, size, frame-rate selection/capture rate, codec,
+  accepted transfer, and ordered candidates. Derive GL and file transfer from that one value. Add a
+  barrier between the former live-transfer reads, change HLG to S-Log3/LogC3 concurrently, and drive
+  the real production setup composition through an injectable recorder/GL boundary; assert pixels,
+  encoder format tags, candidate, size, and FPS all come from one packet.
+
+### C51-TEST-02 — rollback supersession tests assert Engine/UI fields but never the GL command winner
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed mutation-insensitive coverage gap shared with `TRACE51-02`; current
+  source posts a stale renderer curve.
+- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/ui/ModeRollbackOwnershipRobolectricTest.kt:53-140`
+  covers Photo/SDR rollback plus a newer AVC/SDR packet and asserts Engine/UI/candidate policy only.
+  Its unstarted Robolectric `GlPipeline` drops posts, and no transfer sink is observed. In production,
+  rollback correctly chooses the newer packet using `videoPipelinePublicationGeneration` at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:824-834`, but immediately posts
+  `before.transfer` to GL at `:835`. A mutation that leaves this stale post intact while preserving
+  all Engine/UI generation logic is invisible to the current tests.
+- **Concrete failure scenario:** an in-flight Video lens/optics door began under HLG. Before it
+  fails, the operator selects S-Log3, which is a newer pipeline publication but needs no Camera2
+  precision reopen. Rollback preserves S-Log3 in Engine/UI, then queues the old HLG curve into the
+  active GL generation; the finder/file-render path disagrees with the visible selection until a
+  later transfer replay happens.
+- **Suggested fix:** inject/observe the active GL transfer sink in the rollback test. Use a Video
+  baseline with disjoint same-precision curves (HLG versus S-Log3), force the newer publication to
+  win before owned rollback, drain both command lanes, and assert Engine, UI, persisted packet, GL
+  renderer, and subsequent REC all retain the same curve. Mutation-test `before.transfer` versus
+  `restoredVideoPipeline.activeTransfer` at the rollback post.
+
+## Final missed-issue and file-coverage sweep
+
+I re-ran the tracked inventory after the traces and revisited every executor/handler/scheduler,
+atomic/volatile/monitor boundary, CameraAction, capture and recording terminal, GL/native owner,
+provider durability decision, review setup/decode/delete owner, test skip/return/source assertion,
+coverage residual, device case, and documentation claim. The assertion-light instrumentation tests
+remain explicitly diagnostic and androidTest assembly remains truthfully described as compilation,
+not device execution. Required device-harness skips remain non-green unless partial evidence is
+explicitly attested. No additional flaky, false-green, or missing TDD seam survived validation.
+
+No physical Camera2 HAL, GLES error injection, MediaProvider, microphone, HDR display, external
+keyboard, converter, or device test ran. `docs/FIELD_CHECKS.md` remains truthful that A3/A4/A5/D1/
+E1/E2 are open; none was inferred green from host coverage.
+
+## Totals
+
+- Findings: **2**
+- Severity: **2 Medium**
+- Confidence: **2 High**
+- Confirmed product races exposed by test gaps: **2**
+
+---
+
+## Archived prior review
+
 # Test-engineer review — cycle 50
 
 Date: 2026-08-25

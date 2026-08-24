@@ -168,3 +168,27 @@ authority, obscured gesture cancellation, modal focus ownership, release permiss
 screenshot validation against their consumers and tests. No second independent architecture
 finding survived the final sweep. Open field checks remain validation risks rather than architecture
 defects, and no device-only claim was promoted.
+
+---
+
+# Architecture review — cycle 51 (current)
+
+Date/HEAD/workspace: 2026-08-25, `7eb4ee95`, isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`; shared main untouched.
+
+## Inventory and trace coverage
+
+Reviewed the complete 634-file non-build inventory: all 103 production Kotlin/Java modules plus main manifests/resources, all 239 JVM/Robolectric/Compose tests and 4 androidTests, debug hosts, tooling/device harnesses, root Gradle/version/provenance configuration, 65 documentation/assets, and every authoritative design/field/privacy document. Traced facade→controller/GL/recorder/storage/UI ownership, generation/monitor boundaries, process-wide finite lanes, MediaStore durability, Compose state reduction, and release evidence.
+
+## Finding
+
+### C51-CV-01 — newer video-pipeline ownership is not propagated to GL during rollback
+
+- Location: `CameraEngine.kt`, `rollbackOptics`, around lines 821–839.
+- Severity: Medium. Confidence: High. Classification: **confirmed (source-path)**.
+- Architecture break: the Engine correctly selects either baseline or newer `VideoPipelineSelection`, but then bypasses that owner and writes `before.transfer` into GL. This violates the stated one-packet invariant across Engine, accepted source, GL encoder curve, UI, and REC admission.
+- Concrete scenario: accepted Video/HLG → pending Photo; publish newer AVC/SDR packet; Photo reopen fails; rollback preserves AVC/SDR fields/publication but writes HLG into GL.
+- Fix/test: make the selected packet the sole rollback source (`restoredVideoPipeline.activeTransfer`), then assert a newer-before-rollback interleave across Engine, GL, ViewModel, and REC. Update architecture wording to describe baseline restoration only while the optics transaction still owns the independent pipeline generation.
+
+## Sweep result
+
+No second independent layering, ownership, lifecycle, storage, or native-resource defect survived the complete pass. The gate-race and documentation drift are recorded in the critic/verifier and document reports. Architecture findings: **1 Medium/High**.

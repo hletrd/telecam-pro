@@ -1,3 +1,185 @@
+# Aggregated deep review — cycle 51
+
+Date: 2026-08-25
+Reviewed revision: `7eb4ee951e769afe884f8115ffbde25c828028a3` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
+
+## Coverage and aggregation
+
+Four parallel specialist groups covered every required role: code-reviewer, performance-reviewer,
+security-reviewer, debugger, test-engineer, tracer, critic, verifier, architect,
+document-specialist, and native Android designer. Thread capacity prevented a fifth worker, so the
+critic/verifier worker completed the architect, documentation, and designer passes in the same
+review turn. No repository-local reviewer definition was registered. Every group inventoried the
+complete 538-path revision, examined its full specialist surface and cross-file interactions, and
+performed a final missed-issue sweep. Browser automation was not applicable to this native Jetpack
+Compose app, and deployment/device interaction was forbidden. Every reviewer returned; there were
+no agent failures.
+
+The reports produced thirteen raw findings. The rollback-to-GL race was independently confirmed by
+test, trace, critic, verifier, architecture, and documentation reviewers; its matching test gap is
+part of the same root cause. The Loupe/pipeline documentation drift was independently reported by
+critic, verifier, documentation, and design reviewers. The remaining findings have distinct causes.
+The deduplicated result is nine findings: six Medium and three Low; seven are High confidence and two
+are Medium confidence.
+
+## Deduplicated findings
+
+### AGG51-01 — renderer initialization transfers VBO/texture ownership without checking GLES errors
+
+- **Severity / confidence:** Medium / High
+- **Source:** code-reviewer.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt:142-220` now cleans
+  locally owned ids on Kotlin exceptions and zero ids, but `glBufferData` at `:168-173` and external
+  texture setup at `:180-184` never inspect `glGetError`. GLES can report `GL_OUT_OF_MEMORY` or an
+  invalid operation while retaining a non-zero object name. The ids are then transferred at
+  `:186-209`, and `FlipRendererResourceOwnershipTest.kt` exercises only synthetic acquisition
+  prefixes rather than non-throwing GLES error state.
+- **Failure:** an allocation failure can publish a renderer backed by an unallocated VBO or invalid
+  texture state; later draw errors need not fail `eglSwapBuffers`, so preview can be declared Ready
+  while blank/corrupt and the bounded initialization recovery path never runs.
+- **Fix direction:** clear and inspect operation-scoped GLES error state after every mutating setup
+  step before ownership transfer, route failures through exact local cleanup, and fault-inject each
+  non-throwing error plus a same-context retry.
+
+### AGG51-02 — immutable review snapshots amplify one admitted source into process-scale heap pressure
+
+- **Severity / confidence:** Medium / High
+- **Source:** performance-reviewer.
+- **Evidence:** `MediaReview.kt:441-459` grows a `ByteArrayOutputStream` to as much as 64 MiB and
+  then copies it again in `toByteArray`; `:476-492` retains that array while allocating a decoded
+  bitmap and possibly a second rotation bitmap. The 240 px tile takes the same full-source path.
+  `LatestHeavyWorkLane.kt:135-141,236-243,288-300` permits overlapping retired/replacement calls on
+  four process workers, so latest-wins publication does not bound simultaneous compressed and pixel
+  buffers. Tests use tiny streams and assert neither peak bytes nor overlapping admission.
+- **Failure:** concurrent thumbnail/full-review decodes of near-limit owner-null media can occupy
+  hundreds of MiB transiently, producing GC stalls or `OutOfMemoryError` for a small visible result.
+- **Fix direction:** spool one bounded immutable source to a private seekable file/descriptor, use a
+  process-wide byte budget and a smaller thumbnail cap, and test large overlapping retired requests
+  plus exact cleanup.
+
+### AGG51-03 — REC discards its immutable admission packet before native setup
+
+- **Severity / confidence:** Medium / High
+- **Sources / agreement:** test-engineer and tracer.
+- **Evidence:** `CameraEngine.kt:5027-5061` observes accepted session, codec, transfer, FPS, and
+  candidates, but `RecordingAdmissionSnapshot` carries only candidates and a session-current
+  predicate into `continueRecordingAfterAllocation`. `startRecordingClaimed` then re-reads live
+  `videoSize`, `videoFrameRate`, and `transfer` twice at `:5462-5483`; the independently read file
+  value configures `VideoRecorder.start` at `:5580-5593`, while the GL value is posted at
+  `:5659-5663`. HLG↔S-Log3/LogC3 changes share the HLG10 source-precision class and therefore do
+  not invalidate the accepted session. The production snapshot test exits through an injected
+  `afterMicrophoneClaim` terminal before this setup branch.
+- **Failure:** a same-precision curve change during provider/microphone admission can make GL bake
+  HLG while file/container configuration names S-Log3, or vice versa, and the take can publish
+  successfully with semantically torn pixels and tags.
+- **Fix direction:** carry session, size, frame/capture rate, codec, transfer, and ordered candidates
+  as one immutable packet through native setup; derive GL and file transfer from one field and force
+  the former interleave through the production recorder/GL seam.
+
+### AGG51-04 — rollback preserves a newer video packet but posts the older transfer to GL
+
+- **Severity / confidence:** Medium / High
+- **Sources / agreement:** test-engineer, tracer, critic, verifier, architect, and
+  document-specialist.
+- **Evidence:** `CameraEngine.rollbackOptics` correctly chooses the newer independently published
+  `restoredVideoPipeline` at `CameraEngine.kt:824-834`, then unconditionally calls
+  `gl.setTransfer(before.transfer)` at `:835`. The later asynchronous handler command can overwrite
+  the winning transfer. Existing rollback tests use Photo/SDR or assert Engine/UI/candidate state
+  without observing the live GL sink.
+- **Failure:** a Video/HLG optics attempt overlaps a newer S-Log3 or AVC/SDR command, then fails.
+  Engine, UI, persistence, and REC preserve the newer packet while the active renderer ends on the
+  older curve until a later replay/restart.
+- **Fix direction:** post only `restoredVideoPipeline.activeTransfer` (or the selected complete
+  packet) and add a newer-before-rollback test spanning Engine, ViewModel, persistence, observable GL,
+  and subsequent REC.
+
+### AGG51-05 — review sampling overflows before native decode for extreme positive bounds
+
+- **Severity / confidence:** Low / Medium
+- **Source:** security-reviewer.
+- **Evidence:** `MediaReview.kt:455-468` evaluates `(longest + sample - 1) / sample` in signed `Int`.
+  For a bound near `Int.MAX_VALUE`, the numerator overflows on the second iteration and returns a
+  radically undersized sample. The final dimension check occurs only after
+  `BitmapFactory.decodeByteArray`; tests stop at 6001 px. Owner-null HEIF/HEIC rows are deliberately
+  admitted, though real decoder reachability for such extreme metadata remains manual.
+- **Failure:** an adversarial imported image can ask native decode for a raster far beyond the 3000
+  px promise and exhaust memory before the defensive post-decode recycle runs.
+- **Fix direction:** perform comparison/division in `Long` or an overflow-free quotient/remainder
+  form and add `Int.MAX_VALUE` and large-format boundary tests.
+
+### AGG51-06 — PNG validation accepts `tRNS` before a later `PLTE`
+
+- **Severity / confidence:** Low / High
+- **Source:** security-reviewer.
+- **Evidence:** `tools/check_docs.py:162-174,243-252` validates each truecolor `PLTE` and `tRNS`
+  relative to IDAT but never rejects a palette that follows transparency. The production parser
+  accepted a CRC-correct `IHDR,tRNS,PLTE,IDAT,IEND` stream even though PNG requires `tRNS` to follow
+  `PLTE` when a palette exists. The cycle-50 ancillary-order tests cover post-IDAT cases only.
+- **Failure:** malformed store/release screenshot evidence passes after a digest refresh and can
+  render differently or fail in stricter consumers.
+- **Fix direction:** reject any `PLTE` after `tRNS` and mutation-test the exact legal-relative-order
+  violation without traceback.
+
+### AGG51-07 — delayed AppOps classification can latch stale policy truth after replacement Ready
+
+- **Severity / confidence:** Low / Medium
+- **Source:** debugger.
+- **Evidence:** `CameraEngine.handleActiveCameraFailure` proves failed-controller ownership under the
+  monitor at `CameraEngine.kt:3086-3112`, leaves it for an AppOps Binder query, then writes
+  `cameraPolicyBlocked=true` at `:3126-3127` without rechecking controller/session/publication
+  identity. A replacement Ready clears the latch only at `:704-710`; if it commits before the old
+  query returns, the stale write lands afterward and `scheduleCameraRecovery` has no old owner left
+  to retire it.
+- **Failure:** restored camera access can be followed by stale policy state; a later unrelated HAL
+  recovery exhaustion may incorrectly tell the operator camera access is blocked and route them to
+  settings.
+- **Fix direction:** re-enter the monitor after the Binder query and install the result only while
+  the exact failure/controller generation still owns it; identity-gate true/false publications and
+  test old-query → replacement-Ready → old-return → unrelated-exhaustion.
+
+### AGG51-08 — the family-deletion integration test races its executor semaphore release
+
+- **Severity / confidence:** Medium / High
+- **Sources / agreement:** critic and verifier.
+- **Evidence:** `FamilyDeletionMarkerIntegrationRobolectricTest.kt:167-176` counts down its task
+  latch before the executor wrapper's `finally` releases capacity, then immediately asserts the
+  permit count. The full 2,112-test suite reproduced `expected 0 but was 1`, while the exact test
+  passed repeatedly in isolation.
+- **Failure:** the authoritative JVM gate is timing-dependent and can fail despite correct product
+  behavior, obscuring real regressions and making release evidence non-reproducible.
+- **Fix direction:** assert eventual post-release state through a bounded wait or explicit
+  post-finally observation seam, never task-body completion alone.
+
+### AGG51-09 — Loupe and video-pipeline ownership prose contradict executable truth
+
+- **Severity / confidence:** Low / High
+- **Sources / agreement:** critic, verifier, document-specialist, and designer.
+- **Evidence:** comments in `FlipRenderer.kt` and `GlPipeline.kt` describe the current same-stream
+  Loupe Overview as upright/right-way-up, while `CLAUDE.md`, `docs/ARCHITECTURE.md`,
+  `docs/FIELD_CHECKS.md`, and runtime intentionally show the raw converter-fed inverted field.
+  Separately, architecture rollback prose says the baseline packet is restored without documenting
+  the independent pipeline-generation rule that preserves a newer publication. The docs gate still
+  reports agreement.
+- **Failure:** maintainers can reintroduce the superseded orientation rule or overwrite newer
+  pipeline intent by following comments presented as rationale.
+- **Fix direction:** reserve upright language for a future real wide stream, document conditional
+  pipeline ownership and the native REC snapshot contract, and mutation-test stale orientation and
+  unconditional-baseline phrases.
+
+## Verified non-findings and limits
+
+- The native Android designer found no additional user-visible regression across accessibility,
+  responsive layouts, EN/KO parity, RTL, dark theme, status/error states, and Sony-style policy.
+- Focused cycle-50 change tests and all 153 documentation checks passed, but the full JVM run exposed
+  AGG51-08. Those greens do not cover the other forced interleavings, GLES faults, large-source heap
+  overlap, or extreme decoder metadata described above.
+- No device, deploy, Camera2 HAL, GLES fault injection, MediaProvider replacement, HDR display,
+  microphone, converter, or physical-input behavior was run or inferred. A3/A4/A5/D1/E1/E2 remain
+  manual evidence obligations.
+
+---
+
 # Aggregated deep review — cycle 50
 
 Date: 2026-08-25

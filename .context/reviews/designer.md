@@ -179,3 +179,19 @@ surfaces retain explicit overflow/fade or per-tab position behavior.
 
 - New findings: 0
 - Confirmed regressions: 0
+
+---
+
+# Native Android / Compose design review — cycle 51 (current)
+
+Date/HEAD: 2026-08-25, `7eb4ee95`; isolated clone; no device/deploy/source changes.
+
+## Complete design inventory
+
+Reviewed all UI implementation files in `ui`, `ui/controls`, `ui/overlays`, `ui/review`, `MainActivity`, theme/resources, English/Korean strings, manifests, debug snapshot hosts, all 67 UI/controls/overlay/review Compose test files, and every committed phone/tablet/Play bitmap. Covered information architecture, Sony-style quiet-viewfinder policy, touch/keyboard/stylus/TalkBack semantics, modal focus and traversal, 48 dp interaction floors, selected/disabled paint, live regions, status/loading/error/empty/restart states, contrast tokens, font scaling, narrow/large-screen layouts, rotation, RTL ownership, dark system bars, bilingual parity, and perceived-performance transitions.
+
+## Result
+
+No new user-visible design regression survived the full pass. Existing automated evidence covers bilingual presentation, dropdown/selector semantics, modal focus/timers, self-timer and viewfinder accessibility, non-touch review controls, contrast, status scrolling, responsive rows, and focal overflow. The committed stale screenshots are explicitly blocked from submission by their validity manifests, not mistaken for current UI evidence.
+
+The stale “upright” Loupe implementation comments are a design-rationale risk but duplicate C51-CV-03 in the document report; the executable/UI contract remains the raw inverted same-stream exception. Open field checks remain manual. New designer findings: **0**.

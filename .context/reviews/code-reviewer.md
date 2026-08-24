@@ -1,3 +1,79 @@
+# Code review — cycle 51
+
+Date: 2026-08-25
+
+Reviewed revision: `7eb4ee9519b6a8486aa6b510f330156029ced649` (`origin/main`)
+
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
+
+## Inventory and coverage
+
+I read `CLAUDE.md` completely first, then the complete current authorities in
+`docs/ARCHITECTURE.md` and `docs/FIELD_CHECKS.md`. The closed tracked inventory is 538 paths. The
+production inventory is all 103 Kotlin/Java modules under `app/src/main`; I examined their complete
+declaration/import/caller surface and traced the Activity/permission/input boundary, ViewModel
+reducers and persistence, Engine optics/Ready/REC generations, CameraController requests and
+capture, GL generation/output ownership, processed/RAW/video pipelines, durable MediaStore
+publication/recovery/delete, review loading, and Compose action admission.
+
+The remaining inventory was also included: all 256 JVM/Robolectric/Compose/instrumented/host test
+paths, both manifests and every resource/build/R8/baseline-profile input, all 39 `tools/**` and
+`device-tests/**` paths, the complete documentation/plan/review corpus, and binary/store assets at
+their executable provenance boundaries. I rechecked all production changes since the cycle-50
+review rather than treating their tests or closeout as proof, then swept error handling, ignored
+results, capability/model seams, mutable cross-thread fields, monitors/atomics, callback authority,
+native lifecycle, and requested-versus-accepted truth.
+
+## Finding
+
+### C51-CR-01 — renderer initialization publishes VBO/texture objects without checking GLES failure state
+
+- **Severity / confidence:** Medium / High.
+- **Classification:** Likely runtime correctness and recovery defect; the missing checks are
+  confirmed in source, while exercising `GL_OUT_OF_MEMORY` requires real/fault-injected GLES.
+- **Exact evidence:**
+  - `app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt:142-220` now owns ids
+    transactionally, but recognizes only zero ids and Kotlin exceptions. `glBufferData` at
+    `:168-173` and external-texture setup at `:180-184` have no `glGetError` check.
+  - GLES reports allocation/operation failures such as `GL_OUT_OF_MEMORY` through the GL error
+    flag; these calls do not need to throw and the generated object name can remain non-zero.
+  - `FlipRenderer.kt:186-209` therefore transfers those ids into live renderer fields and returns
+    success after an errored data-store or texture setup. The `finally` block clears the pending
+    owner, so the new exact cleanup helper has nothing to retire.
+  - `app/src/test/kotlin/me/hletrd/telecampro/gl/FlipRendererResourceOwnershipTest.kt` proves cleanup
+    only for manually populated acquisition prefixes. It does not execute or inject the GLES call
+    results/error flag and therefore cannot fail when a non-throwing GL error is accepted.
+- **Concrete failure scenario:** preview recovery creates a replacement GL generation while the
+  device is under graphics-memory pressure. `glGenBuffers` returns a non-zero name, but
+  `glBufferData` records `GL_OUT_OF_MEMORY`. Initialization still reports success, the Engine binds
+  the camera texture, and later draws read an unbacked VBO or invalid texture state. Draw errors need
+  not make `eglSwapBuffers` fail, so the generation can publish preview-ready while the user sees a
+  blank/corrupt finder; the bounded initialization retry/cleanup path never runs.
+- **Suggested fix:** establish a local, operation-scoped GLES error checker (clear stale errors at
+  init entry, then require `GL_NO_ERROR` after VBO allocation/upload and external-texture bind/
+  parameter setup) before transferring pending ids. On error, throw through the existing `finally`
+  cleanup. Add an injectable GLES facade or error-source seam and cover a non-throwing error after
+  each mutating call, exact deletion/unbind, no field transfer, and a successful same-context retry.
+
+## Verification, limits, and missed-issue sweep
+
+- Focused current-delta tests passed: `CameraEngineRecordingPreNativeTest`,
+  `FlipRendererResourceOwnershipTest`, `ModeRollbackOwnershipRobolectricTest`,
+  `MediaReviewSizingTest`, and `MediaReviewOwnershipTest`.
+- `python3 tools/check_docs.py` passed 153 checks with 24 declared clean-clone private skips;
+  `git diff --check` passed before this report edit.
+- I revalidated cycle-50's independent pipeline supersession generation, atomic production REC
+  packet, post-monitor policy callback, nullable release tracing, PNG grammar, bitmap ownership, and
+  transactional local-id cleanup. No second code-correctness or maintainability finding survived
+  competing-hypothesis checking.
+- No device, deployment, GLES fault injection, Camera2 HAL, MediaProvider replacement, converter,
+  or physical-input test ran. Field checks A3/A4/A5/D1/E1/E2 remain manual evidence gaps, not
+  host-confirmed defects.
+
+---
+
+## Archived prior review
+
 # Code review — cycle 50
 
 Date: 2026-08-25

@@ -1,3 +1,79 @@
+# Performance review — cycle 51
+
+Date: 2026-08-25
+
+Reviewed revision: `7eb4ee9519b6a8486aa6b510f330156029ced649` (`origin/main`)
+
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
+
+## Inventory and coverage
+
+I read the full project instructions and current architecture/field ledgers, then inventoried all
+538 tracked paths. The performance pass covered every one of the 103 production modules and all 256
+test paths, every executor/HandlerThread/raw thread/scheduler/coroutine lane, queue and retained
+collection, timeout/retry/backoff, Binder/provider/native boundary, bitmap/buffer allocation,
+per-frame/per-buffer operation and log, ViewModel ticker/throttle, Compose publication, and build/
+tool subprocess. It traced camera open/configure/capture/teardown, zoom/sensor fast paths,
+pseudo-ZSL, GL producer/preview/encoder/analysis work, still/DNG encoding, mic/codec/muxer work,
+finite publication/recovery/delete/review owners, persistence, lifecycle replacement, and release
+versus debug behavior.
+
+All code/test/tool/doc changes since the cycle-50 performance baseline were examined in full. Prior
+reports were used only as leads; their fixes and green gates were rechecked against current callers.
+
+## Finding
+
+### C51-PERF-01 — the stable review snapshot can multiply one 64 MiB file into process-scale heap pressure
+
+- **Severity / confidence:** Medium / High.
+- **Classification:** Confirmed allocation-amplification design defect; user-visible OOM/jank is
+  likely for large or adversarial admitted media and device-heap dependent.
+- **Exact evidence:**
+  - `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:441-459` admits 64 MiB and
+    accumulates it in `ByteArrayOutputStream`, whose growing backing buffer is then copied again by
+    `toByteArray()`. Near the limit, both large arrays coexist at return.
+  - `MediaReview.kt:476-492` retains the resulting 64 MiB snapshot while `BitmapFactory` allocates
+    up to a 3000-pixel-side decoded bitmap (about 36 MiB for 3000x3000 ARGB_8888), and
+    `applyExifOrientation` can allocate another full bitmap before recycling the first.
+  - This same full-source snapshot path also backs the 240 px gallery tile; thumbnail size does not
+    reduce compressed-source heap.
+  - `app/src/main/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLane.kt:135-141,236-243`
+    deliberately allows two started calls per blocking lane, and `:288-300` shares four workers
+    across lanes. A timed-out/retired gallery decode and a replacement/full review decode can
+    therefore overlap; latest-wins suppresses publication, not the synchronous reads/allocations.
+  - `MediaReviewSizingTest` uses a nine-byte stream. It proves the byte-count boundary but does not
+    assert peak allocation, overlapping retired calls, or safe behavior near 64 MiB.
+- **Concrete failure scenario:** an owner-null restored JPEG (or provider-controlled lookalike)
+  approaches the accepted 64 MiB cap. Gallery thumbnail decoding first grows and copies that payload;
+  the operator opens or changes review while the old synchronous provider call is still active, so
+  another worker repeats it. One full-screen decode then adds one or two ~36 MiB pixel buffers. A
+  bounded path can thus transiently occupy hundreds of MiB, causing GC stalls or `OutOfMemoryError`
+  despite the visible result being only 240 px or 3000 px and despite every lane being count-bounded.
+- **Suggested fix:** preserve one immutable source without keeping the compressed file in the Java
+  heap: spool at most 64 MiB (+ one-byte overflow probe) to a private temporary/cache file or another
+  closeable seekable owner, then run bounds/pixels/EXIF against that exact owner and delete it after
+  decode. Alternatively use a descriptor-backed stable snapshot with an independently verified size.
+  Make the per-process byte budget explicit across all review workers, use a smaller source cap for
+  the thumbnail lane, and add large-source plus overlapping-retired-request tests that assert the
+  aggregate admission/cleanup contract rather than only final dimensions.
+
+## Verification, limits, and missed-issue sweep
+
+- The five focused changed-path test classes passed. The current tests validate functional
+  ownership and bounds but do not exercise GLES error state or large-source peak memory.
+- `tools/check_docs.py` passed all 153 applicable checks (24 private skips); `git diff --check`
+  passed before report edits.
+- I revalidated fixed-depth ZSL/result rings, processed-snapshot budget, 256 px single-flight
+  analysis readback, frame-notification coalescing, zoom/control throttles, finite provider/native
+  lanes, recorder quarantine, audio ownership/recreation, settings debounce, and the new atomic REC
+  packet. No second CPU, queue-growth, main-thread-I/O, frame-loop, or UI-responsiveness finding
+  survived the final sweep.
+- A5's front pseudo-ZSL soak remains device-only performance evidence; no device or deployment ran.
+
+---
+
+## Archived prior review
+
 # Performance review — cycle 50
 
 Date: 2026-08-25

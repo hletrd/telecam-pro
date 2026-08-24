@@ -1,5 +1,7 @@
 # Critic review — cycle 50
 
+> Superseded by the cycle 51 report appended below; retained to preserve prior-cycle provenance.
+
 Date: 2026-08-25
 
 Reviewed revision: `2388819d` (`origin/main`)
@@ -80,3 +82,48 @@ manifests, and the current architecture/field-check authorities.
   action. No second runtime defect survived the cross-file ownership sweep.
 - No device, Camera2 HAL, converter, HDR display, off-axis audio scene, or real MediaProvider consent
   surface was available. Open field checks A3/A4/A5/D1/E1/E2 remain manual and were not promoted.
+
+---
+
+# Critic review — cycle 51 (current)
+
+Date: 2026-08-25
+
+HEAD: `7eb4ee95`
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`; shared main untouched. No source implementation, commit, push, deploy, or device action.
+
+## Complete inventory and coverage
+
+The exhaustive tracked inventory was built with `rg --files` and classified without sampling: 634 non-build files total; `app/src/main` 120 (103 Kotlin/Java plus manifest/resources/assets), `app/src/test` 240 (239 Kotlin), `app/src/androidTest` 4, `app/src/debug` 4, `tools` 47, `device-tests` 27, and `docs` 65. Root authorities/configuration reviewed were `CLAUDE.md`, `README.md`, `PRIVACY.md`, `NOTICE`, `LICENSE`, both Gradle scripts, version catalog/wrapper/verification metadata, manifests, backup/data-extraction rules, and both locale resource sets. All production packages (`camera`, `capture`, `focus`, `gl`, `stab`, `storage`, `ui`, `ui/controls`, `ui/overlays`, `ui/review`, `video`) were traced against their same-package tests and tooling contracts. Every committed phone/tablet screenshot and Play bitmap was visually inspected; manifests/digests and all docs were checked by `tools/check_docs.py` (153/153 checks passed, 24 explicitly optional-private skips).
+
+Verification evidence: Python coverage-tool tests passed 9/9 and device-harness self-tests passed 195/195. The tooling suite ran 132 tests with 7 environment-only errors because the selected SDK lacks Emulator `glslangValidator`; `verify_host.py` failed at the same explicit preflight. Direct Gradle reached all 2,112 JVM/Robolectric/Compose tests and exposed the confirmed race below (one failure); the exact failing test then passed 5/5 in isolated reruns, consistent with its ordering flaw. No hardware/manual claim was promoted.
+
+## Findings
+
+### C51-CV-01 — rollback preserves a newer video packet but restores the old GL transfer
+
+- Location: `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt`, `rollbackOptics`, around lines 821–839.
+- Severity: Medium. Confidence: High. Classification: **confirmed (source-path)**.
+- Evidence: the generation mismatch branch correctly keeps `currentVideoPipelineSelection()`, but the next statement unconditionally calls `gl.setTransfer(before.transfer)` rather than `restoredVideoPipeline.activeTransfer`.
+- Failure scenario: accepted Video/HLG begins a Video→Photo transition; while its reopen is pending, the operator selects AVC/SDR in the Video settings; then the Photo transition fails. Rollback restores Video and preserves the newer AVC/SDR Engine/UI packet, but reprograms GL to the old HLG transfer. REC admission and container tagging can therefore say AVC/SDR while the GL encoder draw still applies HLG. The cycle-50 interleave test runs the pipeline command *after* rollback returns and never exercises the generation-mismatch branch before rollback.
+- Suggested fix: restore GL from `restoredVideoPipeline.activeTransfer`; add a latch-controlled test where the newer disjoint packet publishes before `rollbackOptics`, then assert Engine fields, GL transfer, UI callback, and REC admission all retain the same packet.
+
+### C51-CV-02 — authoritative JVM gate contains a completion/capacity race
+
+- Location: `app/src/test/kotlin/me/hletrd/telecampro/ui/FamilyDeletionMarkerIntegrationRobolectricTest.kt:167-176`; production ordering in `camera/FamilyDeletionMarkerDispatcher.kt:160-166`.
+- Severity: Medium. Confidence: High. Classification: **confirmed**.
+- Evidence: the callback counts down `markerFinished` inside `task.run()`, while the semaphore is released only in the executor wrapper's `finally` after `task.run()` returns. The awakened test thread immediately asserts zero capacity, which is not ordered after release. The full 2,112-test run failed `expected 0 but was 1`; five isolated reruns passed.
+- Failure scenario: scheduler contention wakes the assertion thread after callback countdown but before the worker's `finally`, making an otherwise correct build fail nondeterministically.
+- Suggested fix: wait for the capacity terminal with a bounded eventual assertion, or expose a test-only terminal signal that is emitted after reservation release. Do not weaken production capacity accounting.
+
+### C51-CV-03 — Loupe and pipeline ownership comments/docs contradict executable truth
+
+- Location: `FlipRenderer.kt:294-298`; `GlPipeline.kt:1090-1110` and `1127`; `CLAUDE.md:867-871`; `docs/ARCHITECTURE.md:308-315`.
+- Severity: Low. Confidence: High. Classification: **confirmed**.
+- Evidence: authoritative docs correctly say the same-stream Loupe Overview is raw/inverted, but source comments repeatedly call it “UPRIGHT” and say it puts the world right-way-up. Separately, the architecture says rollback restores the baseline video packet unconditionally, while cycle-50 code now preserves a newer independently-owned publication. `check_docs.py` still reports the Loupe source/authority contract green, so its invariant misses the contradictory comments.
+- Failure scenario: a future maintainer follows the stale rationale and reintroduces the superseded orientation rule, or removes independent pipeline supersession believing rollback always owns the packet.
+- Suggested fix: rewrite comments around the actual same-stream raw/inverted exception, document conditional pipeline ownership plus the REC snapshot, and extend the docs mutation check to reject the stale “upright overview/world” claims.
+
+## Final missed-issues sweep
+
+Rechecked every changed cycle-50 file, all lock/executor and native-owner seams, manifests/privacy, locale parity, Compose semantics and interaction sizes, release/tooling scripts, screenshots, and all open field checks. No additional actionable finding survived evidence review. New deduplicated findings: **3** (2 Medium, 1 Low; all High confidence).
