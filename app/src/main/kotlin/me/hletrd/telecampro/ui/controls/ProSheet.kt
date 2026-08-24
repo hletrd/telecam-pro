@@ -5,6 +5,7 @@ import me.hletrd.telecampro.R
 import android.util.Range
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
@@ -741,21 +743,47 @@ internal fun MemoryPresetAction(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    ImmediateActionChip(
+        label = stringResource(if (saved) R.string.action_update else R.string.action_save),
+        active = false,
+        enabled = enabled,
+        onClick = onClick,
+        modifier = modifier,
+    )
+}
+
+/** Compact click-only command surface; [active] affects paint, never selectable semantics. */
+@Composable
+internal fun ImmediateActionChip(
+    label: String,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     MinTouchTarget48 {
-        FilterChip(
-            selected = false,
+        Surface(
             onClick = onClick,
             enabled = enabled,
             modifier = modifier.semantics { role = Role.Button },
-            label = {
-                Text(
-                    stringResource(if (saved) R.string.action_update else R.string.action_save),
-                    style = MaterialTheme.typography.labelMedium,
+            shape = RoundedCornerShape(8.dp),
+            color = if (active) CameraColors.TextPrimary else Color.Transparent,
+            contentColor = if (active) Color.Black else CameraColors.TextPrimary,
+            border = if (active) {
+                null
+            } else {
+                BorderStroke(
+                    1.dp,
+                    if (enabled) CameraColors.AffordanceEdge else CameraColors.TextPrimary.copy(alpha = 0.12f),
                 )
             },
-            colors = pixelChipColors(),
-            border = pixelChipBorder(false, enabled),
-        )
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp),
+            )
+        }
     }
 }
 
@@ -1021,17 +1049,12 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             stringResource(R.string.status_use_auto_wb)
         },
     ) {
-        // DES4-3: standalone action chip missed by the d875eea sweep — same 48 dp wrapper.
-        MinTouchTarget48 {
-            FilterChip(
-                selected = controls.wbMode == WbMode.CUSTOM,
-                onClick = actions::onCaptureCustomWb,
-                enabled = customWbCaptureEnabled,
-                label = { Text(stringResource(R.string.action_capture_custom_wb), style = MaterialTheme.typography.labelMedium) },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM, customWbCaptureEnabled),
-            )
-        }
+        ImmediateActionChip(
+            label = stringResource(R.string.action_capture_custom_wb),
+            active = controls.wbMode == WbMode.CUSTOM,
+            enabled = customWbCaptureEnabled,
+            onClick = actions::onCaptureCustomWb,
+        )
     }
     ToggleRow(
         label = stringResource(R.string.label_awb_lock),
