@@ -105,6 +105,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.max
@@ -434,19 +437,58 @@ private fun loadVideoThumbnail(context: Context, uri: Uri, maxDim: Int): Bitmap?
     return bitmap
 }
 
-private fun decodeReviewBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-    var sample = 1
-    if (maxDim > 0) {
-        val longest = max(bounds.outWidth, bounds.outHeight)
-        while (longest / sample > maxDim) sample *= 2
+private const val REVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+
+internal fun readBoundedReviewSnapshot(
+    input: InputStream,
+    maxBytes: Int = REVIEW_SOURCE_MAX_BYTES,
+): ByteArray? {
+    if (maxBytes <= 0) return null
+    val output = ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
+    val buffer = ByteArray(64 * 1024)
+    var total = 0
+    while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        if (read == 0) continue
+        if (total > maxBytes - read) return null
+        output.write(buffer, 0, read)
+        total += read
     }
+    return output.toByteArray()
+}
+
+internal fun reviewDecodeSampleSize(width: Int, height: Int, maxDim: Int): Int? {
+    if (width <= 0 || height <= 0 || maxDim <= 0) return null
+    val longest = max(width, height)
+    var sample = 1
+    while ((longest + sample - 1) / sample > maxDim) {
+        if (sample > Int.MAX_VALUE / 2) return null
+        sample *= 2
+    }
+    return sample
+}
+
+internal fun reviewDecodedFitsBound(width: Int, height: Int, maxDim: Int): Boolean =
+    width > 0 && height > 0 && maxDim > 0 && width <= maxDim && height <= maxDim
+
+private fun decodeReviewBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? = runCatching {
+    val snapshot = context.contentResolver.openInputStream(uri)?.use { stream ->
+        readBoundedReviewSnapshot(stream)
+    }
+        ?: return@runCatching null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(snapshot, 0, snapshot.size, bounds)
+    val sample = reviewDecodeSampleSize(bounds.outWidth, bounds.outHeight, maxDim)
+        ?: return@runCatching null
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-    val decoded = context.contentResolver.openInputStream(uri)?.use {
-        BitmapFactory.decodeStream(it, null, opts)
-    } ?: return@runCatching null
-    applyExifOrientation(context, uri, decoded)
+    val decoded = BitmapFactory.decodeByteArray(snapshot, 0, snapshot.size, opts)
+        ?: return@runCatching null
+    if (!reviewDecodedFitsBound(decoded.width, decoded.height, maxDim)) {
+        decoded.recycle()
+        return@runCatching null
+    }
+    applyExifOrientation(snapshot, decoded)
 }.getOrNull()
 
 /**
@@ -457,9 +499,9 @@ private fun decodeReviewBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap?
  * and its thumbnail while external viewers were correct (cycle-6 feature-dev review). The decode
  * above is already inSampleSize-capped, so the rotate runs on the bounded preview bitmap.
  */
-private fun applyExifOrientation(context: Context, uri: Uri, decoded: Bitmap): Bitmap {
+private fun applyExifOrientation(snapshot: ByteArray, decoded: Bitmap): Bitmap {
     val orientation = runCatching {
-        context.contentResolver.openInputStream(uri)?.use { stream ->
+        ByteArrayInputStream(snapshot).use { stream ->
             androidx.exifinterface.media.ExifInterface(stream)
                 .getAttributeInt(
                     androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,

@@ -11,6 +11,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
 
 class MediaReviewSizingTest {
 
@@ -268,5 +269,26 @@ class MediaReviewSizingTest {
             ProviderThumbnailRequest(1, 1),
             providerThumbnailRequest(maxDim = 1),
         )
+    }
+
+    @Test
+    fun `still review snapshot is bounded from one source open`() {
+        val bytes = ByteArray(9) { it.toByte() }
+
+        assertEquals(bytes.toList(), readBoundedReviewSnapshot(ByteArrayInputStream(bytes), 9)?.toList())
+        assertNull(readBoundedReviewSnapshot(ByteArrayInputStream(bytes), 8))
+        assertNull(readBoundedReviewSnapshot(ByteArrayInputStream(bytes), 0))
+    }
+
+    @Test
+    fun `still review sample and decoded size fail closed`() {
+        assertEquals(1, reviewDecodeSampleSize(3000, 2000, 3000))
+        assertEquals(4, reviewDecodeSampleSize(6001, 4000, 3000))
+        assertNull(reviewDecodeSampleSize(0, 4000, 3000))
+        assertNull(reviewDecodeSampleSize(4000, 3000, 0))
+
+        assertTrue(reviewDecodedFitsBound(3000, 2000, 3000))
+        assertFalse(reviewDecodedFitsBound(3001, 2000, 3000))
+        assertFalse(reviewDecodedFitsBound(0, 2000, 3000))
     }
 }
