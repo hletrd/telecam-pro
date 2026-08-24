@@ -722,14 +722,17 @@ already ~400 ms apart stalled identically, because the stall belongs to the swap
 to how tightly swaps are packed. The START edge carries the wide aim on no-FPS-change routes (it is
 the only request pre-buying field for zoom-out); an injected two-finger pinch measured zero submits
 and zero frame gaps while the fingers move. Two further additions keep captures WYSIWYG: the controller stores the EXACT requested
-ratio for still requests (`setZoomRatio(halRatio, requestRatio)` — a still must never inherit the
+ratio for still requests (`noteRequestZoom` while moving — a still must never inherit the
 mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 ms after the last
 flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
 clip stops carrying the wide framing after finger-up. That landing owns the exact wire value: on a
-no-FPS-change route the 700 ms end becomes state-only instead of resubmitting the same ratio. If
+no-FPS-change route the 700 ms end becomes state-only instead of resubmitting the same ratio. A
+later inward or same-direction re-pinch inside that tail marks the landed value stale as soon as a
+moving tick is suppressed, so its next quiet callback lands the new exact ratio; a duplicate quiet
+callback with no movement is inert. A fresh outward re-pinch still owns a new wide start edge. If
 quiet never lands, the end submits exact; routes whose boost flip really changes FPS still rebuild
 at the end. The pure `ZoomInteractionState` and `resolveZoomBoostFlipApply` seams test those
-start/quiet/repinch/end and route-specific request counts. Scale-remap invalidation of
+start/move/quiet/repinch/end and route-specific request counts. Scale-remap invalidation of
 `ZoomGlideState.pendingRatio`/`.easeTarget` (via `invalidateOpticsDerivedState()`) covers ALL the remap doors: `onModeChange`,
 `onToggleTeleconverter`, `onLens`, `onToggleFrontCamera`, `onStop`, **`onOpticsRollback`,
 `applyLoaded` (settings/MR recall), and the debug `onCameraOverride`** — the last three were the

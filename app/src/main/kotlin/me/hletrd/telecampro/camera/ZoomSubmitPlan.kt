@@ -62,9 +62,13 @@ internal fun startZoomInteraction(): ZoomInteractionTransition = ZoomInteraction
     submitExact = true,
 )
 
-/** The quiet timer lands once only while an interaction is live. */
+/** A suppressed moving tick after a landing makes the current exact wire value stale again. */
+internal fun noteZoomMovement(state: ZoomInteractionState): ZoomInteractionState =
+    if (state.active && state.exactLanded) state.copy(exactLanded = false) else state
+
+/** The quiet timer lands once per unsettled movement burst while an interaction is live. */
 internal fun landQuietZoom(state: ZoomInteractionState): ZoomInteractionTransition =
-    if (state.active) {
+    if (state.active && !state.exactLanded) {
         ZoomInteractionTransition(
             next = state.copy(exactLanded = true),
             submitExact = true,

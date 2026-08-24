@@ -3933,7 +3933,9 @@ class CameraEngine internal constructor(
         // visibility, not atomicity, so a 60 Hz pinch flush could overwrite (lose) an entire
         // normalized packet published between its read and write-back — exactly around the
         // lens/TELE/mode churn where rollbacks happen.
-        synchronized(this) { controls = controls.copy(zoomRatio = z) }
+        val previousZoom = synchronized(this) {
+            controls.zoomRatio.also { controls = controls.copy(zoomRatio = z) }
+        }
         // The finder predicate carries a zoom axis (FINDER_MIN_ZOOM), and a seamless pinch never
         // fires an optics door — re-resolve here so GL and the live UI gate cross the threshold on
         // the same tick. Change-gated inside pushTeleFinder; costs a few boolean reads per tick.
@@ -3945,6 +3947,7 @@ class CameraEngine internal constructor(
         // A moving tick never submits to the HAL: only GL follows it immediately. The START edge
         // pre-buys a slightly wide field (÷ZOOM_GESTURE_MARGIN), while the quiet landing or END edge
         // lands the exact ratio. requestRatio still carries exact z so stills never inherit the aim.
+        if (z != previousZoom) zoomInteractionState = noteZoomMovement(zoomInteractionState)
         val plan = resolveHalZoomSubmit(
             requestedZoom = z,
             interactionActive = zoomInteractionState.active,
@@ -3965,7 +3968,9 @@ class CameraEngine internal constructor(
      * held for the full 700 ms interaction tail — a recorded clip carried it after finger-up (the
      * encoder only sees real frames; GL zoomComp masks it in the preview only). One spaced
      * fast-path swap, NOT a boost flip. The interaction state records that exact framing landed, so
-     * a no-FPS-change end is state-only; routes that restore FPS still rebuild at the end.
+     * a no-FPS-change end is state-only. A later suppressed moving tick clears that ownership so
+     * the next quiet callback lands the new ratio; duplicate quiet callbacks without movement are
+     * inert. Routes that restore FPS still rebuild at the end.
      */
     fun landExactZoom() {
         val transition = landQuietZoom(zoomInteractionState)

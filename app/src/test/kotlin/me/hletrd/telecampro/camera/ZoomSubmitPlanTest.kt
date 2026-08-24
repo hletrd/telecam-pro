@@ -130,12 +130,33 @@ class ZoomSubmitPlanTest {
     }
 
     @Test
-    fun `repinch after quiet spends the landing and end must submit again`() {
+    fun `outward repinch after quiet starts a new edge and end must submit again`() {
         val quiet = landQuietZoom(startZoomInteraction().next)
         val repinch = startZoomInteraction()
         assertTrue(quiet.next.exactLanded)
         assertFalse(repinch.next.exactLanded)
         assertTrue(endZoomInteraction(repinch.next).submitExact)
+    }
+
+    @Test
+    fun `inward repinch movement after quiet earns a second landing without a new edge`() {
+        val firstQuiet = landQuietZoom(startZoomInteraction().next)
+        val moved = noteZoomMovement(firstQuiet.next)
+        val secondQuiet = landQuietZoom(moved)
+
+        assertFalse(moved.exactLanded)
+        assertTrue(secondQuiet.submitExact)
+        assertTrue(secondQuiet.next.exactLanded)
+        assertFalse(endZoomInteraction(secondQuiet.next).submitExact)
+    }
+
+    @Test
+    fun `duplicate quiet callback without movement is idempotent`() {
+        val firstQuiet = landQuietZoom(startZoomInteraction().next)
+        val duplicate = landQuietZoom(firstQuiet.next)
+
+        assertFalse(duplicate.submitExact)
+        assertEquals(firstQuiet.next, duplicate.next)
     }
 
     @Test
