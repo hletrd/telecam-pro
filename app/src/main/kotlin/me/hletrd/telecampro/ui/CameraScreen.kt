@@ -4,6 +4,7 @@ import me.hletrd.telecampro.R
 
 import android.graphics.SurfaceTexture
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.compose.BackHandler
@@ -820,8 +821,20 @@ fun CameraScreen(
                             var maxPointers = 1
                             var zoomed = false
                             var dragged = false
+                            var cancelled = false
                             while (true) {
                                 val event = awaitPointerEvent()
+                                // Android ACTION_CANCEL and ACTION_UP both collapse to a
+                                // pressed=false PointerInputChange. Retain the raw terminal identity
+                                // so the overlay-defense cancel cannot manufacture a tap action.
+                                val rawMotionEvent = event.motionEvent
+                                if (
+                                    rawMotionEvent == null ||
+                                    rawMotionEvent.actionMasked == MotionEvent.ACTION_CANCEL
+                                ) {
+                                    cancelled = true
+                                    break
+                                }
                                 val pressed = event.changes.count { it.pressed }
                                 if (pressed == 0) break
                                 maxPointers = maxOf(maxPointers, pressed)
@@ -847,7 +860,10 @@ fun CameraScreen(
                             // have ended a pinch.
                             if (zoomed) currentActions.value.onPinchEnd()
                             // Only a clean single-finger tap (no second finger, no pinch, no drag) focuses.
-                            if (maxPointers == 1 && !zoomed && !dragged) {
+                            if (
+                                maxPointers == 1 && !zoomed && !dragged &&
+                                !cancelled
+                            ) {
                                 val w = size.width.toFloat()
                                 val h = size.height.toFloat()
                                 if (w > 0f && h > 0f) {

@@ -3,7 +3,18 @@ package me.hletrd.telecampro
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import java.lang.reflect.Proxy
+import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.ui.CameraActions
+import me.hletrd.telecampro.ui.CameraScreen
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
+import me.hletrd.telecampro.ui.controls.CameraSlider
+import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -11,6 +22,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import android.os.Looper
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 class MainActivityTouchDispatchTest {
@@ -30,6 +44,7 @@ class MainActivityTouchDispatchTest {
             assertEquals(3, sensitiveActions)
         } finally {
             controller.destroy()
+            idleMain()
         }
     }
 
@@ -60,6 +75,7 @@ class MainActivityTouchDispatchTest {
             assertEquals(0, sensitiveActions)
         } finally {
             controller.destroy()
+            idleMain()
         }
     }
 
@@ -70,7 +86,7 @@ class MainActivityTouchDispatchTest {
             MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED,
         ).forEach { obscurationFlag ->
             RobolectricEglSentinels.ensure()
-            val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+            val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
             val activity = controller.get()
             try {
                 val childEvents = mutableListOf<MotionEvent>()
@@ -112,6 +128,181 @@ class MainActivityTouchDispatchTest {
                 childEvents.forEach(MotionEvent::recycle)
             } finally {
                 controller.destroy()
+                idleMain()
+            }
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h1056dp-xxhdpi")
+    fun `production viewfinder tap and pinch recover after either obscuration edge`() {
+        listOf(
+            MotionEvent.FLAG_WINDOW_IS_OBSCURED,
+            MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED,
+        ).forEach { obscurationFlag ->
+            RobolectricEglSentinels.ensure()
+            val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+            val activity = controller.get()
+            var tapFocuses = 0
+            var pinchTicks = 0
+            var pinchEnds = 0
+            lateinit var preview: View
+            val actions = Proxy.newProxyInstance(
+                CameraActions::class.java.classLoader,
+                arrayOf(CameraActions::class.java),
+            ) { _, method, _ ->
+                when (method.name) {
+                    "onTapFocus" -> tapFocuses++
+                    "onPinchZoom" -> pinchTicks++
+                    "onPinchEnd" -> pinchEnds++
+                }
+                if (method.returnType == java.lang.Boolean.TYPE) false else null
+            } as CameraActions
+            try {
+                activity.setContent {
+                    TeleCamProTheme {
+                        CameraScreen(
+                            state = CameraUiState(),
+                            actions = actions,
+                            previewViewFactory = { View(it).also { view -> preview = view } },
+                            windowRotationOverrideDeg = 0,
+                        )
+                    }
+                }
+                layoutActivity(activity)
+                val location = IntArray(2).also(preview::getLocationOnScreen)
+                val cx = location[0] + preview.width / 2f
+                val cy = location[1] + preview.height / 2f
+                assertTrue(preview.width > 0 && preview.height > 0)
+
+                dispatchSequence(
+                    activity,
+                    event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(cx to cy)),
+                    event(MotionEvent.ACTION_MOVE, obscurationFlag, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(cx to cy)),
+                    event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(cx to cy)),
+                )
+                dispatchSequence(
+                    activity,
+                    event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(cx to cy)),
+                    event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(cx to cy)),
+                )
+                idleMain()
+                assertEquals(1, tapFocuses)
+
+                val left = cx - preview.width * 0.12f
+                val right = cx + preview.width * 0.12f
+                dispatchSequence(
+                    activity,
+                    event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
+                    event(
+                        MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                        0,
+                        MotionEvent.TOOL_TYPE_FINGER,
+                        pointerCount = 2,
+                        positions = listOf(left to cy, right to cy),
+                    ),
+                    event(
+                        MotionEvent.ACTION_MOVE,
+                        0,
+                        MotionEvent.TOOL_TYPE_FINGER,
+                        pointerCount = 2,
+                        positions = listOf((left - 30f) to cy, (right + 30f) to cy),
+                    ),
+                    event(
+                        MotionEvent.ACTION_MOVE,
+                        obscurationFlag,
+                        MotionEvent.TOOL_TYPE_FINGER,
+                        pointerCount = 2,
+                        positions = listOf((left - 40f) to cy, (right + 40f) to cy),
+                    ),
+                    event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
+                )
+                val ticksAfterCancel = pinchTicks
+                dispatchSequence(
+                    activity,
+                    event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
+                    event(
+                        MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                        0,
+                        MotionEvent.TOOL_TYPE_FINGER,
+                        pointerCount = 2,
+                        positions = listOf(left to cy, right to cy),
+                    ),
+                    event(
+                        MotionEvent.ACTION_MOVE,
+                        0,
+                        MotionEvent.TOOL_TYPE_FINGER,
+                        pointerCount = 2,
+                        positions = listOf((left - 40f) to cy, (right + 40f) to cy),
+                    ),
+                    event(
+                        MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                        0,
+                        MotionEvent.TOOL_TYPE_FINGER,
+                        pointerCount = 2,
+                        positions = listOf((left - 40f) to cy, (right + 40f) to cy),
+                    ),
+                    event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
+                )
+                idleMain()
+                assertTrue(pinchTicks > ticksAfterCancel)
+                assertTrue(pinchEnds >= 1)
+            } finally {
+                controller.destroy()
+                idleMain()
+            }
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w480dp-h1056dp-xxhdpi")
+    fun `production slider drag recovers after full and partial obscuration`() {
+        listOf(
+            MotionEvent.FLAG_WINDOW_IS_OBSCURED,
+            MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED,
+        ).forEach { obscurationFlag ->
+            RobolectricEglSentinels.ensure()
+            val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+            val activity = controller.get()
+            val fractions = mutableListOf<Float>()
+            try {
+                activity.setContent {
+                    TeleCamProTheme {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CameraSlider(
+                                fraction = 0.5f,
+                                onFraction = fractions::add,
+                                enabled = true,
+                                semanticLabel = "Production ruler",
+                                valueDescription = "50 percent",
+                            )
+                        }
+                    }
+                }
+                layoutActivity(activity)
+                val decor = activity.window.decorView
+                val cy = decor.height / 2f
+                val left = decor.width * 0.25f
+                val right = decor.width * 0.75f
+                dispatchSequence(
+                    activity,
+                    event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
+                    event(MotionEvent.ACTION_MOVE, obscurationFlag, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
+                    event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
+                )
+                val emissionsAfterCancel = fractions.size
+                dispatchSequence(
+                    activity,
+                    event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(left to cy)),
+                    event(MotionEvent.ACTION_MOVE, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
+                    event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER, positions = listOf(right to cy)),
+                )
+                idleMain()
+                assertTrue(fractions.size > emissionsAfterCancel)
+                assertTrue(fractions.last() > 0.5f)
+            } finally {
+                controller.destroy()
+                idleMain()
             }
         }
     }
@@ -176,7 +367,11 @@ class MainActivityTouchDispatchTest {
         flags: Int,
         toolType: Int,
         pointerCount: Int = 1,
+        positions: List<Pair<Float, Float>> = List(pointerCount) { index ->
+            (10f + index) to 10f
+        },
     ): MotionEvent {
+        require(positions.size == pointerCount)
         val properties = Array(pointerCount) { index ->
             MotionEvent.PointerProperties().apply {
                 id = index
@@ -185,8 +380,8 @@ class MainActivityTouchDispatchTest {
         }
         val coordinates = Array(pointerCount) { index ->
             MotionEvent.PointerCoords().apply {
-                x = 10f + index
-                y = 10f
+                x = positions[index].first
+                y = positions[index].second
                 pressure = 1f
                 size = 1f
             }
@@ -207,5 +402,30 @@ class MainActivityTouchDispatchTest {
             InputDevice.SOURCE_TOUCHSCREEN,
             flags,
         )
+    }
+
+    private fun dispatchSequence(activity: MainActivity, vararg events: MotionEvent) {
+        try {
+            events.forEach { event ->
+                activity.dispatchTouchEvent(event)
+                idleMain()
+            }
+        } finally {
+            events.forEach(MotionEvent::recycle)
+        }
+    }
+
+    private fun idleMain() = shadowOf(Looper.getMainLooper()).idle()
+
+    private fun layoutActivity(activity: MainActivity) {
+        idleMain()
+        val decor = activity.window.decorView
+        val metrics = activity.resources.displayMetrics
+        decor.measure(
+            View.MeasureSpec.makeMeasureSpec(metrics.widthPixels, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(metrics.heightPixels, View.MeasureSpec.EXACTLY),
+        )
+        decor.layout(0, 0, metrics.widthPixels, metrics.heightPixels)
+        idleMain()
     }
 }
