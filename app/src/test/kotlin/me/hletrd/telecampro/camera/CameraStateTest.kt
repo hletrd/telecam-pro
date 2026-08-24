@@ -163,12 +163,23 @@ class CameraStateTest {
     }
 
     @Test
-    fun `capture registration trace is bounded to ordinary single drive`() {
-        assertTrue(captureRegistrationTraceAdmitted(DriveMode.SINGLE, recordingSnapshot = false))
-        assertFalse(captureRegistrationTraceAdmitted(DriveMode.SINGLE, recordingSnapshot = true))
-        assertFalse(captureRegistrationTraceAdmitted(DriveMode.BURST, recordingSnapshot = false))
-        assertFalse(captureRegistrationTraceAdmitted(DriveMode.AEB, recordingSnapshot = false))
-        assertFalse(captureRegistrationTraceAdmitted(DriveMode.TIMELAPSE, recordingSnapshot = false))
+    fun `capture family traces are bounded to harness owned single shots`() {
+        assertEquals(
+            CaptureFamilyTraceAdmission(registration = true, settlement = true),
+            captureFamilyTraceAdmission(DriveMode.SINGLE, recordingSnapshot = false),
+        )
+        DriveMode.entries.forEach { selected ->
+            assertEquals(
+                CaptureFamilyTraceAdmission(settlement = true),
+                captureFamilyTraceAdmission(selected, recordingSnapshot = true),
+            )
+        }
+        listOf(DriveMode.BURST, DriveMode.AEB, DriveMode.TIMELAPSE).forEach { selected ->
+            assertEquals(
+                CaptureFamilyTraceAdmission(),
+                captureFamilyTraceAdmission(selected, recordingSnapshot = false),
+            )
+        }
     }
 
     @Test

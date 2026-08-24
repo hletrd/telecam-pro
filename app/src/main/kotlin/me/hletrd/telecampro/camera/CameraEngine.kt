@@ -4129,7 +4129,7 @@ class CameraEngine internal constructor(
                         optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
                         processOwnedDngTail = usesProcessStillPublicationTail(effectiveDrive, effFormats),
-                        traceRegistration = captureRegistrationTraceAdmitted(driveMode, singleShot),
+                        traceAdmission = captureFamilyTraceAdmission(driveMode, singleShot),
                     )
                 }.getOrElse { failure ->
                     snapshotLease?.release()
@@ -4660,9 +4660,9 @@ class CameraEngine internal constructor(
         // Only RAW-only SINGLE bypasses both the processed budget and sequence-drive chaining.
         // Its publication tail therefore needs the process-wide finite owner.
         processOwnedDngTail: Boolean = false,
-        // Bounded to the ordinary SINGLE case consumed by the kill-window harness. Sequence drives
-        // and in-REC snapshots must not spend ColorOS's finite per-process diagnostic quota.
-        traceRegistration: Boolean = false,
+        // Bounded harness evidence. Sequence drives never spend ColorOS's finite process log quota;
+        // the one in-REC snapshot keeps its terminal edge without the pre-kill registration line.
+        traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
         onDone: (() -> Unit)? = null,
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
@@ -4670,17 +4670,24 @@ class CameraEngine internal constructor(
         val registeredShot = shotSpec(shotControls, hiRes, optics)
         val requestSpec = registeredShot.spec
         val familyProducerLease = registeredShot.producerLease
-        val expectedOutputExtensions = buildList {
-            if (formats.heif) add("heic")
-            if (formats.jpeg) add("jpg")
-            if (formats.dngRaw) add("dng")
+        val traceText = if (
+            me.hletrd.telecampro.BuildConfig.DEBUG &&
+            (traceAdmission.registration || traceAdmission.settlement)
+        ) {
+            val expectedOutputExtensions = buildList {
+                if (formats.heif) add("heic")
+                if (formats.jpeg) add("jpg")
+                if (formats.dngRaw) add("dng")
+            }
+            requestSpec.familyKey.displayName("complete").substringBeforeLast('.') to
+                expectedOutputExtensions.joinToString(",")
+        } else {
+            null
         }
-        val familyStem = requestSpec.familyKey.displayName("complete").substringBeforeLast('.')
-        if (me.hletrd.telecampro.BuildConfig.DEBUG && traceRegistration) {
+        if (traceAdmission.registration) {
             android.util.Log.i(
                 "CameraEngine",
-                "CaptureFamily: registered stem=$familyStem " +
-                    "outputs=${expectedOutputExtensions.joinToString(",")}",
+                "CaptureFamily: registered stem=${traceText!!.first} outputs=${traceText.second}",
             )
         }
         val remainingSaveLanes = java.util.concurrent.atomic.AtomicInteger(
@@ -4689,11 +4696,10 @@ class CameraEngine internal constructor(
         val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
         val finishSequence = {
             if (remainingSaveLanes.get() == 0 && completionDelivered.compareAndSet(false, true)) {
-                if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                if (traceAdmission.settlement) {
                     android.util.Log.i(
                         "CameraEngine",
-                        "CaptureFamily: settled stem=$familyStem " +
-                            "outputs=${expectedOutputExtensions.joinToString(",")}",
+                        "CaptureFamily: settled stem=${traceText!!.first} outputs=${traceText.second}",
                     )
                 }
                 retainedStillDeletionOwner.markCaptureProducersTerminal(

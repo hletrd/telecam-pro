@@ -968,9 +968,23 @@ fun normalizeTimelapseIntervalSeconds(seconds: Int): Int =
 internal fun captureDriveMode(selected: DriveMode, singleShot: Boolean): DriveMode =
     if (singleShot) DriveMode.SINGLE else selected
 
-/** The pre-kill family trace is consumed only by the ordinary SINGLE device-harness case. */
-internal fun captureRegistrationTraceAdmitted(selected: DriveMode, recordingSnapshot: Boolean): Boolean =
-    selected == DriveMode.SINGLE && !recordingSnapshot
+internal data class CaptureFamilyTraceAdmission(
+    val registration: Boolean = false,
+    val settlement: Boolean = false,
+)
+
+/**
+ * Debug family traces are finite harness evidence, never sequence-drive telemetry. Ordinary Single
+ * needs both edges for the kill-window case; the one in-REC snapshot consumes only settlement.
+ */
+internal fun captureFamilyTraceAdmission(
+    selected: DriveMode,
+    recordingSnapshot: Boolean,
+): CaptureFamilyTraceAdmission = when {
+    recordingSnapshot -> CaptureFamilyTraceAdmission(settlement = true)
+    selected == DriveMode.SINGLE -> CaptureFamilyTraceAdmission(registration = true, settlement = true)
+    else -> CaptureFamilyTraceAdmission()
+}
 
 /**
  * Video codec. HEVC exposes Main10 HLG/Log profiles; AVC is 8-bit SDR only. APV is the professional
