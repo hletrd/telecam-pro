@@ -1,110 +1,127 @@
-# Test-engineer review — cycle 49
+# Test-engineer review — cycle 50
 
 Date: 2026-08-25
-Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27`
-Workspace: isolated clone `/tmp/find-x9-ultra-cycle49.oXnMVe/repo`
+Reviewed revision: `2388819d981d32bc3c59b3e81f75fd4f49fab8bd`
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
+Mode: review only; no production implementation, commit, deployment, or device mutation
 
-## Scope and method
+## Complete inventory and method
 
-I read the clean-clone authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`), inventoried all 534 tracked paths, and reviewed the complete test/build
-surface against the production ownership boundaries it claims to prove: 120 production files under
-`app/src/main`, 238 host unit/Robolectric/Compose test files, four instrumented tests, and 74 files
-under `tools/` and `device-tests/`. I traced the cycle-48 implementation and tests through the
-video-pipeline rollback, obscured-input cancellation, modal focus, viewfinder keyboard, shader,
-release-permission, PNG, localization, gallery-thumbnail, Gradle, coverage-partition, and
-authoritative-host-gate paths. I also searched the whole test inventory for skips, assumptions,
-early-success returns, reflection-only failure injection, duplicated production predicates, and
-missing concurrency/failure-path assertions.
+I first inventoried all 535 tracked paths. The review-relevant inventory was complete rather than
+sampled: all 120 production files under `app/src/main`, all 238 host JVM/Robolectric/Compose tests,
+all four `androidTest` files, all 14 external device-harness files, all 25 host/coverage/release
+tools, all 16 main resources/manifests, the eight Gradle/version/wrapper inputs, and the 64 committed
+docs/assets. I read the clean-clone authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`) in full, plus `README.md`, `device-tests/README.md`, the current completed
+plans, prior provenance reviews, and current coverage manifests. I then examined the complete source
+and test inventory by module and cross-checked every production async/ownership boundary, public UI
+action, device-harness case, test skip/incomplete route, source-inspection assertion, reflection
+fixture, delayed task, and Partition-A/B classification against its claimed evidence.
 
-The full non-device gate passed when run with the documented complete SDK authority:
+The authoritative non-device gate passed with the documented SDK authority:
 
 `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ANDROID_SDK_ROOT=/opt/homebrew/share/android-commandlinetools python3 tools/verify_host.py`
 
-It ran 2,098 JVM/Robolectric/Compose tests with no skipped cases, assembled the debug and
-instrumented APKs, passed debug lint, measured Partition A at 8,283/8,298 lines (99.82%, with the
-15-line residual manifest exact), passed all 127 tooling tests, nine coverage-tool tests, 195 device-
-harness self-tests, 151 documentation checks (24 explicitly optional private-context skips), Python
-compilation, and `git diff --check`. The host-only overall result was 17,746/28,028 lines (63.32%);
-Partition B was 9,463/19,377 (48.84%), correctly reported as device-bound rather than presented as
-host proof. No physical device, Camera2 HAL, MediaProvider, microphone, external keyboard, or HDR
-display was exercised. The six open manual checks remain accurately listed as A3/A4/A5/D1/E1/E2.
+It assembled the debug and instrumented APKs, ran 2,103 JVM/Robolectric/Compose tests with no
+failure or skip, passed lint, enforced Partition A at 8,295/8,310 lines (99.82%, with its exact
+15-line reviewed residual manifest), and passed 130 tooling tests, nine coverage-tool tests, 195
+device-harness self-tests, 152 documentation checks (24 explicitly optional private-context skips),
+Python compilation, and `git diff --check`. Overall host coverage was 17,775/28,061 lines (63.34%);
+Partition B was 9,480/19,398 (48.87%) and remains explicitly device-bound. No physical device,
+Camera2 HAL, MediaProvider, microphone, HDR display, external keyboard, or system consent surface
+was exercised. The manual ledger still truthfully lists A3/A4/A5/D1/E1/E2 as open.
 
 ## Findings
 
-### C49-TEST-01 — the production obscuration test can pass when cancellation fails to terminate the pinch owner
+### C50-TEST-01 — the rollback interleave test uses the restored packet, so it cannot detect a stale codec/candidate overwrite
 
 - **Severity / confidence:** Medium / High
-- **Status:** Confirmed false-positive test shape; current production code appears correct. No
-  device behavior is inferred.
-- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/MainActivityTouchDispatchTest.kt:194-249`
-  sends a clean pinch, an obscured move, and a tainted up, but records only `pinchTicks` at the
-  cancellation boundary. It waits until after a second clean pinch to assert merely
-  `pinchEnds >= 1`. Therefore an implementation changed to invoke `onPinchEnd()` only for clean
-  pointer-up (`if (zoomed && !cancelled)`) would pass: the cancelled pinch would remain unterminated,
-  and the later clean pinch would supply the one counted end. The slider sibling at `:287-302`
-  similarly snapshots only the emission count and proves the next drag works; it does not assert
-  that the cancelled stream never lands the hostile move coordinate. Production's required
-  terminal edge is at `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:824-865`, and the
-  slider's cancel-sensitive landing is at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:554-573`.
-- **Failure scenario:** an overlay arrives during a live pinch. The Activity rejects the marked
-  event, but a future Compose-loop regression suppresses `onPinchEnd()` for `ACTION_CANCEL`. The
-  ViewModel retains interaction/boost-tail ownership, so the next pinch begins against stale state.
-  The existing test then runs a clean pinch, observes one terminal callback from that second
-  gesture, and passes. In the slider variant, a cancel-coordinate regression can apply the obscured
-  right-side value before the next clean drag and still satisfy every assertion.
-- **Concrete fix:** assert the exact per-stream trace before starting recovery: cancelled tap emits
-  no tap action; cancelled pinch emits its already-admitted zoom tick followed by exactly one
-  `onPinchEnd`; the rejected tail emits nothing else; cancelled slider emits only the admitted DOWN
-  value and never the obscured MOVE/terminal coordinate. Then clear or snapshot the trace and assert
-  the next clean gesture contributes exactly one independent terminal edge. Mutation-test
-  `onPinchEnd` gated on `!cancelled` and slider landing from the cancel position.
+- **Classification:** Confirmed false-positive test shape; it masks the confirmed runtime race
+  traced in `TRACE50-01`.
+- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/ui/ModeRollbackOwnershipRobolectricTest.kt:53-87`
+  freezes the engine's current HEVC/Main10 candidates and queues exactly that same HLG packet behind
+  a rollback which restores HEVC/HLG. Its terminal assertions cover only `videoMode`, active
+  `transfer`, and requested transfer. They never use a packet different from the rollback baseline,
+  never assert `videoCodec`/ordered candidates on both sides, never drain the queued ViewModel
+  rollback publication, and never enter the next mode/REC door. The actual callers freeze an
+  independently selected packet before the engine monitor at
+  `ui/CameraViewModel.kt:2336-2353,2588-2612,2855-2871`; the synchronized callee consumes those
+  already-built arguments at `camera/CameraEngine.kt:2511-2556`. Rollback restores and posts the
+  old tuple at `CameraEngine.kt:764-839`, while its ViewModel publication is delayed at
+  `CameraViewModel.kt:911-960`.
+- **Concrete failure scenario:** while a Photo→Video HLG attempt is pending, the operator selects
+  AVC/SDR. Setup rollback restores accepted Photo + HEVC/HLG and queues its UI publication. The
+  already-frozen AVC/SDR command then acquires the engine monitor, observes Photo, takes the
+  no-generation path, and overwrites the restored next-video codec/candidates. The queued rollback
+  still passes its generation check and paints HEVC/HLG in the UI. The current test substitutes
+  HEVC/HLG for AVC/SDR, so both possible packet owners are bit-identical and it stays green.
+- **Suggested fix:** make the deterministic interleave use disjoint packets: accepted/restored
+  HEVC+Main10+HLG versus queued AVC+Main+SDR. Drain the real ViewModel callback and assert one
+  explicitly selected linearization policy across engine codec, ordered candidates, requested and
+  active transfer, UI state, subsequent Video transition, and production REC admission. Mutation-
+  test removal of the pipeline generation/sequence edge, not only removal of `synchronized`.
 
-### C49-TEST-02 — the claimed post-rollback REC admission test duplicates the predicate without entering REC admission
+### C50-TEST-02 — the new REC rollback test still does not execute production REC wiring
 
 - **Severity / confidence:** Medium / High
-- **Status:** Confirmed coverage/evidence gap; no current runtime defect reproduced.
-- **Exact regions:** the cycle-48 plan explicitly closes “subsequent REC candidate admission” at
-  `docs/plans/2026-08-25-rpf-cycle48.md:31-33`. Its only new assertion is
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/ModeRollbackOwnershipRobolectricTest.kt:202-241`.
-  After reflectively invoking private `rollbackOptics` (`:81-101`), the test reads the private
-  `videoEncoderCandidates` list and itself calls `encoderSelectionAdmitsTransfer` at `:234-237`.
-  It never calls `CameraEngine.startRecording`, reaches `beginRecordingAllocation`, or observes the
-  production admission filter/status at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5037-5057`. The numerous
-  `CameraEngineRecordingPreNativeTest` cases install `recordingPreNativeOverrides`; that production
-  branch intentionally supplies an empty candidate list and bypasses this real filter at
-  `CameraEngine.kt:5030-5035`, so they do not close the gap.
-- **Failure scenario:** rollback restores the correct private HEVC/Main10 tuple, so the test's
-  duplicated filter succeeds, but a later edit to the real REC admission branch filters against the
-  wrong transfer/codec, reads a stale tuple, or returns `SELECTED_CODEC_UNAVAILABLE`. Every current
-  rollback test remains green even though the first REC press after a rejected AVC/SDR transition
-  is refused or chooses the wrong encoder ladder.
-- **Concrete fix:** expose a narrow Android-free `RecordingAdmissionSnapshot` decision seam that
-  consumes the accepted session, codec, transfer, frame-rate and ordered candidates, and have
-  `beginRecordingAllocation` call it. Test the actual seam after a public ViewModel
-  HEVC/HLG→AVC/SDR→owned-failure rollback, asserting the exact ordered Main10 candidates and
-  no unavailable status. Alternatively inject only the provider/native tail while leaving the
-  production candidate-admission branch live, then call `startRecording` and observe the captured
-  allocation snapshot. Add the inverse SDR rollback and superseded-failure case.
+- **Classification:** Confirmed integration/TDD gap; current production wiring is source-correct,
+  but the rollback-specific host evidence remains mutation-insensitive.
+- **Exact regions:** after forced rollback,
+  `ModeRollbackOwnershipRobolectricTest.kt:257-304` reads private engine fields and manually calls
+  `recordingEncoderAdmission`; `camera/CameraStateTest.kt:215-250` separately tests that pure seam.
+  Neither calls `CameraEngine.startRecording` or `beginRecordingAllocation`. The production wiring
+  at `camera/CameraEngine.kt:5046-5065` passes live frame-rate/codec/transfer/candidates and converts
+  the seam's failure to status, but those lines are all missed in the current JaCoCo report. The
+  host recorder tests install `RecordingPreNativeEngineOverrides`; that branch deliberately creates
+  an empty candidate snapshot at `CameraEngine.kt:5029-5035` and bypasses this admission decision.
+  The external device cases start real recordings, but none forces an owned pipeline rollback and
+  then presses REC.
+- **Concrete failure scenario:** a future edit wires `requestedVideoTransfer` instead of accepted
+  `transfer`, supplies stale candidates, reverses the FPS boolean, or stops calling the shared seam.
+  Both pure tests and the rollback test remain green because they invoke the correct policy directly;
+  the first REC after rollback is nevertheless refused with the wrong unavailable status.
+- **Suggested fix:** add a narrow recorder-allocation injection that leaves the production candidate
+  admission branch live, invoke public `startRecording` after each forced HLG and SDR rollback, and
+  capture the exact `RecordingAdmissionSnapshot`/status. Cover accepted ordered candidates, FPS
+  refusal, codec refusal, superseded rollback, and the disjoint-packet race from C50-TEST-01.
+
+### C50-TEST-03 — the completed release-trace plan claims a source contract that does not exist
+
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed evidence overclaim and mutation gap; current production code is
+  release-safe.
+- **Exact regions:** the completed cycle-49 plan promises “a release-source contract proving no
+  debug-only payload can be force-unwrapped” at `docs/plans/2026-08-25-rpf-cycle49.md:25-30`.
+  The only added coverage is the pure debug/release matrix at
+  `camera/CameraStateTest.kt:167-213`; repository-wide test search finds no source/variant contract
+  around the production call at `camera/CameraEngine.kt:4170-4183` or nullable trace consumption at
+  `:4723-4751`. Unit tests compile with debug `BuildConfig.DEBUG=true`, and the authoritative host
+  gate assembles but does not execute a release test variant.
+- **Concrete failure scenario:** the production caller is changed to pass `true`, or trace
+  consumption reintroduces `traceText!!` under the build-independent admission flags. The pure
+  matrix remains green because it still proves only that `captureFamilyTraceAdmission(..., false)`
+  is inert; it does not prove production supplies false in release or consumes the payload safely.
+- **Suggested fix:** either add the promised source/bytecode invariant (production call must use
+  `BuildConfig.DEBUG`, no force unwrap of the nullable trace payload), or inject build admission into
+  an executable `photoCallback` owner test and run it under both debug and release build constants.
+  Append a dated correction to the completed plan if the narrower pure-seam evidence is intentional.
 
 ## Final missed-issue sweep
 
-I rechecked the recently changed tests against their corresponding production branches and the
-cycle-48 completion claims. Shader compilation/linking plus production binding lookup failures are
-covered; PNG validation reaches chunk framing, CRC, zlib/scanline structure and IEND; release
-permission tests distinguish the exact signature guard from privacy permissions; modal entry and
-exact Menu/Fn/Gallery return focus are exercised on production composition; viewfinder keyboard
-actions and visible focus paint have production tests; ready-video thumbnail pixels, copy,
-disabled state and EN/KO resources are covered. I found no skipped host test, stale open-field claim,
-new untracked device claim, or additional source-confirmed product defect. Hardware-only behavior
-remains manual/field validation rather than being mislabeled as host proof.
+I re-ran the complete inventory after tracing these findings and rechecked all test early returns,
+skips/incomplete results, reflection/source-text assertions, concurrency latches, device-case effect
+declarations, report/attestation exit semantics, production callback owners, capture/storage/video
+families, Camera2/GL seams, Compose modality/input, release/debug gates, and open field claims. The
+pinch probe is deliberately diagnostic and accurately says it never fails; androidTest assembly is
+accurately described as compilation rather than execution; full/reliability device skips remain
+non-green unless partial evidence is explicitly attested. No additional false-positive or flaky
+test survived source validation. Hardware-only behavior remains manual/device evidence rather than
+being inferred from the green host gate.
 
 ## Totals
 
-- Findings: **2**
-- Severity: **2 Medium**
-- Confidence: **2 High**
-- Confirmed product failures: **0**
-- Confirmed test/evidence gaps: **2**
+- Findings: **3**
+- Severity: **2 Medium, 1 Low**
+- Confidence: **3 High**
+- Confirmed product failures: **1 race shared with `TRACE50-01`**
+- Confirmed test/evidence gaps: **3**

@@ -1,3 +1,64 @@
+# Performance review — cycle 50
+
+Date: 2026-08-25
+
+Reviewed revision: `2388819d981d32bc3c59b3e81f75fd4f49fab8bd` (`origin/main`)
+
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
+
+## Inventory first
+
+The performance inventory covered all 535 tracked paths, beginning with all 103 production
+Kotlin/Java modules (55,212 lines) and all 241 JVM/instrumented test files. I enumerated every
+HandlerThread, executor, scheduled/raw thread, coroutine lane, delayed task, blocking wait/join,
+retry/backoff loop, queue, retained collection/cache, Binder/provider/native boundary, per-frame and
+per-buffer allocation/log, Compose publication, and build/tool subprocess. I also included all
+manifests/resources, baseline profile, Compose stability and R8 inputs, 25 host-tool paths, 14 device
+harness paths, their tests, Gradle/version/wrapper inputs, current authority and field ledger, and
+prior plan/review provenance. The exact source set is the complete
+`app/src/main/{kotlin,java}/me/hletrd/telecampro/**` tree; no production file was sampled out.
+
+The end-to-end pass followed camera enumeration/open/configure/repeating/capture/teardown; zoom and
+sensor fast paths; pseudo-ZSL and processed-snapshot budgets; GL frame coalescing, preview/encoder/
+analysis draws; still/DNG encoding; microphone/codec/muxer work; all finite provider/recovery/delete/
+review lanes; ViewModel tickers and control persistence; Compose focus/input; lifecycle replacement;
+and debug/release trace boundaries. Previous performance reports and comments were used only as
+regression leads.
+
+## Findings
+
+No new actionable CPU, memory, queue-growth, concurrency-throughput, frame-loop, main-thread I/O, or
+UI-responsiveness finding survived current-source validation.
+
+The cycle-49 changes are performance-safe in their intended hot paths: release capture tracing is
+inert and does not build trace strings; sequence tracing remains bounded; keyboard-repeat handling
+does constant work; review focus restoration adds one event-driven effect only on dialog dismissal;
+PNG validation is bounded and the complete documentation gate measured about 0.29 s / 96 MB peak RSS
+on this host; and `setVideoPipeline` holds the Engine monitor only across small-list normalization,
+state publication, and non-blocking posts. The code-review report's pipeline publication-generation
+race is a correctness/state-ownership defect, not a separate measured throughput issue.
+
+## Verification, limits, and final missed-issue sweep
+
+- `:app:testDebugUnitTest` resolved 2,103 current tests with zero failures/errors/skips.
+- `tools/check_docs.py` passed all 152 applicable checks (24 declared private skips), and the measured
+  PNG-validation pass remained sub-second.
+- Of 130 host-tool tests, 123 passed; seven require the missing Emulator `glslangValidator` and were
+  environment-blocked. Nine coverage-tool tests and 195 device-harness self-tests passed.
+- I revalidated the coalesced SurfaceTexture producer, fixed-depth ZSL/result rings, processed still
+  budget, 256-pixel single-flight analysis readback and CPU riders, GL generation retirement,
+  preview/encoder ownership, zoom/control throttles, recorder quarantine, finite pre-native/storage/
+  publication/delete/recovery/review owners, microphone recreation/handoff, settings debounce,
+  Compose state gating, baseline profile, and host subprocess/polling bounds. No missed second issue
+  survived the final full-inventory sweep.
+- Device-only performance evidence remains open exactly where the ledger says: A5's sustained front
+  pseudo-ZSL idle/memory-pressure soak. A3/A4/D1/E1/E2 concern behavior/provider evidence rather than
+  host-confirmed performance. No device or deployment was run.
+
+---
+
+## Archived prior review
+
 # Performance review — cycle 49
 
 Date: 2026-08-25

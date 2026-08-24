@@ -1,4 +1,147 @@
-# Aggregated deep review — cycle 48
+# Aggregated deep review — cycle 50
+
+Date: 2026-08-25
+Reviewed revision: `2388819d981d32bc3c59b3e81f75fd4f49fab8bd` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
+
+## Coverage and aggregation
+
+Five parallel specialist groups covered every required role: code-reviewer, performance-reviewer,
+security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. No repository-local reviewer definition was
+registered. Each group inventoried the complete 535-path revision, examined its full specialist
+surface and cross-file interactions, and performed a final missed-issue sweep. Browser automation
+was not applicable to this native Jetpack Compose app. Every reviewer returned; there were no agent
+failures.
+
+The reports produced 13 raw findings. The video-pipeline supersession race was independently found
+by code, trace, and test reviewers; the REC packet-read race and callback-under-lock violation were
+each independently found by architecture and documentation reviewers; and the PNG false-green was
+independently reproduced by security, critic, and verifier reviewers. Those overlaps are merged at
+the highest reported severity/confidence. The deduplicated result is eight findings: one High, two
+Medium, and five Low; seven are High confidence and one is Medium confidence.
+
+## Deduplicated findings
+
+### AGG50-01 — an older optics rollback can overwrite a newer Photo-mode video-pipeline command in UI and persistence
+
+- **Severity / confidence:** High / High
+- **Sources / agreement:** code-reviewer, tracer, and test-engineer.
+- **Evidence:** `CameraEngine.kt:765-843,2511-2556` restores and posts an older complete pipeline
+  packet, while a later Photo-mode command takes a no-generation publication branch; the ViewModel
+  accepts the queued rollback only by unchanged optics generation at
+  `CameraViewModel.kt:911-959`. The existing interleave test at
+  `ModeRollbackOwnershipRobolectricTest.kt:52-88` queues the same HEVC/HLG packet that rollback
+  restores and never drains/asserts the delayed ViewModel rollback.
+- **Failure:** Engine can retain newer AVC/SDR while UI and persisted state are repainted as
+  HEVC/HLG; the next Video/REC door can then refuse the visibly selected codec.
+- **Fix direction:** add a monotonic pipeline-publication identity independent of Camera2 reopen,
+  publish the winning complete packet to the ViewModel, move convenience reads inside the same
+  ownership boundary, and add a disjoint-packet interleave through UI persistence and REC admission.
+
+### AGG50-02 — REC admission can observe a hybrid video pipeline because it snapshots the session separately from packet fields
+
+- **Severity / confidence:** Medium / High
+- **Sources / agreement:** architect and document-specialist.
+- **Evidence:** `CameraEngine.kt:4947-4958` validates the accepted session under the Engine monitor,
+  but `:5043-5065` then reads frame rate, caps, size, codec, transfer, and candidates separately
+  after unlocking while writers publish the packet under the monitor.
+- **Failure:** a concurrent pipeline commit or rollback can pair an old codec with new candidates
+  and spuriously reject a valid REC attempt as unavailable.
+- **Fix direction:** freeze the accepted session and every REC decision input into one immutable
+  snapshot under one monitor section, then test a controlled old/new publication interleave.
+
+### AGG50-03 — production REC wiring is not exercised by rollback tests
+
+- **Severity / confidence:** Medium / High
+- **Source:** test-engineer.
+- **Evidence:** `ModeRollbackOwnershipRobolectricTest.kt:257-304` reads private fields and directly
+  invokes `recordingEncoderAdmission`; `CameraStateTest.kt:215-250` tests the same pure seam. Neither
+  executes `CameraEngine.startRecording` / `beginRecordingAllocation` at
+  `CameraEngine.kt:5046-5065`, and existing recorder overrides bypass candidate admission.
+- **Failure:** future wiring can pass requested rather than accepted transfer, stale candidates, or
+  the wrong FPS fact while every pure policy test remains green.
+- **Fix direction:** add a narrow allocation injection that preserves production admission and
+  exercise public REC after HLG/SDR rollback, including codec/FPS refusals and supersession.
+
+### AGG50-04 — the PNG documentation gate accepts illegal chunk grammar and ancillary ordering
+
+- **Severity / confidence:** Low / High
+- **Sources / agreement:** security-reviewer, critic, and verifier.
+- **Evidence:** `tools/check_docs.py:111-185` does not require four ASCII-letter chunk bytes or the
+  reserved third-byte bit, and accepts chunk-specific illegal placement such as a CRC-correct
+  `tRNS` after IDAT. Independent production-predicate mutations returned valid metadata.
+- **Failure:** malformed store screenshots can pass the release/docs gate after a digest refresh
+  and fail or render differently in stricter consumers.
+- **Fix direction:** validate chunk type grammar plus every admitted ancillary chunk's structure,
+  multiplicity, and ordering (or reject nonessential ancillary chunks), with focused mutations for
+  reserved-bit/non-letter types and late `tRNS`/color-space chunks.
+
+### AGG50-05 — failed shader initialization leaks partially created GL resources across same-context retries
+
+- **Severity / confidence:** Low / High
+- **Source:** debugger.
+- **Evidence:** `FlipRenderer.kt:114-165,322-344` progressively assigns program/VBO/texture fields;
+  compile/link and later setup failures do not delete all local objects, and a retry overwrites the
+  only ids that `release()` can reach.
+- **Failure:** bounded preview retries can compound leaked shaders, programs, buffers, or textures
+  in the still-live EGL context during an already resource-constrained failure.
+- **Fix direction:** make initialization transactional with local owners and failure cleanup, publish
+  fields only after complete success, and fault-inject every acquisition edge in tests.
+
+### AGG50-06 — owner-null review decoding is not bound to one size-checked file snapshot
+
+- **Severity / confidence:** Low / Medium
+- **Source:** security-reviewer; debugger noted the same risk without recounting it.
+- **Evidence:** `MediaReview.kt:437-449` opens the URI separately for bounds and pixels, does not
+  reject invalid bounds or verify final dimensions, and then opens it again for EXIF orientation.
+  Owner-null imported lookalikes are an explicitly supported restoration input.
+- **Failure:** a provider returning or accepting changed bytes between opens can bypass the 3000 px
+  sampling decision and trigger an unexpectedly large native allocation. Real MediaProvider rewrite
+  semantics still require manual validation.
+- **Fix direction:** decode from one stable descriptor/private bounded snapshot, reject invalid
+  bounds, verify/recycle oversize output, and test a provider that varies content between opens.
+
+### AGG50-07 — Ready invokes `onCameraPolicyBlocked(false)` while the optics monitor is held
+
+- **Severity / confidence:** Low / High
+- **Sources / agreement:** architect and document-specialist.
+- **Evidence:** `CameraEngine.kt:628-684` states callbacks must run after unlock but calls
+  `onCameraPolicyBlocked(false)` inside `OpticsCommitGate.commit`; `:7265-7285` holds the Engine
+  monitor through that terminal mutation.
+- **Failure:** callback work or re-entry can extend or re-enter a half-published Ready critical
+  section, and the live code contradicts the architecture's lock boundary.
+- **Fix direction:** capture the policy-unblocked publication inside the mutation and invoke it with
+  the other post-commit callbacks; add a re-entrant callback ownership regression.
+
+### AGG50-08 — the completed release-trace plan overclaims a source/variant contract
+
+- **Severity / confidence:** Low / High
+- **Source:** test-engineer.
+- **Evidence:** `docs/plans/2026-08-25-rpf-cycle49.md:25-30` promises proof that production cannot
+  force-unwrap a debug-only payload, but `CameraStateTest.kt:167-213` covers only the pure admission
+  matrix; debug unit tests do not execute the release callback caller/consumer at
+  `CameraEngine.kt:4170-4183,4723-4751`.
+- **Failure:** a caller can re-enable release admission or reintroduce a nullable force-unwrap while
+  the claimed regression evidence stays green.
+- **Fix direction:** add the promised source/bytecode invariant or executable build-mode callback
+  test, and append a dated evidence correction to the completed plan.
+
+## Verified non-findings and limits
+
+- Performance and native Android design reviews found no additional actionable issue.
+- The authoritative debug host gate passed in the reviewer that had the complete SDK authority:
+  2,103 JVM/Robolectric/Compose tests, lint, 99.82% Partition A, tooling/harness/docs checks, and
+  `git diff --check`. Other reviewers' partial environment lacked Emulator `glslangValidator`; this
+  is an environment limitation, not a source failure.
+- Release tracing, keyboard-repeat suppression, delete-dialog focus restoration, obscured-input
+  cancellation, and current AppOps wording otherwise matched their production contracts.
+- No device, deploy, MediaProvider replacement, GL fault-injection, camera HAL, converter, HDR,
+  microphone, or physical-input behavior was run or inferred. A3/A4/A5/D1/E1/E2 remain manual.
+
+---
+
+# Archived aggregate — cycle 48
 
 Date: 2026-08-25  
 Reviewed revision: `ad64188a020000833d653d27e3ae40840868f44a` (`origin/main`)  

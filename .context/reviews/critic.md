@@ -1,103 +1,82 @@
-# Critic review — cycle 49
+# Critic review — cycle 50
 
 Date: 2026-08-25
 
-Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27`
+Reviewed revision: `2388819d` (`origin/main`)
 
-## Method
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
 
-I performed the same 534-path inventory as the code review and challenged the repository's strongest
-cycle-48 completion claims against the production source and the exact tests cited as evidence. The
-skeptical sweep covered state/ownership consistency, asynchronous boundaries, error and rollback
-paths, native-resource claims, keyboard/touch equivalence, documentation contradictions, and tests
-whose names imply more than their assertions establish.
+Role: critic; source review plus focused read-only host verification; no implementation or commit
 
-## Findings
+## Inventory before review
 
-### C49-CT-01 — viewfinder keyboard activation is level-triggered instead of press-triggered
+I generated the inventory from all 535 tracked paths before examining behavior. The review did not
+sample only the last commit:
 
-- **Severity / confidence:** Medium / High
-- **Status:** Confirmed; duplicate of `C49-CR-01`.
-- **Evidence/failure:** `CameraScreen.kt:364-385` consumes every matching `KeyDown`, including repeat
-  DOWNs, while `ViewfinderAccessibilityComposeTest.kt:171-215` covers only discrete `pressKey`
-  pairs. Holding Enter/Space/DPAD-center can continuously re-trigger center AF.
-- **Fix:** ignore repeats or implement an exact down/up owner; mutation-test repeated DOWN and
-  cancellation before the next fresh press.
+| Surface | Paths | Treatment |
+|---|---:|---|
+| Production Kotlin/Java | 103 | Every module inventoried from the architecture map; Camera2, GL, capture, storage, video, and UI ownership boundaries traced |
+| Main resources | 15 | Resource/localization/policy assets inventoried |
+| Debug + instrumentation sources | 8 | Export/security and device-probe boundaries inventoried |
+| JVM/Robolectric/Compose tests | 238 | Test intent and false-green seams compared with production call sites |
+| Host/release tooling | 25 | SDK, immutable-build, artifact, docs, permissions, and coverage gates inventoried |
+| Device harness | 14 | Attestation, ADB, media, selector, and case boundaries inventoried |
+| Product/architecture/release docs and assets | 64 | Current authorities and field-evidence limits checked; historical plans/assets classified separately |
+| Prior review provenance | 44 | Consulted only after the independent inventory to avoid re-reporting fixed findings |
+| Build/root/remaining tracked files | 24 | Manifests, Gradle, wrapper, signing example, privacy/publication, license, and repository policy inventoried |
 
-### C49-CT-02 — delete-dialog cancellation has neither an explicit focus-return owner nor the claimed assertion
+The Cycle 49 executable change surface was then examined completely: `CameraEngine.kt`,
+`CameraState.kt`, `CameraScreen.kt`, `MediaReview.kt`, `tools/check_docs.py`, all six changed focused
+test files, and `docs/play-console-submit.md`. Cross-file traces additionally covered
+`CameraViewModel.kt`, `CameraActions.kt`, `MainActivity.kt`, `EncoderCaps.kt`, `VideoRecorder.kt`,
+the optics commit/rollback gates, capture-family producer settlement, modal focus, the committed PNG
+manifests, and the current architecture/field-check authorities.
 
-- **Severity / confidence:** Medium / Medium
-- **Classification:** Likely keyboard-accessibility defect plus confirmed evidence overclaim. The
-  exact post-dialog landing can vary with Compose/platform behavior and needs a real keyboard pass.
-- **Evidence:** `ui/review/MediaReview.kt:1053-1061,1727-1771` has a requester only for the review
-  Close control. The Delete control has no requester, and dismissing its `AlertDialog` merely flips
-  `confirmDelete=false`; no edge restores focus to Delete. The cycle-48 plan marks delete-dialog
-  cancel covered at `docs/plans/2026-08-25-rpf-cycle48.md:77-82`, but
-  `ModalFocusComposeTest.kt:218-253` asserts only that the dialog disappears, then invokes Back
-  without asserting any underlying node is focused.
-- **Failure scenario:** a keyboard/D-pad user opens Delete, cancels, and returns to a review whose
-  focus is absent or lands on Close/another node. The next traversal/action no longer resumes at the
-  control that opened the dialog. The green test cannot detect this because Back closes review even
-  when nothing in it owns focus.
-- **Concrete fix:** attach a `FocusRequester` to Delete, remember it as the nested-modal origin, and
-  request it after dialog disposal on every dismiss route (Cancel, Back, outside click). Assert Delete
-  is focused after each route and only then test continued traversal. Append a dated correction to
-  the completed plan rather than rewriting its historical claim.
+## Finding
 
-## Final skeptical sweep
+### C50-CV-01 — the “fully validate” PNG gate still accepts specification-invalid ancillary ordering
 
-No additional claimed race, data-loss path, shader-interface defect, or release-permission bypass
-survived source verification. Current open field checks remain explicit validation limits rather
-than defects.
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed tooling false-green; current checked-in screenshots themselves pass
+  and this is not evidence that a present asset is corrupt.
+- **Exact region:** `tools/check_docs.py:111-185`, especially the generic ancillary branch at
+  `tools/check_docs.py:180-185`; the mutation suite covers PLTE-specific ordering only at
+  `tools/tests/test_tool_contracts.py:1270-1309`.
+- **Evidence:** `png_metadata()` describes itself as fully validating the PNG, but after the first
+  IDAT every unknown ancillary chunk merely sets `idat_ended = True` and remains accepted as long as
+  no later IDAT appears. PNG ancillary chunks have chunk-specific placement rules; for example,
+  `tRNS` must precede the first IDAT. I inserted a CRC-correct six-byte truecolor `tRNS` immediately
+  before IEND in the current 1440x2880 phone screenshot. The direct production predicate returned
+  `(1440, 2880, 8, 2)` instead of `None`. The same class also includes malformed/late `sRGB`, `iCCP`,
+  `gAMA`, and related color-space chunks whose structure/order is not validated.
+- **Concrete failure scenario:** A screenshot export or metadata-rewrite step emits a late or
+  malformed color/transparency ancillary chunk, and the maintainer refreshes the manifest digest as
+  required by the normal recapture workflow. Digest, dimensions, CRCs, decompressed raster length,
+  and the current gate all pass, while a strict decoder/store ingestion path can reject or
+  reinterpret the file. This reopens the release-tool false assurance the Cycle 49 PNG work claimed
+  to close.
+- **Suggested fix:** Prefer a deterministic production image decoder that performs a complete load,
+  then independently enforce the exact dimensions/color contract. If keeping the parser, validate
+  the chunk type grammar plus every admitted ancillary chunk's length, value, multiplicity, and
+  ordering (or reject all nonessential ancillary chunks). Add digest-refreshed mutations for a
+  post-IDAT `tRNS`, malformed/late `iCCP` and `sRGB`, and an invalid chunk-type reserved bit.
 
----
+## Critic verification and final sweep
 
-## Archived prior review
-
-# Critic review — cycle 39
-
-Date: 2026-08-24
-
-Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224`
-
-Role: skeptical multi-perspective critique
-
-## Coverage
-
-Inventoried all 493 tracked paths: 101 production/debug Kotlin sources, 224 JVM/Compose/
-instrumented test sources, Python and shell build/device tooling, Gradle configuration,
-manifests/resources, privacy/store assets, and committed documentation/review history. Read the
-complete clean-clone authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`) before tracing implementation.
-
-The cycle-38 change surface was checked line by line: stabilization label reconciliation from
-`CameraViewModel.reconcileZoomToCaps` through `CameraEngine.setVideoStabMode`, accepted-route
-capability fallback in `CaptureCapabilities`, live request and session publication in
-`CameraController`, deterministic shared-pool ownership tests, focal-rail rendering, and the shared
-GL/Compose finder geometry. The wider critique also swept route/session generations, exposure and
-zoom remaps, capture-family durability and deletion, recording admission/native quarantine,
-MediaProvider recovery, GL ownership, permissions/navigation, localization, and immutable build
-evidence.
-
-Host-side independent evidence was green: 120 documentation checks, 99 tooling tests, nine
-coverage-tool tests, 184 device-harness self-tests, and `git diff --check`. No device action was
-taken and no open field check was promoted to implementation evidence.
-
-## Findings
-
-No new confirmed findings.
-
-The previous phantom finder input is gone: `finderRect` now exposes only `sideMargin`, `topAnchor`,
-and measured `bottomClearance`, and `FinderGeometryTest` independently asserts their actual axes and
-lower-bound behavior. The stabilization optimization also preserves accepted truth: before caps it
-stores intent only; after caps it skips work only when the before/after labels resolve to the same
-Camera2 value, while a real OFF/ON/PREVIEW transition retains request rebuild plus session reopen.
-The selected-disabled focal chip now keeps the common `HudPlate` floor and the rendered bright/dark
-matrix exercises all selected/enabled combinations.
-
-## Final missed-issue sweep
-
-Rechecked model-string boundaries, capability availability and normalization, Camera2/GL terminal
-ownership, capture and recording exactly-once publication, late provider results, parser bounds,
-UI action guards, EN/KO parity, privacy claims, and release/debug provenance. Potential concerns
-without a reproducible invariant violation or concrete failure path were omitted.
+- Focused Android tests passed for the changed runtime surfaces:
+  `CameraStateTest`, `ModeRollbackOwnershipRobolectricTest`,
+  `ViewfinderAccessibilityComposeTest`, `ModalFocusComposeTest`, and
+  `MainActivityTouchDispatchTest`.
+- `python3 -m unittest tools.tests.test_tool_contracts` passed all 55 configured tests.
+- `python3 tools/check_docs.py` passed 152 checks with 24 documented optional-private skips.
+- `git diff --check` passed.
+- The video-pipeline monitor now covers derivation through publication; the captured rollback packet
+  restores codec, ordered candidates, requested transfer, active transfer, UI publication, and REC
+  filtering consistently in the examined interleavings.
+- Release capture tracing is inert before trace payload construction, and producer-lease/family
+  settlement remains outside diagnostics on every terminal path examined.
+- Delete-dialog Back/Cancel share one dismissal owner and restore the exact Delete focus requester;
+  outside dismissal reaches that same callback. Viewfinder focus-key repeats do not re-run the
+  action. No second runtime defect survived the cross-file ownership sweep.
+- No device, Camera2 HAL, converter, HDR display, off-axis audio scene, or real MediaProvider consent
+  surface was available. Open field checks A3/A4/A5/D1/E1/E2 remain manual and were not promoted.

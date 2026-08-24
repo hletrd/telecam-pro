@@ -1,3 +1,56 @@
+# Native Android designer review — cycle 50
+
+Date: 2026-08-25
+
+Reviewed revision: `2388819d` (`origin/main`)
+
+## Inventory and method
+
+This is a native Jetpack Compose application, so browser automation is not an applicable UI
+runtime. I inventoried and examined all 31 production files under `ui/` (screen, policy,
+ViewModel/actions, controls, overlays, review, theme, focus/input owners), `MainActivity`, UI-facing
+camera/storage/video state, all 93 UI tests, both string catalogs, the manifest/theme/resources,
+debug snapshot host, and every checked-in phone/tablet screenshot plus its validity manifest.
+
+The source-level pass covered Sony-style information architecture; control discoverability and
+enabled/selected feedback; touch, stylus/mouse, keyboard/D-pad, TalkBack and Switch Access; modal
+entry/containment/restoration; 48 dp targets; WCAG focus order/appearance, text and non-text
+contrast; compact, phone, tablet, freeform, rotation, insets, 2x font and overflow behavior;
+loading/empty/disabled/reconfiguring/recording/review/delete/error states; validation and retry;
+deterministic dark appearance; EN/KO, shaping and RTL; and perceived-performance feedback.
+
+## Findings
+
+No new actionable design, accessibility, responsive-layout, localization, state-presentation, or
+perceived-performance defect survived source and cross-file validation at this revision.
+
+The two cycle-49 interaction findings are closed in production code, not only tests. Viewfinder
+activation now fires once on the initial Enter/Space/DPAD-center DOWN and ignores repeat DOWN events
+(`CameraScreen.kt:364-403`), with all key families exercised in
+`ViewfinderAccessibilityComposeTest.kt`. Review Delete owns an exact focus requester and restores it
+after Back/Cancel dismissal (`MediaReview.kt:1051-1069,1737-1782`), and
+`ModalFocusComposeTest.kt:218-263` asserts the return before continued traversal.
+
+The quiet finder hierarchy, stable physical control homes, Fn/My/settings split, capability-aware
+disabled states, review/load/retry copy, restrained live regions, merged control semantics, input
+blocking, two-tone focus indication, contrast tokens, overflow affordances, absolute camera
+geometry under RTL, and window-following glyph policy otherwise remain coherent. The deterministic
+dark theme and explicitly light system-bar icons agree regardless of system theme. No hardcoded
+user prose lacking an EN/KO resource was found.
+
+## Final missed-issue sweep and evidence boundary
+
+The debug JVM/Robolectric/Compose suite passed. The documentation gate passed 152 checks; the full
+host gate could not start because the local SDK lacks the stable Emulator `glslangValidator`.
+Checked-in screenshot manifests intentionally block the stale phone captures and the unprovenanceable
+tablet captures from Play submission. I did not run an emulator or device and do not claim visual
+runtime, TalkBack speech, physical keyboard, camera pixels, or device performance evidence. Open
+field checks A3/A4/A5/D1/E1/E2 remain manual/device validation work, not design passes or failures.
+
+---
+
+## Archived prior review
+
 # Native Android designer review — cycle 49
 
 Date: 2026-08-25

@@ -1,74 +1,116 @@
-# Cycle 49 security review
+# Cycle 50 security review
 
 Date: 2026-08-25
-Reviewed revision: `69c9c64a` (`origin/main` at review start)
-Workspace: isolated clone `/tmp/find-x9-ultra-cycle49.oXnMVe/repo`
+Reviewed revision: `2388819d` (`origin/main` at review start)
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
 
 ## Authority, inventory, and method
 
 I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` as the committed authority
-before reviewing implementation. Optional private maintainer documents are absent and were not
-treated as required. The review inventoried all 534 tracked paths with `git ls-files`: 527 regular
-mode-100644 files and seven regular mode-100755 files, with no symlink, submodule, FIFO, or device
-entry. The implementation surface includes 102 production Kotlin files, one production Java file,
-three debug Kotlin files, four instrumented-test Kotlin files, 237 JVM/Robolectric/Compose test
-files, and 33 Python files; tracked resources, manifests, Gradle inputs, shell tools, binary assets,
-licenses, plans, and historical reviews were included in boundary and provenance sweeps.
+before reviewing implementation. The optional private maintainer documents described by that authority
+are absent and were not treated as required. I inventoried all 535 tracked paths with `git ls-files`:
+528 regular mode-100644 files and seven regular mode-100755 files, with no symlink, submodule, FIFO,
+or device entry. The code inventory is 102 production Kotlin files, one production Java file, three
+debug Kotlin files, four instrumented-test Kotlin files, 237 JVM/Robolectric/Compose test files, 33
+Python files, two shell scripts, 94 Markdown files, and 59 build/resource/asset/license/configuration
+inputs. Binary fonts, PNGs, and the Gradle wrapper participated in identity, mode, digest, packaging,
+and artifact-boundary checks rather than being treated as executable source text.
 
-The direct review covered the merged release/debug component boundary, exported intent ingress,
-DUMP protection, obscured and hardware input, camera/microphone/visual-media permissions, backup
-and extraction rules, external navigation, owner-null MediaStore consent, exact-family deletion,
-pending-row recovery, parser/allocation bounds, private state, Camera2/GL/codec/audio ownership,
-release signing and immutable-output tooling, dependency verification, subprocess construction,
-ADB tooling, and the complete cycle-48 delta. Authentication accounts do not exist in this offline
-camera app; the applicable authorization surface is Android component permissions plus MediaStore
-ownership/system consent.
+Every tracked path participated in the final mode, credential/private-key, permission/component,
+backup, network/location, dynamic-code/deserialization, process/command, URI/path, logging, parser,
+exception, and dangerous-API sweeps. Direct cross-file review covered:
 
-No deployable credential, private key, dynamic-code loader, WebView/JavaScript bridge, unsafe
-deserializer, shell-evaluated application input, release network permission, location permission,
-overlay permission, package-install permission, all-files access, or backup exposure was found.
-The debug-only exported activities remain DUMP-protected, the ordinary launcher does not consume
-debug command extras, and the cycle-48 obscured-stream cancel now clears only the hostile overlay
-flags while retaining the original pointer identity and timing.
+- merged release/debug components, exported intent ingress, DUMP protection, obscured/hardware input,
+  camera/microphone/visual-media permission ownership, external navigation, backup/extraction rules,
+  private preferences/databases, and privacy/Data Safety claims;
+- current-package versus owner-null MediaStore restoration, public filename/MIME recognition,
+  exact-file system delete consent, family/DISCARD authorization, pending-row recovery and bounded
+  JPEG/DNG/HEIF/video probing, plus still/video review decoder inputs;
+- Camera2 route/session generations, GL/EGL and shader ownership, MediaCodec/MediaMuxer/AudioRecord
+  admission and teardown, finite executors, lifecycle callbacks, settings rollback, and the complete
+  cycle-49 production delta;
+- dependency verification, signing inputs, immutable debug/release exports, packaged permission and
+  source-identity checks, subprocess construction, ADB evidence tooling, PNG/store-asset validation,
+  and documentation gates.
 
-## Finding
+This offline camera app has no account authentication surface. Its applicable authorization boundary
+is Android component permissions plus MediaStore ownership/system consent. The release manifest has
+no INTERNET, network-state, location, legacy external-storage, all-files, overlay, package-install,
+or query-all-packages permission. Backup is disabled and both rule formats exclude preferences and
+databases. Debug-only exported activities are DUMP-protected. I found no deployable secret/private
+key, plaintext credential, dynamic-code loader, WebView/JavaScript bridge, unsafe object
+deserializer, or shell-evaluated application input.
 
-### SEC49-01 — the new PNG validator accepts invalid chunk order and is not total for overlong decoded data
+## Findings
+
+### SEC50-01 — the screenshot PNG gate accepts illegal chunk type codes
 
 - **Severity / confidence:** Low / High.
-- **Classification:** Confirmed release/tooling validation defect. The inputs are repository-owned,
-  so this is not a remote application exploit; it is a false-green/crash seam in the Play-asset
-  integrity boundary.
-- **Evidence:** `tools/check_docs.py:111-196` records an `IDAT` end after any later chunk, but its
-  `PLTE` exception at lines 166-171 still accepts `PLTE` after `IDAT`, does not reject `PLTE` for
-  color type 6, and does not validate its size/cardinality. PNG requires `PLTE` before the first
-  `IDAT` and forbids it for truecolor-with-alpha. A CRC-correct 1x1 truecolor fixture with
-  `IHDR -> IDAT -> PLTE -> IEND` was passed directly through the production function and returned
-  `(1, 1, 8, 2)`. Independently, lines 184-186 decompress with a maximum of
-  `expected_size + 1` and then call `inflater.flush(expected_size + 1 - len(pixels))`; an image
-  whose zlib stream expands to exactly one byte beyond the declared raster makes that argument
-  zero. Python raises uncaught `ValueError: length must be greater than zero` because only
-  `zlib.error` is caught. The production function reproduced both outcomes.
-- **Concrete scenario:** A failed or malformed screenshot export is committed and its validity
-  digest is refreshed. An illegal post-IDAT palette can pass the claimed full PNG validation, while
-  a one-byte-overlong decoded raster aborts `tools/check_docs.py` instead of producing the normal
-  bounded failed check. Existing tests cover truncation, CRC, missing IEND, IHDR methods, and wrong
-  geometry (`tools/tests/test_tool_contracts.py:1124-1248`) but neither malformed case.
-- **Suggested fix:** Make the parser a total predicate: enforce one legal `PLTE` in the correct
-  pre-IDAT position with color-type and length rules, reject every other illegal critical-chunk
-  order, and avoid `flush(0)` (or catch `ValueError`) before checking exact decompressed length,
-  EOF, tails, and filter bytes. Add digest-refreshed fixtures for post-IDAT/duplicate/forbidden/
-  malformed `PLTE` and an exactly-one-byte-overlong raster, asserting an ordinary nonzero gate
-  result rather than an uncaught traceback.
+- **Classification:** Confirmed release/tooling integrity defect. Repository-owned input, not a
+  remotely exploitable application path.
+- **Evidence:** `tools/check_docs.py:124-185` reads every four-byte chunk type and uses only bit 5 of
+  the first byte to decide whether an unknown chunk is ancillary. It never enforces PNG's chunk-type
+  grammar: all four bytes must be ASCII letters and the reserved bit (bit 5 of the third byte) must
+  be zero. I extracted the production `png_metadata` function unchanged and passed three CRC-correct
+  1x1 truecolor PNGs containing zero-length unknown chunks named `abcd`, `abca`, and `12x4` between
+  IDAT and IEND. All three returned `(1, 1, 8, 2)`, although `abcd`/`abca` violate the reserved-bit
+  rule and `12x4` is not a legal PNG chunk type at all. Existing mutation tests cover PLTE ordering,
+  CRCs, IEND, IHDR methods, truncation, geometry, and decoded overrun, but not type-code grammar.
+- **Concrete failure scenario:** A malformed screenshot exporter or asset mutation produces a
+  CRC-correct file with an illegal ancillary-looking chunk and the validity digest is refreshed.
+  The documentation/Play-asset gate claims full PNG validation and returns green, so malformed store
+  evidence can be committed and carried into the release workflow rather than producing the expected
+  bounded failure.
+- **Suggested fix:** Before dispatching any chunk, require each type byte to be in `A-Z` or `a-z`
+  and require `(kind[2] & 0x20) == 0`; retain the existing first-byte ancillary classification only
+  after that validation. Add digest-refreshed fixtures for a lowercase reserved third byte and a
+  non-letter type, asserting a normal failed check without traceback.
 
-## Final security sweep and limitations
+### SEC50-02 — owner-null still review sizing is not bound to one immutable file snapshot
 
-The final sweep revisited every exported component and permission, incoming intent, obscured touch
-edge, permission owner, owner-null consent route, provider mutation, URI/family authorization,
-private store and backup rule, network/location/secret surface, process invocation, immutable
-source/output seal, package-private signature guard, parser bound, and cycle-48 security fix. No
-additional current security defect survived source validation. The open A3/A4/A5/D1/E1/E2 field
-checks remain manual evidence obligations; no device, MediaProvider, physical converter, microphone
-scene, production signing key, deployment, or external service was used.
+- **Severity / confidence:** Low / Medium.
+- **Classification:** Likely local availability risk; requires manual/adversarial MediaProvider
+  validation. It is not a confirmed remote exploit.
+- **Evidence:** `MediaStoreWriter.kt:294-339` deliberately restores owner-null rows matching the
+  public TeleCam directory/name/MIME grammar after contextual visual-media access;
+  `LatestCaptureReducer.kt:184-220` explicitly states that such a row may be an imported lookalike.
+  `ui/review/MediaReview.kt:437-449` then opens the URI once to obtain dimensions and a second time to
+  decode pixels with a sample derived from the first open. No stable descriptor/version identity is
+  held across those opens, invalid bounds (`outWidth/outHeight <= 0`) are not rejected, and the
+  decoded bitmap is not checked against the requested maximum as the video-thumbnail sibling is at
+  `MediaReview.kt:421-434`.
+- **Concrete failure scenario:** An owner-null lookalike row is selected/restored, and a privileged
+  gallery/provider writer replaces its bytes between the bounds open and decode open (or a provider
+  returns different content per open). A small first image selects `inSampleSize=1`; the second open
+  can then cause a full native bitmap allocation well beyond the advertised 3000 px review bound,
+  producing memory pressure or process death. Whether the platform MediaProvider permits that exact
+  rewrite race on supported builds remains to be measured.
+- **Suggested fix:** Decode dimensions and pixels from one stable `ParcelFileDescriptor`/seekable
+  snapshot (or copy owner-unverified input into a size-bounded private snapshot), reject non-positive
+  bounds, cap encoded byte/file size, and verify/recycle any decoded bitmap that violates the final
+  dimension/allocation contract. Add a fake-provider test that returns different bytes for successive
+  opens, then run a real owner-null replacement race as a field/security check.
 
-**New security-reviewer finding count: 1 — Low severity, High confidence, confirmed.**
+## Validation evidence and limitations
+
+- Focused cycle-49 camera-state, pipeline rollback, keyboard, modal focus, ownerless-delete, and all
+  video JVM/Robolectric tests passed (`BUILD SUCCESSFUL`, 2026-08-25).
+- The two new PNG fixes' existing focused mutation tests passed, and `python3 tools/check_docs.py`
+  passed 152 checks with zero failures (24 optional-private checks skipped). The illegal chunk-code
+  reproducer above still returned success from the production parser, establishing SEC50-01.
+- `git diff --check` was clean before the provenance reports were written. No device, deployment,
+  production signing, Play upload, external communication, or destructive provider action occurred.
+- Open field checks A3, A4, A5, D1, E1, and E2 remain manual evidence obligations. In particular,
+  SEC50-02 does not claim owner-null provider rewrite semantics without an adversarial device run.
+
+## Final missed-issue sweep
+
+The final sweep revisited every exported component and permission, incoming/outgoing intent,
+obscured/hardware input edge, permission owner, owner-null consent route, exact family/DISCARD
+transition, provider mutation and structural probe, decoder/allocation bound, private store and backup
+rule, camera/GL/codec/audio terminal, finite worker owner, process invocation, immutable source/output
+seal, package-private signature guard, PNG parser boundary, and every cycle-49 security-relevant
+change. Prior resolved findings and explicit field-only evidence were not re-filed.
+
+**New security finding count: 2 — one confirmed Low/High tooling defect and one Low/Medium local
+availability risk requiring manual provider validation.**

@@ -1,3 +1,87 @@
+# Document-specialist review — cycle 50
+
+Date: 2026-08-25
+
+Reviewed revision: `2388819d` (`origin/main`)
+
+## Inventory and validation
+
+I inventoried all 92 Markdown files plus the published HTML privacy policy, EN/KO resources,
+manifests, version catalog/build scripts, release tools, device harness, and source/tests named by
+current documentation. I read the complete committed authorities (`CLAUDE.md`,
+`docs/ARCHITECTURE.md`, `docs/FIELD_CHECKS.md`), README, privacy authorities, device-harness guide,
+Play Data Safety authority, and the complete Play submission sheet. Historical plans/reviews were
+searched for unqualified current-state claims and checked through the repository's plan/doc gates.
+
+`tools/check_docs.py` passed all 152 applicable checks (24 optional-private checks skipped). EN/KO
+resource parity, manifest permissions, versionCode/versionName, Android floor/target, release
+not-ready state, screenshot blockers, field-check membership, privacy statements, and current
+Loupe/DNG/HLG wording agree. Current-version claims were also checked against official metadata:
+AGP 9.3.2 and Compose BOM 2026.08.00 are the newest stable Google Maven entries, Kotlin 2.4.10 is
+JetBrains' current stable release, and Gradle's official current endpoint reports 9.7.1. Sources:
+Google Maven metadata for
+[`com.android.tools.build:gradle`](https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle/maven-metadata.xml)
+and
+[`androidx.compose:compose-bom`](https://dl.google.com/dl/android/maven2/androidx/compose/compose-bom/maven-metadata.xml),
+JetBrains' [Kotlin releases](https://kotlinlang.org/docs/releases.html), and Gradle's
+[`versions/current`](https://services.gradle.org/versions/current).
+
+## Findings
+
+### D50-01 — the architecture promises an atomic REC video packet that production does not snapshot
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed authoritative-doc/code mismatch; same root cause as A50-01.
+- **Exact regions:** `docs/ARCHITECTURE.md:308-314` says codec, ordered candidates, requested
+  transfer, and active transfer form one immutable packet and that Ready/REC can never observe a
+  hybrid. `CLAUDE.md:867-871` repeats that rollback restores the packet before the next REC
+  admission. Writers do serialize it (`CameraEngine.kt:764-793,2511-2556`), but production REC
+  obtains the accepted session under a lock at `:4947-4958` and reads each packet/capability field
+  after unlocking at `:5043-5065`.
+
+**Failure scenario:** a pipeline commit or rollback between those volatile reads can make admission
+pair HEVC with AVC candidates or a non-SDR transfer with an SDR-only component. The app can refuse a
+valid start as “Selected codec unavailable,” despite the authority's absolute “never” claim. The
+exact filter fails closed, so this review does not claim that an incompatible encoder is started.
+The new tests cover writer synchronization and the pure helper, not the production snapshot
+interleave.
+
+**Suggested fix:** fix the production snapshot as described in A50-01, then retain the current
+authority wording and add a docs/test invariant naming the one locked snapshot owner. If the code is
+not fixed, weaken both authorities to describe the actual per-field behavior; that would document a
+race rather than make it safe and is not the preferred resolution.
+
+### D50-02 — “external callbacks run after unlocking” has one live counterexample
+
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed authoritative-doc/code mismatch; same root cause as A50-02.
+- **Exact regions:** `docs/ARCHITECTURE.md:301-307` states that external callbacks run after the
+  optics commit unlocks. `CameraEngine.kt:628-630` repeats the same rule in source. Nevertheless,
+  `commitOpticsReady` invokes `onCameraPolicyBlocked(false)` inside the
+  `OpticsCommitGate.commit` mutation at `CameraEngine.kt:633-677`; the gate holds the Engine monitor
+  for that mutation at `:7265-7285`.
+
+**Failure scenario:** maintainers rely on the authority when adding work to that callback and
+unknowingly place Engine re-entry, callback-sink waiting, or UI work inside the Ready critical
+section. The mismatch also prevents the docs gate from protecting the real rule because it checks
+the prose but not this callback site.
+
+**Suggested fix:** move the policy-unblocked callback beside the other post-commit publications at
+`CameraEngine.kt:678-684`, then add a source-contract check (or a behavior test) that terminal
+mutation bodies contain no callback invocation. The present architecture wording can remain.
+
+## Final sweep and evidence limits
+
+No other current documentation defect survived the full inventory sweep. The six open field checks
+remain A3, A4, A5, D1, E1, and E2; no host result was promoted to device evidence. The complete debug
+test task passed. The consolidated host gate was not runnable in this clone because the local SDK is
+missing the stable Emulator `glslangValidator`, so this review does not repeat the historical
+cycle-49 host-gate pass as evidence for current execution.
+
+---
+
+## Archived prior review
+
 # Document-specialist review — cycle 49
 
 Date: 2026-08-25
