@@ -62,7 +62,7 @@ deprecated APIs, latest stable everything.
 
 | Component | Version | Notes |
 |---|---|---|
-| AGP | 9.3.1 | **Kotlin is built-in** — do NOT apply `org.jetbrains.kotlin.android` |
+| AGP | 9.3.2 | **Kotlin is built-in** — do NOT apply `org.jetbrains.kotlin.android` |
 | Kotlin | 2.4.10 | Compose compiler plugin version; AGP supplies Kotlin Android support |
 | Gradle | 9.7.1 | wrapper |
 | Compose BOM | 2026.08.00 | Material3 |

@@ -3,7 +3,7 @@
 # Ships the baseline profile so ART AOT-compiles the hot paths at install instead of
 # leaving the app on `status=verify` (device-measured: settings-open p99 61 ms -> 26 ms).
 profileinstaller = "1.4.1"
-agp = "9.3.1"
+agp = "9.3.2"
 # Matches the latest stable Compose compiler plugin; AGP 9 supplies Kotlin Android support.
 kotlin = "2.4.10"
 coreKtx = "1.19.0"
