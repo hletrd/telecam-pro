@@ -120,7 +120,7 @@ class OwnerlessMediaDeleteLifecycleTest {
         assertTrue(blockerEntered.await(2, TimeUnit.SECONDS))
         assertEquals(
             ViewModelMediaDeleteDispatch.ACCEPTED,
-            dispatcher.dispatch(Runnable { Unit }),
+            dispatcher.dispatch(Runnable {}),
         )
         val providerRan = AtomicBoolean()
         val vm = createViewModel(
