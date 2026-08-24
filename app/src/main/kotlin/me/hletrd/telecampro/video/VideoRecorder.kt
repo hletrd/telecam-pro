@@ -1081,6 +1081,18 @@ internal data class GeneralNativeAcquisitionState(
     val activeRecorderOwnedByForeignEngine: Boolean,
 )
 
+/** Exact result of one process-gated native call. */
+internal enum class NativeAcquisitionResult {
+    /** The process gate was already closed; [block] did not run. */
+    REJECTED,
+
+    /** [block] returned while its process admission was still current. */
+    RETURNED_CURRENT,
+
+    /** [block] ran, but quarantine closed admission before its return could be published. */
+    RETURNED_REVOKED,
+}
+
 /** Typed finite/terminal process-gate refusal; Engine decides replay versus restart-required. */
 internal enum class NativeAcquisitionRefusalPhase { EGL_CONTEXT, PREVIEW_OUTPUT, CAMERA_GRAPH }
 
@@ -1188,6 +1200,18 @@ internal class RecorderQuarantineAdmissionGate {
     fun runNativeIfSafe(block: () -> Unit): Boolean = runNativeIfSafe(null, block)
 
     fun runNativeIfSafe(owner: Any?, block: () -> Unit): Boolean {
+        return runNativeWithResult(owner, block) == NativeAcquisitionResult.RETURNED_CURRENT
+    }
+
+    /**
+     * Preserves whether the native call entered before quarantine revoked its eventual return.
+     * Boolean callers retain their historical success contract through [runNativeIfSafe], while
+     * owners that acquire a new native resource can retain that exact object on a revoked return.
+     */
+    fun runNativeWithResult(
+        owner: Any? = null,
+        block: () -> Unit,
+    ): NativeAcquisitionResult {
         val admitted = lock.withLock {
             // A pending REC token can already be inside MediaCodec setup while its recorder has not
             // yet reached the published Engine slot. General GL/Camera2 acquisition must wait for
@@ -1200,7 +1224,7 @@ internal class RecorderQuarantineAdmissionGate {
                 true
             }
         }
-        if (!admitted) return false
+        if (!admitted) return NativeAcquisitionResult.REJECTED
         try {
             block()
         } finally {
@@ -1210,7 +1234,13 @@ internal class RecorderQuarantineAdmissionGate {
                 if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
             }
         }
-        return lock.withLock { !quarantined.get() }
+        return lock.withLock {
+            if (quarantined.get()) {
+                NativeAcquisitionResult.RETURNED_REVOKED
+            } else {
+                NativeAcquisitionResult.RETURNED_CURRENT
+            }
+        }
     }
 
     /** Token-specific setup lease: bookkeeping under lock, native work outside it. */
@@ -1366,6 +1396,10 @@ internal object UnsafeRecorderQuarantine {
 
     fun runNativeAcquisition(owner: Any?, block: () -> Unit): Boolean =
         admissionGate.runNativeIfSafe(owner, block)
+
+    /** Typed sibling for native creators that must retain an object returned after revocation. */
+    fun runNativeAcquisitionWithResult(block: () -> Unit): NativeAcquisitionResult =
+        admissionGate.runNativeWithResult(block = block)
 
     fun runPendingNativeSetup(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.runPendingNative(token, block)

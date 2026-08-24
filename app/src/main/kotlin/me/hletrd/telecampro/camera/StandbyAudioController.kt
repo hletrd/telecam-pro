@@ -13,6 +13,7 @@ import android.util.Log
 import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioReadOutcome
 import me.hletrd.telecampro.video.ColorProfiles
+import me.hletrd.telecampro.video.NativeAcquisitionResult
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
 import me.hletrd.telecampro.video.AudioLevelFrame
 import me.hletrd.telecampro.video.accumulateChannelPeaks
@@ -21,6 +22,7 @@ import me.hletrd.telecampro.video.classifyAudioRead
 import me.hletrd.telecampro.video.resolveAudioChannelCount
 import me.hletrd.telecampro.video.standbyMeterShouldRecreate
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -77,6 +79,12 @@ internal fun interface StandbyStopDispatcher {
     fun dispatch(task: () -> Unit)
 }
 
+/** Strong process-long owner for one standby input whose native lifetime became uncertain. */
+internal data class QuarantinedStandbyInput(
+    val input: StandbyAudioInput,
+    val terminationOwner: StandbyInputTerminationOwner<StandbyAudioInput>,
+)
+
 /**
  * Exact-generation owner for the live standby input's stop/release boundary.
  *
@@ -90,6 +98,9 @@ internal class StandbyInputTerminationOwner<T : Any>(
     val generationId: Long,
     private val stopDispatcher: StandbyStopDispatcher,
     private val stop: (T) -> Unit,
+    private val stopDeadlineScheduler: RecordingTeardownScheduler = processStandbyStopScheduler,
+    private val stopTimeoutMs: Long = STANDBY_STOP_TIMEOUT_MS,
+    private val onStopTimeout: (T, StandbyInputTerminationOwner<T>) -> Unit = { _, _ -> },
 ) {
     private val lock = Any()
     private val stopCompleted = CountDownLatch(1)
@@ -99,6 +110,7 @@ internal class StandbyInputTerminationOwner<T : Any>(
     private var stopRequested = false
     private var stopClaimed = false
     private var finished = false
+    private var abandoned = false
 
     fun bind(value: T): Boolean = synchronized(lock) {
         if (finished || input != null) return false
@@ -139,7 +151,7 @@ internal class StandbyInputTerminationOwner<T : Any>(
      */
     fun finishAndRelease(value: T, release: (T) -> Unit) {
         val stopHere = synchronized(lock) {
-            if (finished || input !== value) return
+            if (finished || abandoned || input !== value) return
             if (!stopClaimed) {
                 stopClaimed = true
                 true
@@ -175,15 +187,36 @@ internal class StandbyInputTerminationOwner<T : Any>(
                 }
             }
         }
-        runCatching { release(value) }
-        synchronized(lock) {
-            if (input === value) input = null
-            finished = true
-            started = false
-            starting = false
+        val releaseNow = synchronized(lock) {
+            if (abandoned || input !== value) {
+                finished = true
+                false
+            } else {
+                input = null
+                finished = true
+                started = false
+                starting = false
+                true
+            }
         }
+        if (releaseNow) runCatching { release(value) }
         if (interrupted) Thread.currentThread().interrupt()
     }
+
+    /**
+     * Retains native ownership without stop/release. Logical waiters are released by the controller's
+     * quarantine callback; a worker or stop task that returns later observes [abandoned] and is inert.
+     */
+    fun abandon(value: T): Boolean = synchronized(lock) {
+        if (finished || abandoned || input !== value) return false
+        abandoned = true
+        started = false
+        starting = false
+        stopCompleted.countDown()
+        true
+    }
+
+    internal fun isAbandoned(): Boolean = synchronized(lock) { abandoned }
 
     private fun claimAsyncStopLocked(): T? {
         if (!stopRequested || !started || starting || stopClaimed || finished) return null
@@ -203,15 +236,41 @@ internal class StandbyInputTerminationOwner<T : Any>(
     }
 
     private fun stopAndSignal(value: T) {
-        try {
-            runCatching { stop(value) }
-        } finally {
-            stopCompleted.countDown()
-        }
+        val deadline = RecordingOperationDeadline(
+            scheduler = stopDeadlineScheduler,
+            timeoutMs = stopTimeoutMs,
+            failure = { java.util.concurrent.TimeoutException("Standby AudioRecord.stop timed out") },
+            onTimeout = {
+                if (abandon(value)) onStopTimeout(value, this)
+            },
+        )
+        if (!deadline.arm()) return
+        runCatching { stop(value) }
+        // A timeout owns abandonment and already released logical stop waiters. A late return must
+        // not overwrite that terminal or authorize release of the retained native input.
+        if (deadline.complete()) stopCompleted.countDown()
     }
 
     private companion object {
         const val STOP_WAIT_SLICE_MS = 25L
+    }
+}
+
+private const val STANDBY_STOP_TIMEOUT_MS = 1_500L
+
+/** One process daemon; every termination owner still owns an independent first-wins deadline. */
+private val processStandbyStopScheduler: RecordingTeardownScheduler by lazy {
+    val executor = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "StandbyAudioStopDeadline").apply { isDaemon = true }
+    }.apply {
+        removeOnCancelPolicy = true
+    }
+    RecordingTeardownScheduler { delayMs, action ->
+        runCatching {
+            executor.schedule(action, delayMs, TimeUnit.MILLISECONDS)
+        }.getOrNull()?.let { future ->
+            RecordingTeardownCancellation { future.cancel(false) }
+        }
     }
 }
 
@@ -321,10 +380,17 @@ internal class StandbyAudioController(
     private val stopDispatcher: StandbyStopDispatcher = StandbyStopDispatcher { task ->
         Thread(task, "StandbyAudioStop").apply { isDaemon = true }.start()
     },
+    private val stopDeadlineScheduler: RecordingTeardownScheduler = processStandbyStopScheduler,
+    private val stopTimeoutMs: Long = STANDBY_STOP_TIMEOUT_MS,
     private val onAvailable: () -> Unit,
     private val onUnavailable: (StandbyAudioUnavailable) -> Unit,
+    private val onUnsafeNative: () -> Unit = {},
     private val reserveProcessAdmission: () -> (() -> Unit)? = { {} },
-    private val runNativeAcquisition: ((() -> Unit) -> Boolean) = { block -> block(); true },
+    private val runNativeAcquisition: ((() -> Unit) -> NativeAcquisitionResult) = { block ->
+        block()
+        NativeAcquisitionResult.RETURNED_CURRENT
+    },
+    private val retainQuarantinedInput: (QuarantinedStandbyInput) -> Unit = {},
 ) {
     internal constructor(
         context: Context,
@@ -344,9 +410,10 @@ internal class StandbyAudioController(
             Log.w(
                 TAG,
                 "Standby microphone unavailable after ${unavailable.failedGenerations} " +
-                    "failed generations (${unavailable.reason})",
+                "failed generations (${unavailable.reason})",
             )
         },
+        onUnsafeNative: () -> Unit = {},
     ) : this(
         audioGain = audioGain,
         onLevels = onLevels,
@@ -365,12 +432,16 @@ internal class StandbyAudioController(
         },
         onAvailable = onAvailable,
         onUnavailable = onUnavailable,
+        onUnsafeNative = onUnsafeNative,
         reserveProcessAdmission = {
             UnsafeRecorderQuarantine.reserveStandbyAdmission(processOwner)?.let { admission ->
                 { UnsafeRecorderQuarantine.finishStandbyAdmission(admission) }
             }
         },
-        runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisition,
+        runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisitionWithResult,
+        retainQuarantinedInput = { owner ->
+            UnsafeRecorderQuarantine.quarantineNativeGraph(owner)
+        },
     )
 
     private val ownership = StandbyMeterOwnership<CountDownLatch>()
@@ -379,6 +450,7 @@ internal class StandbyAudioController(
     // Consecutive AudioRecord generations that failed setup/start/launch or reached a terminal read
     // without one PCM read. Explicit user intent and a successful PCM read reset the shared budget.
     private val failureStreak = AtomicInteger(0)
+    private val nativeTerminal = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun setEnabled(enabled: Boolean) {
         if (!enabled) {
@@ -412,7 +484,7 @@ internal class StandbyAudioController(
 
     /** Starts only if the latest intent still wants metering; internal retries never re-enable it. */
     private fun start(updateIntent: Boolean) {
-        val admittedNow = canStart() && permissionGranted()
+        val admittedNow = !nativeTerminal.get() && canStart() && permissionGranted()
         // The immutable owner and release latch are published before Thread.start. REC can therefore
         // await that exact generation and never admits a second AudioRecord after a timeout.
         val createRelease = { CountDownLatch(1) }
@@ -432,6 +504,11 @@ internal class StandbyAudioController(
             generationId = owner.id,
             stopDispatcher = stopDispatcher,
             stop = StandbyAudioInput::stop,
+            stopDeadlineScheduler = stopDeadlineScheduler,
+            stopTimeoutMs = stopTimeoutMs,
+            onStopTimeout = { input, exactOwner ->
+                retainUnsafeInput(input, exactOwner, owner.release)
+            },
         )
         check(liveInputTermination.compareAndSet(null, terminationOwner)) {
             "standby input generation overlap"
@@ -452,12 +529,27 @@ internal class StandbyAudioController(
                     return@meterTask
                 }
                 var setup: StandbyAudioSetupResult? = null
-                val setupAdmitted = runNativeAcquisition {
+                when (runNativeAcquisition {
                     setup = runCatching { audioSetup.create() }.getOrElse {
                         StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
                     }
+                }) {
+                    NativeAcquisitionResult.REJECTED -> return@meterTask
+                    NativeAcquisitionResult.RETURNED_REVOKED -> {
+                        val revokedInput = (setup as? StandbyAudioSetupResult.Ready)?.input
+                            ?: return@meterTask
+                        audioInput = revokedInput
+                        check(terminationOwner.bind(revokedInput)) {
+                            "standby input owner rejected revoked setup generation"
+                        }
+                        check(terminationOwner.abandon(revokedInput)) {
+                            "standby input owner could not abandon revoked setup generation"
+                        }
+                        retainUnsafeInput(revokedInput, terminationOwner, owner.release)
+                        return@meterTask
+                    }
+                    NativeAcquisitionResult.RETURNED_CURRENT -> Unit
                 }
-                if (!setupAdmitted) return@meterTask
                 when (val result = checkNotNull(setup)) {
                     is StandbyAudioSetupResult.Failure -> {
                         generationFailure = result.reason
@@ -474,18 +566,25 @@ internal class StandbyAudioController(
                 var startFailed = false
                 val input = checkNotNull(audioInput)
                 if (!terminationOwner.beginStart(input)) return@meterTask
-                var startAdmitted = false
+                var startResult = NativeAcquisitionResult.REJECTED
                 try {
-                    startAdmitted = runNativeAcquisition {
+                    startResult = runNativeAcquisition {
                         startFailed = runCatching { input.start() }.isFailure
                     }
                 } finally {
                     terminationOwner.finishStart(
                         value = input,
-                        succeeded = startAdmitted && !startFailed,
+                        succeeded = startResult == NativeAcquisitionResult.RETURNED_CURRENT && !startFailed,
                     )
                 }
-                if (!startAdmitted) return@meterTask
+                if (startResult == NativeAcquisitionResult.RETURNED_REVOKED) {
+                    check(terminationOwner.abandon(input)) {
+                        "standby input owner could not abandon revoked start generation"
+                    }
+                    retainUnsafeInput(input, terminationOwner, owner.release)
+                    return@meterTask
+                }
+                if (startResult == NativeAcquisitionResult.REJECTED) return@meterTask
                 if (startFailed) {
                     generationFailure = StandbyAudioFailureReason.START
                     return@meterTask
@@ -555,6 +654,22 @@ internal class StandbyAudioController(
             liveInputTermination.compareAndSet(terminationOwner, null)
             completeGeneration(owner, StandbyAudioFailureReason.THREAD_LAUNCH)
         }
+    }
+
+    /** One terminal path shared by revoked create/start and a timed-out native stop. */
+    private fun retainUnsafeInput(
+        input: StandbyAudioInput,
+        terminationOwner: StandbyInputTerminationOwner<StandbyAudioInput>,
+        logicalRelease: CountDownLatch,
+    ) {
+        nativeTerminal.set(true)
+        runCatching {
+            retainQuarantinedInput(QuarantinedStandbyInput(input, terminationOwner))
+        }
+        // Logical waiters may proceed only far enough to observe process quarantine and refuse REC.
+        // The concrete native input remains strongly retained and is never stopped/released here.
+        logicalRelease.countDown()
+        runCatching(onUnsafeNative)
     }
 
     private fun completeGeneration(

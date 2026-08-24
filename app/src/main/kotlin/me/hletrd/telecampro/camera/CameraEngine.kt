@@ -7240,6 +7240,10 @@ class CameraEngine internal constructor(
         processOwner = processNativeOwner,
         onAvailable = { onStandbyAudioAvailable?.invoke() },
         onUnavailable = { unavailable -> onStandbyAudioUnavailable?.invoke(unavailable) },
+        onUnsafeNative = {
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            invalidateCameraReady()
+        },
     )
 
     // Latest standby-meter intent, so an input change knows whether a meter is even wanted.
