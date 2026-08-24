@@ -296,17 +296,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   throttle that used to pace mid-gesture submits was REFUTED on device 2026-07-27: submits already
   ~400 ms apart (double the floor) stalled 210–413 ms just the same, because the stall belongs to
   the repeating-request SWAP, not to how tightly swaps are packed. **Do not "fix" gesture stutter by
-  tuning `SENSOR_SUBMIT_MIN_INTERVAL_MS`** — that constant now paces only the quiet-window landing
-  and the sensor fast path. A gesture costs TWO swaps, one per edge; the START edge carries the
-  1.2× WIDE aim (zoom-out margin) because it is the only submit left that can pre-buy the field the
-  GL crop needs, and the END edge lands exact. An injected two-finger pinch measured ZERO submits
-  and ZERO frame gaps while the fingers move; the accepted cost is progressive softening while
+  tuning `SENSOR_SUBMIT_MIN_INTERVAL_MS`** — that constant now paces only the sensor fast path; the
+  quiet-window landing is independently scheduled 250 ms after the newest zoom flush. On the common
+  no-FPS-change route, the START edge carries the 1.2× WIDE aim (zoom-out margin) and the quiet
+  landing carries exact framing; the 700 ms end is state-only once that exact value is already on
+  the wire, or lands exact if quiet never did. Routes whose boost flip really changes FPS still
+  rebuild at the end. An injected two-finger pinch measured ZERO submits and ZERO frame gaps while
+  the fingers move; the accepted cost is progressive softening while
   zooming in, since the HAL field stays frozen at the edge's target.
   Encoder/analysis only ever see REAL camera frames (self-redraws
   are preview-only). Plus: in low light the app-side P loop trades exposure→ISO brightness-
-  neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises. Each gesture EDGE
-  is ONE submit: the fps-boost flip's own preview rebuild carries the current/final exact zoom
-  (`setSmoothPreviewBoost(active, finalZoom)`) — the old rebuild-then-correct order at gesture end
+  neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises. The fps-boost
+  transition owns the edge request and exact still truth through
+  `setSmoothPreviewBoost(active, finalZoom, halZoom, submitExactWhenFpsUnchanged)` — the old
+  rebuild-then-correct order at gesture end
   re-submitted the stale wide-aimed ratio and paid two ~180 ms stalls back to back. The zoom RMW
   on engine `controls` takes the engine monitor (packet writers replace `controls` wholesale under
   it; `@Volatile` alone lost whole rollback packets mid-pinch — `setControls` now takes the same

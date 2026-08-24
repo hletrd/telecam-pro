@@ -1098,6 +1098,31 @@ check(
     and "RAW/DNG Photo" in route_comments,
     "active zoom comments keep coordinate ownership route-based",
 )
+zoom_submit_plan = read("app/src/main/kotlin/me/hletrd/telecampro/camera/ZoomSubmitPlan.kt")
+camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
+camera_controller = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt")
+camera_view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
+zoom_glide_state = read("app/src/main/kotlin/me/hletrd/telecampro/ui/ZoomGlideState.kt")
+zoom_submit_authority = "\n".join(
+    (claude, architecture, zoom_submit_plan, camera_controller, camera_view_model, zoom_glide_state)
+)
+check(
+    "Pure moving-tick suppression" in architecture
+    and "resolveZoomGestureEdgeTarget" in zoom_submit_plan
+    and "resolveZoomBoostFlipApply" in zoom_submit_plan
+    and "resolveZoomGestureEdgeTarget(" in camera_engine
+    and "submitExactWhenFpsUnchanged" in camera_controller
+    and "700 ms end is state-only" in claude
+    and "no-FPS-change route the 700 ms end becomes state-only" in architecture
+    and "throttle window + mid-gesture wide-aim clamp" not in zoom_submit_authority
+    and "A gesture costs TWO swaps" not in zoom_submit_authority
+    and "Each gesture EDGE" not in zoom_submit_authority
+    and "Still-truth-only zoom update for THROTTLED" not in zoom_submit_authority
+    and "restamped the submit throttle" not in zoom_submit_authority
+    and "one throttle window after the LAST flush" not in zoom_submit_authority
+    and "quiet for a full throttle window" not in zoom_submit_authority,
+    "zoom authority rejects retired periodic-submit and fixed-edge model",
+)
 build_script = read("app/build.gradle.kts")
 debug_preview_source = read("app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt")
 check(

@@ -68,7 +68,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ZslAdmission.kt` | Pure serve/refuse predicate for the LOGICAL/FRONT-route pseudo-ZSL ring: a buffered frame is served only when its ACTUAL sensor values match the still's INTENDED values within 1/6 stop (plus zoom within 2%, age <= 400 ms, app-side AE-OFF, processed-only, no AE-flash, no live gesture, SINGLE drive). Refusal in low light is the DESIGN — the fluidity cap deliberately diverges preview from intent there, so a real full-quality capture must run (see CLAUDE.md). |
 | `StartupTrace.kt` | Debug-only cold-start stopwatch against a `resume`-origin clock. BUFFERS its marks and emits ONE line at `finish()` because ColorOS's 300-row per-process log quota silently eats per-mark logging; armed idempotently in `CameraEngine.resume` and disarmed on every path that returns without a real open. |
 | `Teleconverter.kt` | The optics catalog as a PAIR: `PhoneModel` and compatible `TeleconverterProfile`s. `detectPhone(Build.MODEL)` is catalog preselection only; `DeviceProfile.resolve` is the other sanctioned model seam and gates measured quirks. Camera capabilities/routes remain enumerated. |
-| `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
+| `ZoomSubmitPlan.kt` | Pure moving-tick suppression, real start-edge wide-target resolver, interaction landing ownership, and route-specific boost-tail apply plan; all are consumed by the Engine/Controller paths they test. |
 | `RecordingAdmissionLatch.kt` | Monitor-owning REC stop-during-start latch (`tryBeginAdmission`/`requestStop`/`completeAdmission`), extracted from CameraEngine and race-tested. |
 | `RecordingPreNativeAllocation.kt` | Process-wide finite lane for pending-video MediaProvider allocation: two daemon workers plus four queued attempts, per-attempt first-wins retirement, and cancellation of queued work. Stop/pause/release/timeout free REC admission immediately; a late row is cleanup/recovery-owned and cannot enter native setup. |
 | `RecordingStorageDispatcher.kt` | Process-lifetime bounded post-native storage owner: exactly two daemon workers plus eight FIFO backlog slots shared by every Engine generation. Each Engine holds only a closeable admission facade, so overflow or facade shutdown leaves the finalized pending row private for launch recovery while already accepted, callback-identity-bearing tails finish without interruption. |
@@ -707,25 +707,29 @@ target is an absolute number in the OLD scale; surviving a remap it eased toward
 framing). Structural reopens start with a fresh boost-free controller; same-route commits call
 `commitRetainedOpticsControls`, whose pure `retainedOpticsApplyPlan` folds the exact packet plus
 boost removal into one camera-thread request update (a full rebuild only when the FPS pin must be
-removed). Each zoom
-gesture EDGE costs one repeating-request swap: `setZoomInteraction` folds the current/final exact
-ratio into the fps-boost flip's own rebuild (`setSmoothPreviewBoost(active, finalZoom)`), instead
-of the old rebuild-then-correct pair that transiently re-submitted the stale mid-gesture wide-aimed
-ratio. The engine's zoom read-modify-write on `controls` shares the packet writers' monitor (as
+removed). Each zoom interaction has explicit start, optional quiet-landing, and end owners:
+`setZoomInteraction` folds exact still truth plus the start edge's bounded wide target into the
+boost flip (`setSmoothPreviewBoost(active, finalZoom, halZoom)`) instead of the old
+rebuild-then-correct pair that transiently re-submitted stale wide framing. The engine's zoom
+read-modify-write on `controls` shares the packet writers' monitor (as
 does `setControls` — every wholesale `controls` writer holds the engine monitor), and
 `onZoomResult → gl.setHalZoom` forwarding is change-gated with a per-rebuild reset. The
-submit decision itself is the pure `resolveHalZoomSubmit` (`camera/ZoomSubmitPlan.kt`, unit-tested).
+moving-tick decision is the pure `resolveHalZoomSubmit`, while the actual start-edge target comes
+from `resolveZoomGestureEdgeTarget` (`camera/ZoomSubmitPlan.kt`, both unit-tested).
 **Since 2026-07-27 a MOVING gesture submits NOTHING** (`submitNow = !interactionActive`): device
 measurement showed each swap stalls this HAL 210–413 ms, and spacing them out did not help — submits
 already ~400 ms apart stalled identically, because the stall belongs to the swap itself rather than
-to how tightly swaps are packed. A gesture therefore costs TWO swaps, one per edge, and the START
-edge carries the wide aim (it used to ride the mid-gesture submits and is the only thing pre-buying
-the field the GL crop needs to zoom out). An injected two-finger pinch measured zero submits and
-zero frame gaps while the fingers move. Two further additions keep captures WYSIWYG: the controller stores the EXACT requested
+to how tightly swaps are packed. The START edge carries the wide aim on no-FPS-change routes (it is
+the only request pre-buying field for zoom-out); an injected two-finger pinch measured zero submits
+and zero frame gaps while the fingers move. Two further additions keep captures WYSIWYG: the controller stores the EXACT requested
 ratio for still requests (`setZoomRatio(halRatio, requestRatio)` — a still must never inherit the
 mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 ms after the last
 flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
-clip stops carrying the wide framing after finger-up. Scale-remap invalidation of
+clip stops carrying the wide framing after finger-up. That landing owns the exact wire value: on a
+no-FPS-change route the 700 ms end becomes state-only instead of resubmitting the same ratio. If
+quiet never lands, the end submits exact; routes whose boost flip really changes FPS still rebuild
+at the end. The pure `ZoomInteractionState` and `resolveZoomBoostFlipApply` seams test those
+start/quiet/repinch/end and route-specific request counts. Scale-remap invalidation of
 `ZoomGlideState.pendingRatio`/`.easeTarget` (via `invalidateOpticsDerivedState()`) covers ALL the remap doors: `onModeChange`,
 `onToggleTeleconverter`, `onLens`, `onToggleFrontCamera`, `onStop`, **`onOpticsRollback`,
 `applyLoaded` (settings/MR recall), and the debug `onCameraOverride`** — the last three were the

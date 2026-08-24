@@ -70,13 +70,17 @@ def run_documentation_gate_from_committed_export(
             "device-tests/README.md",
             "app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/ZoomSubmitPlan.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/ui/ZoomGlideState.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/ui/overlays/Overlays.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/ui/theme/Theme.kt",
             "app/src/main/res/values/strings.xml",
@@ -476,6 +480,46 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(
                     "FAIL  live UI authority keeps the current 0.40 GuideLine weight",
+                    result.stdout,
+                )
+
+    def test_documentation_gate_rejects_retired_zoom_submit_guidance(self) -> None:
+        fixtures = (
+            (
+                "docs/ARCHITECTURE.md",
+                "Pure moving-tick suppression",
+                "Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp)",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt",
+                "Still-truth-only zoom update for MOVING (non-submitted) ticks",
+                "Still-truth-only zoom update for THROTTLED (non-submitted) ticks",
+            ),
+            (
+                "CLAUDE.md",
+                "700 ms end is state-only",
+                "END edge always lands exact",
+            ),
+        )
+        for relative, current, retired in fixtures:
+            with self.subTest(relative=relative):
+                def restore_retired_zoom_guidance(
+                    root: Path,
+                    relative: str = relative,
+                    current: str = current,
+                    retired: str = retired,
+                ) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, retired, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(
+                    restore_retired_zoom_guidance
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  zoom authority rejects retired periodic-submit and fixed-edge model",
                     result.stdout,
                 )
 

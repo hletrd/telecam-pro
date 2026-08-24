@@ -39,7 +39,7 @@ internal class ZoomGlideState {
      * after finger-up, which is exactly when a re-pinch lands — and exactly when GL cannot help,
      * because `zoomComp.coerceAtLeast(1f)` gives a zoom-OUT ZERO outward headroom (the self-redraw
      * is pixel-identical to the previous frame). Worst window is Δ250-450 ms: `landExactZoom` has
-     * already fired, spent the 1.2× wide-aim margin AND restamped the submit throttle, so an
+     * already fired and spent the 1.2× wide-aim margin, so an
      * outward finger gets no new frames until ≈Δ630 ms while the HAL steps the crop 1.2× the WRONG
      * way. Pinch-release-pinch cadence lands squarely in there — the "핀치를 했다가 풀었다 하면
      * 배율이 툭툭 끊긴다" report.
@@ -47,7 +47,7 @@ internal class ZoomGlideState {
      * Cleared at every flush (idempotent after the gesture's first); re-armed by a real pinch-end
      * ([CameraActions.onPinchEnd]) or, for the input paths that have NO finger-up (hardware
      * slide-zoom key repeats, the ease ticker), by the quiet-window landing — which already IS the
-     * "went quiet for one throttle window" signal.
+     * "went quiet for one landing window" signal.
      */
     var leadingEdgeArmed: Boolean = true
 

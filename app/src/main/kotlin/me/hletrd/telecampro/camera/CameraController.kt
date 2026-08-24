@@ -528,10 +528,10 @@ class CameraController(context: Context) {
     }
 
     /**
-     * Still-truth-only zoom update for THROTTLED (non-submitted) ticks: capturePhoto snapshots
-     * [controls], so a shutter press inside the ~200 ms throttle window must see the ratio the
-     * viewfinder already frames (GL zooms instantly), not the previous submitted tick's. No
-     * repeating-request touch here — that is exactly what the throttle exists to avoid.
+     * Still-truth-only zoom update for MOVING (non-submitted) ticks: capturePhoto snapshots
+     * [controls], so a shutter press during the gesture must see the ratio the viewfinder already
+     * frames (GL zooms instantly), not the previous Camera2 target. Moving suppression is absolute;
+     * there is no periodic-submit timer to pace here.
      */
     fun noteRequestZoom(requestRatio: Float) {
         postToCamera { synchronized(controlsWriteLock) { controls = controls.copy(zoomRatio = requestRatio) } }
@@ -1726,7 +1726,8 @@ class CameraController(context: Context) {
      * given, is what actually goes on the wire — the gesture-START edge passes its wide-aimed target
      * there, because with mid-gesture submits suppressed this edge is the only chance to pre-buy the
      * zoom-out margin the GL crop needs, and writing that wide value into [controls] instead would
-     * frame every still in the gesture ~17% wide.
+     * frame every still in the gesture ~17% wide. [submitExactWhenFpsUnchanged] is false only when a
+     * quiet landing already put exact framing on the wire; an FPS-changing boost flip still rebuilds.
      */
     fun setSmoothPreviewBoost(
         active: Boolean,

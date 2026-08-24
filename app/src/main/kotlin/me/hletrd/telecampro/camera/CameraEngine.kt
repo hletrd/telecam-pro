@@ -1906,7 +1906,7 @@ class CameraEngine internal constructor(
     }
 
     private fun wireController(ownedGl: GlPipeline): CameraController {
-        // A fresh controller means a fresh gesture world: clear the interaction flag so a glide
+        // A fresh controller means a fresh gesture world: clear the interaction state so a glide
         // that was cut short by a remap door (whose invalidate deliberately skips the boost-off
         // rebuild) cannot leave the NEXT gesture's leading edge seeing a stale mid-gesture state
         // (AGG4-2 — the flag used to survive every mode/lens/TC remap and defeat the leading-edge
@@ -3964,8 +3964,8 @@ class CameraEngine internal constructor(
      * quiet for one landing window. Without this, the start edge's ~1.2×-wide HAL framing
      * held for the full 700 ms interaction tail — a recorded clip carried it after finger-up (the
      * encoder only sees real frames; GL zoomComp masks it in the preview only). One spaced
-     * fast-path swap, NOT a boost flip — the fps-boost window and its single gesture-end rebuild
-     * are unchanged, so this does not recreate the back-to-back double-stall c92eada removed.
+     * fast-path swap, NOT a boost flip. The interaction state records that exact framing landed, so
+     * a no-FPS-change end is state-only; routes that restore FPS still rebuild at the end.
      */
     fun landExactZoom() {
         val transition = landQuietZoom(zoomInteractionState)
@@ -6416,8 +6416,8 @@ class CameraEngine internal constructor(
             invalidateCameraReady()
             return
         }
-        // onStop's invalidateOpticsDerivedState cancels the interaction-end runnable (the only ordinary
-        // clearer of this flag), so a background mid-gesture left it stale-true across the whole
+        // onStop's invalidateOpticsDerivedState cancels the interaction-end runnable (the ordinary
+        // clearer of this state), so a background mid-gesture left it stale-active across the whole
         // next foreground session's first gesture (AGG4-2). Resume covers the no-reopen path
         // (controller still installed); wireController covers every reopen.
         zoomInteractionState = ZoomInteractionState()

@@ -115,7 +115,7 @@ internal fun frameDefocusCandidate(
     // The OSD must not grow an element mid-take, and panning during REC is exactly when the
     // motion-blur ambiguity is worst. ARMED video (neither flag) admits — that is where it helps.
     if (recording || recordingStarting) return false
-    // Each throttled HAL zoom submit gaps this stream ~180 ms and the HAL re-converges afterwards,
+    // Each Camera2 zoom edge/landing submit gaps this stream ~180 ms and the HAL re-converges afterwards,
     // producing genuinely soft REAL frames that say nothing about the subject distance.
     if (zoomInteracting) return false
     val exposure = exposureNs ?: return false

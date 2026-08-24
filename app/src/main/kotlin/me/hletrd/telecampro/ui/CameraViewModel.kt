@@ -371,11 +371,11 @@ class CameraViewModel @JvmOverloads constructor(
         engine.setZoomInteraction(false)
     }
 
-    // Quiet-window landing: one throttle window after the LAST flush, the exact (non-wide-aimed)
+    // Quiet-window landing: 250 ms after the LAST flush, the exact (non-wide-aimed)
     // ratio lands on the HAL even though the 700 ms boost tail is still running — otherwise a clip
     // keeps the ~1.2×-wide framing after finger-up and a tail still frames wider than the finder.
     // It also RE-ARMS the zoom-OUT leading edge (AGG4-14): reaching here means the pipeline went
-    // quiet for a full throttle window, which is the only re-arm signal available to the input paths
+    // quiet for the full landing window, which is the only re-arm signal available to the input paths
     // with no finger-up (hardware slide-zoom key repeats, the ease ticker). onPinchEnd re-arms
     // sooner when touch actually reports the boundary; whichever lands first wins, both are idempotent.
     private val zoomQuietLanding = Runnable {
@@ -882,7 +882,7 @@ class CameraViewModel @JvmOverloads constructor(
                 cancelCountdown()
                 // The rollback restored a different optics scale: every in-flight glide value is an
                 // ABSOLUTE ratio in the failed attempt's scale, so ease target / coalesced base /
-                // throttled landing all invalidate together (same invariant as every optics-remap door).
+                // scheduled quiet landing all invalidate together (same invariant as every optics-remap door).
                 invalidateOpticsDerivedState()
                 clearTapFocusUi()
                 // Engine snapshots this hidden bank inside the same generation-owned transaction as
@@ -1355,7 +1355,7 @@ class CameraViewModel @JvmOverloads constructor(
         // next gesture.
         preTeleUnifiedZoom = Float.NaN
         // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
-        // easing toward a target computed in the old scale (or a throttled landing about to fire) would
+        // easing toward a target computed in the old scale (or a scheduled quiet landing about to fire) would
         // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
         invalidateOpticsDerivedState()
         clearTapFocusUi()
@@ -2093,12 +2093,10 @@ class CameraViewModel @JvmOverloads constructor(
         // path) — a leading edge strictly worse than no leading edge. Calling in with the boost
         // already active is cheap and deliberate: CameraController.setSmoothPreviewBoost sees
         // `smoothPreviewBoost == active` and takes its fast-path branch — ONE submitZoomFastPath
-        // with the exact ratio, no startPreview rebuild. Because the edge is spent by this same
-        // flush, a re-pinch costs exactly ONE extra submit however long the gesture runs, so the
-        // sustained rate stays inside the ≥200 ms throttle's cost class (a ~260 ms pinch-release
-        // cadence is ~4 submits/s against its 5/s ceiling). What it does NOT respect is the
-        // throttle's local spacing: landing at Δ250 then re-pinching at Δ300 submits twice ~50 ms
-        // apart. That is the trade taken knowingly — the leading edge exists precisely because
+        // with the new bounded edge target, no startPreview rebuild. Because the edge is spent by this same
+        // flush, a re-pinch costs exactly ONE extra submit however long the gesture runs. A landing
+        // at Δ250 and a new outward edge at Δ300 can still submit twice ~50 ms apart; that is the
+        // trade taken knowingly — the leading edge exists precisely because
         // zoom-OUT has no GL fallback (zoomComp is clamped at 1), so one extra ~180 ms stall beats
         // a crop frozen the wrong way for ~330 ms.
         if (leadingWide || !zoomGlide.interacting) {
@@ -2130,7 +2128,7 @@ class CameraViewModel @JvmOverloads constructor(
             s.lens
         }
         _state.update { it.copy(controls = it.controls.copy(zoomRatio = z), lens = lensBand) }
-        // A pending throttled full-apply captured OLDER controls — refresh its zoom so it can't
+        // A pending coalesced full-control apply captured OLDER controls — refresh its zoom so it can't
         // briefly snap the ratio back when it lands.
         pendingControls = pendingControls?.copy(zoomRatio = z)
         markChanged(FnSlot.ZOOM)
@@ -2189,7 +2187,7 @@ class CameraViewModel @JvmOverloads constructor(
      *
      * 1. The zoom glide. A scale remap makes
      * every in-flight glide value an ABSOLUTE ratio in the OLD scale: the coalesced pending ratio, the
-     * hardware-key ease target, and the throttled quiet-landing / interaction-end / 16 ms-flush
+     * hardware-key ease target, and the scheduled quiet-landing / interaction-end / 16 ms-flush
      * Runnables would each submit an old-scale ratio (or run a wasted AE/AF rebuild) through whatever
      * controller is live — plausibly the OUTGOING one, since a full reopen outlasts these 16/250/700 ms
      * callbacks (AGG3-10/TRC-1). This is the single door prior cycles hand-duplicated at ~10 sites and
@@ -2260,7 +2258,7 @@ class CameraViewModel @JvmOverloads constructor(
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
         }
         // The mode remap invalidated the zoom SCALE — the coalesced base, any hardware-key glide whose
-        // absolute target was set in the old scale, and any throttled quiet-landing / interaction-end
+        // absolute target was set in the old scale, and any scheduled quiet-landing / interaction-end
         // that would otherwise submit an old-scale ratio through the outgoing controller (AGG3-10/25).
         invalidateOpticsDerivedState()
         clearTapFocusUi()
@@ -2406,7 +2404,7 @@ class CameraViewModel @JvmOverloads constructor(
         // Exit clears only after accepted Ready, preserving rollback ownership as before.
         if (enabled) preTeleUnifiedZoom = checkNotNull(acceptedTransition).preTeleUnifiedZoom
         // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
-        // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
+        // scheduled quiet landing set in the pre-flip scale (same invariant as every optics-remap door).
         invalidateOpticsDerivedState()
         clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
@@ -2683,7 +2681,7 @@ class CameraViewModel @JvmOverloads constructor(
             )
         }
         // The lens-preset rewrite overwrote the coalesced base and invalidated any hardware-key glide /
-        // throttled landing set in the pre-pick scale (same invariant as every optics-remap door).
+        // scheduled quiet landing set in the pre-pick scale (same invariant as every optics-remap door).
         invalidateOpticsDerivedState()
         clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
