@@ -116,11 +116,13 @@ internal fun audioRestoredByMicrophoneGrant(
  */
 internal fun hardwareShutterAudioDrop(
     fullKeyAction: HardwareKeyAction,
+    primaryShutterEnabled: Boolean,
     videoMode: Boolean,
     recording: Boolean,
     recordAudio: Boolean,
     hasMicrophonePermission: Boolean,
-): Boolean = fullKeyAction == HardwareKeyAction.SHUTTER &&
+): Boolean = hardwareActionAdmitted(fullKeyAction, primaryShutterEnabled) &&
+    fullKeyAction == HardwareKeyAction.SHUTTER &&
     !hasMicrophonePermission &&
     microphonePermissionRequired(
         action = PendingAudioAction.START_RECORDING,

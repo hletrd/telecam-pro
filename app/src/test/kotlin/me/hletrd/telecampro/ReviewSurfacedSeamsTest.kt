@@ -45,6 +45,7 @@ class ReviewSurfacedSeamsTest {
                 action.name,
                 hardwareShutterAudioDrop(
                     fullKeyAction = action,
+                    primaryShutterEnabled = true,
                     videoMode = true,
                     recording = false,
                     recordAudio = true,
@@ -55,6 +56,7 @@ class ReviewSurfacedSeamsTest {
         assertTrue(
             hardwareShutterAudioDrop(
                 fullKeyAction = HardwareKeyAction.SHUTTER,
+                primaryShutterEnabled = true,
                 videoMode = true,
                 recording = false,
                 recordAudio = true,
@@ -68,6 +70,17 @@ class ReviewSurfacedSeamsTest {
         assertFalse(
             hardwareShutterAudioDrop(
                 fullKeyAction = HardwareKeyAction.SHUTTER,
+                primaryShutterEnabled = false,
+                videoMode = true,
+                recording = false,
+                recordAudio = true,
+                hasMicrophonePermission = false,
+            ),
+        )
+        assertFalse(
+            hardwareShutterAudioDrop(
+                fullKeyAction = HardwareKeyAction.SHUTTER,
+                primaryShutterEnabled = true,
                 videoMode = true,
                 recording = false,
                 recordAudio = true,
@@ -77,6 +90,7 @@ class ReviewSurfacedSeamsTest {
         assertFalse(
             hardwareShutterAudioDrop(
                 fullKeyAction = HardwareKeyAction.SHUTTER,
+                primaryShutterEnabled = true,
                 videoMode = false,
                 recording = false,
                 recordAudio = true,
@@ -87,6 +101,7 @@ class ReviewSurfacedSeamsTest {
         assertFalse(
             hardwareShutterAudioDrop(
                 fullKeyAction = HardwareKeyAction.SHUTTER,
+                primaryShutterEnabled = true,
                 videoMode = true,
                 recording = false,
                 recordAudio = false,

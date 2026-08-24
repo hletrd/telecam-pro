@@ -1,5 +1,7 @@
 package me.hletrd.telecampro
 
+import me.hletrd.telecampro.camera.HardwareKeyAction
+
 internal enum class CameraKeyEdge { DOWN, REPEAT, UP }
 
 internal data class CameraKeyDecision(
@@ -47,3 +49,12 @@ internal fun updateAggregateCameraKeyOwnership(
     val isActive = ownedKeys.isNotEmpty()
     return isActive.takeIf { it != wasActive }
 }
+
+/**
+ * Physical keys keep owning their DOWN/UP pair while an unavailable shutter stays inert.
+ * Non-shutter assignments retain their own live-control policy.
+ */
+internal fun hardwareActionAdmitted(
+    action: HardwareKeyAction,
+    primaryShutterEnabled: Boolean,
+): Boolean = action != HardwareKeyAction.SHUTTER || primaryShutterEnabled

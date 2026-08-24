@@ -639,9 +639,10 @@ class MainActivity : ComponentActivity() {
                     // later Settings grant restores it, exactly like the touch decline. The STATUS
                     // text differs from the decline's on purpose: here the user was never asked and
                     // so has denied nothing.
-                    if (hardwareShutterAudioDrop(
-                            fullKeyAction = s.volumeKeyAction,
-                            videoMode = s.mode == CaptureMode.VIDEO,
+                        if (hardwareShutterAudioDrop(
+                                fullKeyAction = s.volumeKeyAction,
+                                primaryShutterEnabled = s.primaryShutterEnabled,
+                                videoMode = s.mode == CaptureMode.VIDEO,
                             recording = s.isRecording,
                             recordAudio = s.recordAudio,
                             hasMicrophonePermission = hasMicrophonePermission,
@@ -721,6 +722,7 @@ class MainActivity : ComponentActivity() {
                         // video-only with audio still ARMED in the UI. Live since 2026-07-31 (767).
                         if (hardwareShutterAudioDrop(
                                 fullKeyAction = s.halfPressAction,
+                                primaryShutterEnabled = s.primaryShutterEnabled,
                                 videoMode = s.mode == CaptureMode.VIDEO,
                                 recording = s.isRecording,
                                 recordAudio = s.recordAudio,
@@ -761,6 +763,7 @@ class MainActivity : ComponentActivity() {
                         // Same denial-recorded audio drop as the full-key and half-press paths.
                         if (hardwareShutterAudioDrop(
                                 fullKeyAction = s.quickButtonAction,
+                                primaryShutterEnabled = s.primaryShutterEnabled,
                                 videoMode = s.mode == CaptureMode.VIDEO,
                                 recording = s.isRecording,
                                 recordAudio = s.recordAudio,

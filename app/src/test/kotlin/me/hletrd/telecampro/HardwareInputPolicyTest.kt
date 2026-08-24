@@ -1,5 +1,6 @@
 package me.hletrd.telecampro
 
+import me.hletrd.telecampro.camera.HardwareKeyAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -7,6 +8,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HardwareInputPolicyTest {
+
+    @Test
+    fun unavailableShutterIsInertWhileOtherAssignmentsRemainAdmitted() {
+        assertFalse(hardwareActionAdmitted(HardwareKeyAction.SHUTTER, primaryShutterEnabled = false))
+        assertTrue(hardwareActionAdmitted(HardwareKeyAction.SHUTTER, primaryShutterEnabled = true))
+        HardwareKeyAction.entries.filterNot { it == HardwareKeyAction.SHUTTER }.forEach { action ->
+            assertTrue(action.name, hardwareActionAdmitted(action, primaryShutterEnabled = false))
+        }
+    }
 
     @Test
     fun availableDownStartsAndOwnsCameraKey() {

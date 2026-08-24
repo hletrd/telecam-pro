@@ -814,6 +814,31 @@ class CameraViewModelRobolectricTest {
         assertNull(v.state.value.status)
     }
 
+    @Test fun `unavailable hardware shutter preserves the terminal camera verdict`() {
+        val (v, e) = createViewModel()
+        val terminals = listOf(
+            CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN,
+        )
+        terminals.forEach { message ->
+            val terminal = message.status()
+            e.onStatus!!.invoke(terminal)
+
+            v.onHardwareFullKey(true)
+            v.onHardwareFullKey(false)
+            v.onHardwareQuickButton(true)
+            v.onHardwareQuickButton(false)
+
+            assertEquals(message.name, terminal, v.state.value.status)
+            assertFalse(v.state.value.isRecording)
+            assertEquals(0, v.state.value.shutterFlashTick)
+            idleFor(5_999)
+            assertEquals(message.name, terminal, v.state.value.status)
+            idleFor(1)
+            assertNull(v.state.value.status)
+        }
+    }
+
     @Test fun `saved-confirmation statuses clear on the shorter timer and re-arm per message`() {
         val (v, e) = createViewModel()
         val videoSaved = CameraStatusMessage.VIDEO_SAVED.status()

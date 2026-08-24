@@ -33,6 +33,7 @@ import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -3170,6 +3171,7 @@ class CameraViewModel private constructor(
     }
 
     private fun performHardwareAction(action: HardwareKeyAction, active: Boolean) {
+        if (!hardwareActionAdmitted(action, _state.value.primaryShutterEnabled)) return
         when (action) {
             HardwareKeyAction.SHUTTER -> if (active) {
                 if (_state.value.mode == CaptureMode.PHOTO) onCapturePhoto() else onToggleRecording()
