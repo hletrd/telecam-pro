@@ -1,65 +1,101 @@
-# Causal-tracing review — cycle 39
+# Causal-tracing review — cycle 49
 
-Date: 2026-08-24
-Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224`
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle39.feeBBZ`
+Date: 2026-08-25
+Reviewed revision: `69c9c64af89e57ce98408a0a16c8545bfabf69d8`
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle49.oXnMVe/repo`
+Mode: Prompt 1 review; no production source, plan, shared-main, device, deployment, or git mutation
 
 ## Scope and method
 
-I read the complete repository authorities and inventoried all 493 tracked paths before tracing the
-production graph. The trace covered route inventory and identity epochs; optics generations,
-rollback baselines and camera replacement; controller/session/preview/GL terminals; tap, AF,
-custom-WB, ZSL and capture correlation; still-family production, publication, deletion and recovery;
-REC allocation, process-native admission, microphone handoff, codec/muxer finalization and storage;
-review/player and ownerless-delete identities; lifecycle replacement; UI publication; and host,
-release and device-evidence tooling. Tests, resources, historical findings, and the complete cycle-38
-change surface were included in the final sweep.
+I read the complete committed authorities and inventoried all 534 tracked paths before tracing the
+runtime graph. The causal pass covered route inventory; optics intent, baseline, commit and rollback
+generations; Camera2 controller/session/preview health; GL/output/analysis identities; AF/custom-WB/
+ZSL/capture correlation; still family production, deletion and recovery; REC allocation, microphone,
+native finalization and storage; review/player and ownerless-delete deadlines; lifecycle replacement;
+UI publication; release/debug variants; tests; and host/device evidence tooling. The final sweep
+rechecked the complete cycle-48 change surface and every production executor, delayed task, retry,
+mutable owner, debug diagnostic, and cross-thread read/write seam.
 
 ## Findings
 
-No new causal correctness issue survived competing-hypothesis validation at current HEAD.
+### TRACE49-01 — release SINGLE capture follows a debug trace decision to a null payload
 
-In particular, the prior duplicate-reconfiguration chain is closed rather than merely hidden in the
-ViewModel: route capability reconciliation still calls the Engine with the normalized label
-(`app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:2878-2925`), but the Engine now
-resolves both labels against the currently accepted capability set and returns before request rebuild
-or reopen when their HAL values match
-(`app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:1587-1597`; `camera/CaptureCapabilities.kt:586-604`).
-Real OFF/ON/PREVIEW_STABILIZATION transitions still take the established apply-and-reopen path, so
-the fix does not suppress an operator command that changes wire state.
+- **Severity / confidence:** High / High.
+- **Classification:** **Confirmed causal failure.** This is the same root cause as PERF49-01 and
+  should be deduplicated once.
+- **Exact evidence:** `captureFamilyTraceAdmission` is build-independent and admits both SINGLE log
+  edges (`app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:971-986`), but `traceText`
+  exists only when `BuildConfig.DEBUG` (`app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:4713-4725`).
+  Registration and settlement consult only the admission flags and force the nullable payload
+  (`CameraEngine.kt:4727-4743`). Ordinary capture catches the registration throw before Camera2
+  dispatch and reports failure (`CameraEngine.kt:4152-4178`); an in-REC snapshot reaches the same
+  throw at settlement, before producer-terminal ownership and continuation cleanup.
+- **Concrete scenario:** Any release ordinary shutter press takes the path
+  `SINGLE admission -> traceText=null -> registration=true -> traceText!!`. The causal edge that was
+  intended only as debug evidence becomes the terminal owner of release capture admission. Debug
+  tests cannot reproduce it because their generated `BuildConfig.DEBUG` is true.
+- **Suggested fix:** make the trace plan carry its effective build admission, keep payload creation
+  and use in one nullable-safe branch, and test the same callback lifecycle with explicit debug false.
 
-## Competing hypotheses and final completeness sweep
+### TRACE49-02 — `setVideoPipeline` derives a supposedly atomic packet outside the optics monitor, so rollback can install Photo + active HLG without a generation or reopen
 
-1. **A capability-normalization callback can still authorize a second same-generation session:**
-   rejected. The callback may update the stored label, but equal effective HAL modes now stop before
-   either native side effect; genuine mode changes retain the original path.
-2. **A late REC allocation or setup result can publish after Stop/pause/replacement:** rejected. The
-   allocation attempt, deadline, process-admission token, exact accepted-session snapshot, setup
-   finalization owner, and topology lease all have independent first-wins/current-owner checks before
-   native publication (`camera/CameraEngine.kt:4880-5123,5136-5528`). A late provider URI is routed to
-   durable pending-row retirement rather than recorder setup.
-3. **A recorder terminal can release native owners while EGL still references the encoder surface:**
-   rejected. Detach completion owns finalization; deadline expiry quarantines the exact graph and
-   closes process-wide native acquisition. Storage publication is a later, separately bounded tail
-   (`camera/CameraEngine.kt:5620-6237`; `video/VideoRecorder.kt:523-553`).
-4. **A late still sibling can resurrect a deleted or evicted review family:** rejected. Capture ids,
-   durable family tombstones, producer-terminal state, exact output ownership and bounded unresolved
-   discards remain checked at publication and deletion terminals; launch recovery owns rows that
-   cannot be resolved immediately.
-5. **A retired review/provider result can publish into a replacement composition:** rejected. Each
-   lane replaces publication authority immediately, applies a terminal timeout/capacity result, and
-   disposes produced native/bitmap values whose exact request cannot be claimed
-   (`ui/review/LatestHeavyWorkLane.kt:153-281`). Playback uses an exact handle plus deadline owner.
-6. **Lifecycle teardown can leave recurring work or a stale native replay alive:** rejected. Named
-   handler work is removed on stop/clear, process replay observations are generation-replaced and
-   canceled, and every replay rechecks lifecycle, surface generation and process authority before
-   acquisition.
+- **Severity / confidence:** Medium / High.
+- **Classification:** **Confirmed data race; user manifestation is timing-dependent.** The mutable
+  fields and writers are present on different lanes, and no test controls this interleaving.
+- **Exact evidence:**
+  - Background optics failure restores `videoMode`, active `transfer`, requested transfer, codec and
+    candidates under the Engine monitor (`CameraEngine.kt:764-793`).
+  - The new `setVideoPipeline` reads `videoMode` and `transfer` to derive `activeTransfer` and
+    `tenBitChanged` before acquiring that monitor (`CameraEngine.kt:2511-2536`). It takes the monitor
+    only later, either through `beginOpticsTransaction` or the plain publish branch
+    (`CameraEngine.kt:2537-2549`).
+  - Mode changes intentionally publish desired Video state before asynchronous setup can later
+    rollback (`CameraEngine.kt:2224-2237,2264-2282`), creating a substantial overlap window in which
+    a transfer/codec command or late encoder-inventory reconciliation can execute.
+  - Architecture claims the codec/candidates/requested transfer/active transfer are one packet and
+    that UI HLG cannot coexist with an accepted SDR session (`docs/ARCHITECTURE.md:308-314`), but
+    there is no direct concurrency test for `setVideoPipeline`; current rollback tests call it
+    serially through the ViewModel.
+- **Concrete failure interleaving:**
+  1. Photo→Video publishes desired `videoMode=true, transfer=HLG` and starts generation *g*.
+  2. A pipeline command reads those values, derives `activeTransfer=HLG`, and computes
+     `tenBitChanged=false`, then pauses before its publish branch.
+  3. Setup failure rolls *g* back under the Engine monitor to the accepted Photo/SDR packet and
+     queues the UI rollback.
+  4. The pipeline command acquires the monitor and performs the no-generation branch computed from
+     the stale pre-rollback snapshot, writing `transfer=HLG` while `videoMode=false`; it then pushes
+     HLG into GL. Because its stale `tenBitChanged` was false, it neither creates a newer optics
+     intent nor reopens Camera2.
 
-No wrong-clock comparison, nullable-owner alias, stale rollback, lost completion, double terminal,
-use-after-retire publication, or cross-file ownership gap survived the final sweep. Open entries in
-`docs/FIELD_CHECKS.md` remain explicitly device/manual evidence gaps, not code findings.
+  The result is a standard SDR Photo session with Engine/GL active HLG truth. The viewfinder is
+  transformed with the wrong curve, the next snapshot/rollback baseline records a hybrid packet,
+  and there is no convergence edge until another mode/transfer action happens.
+- **Competing hypotheses checked:**
+  - ViewModel actions originate on main, but rollback mutates the Engine on `setupExecutor`; the
+    relevant writers are therefore concurrent even when all UI calls are serialized.
+  - Volatile fields make individual reads visible but cannot make the multi-read derivation atomic.
+  - The later `synchronized(this) { publish() }` protects only writes; it does not revalidate the
+    mode/transfer values that selected the branch and packet.
+  - The optics generation protects only the `tenBitChanged=true` branch. This exact interleaving
+    selected the plain branch before rollback, so no generation exists for rollback/Ready ordering
+    to reject.
+- **Suggested fix:** normalize candidates outside the lock if desired, but derive active transfer,
+  boundary-change decision, baseline and publication from current Engine state inside the one
+  optics/Engine monitor. If the boundary changes, increment/publish the generation in that same
+  critical section; otherwise revalidate current mode before the fast packet commit. Add a
+  deterministic latch-based test that pauses pipeline derivation, forces owned mode rollback, then
+  resumes and asserts Photo remains active SDR or that a newer owned generation converges.
 
-## Totals
+## Competing-hypothesis and missed-issues sweep
 
-- New findings: 0
-- Confirmed regressions: 0
+I rechecked capture save-lane exactly-once completion, family producer leases and deletion
+tombstones, latest-capture ordering, route/preview/GL/controller identities, recorder admission and
+stop-during-start latches, native detach/quarantine, finite provider dispatchers, ownerless delete,
+review decode/player ownership, microphone handoff, zoom/control coalescers, lifecycle ticker
+cancellation, and all current test/comment/document claims. Outside the two findings above, no stale
+rollback, nullable-owner alias, wrong-clock comparison, double terminal, lost continuation,
+use-after-retire publication, unbounded owner, or conflicting source/test/document contract survived
+validation. The remaining A3/A4/A5/D1/E1/E2 ledger entries are explicit manual/device evidence gaps,
+not host-proven causal defects.
+
+**New finding count: 2 (one shared with the performance review).**

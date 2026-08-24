@@ -1,51 +1,72 @@
-# Architecture review — cycle 39
+# Architecture review — cycle 49
 
-Date: 2026-08-24
-Reviewed revision: `5ee6b21` (`origin/main`)
-Workspace: `/private/tmp/find-x9-cycle39.feeBBZ`
+Date: 2026-08-25
 
-## Coverage and system inventory
+Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27` (`origin/main`)
 
-Reviewed all 493 tracked paths and read the complete governing authorities: `CLAUDE.md`,
-`docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`. The optional private maintainer documents are
-absent, which the committed clean-clone policy explicitly permits. The architecture inventory
-covered the Activity/ViewModel unidirectional state boundary; CameraEngine optics/session
-transactions; capability-enumerated rear/front/external routing; CameraController session fallback
-and terminal release; RendererAssists/GlPipeline/EGL generation replay; processed-still and RAW
-ownership; video pre-native admission, native teardown, storage tails, and quarantine; exact-family
-MediaStore publication/delete/recovery; settings/MR normalization; Compose control projections; and
-immutable build/release evidence.
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle49.oXnMVe/repo`
 
-Cross-file review concentrated on the system's load-bearing invariants: PMA110 quirks remain behind
-`DeviceProfile` while generic hardware follows enumerated capabilities; Ready state carries accepted
-controller/session/output truth; optics changes are generation-owned; GL and Camera2 replacements
-require exact terminal ownership; native uncertainty quarantines rather than racing cleanup; provider
-work stays in process-finite lanes; capture-family deletion and late publication share one exact-key
-authority; and UI/persistence/EXIF consume one normalized optics declaration.
+## System inventory and architectural sweep
 
-## Findings
+I read the complete committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`) and inventoried all 534 tracked paths. The architecture pass traced the
+Activity/ViewModel unidirectional boundary; CameraEngine optics and capture orchestration;
+CameraController accepted-session/fallback ownership; RendererAssists/GlPipeline/EGL generations;
+processed and RAW save lanes; video pre-native/native/storage owners; exact-family MediaStore
+durability, deletion, and recovery; review work pools; settings/MR normalization; capability-driven
+UI projection; and immutable build/release evidence.
 
-No new actionable architecture finding survived the whole-repository and cross-boundary review at
-the reviewed revision.
+The final cross-boundary sweep rechecked the system's load-bearing rules: requested state versus
+accepted session truth, generation-owned rollback, exact native identities, finite process queues,
+producer termination before family retirement, debug diagnostics as non-functional observers, and
+release behavior matching debug behavior apart from explicitly absent instrumentation.
 
-In particular, cycle 38 did not add a second stabilization authority: user-visible label
-normalization remains in the capability projection while CameraEngine decides reconfiguration from
-the effective HAL value. The finder geometry cleanup strengthens the existing single-authority
-boundary shared by Compose and GL. The test-capacity fixes change only scheduler handshakes, not the
-production latest-wins or bounded-pool design.
+## Finding
 
-## Known debt and final sweep
+### A49-01 — a debug evidence payload is a required release capture dependency
 
-The 7,000-plus-line `CameraEngine` facade remains the explicit deferred item AGG35-08 in
-`docs/plans/2026-08-24-rpf-cycle35.md` (Medium severity, High confidence). Its exit criterion requires
-a new concrete defect spanning at least two responsibility regions, or planned work that must modify
-three or more regions. This review found neither, so filing the broad decomposition again would
-duplicate an existing deferred record rather than identify new work.
+- **Severity / confidence:** High / High
+- **Classification:** Confirmed architecture and implementation defect.
 
-The final sweep rechecked layering direction, duplicate policy derivations, volatile versus atomic
-multi-field publication, lifecycle/reconfiguration transitions, process-singleton capacity and
-callback retention, route/capability truth, accepted-session versus requested state, storage
-durability and recovery, ownerless-media consent boundaries, release provenance, and documentation
-alignment. `python3 tools/check_docs.py` passed all 120 applicable committed checks with zero
-failures. Open field checks were kept as unverified device/provider work and were not converted into
-architectural claims.
+`CaptureFamilyTraceAdmission` is modeled as runtime capture state even though its contract says it is
+debug harness evidence. `CameraEngine.photoCallback` then creates the corresponding payload only
+under `BuildConfig.DEBUG` (`CameraEngine.kt:4713-4725`) but consumes admission outside that boundary
+(`CameraEngine.kt:4727-4743`). Because `captureFamilyTraceAdmission` admits every ordinary Single
+shot and every in-REC snapshot settlement (`CameraState.kt:971-986`), release Single callback
+construction dereferences a null debug payload. The enclosing public path catches the exception and
+returns `PHOTO_CAPTURE_FAILED` before Camera2 dispatch (`CameraEngine.kt:4164-4183`). The settlement
+variant can throw before producer-terminal publication and family-lease release
+(`CameraEngine.kt:4737-4751`).
+
+This violates two explicit architecture laws at once:
+
+- diagnostics must be observational and absent from release without changing product control flow;
+- every still-family producer must reach exactly one terminal edge before deletion/recovery may
+  retire its authority.
+
+The layering error is that build policy, diagnostic admission, diagnostic payload creation, and
+capture-family lifecycle are four separate decisions. Their invalid combination is representable:
+`DEBUG=false + admitted=true + payload=null`, and production uses that state on the default shutter
+path. The cycle-48 test covers only the admission reducer under the debug variant, while release
+assembly proves bytecode construction but executes no shutter behavior. The green authoritative
+host gate therefore gives false assurance about the release architecture.
+
+**Fix direction:** Collapse those decisions into one build-aware optional trace object (or a logger
+whose release implementation is a no-op) and let capture lifecycle consume only that interface.
+Registration/settlement observation must wrap no ownership mutation and cleanup must remain
+unconditional. Add an explicit build-mode matrix around callback creation and producer settlement,
+plus a release-variant public capture smoke test. The invariant should be structural: disabling a
+diagnostic must remove output only, never data or control-flow dependencies.
+
+## Architectural debt and final sweep
+
+The 7,000-plus-line CameraEngine facade remains the previously recorded deferred decomposition item.
+A49-01 does not justify a wholesale rewrite; it identifies a narrow extraction boundary for
+capture-family tracing that should become an optional observer beside, not inside, producer
+lifecycle ownership.
+
+I also rechecked the new video-pipeline transaction packet, rollback publication, shader binding
+authority, obscured gesture cancellation, modal focus ownership, release permission allowlist, and
+screenshot validation against their consumers and tests. No second independent architecture
+finding survived the final sweep. Open field checks remain validation risks rather than architecture
+defects, and no device-only claim was promoted.

@@ -1,3 +1,58 @@
+# Document-specialist review — cycle 49
+
+Date: 2026-08-25
+
+Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27`
+
+## Coverage
+
+I read the three committed operating authorities completely, then the README, privacy policy,
+device-harness guide, Play Data Safety authority, and complete Play submission sheet. I inventoried
+all 93 tracked Markdown files and checked historical plans/reviews for current-tense claims that
+escaped their supersession labels. I also ran the full documentation checker (151 pass, 24 declared
+private-file skips) and cross-checked user-facing EN/KO resources, manifest permissions, release
+state, field-check membership, and current source behavior.
+
+## Findings
+
+### C49-DOC-01 — a historical matrix still calls the already-fixed AppOps disclosure an open UX gap
+
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed documentation contradiction.
+- **Evidence:** `docs/play-console-submit.md:386-392` says the app “said NOTHING” and declares
+  “This is an open UX gap,” directing readers to BACKLOG. The same document's current release delta
+  at `:280-287` says the AppOps-policy path now surfaces “Camera blocked for this app on this
+  device.” plus Settings and is confirmed. Production contains that localized status
+  (`app/src/main/res/values/strings.xml:271`, Korean peer present) and handles the policy failure in
+  `CameraEngine.kt:3000-3080`.
+- **Failure scenario:** a release reviewer or maintainer treats a closed behavior as current work,
+  duplicates it, or reports the present artifact as silently black despite the implemented status.
+  The surrounding matrix is labeled historical, but the paragraph uses unqualified present tense
+  and the emphatic “open” status, so it conflicts with the current authority within the same file.
+- **Concrete fix:** explicitly mark the paragraph as the historical pre-fix observation and point
+  to the current fixed release item/commit. Extend `tools/check_docs.py` to reject the exact active
+  “open UX gap” phrase outside an explicitly superseded quotation.
+
+### C49-DOC-02 — cycle-48 claims delete-dialog focus coverage without asserting focus return
+
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed evidence-record gap; product behavior is separately `C49-CT-02`.
+- **Evidence:** `docs/plans/2026-08-25-rpf-cycle48.md:77-82` marks delete-dialog cancel covered, but
+  `ModalFocusComposeTest.kt:218-253` checks disappearance only and never asserts the Delete opener or
+  any review node regains focus.
+- **Concrete fix:** after adding the missing product assertion/ownership, append a dated correction
+  to cycle 48 describing the evidence actually added.
+
+## Final documentation sweep
+
+No further current-source contradiction survived. EN/KO parity, privacy permissions, minSdk,
+current no-artifact release state, screenshot blockers, Loupe orientation, device-evidence limits,
+and the six open field checks all agree across the committed authorities.
+
+---
+
+## Archived prior review
+
 # Document-specialist review — cycle 39
 
 Date: 2026-08-24

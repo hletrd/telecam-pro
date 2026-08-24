@@ -1,3 +1,63 @@
+# Native Android designer review — cycle 49
+
+Date: 2026-08-25
+
+Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27`
+
+## Scope
+
+This is a native Jetpack Compose app, so browser automation is not applicable. I reviewed the full
+production UI inventory (`MainActivity`, all UI/control/overlay/review/theme modules, state and
+resource authorities) plus all Compose/Robolectric UI tests and checked-in screenshot manifests.
+The sweep covered Sony-style information hierarchy, affordances, touch/stylus/mouse, keyboard/D-pad,
+TalkBack semantics, WCAG 2.2 keyboard/focus-order/focus-appearance concerns, 48 dp targets, contrast,
+loading/empty/error states, deterministic dark appearance, reduced motion, EN/KO, RTL, 2x font and
+compact/large-screen behavior, and perceived-performance feedback.
+
+## Findings
+
+### C49-DSN-01 — holding the viewfinder activation key repeatedly fires autofocus
+
+- **Severity / confidence:** Medium / High
+- **Status:** Confirmed; duplicate of `C49-CR-01`.
+- **Region:** `ui/CameraScreen.kt:364-385`; test gap at
+  `ui/ViewfinderAccessibilityComposeTest.kt:171-215`.
+- **User impact:** Enter/Space/DPAD-center behaves unlike a button: holding it restarts the same AF
+  action at repeat cadence. That is disruptive on TV remotes, keyboards, switch devices, and
+  accessibility controllers where long presses are common.
+- **Fix:** make activation one-shot per physical press and test repeat/cancel/fresh-press behavior.
+
+### C49-DSN-02 — canceling review Delete does not explicitly restore focus to Delete
+
+- **Severity / confidence:** Medium / Medium
+- **Status:** Likely runtime focus-order defect; source-confirmed missing owner and test assertion.
+- **Region:** `ui/review/MediaReview.kt:1053-1061,1727-1771` and
+  `ui/ModalFocusComposeTest.kt:218-253`.
+- **User impact:** after inspecting a destructive confirmation and canceling it, a keyboard/D-pad
+  user may lose their place in review instead of returning to the Delete button. This breaks the
+  spatial/operational continuity expected by WCAG focus order and by the app's new outer-modal focus
+  restoration policy.
+- **Fix:** add exact nested-modal origin restoration and assert it for Cancel, Back, and outside
+  dismiss before continuing traversal.
+
+## Full UI/UX sweep — no additional finding
+
+- The quiet Sony-style finder hierarchy, stable physical control homes, Fn/My Menu/settings split,
+  capability-aware disabled states, and review/loading/error copy remain coherent.
+- TalkBack roles, state descriptions, live-region restraint, modal entry exclusion, 48 dp targets,
+  HUD/destructive contrast, and two-tone keyboard focus outline are otherwise consistent.
+- The deterministic dark theme and pinned light system-bar icons agree under light/dark system
+  settings. Animations use platform-aware Compose primitives and no new looping motion was found.
+- EN/KO parity and intended camera abbreviations are enforced; absolute camera geometry remains
+  stable under RTL while localized text keeps shaping. Existing 2x-font and compact-wide snapshot
+  coverage addresses the highest-risk reflow surfaces.
+- Current phone/tablet screenshots remain intentionally blocked from Play submission; no stale asset
+  was treated as present UI evidence.
+
+---
+
+## Archived prior review
+
 # Native Android designer review — cycle 39
 
 Date: 2026-08-24

@@ -1,167 +1,72 @@
-# Debugger review — cycle 39
+# Cycle 49 debugger review
 
-Date: 2026-08-24
-Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224` (`origin/main`)
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle39.feeBBZ`
+Date: 2026-08-25
+Reviewed revision: `69c9c64a` (`origin/main` at review start)
+Workspace: isolated clone `/tmp/find-x9-ultra-cycle49.oXnMVe/repo`
 
-## Scope, inventory, and method
+## Coverage and method
 
-I reviewed the isolated current tree only after reading `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`. Prior reviews were regression hypotheses rather than current findings. The
-complete inventory contains 493 tracked paths: 101 production Kotlin files, three debug Kotlin
-files, four instrumented-test files, 220 JVM/Robolectric/Compose test files, 32 Python files, 73
-Markdown files, and 60 other tracked build/resource/script/license/asset inputs. Every path
-participated in file-type, Git-mode, suspicious-token, exception, subprocess, threading, timeout,
-ownership, and failure-handling searches.
-
-The causal review traced:
-
-- Camera2 route inventory, optics generations, caps publication, stabilization projection and
-  session reopen, callback dispatch, controller teardown, fallback ladders, request fast paths,
-  capture correlation/ZSL, watchdogs, lifecycle pause/release, and bounded recovery;
-- GL/EGL generation ownership, preview/encoder attachment, frame coalescing, analysis/motion state,
-  output teardown, process quarantine, and first-frame Ready publication;
-- processed/RAW still budgets and family continuations, pending-video allocation, microphone
-  handoff, codec/muxer finalization, post-native storage, ownerless deletion, relaunch recovery, and
-  review decode/player ownership;
-- ViewModel caps reconciliation, settings/MR restore, timers/tickers, review invalidation, Compose
-  state, and the full current-delta call graph;
-- tool/build/device-evidence failure paths, optimized-Python guards, subprocess construction,
-  source/artifact mutation checks, and the current test synchronization.
-
-## Current-delta validation
-
-The four cycle-38 fixes survive their cross-file failure hypotheses:
-
-- `camera/CaptureCapabilities.kt:586-600` compares the resolved Camera2 stabilization values, and
-  `camera/CameraEngine.kt:1587-1600` stores the normalized label even when no wire change is needed.
-  A pre-capability call remains intentionally deferred to the normal session-start path; a genuine
-  HAL-mode change still reapplies the request and reopens the session.
-- `ui/CameraScreen.kt:2835-2924` preserves `HudPlate` under the selected-disabled wash instead of
-  replacing the contrast floor. Both background layers are inside the same clipped pill, so the
-  overlay cannot erase the dark live-frame foundation.
-- `camera/CameraState.kt` removes the dead bottom-margin input and leaves finder placement governed
-  by the documented top-anchor plus measured bottom-clearance constraints; current callers and
-  position-sensitive tests use the same signature.
-- `ui/review/LatestHeavyWorkLaneTest.kt:418-450` now saturates the shared executor with one request
-  per independent lane. It no longer submits a same-lane successor before its predecessor starts,
-  so the setup cannot legally retire a blocker under the production latest-wins contract.
-  `MediaReviewOwnershipTest.kt:83-116` similarly handshakes each poisoned worker before submitting
-  the next request.
-
-Focused verification passed all changed regression classes in one Gradle run:
-`CaptureCapabilitiesTest`, `FinderGeometryTest`, `AffordanceEdgeComposeTest`,
-`LatestHeavyWorkLaneTest`, and `MediaReviewOwnershipTest`. The initial invocation failed before
-task execution because the detached worktree had no local SDK declaration; rerunning with the
-existing `/Users/hletrd/Library/Android/sdk` as `ANDROID_HOME` completed successfully. That setup
-failure is environmental, reproducible, and already covered by the documented SDK preflight; it is
-not a repository defect.
-
-## Findings
-
-No actionable production bug, correctness regression, deadlock, race, resource leak, data-loss
-path, error-handling defect, or scheduler-dependent gate failure survives current-HEAD validation.
-
-The five open physical checks in `docs/FIELD_CHECKS.md` remain evidence obligations rather than
-host-proven defects. In particular, A4 needs a rotatable front-camera device, D1 needs an acoustic
-A/B, and E1/E2 require real MediaProvider ownership/consent behavior; this review does not infer
-their results from host code.
-
-## Final missed-issue sweep and count
-
-The final sweep replayed every native terminal, callback/generation edge, optics/caps transition,
-finite queue and admission owner, provider mutation/recovery state, capture family, review worker,
-bitmap/media parser bound, settings corruption seam, Activity/ViewModel lifecycle transition, and
-build/device-evidence boundary. It separately checked every cycle-38 production and test delta and
-revalidated the previous scheduler race under the corrected setup. No review-relevant current path
-was skipped or sampled in place of the repository inventory.
-
-**New debugger finding count: 0.**
-
-<!-- Archived cycle-38 provenance follows; DBG38-01 is fixed on current HEAD and is not a cycle-39 finding.
-
-# Debugger review — cycle 38
-
-Date: 2026-08-24
-Reviewed revision: `fa95299562d52f6b4ddd200f6d410ebd00a54c1d`
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle38.FKvYBP`
-
-## Scope, inventory, and method
-
-I reviewed the isolated `origin/main` tree only after reading `CLAUDE.md`,
-`docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`. Retained reviews and the completed cycle-37 plan
-were regression hypotheses, not current findings.
-
-All 490 tracked paths were inventoried: 101 production Kotlin files, three debug Kotlin files, four
-instrumented-test files, 220 JVM/Robolectric/Compose tests, 32 Python files, 70 Markdown files, and
-60 other tracked build/resource/script/license/asset inputs. The complete tree participated in
-file-type, Git-mode, digest, suspicious-token, exception, subprocess, threading, timeout, ownership,
-and failure-handling searches. I then traced the cross-file graphs most likely to conceal latent
-failures:
-
-- Camera2 route inventory, optics generations, dual-open/sequential replacement, callback dispatch,
-  teardown terminals, session fallback, request fast paths, capture correlation/ZSL, watchdogs,
-  pause/release, and bounded recovery;
-- GL/EGL generation ownership, frame coalescing, analysis/motion state, preview replacement, encoder
-  attachment, output unbind/destroy ordering, and quarantine;
-- processed/RAW still budgets and publication, capture-family leases, pending-video allocation,
-  standby microphone handoff, codec/muxer finalization, and post-native storage tails;
-- MediaStore restore, family/DISCARD journals, ownerless consent, review decode/playback, provider
-  timeouts, settings restore, Activity/ViewModel lifecycle, and timers/tickers;
-- the cycle-37 stabilization and Gamma capability projections, disabled focal-rail rendering,
-  optimized-Python guards, privacy parity, and their tests/tooling.
+I read the complete committed authority (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`), inventoried all 534 tracked files, and traced failure and ownership paths
+across Camera2 session generations, optics transactions, pseudo-ZSL, still-family registration and
+publication, GL/EGL, MediaCodec/MediaMuxer/AudioRecord, review/delete/recovery, Activity/ViewModel
+lifecycle, finite executors, release tooling, and the entire cycle-48 implementation delta. Tests,
+comments, plans, and historical reviews were checked against production behavior rather than
+treated as proof. A final sweep covered stale callbacks, release/debug variant differences,
+exception cleanup, resource leases, state divergence, timeouts, bounds, and false-green tests.
 
 ## Finding
 
-### DBG38-01 — shared-pool capacity test races its own latest-wins replacement
+### DBG49-01 — every default release Single photo fails before Camera2 dispatch and leaks its family producer lease
 
-- **Severity / confidence:** Medium / High.
-- **Classification:** Confirmed scheduler-dependent quality-gate failure; test defect, not a
-  confirmed shipping-app defect.
-- **Exact evidence:** `app/src/test/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLaneTest.kt:418-450`
-  creates two `ProgressiveLatestWorkLane`s and submits `A`, `B`, `C`, and `D` back-to-back, two per
-  lane, then requires all four blocking callbacks to have started within two seconds. But
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLane.kt:163-171,242-254`
-  deliberately gives each lane one latest request: every submit atomically replaces and retires the
-  predecessor, and the channel is conflated. There is no barrier ensuring `A` entered
-  `executeOwned()` before `B` replaces it, or that `C` started before `D` replaces it. The
-  authoritative `python3 tools/verify_host.py` run failed after 2,011 tests on exactly
-  `shared four-thread pool gives a healthy lane a bounded exhaustion terminal`, reporting an
-  `AssertionError` from the coroutine block at line 439. A subsequent full 2,011-test rerun and
-  eight focused reruns passed, which is the expected signature of this unsynchronized scheduling
-  race rather than a deterministic implementation failure.
-- **Failure scenario:** under CPU/Gradle contention, the fixed-pool consumer does not start `A`
-  before the caller submits `B`. `B` legally retires `A`, so the `started` latch can reach at most
-  three (and similarly fewer if `D` wins before `C` starts). The two-second assertion fails and the
-  repository's authoritative host gate turns red despite the production latest-wins behavior doing
-  exactly what its contract requires. This blocks an otherwise valid commit and makes gate results
-  load-dependent.
-- **Suggested fix:** make pool saturation independent of latest-wins replacement. Prefer four
-  independent lanes with one blocking request each, then submit through a fifth healthy lane and
-  assert its bounded `CapacityExhausted` result. Alternatively, give each of `A` and `C` an exact
-  start handshake before submitting its same-lane successor. Do not merely extend the two-second
-  timeout; the missing happens-before edge, not elapsed time, is the defect. Keep a repeated or
-  deliberately delayed-dispatch regression so the test remains deterministic under loaded CI.
+- **Severity / confidence:** High / High.
+- **Classification:** Confirmed source-level release regression. Observing the UI/file symptom on a
+  signed device build is manual validation, but the variant-dependent null dereference and missing
+  cleanup are deterministic.
+- **Evidence:** `CameraState.kt:971-986` admits registration and settlement traces for an ordinary
+  `DriveMode.SINGLE`, independent of build type. `CameraEngine.kt:4710-4726` first calls `shotSpec`,
+  which registers the capture family and returns its process-wide producer lease, then makes
+  `traceText` non-null only when `BuildConfig.DEBUG` is true. The actual branches at
+  `CameraEngine.kt:4727-4743` test only `traceAdmission.registration/settlement` and dereference
+  `traceText!!`. In release, `BuildConfig.DEBUG == false`, so the default Single path necessarily
+  dereferences null at line 4730. `capturePhoto` catches callback construction at lines 4164-4178,
+  releases only the processed-snapshot budget lease, reports `PHOTO_CAPTURE_FAILED`, and never sees
+  or closes `registeredShot.producerLease`; the family registration has already occurred. No
+  Camera2 request reaches lines 4180-4194. For an in-REC snapshot, registration is false but
+  settlement is true, so the equivalent null dereference occurs at line 4742 after save completion,
+  before terminal ownership, producer-lease close, deleted-family retirement, and `onDone`.
+- **Concrete scenario:** Install the Play/release APK, leave the default drive on Single, and press
+  the photo shutter. Callback construction creates a capture-family identity and producer lease,
+  then throws before `CameraController.capturePhoto`; the user gets “Photo capture failed” and no
+  file. Repeated presses repeat the leak. A still snapshot during an SDR video can save its bytes
+  but fail terminal family cleanup at settlement. Burst/AEB/timelapse avoid the trace admission,
+  which can obscure the variant-specific defect during broader testing.
+- **Test gap:** `CameraStateTest` verifies only the build-independent admission values, while all
+  runnable JVM/Robolectric camera tests use the debug variant where `traceText` is populated.
+  `assembleRelease`/`bundleRelease` compile this branch but do not execute a release Single shutter,
+  so both authoritative host gates can remain green.
+- **Suggested fix:** Couple admission and payload in one nullable trace packet, or guard both log
+  sites with `BuildConfig.DEBUG && admission` / `traceText != null`. More defensively, transfer the
+  registered producer lease into a close-on-failure owner immediately after `shotSpec` so any later
+  callback-construction exception seals the local family and closes process authority. Add a
+  release-variant test that invokes ordinary Single callback construction with DEBUG false and
+  asserts successful Camera2 dispatch plus exactly-once producer cleanup; cover the in-REC
+  settlement edge separately.
 
-## Verification evidence
+## Additional confirmed tooling edge
 
-- The initial authoritative host run built debug and androidTest APKs and passed lint before the
-  scheduler-dependent JVM test failed. A clean full JVM rerun passed all 2,011 tests; eight focused
-  reruns of DBG38-01 also passed, confirming nondeterminism.
-- The 99 tool tests, nine coverage tests, 184 device-harness self-tests, all 120 applicable
-  documentation checks, Python compilation, and optimized-runtime rejection checks passed.
-- Current Git modes contain only regular tracked files. No device behavior was run or inferred, and
-  no source, plan, Git history, deployment, or external state was changed.
+The security report records one distinct Low/High debugger-relevant issue in
+`tools/check_docs.py:111-196`: the PNG validator accepts illegal post-IDAT `PLTE` ordering and raises
+an uncaught `ValueError` for an exactly-one-byte-overlong decoded raster. It is not duplicated here
+as a second debugger finding.
 
-## Final missed-issue sweep and count
+## Final missed-issue sweep and limitations
 
-The final sweep replayed every native terminal, callback/generation edge, queue/admission owner,
-provider mutation and recovery state, capture family, review worker, bitmap/media parser bound,
-settings corruption seam, Activity/ViewModel lifecycle transition, and build/device-evidence
-boundary. It separately traced every cycle-37 implementation delta and rechecked older resolved
-findings for regression. No additional actionable production bug, correctness regression,
-deadlock, race, resource leak, data-loss path, or error-handling defect survived validation. The five
-open physical checks in `docs/FIELD_CHECKS.md` remain evidence obligations, not host-proven defects.
+The final sweep rechecked all cycle-48 changes (video-pipeline rollback, obscured cancel, shader
+binding checks, modal/viewfinder focus, trace admission, packaged permissions, and PNG validation),
+then revisited still/video terminal ownership, stale generations, delete/recovery consistency,
+Camera2/GL/codec/audio exception paths, bounded workers, timers, lifecycle transitions, and
+release/debug divergence. No further current debugger finding survived validation. No physical
+device behavior or open field check was inferred.
 
-**Archived cycle-38 debugger finding count: 1 — one Medium (High confidence).**
--->
+**New debugger finding count: 1 — High severity, High confidence, confirmed.**

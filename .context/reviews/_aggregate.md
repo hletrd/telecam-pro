@@ -326,3 +326,141 @@ None.
 - Confidence: 10 High
 - Cross-agent duplicates/agreement: none
 - Device/manual evidence was not inferred from host behavior.
+
+---
+
+# Aggregate review — cycle 49
+
+Date: 2026-08-25
+Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27` (`origin/main`)
+
+## Coverage and aggregation
+
+Five parallel reviewer workers covered every required specialist role: code-reviewer, perf-reviewer,
+security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. Each inventoried the complete 534-path repository,
+read the committed authorities, examined relevant files and cross-file interactions, and performed a
+final missed-issues sweep. The designer reviewed the native Jetpack Compose UI through production
+semantics/layout code and tests; browser automation is not applicable to this native app. All workers
+returned successfully, so there are no agent failures.
+
+Overlapping reports of the release trace failure were merged into one High/High finding. Keyboard
+repeat reports were merged into one Medium/High finding. Delete-dialog focus ownership and its
+cycle-48 evidence overclaim were merged into one Medium/High finding. The remaining candidates are
+independent. Previously fixed or explicitly deferred historical items were excluded.
+
+## Deduplicated findings
+
+### C49-01 — release Single stills dereference a debug-only trace payload
+
+- **Severity / confidence:** High / High
+- **Agreement:** perf-reviewer, tracer, security/debugger, verifier, and architect.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:971-986`
+  admits registration/settlement for ordinary Single and settlement for in-recording snapshots in
+  every build. `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:4713-4725`
+  creates `traceText` only when `BuildConfig.DEBUG`, but `:4727-4743` consumes the build-independent
+  admission and force-unwraps that nullable payload.
+- **Failure scenario:** in release, ordinary Single callback construction throws after registering
+  the family but before Camera2 dispatch, producing `PHOTO_CAPTURE_FAILED` and leaking the family
+  producer lease. An in-recording snapshot can throw at settlement before terminal cleanup.
+- **Fix:** make trace admission build-aware and nullable-safe, keep capture cleanup independent of
+  diagnostics, and add a pure debug/release behavior matrix plus release-source contract coverage.
+
+### C49-02 — `setVideoPipeline` can race optics rollback into Photo + active HLG
+
+- **Severity / confidence:** Medium / High
+- **Source:** tracer.
+- **Evidence:** rollback restores the pipeline packet under the Engine monitor at
+  `CameraEngine.kt:764-793`, while `setVideoPipeline` derives `activeTransfer` and
+  `tenBitChanged` from volatile state before acquiring that monitor at `:2511-2549`.
+- **Failure scenario:** a command derives HLG against desired Video, setup rolls back to Photo/SDR,
+  then the stale no-generation branch publishes HLG without reopen, leaving an SDR Photo session
+  with HLG Engine/GL truth.
+- **Fix:** derive and publish the decision from current state under one monitor, with generation
+  ownership when the boundary changes, and add a deterministic rollback/pipeline race regression.
+
+### C49-03 — screenshot PNG validation accepts illegal palettes and can throw on bounded overrun
+
+- **Severity / confidence:** Low / High
+- **Source:** security-reviewer; independently noted by debugger.
+- **Evidence:** `tools/check_docs.py:111-196` permits `PLTE` after `IDAT`, permits it for color type
+  6, and does not validate its cardinality. Exactly one decoded byte beyond the declared raster can
+  call `decompressobj.flush(0)`, raising uncaught `ValueError`.
+- **Failure scenario:** a malformed checked-in Play screenshot can either pass a claimed structural
+  check or abort the docs gate with a traceback instead of a bounded validation failure.
+- **Fix:** enforce PNG critical-chunk ordering and PLTE rules, make decompression a total predicate,
+  and add malformed-palette and one-byte-overrun fixtures.
+
+### C49-04 — held viewfinder activation keys repeatedly restart autofocus
+
+- **Severity / confidence:** Medium / High
+- **Agreement:** code-reviewer, critic, and designer.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:364-385` fires center
+  focus for every matching `KeyDown` without filtering `repeatCount`; current tests only send
+  discrete press pairs.
+- **Failure scenario:** holding Enter, Space, Numpad Enter, or DPAD-center reissues AF at hardware
+  repeat cadence instead of behaving like one button activation.
+- **Fix:** admit only the initial DOWN or own one activation through UP, and test repeat events plus
+  a fresh second press.
+
+### C49-05 — Delete-dialog dismissal has no explicit focus-return owner
+
+- **Severity / confidence:** Medium / High
+- **Agreement:** critic, document-specialist, and designer. Runtime landing remains
+  platform-dependent; the missing owner and evidence overclaim are confirmed.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt:1053-1061,1727-1771`
+  has no Delete `FocusRequester`; dismiss only clears `confirmDelete`. The test at
+  `ModalFocusComposeTest.kt:218-253` asserts disappearance, not restored focus, despite the completed
+  cycle-48 plan claiming cancel coverage.
+- **Failure scenario:** a keyboard/D-pad user cancels Delete and can lose the review position or
+  land on another control.
+- **Fix:** restore focus to the Delete origin after every dismissal path, assert it, and append a
+  dated correction to the completed cycle-48 plan.
+
+### C49-06 — Play submission history calls the fixed AppOps disclosure an open gap
+
+- **Severity / confidence:** Low / High
+- **Source:** document-specialist.
+- **Evidence:** `docs/play-console-submit.md:386-392` says the app says nothing and labels this an
+  open UX gap, while `:280-287` and production resources/handling document the shipped blocked-camera
+  status plus Settings action.
+- **Failure scenario:** maintainers or release reviewers treat fixed behavior as current missing
+  work and misreport the artifact.
+- **Fix:** label the paragraph as a historical pre-fix observation, point to the current fix, and
+  add a docs invariant against the active phrase.
+
+### C49-07 — obscured-gesture cancellation tests can pass with a missing terminal edge
+
+- **Severity / confidence:** Medium / High
+- **Source:** test-engineer.
+- **Evidence:** `MainActivityTouchDispatchTest.kt:194-249` checks pinch termination only after a
+  later clean pinch, so that later gesture can satisfy the count; the slider sibling at `:287-302`
+  does not exclude a hostile cancel-coordinate value.
+- **Failure scenario:** a regression leaves the canceled pinch owner live or lands an obscured
+  slider coordinate while the test suite stays green.
+- **Fix:** assert the exact canceled-stream trace before recovery, then independently assert the
+  clean gesture.
+
+### C49-08 — rollback REC-admission coverage duplicates production policy
+
+- **Severity / confidence:** Medium / High
+- **Source:** test-engineer.
+- **Evidence:** `ModeRollbackOwnershipRobolectricTest.kt:202-241` reads private candidates and calls
+  `encoderSelectionAdmitsTransfer` itself; it never reaches `beginRecordingAllocation`'s production
+  admission branch at `CameraEngine.kt:5037-5057`, despite the cycle-48 plan's completion claim.
+- **Failure scenario:** production REC admission can later filter stale/wrong state while the
+  duplicated predicate test remains green.
+- **Fix:** extract one Android-free production admission decision seam and make both runtime and
+  rollback tests call that exact seam, covering HLG and SDR rollback packets.
+
+## AGENT FAILURES
+
+None.
+
+## Final sweep
+
+No further current finding survived source verification or deduplication. Existing manual checks
+A3/A4/A5/D1/E1/E2 remain explicit device/scene/provider evidence gaps, not host-proven defects. The
+previously recorded broad `CameraEngine` decomposition remains deferred debt and is not duplicated.
+
+---
