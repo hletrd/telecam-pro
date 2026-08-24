@@ -1586,7 +1586,13 @@ class CameraEngine internal constructor(
 
     fun setVideoStabMode(m: VideoStabMode) {
         if (videoStabMode == m) return
+        val requiresReconfigure = videoStabModeChangeRequiresReconfigure(
+            videoStabModes = caps?.videoStabModes,
+            before = videoStabMode,
+            after = m,
+        )
         videoStabMode = m
+        if (!requiresReconfigure) return
         applyStabilization()
         // CONTROL_VIDEO_STABILIZATION_MODE is advertised as a session key on the Find X9 Ultra tele.
         // Request-only updates work, but the HAL can select a different OIS/EIS pipeline at configure

@@ -584,6 +584,22 @@ fun VideoStabMode.normalizedForAvailableModes(videoStabModes: IntArray): VideoSt
 }
 
 /**
+ * Whether changing the user-visible stabilization label changes the Camera2 control value for the
+ * currently accepted route. Capability reconciliation can collapse ENHANCED to STANDARD or OFF
+ * after the Engine has already applied that same fallback while installing the route; that label
+ * update must not rebuild the repeating request and reopen an unchanged session.
+ *
+ * Before capabilities arrive there is no accepted request to reconfigure. The requested label is
+ * still stored, and the normal session-start path applies it once route truth is available.
+ */
+internal fun videoStabModeChangeRequiresReconfigure(
+    videoStabModes: IntArray?,
+    before: VideoStabMode,
+    after: VideoStabMode,
+): Boolean = videoStabModes != null &&
+    videoStabControlModeFor(videoStabModes, before) != videoStabControlModeFor(videoStabModes, after)
+
+/**
  * Extracts sorted distinct fixed rates from plain lower/upper pairs. Android Range getters throw
  * "not mocked" on the JVM, so both capability flattening and tests share this Android-free core.
  */

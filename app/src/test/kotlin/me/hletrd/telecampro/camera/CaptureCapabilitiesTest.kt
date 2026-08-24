@@ -2,6 +2,8 @@ package me.hletrd.telecampro.camera
 
 import android.hardware.camera2.CameraMetadata
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Pins the HAL video-stabilization mode resolution ([videoStabControlModeFor]). */
@@ -57,6 +59,43 @@ class CaptureCapabilitiesTest {
         assertEquals(
             VideoStabMode.ENHANCED,
             VideoStabMode.ENHANCED.normalizedForAvailableModes(intArrayOf(off, on, preview)),
+        )
+    }
+
+    @Test
+    fun `capability normalization does not reconfigure an unchanged HAL mode`() {
+        assertFalse(
+            videoStabModeChangeRequiresReconfigure(
+                intArrayOf(off, on),
+                VideoStabMode.ENHANCED,
+                VideoStabMode.STANDARD,
+            ),
+        )
+        assertFalse(
+            videoStabModeChangeRequiresReconfigure(
+                intArrayOf(off),
+                VideoStabMode.ENHANCED,
+                VideoStabMode.OFF,
+            ),
+        )
+        assertFalse(
+            "a restored label is stored without touching a session before caps arrive",
+            videoStabModeChangeRequiresReconfigure(
+                null,
+                VideoStabMode.OFF,
+                VideoStabMode.ENHANCED,
+            ),
+        )
+    }
+
+    @Test
+    fun `real HAL stabilization transitions still require reconfiguration`() {
+        val modes = intArrayOf(off, on, preview)
+        assertTrue(
+            videoStabModeChangeRequiresReconfigure(modes, VideoStabMode.OFF, VideoStabMode.STANDARD),
+        )
+        assertTrue(
+            videoStabModeChangeRequiresReconfigure(modes, VideoStabMode.STANDARD, VideoStabMode.ENHANCED),
         )
     }
 
