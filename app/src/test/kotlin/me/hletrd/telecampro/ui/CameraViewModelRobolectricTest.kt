@@ -759,13 +759,42 @@ class CameraViewModelRobolectricTest {
         armCountdown(v)
         assertEquals(3, v.state.value.timerCountdownSec)
 
-        v.onReviewOpenChange(true, Uri.parse("content://telecam.test/previous"))
+        val uri = Uri.parse("content://telecam.test/previous")
+        v.onReviewOpenChange(true, uri)
         assertEquals(0, v.state.value.timerCountdownSec)
         assertTrue(v.state.value.cameraInputBlocked)
+        assertEquals(uri, v.state.value.openReview?.uri)
+        assertEquals(MediaDeleteScope.FILE_ONLY, v.state.value.openReview?.deleteScope)
         idleFor(3_100)
 
         assertNull("review leaked a late capture attempt", v.state.value.status)
         assertEquals(0, v.state.value.shutterFlashTick)
+    }
+
+    @Test fun `policy replacement preserves exact review until its own close retires every owner`() {
+        val (v, e) = createViewModel()
+        val uri = Uri.parse("content://telecam.test/policy-review")
+        assertFalse("untracked fixture is file-only", v.onReviewOpenChange(true, uri))
+        val frozen = v.state.value.openReview
+        assertNotNull(frozen)
+
+        // MainActivity replaces CameraScreen with PermissionGate for this Engine state and installs
+        // a separate owner. The exact review is ViewModel state, so composition replacement cannot
+        // discard its URI while retaining only the pin/block Boolean.
+        e.onCameraPolicyBlocked!!.invoke(true)
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_POLICY, true)
+        assertEquals(frozen, v.state.value.openReview)
+        assertTrue(v.state.value.cameraInputBlocked)
+
+        e.onCameraPolicyBlocked!!.invoke(false)
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_POLICY, false)
+        assertEquals(frozen, v.state.value.openReview)
+        assertTrue("the reconstructed review still owns input", v.state.value.cameraInputBlocked)
+
+        v.onReviewOpenChange(false, uri)
+        assertNull(v.state.value.openReview)
+        assertFalse(v.state.value.reviewOpen)
+        assertFalse(v.state.value.cameraInputBlocked)
     }
 
     @Test fun `review gate covers every starting and active video combination`() {

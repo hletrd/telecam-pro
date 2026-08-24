@@ -1206,6 +1206,21 @@ data class CameraReadyPublication(
     val photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
 )
 
+/**
+ * Exact media identity frozen for one open review.
+ *
+ * This belongs to the ViewModel state rather than a `CameraScreen` remember slot: the camera-policy
+ * gate temporarily removes the screen from composition, and a replacement screen must reconstruct
+ * the same review (URI, authorship, delete promise, and family pin) instead of retaining only an
+ * invisible `reviewOpen` Boolean/input owner.
+ */
+@Immutable
+data class OpenReviewPresentation(
+    val uri: android.net.Uri,
+    val provenance: MediaProvenance,
+    val deleteScope: MediaDeleteScope,
+)
+
 /** Latest-event identity gate for callbacks delivered across camera/setup/main threads. */
 internal class CameraReadyPublicationGate {
     private val latestSequence = java.util.concurrent.atomic.AtomicLong(0)
@@ -1349,8 +1364,10 @@ data class CameraUiState(
     // outlived the grace delay. Deliberately NOT derived from [cameraReady]: every optics door
     // clears that bit, including the same-route fast path behind every photo lens preset.
     val switchCoverVisible: Boolean = false,
-    // True while the full-screen media-review overlay is up (also used to freeze its media URI).
-    val reviewOpen: Boolean = false,
+    // One ViewModel-owned frozen review identity. Keeping all three presentation fields here lets a
+    // CameraScreen replacement reconstruct the exact overlay and keeps the family pin/input owner
+    // from surviving invisibly when the camera-policy gate temporarily replaces the viewfinder.
+    val openReview: OpenReviewPresentation? = null,
     // One Activity-facing gate for every full-screen modal (settings, Fn, review). Hardware shutter,
     // zoom and half-press input must not mutate the hidden viewfinder behind any of them.
     val cameraInputBlocked: Boolean = false,
@@ -1522,6 +1539,8 @@ data class CameraUiState(
     val histogramData: HistogramData? = null,
     val waveformData: WaveformData? = null,
 ) {
+    val reviewOpen: Boolean get() = openReview != null
+
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
 

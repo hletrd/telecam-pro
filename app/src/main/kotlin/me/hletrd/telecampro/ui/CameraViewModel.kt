@@ -59,6 +59,7 @@ import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.OpenReviewPresentation
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.MemoryPresetPresentation
@@ -3396,14 +3397,37 @@ class CameraViewModel @JvmOverloads constructor(
         if (open) cancelCountdown()
         // Pin before publishing the modal state: a concurrent capture callback may trim ordinary
         // history, but it cannot evict the exact family the confirmation copy now describes.
-        val familyPinned = if (open) {
-            captureOutputs.pinForReview(uri)
-        } else {
+        if (!open) {
             captureOutputs.releaseReviewPin(uri)
-            false
+            // A stale overlay callback may retire only the exact review it rendered. Releasing its
+            // URI from the tracker is harmless when a newer pin exists; releasing the shared REVIEW
+            // input owner or clearing the newer presentation would not be.
+            if (_state.value.openReview?.uri != uri) return false
+            _state.update { current ->
+                if (current.openReview?.uri == uri) current.copy(openReview = null) else current
+            }
+            onCameraInputBlockOwnerChange(CameraInputBlockOwner.REVIEW, false)
+            return false
         }
-        onCameraInputBlockOwnerChange(CameraInputBlockOwner.REVIEW, open)
-        _state.update { it.copy(reviewOpen = open) }
+
+        val before = _state.value
+        val familyPinned = captureOutputs.pinForReview(uri)
+        val frozen = OpenReviewPresentation(
+            uri = uri,
+            provenance = if (before.lastMediaUri == uri) {
+                before.lastMediaProvenance
+            } else {
+                captureOutputs.provenanceFor(uri) ?: MediaProvenance.APP_OWNED
+            },
+            deleteScope = if (familyPinned) {
+                if (before.lastMediaUri == uri) before.lastMediaDeleteScope
+                else captureOutputs.deleteScopeFor(uri)
+            } else {
+                MediaDeleteScope.FILE_ONLY
+            },
+        )
+        onCameraInputBlockOwnerChange(CameraInputBlockOwner.REVIEW, true)
+        _state.update { it.copy(openReview = frozen) }
         return familyPinned
     }
 

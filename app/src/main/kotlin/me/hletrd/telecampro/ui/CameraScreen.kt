@@ -69,7 +69,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -126,7 +125,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
@@ -148,7 +146,6 @@ import me.hletrd.telecampro.camera.finderRect
 import me.hletrd.telecampro.camera.finderContainsTopLeftPoint
 import me.hletrd.telecampro.camera.teleFinderVisible
 import me.hletrd.telecampro.camera.LensChoice
-import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.ViewfinderFocusActionAvailability
@@ -439,26 +436,10 @@ fun CameraScreen(
     // mode still preserves active/critical state and opens one requested ruler at a time.
     var detailsVisible by remember { mutableStateOf(false) }
     var openManualDial by remember { mutableStateOf<DialType?>(null) }
-    // In-app review overlay (last saved still, pinch-to-zoom for focus check). Open/closed lives in
-    // CameraUiState (state.reviewOpen) so MainActivity's hardware-key handlers can refuse to fire
-    // the shutter under the overlay. The reviewed uri is FROZEN here at open time so a timer/
-    // timelapse capture completing mid-review can't swap the image being inspected.
-    // rememberSaveable, not remember: reviewOpen, the family pin, and the input block all live in
-    // the ViewModel and SURVIVE an Activity recreation (dark-mode flip, locale) — a plain remember
-    // here reset only the URI, so the overlay vanished while the VM still held reviewOpen=true and
-    // the pinned family, leaving the shutter refusing input behind a modal that no longer existed
-    // (review L9). Uri is Parcelable, so autoSaver would also work; the explicit string round-trip
-    // is kept because it makes the saved form (and its size) obvious. After full PROCESS death the
-    // restored URI is inert by design: the recreated ViewModel starts with reviewOpen=false, and
-    // the modal keys on BOTH.
-    var reviewUri by rememberSaveable(
-        stateSaver = Saver<android.net.Uri?, String>(
-            save = { it?.toString() ?: "" },
-            restore = { if (it.isEmpty()) null else it.toUri() },
-        ),
-    ) { mutableStateOf<android.net.Uri?>(null) }
-    var reviewDeleteScope by rememberSaveable { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
-    var reviewProvenance by rememberSaveable { mutableStateOf(MediaProvenance.APP_OWNED) }
+    // In-app review overlay (last saved still, pinch-to-zoom for focus check). The complete frozen
+    // identity lives in CameraUiState, not in this composition: camera policy can temporarily replace
+    // CameraScreen with PermissionGate, and the returning screen must reconstruct the exact review
+    // rather than strand its ViewModel family pin and REVIEW input owner behind no visible overlay.
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     // A programmatic open is an EVENT, not just a tab value. My Menu's non-manual WB row dismisses
@@ -468,7 +449,7 @@ fun CameraScreen(
     var fnOverlayVisible by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
     val modalVisible = sheetVisible || fnOverlayVisible ||
-        (state.reviewOpen && reviewUri != null) || state.ownerlessDeleteConsentPending
+        state.openReview != null || state.ownerlessDeleteConsentPending
 
     // MainActivity owns hardware camera keys outside Compose. Mirror every full-screen modal into
     // CameraUiState so volume/camera/zoom/focus input cannot operate the hidden viewfinder behind it.
@@ -1347,27 +1328,19 @@ fun CameraScreen(
 
                 // Keyed on the two fields the lambda actually reads (perf review #11): capturing
                 // `state` minted a new lambda per emission, dragging ShutterRow into every 10 Hz
-                // telemetry recomposition. currentActions/reviewUri/reviewDeleteScope are
-                // recomposition-stable holders, safe inside the remembered closure.
+                // telemetry recomposition. currentActions is a recomposition-stable holder, safe
+                // inside the remembered closure.
                 val reviewOpenUri = state.lastMediaUri
-                val reviewOpenScope = state.lastMediaDeleteScope
-                val reviewOpenProvenance = state.lastMediaProvenance
                 val reviewEnabled = reviewTargetEnabled(
                     recordingStarting = state.isRecordingStarting,
                     recording = state.isRecording,
                     recordingFinalizing = state.isRecordingFinalizing,
                 )
-                val onOpenReview = remember(reviewOpenUri, reviewOpenScope, reviewOpenProvenance) {
+                val onOpenReview = remember(reviewOpenUri) {
                     {
                         if (reviewOpenUri != null) {
-                            val familyPinned = currentActions.value.onReviewOpenChange(true, reviewOpenUri)
-                            reviewUri = reviewOpenUri
-                            reviewProvenance = reviewOpenProvenance
-                            reviewDeleteScope = if (familyPinned) {
-                                reviewOpenScope
-                            } else {
-                                MediaDeleteScope.FILE_ONLY
-                            }
+                            currentActions.value.onReviewOpenChange(true, reviewOpenUri)
+                            Unit
                         } else {
                             // Nothing to review (fresh or reinstalled app): the tap asks for the
                             // capture-restore instead — and, via MainActivity's decorator, for the
@@ -1465,21 +1438,19 @@ fun CameraScreen(
         )
     }
 
-    val frozenReviewUri = reviewUri
-    if (state.reviewOpen && frozenReviewUri != null) {
+    val frozenReview = state.openReview
+    if (frozenReview != null) {
         MediaReviewOverlay(
-            uri = frozenReviewUri,
-            deleteScope = reviewDeleteScope,
-            provenance = reviewProvenance,
+            uri = frozenReview.uri,
+            deleteScope = frozenReview.deleteScope,
+            provenance = frozenReview.provenance,
             overlayRotation = overlayRotation,
             onClose = {
-                actions.onReviewOpenChange(false, frozenReviewUri)
-                reviewUri = null
+                actions.onReviewOpenChange(false, frozenReview.uri)
             },
             onDelete = {
-                actions.onDeleteLastMedia(frozenReviewUri, reviewProvenance)
-                actions.onReviewOpenChange(false, frozenReviewUri)
-                reviewUri = null
+                actions.onDeleteLastMedia(frozenReview.uri, frozenReview.provenance)
+                actions.onReviewOpenChange(false, frozenReview.uri)
             },
         )
     }

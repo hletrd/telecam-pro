@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.ui
 
+import android.net.Uri
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -20,10 +23,15 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.OpenReviewPresentation
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.ViewfinderFocusActionAvailability
+import me.hletrd.telecampro.PermissionGate
+import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import me.hletrd.telecampro.ui.review.GalleryThumb
+import java.lang.reflect.Proxy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -37,6 +45,11 @@ import org.robolectric.annotation.Config
 class CameraAdmissionPresentationComposeTest {
     @get:Rule
     val compose = createComposeRule()
+
+    private val noOpActions: CameraActions = Proxy.newProxyInstance(
+        CameraActions::class.java.classLoader,
+        arrayOf(CameraActions::class.java),
+    ) { _, method, _ -> if (method.returnType == java.lang.Boolean.TYPE) false else null } as CameraActions
 
     @Test
     fun `shutter alpha and semantics follow healthy and fail closed state`() {
@@ -185,6 +198,59 @@ class CameraAdmissionPresentationComposeTest {
         }
         compose.waitForIdle()
         assertEquals(listOf(1, 0, 0, 0), activations.toList())
+    }
+
+    @Test
+    fun `policy replacement reconstructs the exact ViewModel-owned review presentation`() {
+        val policyBlocked = mutableStateOf(false)
+        val state = mutableStateOf(
+            CameraUiState(
+                cameraReady = true,
+                photoSessionOutputs = PhotoSessionOutputs(processed = true),
+            ),
+        )
+        val frozen = OpenReviewPresentation(
+            uri = Uri.parse("content://telecam.test/replacement-review"),
+            provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            deleteScope = MediaDeleteScope.FILE_ONLY,
+        )
+        compose.setContent {
+            TeleCamProTheme {
+                if (policyBlocked.value) {
+                    PermissionGate(
+                        permanentlyDenied = true,
+                        policyBlocked = true,
+                        onRequest = {},
+                        onOpenSettings = {},
+                        onOpenPrivacy = {},
+                    )
+                } else {
+                    CameraScreen(
+                        state = state.value,
+                        actions = noOpActions,
+                        previewViewFactory = { View(it) },
+                        windowRotationOverrideDeg = 0,
+                    )
+                }
+            }
+        }
+
+        state.value = state.value.copy(openReview = frozen)
+        compose.waitForIdle()
+        val reviewPane = SemanticsMatcher.expectValue(
+            SemanticsProperties.PaneTitle,
+            "Media review",
+        )
+        compose.onNode(reviewPane).assertExists()
+
+        policyBlocked.value = true
+        compose.waitForIdle()
+        compose.onNode(reviewPane).assertDoesNotExist()
+
+        policyBlocked.value = false
+        compose.waitForIdle()
+        compose.onNode(reviewPane).assertExists()
+        assertEquals(frozen, state.value.openReview)
     }
 
     private fun customActionLabels(): List<String> = compose.onNodeWithTag("viewfinder")
