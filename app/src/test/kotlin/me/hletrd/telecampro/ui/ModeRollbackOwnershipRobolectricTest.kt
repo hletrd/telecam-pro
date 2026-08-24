@@ -29,7 +29,11 @@ class ModeRollbackOwnershipRobolectricTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private var vm: CameraViewModel? = null
 
-    private fun createAccepted(mode: CaptureMode): Pair<CameraViewModel, CameraEngine> {
+    private fun createAccepted(
+        mode: CaptureMode,
+        acceptedTransfer: ColorTransfer = transferFor(mode),
+        requestedTransfer: ColorTransfer = ColorTransfer.HLG,
+    ): Pair<CameraViewModel, CameraEngine> {
         RobolectricEglSentinels.ensure()
         val engine = CameraEngine(app)
         val viewModel = CameraViewModel(app, engine)
@@ -53,12 +57,12 @@ class ModeRollbackOwnershipRobolectricTest {
         setBoolean(engine, "cameraReady", true)
         setBoolean(engine, "previewReady", true)
         setBoolean(engine, "videoMode", mode == CaptureMode.VIDEO)
-        setField(engine, "transfer", transferFor(mode))
+        setField(engine, "transfer", acceptedTransfer)
         setBoolean(viewModel, "lifecycleStarted", true)
         state(viewModel).value = state(viewModel).value.copy(
             cameraReady = true,
             mode = mode,
-            transfer = ColorTransfer.HLG,
+            transfer = requestedTransfer,
             videoCodec = VideoCodec.HEVC,
             tenBitEncodeAvailable = true,
             recordAudio = true,
@@ -123,8 +127,15 @@ class ModeRollbackOwnershipRobolectricTest {
     fun `failed Photo to Video restores SDR drops standby and Ready`() {
         val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
         assertFalse(standbyWanted(engine))
+        val generationBefore = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
 
         viewModel.onModeChange(CaptureMode.VIDEO)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertEquals(
+            "mode and transfer must publish through one optics generation",
+            generationBefore + 1,
+            (field(engine, "opticsIntentGeneration") as AtomicLong).get(),
+        )
         assertTrue(standbyWanted(engine))
 
         forceOwnedRollback(engine, ColorTransfer.SDR)
@@ -133,6 +144,27 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals(ColorTransfer.SDR, engineTransfer(engine))
         assertFalse(standbyWanted(engine))
         assertTrue(viewModel.state.value.cameraReady)
+    }
+
+    @Test
+    fun `failed direct transfer reopen restores the accepted pre-mutation transfer`() {
+        val (_, engine) = createAccepted(
+            CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+        val generationBefore = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
+
+        engine.setTransfer(ColorTransfer.HLG)
+
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertEquals(
+            generationBefore + 1,
+            (field(engine, "opticsIntentGeneration") as AtomicLong).get(),
+        )
+        forceOwnedRollback(engine, ColorTransfer.SDR)
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertTrue(engineReady(engine))
     }
 
     private fun transferFor(mode: CaptureMode) =
@@ -144,6 +176,7 @@ class ModeRollbackOwnershipRobolectricTest {
 
     private fun engineTransfer(engine: CameraEngine) = field(engine, "transfer") as ColorTransfer
     private fun standbyWanted(engine: CameraEngine) = field(engine, "standbyAudioMonitorWanted") as Boolean
+    private fun engineReady(engine: CameraEngine) = field(engine, "cameraReady") as Boolean
 
     private fun field(owner: Any, name: String): Any? = owner.javaClass.getDeclaredField(name)
         .apply { isAccessible = true }

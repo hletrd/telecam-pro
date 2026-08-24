@@ -1386,6 +1386,7 @@ class CameraViewModel private constructor(
             resolvedControls = cSynced,
             resolvedPhotoExposureTimeNs = photoExposureTimeNs,
             recalledVideoSize = restoredVideoSize,
+            resolvedTransfer = if (e.mode == CaptureMode.VIDEO) safeTransfer else ColorTransfer.SDR,
         )
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
@@ -1417,7 +1418,6 @@ class CameraViewModel private constructor(
         } else {
             engine.setVideoCodec(safeCodec)
         }
-        applyEngineTransfer(e.mode, safeTransfer, safeCodec)
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
@@ -2328,8 +2328,15 @@ class CameraViewModel private constructor(
             resolvedLens = optics.lens,
             resolvedControls = optics.controls,
             resolvedPhotoExposureTimeNs = photoExposureTimeNs,
+            resolvedTransfer = if (mode == CaptureMode.VIDEO) {
+                _state.value.transfer.normalizedForEncoder(
+                    _state.value.videoCodec,
+                    _state.value.tenBitEncodeAvailable,
+                )
+            } else {
+                ColorTransfer.SDR
+            },
         )
-        applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
         // refreshProgramAppSide is intentionally a no-op when the already-published flag matches;
         // the analysis pipeline still needs an explicit mode-boundary update in that case.

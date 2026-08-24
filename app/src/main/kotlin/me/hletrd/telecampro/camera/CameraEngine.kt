@@ -690,7 +690,11 @@ class CameraEngine internal constructor(
         // transaction's monitor). Compared against the CONFIGURED intent, not accepted truth: a
         // ladder-dropped hi-res (intent true, truth false) must not force a full — and identically
         // failing — reconfigure on every subsequent fast door (tracer T9 / code-review F12).
-        if (resolvedHiResStill() != transaction.before.hiResConfigured &&
+        val sessionTransferChanged = tenBitSessionWanted(
+            transaction.before.videoMode,
+            transaction.before.transfer,
+        ) != tenBitSessionWanted(videoMode, transfer)
+        if ((resolvedHiResStill() != transaction.before.hiResConfigured || sessionTransferChanged) &&
             ownsOpticsTransaction(transaction) && !paused && recorder == null
         ) {
             reconfigureCamera(cameraId, transaction)
@@ -2174,6 +2178,7 @@ class CameraEngine internal constructor(
         resolvedLens: LensChoice,
         resolvedControls: ManualControls,
         resolvedPhotoExposureTimeNs: Long,
+        resolvedTransfer: ColorTransfer,
     ) {
         val wasVideoMode = videoMode
         if (captureModeTransitionStopsTimelapse(wasVideoMode, enabled)) {
@@ -2195,10 +2200,12 @@ class CameraEngine internal constructor(
         val modeControls = modeIntent.normalizedForCaptureMode(
             if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
-        val changed = wasVideoMode != enabled
+        val targetTransfer = if (enabled) resolvedTransfer else ColorTransfer.SDR
+        val changed = wasVideoMode != enabled || transfer != targetTransfer
         val transaction = if (changed) {
             beginOpticsTransaction {
                 videoMode = enabled
+                transfer = targetTransfer
                 lensChoice = resolvedLens
                 controls = modeControls
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
@@ -2209,12 +2216,14 @@ class CameraEngine internal constructor(
         } else {
             synchronized(this) {
                 videoMode = enabled
+                transfer = targetTransfer
                 lensChoice = resolvedLens
                 controls = modeControls
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
             }
             null
         }
+        if (recorder == null) gl.setTransfer(targetTransfer)
         // Mode changes how the finder gate treats still aspect: Photo requires 4:3, while Video
         // deliberately ignores it. Re-resolve synchronously so a mode flip cannot leave stale GL
         // PIP truth until the async reconfigure lands.
@@ -2321,6 +2330,7 @@ class CameraEngine internal constructor(
         resolvedControls: ManualControls,
         resolvedPhotoExposureTimeNs: Long,
         recalledVideoSize: Size?,
+        resolvedTransfer: ColorTransfer,
     ): Boolean {
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
         val declaration = teleconverterDeclaration(
@@ -2347,6 +2357,7 @@ class CameraEngine internal constructor(
         )
         val transaction = beginOpticsTransaction {
             videoMode = enabledVideo
+            transfer = if (enabledVideo) resolvedTransfer else ColorTransfer.SDR
             lensChoice = resolvedLens
             teleconverterMode = routeTeleconverter
             teleconverterDeclaration = declaration
@@ -2365,6 +2376,7 @@ class CameraEngine internal constructor(
             overrideId = null
             userCameraPin = null
         }.first
+        if (recorder == null) gl.setTransfer(transfer)
         // Self-contained finder resolve: TC/mode just changed above, and relying on the restore
         // block's TRAILING setAspectRatio/setTeleFinder calls made correctness depend on adjacent
         // setter call order (a reorder would resolve against stale inputs).
@@ -2466,7 +2478,6 @@ class CameraEngine internal constructor(
             ColorTransfer.SDR
         }
         val previousTransfer = transfer
-        transfer = resolved
         // Log = a GL-baked standard curve (proven architecture, inherited from the removed O-Log2
         // option). The native com.oplus.log.video.mode key was tried twice and is effectively INERT
         // for a third-party Camera2 session: the HAL accepts it ("applied" logs) but neither the
@@ -2483,8 +2494,14 @@ class CameraEngine internal constructor(
         // a change that flips that answer has to reconfigure or the new curve rides the old buffers.
         val tenBitChanged = tenBitSessionWanted(videoMode, previousTransfer) !=
             tenBitSessionWanted(videoMode, resolved)
-        if (tenBitChanged) reopenForSession()
-        if (recorder == null) gl.setTransfer(resolved)
+        if (tenBitChanged && recorder == null) {
+            val transaction = beginOpticsTransaction { transfer = resolved }.first
+            gl.setTransfer(resolved)
+            reopenForSession(transaction)
+        } else {
+            transfer = resolved
+            if (recorder == null) gl.setTransfer(resolved)
+        }
     }
     fun setPeaking(enabled: Boolean) {
         rendererAssists.setPeaking(enabled)
