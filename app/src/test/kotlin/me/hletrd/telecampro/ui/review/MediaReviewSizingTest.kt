@@ -11,7 +11,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.ByteArrayInputStream
 
 class MediaReviewSizingTest {
 
@@ -272,20 +271,35 @@ class MediaReviewSizingTest {
     }
 
     @Test
-    fun `still review snapshot is bounded from one source open`() {
-        val bytes = ByteArray(9) { it.toByte() }
-
-        assertEquals(bytes.toList(), readBoundedReviewSnapshot(ByteArrayInputStream(bytes), 9)?.toList())
-        assertNull(readBoundedReviewSnapshot(ByteArrayInputStream(bytes), 8))
-        assertNull(readBoundedReviewSnapshot(ByteArrayInputStream(bytes), 0))
-    }
-
-    @Test
     fun `still review sample and decoded size fail closed`() {
         assertEquals(1, reviewDecodeSampleSize(3000, 2000, 3000))
         assertEquals(4, reviewDecodeSampleSize(6001, 4000, 3000))
+        assertEquals(4, reviewDecodeSampleSize(4000, 6001, 3000))
+        assertEquals(1_048_576, reviewDecodeSampleSize(Int.MAX_VALUE, 1, 3000))
+        assertEquals(1_048_576, reviewDecodeSampleSize(1, Int.MAX_VALUE, 3000))
+        assertEquals(1_073_741_824, reviewDecodeSampleSize(Int.MAX_VALUE, 1, 2))
+        assertNull(reviewDecodeSampleSize(Int.MAX_VALUE, 1, 1))
         assertNull(reviewDecodeSampleSize(0, 4000, 3000))
         assertNull(reviewDecodeSampleSize(4000, 3000, 0))
+
+        for (longest in listOf(1, 2999, 3000, 3001, 5999, 6000, 6001, 12_001, Int.MAX_VALUE)) {
+            val sample = requireNotNull(reviewDecodeSampleSize(longest, 1, 3000))
+            assertTrue(
+                "sample must be a positive power of two: $sample",
+                sample > 0 && (sample and (sample - 1)) == 0,
+            )
+            assertTrue(
+                "sample must satisfy the requested bound: longest=$longest sample=$sample",
+                (longest.toLong() + sample - 1L) / sample <= 3000L,
+            )
+            if (sample > 1) {
+                val previous = sample / 2
+                assertTrue(
+                    "sample must be the smallest admitted power: longest=$longest sample=$sample",
+                    (longest.toLong() + previous - 1L) / previous > 3000L,
+                )
+            }
+        }
 
         assertTrue(reviewDecodedFitsBound(3000, 2000, 3000))
         assertFalse(reviewDecodedFitsBound(3001, 2000, 3000))

@@ -16,12 +16,145 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.Closeable
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * Process-wide byte authority for immutable compressed review sources.
+ *
+ * Reservations grow with bytes actually accepted from the provider rather than pessimistically
+ * claiming one complete per-source ceiling. The monitor covers arithmetic only; provider reads and
+ * cache-file writes never run while it is held. A blocked/retired worker therefore keeps accounting
+ * for exactly the bytes it still owns until its synchronous work can reach cleanup.
+ */
+internal class ReviewSourceByteBudget(private val maxBytes: Long) {
+    init {
+        require(maxBytes > 0L) { "review source budget must be positive" }
+    }
+
+    private var usedBytes = 0L
+
+    internal inner class Lease internal constructor() : Closeable {
+        private var reservedBytes = 0L
+        private var closed = false
+
+        fun tryGrow(byteCount: Int): Boolean = synchronized(this@ReviewSourceByteBudget) {
+            if (closed || byteCount <= 0) return@synchronized false
+            val delta = byteCount.toLong()
+            if (usedBytes > maxBytes - delta) return@synchronized false
+            usedBytes += delta
+            reservedBytes += delta
+            true
+        }
+
+        override fun close() = synchronized(this@ReviewSourceByteBudget) {
+            if (closed) return@synchronized
+            check(reservedBytes in 0L..usedBytes) { "review source reservation accounting diverged" }
+            usedBytes -= reservedBytes
+            reservedBytes = 0L
+            closed = true
+        }
+    }
+
+    fun openLease(): Lease = Lease()
+
+    /** Focused test/diagnostic seam; production admission never branches on this snapshot. */
+    internal fun usedBytes(): Long = synchronized(this) { usedBytes }
+}
+
+/**
+ * One private, read-only compressed source used for bounds, pixels, and EXIF.
+ *
+ * The provider stream is consumed once into a cache file. Later decoder stages receive fresh
+ * read-only streams over those same immutable bytes, avoiding both provider TOCTOU and the former
+ * ByteArrayOutputStream + toByteArray heap duplication. Closing is exactly-once and releases both
+ * the cache file and its process byte reservation.
+ */
+internal class ReviewSourceSpool(
+    private val file: File,
+    val sizeBytes: Long,
+    private val lease: ReviewSourceByteBudget.Lease,
+) : Closeable {
+    private val closed = AtomicBoolean(false)
+
+    fun openInputStream(): InputStream {
+        check(!closed.get()) { "review source spool is closed" }
+        return FileInputStream(file)
+    }
+
+    internal fun exists(): Boolean = file.exists()
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        runCatching { file.delete() }
+        lease.close()
+    }
+}
+
+internal const val REVIEW_SOURCE_MAX_BYTES = 64L * 1024L * 1024L
+internal const val REVIEW_SOURCE_PROCESS_MAX_BYTES = 2L * REVIEW_SOURCE_MAX_BYTES
+
+/** Two maximum-size sources may coexist; smaller thumbnail/full requests share the residual bytes. */
+private val processReviewSourceBudget = ReviewSourceByteBudget(REVIEW_SOURCE_PROCESS_MAX_BYTES)
+
+/**
+ * Copies one provider source into an immutable private spool with per-source and process bounds.
+ * Every failure path deletes the partial file and releases the exact bytes already admitted.
+ */
+internal fun spoolReviewSource(
+    cacheDirectory: File,
+    input: InputStream,
+    maxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
+    budget: ReviewSourceByteBudget = processReviewSourceBudget,
+): ReviewSourceSpool? {
+    if (maxBytes <= 0L) return null
+    val lease = budget.openLease()
+    var spoolFile: File? = null
+    var transferred = false
+    try {
+        if (!cacheDirectory.isDirectory && !cacheDirectory.mkdirs()) return null
+        val file = File.createTempFile("review-source-", ".bin", cacheDirectory)
+        spoolFile = file
+        var total = 0L
+        val buffer = ByteArray(64 * 1024)
+        FileOutputStream(file).use { output ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                if (read == 0) {
+                    val single = input.read()
+                    if (single < 0) break
+                    if (total >= maxBytes || !lease.tryGrow(1)) return null
+                    output.write(single)
+                    total++
+                    continue
+                }
+                if (total > maxBytes - read || !lease.tryGrow(read)) return null
+                output.write(buffer, 0, read)
+                total += read
+            }
+        }
+        if (!file.setReadOnly()) return null
+        transferred = true
+        return ReviewSourceSpool(file, total, lease)
+    } catch (_: Throwable) {
+        return null
+    } finally {
+        if (!transferred) {
+            spoolFile?.let { file -> runCatching { file.delete() } }
+            lease.close()
+        }
+    }
+}
 
 /**
  * Process-finite latest-wins lane for work whose individual result is expensive to retain.
