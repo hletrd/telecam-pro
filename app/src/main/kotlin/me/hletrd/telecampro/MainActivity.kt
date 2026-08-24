@@ -17,11 +17,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -39,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -855,53 +860,65 @@ internal fun PermissionGate(
     // look odd on a Sony camera screen" (docs/UX_POLICY.md). The primary CTA carries clearly more
     // visual weight than the secondary Privacy link.
     Surface(modifier = Modifier.fillMaxSize(), color = CameraColors.Background) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = when {
-                    policyBlocked -> stringResource(R.string.camera_permission_policy_blocked)
-                    permanentlyDenied -> stringResource(R.string.camera_permission_permanently_denied)
-                    else -> stringResource(R.string.camera_permission_required)
-                },
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodyLarge,
-                color = CameraColors.TextPrimary,
-            )
-            Spacer(Modifier.height(16.dp))
-            // A CONTAINER fill, not foreground ink — hence a bare `Color.White` rather than
-            // CameraColors.TextPrimary, which is the rule stated on CameraColors. The pairing proves
-            // it: the content on top of this is BLACK, so the white here is the surface the CTA is
-            // made of. (This is the one white outside ui/; the permission screen predates the token
-            // set and draws no camera chrome.)
-            val primaryColors = ButtonDefaults.buttonColors(
-                containerColor = Color.White,
-                contentColor = Color.Black,
-            )
-            // 48 dp outer targets (DES4-2): these CTAs gate ALL further use of the app and are the
-            // first thing a new user must hit one-handed; material3's bare Button/TextButton stop
-            // at a 40 dp container.
-            if (permanentlyDenied) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val availableHeight = maxHeight
+            val compact = availableHeight < 480.dp || LocalDensity.current.fontScale >= 1.5f
+            Column(
+                // Keep the centered first-run composition on ordinary windows, but give compact
+                // windows a bounded scroll owner. heightIn preserves a viewport-height content box
+                // when the copy is short and expands naturally when EN/KO large-font copy or an
+                // external-navigation recovery exceeds it.
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = availableHeight)
+                    .padding(horizontal = 24.dp, vertical = if (compact) 12.dp else 24.dp),
+                verticalArrangement = if (compact) Arrangement.Top else Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = when {
+                        policyBlocked -> stringResource(R.string.camera_permission_policy_blocked)
+                        permanentlyDenied -> stringResource(R.string.camera_permission_permanently_denied)
+                        else -> stringResource(R.string.camera_permission_required)
+                    },
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = CameraColors.TextPrimary,
+                )
+                Spacer(Modifier.height(16.dp))
+                // A CONTAINER fill, not foreground ink — hence a bare `Color.White` rather than
+                // CameraColors.TextPrimary, which is the rule stated on CameraColors. The pairing proves
+                // it: the content on top of this is BLACK, so the white here is the surface the CTA is
+                // made of. (This is the one white outside ui/; the permission screen predates the token
+                // set and draws no camera chrome.)
+                val primaryColors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                )
+                // 48 dp outer targets (DES4-2): these CTAs gate ALL further use of the app and are the
+                // first thing a new user must hit one-handed; material3's bare Button/TextButton stop
+                // at a 40 dp container.
+                if (permanentlyDenied) {
+                    MinTouchTarget48 {
+                        Button(onClick = onOpenSettings, colors = primaryColors) { Text(stringResource(R.string.action_settings)) }
+                    }
+                } else {
+                    MinTouchTarget48 {
+                        Button(onClick = onRequest, colors = primaryColors) { Text(stringResource(R.string.action_allow_camera_access)) }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 MinTouchTarget48 {
-                    Button(onClick = onOpenSettings, colors = primaryColors) { Text(stringResource(R.string.action_settings)) }
+                    TextButton(onClick = onOpenPrivacy) {
+                        Text(stringResource(R.string.action_privacy_policy), color = CameraColors.TextSecondary)
+                    }
                 }
-            } else {
-                MinTouchTarget48 {
-                    Button(onClick = onRequest, colors = primaryColors) { Text(stringResource(R.string.action_allow_camera_access)) }
-                }
+                ExternalNavigationRecovery(
+                    failure = externalFailure,
+                    onOpenPrivacyInApp = onOpenPrivacyInApp,
+                )
             }
-            Spacer(Modifier.height(8.dp))
-            MinTouchTarget48 {
-                TextButton(onClick = onOpenPrivacy) {
-                    Text(stringResource(R.string.action_privacy_policy), color = CameraColors.TextSecondary)
-                }
-            }
-            ExternalNavigationRecovery(
-                failure = externalFailure,
-                onOpenPrivacyInApp = onOpenPrivacyInApp,
-            )
         }
     }
 }
