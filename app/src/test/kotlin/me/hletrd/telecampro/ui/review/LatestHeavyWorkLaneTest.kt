@@ -384,13 +384,17 @@ class LatestHeavyWorkLaneTest {
         val dispatcher = executor.asCoroutineDispatcher()
         val release = CountDownLatch(1)
         try {
-            val started = CountDownLatch(2)
+            val startedA = CountDownLatch(1)
+            val startedB = CountDownLatch(1)
             val lane = ProgressiveLatestWorkLane<String, String>(
                 dispatcher = dispatcher,
                 workerCount = 2,
                 terminalTimeoutMs = 100,
                 work = {
-                    started.countDown()
+                    when (it) {
+                        "A" -> startedA.countDown()
+                        "B" -> startedB.countDown()
+                    }
                     release.await()
                     it
                 },
@@ -399,8 +403,12 @@ class LatestHeavyWorkLaneTest {
 
             runBlocking {
                 val a = async(start = CoroutineStart.UNDISPATCHED) { lane.submit(Any(), "A") }
+                // Make A STARTED before publishing B. Otherwise latest-wins may legitimately retire
+                // queued A before a worker consumes it under full-suite host load, and this test
+                // waits forever for a second blocker it never actually established.
+                assertTrue(startedA.await(2, TimeUnit.SECONDS))
                 val b = async(start = CoroutineStart.UNDISPATCHED) { lane.submit(Any(), "B") }
-                assertTrue(started.await(2, TimeUnit.SECONDS))
+                assertTrue(startedB.await(2, TimeUnit.SECONDS))
                 val newest = lane.submit(Any(), "C")
 
                 assertEquals(ProgressiveLatestWorkLane.Submission.CapacityExhausted, newest)
