@@ -67,6 +67,8 @@ def run_documentation_gate_from_committed_export(
             "privacy-policy/index.html",
             "docs/ARCHITECTURE.md",
             "docs/FIELD_CHECKS.md",
+            "docs/play-console-submit.md",
+            "docs/assets/play/screenshots/tablet/asset-validity.json",
             "device-tests/README.md",
             "app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
@@ -357,6 +359,12 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("phone screenshot bytes match the validity manifest", result.stdout)
         self.assertIn("committed submission sheet matches phone screenshot readiness", result.stdout)
+        self.assertIn("tablet screenshot bytes match the validity manifest", result.stdout)
+        self.assertIn("committed submission sheet matches tablet screenshot readiness", result.stdout)
+        self.assertIn(
+            "committed tablet asset guidance keeps the deleted operator rail retired",
+            result.stdout,
+        )
         self.assertIn("PRIVACY.md discloses CAMERA", result.stdout)
         self.assertIn("ownerless legacy candidates without an own-captures-only claim", result.stdout)
         self.assertIn(
@@ -1037,6 +1045,81 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  committed submission sheet matches phone screenshot readiness",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
+        def add_missing_asset(root: Path) -> None:
+            path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            missing = "docs/assets/play/screenshots/tablet/99-missing.png"
+            manifest["assets"][missing] = "0" * 64
+            manifest["blocking_assets"].append(missing)
+            path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(add_missing_asset)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  tablet screenshot manifest owns every checked-in tablet PNG",
+            result.stdout,
+        )
+        self.assertIn("99-missing.png", result.stdout)
+
+    def test_committed_export_rejects_mismatched_tablet_screenshot_digest(self) -> None:
+        def mismatch_digest(root: Path) -> None:
+            path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            asset = "docs/assets/play/screenshots/tablet/03-focus.png"
+            manifest["assets"][asset] = "0" * 64
+            path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(mismatch_digest)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FAIL  tablet screenshot bytes match the validity manifest", result.stdout)
+        self.assertIn("03-focus.png", result.stdout)
+
+    def test_committed_export_rejects_stale_tablet_screenshot_copy(self) -> None:
+        def drift_copy(root: Path) -> None:
+            path = root / "app/src/main/res/values/strings.xml"
+            text = path.read_text(encoding="utf-8")
+            marker = '<string name="label_gamma">Gamma</string>'
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, '<string name="label_gamma">Tone Map</string>', 1),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(drift_copy)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  tablet screenshot recapture copy matches current resources",
+            result.stdout,
+        )
+        self.assertIn("label_gamma", result.stdout)
+
+    def test_committed_export_rejects_unproved_tablet_screenshot_promotion(self) -> None:
+        def claim_ready(root: Path) -> None:
+            path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["submission_ready"] = True
+            path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(claim_ready)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  tablet screenshot manifest records a valid fail-closed provenance state",
+            result.stdout,
+        )
+        self.assertIn(
+            "FAIL  committed submission sheet matches tablet screenshot readiness",
             result.stdout,
         )
 
