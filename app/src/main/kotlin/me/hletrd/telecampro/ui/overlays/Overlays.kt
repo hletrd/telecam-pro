@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -322,6 +323,19 @@ fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceO
  * Tap-to-focus reticle: a small yellow bracketed square centered at [point] (view-normalized
  * 0..1 coordinates). Draws nothing while [point] is null (e.g. after the auto-hide timeout).
  */
+internal enum class FocusReticleCue {
+    NONE,
+    CHECK,
+    CROSS,
+}
+
+/** Non-color terminal-state channel kept pure so every AF state has deterministic coverage. */
+internal fun focusReticleCue(indication: AfIndication): FocusReticleCue = when (indication) {
+    AfIndication.FOCUSED -> FocusReticleCue.CHECK
+    AfIndication.FAILED -> FocusReticleCue.CROSS
+    AfIndication.SCANNING, AfIndication.IDLE -> FocusReticleCue.NONE
+}
+
 @Composable
 fun FocusReticle(
     point: Pair<Float, Float>?,
@@ -351,18 +365,55 @@ fun FocusReticle(
         val half = 32.dp.toPx()
         val corner = 10.dp.toPx()
         val strokeWidth = 2.dp.toPx()
+        val outlineWidth = 4.dp.toPx()
         val left = cx - half
         val right = cx + half
         val top = cy - half
         val bottom = cy + half
-        drawLine(color, Offset(left, top), Offset(left + corner, top), strokeWidth)
-        drawLine(color, Offset(left, top), Offset(left, top + corner), strokeWidth)
-        drawLine(color, Offset(right, top), Offset(right - corner, top), strokeWidth)
-        drawLine(color, Offset(right, top), Offset(right, top + corner), strokeWidth)
-        drawLine(color, Offset(left, bottom), Offset(left + corner, bottom), strokeWidth)
-        drawLine(color, Offset(left, bottom), Offset(left, bottom - corner), strokeWidth)
-        drawLine(color, Offset(right, bottom), Offset(right - corner, bottom), strokeWidth)
-        drawLine(color, Offset(right, bottom), Offset(right, bottom - corner), strokeWidth)
+        val bracketSegments = listOf(
+            Offset(left, top) to Offset(left + corner, top),
+            Offset(left, top) to Offset(left, top + corner),
+            Offset(right, top) to Offset(right - corner, top),
+            Offset(right, top) to Offset(right, top + corner),
+            Offset(left, bottom) to Offset(left + corner, bottom),
+            Offset(left, bottom) to Offset(left, bottom - corner),
+            Offset(right, bottom) to Offset(right - corner, bottom),
+            Offset(right, bottom) to Offset(right, bottom - corner),
+        )
+        fun drawOutlinedLine(start: Offset, end: Offset, rounded: Boolean = false) {
+            val cap = if (rounded) StrokeCap.Round else StrokeCap.Butt
+            // Two-channel contrast over arbitrary preview pixels: bright state ink survives dark
+            // detail, while its opaque black keyline survives bright or same-hue subjects.
+            drawLine(Color.Black, start, end, outlineWidth, cap = cap)
+            drawLine(color, start, end, strokeWidth, cap = cap)
+        }
+        bracketSegments.forEach { (start, end) -> drawOutlinedLine(start, end) }
+
+        // Color remains the Sony-style fast glance channel; terminal geometry makes the same
+        // verdict available to color-vision-deficient operators without adding prose to the finder.
+        val cueHalf = 9.dp.toPx()
+        when (focusReticleCue(indication)) {
+            FocusReticleCue.NONE -> Unit
+            FocusReticleCue.CHECK -> {
+                val start = Offset(cx - cueHalf, cy)
+                val middle = Offset(cx - cueHalf * 0.25f, cy + cueHalf * 0.7f)
+                val end = Offset(cx + cueHalf, cy - cueHalf * 0.8f)
+                drawOutlinedLine(start, middle, rounded = true)
+                drawOutlinedLine(middle, end, rounded = true)
+            }
+            FocusReticleCue.CROSS -> {
+                drawOutlinedLine(
+                    Offset(cx - cueHalf, cy - cueHalf),
+                    Offset(cx + cueHalf, cy + cueHalf),
+                    rounded = true,
+                )
+                drawOutlinedLine(
+                    Offset(cx + cueHalf, cy - cueHalf),
+                    Offset(cx - cueHalf, cy + cueHalf),
+                    rounded = true,
+                )
+            }
+        }
     }
 }
 
