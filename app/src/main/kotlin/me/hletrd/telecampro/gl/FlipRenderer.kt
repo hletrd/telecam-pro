@@ -8,6 +8,53 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
+internal data class ShaderLocations(
+    val aPosition: Int,
+    val aTexCoord: Int,
+    val uMvp: Int,
+    val uTexMatrix: Int,
+    val uTexture: Int,
+    val uTransfer: Int,
+    val uSourceHlg: Int,
+    val uPeaking: Int,
+    val uPeakThreshold: Int,
+    val uPeakColor: Int,
+    val uZebra: Int,
+    val uZebraThreshold: Int,
+    val uFalseColor: Int,
+    val uTexel: Int,
+    val uDigitalGain: Int,
+)
+
+internal fun resolveShaderLocations(
+    attributeLookup: (String) -> Int,
+    uniformLookup: (String) -> Int,
+): ShaderLocations {
+    fun required(kind: String, name: String, location: Int): Int {
+        check(location >= 0) { "Required shader $kind '$name' is inactive or missing" }
+        return location
+    }
+    fun attribute(name: String) = required("attribute", name, attributeLookup(name))
+    fun uniform(name: String) = required("uniform", name, uniformLookup(name))
+    return ShaderLocations(
+        aPosition = attribute(ShaderBindings.A_POSITION),
+        aTexCoord = attribute(ShaderBindings.A_TEX_COORD),
+        uMvp = uniform(ShaderBindings.U_MVP),
+        uTexMatrix = uniform(ShaderBindings.U_TEX_MATRIX),
+        uTexture = uniform(ShaderBindings.U_TEXTURE),
+        uTransfer = uniform(ShaderBindings.U_TRANSFER),
+        uSourceHlg = uniform(ShaderBindings.U_SOURCE_HLG),
+        uPeaking = uniform(ShaderBindings.U_PEAKING),
+        uPeakThreshold = uniform(ShaderBindings.U_PEAK_THRESHOLD),
+        uPeakColor = uniform(ShaderBindings.U_PEAK_COLOR),
+        uZebra = uniform(ShaderBindings.U_ZEBRA),
+        uZebraThreshold = uniform(ShaderBindings.U_ZEBRA_THRESHOLD),
+        uFalseColor = uniform(ShaderBindings.U_FALSE_COLOR),
+        uTexel = uniform(ShaderBindings.U_TEXEL),
+        uDigitalGain = uniform(ShaderBindings.U_DIGITAL_GAIN),
+    )
+}
+
 /**
  * Draws the camera external-OES texture to whatever GL surface is current.
  *
@@ -67,21 +114,25 @@ class FlipRenderer {
     /** Compiles the program and allocates the external texture. Must run with an EGL context current. */
     fun init(): Int {
         program = buildProgram(Shaders.VERTEX, Shaders.FRAGMENT)
-        aPosition = GLES20.glGetAttribLocation(program, "aPosition")
-        aTexCoord = GLES20.glGetAttribLocation(program, "aTexCoord")
-        uMvp = GLES20.glGetUniformLocation(program, "uMvp")
-        uTexMatrix = GLES20.glGetUniformLocation(program, "uTexMatrix")
-        uTexture = GLES20.glGetUniformLocation(program, "uTexture")
-        uTransfer = GLES20.glGetUniformLocation(program, "uTransfer")
-        uSourceHlg = GLES20.glGetUniformLocation(program, "uSourceHlg")
-        uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
-        uPeakThreshold = GLES20.glGetUniformLocation(program, "uPeakThreshold")
-        uPeakColor = GLES20.glGetUniformLocation(program, "uPeakColor")
-        uZebra = GLES20.glGetUniformLocation(program, "uZebra")
-        uZebraThreshold = GLES20.glGetUniformLocation(program, "uZebraThreshold")
-        uFalseColor = GLES20.glGetUniformLocation(program, "uFalseColor")
-        uTexel = GLES20.glGetUniformLocation(program, "uTexel")
-        uDigitalGain = GLES20.glGetUniformLocation(program, "uDigitalGain")
+        val locations = resolveShaderLocations(
+            attributeLookup = { GLES20.glGetAttribLocation(program, it) },
+            uniformLookup = { GLES20.glGetUniformLocation(program, it) },
+        )
+        aPosition = locations.aPosition
+        aTexCoord = locations.aTexCoord
+        uMvp = locations.uMvp
+        uTexMatrix = locations.uTexMatrix
+        uTexture = locations.uTexture
+        uTransfer = locations.uTransfer
+        uSourceHlg = locations.uSourceHlg
+        uPeaking = locations.uPeaking
+        uPeakThreshold = locations.uPeakThreshold
+        uPeakColor = locations.uPeakColor
+        uZebra = locations.uZebra
+        uZebraThreshold = locations.uZebraThreshold
+        uFalseColor = locations.uFalseColor
+        uTexel = locations.uTexel
+        uDigitalGain = locations.uDigitalGain
 
         // Fresh VBO per GL generation (same replay discipline as RendererConfigStore: init() must
         // fully re-seed everything a replacement context needs; release() deletes it).

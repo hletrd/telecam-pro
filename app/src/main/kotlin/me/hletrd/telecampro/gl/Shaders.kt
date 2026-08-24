@@ -1,5 +1,42 @@
 package me.hletrd.telecampro.gl
 
+/** One production authority shared by GLSL declarations, GLES lookup, and the host gate. */
+internal object ShaderBindings {
+    const val A_POSITION = "aPosition"
+    const val A_TEX_COORD = "aTexCoord"
+    const val U_MVP = "uMvp"
+    const val U_TEX_MATRIX = "uTexMatrix"
+    const val U_TEXTURE = "uTexture"
+    const val U_TRANSFER = "uTransfer"
+    const val U_SOURCE_HLG = "uSourceHlg"
+    const val U_PEAKING = "uPeaking"
+    const val U_PEAK_THRESHOLD = "uPeakThreshold"
+    const val U_PEAK_COLOR = "uPeakColor"
+    const val U_ZEBRA = "uZebra"
+    const val U_ZEBRA_THRESHOLD = "uZebraThreshold"
+    const val U_FALSE_COLOR = "uFalseColor"
+    const val U_TEXEL = "uTexel"
+    const val U_DIGITAL_GAIN = "uDigitalGain"
+
+    val attributes = setOf(A_POSITION, A_TEX_COORD)
+    val uniforms = setOf(
+        U_MVP,
+        U_TEX_MATRIX,
+        U_TEXTURE,
+        U_TRANSFER,
+        U_SOURCE_HLG,
+        U_PEAKING,
+        U_PEAK_THRESHOLD,
+        U_PEAK_COLOR,
+        U_ZEBRA,
+        U_ZEBRA_THRESHOLD,
+        U_FALSE_COLOR,
+        U_TEXEL,
+        U_DIGITAL_GAIN,
+    )
+    val requiredInterface = attributes + uniforms
+}
+
 /**
  * GLSL ES 2.0 shaders for the flip/preview pipeline.
  *
@@ -23,11 +60,11 @@ package me.hletrd.telecampro.gl
  */
 object Shaders {
 
-    const val VERTEX = """
-        uniform mat4 uMvp;
-        uniform mat4 uTexMatrix;
-        attribute vec4 aPosition;
-        attribute vec4 aTexCoord;
+    val VERTEX = """
+        uniform mat4 ${ShaderBindings.U_MVP};
+        uniform mat4 ${ShaderBindings.U_TEX_MATRIX};
+        attribute vec4 ${ShaderBindings.A_POSITION};
+        attribute vec4 ${ShaderBindings.A_TEX_COORD};
         varying vec2 vTexCoord;
         void main() {
             gl_Position = uMvp * aPosition;
@@ -39,19 +76,19 @@ object Shaders {
     val FRAGMENT = """
         #extension GL_OES_EGL_image_external : require
         precision highp float;
-        uniform samplerExternalOES uTexture;
+        uniform samplerExternalOES ${ShaderBindings.U_TEXTURE};
         // 1 when the CAMERA stream is a 10-bit HLG-encoded buffer (HLG10 / DV session).
-        uniform int uSourceHlg;
-        uniform int uTransfer;   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
+        uniform int ${ShaderBindings.U_SOURCE_HLG};
+        uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
                                  // 5 = LogC3/AWG3, 3 = vacant (removed O-Log2 branch)
-        uniform int uPeaking;    // 0/1  (preview only)
-        uniform float uPeakThreshold; // edge magnitude above which peaking paints
-        uniform vec3 uPeakColor;      // peaking highlight color
-        uniform int uZebra;      // 0/1  (preview only)
-        uniform float uZebraThreshold; // luma above which zebra stripes draw
-        uniform int uFalseColor; // 0/1  (preview only) exposure false-color map
-        uniform vec2 uTexel;     // 1/width, 1/height for neighbor sampling
-        uniform float uDigitalGain; // >=1 (preview only): brightness-simulation linear gain for the
+        uniform int ${ShaderBindings.U_PEAKING};    // 0/1  (preview only)
+        uniform float ${ShaderBindings.U_PEAK_THRESHOLD}; // edge magnitude above which peaking paints
+        uniform vec3 ${ShaderBindings.U_PEAK_COLOR};      // peaking highlight color
+        uniform int ${ShaderBindings.U_ZEBRA};      // 0/1  (preview only)
+        uniform float ${ShaderBindings.U_ZEBRA_THRESHOLD}; // luma above which zebra stripes draw
+        uniform int ${ShaderBindings.U_FALSE_COLOR}; // 0/1  (preview only) exposure false-color map
+        uniform vec2 ${ShaderBindings.U_TEXEL};     // 1/width, 1/height for neighbor sampling
+        uniform float ${ShaderBindings.U_DIGITAL_GAIN}; // >=1 (preview only): brightness-simulation linear gain for the
                                     // exposure shortfall the fluidity-capped repeating request
                                     // cannot carry (see previewExposureTrade)
         varying vec2 vTexCoord;

@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -49,11 +50,34 @@ class ShaderProgramCompileTest {
     }
 
     @Test
-    fun `required interface audit rejects a renamed runtime uniform`() {
+    fun `required interface audit rejects a renamed shader uniform`() {
         val renamed = (Shaders.VERTEX + "\n" + Shaders.FRAGMENT)
             .replace("uDigitalGain", "uRenamedDigitalGain")
 
         assertEquals(setOf("uDigitalGain"), missingInterface(renamed))
+    }
+
+    @Test
+    fun `production lookup consumes every binding and rejects a missing location`() {
+        val attributes = mutableListOf<String>()
+        val uniforms = mutableListOf<String>()
+        resolveShaderLocations(
+            attributeLookup = { name -> attributes += name; attributes.lastIndex },
+            uniformLookup = { name -> uniforms += name; uniforms.lastIndex },
+        )
+        assertEquals(ShaderBindings.attributes, attributes.toSet())
+        assertEquals(ShaderBindings.uniforms, uniforms.toSet())
+        assertEquals(attributes.size, attributes.toSet().size)
+        assertEquals(uniforms.size, uniforms.toSet().size)
+
+        ShaderBindings.requiredInterface.forEach { missing ->
+            assertThrows(missing, IllegalStateException::class.java) {
+                resolveShaderLocations(
+                    attributeLookup = { name -> if (name == missing) -1 else 0 },
+                    uniformLookup = { name -> if (name == missing) -1 else 0 },
+                )
+            }
+        }
     }
 
     private fun compile(validator: Path, stage: String, source: Path) {
@@ -69,7 +93,7 @@ class ShaderProgramCompileTest {
         return process.waitFor() to output
     }
 
-    private fun missingInterface(source: String): Set<String> = REQUIRED_INTERFACE.filterTo(mutableSetOf()) { name ->
+    private fun missingInterface(source: String): Set<String> = ShaderBindings.requiredInterface.filterTo(mutableSetOf()) { name ->
         !Regex("\\b$name\\b").containsMatchIn(source)
     }
 
@@ -101,11 +125,4 @@ class ShaderProgramCompileTest {
         return copy
     }
 
-    private companion object {
-        val REQUIRED_INTERFACE = setOf(
-            "aPosition", "aTexCoord", "uMvp", "uTexMatrix", "uTexture", "uTransfer",
-            "uSourceHlg", "uPeaking", "uPeakThreshold", "uPeakColor", "uZebra",
-            "uZebraThreshold", "uFalseColor", "uTexel", "uDigitalGain",
-        )
-    }
 }
