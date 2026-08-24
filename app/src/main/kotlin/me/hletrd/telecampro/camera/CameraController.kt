@@ -112,6 +112,7 @@ class CameraController(context: Context) {
     // backgrounds mid-startup — e.g. onStop behind the keyguard closes us while the session is still
     // configuring) short-circuit instead of touching an already-disconnected device.
     @Volatile private var closed = false
+    private val dualOpenRestorability = CameraControllerRestorability()
     @Volatile private var openAttempted = false
     // CAS gate for close(): reachable from main (pause), setupExecutor (reopens), and the GL-start
     // continuation (openCamera → controller?.close()), so the closed check-then-act alone can race.
@@ -261,6 +262,12 @@ class CameraController(context: Context) {
         onReady: Ready,
         onError: ErrorCb,
     ) {
+        // A replaced controller's Engine callback is identity-inert while a dual-open candidate owns
+        // the shared slot. Publish terminality BEFORE invoking that callback so supersession cleanup
+        // can never mistake the outgoing native owner for a restorable one in the callback→close gap.
+        val terminalError = ErrorCb { failure ->
+            reportTerminalCameraFailure(dualOpenRestorability, failure, onError::onError)
+        }
         this.selection = selection
         this.caps = caps
         this.glSurface = glInputSurface
@@ -316,16 +323,16 @@ class CameraController(context: Context) {
                     configAttempt = 0
                     if (deferSession) {
                         deferredReady = onReady
-                        deferredError = onError
+                        deferredError = terminalError
                         onDeviceOpened?.invoke()
                     } else {
                         val sessionAdmitted = runNativeAcquisition {
-                            runCatching { configureSession(onReady, onError) }
-                                .onFailure { onError.onError(it) }
+                            runCatching { configureSession(onReady, terminalError) }
+                                .onFailure { terminalError.onError(it) }
                         }
                         if (!sessionAdmitted) {
                             deviceCloseOwner.retire(camera)
-                            onError.onError(
+                            terminalError.onError(
                                 NativeAcquisitionRefusedException(
                                     NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
                                     "Native acquisition refused before camera session",
@@ -341,7 +348,7 @@ class CameraController(context: Context) {
                     // Typed: disconnect means another client took the camera (or the provider is
                     // rebalancing) — eviction-class, so the engine recovers WITHOUT announcing a
                     // fault the user did not cause.
-                    onError.onError(CameraEvictedException("Camera disconnected"))
+                    terminalError.onError(CameraEvictedException("Camera disconnected"))
                     beginClose()
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
@@ -362,7 +369,7 @@ class CameraController(context: Context) {
                     // framework's own stopRepeating log inside close() — the actual onError source
                     // was silent, which cost a device-bisect session to attribute.
                     Log.e(TAG, "CameraDevice.StateCallback.onError: code=$error (device=${camera.id})")
-                    onError.onError(
+                    terminalError.onError(
                         when {
                             cameraErrorCodeIsEviction(error) -> CameraEvictedException("Camera error $error")
                             cameraErrorCodeIsPolicyBlock(error) ->
@@ -378,12 +385,12 @@ class CameraController(context: Context) {
                 })
             }.onFailure {
                 deviceCloseOwner.proveNoDeviceWillArrive()
-                onError.onError(it)
+                terminalError.onError(it)
             }
         }
         if (!openAdmitted) {
             deviceCloseOwner.proveNoDeviceWillArrive()
-            onError.onError(
+            terminalError.onError(
                 NativeAcquisitionRefusedException(
                     NativeAcquisitionRefusalPhase.CAMERA_GRAPH,
                     "Native acquisition refused before camera open",
@@ -391,6 +398,9 @@ class CameraController(context: Context) {
             )
         }
     }
+
+    /** True only while this exact controller may safely resume ownership after dual-open supersession. */
+    internal fun restorableAfterDualOpen(): Boolean = dualOpenRestorability.canRestore()
 
     // Callbacks parked by a deferSession open until the old camera releases the preview surface.
     private var deferredReady: Ready? = null
@@ -2173,6 +2183,7 @@ class CameraController(context: Context) {
         // threads (pause() on main, reopens on setupExecutor, openCamera() from the GL continuation),
         // so a plain `if (closed) return; closed = true` check-then-act can double-run. CAS decides.
         if (closeStarted.compareAndSet(false, true)) {
+            dualOpenRestorability.markTerminal()
             closed = true
             if (!openAttempted) deviceCloseOwner.proveNoDeviceWillArrive()
             deviceCloseOwner.armClose(device)
@@ -2699,4 +2710,26 @@ internal fun afOverrideFor(
         AfOverride.LockAt(lastFocusDistance)
     touchAfUsesAuto -> AfOverride.TouchAuto
     else -> null
+}
+
+/** Lock-free terminal signal shared by CameraController callbacks and dual-open cleanup. */
+internal class CameraControllerRestorability {
+    @Volatile
+    private var terminal = false
+
+    fun markTerminal() {
+        terminal = true
+    }
+
+    fun canRestore(): Boolean = !terminal
+}
+
+/** Marks terminality before external failure publication; ordering is part of the ownership contract. */
+internal fun reportTerminalCameraFailure(
+    restorability: CameraControllerRestorability,
+    failure: Throwable,
+    report: (Throwable) -> Unit,
+) {
+    restorability.markTerminal()
+    report(failure)
 }
