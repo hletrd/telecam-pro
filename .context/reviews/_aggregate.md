@@ -1,102 +1,178 @@
-# Aggregate deep review — cycle 22
+# Aggregate deep review — cycle 23
 
 Date: 2026-08-24
-Reviewed HEAD: `0c6d056b587d9b390688010cbd63fe6011da551a`
+Reviewed HEAD: `b5a433169b3fbdfdd52a8012937dd7a18efc12ee`
 
 ## Review provenance
 
 Three fresh concurrent review agents covered every required specialist perspective plus the
-repository's registered QA adversary. The environment exposed only three child-agent slots, so
-closely related roles were grouped without dropping a perspective:
+repository's registered QA adversary. The environment exposed three child-agent slots, so closely
+related roles were grouped without dropping a perspective:
 
-- `code-reviewer.md`, `critic.md`, `verifier.md`, `feature-dev-code-reviewer.md`,
-  `test-engineer.md`, and `qa-adversary.md`
-- `perf-reviewer.md`, `architect.md`, and `tracer.md`
-- `security-reviewer.md`, `debugger.md`, `document-specialist.md`, and `designer.md`
+- `code-reviewer.md`, `architect.md`, `critic.md`, and `verifier.md`
+- `perf-reviewer.md`, `debugger.md`, `designer.md`, and `qa-adversary.md`
+- `security-reviewer.md`, `tracer.md`, `test-engineer.md`, and `document-specialist.md`
 
-The reviewers inventoried all current production Kotlin, host and instrumented tests, resources,
-build/release tools, device harnesses, and active documentation. Historical reports and completed
-plans were treated only as leads. Debug assembly and the complete host unit task passed; the broader
-release-tool suite passed 69 tests, focused artifact tests passed 27/27, documentation checks passed
-111/111, and `git diff --check` passed. Native-device checks were not run because deployment is
-disabled and no current device serial was supplied. There were no agent failures.
+The reviewers inventoried all 95 production Kotlin files, 187 host-test files, four instrumented
+tests, two debug hosts, resources/manifests/build inputs, all Python/shell tools and device harnesses,
+and active documentation. Historical reports and completed plans were leads only; every candidate
+was revalidated against current HEAD. Debug assembly and 1,831 JVM/Robolectric/Compose tests passed
+on the authoritative retry, as did 111 documentation checks and `git diff --check`. Device gates
+were blocked by directive (`DEPLOY_MODE=none`, no current `ANDROID_SERIAL`). There were no agent
+failures.
 
 ## Deduplicated findings
 
-### AGG22-01 — camera teardown timeout is treated as proof that the old graph released ownership
+### AGG23-01 — Camera2 strict release is published before the exact device reports `onClosed`
 
 - **Severity / confidence:** High / High
-- **Classification:** Confirmed architecture/correctness gap; device manifestation requires a
-  camera-handler or native close stall longer than 1.5 seconds
-- **Cross-agent agreement:** architect and tracer; performance confirmed at Medium/High
-- **Evidence:** `CameraController.close()` queues teardown at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt:2149-2183`, performs a timed
-  `join` at `:2184-2191`, and returns without checking thread liveness or publishing a terminal
-  result. `CameraEngine.reconfigureCamera` then starts the replacement session after `old?.close()`
-  at `CameraEngine.kt:3627-3647`.
-- **Failure:** if a Camera2/DNG/framework callback occupies the handler beyond the timeout, the old
-  controller may still own its device, session, readers, ring, and surface while the replacement
-  starts. Late teardown can then overlap the new topology, causing `CAMERA_IN_USE`, broken-pipe HAL
-  failures, preview loss, or teardown of replacement-adjacent resources.
-- **Required fix:** expose and consume an identity-owned strict-release versus timeout/quarantine
-  terminal result. A timeout must not authorize replacement acquisition. Add deterministic handler-
-  latch and reconfiguration tests.
+- **Classification:** Confirmed correctness and native-resource ownership defect
+- **Cross-agent agreement:** code reviewer, architect, critic, verifier; test/document review confirms
+  the missing platform-boundary coverage
+- **Evidence:** `CameraController.close()` calls asynchronous `session?.close()` and
+  `device?.close()` at `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt:2174-2175`,
+  then immediately calls `closeTerminal.strictlyReleased()` at `:2184`. No device/session callback
+  at `:298-358`, `:692-751`, or `:807-825` participates in the terminal. Engine replacement doors
+  consume that result at `CameraEngine.kt:1841-1849` and `:3638-3655`.
+- **Failure:** `CameraDevice.close()` can return while the HAL graph is still shutting down. The
+  replacement then opens before the exact old device's `StateCallback.onClosed`, reintroducing
+  `CAMERA_IN_USE`, broken-pipe, or dead-preview overlap despite the cycle-22 quarantine design.
+- **Required fix:** bind close terminality to exact callback-device identity, arm ownership before
+  requesting close, publish strict release only from `onClosed(expectedDevice)`, quarantine on the
+  bounded timeout, and test delayed/wrong/late callback schedules through the production orchestration.
 
-### AGG22-02 — family delete and late publication are not serialized across Engine replacement
+### AGG23-02 — error/disconnect before `onOpened` leaks the callback-supplied CameraDevice
 
 - **Severity / confidence:** High / High
-- **Classification:** Confirmed correctness, privacy, and data-loss-adjacent ownership defect
-- **Cross-agent agreement:** architect and tracer
-- **Evidence:** family mark/retirement use `withFamilyJournalAuthority` at
-  `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:381-450`, but publication
-  performs a bare family-marker check at `:483-486`. `StillCapturePipeline` checks once at
-  `app/src/main/kotlin/me/hletrd/telecampro/capture/StillCapturePipeline.kt:382-390` and later enters
-  only its Engine-local publication owner at `:481-506`.
-- **Failure:** old Engine A observes no family marker; replacement Engine B marks and deletes that
-  family; A then publishes its already-pending sibling. The retained marker hides it from in-app
-  restore but cannot undo `IS_PENDING=0`, so system Gallery can expose media after Delete completed.
-- **Required fix:** serialize the family-live check and provider publication with the exact-family
-  authority used by mark/retire, or guarantee an authoritative post-publication recheck and exact-
-  URI discard. Add a deterministic two-Engine check → mark/delete → publish test while preserving
-  unrelated-family progress.
+- **Classification:** Confirmed lifecycle/resource leak
+- **Cross-agent agreement:** code reviewer, architect, critic, verifier
+- **Evidence:** the controller stores `device = camera` only in `onOpened` at
+  `CameraController.kt:299-303`. `onDisconnected` and `onError` at `:324-356` may occur instead of
+  `onOpened`, but call only the controller's no-arg close. Teardown reaches `device?.close()` at
+  `:2175`, which is null in this documented callback shape; the callback parameter is never closed.
+- **Failure:** bounded recovery can retry while retaining each failed-open native handle, converting
+  a transient policy/provider/camera-in-use event into persistent camera-budget exhaustion.
+- **Required fix:** install or retire every exact callback-supplied device before notifying recovery,
+  with exactly-once identity ownership across normal, error-before-open, late-after-close, and racing
+  callback paths. Add callback-seam regressions for both failure callbacks.
 
-### AGG22-03 — first DISCARD migration reads SharedPreferences under the global database lock
+### AGG23-03 — a camera-handler losing close caller can await teardown queued behind itself
 
 - **Severity / confidence:** Medium / High
-- **Classification:** Confirmed lock-scope and process-liveness defect
-- **Source:** performance reviewer
-- **Evidence:** `PendingDiscardJournal.page` holds the static `databaseLock` at
-  `app/src/main/kotlin/me/hletrd/telecampro/storage/PendingDiscardJournal.kt:110-138` while the first
-  migration evaluates filesystem-backed `legacyPreferences.all` at `:151-157`. Cycle 21 moved the
-  cleanup commit outside this lock, but not the initial read. Every unrelated exact-URI mark,
-  lookup, and remove still needs the same database lock.
-- **Failure:** a slow or blocked first preference load during launch recovery stalls unrelated
-  current media publication/deletion ownership, coupling live save latency to legacy compatibility
-  data even when it contains no entries.
-- **Required fix:** snapshot legacy entries outside `databaseLock`, then recheck migration completion
-  inside the lock and transactionally insert the frozen snapshot plus completion metadata. Add a
-  latch-controlled first-migration test proving unrelated mark/lookup/remove progress.
+- **Classification:** Confirmed race-only availability defect
+- **Cross-agent agreement:** code reviewer, architect, critic, verifier
+- **Evidence:** only the CAS winner at `CameraController.kt:2149` arranges teardown, but every loser
+  awaits the terminal at `:2218`. Camera callbacks run on the same handler through `:68-82` and call
+  close at `:329-330`/`:356`; an off-thread winner can post teardown behind that callback at
+  `:2201-2202`.
+- **Failure:** the callback thread waits for work queued behind itself, hits 1.5 seconds, and falsely
+  quarantines the process even though teardown would run immediately after the callback returned.
+- **Required fix:** separate close initiation from off-handler terminal awaiting, or return a terminal
+  handle/future. A camera-handler observer must never block on its own queue. Add a deterministic
+  posted-teardown/losing-callback regression.
 
-### AGG22-04 — sequential terminal Git probes cannot attest one coherent repository state
+### AGG23-04 — a current-process family tombstone can retire before a future old-Engine sibling exists
+
+- **Severity / confidence:** High / High
+- **Classification:** Confirmed correctness/privacy and delete-integrity defect
+- **Source:** debugger review
+- **Evidence:** launch recovery preserves markers owned by this process at
+  `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:914-981`, but explicit
+  retirement at `:433-472` checks only provider rows and publication claims already registered.
+  Restored families lack live producer identity (`CaptureOutputTracker.kt:74-105,229-236`), so a
+  replacement Engine treats them as producer-terminal at `CameraEngine.kt:4178-4195`. Sequential
+  sibling writers do not create/register the later row until `StillCapturePipeline.kt:201-349,384-402`.
+- **Failure:** Engine A publishes HEIF and is replaced before creating JPEG. Engine B restores and
+  deletes HEIF, sees no later row/claim, retires the current-process marker, and announces Delete.
+  A then creates and publishes JPEG, resurrecting the family in system Gallery.
+- **Required fix:** make producer terminality process-wide per family with a lease registered before
+  Camera2 receives the shot and released only after all processed/DNG lanes are terminal. Retirement
+  must require no producer lease and no publication claim. Add deterministic two-Engine future-sibling
+  tests.
+
+### AGG23-05 — unrelated family publication waits behind the global preferences commit lock
 
 - **Severity / confidence:** Medium / High
-- **Classification:** Confirmed release-integrity and operator-contract defect
-- **Cross-agent agreement:** every non-designer role
-- **Evidence:** `tools/check_release_artifact.py:732-762` observes final ordinary status, ignored
-  packageable sources, and HEAD in separate processes, followed by temporary-artifact cleanup.
-  Reviewers independently reproduced both a tracked edit after final status and an ignored protected
-  input created during final HEAD while the checker returned `failures=[]`. Existing tests at
-  `tools/tests/test_release_artifact.py:595-698` cover earlier boundaries but not these schedules.
-- **Failure:** tracked/untracked worktree mutations after status or ignored package inputs after the
-  ignored scan leave HEAD unchanged and can receive an `upload-ready` verdict, contradicting
-  `docs/play-console-submit.md:694-700`.
-- **Required fix:** make terminal repository truth one Git-owned/coordinated snapshot or verify an
-  immutable sealed source owner; move cleanup before that boundary. Add deterministic regressions
-  for tracked, untracked, ignored, and HEAD mutations at every terminal edge.
+- **Classification:** Confirmed cross-family liveness/performance regression
+- **Source:** performance review
+- **Evidence:** `markFamilyDeletedResult` holds `familyJournalMetadataLock` while reading preferences
+  and synchronously committing at `MediaStoreWriter.kt:395-415`. Cycle 22 made publication acquire
+  that same global lock only to read `contains(key)` at `:524-549`, even though exact-family monitors
+  already serialize same-key operations and the fast read at `:506-509` is thread-safe.
+- **Failure:** a slow family-A preference fsync delays family-B Gallery visibility, saved callback,
+  review update, and retained-snapshot release across otherwise independent Engine tails.
+- **Required fix:** perform the marker read under only the exact-family authority; retain the global
+  metadata lock for capacity-changing mark/retire transactions. Add a blocked-commit/unrelated-family
+  publication test.
+
+### AGG23-06 — partial-overlay tapjacking reaches capture and destructive Compose actions
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed Android interaction/security gap
+- **Cross-agent agreement:** security reviewer, tracer, test engineer, document specialist
+- **Evidence:** `MainActivity.kt:198-200` configures only
+  `window.decorView.filterTouchesWhenObscured = true`. No Activity dispatch checks
+  `MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED` or hides overlay windows. Destructive review actions
+  flow through `MediaReview.kt:1374-1420` to `CameraViewModel.kt:3310-3395`; the exported launcher is
+  declared at `AndroidManifest.xml:69-105`.
+- **Failure:** a partial/spatial overlay produces a partially obscured event that the existing full-
+  obscuration filter accepts, allowing redirected Shutter/REC/settings/permission/delete taps.
+- **Required fix:** reject both full and partial obscuration at the Activity dispatch boundary (or
+  use the product-approved overlay-hiding policy), and add real Activity/instrumented MotionEvent
+  coverage for ordinary and both flagged cases.
+
+### AGG23-07 — one terminal `git status` process is not an atomic live-worktree authority
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed release-integrity and operator-contract defect; cycle-22 root cause
+  persists under a different schedule
+- **Cross-agent agreement:** security reviewer, tracer, test engineer, document specialist
+- **Evidence:** `tools/check_release_artifact.py:416-441,789-810` calls one porcelain-v2 status
+  process a coordinated terminal snapshot. Git combines record types in one stream but does not
+  freeze worktree files while walking them. Tests at `tools/tests/test_release_artifact.py:620-882`
+  inject finished fake streams and cannot mutate an already-scanned path during the real process.
+- **Failure:** a concurrent writer changes a tracked or protected ignored path after Git has visited
+  it but before status exits; the checker can still return `upload-ready` for a dirty return-time tree.
+- **Required fix:** define readiness against the wrapper's sealed immutable source owner or hold a
+  writer lock honored by every supported mutation path through verdict consumption. Do not claim
+  live-worktree atomicity from repeated scans. Add a real-process race regression or narrow the
+  documented contract to the immutable authority.
+
+### AGG23-08 — owner-null restored media has filename syntax, not verifiable app provenance
+
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed local trust-boundary and privacy/Play-language overclaim
+- **Cross-agent agreement:** security reviewer, tracer, test engineer, document specialist
+- **Evidence:** owner-null rows are admitted by directory, public filename grammar, collection, and
+  MIME at `MediaStoreWriter.kt:191-292` and `LatestCaptureReducer.kt:83-208`. `PRIVACY.md:15-19` and
+  `docs/play-data-safety.md:46-83` describe them absolutely as captures/files this app itself saved.
+- **Failure:** an imported or other-app owner-null lookalike can become latest review media and enter
+  the platform decoder/player. File-only deletion prevents a false family delete, but authorship,
+  local-media disclosure scope, and parser trust are still overstated.
+- **Required fix:** implement verifiable future provenance, require system-picker selection, or label
+  the legacy heuristic honestly in UI/public copy. Add provider/device coverage for adversarial
+  owner-null lookalikes according to the chosen contract.
+
+### AGG23-09 — cycle-22 completion evidence claims CameraController/Engine tests that do not exist
+
+- **Severity / confidence:** Low / High
+- **Classification:** Confirmed test-coverage and documentation mismatch
+- **Cross-agent agreement:** test engineer and document specialist; code/architecture findings show
+  the behavior the missing tests failed to exercise
+- **Evidence:** `docs/plans/2026-08-24-rpf-cycle22.md:27-43,128-132` marks handler-latch and
+  reconfiguration coverage complete. `CameraTeardownTerminalTest.kt:13-111` exercises the extracted
+  terminal and pure `cameraReplacementMayAcquire` predicate only; it does not call production
+  `CameraController.close()`, drive HandlerThread posting/inline/failure/timeout branches, or observe
+  Engine replacement acquisition.
+- **Failure:** green pure tests are presented as integration evidence while the false onClosed proof,
+  failed-open handle leak, and self-wait survive in production orchestration.
+- **Required fix:** add the claimed production-orchestration seams/tests while implementing
+  AGG23-01 through AGG23-03, and correct cycle-22 evidence wording to distinguish state-machine unit
+  coverage from Camera2/Engine integration coverage.
 
 ## Accounting
 
-- New review findings: **4**
-- Deduplicated root causes: **4**
+- New review findings: **9**
+- Deduplicated root causes: **9**
 - Agent failures: **0**
-- Deferred findings: **0** (all findings require implementation this cycle)
+- Deferred findings: **0** (all findings are scheduled for implementation in cycle 23)
