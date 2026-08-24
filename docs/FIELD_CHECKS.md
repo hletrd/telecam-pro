@@ -6,10 +6,10 @@ these are the ones that need a real scene, real light, the physical converter, o
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-08-24):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐ · E2 ☐.
-Six remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
+**Status (2026-08-25):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐ · E2 ☐ · E3 ☐.
+Seven remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
 front route, **A5** needs a sustained front pseudo-ZSL soak, **D1** needs an off-axis sound source,
-and **E1/E2** need real MediaProvider ownership and system-consent behavior. B1 closed the rotation
+and **E1/E2/E3** need real MediaProvider ownership, system-consent, and reset/reindex behavior. B1 closed the rotation
 work end to end; C1 confirmed the afocal
 correction against real converter glass. C3 is closed as an honest no-observable-difference result,
 not proof of a distinct teleconverter OIS profile.
@@ -271,6 +271,30 @@ launch failure preserve the exact file, approval performs no redundant resolver 
 authoritatively absent row is not restored. Record API level, provider version, and the observed
 system copy for API 33 and the target API 36 device. Host/Robolectric coverage cannot close this
 check because only a real MediaProvider can prove the consent and disappearance semantics.
+
+### E3. DISCARD identity across provider reset/reindex — ◯ OPEN 2026-08-25
+
+Host fakes prove that version changes, row-generation/name reassignment, unavailable volumes,
+ambiguous/missing identity, and legacy URI-only records retain their durable marker without issuing a
+provider delete. They cannot establish whether a particular OEM reset/reindex reuses row IDs or how
+its provider version changes. This check is evidence only; it is not permission to reset a device.
+
+- Obtain explicit operator confirmation before any MediaProvider reset or equivalent destructive
+  setup. Use a disposable test device/profile and disposable TeleCam media only.
+- Create one pending disposable output, force its immediate delete to fail after the versioned
+  DISCARD identity is durable, and record URI, volume, provider version, `_ID`, `GENERATION_ADDED`,
+  display name, relative path, MIME, owner, and family identity.
+- Perform the approved provider reset/reindex, then create or locate a disposable replacement at
+  the same URI if that build actually reuses the ID. Relaunch recovery without weakening the
+  identity checks.
+- Repeat a control without reset where the exact original row and provider version are stable and
+  the first delete fails but the retry succeeds.
+
+**Pass:** a version change or replacement identity causes zero delete calls and retains the marker;
+the stable exact-row control retries and clears only after provider absence is authoritative. Record
+device/build, provider package/version before and after, whether URI reuse actually occurred, and
+the immutable APK/source identity. “No URI reuse observed” is an honest inconclusive result, not a
+claim that the guard is unnecessary.
 
 ---
 
