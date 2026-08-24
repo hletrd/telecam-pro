@@ -361,6 +361,7 @@ private fun OutputFormatChip(
     selected: Boolean,
     enabled: Boolean,
     onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val outputLabel = stringResource(R.string.label_output)
     MinTouchTarget48 {
@@ -368,7 +369,7 @@ private fun OutputFormatChip(
             selected = selected,
             onClick = onToggle,
             enabled = enabled,
-            modifier = Modifier.semantics {
+            modifier = modifier.semantics {
                 contentDescription = segmentedOptionName(outputLabel, name)
             },
             leadingIcon = if (selected) {
@@ -951,6 +952,21 @@ internal fun PhotoFormatToggles(
         (!formats.heif || formats.jpeg || rawSelected)
     val jpegEnabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected)
     val dngEnabled = rawAvailable && (!formats.dngRaw || processedSelected)
+    val optionScroll = rememberScrollState()
+    val heifIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    val jpegIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    val dngIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    // More than one format may be selected, so the trailing-most selected format owns automatic
+    // visibility. That preserves the row's multi-select truth while ensuring DNG/JPEG restored by
+    // settings or enabled through another surface cannot sit beyond a narrow viewport. A direct
+    // tap is already visible; this edge is for initial/external state and constrained-font reflow.
+    val selectedIntoView = when {
+        formats.dngRaw -> dngIntoView
+        formats.jpeg -> jpegIntoView
+        formats.heif -> heifIntoView
+        else -> null
+    }
+    LaunchedEffect(formats, selectedIntoView) { selectedIntoView?.bringIntoView() }
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // No `enabled` axis on this row: each format chip carries its own availability, so the label
         // itself is never the thing that is unavailable.
@@ -959,59 +975,85 @@ internal fun PhotoFormatToggles(
         // the label keeps the 6 dp row gap — the caption used to float at the page rhythm and read
         // as a separate row (UI review #32).
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            // The sheet's ONE multi-select chip row. Two things its exclusive siblings do not get
-            // (UI review #31/#33): each chip announces WITH row context ("Output, HEIF" — the same
-            // orphan-label fix segmentedOptionName exists for; selectableGroup stays deliberately
-            // absent, it would lie about exclusivity), and a selected chip wears the standard
-            // leading check so two lit chips read as pick-many, not a rendering glitch.
-            OutputFormatChip("HEIF", formats.heif, heifEnabled) {
-                onSetPhotoFormats(formats.copy(heif = !formats.heif))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Multi-select on purpose: unlike SegmentedSelector, this row must never claim an
+                    // exclusive selectableGroup. It shares only that row's RTL-aware overflow owner.
+                    .trailingEdgeFadeScrollHint(optionScroll)
+                    .horizontalScroll(optionScroll),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // The sheet's ONE multi-select chip row. Two things its exclusive siblings do not get
+                // (UI review #31/#33): each chip announces WITH row context ("Output, HEIF" — the same
+                // orphan-label fix segmentedOptionName exists for; selectableGroup stays deliberately
+                // absent, it would lie about exclusivity), and a selected chip wears the standard
+                // leading check so two lit chips read as pick-many, not a rendering glitch.
+                OutputFormatChip(
+                    name = "HEIF",
+                    selected = formats.heif,
+                    enabled = heifEnabled,
+                    onToggle = {
+                        onSetPhotoFormats(formats.copy(heif = !formats.heif))
+                    },
+                    modifier = Modifier.bringIntoViewRequester(heifIntoView),
+                )
+                OutputFormatChip(
+                    name = "JPEG",
+                    selected = formats.jpeg,
+                    enabled = jpegEnabled,
+                    onToggle = {
+                        onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg))
+                    },
+                    modifier = Modifier.bringIntoViewRequester(jpegIntoView),
+                )
+                OutputFormatChip(
+                    name = "DNG",
+                    selected = formats.dngRaw,
+                    enabled = dngEnabled,
+                    onToggle = {
+                        onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw))
+                    },
+                    modifier = Modifier.bringIntoViewRequester(dngIntoView),
+                )
             }
-            OutputFormatChip("JPEG", formats.jpeg, jpegEnabled) {
-                onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg))
+            if (!processedAvailable && !rawAvailable) {
+                Text(
+                    // Same reasoning as the Ready-publication status: in VIDEO this is a designed trade
+                    // (the 10-bit session drops the still readers), not a fault, so the sheet says what
+                    // it BOUGHT rather than what it lost.
+                    stringResource(
+                        if (videoMode) R.string.output_10_bit_video_stills_off
+                        else R.string.status_still_capture_unavailable,
+                    ),
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            } else if (!rawAvailable) {
+                // BEFORE the "switching" line, not after: on a route that structurally cannot carry RAW
+                // (front, hi-res, 10-bit video) nothing is switching, and announcing a lens change that
+                // will never happen is worse than saying plainly that RAW is off the table. The DNG
+                // request itself survives — it is intent, and it applies again the moment the operator
+                // returns to a route that can serve it.
+                Text(
+                    stringResource(R.string.output_raw_unavailable),
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            } else if (!rawInSession && formats.dngRaw) {
+                Text(
+                    stringResource(R.string.output_switching_single_lens),
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            } else if (!processedAvailable) {
+                Text(
+                    // Word for word the status CameraEngine emits for the same accepted-output mask.
+                    stringResource(R.string.output_processed_unavailable_dng_only),
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
             }
-            OutputFormatChip("DNG", formats.dngRaw, dngEnabled) {
-                onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw))
-            }
-        }
-        if (!processedAvailable && !rawAvailable) {
-            Text(
-                // Same reasoning as the Ready-publication status: in VIDEO this is a designed trade
-                // (the 10-bit session drops the still readers), not a fault, so the sheet says what
-                // it BOUGHT rather than what it lost.
-                stringResource(
-                    if (videoMode) R.string.output_10_bit_video_stills_off
-                    else R.string.status_still_capture_unavailable,
-                ),
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        } else if (!rawAvailable) {
-            // BEFORE the "switching" line, not after: on a route that structurally cannot carry RAW
-            // (front, hi-res, 10-bit video) nothing is switching, and announcing a lens change that
-            // will never happen is worse than saying plainly that RAW is off the table. The DNG
-            // request itself survives — it is intent, and it applies again the moment the operator
-            // returns to a route that can serve it.
-            Text(
-                stringResource(R.string.output_raw_unavailable),
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        } else if (!rawInSession && formats.dngRaw) {
-            Text(
-                stringResource(R.string.output_switching_single_lens),
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        } else if (!processedAvailable) {
-            Text(
-                // Word for word the status CameraEngine emits for the same accepted-output mask.
-                stringResource(R.string.output_processed_unavailable_dng_only),
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
         }
     }
 }
