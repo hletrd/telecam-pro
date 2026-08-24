@@ -562,9 +562,10 @@ class CameraViewModelRobolectricTest {
         )
     }
 
-    @Test fun `MR tele focal uses the device host lens instead of a 70 mm default`() {
+    @Test fun `MR tele focal uses the measured device host only for an OTHER phone`() {
         val extras = ExtraSettings(
             teleconverter = true,
+            phoneModel = me.hletrd.telecampro.camera.PhoneModel.OTHER,
             teleconverterProfile = TeleconverterProfile.CUSTOM,
             teleconverterCustomMagnification = 4f,
         )

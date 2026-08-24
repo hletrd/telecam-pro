@@ -19,6 +19,21 @@ internal data class AcceptedOpticsAuxState(
     val photoFormats: PhotoFormats,
 )
 
+/** Complete Engine -> UI rollback publication for one generation-owned optics transaction. */
+data class OpticsRollbackPublication(
+    val mode: CaptureMode,
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val facing: CameraFacing,
+    val route: CameraRoute,
+    val controls: ManualControls,
+    val photoExposureTimeNs: Long,
+    val userPin: String?,
+    val preTeleUnifiedZoom: Float,
+    val declaration: TeleconverterDeclaration,
+    val generation: Long,
+)
+
 /** Auxiliary UI state changes only when the desired camera transaction reaches Ready. */
 internal fun acceptedOpticsAuxState(
     teleconverter: Boolean,

@@ -271,8 +271,8 @@ class CameraEngine internal constructor(
         get() = callbackSink.function1(EngineCallbackKey.CAMERA_READY)
         set(value) = callbackSink.install(EngineCallbackKey.CAMERA_READY, value)
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
-    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, CameraRoute, ManualControls, Long, String?, restoredPreTeleUnifiedZoom: Float, generation: Long) -> Unit)?
-        get() = callbackSink.function10(EngineCallbackKey.OPTICS_ROLLBACK)
+    var onOpticsRollback: ((OpticsRollbackPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.OPTICS_ROLLBACK)
         set(value) = callbackSink.install(EngineCallbackKey.OPTICS_ROLLBACK, value)
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
@@ -396,6 +396,7 @@ class CameraEngine internal constructor(
         val facing: CameraFacing,
         val route: CameraRoute,
         val controls: ManualControls,
+        val declaration: TeleconverterDeclaration,
         val photoExposureTimeNs: Long,
         val overrideId: String?,
         val userPin: String?,
@@ -461,6 +462,7 @@ class CameraEngine internal constructor(
         facing = facing,
         route = activeCameraRoute,
         controls = controls,
+        declaration = teleconverterDeclaration,
         photoExposureTimeNs = photoExposureTimeNs,
         overrideId = overrideId,
         userPin = userCameraPin,
@@ -666,6 +668,7 @@ class CameraEngine internal constructor(
                 facing = before.facing,
                 route = before.route,
                 controls = before.controls,
+                declaration = before.declaration,
                 photoExposureTimeNs = before.photoExposureTimeNs,
                 overrideId = before.overrideId,
                 userPin = before.userPin,
@@ -681,6 +684,8 @@ class CameraEngine internal constructor(
         facing = restored.facing
         activeCameraRoute = restored.route
         controls = restored.controls
+        teleconverterDeclaration = restored.declaration
+        controller?.setTeleconverterMagnification(restored.declaration.magnification)
         photoExposureTimeNs = restored.photoExposureTimeNs
         overrideId = restored.overrideId
         userCameraPin = restored.userPin
@@ -694,21 +699,24 @@ class CameraEngine internal constructor(
         // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged with
         // this generation, so it cannot clamp the failed candidate or a newer user intent.
         onOpticsRollback?.invoke(
-            restored.mode,
-            restored.lens,
-            restored.teleconverter,
-            restored.facing,
-            restored.route,
-            restored.controls,
-            restored.photoExposureTimeNs,
-            // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
-            // the engine's routed-target overrideId (which is non-null after any door).
-            restored.userPin,
-            // The VM mirrors preTeleUnifiedZoom and resets it eagerly on recall; a FAILED recall
-            // restores the engine's snapshot here, so the mirror must receive the same value or
-            // the next TC-off diverges OSD from wire on the failed-recall path (verification S4).
-            before.preTeleUnifiedZoom,
-            transaction.generation,
+            OpticsRollbackPublication(
+                mode = restored.mode,
+                lens = restored.lens,
+                teleconverter = restored.teleconverter,
+                facing = restored.facing,
+                route = restored.route,
+                controls = restored.controls,
+                photoExposureTimeNs = restored.photoExposureTimeNs,
+                // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
+                // the engine's routed-target overrideId (which is non-null after any door).
+                userPin = restored.userPin,
+                // The VM mirrors preTeleUnifiedZoom and resets it eagerly on recall; a FAILED recall
+                // restores the engine's snapshot here, so the mirror must receive the same value or
+                // the next TC-off diverges OSD from wire on the failed-recall path (verification S4).
+                preTeleUnifiedZoom = before.preTeleUnifiedZoom,
+                declaration = restored.declaration,
+                generation = transaction.generation,
+            ),
         )
         before.caps?.let { onCapsReady?.invoke(it, transaction.generation) }
         onVideoSizeChosen?.invoke(before.videoSize, transaction.generation)
@@ -1154,17 +1162,19 @@ class CameraEngine internal constructor(
 
     private val gyro = me.hletrd.telecampro.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
-    // WHICH converter is mounted (its angular magnification), set by the ViewModel from the user's
-    // profile pick and restored settings. Passive glass cannot announce itself, so this is a
-    // declaration, not a measurement — see Teleconverter.kt. It feeds the TELE zoom ceiling, the
-    // HAL's effective-zoom hint, and the EXIF focal, and is snapshotted per shot ([ShotOptics]) so a
-    // profile change mid-save cannot relabel a frame that was taken through a different optic.
-    @Volatile private var teleconverterMagnification = TELECONVERTER_MAGNIFICATION
-    // The DECLARED phone's host tele focal (mm-equiv) the converter clamps onto — 70 on the OPPO
-    // hosts, 85 on the vivo kits (review 2026-08-01: the hardcoded 70 default wrote a ZEISS 200's
-    // 200 mm as ≈165 mm into EXIF/OSD on the very phones the converter list advertises). Pushed
-    // with the magnification; snapshotted into ShotOptics for the same mid-save honesty.
-    @Volatile private var teleconverterHostEquivMm = LensChoice.TELE3X.targetEquivMm
+    // The phone, converter, custom value, and host focal are ONE declaration. A single volatile
+    // owner prevents readers from composing halves of different MR recalls; optics transactions
+    // snapshot and roll back this object with route/controls so async failure cannot leave rejected
+    // focal metadata behind. Passive glass cannot announce itself — see Teleconverter.kt.
+    @Volatile private var teleconverterDeclaration = teleconverterDeclaration(
+        phone = DEFAULT_PHONE_MODEL,
+        profile = DEFAULT_TELECONVERTER_PROFILE,
+        customMagnification = TELECONVERTER_MAGNIFICATION,
+    )
+    private val teleconverterMagnification: Float
+        get() = teleconverterDeclaration.magnification
+    private val teleconverterHostEquivMm: Float
+        get() = teleconverterDeclaration.hostTeleEquivMm
     @Volatile private var videoMode = false
     // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
     // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
@@ -2160,11 +2170,18 @@ class CameraEngine internal constructor(
         enabledVideo: Boolean,
         resolvedLens: LensChoice,
         resolvedTeleconverter: Boolean,
+        resolvedDeclaration: TeleconverterDeclaration,
         resolvedControls: ManualControls,
         resolvedPhotoExposureTimeNs: Long,
         recalledVideoSize: Size?,
     ): Boolean {
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
+        val declaration = teleconverterDeclaration(
+            phone = resolvedDeclaration.phone,
+            profile = resolvedDeclaration.profile,
+            customMagnification = resolvedDeclaration.customMagnification,
+            measuredOtherHostEquivMm = resolvedDeclaration.hostTeleEquivMm,
+        )
         if (captureModeTransitionStopsTimelapse(videoMode, enabledVideo)) {
             // MR/settings recall is a second route into VIDEO and must own the same interval boundary
             // as the direct Photo/Video carousel transition.
@@ -2185,6 +2202,8 @@ class CameraEngine internal constructor(
             videoMode = enabledVideo
             lensChoice = resolvedLens
             teleconverterMode = routeTeleconverter
+            teleconverterDeclaration = declaration
+            controller?.setTeleconverterMagnification(declaration.magnification)
             // MR recall / settings restore EXITS the front camera in this same atomic publication:
             // recalled packets are rear-route optics (lens band, TC state, unified/lens-local zoom
             // semantics — facing itself is deliberately never persisted), so applying one while
@@ -2996,12 +3015,19 @@ class CameraEngine internal constructor(
      * rebuild or zoom submit. Resubmitting here instead would pay the documented ~180 ms
      * setRepeatingRequest stall at slider rate while the custom-magnification ruler is being dragged.
      */
-    fun setTeleconverterMagnification(magnification: Float, hostTeleEquivMm: Float) {
-        val m = normalizeMagnification(magnification)
-        teleconverterHostEquivMm = if (hostTeleEquivMm > 0f) hostTeleEquivMm else LensChoice.TELE3X.targetEquivMm
-        if (teleconverterMagnification == m) return
-        teleconverterMagnification = m
-        controller?.setTeleconverterMagnification(m)
+    @Synchronized
+    fun setTeleconverterDeclaration(declaration: TeleconverterDeclaration) {
+        val normalizedDeclaration = teleconverterDeclaration(
+            phone = declaration.phone,
+            profile = declaration.profile,
+            customMagnification = declaration.customMagnification,
+            measuredOtherHostEquivMm = declaration.hostTeleEquivMm,
+        )
+        val previous = teleconverterDeclaration
+        if (previous == normalizedDeclaration) return
+        teleconverterDeclaration = normalizedDeclaration
+        if (previous.magnification == normalizedDeclaration.magnification) return
+        controller?.setTeleconverterMagnification(normalizedDeclaration.magnification)
         // The Loupe Overview's pretend-field scale follows the selected converter (the hint marks
         // the magnified view against the PRE-CONVERTER world) — re-resolve so a profile change with
         // the finder already visible resizes the hint without waiting for a door.
@@ -7059,6 +7085,11 @@ internal data class OpticsIntentState(
     val teleconverter: Boolean,
     val controls: ManualControls,
     val overrideId: String?,
+    val declaration: TeleconverterDeclaration = teleconverterDeclaration(
+        phone = DEFAULT_PHONE_MODEL,
+        profile = DEFAULT_TELECONVERTER_PROFILE,
+        customMagnification = TELECONVERTER_MAGNIFICATION,
+    ),
     // The diagnostic-pin half of the override pair: [overrideId] is the engine's ROUTED target,
     // this is only ever a genuine setCameraOverride pin — the value the UI may present as an
     // active override (a rollback restoring the routed id here surfaced the diagnostic row after

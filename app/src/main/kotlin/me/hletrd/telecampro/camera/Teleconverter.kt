@@ -119,6 +119,46 @@ val DEFAULT_TELECONVERTER_PROFILE = TeleconverterProfile.EXPLORER_300
 const val TELECONVERTER_MAGNIFICATION = 300f / 70f
 
 /**
+ * One complete user declaration of the converter attached to the phone.
+ *
+ * The four stored fields deliberately travel together. [phone] owns the named host focal,
+ * [profile] owns the glass magnification, [customMagnification] owns CUSTOM's value, and
+ * [hostTeleEquivMm] is the measured fallback used only when [PhoneModel.OTHER] declares no known
+ * host. Splitting these across independent Engine setters let MR recall pair an incoming converter
+ * with the outgoing phone's focal and left asynchronous rollback unable to restore either half.
+ */
+data class TeleconverterDeclaration(
+    val phone: PhoneModel,
+    val profile: TeleconverterProfile,
+    val customMagnification: Float,
+    val hostTeleEquivMm: Float,
+) {
+    val magnification: Float
+        get() = effectiveMagnification(profile, customMagnification)
+}
+
+/** Builds a reconciled declaration whose named-phone host can never disagree with its identity. */
+internal fun teleconverterDeclaration(
+    phone: PhoneModel,
+    profile: TeleconverterProfile,
+    customMagnification: Float,
+    measuredOtherHostEquivMm: Float = LensChoice.TELE3X.targetEquivMm,
+): TeleconverterDeclaration {
+    val host = if (phone == PhoneModel.OTHER) {
+        measuredOtherHostEquivMm.takeIf { it.isFinite() && it > 0f }
+            ?: LensChoice.TELE3X.targetEquivMm
+    } else {
+        phone.teleEquivMm
+    }
+    return TeleconverterDeclaration(
+        phone = phone,
+        profile = reconcileConverter(phone, profile),
+        customMagnification = normalizeMagnification(customMagnification),
+        hostTeleEquivMm = host,
+    )
+}
+
+/**
  * Bounds for a custom magnification. The floor is just above 1× (a converter that magnifies by 1×
  * is not a converter), and the ceiling is far past any real phone clip-on — it exists to keep a
  * corrupt persisted value from producing an absurd focal length or zoom ceiling, not to express an

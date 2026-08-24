@@ -90,11 +90,11 @@ import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.defaultConverterFor
 import me.hletrd.telecampro.camera.detectPhone
-import me.hletrd.telecampro.camera.effectiveMagnification
 import me.hletrd.telecampro.camera.effectiveFocalMm
 import me.hletrd.telecampro.camera.normalizeMagnification
 import me.hletrd.telecampro.camera.reconcileConverter
 import me.hletrd.telecampro.camera.teleDisplayBase
+import me.hletrd.telecampro.camera.teleconverterDeclaration
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
@@ -685,9 +685,14 @@ class CameraViewModel @JvmOverloads constructor(
             // (this callback arrives on the setup thread; the seed path calls the same setter from
             // main, and one setter must not be entered from two threads).
             mainHandler.post {
-                engine.setTeleconverterMagnification(
-                    _state.value.teleconverterMagnification,
-                    _state.value.teleconverterHostEquivMm,
+                val current = _state.value
+                engine.setTeleconverterDeclaration(
+                    teleconverterDeclaration(
+                        phone = current.phoneModel,
+                        profile = current.teleconverterProfile,
+                        customMagnification = current.teleconverterCustomMagnification,
+                        measuredOtherHostEquivMm = current.teleconverterHostEquivMm,
+                    ),
                 )
                 refreshMemorySlotInfo()
             }
@@ -819,16 +824,14 @@ class CameraViewModel @JvmOverloads constructor(
                 }
             }
         }
-        engine.onOpticsRollback = {
-                mode, lens, teleconverter, facing, route, controls, restoredPhotoExposureTimeNs, userPin,
-                restoredPreTeleUnifiedZoom, generation ->
+        engine.onOpticsRollback = { rollback ->
             mainHandler.post {
-                if (!engine.isOpticsGenerationCurrent(generation)) return@post
+                if (!engine.isOpticsGenerationCurrent(rollback.generation)) return@post
                 // "Camera unchanged": the failed door never closed the outgoing session, so it is
                 // still streaming. Drop the dip now rather than blacking out live picture until the
                 // deadline — and remember this generation, because the rollback's OWN trailing
                 // Not-Ready (posted right behind this one, from the same thread) carries it.
-                applySwitchCover(switchCover.onOpticsRollback(generation))
+                applySwitchCover(switchCover.onOpticsRollback(rollback.generation))
                 cancelPendingControls()
                 cancelCountdown()
                 // The rollback restored a different optics scale: every in-flight glide value is an
@@ -838,24 +841,28 @@ class CameraViewModel @JvmOverloads constructor(
                 clearTapFocusUi()
                 // Engine snapshots this hidden bank inside the same generation-owned transaction as
                 // visible optics, so even Ready-callback overlap restores the exact accepted value.
-                photoExposureTimeNs = restoredPhotoExposureTimeNs
+                photoExposureTimeNs = rollback.photoExposureTimeNs
                 // Mirror the engine's restored pre-TELE snapshot: recall resets this mirror eagerly,
                 // and without the rollback leg a FAILED recall left NaN here while the engine
                 // restored its value — the next TC-off then showed the preset while the wire
                 // restored the retained framing (verification S4).
-                preTeleUnifiedZoom = restoredPreTeleUnifiedZoom
+                preTeleUnifiedZoom = rollback.preTeleUnifiedZoom
                 _state.update {
                     it.copy(
-                        mode = mode,
-                        lens = lens,
-                        teleconverterMode = teleconverter,
-                        facing = facing,
-                        activeCameraRoute = route,
-                        controls = controls,
+                        mode = rollback.mode,
+                        lens = rollback.lens,
+                        teleconverterMode = rollback.teleconverter,
+                        facing = rollback.facing,
+                        activeCameraRoute = rollback.route,
+                        controls = rollback.controls,
+                        phoneModel = rollback.declaration.phone,
+                        phoneModelDetected = rollback.declaration.phone == detectedPhone,
+                        teleconverterProfile = rollback.declaration.profile,
+                        teleconverterCustomMagnification = rollback.declaration.customMagnification,
                         // The engine publishes only a GENUINE diagnostic pin here (its routed-target
                         // pin stays internal) — so a routine failed door can no longer surface the
                         // Setup Camera ID row or poison the same-route recall fast path.
-                        cameraOverrideId = userPin,
+                        cameraOverrideId = rollback.userPin,
                     )
                 }
                 refreshProgramAppSide()
@@ -1192,9 +1199,14 @@ class CameraViewModel @JvmOverloads constructor(
         // it — resolve the magnification before anything clamps a zoom against it.
         // SettingsStore already reconciled the persisted pair; re-running it here costs nothing and
         // keeps this path correct for any caller that hands over a hand-built ExtraSettings.
-        val restoredConverter = reconcileConverter(e.phoneModel, e.teleconverterProfile)
-        val restoredMagnification =
-            effectiveMagnification(restoredConverter, e.teleconverterCustomMagnification)
+        val restoredDeclaration = teleconverterDeclaration(
+            phone = e.phoneModel,
+            profile = e.teleconverterProfile,
+            customMagnification = e.teleconverterCustomMagnification,
+            measuredOtherHostEquivMm = hostTeleEquivMmFor(e.phoneModel),
+        )
+        val restoredConverter = restoredDeclaration.profile
+        val restoredMagnification = restoredDeclaration.magnification
         val restoredOptics = restoredOptics(
             mode = e.mode,
             requestedLens = requestedLens,
@@ -1259,27 +1271,20 @@ class CameraViewModel @JvmOverloads constructor(
             },
         ).normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
-        // Before setResolvedOptics: the engine's own TELE zoom ceiling and its HAL effective-zoom
-        // hint both derive from the converter, so the recalled optic must be in force first — its
-        // terminal commit re-normalizes the packet against it. Rolled back below on refusal, like
-        // the hidden Photo shutter: a rejected recall must leave NEITHER bank behind.
-        val previousMagnification = _state.value.teleconverterMagnification
-        // Host focal rides the DECLARED phone, which an MR recall does not change.
-        val hostTeleEquivMm = _state.value.teleconverterHostEquivMm
-        engine.setTeleconverterMagnification(restoredMagnification, hostTeleEquivMm)
-        // Resolution and hidden Photo exposure join the optics transaction. A synchronous REC
-        // rejection or asynchronous camera rollback must leave neither rejected bank behind.
+        // Converter declaration, resolution, and hidden Photo exposure join ONE optics transaction.
+        // A synchronous REC refusal mutates none of them; an asynchronous failure restores the
+        // complete phone/profile/custom/host packet from the generation-owned baseline.
         val opticsAccepted = engine.setResolvedOptics(
             enabledVideo = e.mode == CaptureMode.VIDEO,
             resolvedLens = restoredLens,
             resolvedTeleconverter = restoredTeleconverter,
+            resolvedDeclaration = restoredDeclaration,
             resolvedControls = cSynced,
             resolvedPhotoExposureTimeNs = photoExposureTimeNs,
             recalledVideoSize = restoredVideoSize,
         )
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
-            engine.setTeleconverterMagnification(previousMagnification, hostTeleEquivMm)
             return
         }
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
@@ -1354,12 +1359,12 @@ class CameraViewModel @JvmOverloads constructor(
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
-                phoneModel = e.phoneModel,
+                phoneModel = restoredDeclaration.phone,
                 // Same re-derivation as the live picker: a restored phone that is not the one this
                 // boot detected must not inherit the "Detected …" claim.
-                phoneModelDetected = e.phoneModel == detectedPhone,
+                phoneModelDetected = restoredDeclaration.phone == detectedPhone,
                 teleconverterProfile = restoredConverter,
-                teleconverterCustomMagnification = e.teleconverterCustomMagnification,
+                teleconverterCustomMagnification = restoredDeclaration.customMagnification,
                 // Recall/restore packets are rear-route optics; the engine's setResolvedOptics
                 // exits FRONT in the same transaction, so the UI mirrors that here (MR recall
                 // stays available while FRONT — it flips back as part of the recall).
@@ -1684,7 +1689,7 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun refreshMemorySlotInfo(activeSlot: MemorySlot? = _state.value.activeMemorySlot) {
         val info = settingsStore.savedPresetInfo()
-        val hostTeleEquivMm = _state.value.teleconverterHostEquivMm
+        val measuredOtherHostEquivMm = _state.value.lensInventory.teleHostEquivMm
         _state.update {
             it.copy(
                 savedMemorySlots = info.keys,
@@ -1696,7 +1701,7 @@ class CameraViewModel @JvmOverloads constructor(
                         customName = preset.customName,
                         customSummary = preset.customSummary,
                         mode = extras.mode,
-                        focalMm = memoryPresetFocalMm(extras, hostTeleEquivMm),
+                        focalMm = memoryPresetFocalMm(extras, measuredOtherHostEquivMm),
                         exposureMode = preset.loaded.controls.exposureMode,
                         photoFormats = PhotoFormats(extras.heif, extras.jpeg, extras.dngRaw),
                         videoWidth = videoSize?.width ?: 0,
@@ -2400,16 +2405,21 @@ class CameraViewModel @JvmOverloads constructor(
         custom: Float,
         persistImmediately: Boolean,
     ) {
-        val magnification = effectiveMagnification(profile, custom)
-        engine.setTeleconverterMagnification(magnification, hostTeleEquivMmFor(phone))
+        val declaration = teleconverterDeclaration(
+            phone = phone,
+            profile = profile,
+            customMagnification = custom,
+            measuredOtherHostEquivMm = hostTeleEquivMmFor(phone),
+        )
+        engine.setTeleconverterDeclaration(declaration)
         _state.update {
             it.copy(
-                phoneModel = phone,
+                phoneModel = declaration.phone,
                 // Re-derived, never carried: picking a different phone by hand un-claims the
                 // detection, and picking the detected one back re-claims it.
-                phoneModelDetected = phone == detectedPhone,
-                teleconverterProfile = profile,
-                teleconverterCustomMagnification = custom,
+                phoneModelDetected = declaration.phone == detectedPhone,
+                teleconverterProfile = declaration.profile,
+                teleconverterCustomMagnification = declaration.customMagnification,
             )
         }
         // The converter IS the TELE zoom SCALE, so this is an optics-remap door like mode/lens/TC:
@@ -2535,9 +2545,14 @@ class CameraViewModel @JvmOverloads constructor(
                 teleconverterProfile = defaultConverterFor(phone),
             )
         }
-        engine.setTeleconverterMagnification(
-            _state.value.teleconverterMagnification,
-            _state.value.teleconverterHostEquivMm,
+        val current = _state.value
+        engine.setTeleconverterDeclaration(
+            teleconverterDeclaration(
+                phone = current.phoneModel,
+                profile = current.teleconverterProfile,
+                customMagnification = current.teleconverterCustomMagnification,
+                measuredOtherHostEquivMm = current.teleconverterHostEquivMm,
+            ),
         )
     }
 
@@ -3842,15 +3857,18 @@ internal fun focusModeChangeClearsTapPoint(
     requested: FocusMode,
 ): Boolean = current != requested
 
-/** Reconstructs an MR row against this device's declared/measured converter host lens. */
+/** Reconstructs an MR row from that bank's own phone declaration (measured only for OTHER). */
 internal fun memoryPresetFocalMm(extras: ExtraSettings, hostTeleEquivMm: Float): Float =
     if (extras.teleconverter) {
+        val declaration = teleconverterDeclaration(
+            phone = extras.phoneModel,
+            profile = extras.teleconverterProfile,
+            customMagnification = extras.teleconverterCustomMagnification,
+            measuredOtherHostEquivMm = hostTeleEquivMm,
+        )
         effectiveFocalMm(
-            effectiveMagnification(
-                extras.teleconverterProfile,
-                extras.teleconverterCustomMagnification,
-            ),
-            hostTeleEquivMm,
+            declaration.magnification,
+            declaration.hostTeleEquivMm,
         )
     } else {
         extras.lens.targetEquivMm
