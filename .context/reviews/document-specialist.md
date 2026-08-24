@@ -1,57 +1,68 @@
-# Document-specialist review — cycle 38
+# Document-specialist review — cycle 39
 
 Date: 2026-08-24
 
-Reviewed revision: `fa95299` (`origin/main`)
+Reviewed revision: `5ee6b21` (`origin/main`)
 
-Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
+Workspace: isolated worktree `/private/tmp/find-x9-cycle39.feeBBZ`
 
-## Scope
+## Scope and evidence
 
-Inventoried all 490 tracked paths and read the committed authorities, field ledger, README, privacy
-and Play material, current/historical plans, resources/manifests, relevant implementation/tests, and
-prior review records. Optional private `docs/BACKLOG.md` and `docs/UX_POLICY.md` are absent, so no
-private state is inferred. `tools/check_docs.py` passes 120 checks with 24 optional-private skips.
+Inventoried all 493 tracked paths and examined the complete committed instruction/architecture/field
+authority, README, privacy and Play material, release/build configuration, device-harness guidance,
+resources/manifests, production implementation, tests, and current/historical review plans. Optional
+private maintainer documents are absent, as the committed clean-clone policy permits.
+`tools/check_docs.py` passed 120 checks with 24 optional-private skips. Current stable dependency
+claims were cross-checked against Google Maven, JetBrains plugin metadata, Maven Central, and
+Gradle's official current-release service; no toolchain-version drift was found.
 
 ## Findings
 
-### DOC38-01 — the completed Cycle 37 plan claims bright-frame selected-disabled coverage that does not exist
+### DOC39-01 — current authorities and the renderer comment put Loupe Overview on the wrong side
 
 - **Severity / confidence:** Low / High.
-- **Exact regions:** `docs/plans/2026-08-24-rpf-cycle37.md:47-52,88-100` marks a coherent
-  selected-disabled fill plus native Compose coverage over bright and dark frames complete. The
-  implementation at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855,2912-2924` replaces the
-  dark `HudPlate` with a 12%-white translucent fill for selected-disabled. The test at
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:65-107` checks
-  only that state's token alpha; it renders no selected-disabled chip and uses only the dark
-  `CameraColors.Pill` background.
-- **Mismatch:** the durable completion record says the exact missing bright/dark state matrix was
-  exercised, while the checked-in evidence neither renders nor protects it. On a bright live frame,
-  the 12%-white container/border and 38%-white label all blend into the white scene because this
-  branch has no dark contrast plate.
-- **Suggested fix:** correct the selected-disabled composition and add the promised bright/dark
-  render matrix. Keep the historical plan complete only once its concrete evidence is true.
+- **Exact regions:** `CLAUDE.md:251-253` and `docs/ARCHITECTURE.md:745-749` both say the viewport is
+  in the bottom-left corner; the renderer repeats that stale claim at
+  `app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt:1067-1073` even as it consumes
+  `rect.x`. The executable geometry explicitly insets from the **right** at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:665-691`, because the left column
+  owns the exposure/zoom ruler. Compose consumes that absolute x-coordinate from a BottomLeft
+  origin at `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:896-917`, so the positive
+  `boxWidth - width - inset` offset lands the overview at bottom-right. The position-sensitive test
+  pins that right-side x value at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:18-33`.
+- **Mismatch / scenario:** a maintainer following either authority or the renderer comment can move or test the overlay as a
+  bottom-left element, exactly where the implementation comments record that it overlapped the
+  persistent ruler. The two authoritative prose copies therefore describe the superseded placement,
+  while code and tests enforce the user-requested right side.
+- **Suggested fix:** change both current-authority occurrences to “bottom-right” (or “right-inset
+  bottom corner”) and extend `tools/check_docs.py` to bind the authority wording to `finderRect`'s
+  right-edge law so the two copies cannot drift again.
 
-### DOC38-02 — `finderRect` documentation advertises a bottom-inset control the implementation suppresses
+### DOC39-02 — cycle 38 records pure predicate tests as Engine-facing stabilization proof
 
 - **Severity / confidence:** Low / High.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:671-691` says
-  `bottomMargin` insets the PIP from the bottom, then marks that parameter
-  `@Suppress("UNUSED_PARAMETER")`; `:693-719` derives `y` from `topAnchor` and
-  `bottomClearance` instead. `FinderGeometryTest.kt:8-13,18-35,70-88` repeats the old independent
-  bottom-clearance story while never asserting that changing `bottomMargin` changes position.
-- **Mismatch:** maintainers are told they can tune a bottom margin, but it is an inert argument. The
-  comments later in the function correctly explain that the top anchor/current clearance replaced
-  the old approximation, making the opening KDoc and test header stale.
-- **Suggested fix:** remove the dead parameter and rewrite the KDoc/test vocabulary around
-  `topAnchor` plus measured `bottomClearance`, or restore an explicit and tested semantic for it.
+- **Exact regions:** `docs/plans/2026-08-24-rpf-cycle38.md:27-28` marks focused pure **and
+  Engine-facing** regression coverage complete, and `:75-80` reports that stabilization
+  normalization avoids rebuild/reopen. The only new stabilization tests are the direct pure-helper
+  assertions at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/CaptureCapabilitiesTest.kt:65-100`. Repository-wide
+  search finds no test that invokes `CameraEngine.setVideoStabMode`, whose state assignment,
+  `applyStabilization()`, and `reopenForSession()` control flow lives at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:1587-1600`.
+- **Mismatch / scenario:** the durable completion record promises integration evidence that does not
+  exist. A future reviewer can accept a green pure predicate as proof that no request or session side
+  effect occurred, even though a call-order regression in the Engine would be invisible to it.
+- **Suggested fix:** add the Engine-side-effect regression described by TEST39-01, then append a
+  dated correction to the completed cycle-38 plan identifying the new test. Do not rewrite away the
+  historical overclaim.
 
 ## Final sweep
 
-Toolchain versions, Android floor, ZSL inclusivity, stabilization/Gamma capability wording, privacy
-facts, release status, Loupe exception, DNG routing, and open field checks agree with current source.
-No additional current-authority drift survived.
+Android floor, current stable toolchain versions, privacy disclosures, Play release/artifact state,
+field-check membership, afocal-orientation exception, DNG routing, ZSL boundary, finder geometry,
+and current source/module ownership otherwise agree with committed truth. No other current-authority
+drift survived the final sweep.
 
 ## Totals
 

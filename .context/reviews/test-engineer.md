@@ -1,75 +1,62 @@
-# Test-engineer review — cycle 38
+# Test-engineer review — cycle 39
 
 Date: 2026-08-24
 
-Reviewed revision: `fa95299` (`origin/main`)
+Reviewed revision: `5ee6b21` (`origin/main`)
 
-Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
+Workspace: isolated worktree `/private/tmp/find-x9-cycle39.feeBBZ`
 
 ## Scope and evidence
 
-- Inventoried all 490 tracked paths, including 101 production Kotlin files, 220 JVM/Robolectric/
-  Compose test files, four androidTest probes, and 38 Python tooling/device-harness files. Reviewed
-  the matching production seams rather than treating coverage or test names as behavioral proof.
-- Read the complete committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-  `docs/FIELD_CHECKS.md`), the current plan/review history, resources/manifests, and release/privacy
-  material. Optional private `docs/BACKLOG.md` and `docs/UX_POLICY.md` are absent in this clean
-  worktree, as the committed authority permits.
-- `tools/check_docs.py` passed all 120 available checks (24 optional-private skips); 99 Python tool
-  tests and 184 device-harness self-tests passed. No device was connected or used.
-- A whole `tools/verify_host.py` attempt overlapped other Cycle 38 reviewers using the same Gradle
-  output directory and hit a transient missing `in-progress-results-generic.bin` while Gradle was
-  replacing test results. That concurrent-run artifact is not counted as a repository failure; the
-  Python portions were rerun independently as above.
+- Inventoried all 493 tracked paths: 101 production Kotlin files, 220 JVM/Robolectric/Compose test
+  files, four androidTest probes, and 34 Python/shell tooling and device-harness files. Examined the
+  production seams behind the tests, the cycle-38 change surface, the committed authorities, the
+  field/device-evidence boundary, resources/manifests, release tooling, and prior review/plan history.
+- `tools/check_docs.py` passed all 120 available checks (24 optional-private skips), all 99 Python
+  tool tests passed, and all 184 device-harness self-tests passed. The five focused JVM/Compose
+  suites touched by cycle 38 also passed with the repository's documented JDK/SDK environment.
+  No device was connected, so no device-only behavior is claimed.
+- Checked current stable toolchain claims against primary repositories on 2026-08-24: Google Maven
+  still makes AGP 9.3.2, Compose BOM 2026.08.00, and HeifWriter 1.1.0 the newest stable releases;
+  JetBrains' plugin metadata makes Kotlin 2.4.10 the newest stable release; Gradle's current-release
+  service reports 9.7.1. No version drift was found.
 
-## Findings
+## Finding
 
-### TEST38-01 — the focal-rail test never renders the vulnerable selected-disabled state or a bright frame
+### TEST39-01 — the stabilization regression never exercises the Engine side effects it claims to protect
 
-- **Severity / confidence / status:** Low / High / Confirmed coverage gap over a current visual defect.
-- **Exact evidence:** production selects a translucent-white-only treatment at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855`, and applies it directly
-  over the live preview at `CameraScreen.kt:2912-2924`. Selected-disabled is a normal state during
-  reconfiguration/recording by `CameraScreenPolicy.kt:659-708`. The Cycle 37 test merely checks
-  three alpha numbers for that state at
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:65-72`; its
-  rendered fixture at `:74-107` includes only enabled and **unselected** disabled chips, both over
-  the single dark `CameraColors.Pill` background.
-- **Why the green test is insufficient:** unlike the unselected-disabled branch, selected-disabled
-  replaces `HudPlate` with `Color.White.copy(alpha = 0.12f)`. On a white/sky/snow frame, that fill,
-  its 12%-white border, and its 38%-white label all composite back to white. The selected lens/zoom
-  mark can therefore become visually absent precisely while controls are locked. The test's token
-  equality assertions encode the faulty recipe rather than testing its rendered outcome.
-- **Suggested TDD fix:** first render all four `(selected, enabled)` states over opaque near-black and
-  near-white frame fixtures and assert the selected-disabled label/boundary remains distinguishable.
-  Then preserve `HudPlate` as the contrast floor and layer a quiet selected tint instead of replacing
-  the plate with translucent white.
+- **Severity / confidence / status:** Low / High / Confirmed coverage and completion-evidence gap.
+- **Exact evidence:** `CameraEngine.setVideoStabMode` owns the observable contract at
+  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:1587-1600`: it must store the new
+  label while skipping both `applyStabilization()` and `reopenForSession()` for a same-effective HAL
+  mode, but must perform both for a real HAL transition. The new tests at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/CaptureCapabilitiesTest.kt:65-100` call only the
+  pure `videoStabModeChangeRequiresReconfigure` predicate and never construct an Engine, invoke
+  `setVideoStabMode`, or observe request/reopen effects. No other test references
+  `CameraEngine.setVideoStabMode`. Nevertheless,
+  `docs/plans/2026-08-24-rpf-cycle38.md:27-28` marks “Engine-facing regression coverage” complete,
+  and `:75-80` presents no-rebuild/no-reopen as covered completion evidence.
+- **Failure scenario:** a later refactor can keep the predicate correct while moving
+  `applyStabilization()` or `reopenForSession()` before the guard, omitting the label assignment, or
+  applying only one of the two effects for a real transition. Every cycle-38 stabilization test
+  stays green even though capability reconciliation again interrupts preview or a user-selected HAL
+  mode is not installed.
+- **Suggested TDD fix:** add an Engine-level test seam/collaborator that records stabilization apply
+  and session-reopen calls. Drive Enhanced→Standard with `[OFF, ON]`, Enhanced→Off with `[OFF]`, and
+  Off→Standard/Standard→Enhanced with fully advertised modes; assert stored intent plus exact zero
+  versus one side-effect counts. Then add a dated correction to the completed cycle-38 plan rather
+  than treating its existing pure-predicate test as Engine-facing.
 
-### TEST38-02 — finder geometry tests pass an inert `bottomMargin` and never assert that it moves the box
+## Final missed-issues sweep
 
-- **Severity / confidence / status:** Low / High / Confirmed contract-test gap.
-- **Exact evidence:** `finderRect` documents `bottomMargin` as the bottom inset at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:671-678`, but marks the parameter
-  unused at `:680-691`; vertical placement is owned by `topAnchor`/`bottomClearance`. The first test
-  passes `bottomMargin = 0.10f` at
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:18-35` without comparing it
-  with another value. The margin-pair test at `:70-88` asserts only width/height equality, so it also
-  passes whether the documented bottom inset works or not.
-- **Failure scenario:** a future caller tunes the apparently supported `bottomMargin` to clear new
-  chrome and receives bit-identical geometry; the suite remains green and the overlay can overlap.
-- **Suggested TDD fix:** choose one contract. If the obsolete parameter is removed, update KDoc and
-  tests to name `topAnchor`/`bottomClearance` as the only vertical controls. If it remains supported,
-  add a metamorphic test proving changing it changes only `y`, then implement that behavior.
-
-## Final coverage/flake sweep
-
-No ignored/disabled tests, vacuous always-true assertions, unseeded behavioral randomness, or new
-device-evidence overclaims survived the final sweep. The Android test APK remains packaging evidence
-only. Apart from the two gaps above, the current host suites and documentation contracts align with
-their production seams.
+No ignored/disabled tests, new unseeded randomness, device-evidence overclaim, or additional
+cycle-38 flake survived the final sweep. The two scheduler-sensitive capacity tests now establish
+their worker-start happens-before edges before submitting the exhaustion probe. The remaining
+device-only gaps are explicitly owned by `docs/FIELD_CHECKS.md` and were not misclassified as host
+test failures.
 
 ## Totals
 
-- New findings: 2
-- Severity: 2 Low
-- Confidence: 2 High
+- New findings: 1
+- Severity: 1 Low
+- Confidence: 1 High

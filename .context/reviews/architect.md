@@ -1,54 +1,51 @@
-# Architecture review — cycle 38
+# Architecture review — cycle 39
 
 Date: 2026-08-24
-Reviewed revision: `fa95299` (`origin/main`)
-Workspace: `/private/tmp/find-x9-cycle38.FKvYBP`
+Reviewed revision: `5ee6b21` (`origin/main`)
+Workspace: `/private/tmp/find-x9-cycle39.feeBBZ`
 
-## Coverage and architecture inventory
+## Coverage and system inventory
 
-Examined the full 490-path repository and its cross-file boundaries: Activity/ViewModel unidirectional
-state, CameraEngine orchestration, CameraController session fallback and Camera2 ownership,
-RendererAssists/GlPipeline/EGL generations, VideoRecorder and process-native quarantine,
-StillCapturePipeline and process-finite publication owners, MediaStore durability/recovery/delete,
-capability normalization, settings/recall, Compose control projections, debug/device harnesses, and
-immutable build/release evidence tooling. The committed design authorities (`CLAUDE.md`,
-`docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`) were read in full; optional `docs/BACKLOG.md` is
-not present. I compared current code to the architecture rather than inheriting historical review
-conclusions.
+Reviewed all 493 tracked paths and read the complete governing authorities: `CLAUDE.md`,
+`docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`. The optional private maintainer documents are
+absent, which the committed clean-clone policy explicitly permits. The architecture inventory
+covered the Activity/ViewModel unidirectional state boundary; CameraEngine optics/session
+transactions; capability-enumerated rear/front/external routing; CameraController session fallback
+and terminal release; RendererAssists/GlPipeline/EGL generation replay; processed-still and RAW
+ownership; video pre-native admission, native teardown, storage tails, and quarantine; exact-family
+MediaStore publication/delete/recovery; settings/MR normalization; Compose control projections; and
+immutable build/release evidence.
 
-## Finding
+Cross-file review concentrated on the system's load-bearing invariants: PMA110 quirks remain behind
+`DeviceProfile` while generic hardware follows enumerated capabilities; Ready state carries accepted
+controller/session/output truth; optics changes are generation-owned; GL and Camera2 replacements
+require exact terminal ownership; native uncertainty quarantines rather than racing cleanup; provider
+work stays in process-finite lanes; capture-family deletion and late publication share one exact-key
+authority; and UI/persistence/EXIF consume one normalized optics declaration.
 
-### ARCH38-01 — finder placement retains two configuration models, but one is a phantom seam
+## Findings
 
-- **Severity:** Low
-- **Confidence:** High
-- **Status:** Confirmed
-- **Evidence:** The old bottom-relative model is explicitly declared replaced at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:363-369`, yet the shared geometry
-  authority still exposes and documents `bottomMargin` at `CameraState.kt:671-686`. Its actual
-  vertical policy at `CameraState.kt:722-730` is top-relative plus a minimum and measured bottom
-  clearance; `bottomMargin` cannot affect the result. The shared-contract tests continue to pass the
-  phantom input at `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:17-35,70-88`.
-- **Architectural impact:** `finderRect` is intentionally the single geometry authority shared by
-  GL pixels and Compose dp. Leaving an inert alternative policy on that boundary weakens the single-
-  authority design: callers cannot tell which parameters are state and which are compatibility
-  debris, and tests validate an API shape that the renderer does not consume.
-- **Concrete failure scenario:** A future large-screen or chrome-layout adjustment chooses the
-  documented bottom-inset seam. Both GL and Compose still agree with each other, so alignment tests
-  remain green, but they agree on the unchanged and still-overlapping rectangle. The architectural
-  invariant "one shared function" therefore masks the fact that its advertised configuration was
-  never part of the function's policy.
-- **Suggested fix:** Collapse the boundary to one vertical-placement vocabulary: remove the obsolete
-  constant/parameter and make `topAnchor`, `FINDER_MIN_BOTTOM_CLEARANCE`, and measured
-  `bottomClearance` the only documented inputs. Pin behavioral laws for each live input. If source or
-  binary compatibility outside this application is required, isolate the old signature in an
-  explicitly deprecated adapter rather than the core geometry authority.
+No new actionable architecture finding survived the whole-repository and cross-boundary review at
+the reviewed revision.
+
+In particular, cycle 38 did not add a second stabilization authority: user-visible label
+normalization remains in the capability projection while CameraEngine decides reconfiguration from
+the effective HAL value. The finder geometry cleanup strengthens the existing single-authority
+boundary shared by Compose and GL. The test-capacity fixes change only scheduler handshakes, not the
+production latest-wins or bounded-pool design.
 
 ## Known debt and final sweep
 
-The 7,693-line `CameraEngine` facade remains the explicit deferred item from cycle 35, with its
-existing exit criterion; I found no new concrete ownership defect spanning its responsibility
-regions, so refiling the same broad decomposition request would violate the repository's deferred-
-work rules. A final sweep of layering directions, duplicated policy derivations, process-lifetime
-owners, lifecycle/reconfiguration transitions, route/capability truth, storage recovery, and
-build-evidence boundaries found no other new actionable architecture issue.
+The 7,000-plus-line `CameraEngine` facade remains the explicit deferred item AGG35-08 in
+`docs/plans/2026-08-24-rpf-cycle35.md` (Medium severity, High confidence). Its exit criterion requires
+a new concrete defect spanning at least two responsibility regions, or planned work that must modify
+three or more regions. This review found neither, so filing the broad decomposition again would
+duplicate an existing deferred record rather than identify new work.
+
+The final sweep rechecked layering direction, duplicate policy derivations, volatile versus atomic
+multi-field publication, lifecycle/reconfiguration transitions, process-singleton capacity and
+callback retention, route/capability truth, accepted-session versus requested state, storage
+durability and recovery, ownerless-media consent boundaries, release provenance, and documentation
+alignment. `python3 tools/check_docs.py` passed all 120 applicable committed checks with zero
+failures. Open field checks were kept as unverified device/provider work and were not converted into
+architectural claims.

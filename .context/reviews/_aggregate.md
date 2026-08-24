@@ -1,3 +1,78 @@
+# Aggregated deep review — cycle 39
+
+Date: 2026-08-24
+Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224` (`origin/main`)
+Workspace: clean detached worktree `/private/tmp/find-x9-cycle39.feeBBZ`
+
+## Coverage and aggregation
+
+Six parallel specialist groups covered code-reviewer, architect, performance, tracer, security,
+debugger, critic, verifier, test engineer, document specialist, native Android designer,
+feature-development code reviewer, and QA adversary. No additional repository-local reviewer agent
+was registered. Every group inventoried all 493 tracked paths, read the complete committed
+authorities, examined its relevant implementation, tests, tooling, resources, and cross-file
+interactions, and completed a final missed-issue sweep. The native Compose UI was reviewed from
+source, semantics, resources, and host tests; browser automation is not applicable. No device
+behavior was run or inferred.
+
+The three raw specialist findings deduplicate to two current root causes. The test engineer and
+document specialist independently identified the stabilization evidence gap, so that finding carries
+cross-agent agreement. Highest severity and confidence are preserved.
+
+## Findings
+
+### AGG39-01 — stabilization coverage does not exercise the Engine side-effect boundary
+
+- **Severity / confidence:** Low / High
+- **Sources:** test-engineer, document-specialist (**cross-agent agreement**)
+- **Status:** confirmed test-coverage and completed-plan evidence gap.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:1587-1600`
+  owns the contract that stores the normalized label while skipping both `applyStabilization()` and
+  `reopenForSession()` for a same-effective HAL mode, and performs both effects for a real HAL
+  transition. The cycle-38 tests at
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/CaptureCapabilitiesTest.kt:65-100` exercise only
+  `videoStabModeChangeRequiresReconfigure`; no test invokes `CameraEngine.setVideoStabMode` or
+  observes its state/effect ordering. `docs/plans/2026-08-24-rpf-cycle38.md:27-28,75-80`
+  nevertheless records Engine-facing coverage as complete.
+- **Failure:** a refactor can keep the pure predicate correct while moving either Engine effect
+  before the guard, omitting the stored label update, or dropping one real-transition effect; every
+  existing stabilization regression remains green.
+- **Plan direction:** add a narrow Engine-level observation seam and regression coverage that drives
+  same-effective and real-effective transitions through `setVideoStabMode`, asserting stored intent
+  and exact apply/reopen counts; append a dated correction to the cycle-38 completion record.
+
+### AGG39-02 — Loupe Overview authority and renderer comment name the wrong corner
+
+- **Severity / confidence:** Low / High
+- **Source:** document-specialist
+- **Status:** confirmed documentation/code mismatch.
+- **Evidence:** `CLAUDE.md:251-253`, `docs/ARCHITECTURE.md:745-749`, and
+  `app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt:1067-1073` call the viewport
+  bottom-left. `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:665-691` explicitly
+  right-insets it to avoid the left exposure/zoom ruler, while the Compose consumer and
+  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:18-33` pin the resulting
+  bottom-right placement.
+- **Failure:** a maintainer following either current authority can move or test the overview into the
+  persistent left ruler, restoring the user-reported overlap that the right-inset law fixed.
+- **Plan direction:** correct both current authorities and the renderer comment to bottom-right, and
+  extend the documentation contract checker to bind the wording to the right-edge geometry law.
+
+## Agent failures
+
+None. Every available reviewer returned and wrote its provenance report.
+
+## Totals
+
+- Raw specialist findings: 3
+- Deduplicated current findings: 2
+- Severity: 2 Low
+- Confidence: 2 High
+- Deferred findings: none at review stage; Prompt 2 must schedule or explicitly defer every item.
+
+---
+
+<!-- Prior aggregate retained in place as non-destructive review history. -->
+
 # Aggregated deep review — cycle 38
 
 Date: 2026-08-24

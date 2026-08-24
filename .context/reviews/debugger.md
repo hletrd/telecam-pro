@@ -1,3 +1,85 @@
+# Debugger review — cycle 39
+
+Date: 2026-08-24
+Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224` (`origin/main`)
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle39.feeBBZ`
+
+## Scope, inventory, and method
+
+I reviewed the isolated current tree only after reading `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`. Prior reviews were regression hypotheses rather than current findings. The
+complete inventory contains 493 tracked paths: 101 production Kotlin files, three debug Kotlin
+files, four instrumented-test files, 220 JVM/Robolectric/Compose test files, 32 Python files, 73
+Markdown files, and 60 other tracked build/resource/script/license/asset inputs. Every path
+participated in file-type, Git-mode, suspicious-token, exception, subprocess, threading, timeout,
+ownership, and failure-handling searches.
+
+The causal review traced:
+
+- Camera2 route inventory, optics generations, caps publication, stabilization projection and
+  session reopen, callback dispatch, controller teardown, fallback ladders, request fast paths,
+  capture correlation/ZSL, watchdogs, lifecycle pause/release, and bounded recovery;
+- GL/EGL generation ownership, preview/encoder attachment, frame coalescing, analysis/motion state,
+  output teardown, process quarantine, and first-frame Ready publication;
+- processed/RAW still budgets and family continuations, pending-video allocation, microphone
+  handoff, codec/muxer finalization, post-native storage, ownerless deletion, relaunch recovery, and
+  review decode/player ownership;
+- ViewModel caps reconciliation, settings/MR restore, timers/tickers, review invalidation, Compose
+  state, and the full current-delta call graph;
+- tool/build/device-evidence failure paths, optimized-Python guards, subprocess construction,
+  source/artifact mutation checks, and the current test synchronization.
+
+## Current-delta validation
+
+The four cycle-38 fixes survive their cross-file failure hypotheses:
+
+- `camera/CaptureCapabilities.kt:586-600` compares the resolved Camera2 stabilization values, and
+  `camera/CameraEngine.kt:1587-1600` stores the normalized label even when no wire change is needed.
+  A pre-capability call remains intentionally deferred to the normal session-start path; a genuine
+  HAL-mode change still reapplies the request and reopens the session.
+- `ui/CameraScreen.kt:2835-2924` preserves `HudPlate` under the selected-disabled wash instead of
+  replacing the contrast floor. Both background layers are inside the same clipped pill, so the
+  overlay cannot erase the dark live-frame foundation.
+- `camera/CameraState.kt` removes the dead bottom-margin input and leaves finder placement governed
+  by the documented top-anchor plus measured bottom-clearance constraints; current callers and
+  position-sensitive tests use the same signature.
+- `ui/review/LatestHeavyWorkLaneTest.kt:418-450` now saturates the shared executor with one request
+  per independent lane. It no longer submits a same-lane successor before its predecessor starts,
+  so the setup cannot legally retire a blocker under the production latest-wins contract.
+  `MediaReviewOwnershipTest.kt:83-116` similarly handshakes each poisoned worker before submitting
+  the next request.
+
+Focused verification passed all changed regression classes in one Gradle run:
+`CaptureCapabilitiesTest`, `FinderGeometryTest`, `AffordanceEdgeComposeTest`,
+`LatestHeavyWorkLaneTest`, and `MediaReviewOwnershipTest`. The initial invocation failed before
+task execution because the detached worktree had no local SDK declaration; rerunning with the
+existing `/Users/hletrd/Library/Android/sdk` as `ANDROID_HOME` completed successfully. That setup
+failure is environmental, reproducible, and already covered by the documented SDK preflight; it is
+not a repository defect.
+
+## Findings
+
+No actionable production bug, correctness regression, deadlock, race, resource leak, data-loss
+path, error-handling defect, or scheduler-dependent gate failure survives current-HEAD validation.
+
+The five open physical checks in `docs/FIELD_CHECKS.md` remain evidence obligations rather than
+host-proven defects. In particular, A4 needs a rotatable front-camera device, D1 needs an acoustic
+A/B, and E1/E2 require real MediaProvider ownership/consent behavior; this review does not infer
+their results from host code.
+
+## Final missed-issue sweep and count
+
+The final sweep replayed every native terminal, callback/generation edge, optics/caps transition,
+finite queue and admission owner, provider mutation/recovery state, capture family, review worker,
+bitmap/media parser bound, settings corruption seam, Activity/ViewModel lifecycle transition, and
+build/device-evidence boundary. It separately checked every cycle-38 production and test delta and
+revalidated the previous scheduler race under the corrected setup. No review-relevant current path
+was skipped or sampled in place of the repository inventory.
+
+**New debugger finding count: 0.**
+
+<!-- Archived cycle-38 provenance follows; DBG38-01 is fixed on current HEAD and is not a cycle-39 finding.
+
 # Debugger review — cycle 38
 
 Date: 2026-08-24
@@ -81,4 +163,5 @@ findings for regression. No additional actionable production bug, correctness re
 deadlock, race, resource leak, data-loss path, or error-handling defect survived validation. The five
 open physical checks in `docs/FIELD_CHECKS.md` remain evidence obligations, not host-proven defects.
 
-**New debugger finding count: 1 — one Medium (High confidence).**
+**Archived cycle-38 debugger finding count: 1 — one Medium (High confidence).**
+-->

@@ -1,54 +1,68 @@
-# Native Android designer review — cycle 38
+# Native Android designer review — cycle 39
 
 Date: 2026-08-24
 
-Reviewed revision: `fa95299` (`origin/main`)
+Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224`
 
-Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
+Workspace: isolated worktree `/private/tmp/find-x9-cycle39.feeBBZ`
 
 ## Scope and method
 
-This is native Android Compose, so browser automation is not applicable. I inventoried all 490
-tracked paths and reviewed production/debug Compose, semantics, resources, manifests/theme, UI
-state/actions, responsive geometry, relevant unit/native-Compose tests, and current screenshot
-validity metadata. Coverage included IA, touch/non-touch/TalkBack/Switch Access, target size and
-contrast, phone/large-screen/freeform layouts, font scale/insets, EN/KO/RTL, the dark-only theme,
-loading/empty/error/delete/recording states, and perceived performance. No device was connected.
+This is a native Android/Compose application, so browser automation is not applicable. I read the
+committed design and behavior authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
+`docs/FIELD_CHECKS.md`), inventoried all 493 tracked paths, and reviewed the complete production UI
+surface and its cross-file state/actions/resources/tests. The inventory included `CameraScreen`,
+`CameraScreenPolicy`, `CameraViewModel`, all `ui/controls`, `ui/overlays`, `ui/review`, theme,
+permission and external-navigation surfaces, EN/KO resources, manifests, debug snapshot host, phone
+and tablet screenshot assets, and the UI-facing camera/storage/video policies that decide what the
+operator may see or activate.
 
-## Finding
+The review covered information architecture; quiet Sony Alpha/Xperia-style affordances; touch,
+keyboard/D-pad, TalkBack, and Switch Access; focus containment and restoration; WCAG 2.2 target,
+contrast, naming, role, state, and live-region behavior; phone, tablet, freeform, insets, rotation,
+font-scale, overflow, and scroll behavior; loading, empty, disabled, reconfiguring, permission,
+recording, review, deletion, retry, and terminal-error states; dark-theme/system-bar consistency;
+EN/KO parity and layout-direction-sensitive placement; and perceived-performance ownership. I also
+visually inspected the checked-in phone/tablet captures while treating their validity manifest as
+authoritative rather than mistaking historical screenshots for current app evidence. No device was
+connected and no screenshot was represented as a current target-device validation.
 
-### DES38-01 — the selected lens/zoom chip can disappear on a bright viewfinder while the rail is locked
+## Findings
 
-- **Severity / confidence / status:** Low / High / Confirmed compositing defect; visual validation
-  on the target device remains appropriate after the fix.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt:659-708`
-  produces `selected=true, enabled=false` for the current lens/zoom during camera reconfiguration or
-  recording. `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855` resolves that
-  state to a 12%-white translucent container, 12%-white border, and 38%-white label;
-  `CameraScreen.kt:2912-2924` composites them directly over the live preview.
-- **Problem:** every other idle/disabled branch retains `HudPlate`, the dark contrast floor designed
-  for live imagery. Selected-disabled uniquely drops it. Over sky, snow, a white wall, or an
-  overexposed frame, all three white layers composite toward the same white background, so the
-  current focal choice loses both its text and boundary. This is common rather than theoretical:
-  the active chip is disabled for the entire recording and during each optics reconfiguration.
-- **Test evidence:** `AffordanceEdgeComposeTest.kt:65-107` renders enabled and unselected-disabled
-  only, over one dark `CameraColors.Pill` background. Selected-disabled is reduced to alpha-token
-  assertions, so the test blesses the disappearing recipe without observing it.
-- **Suggested fix:** keep a dark `HudPlate` foundation for selected-disabled and layer the quiet
-  selection wash above it (or use another composited color with a measured bright/dark floor).
-  Render the full four-state matrix over near-white and near-black frame fixtures, preserving the
-  existing disabled semantics and 48 dp target.
+No new actionable design, accessibility, responsive-layout, localization, state-presentation, or
+perceived-performance defect survived source and cross-file validation at the reviewed revision.
 
-## Confirmed strengths and final sweep
+The cycle-38 selected-disabled focal-rail defect is closed: the active but locked chip now retains
+the shared dark live-frame plate and layers the quiet selection wash above it
+(`app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2859,2916-2937`), with a rendered
+bright/dark four-state regression matrix in
+`app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:110-147`.
+The finder overlay continues to share one geometry seam between GL and Compose after removal of the
+misleading dead margin input. The settings rail remains a selectable tab group with one merged,
+named 48 dp-plus action per category; modal surfaces contain traversal and expose an explicit close
+owner; the viewfinder and review expose capability-dependent non-touch actions without duplicating
+touch-only gesture nodes; disabled controls preserve both semantic and visual state; and scrolling
+surfaces retain explicit overflow/fade or per-tab position behavior.
 
-The nine-tab IA, quiet preview-first chrome, mode/Fn/MR organization, typed loading/error/delete
-surfaces, modal focus, review keyboard support, primary 48 dp targets, orientation policy,
-large-screen geometry, EN/KO pairing, RTL-absolute finder placement, and bounded heavy review work
-remain coherent. Apart from DES38-01, no additional source-proven accessibility, responsive,
-localization, state, or perceived-performance defect survived.
+## Evidence boundaries and final missed-issues sweep
+
+- `python3 tools/check_docs.py` passed all 120 applicable committed checks with zero failures; 24
+  checks for intentionally absent private maintainer files were skipped.
+- The two stale phone screenshots remain explicitly blocked by
+  `docs/assets/play/screenshots/asset-validity.json` and `docs/play-console-submit.md`. This is an
+  already-owned immutable-device recapture task, not a new UI finding; the assets were not modified
+  or treated as release-ready.
+- Open field checks A3, A4, D1, E1, and E2 remain accurately scoped to a real scene, rotatable
+  large-screen front route, acoustic comparison, or real MediaProvider consent/provenance. Host
+  inspection cannot close or fail those checks.
+- The final sweep rechecked small permanent text, 48 dp interaction ownership, compound semantics,
+  selected/disabled combinations, focus order, Back/scrim behavior, live-region urgency, timer and
+  review modals, permission denial/recovery, ownerless-delete cancellation, color tokens over live
+  bright/dark content, horizontal option overflow, window-following rotation, absolute finder
+  anchoring under RTL, bilingual resource parity, and lifecycle gating of expensive meters/scopes.
+  No additional confirmed defect remained.
 
 ## Totals
 
-- New findings: 1
-- Severity: 1 Low
-- Confidence: 1 High
+- New findings: 0
+- Confirmed regressions: 0

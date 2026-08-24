@@ -1,57 +1,72 @@
-# Feature-development code review — cycle 38
+# Feature-development code review — cycle 39
 
 Date: 2026-08-24
 
-Reviewed revision: `fa95299` (`origin/main`)
+Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224`
 
-Workspace: isolated worktree `/private/tmp/find-x9-cycle38.FKvYBP`
+Workspace: isolated worktree `/private/tmp/find-x9-cycle39.feeBBZ`
 
 ## Coverage
 
-Inventoried all 490 tracked files and examined every production subsystem, its relevant tests,
-resources, build/release tooling, and committed authority from the feature-integrator perspective.
-The final sweep emphasized the Cycle 37 implementation surface and cross-file UI-policy/test
-contracts. No source, plan, or build file was modified.
+I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`, inventoried all 493 tracked
+paths, and reviewed the entire repository from a feature-integrator perspective: 101 production
+Kotlin files, 220 JVM/Robolectric/Compose tests, four instrumentation probes, EN/KO resources,
+manifests/theme, Gradle/version/signing configuration, Python release and immutable-build tools,
+device harness, privacy/submission documentation, and historical plans/reviews used only as leads.
+
+The cross-file review emphasized whether a future feature can safely extend the established single
+authorities: enumerated capabilities and `DeviceProfile` quirks; desired/accepted optics
+transactions; route-based zoom scale; controls normalization; renderer snapshot replay; terminal
+native ownership; capture-family publication/deletion; Settings/MR/EXIF agreement; UI availability
+and semantics; process-finite background lanes; immutable artifact evidence; and field-check
+honesty. Every cycle-38 production/test change was inspected for signature drift, duplicated policy,
+or a fix that passed only its narrow regression.
 
 ## Findings
 
-### FDEV38-01 — selected-disabled focal-rail colors discard the shared live-preview contrast floor
+No new actionable feature-integration, correctness, API-contract, maintainability, or testability
+finding survived the whole-repository review at the current revision.
 
-- **Severity / confidence / status:** Low / High / Confirmed.
-- **Exact regions:** state production at
-  `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreenPolicy.kt:659-708`; color resolution and
-  draw at `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2855,2912-2924`; missing
-  render matrix at
-  `app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:65-107`.
-- **Problem:** the selected-disabled branch uses translucent white as the container itself, while
-  the unselected-disabled branch uses `HudPlate`. Because `background()` composites that color
-  directly onto the camera frame, bright pixels erase the container, border, and label together.
-- **Failure scenario:** start recording while aimed at sky/snow. The active lens chip becomes
-  disabled and can visually disappear, even though sibling unavailable choices retain their dark
-  plates.
-- **Suggested fix:** express selected-disabled as a composition of the shared plate and a selection
-  tint, not a replacement plate. Add bright/dark rendered tests for all four state combinations.
+The cycle-38 patches improve the extension seams without creating parallel authorities:
 
-### FDEV38-02 — `finderRect` carries a dead parameter whose documented contract survives in tests
+- effective stabilization normalization is centralized in the existing capability layer and the
+  Engine still owns whether the resolved wire value requires a request/session reconfiguration;
+- focal-rail rendering adds a compositing layer without changing selection, availability, action,
+  or accessibility ownership;
+- finder geometry removes an inert parameter and replaces weak size-only coverage with independent
+  position laws shared by GL and Compose; and
+- latest-work test synchronization changes only test handshakes, not production pool, timeout,
+  disposal, or publication semantics.
 
-- **Severity / confidence / status:** Low / High / Confirmed maintainability/API defect.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:671-719` and
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:8-35,70-96`.
-- **Problem:** the function says `bottomMargin` controls the vertical inset, but suppresses the
-  parameter as unused after the geometry migrated to `topAnchor`/`bottomClearance`. Tests still pass
-  custom bottom-margin values yet assert only size or the unrelated clearance floor.
-- **Failure scenario:** a feature author adjusts the advertised parameter to make room for a new
-  bottom control; nothing moves and all tests pass.
-- **Suggested fix:** delete the parameter and stale contract if it is obsolete, updating call sites
-  and tests, or restore a well-defined vertical effect with an axis-isolation test.
+## Existing debt and evidence limits
 
-## Final sweep
+The broad `CameraEngine` facade remains the explicitly deferred AGG35-08 item in
+`docs/plans/2026-08-24-rpf-cycle35.md` at its original Medium/High classification. Its recorded exit
+criterion requires a new concrete defect spanning at least two responsibility regions or planned
+work touching at least three. This review found neither, so duplicating that debt as a new finding
+would violate the repository's deferral policy.
 
-Cycle 37's Gamma and stabilization projections, ZSL comparator, privacy parity, optimized-Python
-guards, and MR comment are internally consistent. No further feature-integration defect survived.
+The fail-closed stale Play screenshots and open field checks A3/A4/D1/E1/E2 likewise already have
+precise owners and exit criteria. They were not recast as source defects, silently closed, or used
+as proof of unmeasured hardware/provider behavior.
+
+## Final missed-issues sweep
+
+- `python3 tools/check_docs.py` passed all 120 applicable committed checks with zero failures and 24
+  optional-private skips, including production-module inventory and the review-critical ownership
+  map.
+- I searched for hardcoded production prose, localization-key asymmetry, TODO/FIXME/suppression
+  escape hatches, deprecated or duplicate feature seams, dead parameters, no-op controls, requested
+  state rendered as accepted truth, capability-blind choices, unbounded work, main-thread provider
+  calls, modal input leakage, and tests that assert constants without exercising behavior.
+- I traced feature doors across restore, live update, same-route normalization, route-changing
+  reopen, rollback, accepted-session callback, lifecycle restart, and persistence. I also rechecked
+  photo/video/front/TELE/DNG paths; full versus degraded/preview-only sessions; save/review/delete
+  siblings; and debug/release/device-evidence separation.
+- No new cross-file policy split, unreachable feature state, lying UI state, dead extension input,
+  or regression-test blind spot remained after that sweep.
 
 ## Totals
 
-- New findings: 2
-- Severity: 2 Low
-- Confidence: 2 High
+- New findings: 0
+- Confirmed regressions: 0

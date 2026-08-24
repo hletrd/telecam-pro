@@ -1,75 +1,65 @@
-# Causal-tracing review — cycle 38
+# Causal-tracing review — cycle 39
 
 Date: 2026-08-24
-Reviewed revision: `fa95299562d52f6b4ddd200f6d410ebd00a54c1d`
-Workspace: isolated detached worktree `/private/tmp/find-x9-cycle38.FKvYBP`
+Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224`
+Workspace: isolated detached worktree `/private/tmp/find-x9-cycle39.feeBBZ`
 
 ## Scope and method
 
-I read the full committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`) and inventoried all 490 tracked paths before tracing the production graph.
-The trace covered route discovery and topology epochs; optics generations, rollback baselines, and
-dual/sequential replacement; controller/session/preview/encoder/analysis terminals; tap/custom-WB/ZSL/
-capture correlation; still-family producer/publication/delete/recovery ownership; REC allocation,
-native teardown, storage and microphone handoff; review/player and ownerless-delete identities;
-lifecycle replacement; final UI publication; and build/release/device-evidence tools. All production
-packages, tests, resources, and the cycle-37 change surface were included in the final sweep.
+I read the complete repository authorities and inventoried all 493 tracked paths before tracing the
+production graph. The trace covered route inventory and identity epochs; optics generations,
+rollback baselines and camera replacement; controller/session/preview/GL terminals; tap, AF,
+custom-WB, ZSL and capture correlation; still-family production, publication, deletion and recovery;
+REC allocation, process-native admission, microphone handoff, codec/muxer finalization and storage;
+review/player and ownerless-delete identities; lifecycle replacement; UI publication; and host,
+release and device-evidence tooling. Tests, resources, historical findings, and the complete cycle-38
+change surface were included in the final sweep.
 
 ## Findings
 
-### TRACE38-01 — a caps-result label reconciliation feeds back into the session-reconfiguration command path
+No new causal correctness issue survived competing-hypothesis validation at current HEAD.
 
-- **Severity:** Medium
-- **Confidence:** High
-- **Status:** Confirmed causal path; the precise visible delay is device-dependent.
-- **Evidence:** The route transition publishes its candidate capabilities before starting the deferred
-  Camera2 session (`app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:3782-3810`). The
-  generation-guarded ViewModel callback computes a resolved stabilization label and writes it to state,
-  but then sends that derived result back through `engine.setVideoStabMode`
-  (`app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:2878-2925`). The setter is a command
-  boundary for operator changes: it pushes `CameraController.setVideoStabMode` and calls
-  `reopenForSession` (`CameraEngine.kt:1561-1564,1587-1594`). `reopenForSession` captures the same
-  current optics generation, invalidates Ready, and queues `reconfigureCamera` on the serial setup lane
-  (`CameraEngine.kt:2844-2885`). Because it reuses rather than supersedes the current generation, the
-  original route setup and the queued second setup are both authorized to run.
-- **Competing hypothesis rejected:** this second pass is required to change the wire mode. It is not.
-  `videoStabControlModeFor` maps unsupported Active to `ON` on an OFF+ON route and unsupported
-  Standard/Active to `OFF` on an OFF-only route; `normalizedForAvailableModes` then changes only the
-  enum label to Standard/Off (`camera/CaptureCapabilities.kt:551-583`). Old and normalized states
-  therefore resolve to the same exact HAL value in every branch that triggers this reconciliation.
-- **Failure scenario:** an Active-capable route is followed by a route advertising only OFF+ON. The
-  first generation configures ON correctly, publishes caps, and begins terminal convergence. The caps
-  result relabels Active→Standard, then invalidates Ready and queues a second close/open under that
-  same generation. The user sees an avoidable second reconfiguration/blackout, and any immediately
-  queued optics action waits behind it on the sole setup executor.
-- **Suggested fix:** make capability reconciliation part of the generation-owned desired packet before
-  the first session is configured, then publish the applied enum to UI; alternatively use a distinct
-  reconciliation operation that compares old/new resolved HAL modes and updates only the enum when
-  they are identical. Test the exact sequence `caps published -> normalized label -> no Ready
-  invalidation/no setup submission`, in addition to the existing pure mapping tests.
+In particular, the prior duplicate-reconfiguration chain is closed rather than merely hidden in the
+ViewModel: route capability reconciliation still calls the Engine with the normalized label
+(`app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:2878-2925`), but the Engine now
+resolves both labels against the currently accepted capability set and returns before request rebuild
+or reopen when their HAL values match
+(`app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:1587-1597`; `camera/CaptureCapabilities.kt:586-604`).
+Real OFF/ON/PREVIEW_STABILIZATION transitions still take the established apply-and-reopen path, so
+the fix does not suppress an operator command that changes wire state.
 
 ## Competing hypotheses and final completeness sweep
 
-1. **The new projected choice list can itself grow or churn per frame:** rejected. It is built only at
-   caps delivery and contains at most three enum values.
-2. **A stale caps callback can normalize a newer optics generation:** rejected at the current entry
-   boundary; the main-thread callback checks `isOpticsGenerationCurrent(generation)` before reconciling.
-   The finding is instead that a current result is incorrectly treated as a new command.
-3. **Cycle 36's dual-open cleanup can again orphan a nullable outgoing controller:** rejected. Current
-   production still totalizes vacant/live/terminal/newer layouts and checks the blocking boundary before
-   publication/session start.
-4. **A late still/recording/provider result can publish through a replacement owner:** rejected. Exact
-   controller/session/capture-family/generation identities remain checked at terminal publication, and
-   process-wide provider lanes retain bounded recovery authority.
-5. **A retired GL/review/audio owner can clear or publish into a replacement:** rejected. Generation or
-   exact-handle terminals remain first-wins and stale work releases only its own resources.
+1. **A capability-normalization callback can still authorize a second same-generation session:**
+   rejected. The callback may update the stored label, but equal effective HAL modes now stop before
+   either native side effect; genuine mode changes retain the original path.
+2. **A late REC allocation or setup result can publish after Stop/pause/replacement:** rejected. The
+   allocation attempt, deadline, process-admission token, exact accepted-session snapshot, setup
+   finalization owner, and topology lease all have independent first-wins/current-owner checks before
+   native publication (`camera/CameraEngine.kt:4880-5123,5136-5528`). A late provider URI is routed to
+   durable pending-row retirement rather than recorder setup.
+3. **A recorder terminal can release native owners while EGL still references the encoder surface:**
+   rejected. Detach completion owns finalization; deadline expiry quarantines the exact graph and
+   closes process-wide native acquisition. Storage publication is a later, separately bounded tail
+   (`camera/CameraEngine.kt:5620-6237`; `video/VideoRecorder.kt:523-553`).
+4. **A late still sibling can resurrect a deleted or evicted review family:** rejected. Capture ids,
+   durable family tombstones, producer-terminal state, exact output ownership and bounded unresolved
+   discards remain checked at publication and deletion terminals; launch recovery owns rows that
+   cannot be resolved immediately.
+5. **A retired review/provider result can publish into a replacement composition:** rejected. Each
+   lane replaces publication authority immediately, applies a terminal timeout/capacity result, and
+   disposes produced native/bitmap values whose exact request cannot be claimed
+   (`ui/review/LatestHeavyWorkLane.kt:153-281`). Playback uses an exact handle plus deadline owner.
+6. **Lifecycle teardown can leave recurring work or a stale native replay alive:** rejected. Named
+   handler work is removed on stop/clear, process replay observations are generation-replaced and
+   canceled, and every replay rechecks lifecycle, surface generation and process authority before
+   acquisition.
 
-No additional wrong-clock comparison, nullable-identity alias, stale rollback, double terminal, lost
-completion, use-after-retire publication, or cross-file ownership gap survived the final repository-wide
-sweep. Device behavior was not inferred beyond the committed field ledger.
+No wrong-clock comparison, nullable-owner alias, stale rollback, lost completion, double terminal,
+use-after-retire publication, or cross-file ownership gap survived the final sweep. Open entries in
+`docs/FIELD_CHECKS.md` remain explicitly device/manual evidence gaps, not code findings.
 
 ## Totals
 
-- New findings: 1
-- Severity: 1 Medium
-- Confidence: High in the duplicate authorized reconfiguration path.
+- New findings: 0
+- Confirmed regressions: 0
