@@ -636,7 +636,33 @@ class CameraEngine internal constructor(
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
     private data class OpticsReconfiguration(val overrideId: String?, val transaction: OpticsTransaction)
 
+    /**
+     * Complete post-monitor rollback packet. Every mutable value needed by controller, GL, and UI
+     * publication is frozen while the rollback still owns the optics generation; execution never
+     * re-derives an old packet from fields a newer intent may already have replaced.
+     */
+    private data class OpticsRollbackEffects(
+        val generation: Long,
+        val status: CameraStatus,
+        val videoPipeline: VideoPipelineSelection,
+        val postTransfer: Boolean,
+        val controller: CameraController?,
+        val controls: ManualControls,
+        val teleconverterMagnification: Float,
+        val videoMode: Boolean,
+        val caps: CameraCaps?,
+        val videoSize: Size,
+        val previewStreamSize: Size,
+        val previewAspect: Float,
+        val punchInResolved: Boolean,
+        val restoreSession: Boolean,
+        val opticsPublication: OpticsRollbackPublication,
+        val readyPublication: CameraReadyPublication,
+    )
+
     @Volatile private var opticsRollbackBaseline: OpticsSnapshot? = null
+    /** Non-zero while one committed rollback still owes its controller/GL/publication packet. */
+    @Volatile private var opticsRollbackEffectsGeneration = 0L
 
     private fun currentOpticsSnapshot(): OpticsSnapshot = OpticsSnapshot(
         videoMode = videoMode,
@@ -846,8 +872,17 @@ class CameraEngine internal constructor(
         ),
     )
 
-    @Synchronized
     private fun rollbackOptics(transaction: OpticsTransaction, status: CameraStatus) {
+        val effects = synchronized(this) { commitOpticsRollbackLocked(transaction, status) } ?: return
+        executeOpticsRollbackEffects(effects)
+    }
+
+    /** Engine-monitor-only state commit. No controller/GL call or external callback is allowed here. */
+    private fun commitOpticsRollbackLocked(
+        transaction: OpticsTransaction,
+        status: CameraStatus,
+    ): OpticsRollbackEffects? {
+        check(Thread.holdsLock(this)) { "optics rollback commit requires the Engine monitor" }
         val before = transaction.before
         val restored = rollbackOpticsState(
             currentGeneration = opticsIntentGeneration.get(),
@@ -865,7 +900,7 @@ class CameraEngine internal constructor(
                 userPin = before.userPin,
                 requestedVideoSize = before.requestedVideoSize,
             ),
-        ) ?: return
+        ) ?: return null
         opticsRollbackBaseline = null
         videoMode = restored.mode == CaptureMode.VIDEO
         // The outgoing session is still the accepted owner. Restore its exact curve directly:
@@ -882,20 +917,15 @@ class CameraEngine internal constructor(
         } else {
             currentVideoPipelineSelection()
         }
-        if (recorder == null) postGlTransfer(restoredVideoPipeline.activeTransfer)
+        val postTransfer = recorder == null
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
         // A failed FRONT open (or a failed exit) restores the exact prior facing with the rest of
         // the packet; applyStabilization below then re-pushes the matching preview mirror.
         facing = restored.facing
         activeCameraRoute = restored.route
-        // Facing resolves the user's independent loupe intent against the active route. The
-        // rejected route was pushed optimistically, so restore both the live GL generation and
-        // RendererAssists' replay snapshot before any replacement generation can observe it.
-        pushPunchIn()
         controls = restored.controls
         teleconverterDeclaration = restored.declaration
-        controller?.setTeleconverterMagnification(restored.declaration.magnification)
         photoExposureTimeNs = restored.photoExposureTimeNs
         overrideId = restored.overrideId
         userCameraPin = restored.userPin
@@ -905,44 +935,32 @@ class CameraEngine internal constructor(
         requestedVideoSize = restored.requestedVideoSize
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
-        controller?.setPinAutoFps(before.videoMode, transaction.generation)
-        // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged with
-        // this generation, so it cannot clamp the failed candidate or a newer user intent.
-        onOpticsRollback?.invoke(
-            OpticsRollbackPublication(
-                mode = restored.mode,
-                transfer = restoredVideoPipeline.requestedTransfer,
-                videoCodec = restoredVideoPipeline.codec,
-                lens = restored.lens,
-                teleconverter = restored.teleconverter,
-                facing = restored.facing,
-                route = restored.route,
-                controls = restored.controls,
-                photoExposureTimeNs = restored.photoExposureTimeNs,
-                // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
-                // the engine's routed-target overrideId (which is non-null after any door).
-                userPin = restored.userPin,
-                // The VM mirrors preTeleUnifiedZoom and resets it eagerly on recall; a FAILED recall
-                // restores the engine's snapshot here, so the mirror must receive the same value or
-                // the next TC-off diverges OSD from wire on the failed-recall path (verification S4).
-                preTeleUnifiedZoom = before.preTeleUnifiedZoom,
-                declaration = restored.declaration,
-                generation = transaction.generation,
-                videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
-            ),
+        val opticsPublication = OpticsRollbackPublication(
+            mode = restored.mode,
+            transfer = restoredVideoPipeline.requestedTransfer,
+            videoCodec = restoredVideoPipeline.codec,
+            lens = restored.lens,
+            teleconverter = restored.teleconverter,
+            facing = restored.facing,
+            route = restored.route,
+            controls = restored.controls,
+            photoExposureTimeNs = restored.photoExposureTimeNs,
+            // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
+            // the engine's routed-target overrideId (which is non-null after any door).
+            userPin = restored.userPin,
+            // The VM mirrors preTeleUnifiedZoom and resets it eagerly on recall; a FAILED recall
+            // restores the engine's snapshot here, so the mirror must receive the same value or
+            // the next TC-off diverges OSD from wire on the failed-recall path (verification S4).
+            preTeleUnifiedZoom = before.preTeleUnifiedZoom,
+            declaration = restored.declaration,
+            generation = transaction.generation,
+            videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
         )
-        before.caps?.let { onCapsReady?.invoke(it, transaction.generation) }
-        onVideoSizeChosen?.invoke(before.videoSize, transaction.generation)
-        emitPreviewAspect(transaction.generation)
-        gl.setCameraPreviewSize(before.previewStreamSize.width, before.previewStreamSize.height)
-        seedGlZoom()
-        applyStabilization()
         val restoreSession = before.ready && before.readyController === controller && !paused &&
             before.sessionGeneration == cameraSessionGeneration.get()
         if (restoreSession) {
-            finishRetainedControllerOpticsRemap(checkNotNull(controller))
-        } else {
-            controller?.updateControls(before.controls)
+            // The remaining zoom effects execute from the frozen packet after unlock.
+            zoomInteractionState = ZoomInteractionState()
         }
         val readyPublication = if (restoreSession) {
             val restoredController = checkNotNull(controller)
@@ -972,8 +990,86 @@ class CameraEngine internal constructor(
                 sessionGeneration = sessionGeneration,
             )
         }
-        onCameraReadyChange?.invoke(readyPublication)
-        onStatus?.invoke(status)
+        // Capture/REC admission must not observe the internally committed Ready state before the
+        // matching controller and GL packet has been enqueued. UI state is still Not-Ready from the
+        // rejected door, and the central accepted-session helpers also honor this generation gate.
+        opticsRollbackEffectsGeneration = transaction.generation
+        return OpticsRollbackEffects(
+            generation = transaction.generation,
+            status = status,
+            videoPipeline = restoredVideoPipeline,
+            postTransfer = postTransfer,
+            controller = controller,
+            controls = before.controls,
+            teleconverterMagnification = restored.declaration.magnification,
+            videoMode = before.videoMode,
+            caps = before.caps,
+            videoSize = before.videoSize,
+            previewStreamSize = before.previewStreamSize,
+            previewAspect = displayedPreviewAspect(before.previewStreamSize, before.caps),
+            punchInResolved = punchInResolved(
+                rendererAssists.isPunchInIntended(),
+                restored.route == CameraRoute.FRONT,
+            ),
+            restoreSession = restoreSession,
+            opticsPublication = opticsPublication,
+            readyPublication = readyPublication,
+        )
+    }
+
+    /** Executes the frozen packet after unlock; a newer optics generation retires remaining effects. */
+    private fun executeOpticsRollbackEffects(effects: OpticsRollbackEffects) {
+        fun owned(): Boolean = synchronized(this) {
+            opticsRollbackEffectsGeneration == effects.generation &&
+                reconfigurationOwnsGeneration(opticsIntentGeneration.get(), effects.generation) &&
+                controller === effects.controller
+        }
+        try {
+            if (!owned()) return
+            if (effects.postTransfer && recorder == null) {
+                postGlTransfer(effects.videoPipeline.activeTransfer)
+            }
+            if (!owned()) return
+            // Facing resolves the user's independent loupe intent against the active route. Restore
+            // both the live GL generation and RendererAssists replay snapshot from the frozen value.
+            rendererAssists.setPunchInResolved(effects.punchInResolved)
+            effects.controller?.setTeleconverterMagnification(effects.teleconverterMagnification)
+            effects.controller?.setPinAutoFps(effects.videoMode, effects.generation)
+
+            if (!owned()) return
+            // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged
+            // with this generation, so it cannot clamp the failed candidate or a newer user intent.
+            onOpticsRollback?.invoke(effects.opticsPublication)
+            effects.caps?.let { onCapsReady?.invoke(it, effects.generation) }
+            onVideoSizeChosen?.invoke(effects.videoSize, effects.generation)
+            onPreviewAspect?.invoke(effects.previewAspect, effects.generation)
+
+            if (!owned()) return
+            gl.setCameraPreviewSize(effects.previewStreamSize.width, effects.previewStreamSize.height)
+            gl.setZoomTarget(effects.controls.zoomRatio)
+            gl.setHalZoom(effects.controls.zoomRatio)
+            applyStabilization()
+            if (effects.restoreSession) {
+                effects.controller?.commitRetainedOpticsControls(effects.controls)
+            } else {
+                effects.controller?.updateControls(effects.controls)
+            }
+        } finally {
+            synchronized(this) {
+                if (opticsRollbackEffectsGeneration == effects.generation) {
+                    opticsRollbackEffectsGeneration = 0L
+                }
+            }
+        }
+        val publishTerminal = synchronized(this) {
+            reconfigurationOwnsGeneration(opticsIntentGeneration.get(), effects.generation) &&
+                controller === effects.controller &&
+                cameraSessionGeneration.get() == effects.readyPublication.sessionGeneration &&
+                cameraReadyPublicationSequence.get() == effects.readyPublication.sequence
+        }
+        if (!publishTerminal) return
+        onCameraReadyChange?.invoke(effects.readyPublication)
+        onStatus?.invoke(effects.status)
     }
     @Volatile private var previewSurface: Surface? = null
     // Last-known preview surface dimensions, kept alongside previewSurface so the async start
@@ -4247,6 +4343,7 @@ class CameraEngine internal constructor(
 
     private fun currentAcceptedCameraSession(): AcceptedCameraSession? {
         if (UnsafeRecorderQuarantine.isActive()) return null
+        if (opticsRollbackEffectsGeneration != 0L) return null
         val accepted = acceptedCameraSession ?: return null
         return accepted.takeIf {
             cameraReady && !paused && controller === it.controller &&
@@ -5075,6 +5172,7 @@ class CameraEngine internal constructor(
     // ---- Video ----
 
     private fun currentAcceptedRecordingSession(): AcceptedCameraSession? = synchronized(this) {
+        if (opticsRollbackEffectsGeneration != 0L) return@synchronized null
         acceptedCameraSession?.takeIf { accepted ->
             acceptedCameraSessionIsCurrent(
                 currentController = controller,
@@ -7092,12 +7190,19 @@ class CameraEngine internal constructor(
 
     /** Pushes the DISPLAYED preview aspect (post sensor-orientation W/H swap) to the UI. */
     private fun emitPreviewAspect(generation: Long = opticsIntentGeneration.get()) {
-        val s = previewStreamSize
+        onPreviewAspect?.invoke(displayedPreviewAspect(previewStreamSize, caps), generation)
+    }
+
+    /** Frozen-packet form used by rollback so a newer route cannot change the published aspect. */
+    private fun displayedPreviewAspect(size: Size, routeCaps: CameraCaps?): Float {
         // The ~90° sensor orientation means the SurfaceTexture transform swaps the shown W/H (the
         // afocal 180° doesn't change the swap). Same rule FlipRenderer uses for its aspect choice.
-        val swapped = ((caps?.sensorOrientation ?: 90) % 180) == 90
-        val aspect = if (swapped) s.height.toFloat() / s.width else s.width.toFloat() / s.height
-        onPreviewAspect?.invoke(aspect, generation)
+        val swapped = ((routeCaps?.sensorOrientation ?: 90) % 180) == 90
+        return if (swapped) {
+            size.height.toFloat() / size.width
+        } else {
+            size.width.toFloat() / size.height
+        }
     }
 
     private fun chooseStreamSize(sel: TeleSelection, fourByThree: Boolean): Size {

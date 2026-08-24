@@ -3,10 +3,15 @@ package me.hletrd.telecampro.ui
 import android.app.Application
 import android.media.MediaFormat
 import android.os.Looper
+import android.util.Range
+import android.util.Rational
+import android.util.Size
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.hletrd.telecampro.camera.CameraController
+import me.hletrd.telecampro.camera.CameraCaps
 import me.hletrd.telecampro.camera.CameraEngine
+import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -20,6 +25,7 @@ import me.hletrd.telecampro.video.CodecInventory
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -172,6 +178,61 @@ class ModeRollbackOwnershipRobolectricTest {
         assertEquals(null, admitted.failure)
     }
 
+    @Test
+    fun `rollback commits state then invokes every callback after releasing Engine monitor`() {
+        val (_, engine) = createAccepted(CaptureMode.PHOTO)
+        val caps = rollbackCaps()
+        setField(engine, "caps", caps)
+        val transaction = beginUnchangedOpticsTransaction(engine)
+        val lockStates = linkedMapOf<String, Boolean>()
+        var rollbackControls: Any? = null
+        var publishedCaps: CameraCaps? = null
+        var publishedSize: Size? = null
+        var publishedAspect: Float? = null
+        var ready = false
+        var status: CameraStatus? = null
+        engine.onOpticsRollback = {
+            lockStates["optics"] = Thread.holdsLock(engine)
+            rollbackControls = it.controls
+        }
+        engine.onCapsReady = { value, _ ->
+            lockStates["caps"] = Thread.holdsLock(engine)
+            publishedCaps = value
+        }
+        engine.onVideoSizeChosen = { value, _ ->
+            lockStates["size"] = Thread.holdsLock(engine)
+            publishedSize = value
+        }
+        engine.onPreviewAspect = { value, _ ->
+            lockStates["aspect"] = Thread.holdsLock(engine)
+            publishedAspect = value
+        }
+        engine.onCameraReadyChange = {
+            lockStates["ready"] = Thread.holdsLock(engine)
+            ready = it.ready
+        }
+        engine.onStatus = {
+            lockStates["status"] = Thread.holdsLock(engine)
+            status = it
+        }
+
+        forceOwnedRollback(engine, transaction, drainMain = false)
+
+        assertEquals(
+            setOf("optics", "caps", "size", "aspect", "ready", "status"),
+            lockStates.keys,
+        )
+        assertTrue(lockStates.values.none { it })
+        assertEquals(field(engine, "controls"), rollbackControls)
+        assertSame(caps, publishedCaps)
+        assertEquals(Size(1920, 1080), publishedSize)
+        assertEquals(1080f / 1920f, publishedAspect)
+        assertTrue(ready)
+        assertEquals(CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED, status?.message)
+        val method = CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
+        assertFalse("rollback wrapper must not own the Engine monitor", Modifier.isSynchronized(method.modifiers))
+    }
+
     private fun createAccepted(
         mode: CaptureMode,
         acceptedTransfer: ColorTransfer = transferFor(mode),
@@ -260,6 +321,53 @@ class ModeRollbackOwnershipRobolectricTest {
         }.apply { isAccessible = true }.invoke(engine, { Unit }) as Pair<*, *>
         return checkNotNull(result.first)
     }
+
+    private fun rollbackCaps() = CameraCaps(
+        logicalId = "test",
+        physicalId = null,
+        sensorOrientation = 90,
+        minFocusDistanceDiopters = 0f,
+        hyperfocalDiopters = 0f,
+        isoRange = Range(100, 100),
+        exposureTimeRange = Range(1_000L, 1_000L),
+        maxFrameDurationNs = 1_000L,
+        evRange = Range(0, 0),
+        evStep = Rational(1, 3),
+        focalLengthsMm = floatArrayOf(4f),
+        equivalentFocalMm = 23f,
+        lensFocalLengthMm = 4f,
+        lensApertureF = 2f,
+        nativeFocalInImageWidths = 1f,
+        supportsManualSensor = false,
+        supportsManualPostProcessing = false,
+        supportsRaw = false,
+        lensFacingFront = false,
+        rawSize = null,
+        supportedDynamicRangeProfiles = emptySet(),
+        largestJpegSize = Size(4000, 3000),
+        hiResJpegSize = null,
+        hiResUsesMaxResolutionMode = false,
+        largestYuvSize = Size(4000, 3000),
+        timestampSource = 0,
+        isLogicalMultiCamera = false,
+        oisAvailable = false,
+        flashAvailable = false,
+        zoomRatioRange = Range(1f, 10f),
+        videoStabModes = intArrayOf(0),
+        afModes = intArrayOf(0),
+        awbModes = intArrayOf(1),
+        aeModes = intArrayOf(1),
+        maxAeRegions = 0,
+        maxAfRegions = 0,
+        antibandingModes = intArrayOf(0),
+        effectModes = intArrayOf(0),
+        edgeModes = intArrayOf(0),
+        noiseReductionModes = intArrayOf(0),
+        availableFpsRanges = arrayOf(Range(30, 30)),
+        availableVideoSizes = listOf(Size(1920, 1080)),
+        openGateVideoSizes = listOf(Size(1440, 1080)),
+        highSpeedConfigs = emptyMap(),
+    )
 
     private fun forceOwnedRollback(
         engine: CameraEngine,
