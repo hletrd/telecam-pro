@@ -1921,6 +1921,8 @@ check(
     "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)" in gl_pipeline
     and "window-rotation term" in claude
     and "raw, inverted field" in claude
+    and "The Loupe Overview draws UPRIGHT" not in claude
+    and "world the right way up in the corner" not in claude
     and "one-call `rotationOverrideDeg`" in field_checks
     and "raw, inverted field" in field_checks,
     "committed Loupe Overview criteria match the per-draw orientation authority",

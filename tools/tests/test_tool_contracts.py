@@ -596,6 +596,25 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_unqualified_upright_loupe_claim(self) -> None:
+        def restore_upright_claim(root: Path) -> None:
+            path = root / "CLAUDE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "The Loupe Overview omits the afocal term per draw"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "The Loupe Overview draws UPRIGHT", 1),
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(restore_upright_claim)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_bare_snapshot_edge_to_edge(self) -> None:
         def restore_bare_edge_to_edge(root: Path) -> None:
             path = root / "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt"
