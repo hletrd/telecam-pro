@@ -25,6 +25,7 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.normalizeAudioGain
 import me.hletrd.telecampro.storage.CompletedOutputPublication
 import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.PendingOutputAllocation
 import me.hletrd.telecampro.storage.publishCompletedOutput
 import java.nio.ByteBuffer
 import java.util.Collections
@@ -99,6 +100,7 @@ class VideoRecorder(private val context: Context) {
     private var muxer: MediaMuxer? = null
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
+    private var pendingAllocation: PendingOutputAllocation? = null
 
     private val inputSurfaceOwner = ExactlyOnceResourceOwner<Surface>()
     /** Linearizes every recorder-owned native create/start/stop/release against quarantine. */
@@ -197,7 +199,7 @@ class VideoRecorder(private val context: Context) {
      * true (possibly fractional, drop-frame) frame rate; [captureRate] > 0 marks a high-speed clip so
      * the encoder is told it is fed faster than real-time (KEY_CAPTURE_RATE).
      */
-    fun start(
+    internal fun start(
         uri: Uri,
         size: Size,
         encoderRate: Double,
@@ -208,6 +210,7 @@ class VideoRecorder(private val context: Context) {
         recordAudio: Boolean,
         audioGain: Float = 1f,
         orientationHint: Int = 0,
+        pendingAllocation: PendingOutputAllocation? = null,
         frontFacing: Boolean = false,
         cameraRoute: CameraRoute = if (frontFacing) CameraRoute.FRONT else CameraRoute.BACK,
         audioScene: AudioScene = AudioScene.STANDARD,
@@ -223,6 +226,7 @@ class VideoRecorder(private val context: Context) {
         val codec = admittedCandidates.firstOrNull()?.codec ?: return null
         if (admittedCandidates.any { it.codec != codec }) return null
         this.uri = uri
+        this.pendingAllocation = pendingAllocation
         this.audioGain = normalizeAudioGain(audioGain)
         this.audioScene = audioScene
         this.audioZoom = audioZoom
@@ -460,6 +464,7 @@ class VideoRecorder(private val context: Context) {
         val outputUri = uri
         val frozenStorage = FrozenRecordingStorage(
             outputUri = outputUri,
+            pendingAllocation = pendingAllocation,
             muxerStarted = muxerStarted,
             wroteVideoSample = wroteVideoSample,
             failure = firstFailure.cause,
@@ -475,6 +480,7 @@ class VideoRecorder(private val context: Context) {
         // can NEVER delete the clip the 1st already published (CR-4: uri used to survive this reset, so
         // a 2nd stop() recomputed saved=false and deleted the ALREADY-PUBLISHED file).
         uri = null
+        pendingAllocation = null
         videoTrack = -1
         audioTrack = -1
         muxerStartState = MuxerStartState.WAITING
@@ -1801,6 +1807,7 @@ internal fun runRecorderNativeOwnerSequence(
 
 internal data class FrozenRecordingStorage<T>(
     val outputUri: T?,
+    val pendingAllocation: PendingOutputAllocation? = null,
     val muxerStarted: Boolean,
     val wroteVideoSample: Boolean,
     val failure: Throwable?,
@@ -1813,6 +1820,7 @@ internal data class RecordingStorageEffects<T>(
     val markComplete: (T) -> Boolean,
     val publish: (T) -> Boolean,
     val delete: (T) -> Unit,
+    val deleteAllocation: ((PendingOutputAllocation) -> Unit)? = null,
 )
 
 internal fun <T> completeFrozenRecordingStorage(
@@ -1850,7 +1858,14 @@ internal fun <T> completeFrozenRecordingStorage(
             publish = { effects.publish(outputUri) },
         )
     } else {
-        if (outputUri != null) effects.delete(outputUri)
+        if (outputUri != null) {
+            val allocation = frozen.pendingAllocation
+            if (allocation != null && effects.deleteAllocation != null) {
+                effects.deleteAllocation.invoke(allocation)
+            } else {
+                effects.delete(outputUri)
+            }
+        }
         null
     }
     val storageDisposition = when (publication) {
@@ -1896,6 +1911,7 @@ internal class RecordingStorageTail(
                     }
                 },
                 delete = { MediaStoreWriter.discardRejectedOutput(context, it) },
+                deleteAllocation = { MediaStoreWriter.discardPendingOutput(context, it) },
             ),
         ).also { completed = it }
     }

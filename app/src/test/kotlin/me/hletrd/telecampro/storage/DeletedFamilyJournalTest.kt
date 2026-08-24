@@ -52,14 +52,14 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
-    fun `rejected output binds its exact context and uri into durable discard`() {
+    fun `uri only rejected output fails closed without blessing provider occupant`() {
         val uri = Uri.parse("content://media/external/images/media/4242")
 
         assertEquals(
-            // Robolectric's empty provider authoritatively reports this fake row already absent.
-            // The important production composition is that the private RejectedOutput carries the
-            // application Context + exact Uri through its bounded owner into the delete contract.
-            PendingOutputDiscardResult.DELETED,
+            // A URI is not allocation authority: a provider may have reassigned it. Production
+            // still/video callers carry PendingOutputAllocation; legacy callers retain durable
+            // REGISTERED/family recovery instead of reading and blessing the current occupant.
+            PendingOutputDiscardResult.UNRESOLVED,
             MediaStoreWriter.discardRejectedOutput(context, uri),
         )
     }

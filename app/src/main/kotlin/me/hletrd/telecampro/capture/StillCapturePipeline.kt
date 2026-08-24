@@ -29,6 +29,7 @@ import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
+import me.hletrd.telecampro.storage.PendingOutputAllocation
 
 /** Immutable request-time state consumed by every output belonging to one shutter press. */
 internal data class ShotSpec(
@@ -94,11 +95,22 @@ internal data class ExifShot(
 
 /** A fully written DNG awaiting MediaStore publication on the I/O lane. */
 internal data class PendingDngPublication(
-    val uri: android.net.Uri,
+    val allocation: PendingOutputAllocation,
     val captureId: Int,
     val familyKey: CaptureFamilyKey,
     val completionMarkerDurable: Boolean,
-)
+) {
+    val uri: android.net.Uri get() = allocation.uri
+}
+
+internal sealed interface DngWriteResult {
+    data class Complete(val publication: PendingDngPublication) : DngWriteResult
+    data class Rejected(
+        val allocation: PendingOutputAllocation,
+        val failure: Throwable,
+    ) : DngWriteResult
+    data class Failed(val failure: Throwable) : DngWriteResult
+}
 
 /**
  * The STILL SAVE LANES, extracted from CameraEngine (ARCH4-3 step 1 of the god-object plan):
@@ -117,21 +129,31 @@ internal class StillCapturePipeline(
     private val emitRawSaved: (android.net.Uri, Int) -> Unit,
     /** Engine-owned check/publish/recheck boundary; survives ViewModel callback detachment. */
     private val publishStillOutput: (
-        android.net.Uri,
+        PendingOutputAllocation,
         Int,
         publish: () -> Boolean,
     ) -> DeletedStillPublication,
     /** Releases the successful-publication race owner only after the saved callback has returned. */
-    private val finishPublishedStill: (android.net.Uri, Int) -> Unit,
+    private val finishPublishedStill: (PendingOutputAllocation, Int) -> Unit,
     // A COMPLETE output whose MediaStore publish failed. The same Engine owner that guards the
     // pre-publication boundary receives this retained result, so a family tombstoned during the
     // provider call still takes DISCARD instead of becoming recoverable media.
-    private val emitPublishRetained: (android.net.Uri, Int) -> RetainedStillDisposition,
+    private val emitPublishRetained: (PendingOutputAllocation, Int) -> RetainedStillDisposition,
     private val onRejectedOutputDisposition: (PendingOutputDiscardResult) -> Unit,
 ) {
 
-    private fun discardRejectedOutput(uri: android.net.Uri): PendingOutputDiscardResult =
-        MediaStoreWriter.discardRejectedOutput(context, uri).also(onRejectedOutputDisposition)
+    private fun discardRejectedOutput(allocation: PendingOutputAllocation) {
+        val dispatch = MediaStoreWriter.dispatchRejectedOutput(
+            context,
+            allocation,
+            onRejectedOutputDisposition,
+        )
+        if (dispatch != me.hletrd.telecampro.storage.RejectedOutputCleanupDispatch.ACCEPTED) {
+            // REGISTERED remains durable launch-recovery ownership. Saturation never runs provider
+            // or SQLite work inline on the save/camera caller.
+            onRejectedOutputDisposition(PendingOutputDiscardResult.UNRESOLVED)
+        }
+    }
 
     /**
      * ONE decode → center-crop to [ShotSpec.aspectRatio] (processed stills only; [saveDng]'s RAW
@@ -227,12 +249,13 @@ internal class StillCapturePipeline(
      */
     private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
         val exifData = buildHeifExifData(exifShot, rotated.width, rotated.height)
-        val u = MediaStoreWriter.createPendingImage(
+        val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("heic"),
             "image/heic",
         )
-        if (u == null) { emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status()); return }
+        if (allocation == null) { emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status()); return }
+        val u = allocation.uri
         // The Setup quality slider governs BOTH still containers (it used to silently apply only
         // to JPEG, leaving the DEFAULT photo format pinned at the encoder's 95).
         val quality = spec.jpegQuality
@@ -240,16 +263,16 @@ internal class StillCapturePipeline(
             MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
                 HeifCapture.writeHeif(pfd.fileDescriptor, rotated, quality, exifData); true
             } ?: false
-        }.getOrElse { failure -> discardRejectedOutput(u); throw failure }
+        }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
         if (!wrote) {
-            discardRejectedOutput(u)
+            discardRejectedOutput(allocation)
             emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status())
             return
         }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         completeStillPublication(
             kind = "HEIF",
-            output = u,
+            output = allocation,
             captureId = spec.captureId,
             markerDurable = completion.durable,
             effects = publicationEffects(spec.familyKey),
@@ -261,20 +284,21 @@ internal class StillCapturePipeline(
      * Same publish-or-delete policy as [writeProcessedHeif].
      */
     private fun writeProcessedJpeg(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
-        val u = MediaStoreWriter.createPendingImage(
+        val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("jpg"),
             "image/jpeg",
         )
-        if (u == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
+        if (allocation == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
+        val u = allocation.uri
         val quality = spec.jpegQuality
         val wrote = runCatching {
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
                 rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
             } ?: false
-        }.getOrElse { failure -> discardRejectedOutput(u); throw failure }
+        }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
         if (!wrote) {
-            discardRejectedOutput(u)
+            discardRejectedOutput(allocation)
             emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
             return
         }
@@ -284,7 +308,7 @@ internal class StillCapturePipeline(
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         completeStillPublication(
             kind = "JPEG",
-            output = u,
+            output = allocation,
             captureId = spec.captureId,
             markerDurable = completion.durable,
             effects = publicationEffects(spec.familyKey),
@@ -298,20 +322,21 @@ internal class StillCapturePipeline(
      * publish-or-delete policy as [writeProcessedJpeg].
      */
     private fun writePassthroughJpeg(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
-        val u = MediaStoreWriter.createPendingImage(
+        val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("jpg"),
             "image/jpeg",
         )
-        if (u == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
+        if (allocation == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
+        val u = allocation.uri
         val wrote = runCatching {
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
                 out.write(bytes)
                 true
             } ?: false
-        }.getOrElse { failure -> discardRejectedOutput(u); throw failure }
+        }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
         if (!wrote) {
-            discardRejectedOutput(u)
+            discardRejectedOutput(allocation)
             emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
             return
         }
@@ -322,7 +347,7 @@ internal class StillCapturePipeline(
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         completeStillPublication(
             kind = "JPEG",
-            output = u,
+            output = allocation,
             captureId = spec.captureId,
             markerDurable = completion.durable,
             effects = publicationEffects(spec.familyKey),
@@ -338,13 +363,16 @@ internal class StillCapturePipeline(
         chars: CameraCharacteristics,
         result: TotalCaptureResult,
         spec: ShotSpec,
-    ): PendingDngPublication {
-        val uri = MediaStoreWriter.createPendingImage(
+    ): DngWriteResult {
+        val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("dng"),
             "image/x-adobe-dng",
         )
-            ?: throw IllegalStateException("Failed to create MediaStore entry")
+            ?: return DngWriteResult.Failed(
+                IllegalStateException("Failed to create or identify MediaStore entry"),
+            )
+        val uri = allocation.uri
         var outputComplete = false
         try {
             val out = MediaStoreWriter.openOutputStream(context, uri)
@@ -354,17 +382,22 @@ internal class StillCapturePipeline(
             }
             outputComplete = true
             val completion = MediaStoreWriter.markWriteComplete(context, uri)
-            return PendingDngPublication(
-                uri = uri,
-                captureId = spec.captureId,
-                familyKey = spec.familyKey,
-                completionMarkerDurable = completion.durable,
+            return DngWriteResult.Complete(
+                PendingDngPublication(
+                    allocation = allocation,
+                    captureId = spec.captureId,
+                    familyKey = spec.familyKey,
+                    completionMarkerDurable = completion.durable,
+                ),
             )
         } catch (t: Throwable) {
             // A fully-written DNG is handed to the publication lane with its marker outcome.
             // Interrupted writes remain REGISTERED and are deleted; marker exhaustion is returned.
-            if (!outputComplete) discardRejectedOutput(uri)
-            throw t
+            return if (!outputComplete) {
+                DngWriteResult.Rejected(allocation, t)
+            } else {
+                DngWriteResult.Failed(t)
+            }
         }
     }
 
@@ -372,7 +405,7 @@ internal class StillCapturePipeline(
     fun publishDng(pending: PendingDngPublication) {
         completeStillPublication(
             kind = "DNG",
-            output = pending.uri,
+            output = pending.allocation,
             captureId = pending.captureId,
             markerDurable = pending.completionMarkerDurable,
             effects = publicationEffects(pending.familyKey, emitSaved = emitRawSaved),
@@ -382,7 +415,7 @@ internal class StillCapturePipeline(
     private fun publicationEffects(
         familyKey: CaptureFamilyKey,
         emitSaved: (android.net.Uri, Int) -> Unit = emitMediaSaved,
-    ) = StillPublicationEffects(
+    ) = StillPublicationEffects<PendingOutputAllocation>(
         withFamilyPublicationAuthority = { deleted, unavailable, live ->
             MediaStoreWriter.withFamilyPublicationAuthority(
                 context = context,
@@ -394,10 +427,10 @@ internal class StillCapturePipeline(
         },
         discardDeletedFamily = { output -> MediaStoreWriter.discardPendingOutput(context, output) },
         publishOwned = { output, captureId ->
-            publishStillOutput(output, captureId) { MediaStoreWriter.publish(context, output) }
+            publishStillOutput(output, captureId) { MediaStoreWriter.publish(context, output.uri) }
         },
         finishPublished = finishPublishedStill,
-        emitSaved = emitSaved,
+        emitSaved = { output, captureId -> emitSaved(output.uri, captureId) },
         emitRetained = emitPublishRetained,
         emitStatus = emitStatus,
     )

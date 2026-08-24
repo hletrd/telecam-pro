@@ -29,7 +29,37 @@ internal class PendingDiscardJournal(
 ) {
     private val applicationContext = context.applicationContext
 
-    /** Commits the SQLite marker before removing any older preference value for this URI. */
+    /** Captures the exact row allocated for one versioned capture-family output. */
+    fun captureAllocation(uri: Uri, expectedFamily: CaptureFamilyKey): PendingOutputAllocation? =
+        withUriAuthority(uri.toString()) {
+            val identity = (identityReader.read(uri.toString()) as? PendingDiscardIdentityRead.Present)
+                ?.identity
+                ?: return@withUriAuthority null
+            if (identity.familyIdentity != expectedFamily.discardIdentity()) {
+                return@withUriAuthority null
+            }
+            PendingOutputAllocation(uri, expectedFamily, identity)
+        }
+
+    /**
+     * Commits DISCARD only for the immutable allocation owned by the caller and returns the exact
+     * record that became durable. A fresh read can confirm the old allocation; it can never replace
+     * that caller truth and bless whichever row happens to occupy the URI now.
+     */
+    fun mark(allocation: PendingOutputAllocation): PendingDiscardRecord? =
+        withUriAuthority(allocation.uri.toString()) {
+            val current = (identityReader.read(allocation.uri.toString()) as?
+                PendingDiscardIdentityRead.Present)?.identity
+                ?: return@withUriAuthority null
+            if (current != allocation.identity ||
+                current.familyIdentity != allocation.familyKey.discardIdentity()
+            ) {
+                return@withUriAuthority null
+            }
+            commitIdentity(allocation.uri.toString(), current)
+        }
+
+    /** Legacy/test snapshot API. Production destructive callers carry [PendingOutputAllocation]. */
     fun mark(uri: String): Boolean = withUriAuthority(uri) {
         val identity = when (val read = identityReader.read(uri)) {
             is PendingDiscardIdentityRead.Present -> read.identity
@@ -38,6 +68,10 @@ internal class PendingDiscardJournal(
             PendingDiscardIdentityRead.Unavailable,
             -> return@withUriAuthority false
         }
+        commitIdentity(uri, identity) != null
+    }
+
+    private fun commitIdentity(uri: String, identity: PendingDiscardIdentity): PendingDiscardRecord? =
         runCatching {
             synchronized(databaseLock) {
                 withWritableDatabase { database ->
@@ -75,9 +109,8 @@ internal class PendingDiscardJournal(
             // A failed cleanup is harmless: SQLite is already the durable authority, and a later
             // journal page removes the duplicate preference key idempotently.
             runCatching { removeLegacyEntries(setOf(uri)) }
-            true
-        }.getOrDefault(false)
-    }
+            PendingDiscardRecord(uri, IDENTITY_RECORD_VERSION, identity)
+        }.getOrNull()
 
     /** A database failure is not evidence that an exact delete owner is absent. */
     fun lookup(uri: String): DiscardJournalLookup = withUriAuthority(uri) {
@@ -472,6 +505,16 @@ internal data class PendingDiscardIdentity(
     val dateTaken: Long?,
 )
 
+/** Immutable creation-time authority for one app-allocated pending MediaStore row. */
+internal data class PendingOutputAllocation(
+    val uri: Uri,
+    val familyKey: CaptureFamilyKey,
+    val identity: PendingDiscardIdentity,
+)
+
+internal fun CaptureFamilyKey.discardIdentity(): String =
+    "${media.name}|$capturedAtEpochMillis|$sequence"
+
 internal sealed interface PendingDiscardIdentityRead {
     data class Present(val identity: PendingDiscardIdentity) : PendingDiscardIdentityRead
     data class Absent(
@@ -551,9 +594,7 @@ private class MediaStorePendingDiscardIdentityReader(
         val mimeType = requiredString(MediaStore.MediaColumns.MIME_TYPE) ?: return null
         val ownerPackageName = optionalString(MediaStore.MediaColumns.OWNER_PACKAGE_NAME)
         val dateTaken = optionalLong(MediaStore.MediaColumns.DATE_TAKEN)
-        val familyIdentity = CaptureFamilyKey.parse(displayName)?.familyKey?.let { family ->
-            "${family.media.name}|${family.capturedAtEpochMillis}|${family.sequence}"
-        }
+        val familyIdentity = CaptureFamilyKey.parse(displayName)?.familyKey?.discardIdentity()
         return PendingDiscardIdentity(
             volumeName = volumeName,
             providerVersion = providerVersion,

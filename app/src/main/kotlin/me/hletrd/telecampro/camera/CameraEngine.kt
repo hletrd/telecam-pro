@@ -14,6 +14,7 @@ import android.util.Size
 import android.view.Surface
 import me.hletrd.telecampro.BuildConfig
 import me.hletrd.telecampro.capture.DngCapture
+import me.hletrd.telecampro.capture.DngWriteResult
 import me.hletrd.telecampro.capture.ExifShot
 import me.hletrd.telecampro.capture.ShotSpec
 import me.hletrd.telecampro.capture.StillCapturePipeline
@@ -30,6 +31,7 @@ import me.hletrd.telecampro.storage.CaptureFamilyMedia
 import me.hletrd.telecampro.storage.CaptureFamilyProducerLease
 import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
+import me.hletrd.telecampro.storage.PendingOutputAllocation
 import me.hletrd.telecampro.storage.RecoveryReport
 import me.hletrd.telecampro.storage.RecoveryRetryDecision
 import me.hletrd.telecampro.video.NativeGraphDisposition
@@ -84,6 +86,12 @@ internal data class RecordingPreNativeEngineOverrides(
     val onNativeSetupPacket: ((RecordingNativeSetupPacket) -> Boolean)? = null,
     /** Host-only capability answer; null keeps exact CameraCaps-derived production admission. */
     val frameRateAvailable: Boolean? = null,
+)
+
+/** Pending REC row plus immutable allocation authority; host overrides may supply URI-only truth. */
+internal data class RecordingPendingOutput(
+    val uri: android.net.Uri,
+    val allocation: PendingOutputAllocation?,
 )
 
 internal data class RecordingAdmissionInputs(
@@ -241,9 +249,9 @@ class CameraEngine internal constructor(
         FamilyDeletionCompletionRegistry<CaptureFamilyDeleteDurability>()
     // Deleted-family veto lives with the still lane, not the UI callback graph. A retained output
     // can complete after ViewModel.onCleared; its durable discard must remain owned by this Engine.
-    private val retainedStillDeletionOwner = RetainedStillDeletionOwner<android.net.Uri>(
+    private val retainedStillDeletionOwner = RetainedStillDeletionOwner<PendingOutputAllocation>(
         maxTombstones = MAX_RETAINED_STILL_DELETE_TOMBSTONES,
-        discard = { uri -> MediaStoreWriter.discardPendingOutput(context, uri) },
+        discard = { allocation -> MediaStoreWriter.discardPendingOutput(context, allocation) },
         persistDeletionIntent = { family -> MediaStoreWriter.markFamilyDeleted(context, family) },
     )
     // Process rescans may retire a marker created by another Engine generation. Register this exact
@@ -269,7 +277,7 @@ class CameraEngine internal constructor(
     // off the serial REC/native lane: timeout/Stop/release retire admission immediately while the
     // finite daemon pool owns any provider call that returns late.
     private val recordingPreNativeAttempt = java.util.concurrent.atomic.AtomicReference<
-        RecordingPreNativeAllocationAttempt<android.net.Uri>?
+        RecordingPreNativeAllocationAttempt<RecordingPendingOutput>?
     >(null)
     @Volatile
     private var recorderSetupFinalizationOwner: RecorderSetupOwner? = null
@@ -4413,6 +4421,11 @@ class CameraEngine internal constructor(
                     android.util.Log.e("CameraEngine", "Photo callback creation failed", failure)
                     onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                     return false
+                } ?: run {
+                    snapshotLease?.release()
+                    onStillCaptureAdmissionChanged?.invoke(false)
+                    onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+                    return false
                 }
                 val dispatched = runCatching {
                     ctrl.capturePhoto(
@@ -4457,12 +4470,16 @@ class CameraEngine internal constructor(
         val chainOptics = snapshotShotOptics()
         fun fire(shot: Int) {
             if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return
+            val callback = photoCallback(
+                formats,
+                controls,
+                hiRes = accepted.outputs.hiRes,
+                optics = chainOptics,
+            ) { fire(shot + 1) } ?: return
             accepted.controller.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
-                photoCallback(formats, controls, hiRes = accepted.outputs.hiRes, optics = chainOptics) {
-                    fire(shot + 1)
-                },
+                callback,
             )
         }
         fire(0)
@@ -4494,12 +4511,13 @@ class CameraEngine internal constructor(
                 // SPEED override so the bracketed time applies even when the user dials ANGLE.
                 val stepControls = manualAebStepControls(controls, steps[i])
                 ctrl.updateControls(stepControls)
+                val callback = photoCallback(
+                    formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
+                ) { fire(i + 1) } ?: run { ctrl.updateControls(controls); return }
                 ctrl.capturePhoto(
                     formats.wantsProcessedStill,
                     formats.dngRaw,
-                    photoCallback(
-                        formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
-                    ) { fire(i + 1) },
+                    callback,
                 )
             }
             fire(0)
@@ -4521,12 +4539,13 @@ class CameraEngine internal constructor(
             if (i >= steps.size) { ctrl.updateControls(controls); return }
             val stepControls = autoAebStepControls(controls, steps[i])
             ctrl.updateControls(stepControls)
+            val callback = photoCallback(
+                formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
+            ) { fire(i + 1) } ?: run { ctrl.updateControls(controls); return }
             ctrl.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
-                photoCallback(
-                    formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
-                ) { fire(i + 1) },
+                callback,
             )
         }
         fire(0)
@@ -4568,22 +4587,27 @@ class CameraEngine internal constructor(
                             stopTimelapseIfOwns(generation)
                             return@action
                         }
+                        val callback = photoCallback(
+                            formats,
+                            controls,
+                            hiRes = accepted.outputs.hiRes,
+                            optics = snapshotShotOptics(),
+                        ) {
+                            if (timelapseRun.owns(generation)) {
+                                schedule(currentTimelapseIntervalSeconds())
+                            }
+                        }
+                        if (callback == null) {
+                            schedule(currentTimelapseIntervalSeconds())
+                            return@action
+                        }
                         accepted.controller.capturePhoto(
                             formats.wantsProcessedStill,
                             formats.dngRaw,
                             // Each tick is its own chain: this lambda runs on the timelapse
                             // scheduler thread, so the tick snapshots its optics under the
                             // monitor like every other dispatch (T1).
-                            photoCallback(
-                                formats,
-                                controls,
-                                hiRes = accepted.outputs.hiRes,
-                                optics = snapshotShotOptics(),
-                            ) {
-                                if (timelapseRun.owns(generation)) {
-                                    schedule(currentTimelapseIntervalSeconds())
-                                }
-                            },
+                            callback,
                         )
                     }
                     timelapseOverrides?.schedule?.invoke(delaySeconds, action)
@@ -4776,10 +4800,13 @@ class CameraEngine internal constructor(
      * Provider work uses one process-lifetime finite lane. Overflow or stale-facade shutdown never
      * runs inline: the already-durable family tombstone remains the launch-recovery owner.
      */
-    private fun dispatchDeletedStillDiscard(uri: android.net.Uri, captureId: Int) {
-        if (!retainedStillDeletionOwner.ownRetainedForAsyncDiscard(uri, captureId)) return
+    private fun dispatchDeletedStillDiscard(
+        allocation: PendingOutputAllocation,
+        captureId: Int,
+    ) {
+        if (!retainedStillDeletionOwner.ownRetainedForAsyncDiscard(allocation, captureId)) return
         val task = Runnable {
-            if (retainedStillDeletionOwner.discardDeleted(uri, captureId) ==
+            if (retainedStillDeletionOwner.discardDeleted(allocation, captureId) ==
                 RetainedStillDisposition.DISCARD_RETRY_PENDING
             ) {
                 onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
@@ -4799,11 +4826,13 @@ class CameraEngine internal constructor(
         emitStatus = { status -> onStatus?.invoke(status) },
         emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
         emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
-        publishStillOutput = { uri, id, publish ->
-            retainedStillDeletionOwner.publishIfLive(uri, id, publish)
+        publishStillOutput = { allocation, id, publish ->
+            retainedStillDeletionOwner.publishIfLive(allocation, id, publish)
         },
         finishPublishedStill = retainedStillDeletionOwner::finishPublished,
-        emitPublishRetained = { uri, id -> retainedStillDeletionOwner.handleRetained(uri, id) },
+        emitPublishRetained = { allocation, id ->
+            retainedStillDeletionOwner.handleRetained(allocation, id)
+        },
         onRejectedOutputDisposition = {
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         },
@@ -4941,9 +4970,17 @@ class CameraEngine internal constructor(
         // the one in-REC snapshot keeps its terminal edge without the pre-kill registration line.
         traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
         onDone: (() -> Unit)? = null,
-    ): CameraController.PhotoCallback {
+    ): CameraController.PhotoCallback? {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
         require(!processOwnedDngTail || formats.dngRaw && !formats.wantsProcessedStill)
+        // Reserve process-finite cleanup before Camera2 can create a RAW output. The reservation is
+        // released on every success/no-image/error edge, or transferred exactly once to failed-row
+        // cleanup after DNG byte writing returns.
+        val rejectedDngCleanup = if (formats.dngRaw) {
+            MediaStoreWriter.reserveRejectedOutputCleanup() ?: return null
+        } else {
+            null
+        }
         val registeredShot = shotSpec(shotControls, hiRes, optics)
         val requestSpec = registeredShot.spec
         val familyProducerLease = registeredShot.producerLease
@@ -5078,15 +5115,10 @@ class CameraEngine internal constructor(
                             // DngCreator needs the live Image, so write + the bounded COMPLETE
                             // marker attempt remain on this camera callback. Only the durability-
                             // gated publication crosses to ioExecutor.
-                            val write = runCatching {
-                                stillPipeline.saveDng(raw, rawChars, result, spec)
-                            }
-                            write.onFailure { failure ->
-                                android.util.Log.e("CameraEngine", "DNG write failed", failure)
-                                reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
-                            }
-                            val pending = write.getOrNull()
-                            if (pending != null) {
+                            when (val write = stillPipeline.saveDng(raw, rawChars, result, spec)) {
+                                is DngWriteResult.Complete -> {
+                                    rejectedDngCleanup?.cancel()
+                                    val pending = write.publication
                                 if (processOwnedDngTail) {
                                     val disposition = stillPublicationDispatcher.dispatchRecoverable(
                                         publication = { stillPipeline.publishDng(pending) },
@@ -5094,7 +5126,10 @@ class CameraEngine internal constructor(
                                             // The row is structurally complete and remains private.
                                             // A tombstoned family transfers to durable discard;
                                             // otherwise launch recovery publishes it later.
-                                            dispatchDeletedStillDiscard(pending.uri, pending.captureId)
+                                            dispatchDeletedStillDiscard(
+                                                pending.allocation,
+                                                pending.captureId,
+                                            )
                                             reportStatus(
                                                 if (pending.completionMarkerDurable) {
                                                     CameraStatusMessage.DNG_SAVE_DELAYED.status()
@@ -5125,7 +5160,10 @@ class CameraEngine internal constructor(
                                         // deleted family still belongs to the Engine tombstone: route it
                                         // through the recovery lane even though the ordinary DNG publish
                                         // continuation could not enter the shutting-down still executor.
-                                        dispatchDeletedStillDiscard(pending.uri, pending.captureId)
+                                        dispatchDeletedStillDiscard(
+                                            pending.allocation,
+                                            pending.captureId,
+                                        )
                                         reportStatus(
                                             if (pending.completionMarkerDurable) {
                                                 CameraStatusMessage.DNG_SAVE_DELAYED.status()
@@ -5137,8 +5175,31 @@ class CameraEngine internal constructor(
                                         )
                                     }
                                 }
+                                }
+                                is DngWriteResult.Rejected -> {
+                                    android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
+                                    reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
+                                    val submitted = checkNotNull(rejectedDngCleanup).submit(
+                                        context,
+                                        write.allocation,
+                                    ) { _ ->
+                                        runCatching {
+                                            onStillCaptureAdmissionChanged?.invoke(
+                                                stillOutputAdmissionAvailable(),
+                                            )
+                                        }
+                                        finishDng()
+                                    }
+                                    dngPublishQueued = submitted
+                                }
+                                is DngWriteResult.Failed -> {
+                                    rejectedDngCleanup?.cancel()
+                                    android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
+                                    reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
+                                }
                             }
                         } else {
+                            rejectedDngCleanup?.cancel()
                             reportStatus(CameraStatusMessage.DNG_CAPTURE_FAILED.status())
                         }
                     }
@@ -5154,6 +5215,7 @@ class CameraEngine internal constructor(
 
             override fun onError(t: Throwable) {
                 try {
+                    rejectedDngCleanup?.cancel()
                     android.util.Log.e("CameraEngine", "Photo capture failed", t)
                     reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
@@ -5379,7 +5441,7 @@ class CameraEngine internal constructor(
             }
         }
         val deadlineRef = java.util.concurrent.atomic.AtomicReference<RecordingOperationDeadline?>()
-        lateinit var attempt: RecordingPreNativeAllocationAttempt<android.net.Uri>
+        lateinit var attempt: RecordingPreNativeAllocationAttempt<RecordingPendingOutput>
         attempt = RecordingPreNativeAllocationAttempt(
             onRetired = {
                 deadlineRef.get()?.complete()
@@ -5387,8 +5449,8 @@ class CameraEngine internal constructor(
                 UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
                 completeAttempt(false)
             },
-            onLateValue = { uri ->
-                retirePendingRecordingRow(uri, recordingCaptureId, "stale-pre-native-allocation")
+            onLateValue = { pending ->
+                retirePendingRecordingRow(pending, recordingCaptureId, "stale-pre-native-allocation")
             },
         )
         if (!recordingPreNativeAttempt.compareAndSet(null, attempt)) {
@@ -5419,9 +5481,13 @@ class CameraEngine internal constructor(
             val result = runCatching {
                 val overrides = recordingPreNativeOverrides
                 if (overrides != null) {
-                    overrides.allocatePendingVideo(name, "video/mp4")
+                    overrides.allocatePendingVideo(name, "video/mp4")?.let {
+                        RecordingPendingOutput(it, allocation = null)
+                    }
                 } else {
-                    MediaStoreWriter.createPendingVideo(context, name, "video/mp4")
+                    MediaStoreWriter.createPendingVideoAllocation(context, name, "video/mp4")?.let {
+                        RecordingPendingOutput(it.uri, it)
+                    }
                 }
             }
             when (attempt.deliver(result) {
@@ -5459,8 +5525,8 @@ class CameraEngine internal constructor(
                                 attempt.retire()
                                 return@execute
                             }
-                            val uri = attempt.claim()
-                            if (uri == null) {
+                            val pending = attempt.claim()
+                            if (pending == null) {
                                 completeRecorderSetup(setupContext)
                                 return@execute
                             }
@@ -5474,7 +5540,7 @@ class CameraEngine internal constructor(
                                         processAdmission = processAdmission,
                                         completeAttempt = completeAttempt,
                                         setupContext = setupContext,
-                                        uri = uri,
+                                        pending = pending,
                                         recordingCaptureId = recordingCaptureId,
                                         name = name,
                                     )
@@ -5535,16 +5601,17 @@ class CameraEngine internal constructor(
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
         completeAttempt: (Boolean) -> Unit,
         setupContext: RecorderSetupOwner,
-        uri: android.net.Uri,
+        pending: RecordingPendingOutput,
         recordingCaptureId: Int,
         name: String,
     ): Boolean = try {
+        val uri = pending.uri
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "superseded-before-mic")
+            retirePendingRecordingRow(pending, recordingCaptureId, "superseded-before-mic")
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             false
         } else if (!admission.isCurrent()) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "superseded-before-mic")
+            retirePendingRecordingRow(pending, recordingCaptureId, "superseded-before-mic")
             onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             false
         } else {
@@ -5552,7 +5619,7 @@ class CameraEngine internal constructor(
             // therefore cannot suppress the standby meter or retain its release latch.
             val audioClaim = standbyAudioController.beginRecording()
             if (!audioClaim.admitted) {
-                retirePendingRecordingRow(uri, recordingCaptureId, "mic-claim-refused")
+                retirePendingRecordingRow(pending, recordingCaptureId, "mic-claim-refused")
                 false
             } else {
                 try {
@@ -5567,7 +5634,7 @@ class CameraEngine internal constructor(
                         // standby claim in both outcomes; only the result callback is simulated.
                         if (!admitted) {
                             retirePendingRecordingRow(
-                                uri,
+                                pending,
                                 recordingCaptureId,
                                 "injected-post-mic-refusal",
                             )
@@ -5584,7 +5651,7 @@ class CameraEngine internal constructor(
                             setupContext = setupContext,
                             setupPacket = checkNotNull(admission.setupPacket),
                             completeAttempt = completeAttempt,
-                            uri = uri,
+                            pending = pending,
                             recordingCaptureId = recordingCaptureId,
                             name = name,
                         )
@@ -5613,39 +5680,40 @@ class CameraEngine internal constructor(
         setupContext: RecorderSetupOwner,
         setupPacket: RecordingNativeSetupPacket,
         completeAttempt: (Boolean) -> Unit,
-        uri: android.net.Uri,
+        pending: RecordingPendingOutput,
         recordingCaptureId: Int,
         name: String,
     ): Boolean {
+        val uri = pending.uri
         val meterReleased = audioClaim.release?.let {
             runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
         } ?: true
         if (!meterReleased) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "mic-release-timeout")
+            retirePendingRecordingRow(pending, recordingCaptureId, "mic-release-timeout")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.MICROPHONE_BUSY.status())
             return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "quarantined-after-mic-release")
+            retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-after-mic-release")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         if (recorder != null) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "recorder-already-published")
+            retirePendingRecordingRow(pending, recordingCaptureId, "recorder-already-published")
             abortRecordingStart()
             return false
         }
         if (currentAcceptedRecordingSession() !== acceptedSession) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "session-superseded-before-native")
+            retirePendingRecordingRow(pending, recordingCaptureId, "session-superseded-before-native")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             return false
         }
         val ownedGl = glOwners.current()
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "quarantined-before-native")
+            retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-before-native")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
@@ -5672,7 +5740,7 @@ class CameraEngine internal constructor(
         }
         recordingPreNativeOverrides?.onNativeSetupPacket?.let { observe ->
             if (!observe(setupPacket)) {
-                retirePendingRecordingRow(uri, recordingCaptureId, "injected-native-setup-terminal")
+                retirePendingRecordingRow(pending, recordingCaptureId, "injected-native-setup-terminal")
                 abortRecordingStart()
                 return false
             }
@@ -5681,7 +5749,7 @@ class CameraEngine internal constructor(
         // Bind before the first vendor-native setup call. A release timeout that wins from here on
         // can retain this exact graph; if release already revoked setup, no native entry is allowed.
         if (!setupContext.terminal.bind(rec)) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "setup-revoked-before-native")
+            retirePendingRecordingRow(pending, recordingCaptureId, "setup-revoked-before-native")
             abortRecordingStart()
             return false
         }
@@ -5768,7 +5836,7 @@ class CameraEngine internal constructor(
             )
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
-            retirePendingRecordingRow(uri, recordingCaptureId, "quarantined-before-setup")
+            retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-before-setup")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
@@ -5778,6 +5846,7 @@ class CameraEngine internal constructor(
             configuredSurface = rec.start(
                 uri, encoderSize, rate.encoderRate, captureRate, attemptBitRate,
                 fileTransfer, encoderCandidates, recordAudio, audioGain, orientationHint,
+                pendingAllocation = pending.allocation,
                 frontFacing = activeCameraRoute == CameraRoute.FRONT,
                 cameraRoute = activeCameraRoute,
                 audioScene = audioScene,
@@ -5791,7 +5860,7 @@ class CameraEngine internal constructor(
         if (!nativeSetupAdmitted) {
             setupDeadline.complete()
             if (!UnsafeRecorderQuarantine.isActive()) {
-                retirePendingRecordingRow(uri, recordingCaptureId, "native-setup-refused")
+                retirePendingRecordingRow(pending, recordingCaptureId, "native-setup-refused")
                 abortRecordingStart()
                 onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             }
@@ -5810,7 +5879,7 @@ class CameraEngine internal constructor(
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
             // doesn't linger as a 0-byte orphan. Cleanup stays off the serial native lane; overflow
             // leaves the durably REGISTERED row for launch recovery.
-            retirePendingRecordingRow(uri, recordingCaptureId, "native-setup-failed")
+            retirePendingRecordingRow(pending, recordingCaptureId, "native-setup-failed")
             abortRecordingStart()
             onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status()); return false
         }
@@ -6653,12 +6722,14 @@ class CameraEngine internal constructor(
      * invalid-row cleanup.
      */
     private fun retirePendingRecordingRow(
-        uri: android.net.Uri,
+        pending: RecordingPendingOutput,
         captureId: Int,
         reason: String,
     ) {
+        val uri = pending.uri
         val task = Runnable {
             val disposition = recordingPreNativeOverrides?.discardPendingOutput?.invoke(uri)
+                ?: pending.allocation?.let { MediaStoreWriter.discardPendingOutput(context, it) }
                 ?: MediaStoreWriter.discardPendingOutput(context, uri)
             if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                 android.util.Log.i(

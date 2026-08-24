@@ -287,7 +287,15 @@ class PendingDiscardJournalTest {
 
         assertEquals(
             PendingOutputDiscardResult.RECOVERY_MARKED,
-            MediaStoreWriter.discardPendingOutput(context, uri, journal),
+            MediaStoreWriter.discardPendingOutput(
+                context,
+                PendingOutputAllocation(
+                    uri,
+                    CaptureFamilyKey(CaptureFamilyMedia.STILL, 1L, 1L),
+                    testIdentity(),
+                ),
+                journal,
+            ),
         )
         assertEquals(
             DiscardJournalLookup.PRESENT,

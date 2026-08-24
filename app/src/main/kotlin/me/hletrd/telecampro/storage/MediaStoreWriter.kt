@@ -73,6 +73,9 @@ object MediaStoreWriter {
     private val familyJournalMetadataLock = Any()
     private val familyAuthorityRegistryLock = Any()
     private val familyAuthorities = mutableMapOf<String, FamilyJournalAuthority>()
+    private const val MAX_LIVE_PENDING_ALLOCATIONS = 128
+    private val pendingAllocationLock = Any()
+    private val pendingAllocations = LinkedHashMap<Uri, PendingOutputAllocation>()
 
     private class FamilyJournalAuthority(
         val monitor: Any = Any(),
@@ -191,14 +194,20 @@ object MediaStoreWriter {
         }
     }
 
-    private data class RejectedOutput(val context: Context, val uri: Uri)
+    internal data class RejectedOutput(
+        val context: Context,
+        val allocation: PendingOutputAllocation,
+    )
 
-    private val rejectedOutputOwner = BoundedRejectedOutputOwner<RejectedOutput>(
+    private val rejectedOutputOwner = RejectedOutputCleanupCapacityOwner<RejectedOutput>(
+        workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
+        backlogCapacity = REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
         admissionLimit = MAX_REJECTED_OUTPUTS,
         // Once admission closes, work already accepted by the bounded still/recording owners may
         // still report siblings. Keep equal-sized exact headroom so those URIs are never forgotten.
-        ownershipLimit = MAX_REJECTED_OUTPUTS + MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS,
-        discardEffect = { discardPendingOutput(it.context, it.uri) },
+        ownershipLimit = MAX_REJECTED_OUTPUTS + MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS +
+            REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+        discardEffect = { discardPendingOutput(it.context, it.allocation) },
     )
 
     /**
@@ -399,12 +408,34 @@ object MediaStoreWriter {
         return registerPending(context, uri)
     }
 
+    /** Creates and freezes the exact provider identity used by every later destructive decision. */
+    internal fun createPendingImageAllocation(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputAllocation? {
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
+        val uri = createPendingImage(context, displayName, mimeType, subDir) ?: return null
+        return discardJournal.captureAllocation(uri, family)?.also(::rememberPendingAllocation)
+    }
+
     fun createPendingVideo(
         context: Context,
         displayName: String,
         mimeType: String,
         subDir: String = CAPTURE_SUBDIR,
-    ): Uri? {
+    ): Uri? = createPendingVideoAllocation(context, displayName, mimeType, subDir)?.uri
+
+    internal fun createPendingVideoAllocation(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputAllocation? {
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
             put(MediaStore.Video.Media.MIME_TYPE, mimeType)
@@ -417,8 +448,23 @@ object MediaStoreWriter {
         val uri = runCatching {
             context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
         }.getOrNull() ?: return null
-        return registerPending(context, uri)
+        val registered = registerPending(context, uri) ?: return null
+        return discardJournal.captureAllocation(registered, family)
+            ?.also(::rememberPendingAllocation)
     }
+
+    internal fun pendingOutputAllocation(uri: Uri): PendingOutputAllocation? =
+        synchronized(pendingAllocationLock) { pendingAllocations[uri] }
+
+    private fun rememberPendingAllocation(allocation: PendingOutputAllocation) =
+        synchronized(pendingAllocationLock) {
+            // Never replace old caller truth at a reused URI. A newer allocation then degrades to
+            // launch recovery rather than inheriting destructive authority from a fresh read.
+            pendingAllocations.putIfAbsent(allocation.uri, allocation)
+            while (pendingAllocations.size > MAX_LIVE_PENDING_ALLOCATIONS) {
+                pendingAllocations.remove(pendingAllocations.keys.first())
+            }
+        }
 
     /**
      * Durably records that all bytes/container metadata for [uri] were finalized. Call this after
@@ -452,28 +498,57 @@ object MediaStoreWriter {
      */
     internal fun discardPendingOutput(
         context: Context,
-        uri: Uri,
+        allocation: PendingOutputAllocation,
         discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
     ): PendingOutputDiscardResult {
-        val marker = markCompletionWithRetry(
-            maxAttempts = COMPLETION_MARK_ATTEMPTS,
-            commit = {
-                discardJournal.mark(uri.toString())
-            },
-            backoff = { attempt ->
-                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
-            },
-        )
-        val deleted = delete(context, uri)
+        var committed: PendingDiscardRecord? = null
+        var zeroBased = 0
+        while (committed == null && zeroBased < COMPLETION_MARK_ATTEMPTS) {
+            committed = discardJournal.mark(allocation)
+            if (committed == null && zeroBased < COMPLETION_MARK_ATTEMPTS - 1) {
+                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * (zeroBased + 1)) }
+            }
+            zeroBased += 1
+        }
+        val record = committed ?: return PendingOutputDiscardResult.UNRESOLVED
+        val deleted = discardJournal.withReplayIdentityAuthority(record) { replay ->
+            when (replay) {
+                DiscardReplayIdentity.MATCH -> deleteKnownOutput(
+                    context = context,
+                    uri = allocation.uri,
+                    discardJournal = discardJournal,
+                    expectedIdentity = allocation.identity,
+                ).fullyRetired
+                DiscardReplayIdentity.ABSENT -> clearPending(context, allocation.uri, discardJournal)
+                DiscardReplayIdentity.MISMATCH,
+                DiscardReplayIdentity.AMBIGUOUS,
+                DiscardReplayIdentity.UNAVAILABLE,
+                DiscardReplayIdentity.LEGACY,
+                -> false
+            }
+        }
         // Keep the three outcomes distinct. In particular, callers must not erase UNRESOLVED and
         // claim terminal deletion: without either the row delete or a durable DISCARD marker, a
         // structurally valid pending row is still eligible for launch adoption.
         return when {
             deleted -> PendingOutputDiscardResult.DELETED
-            marker.durable -> PendingOutputDiscardResult.RECOVERY_MARKED
+            discardJournal.lookup(allocation.uri.toString()) == DiscardJournalLookup.PRESENT ->
+                PendingOutputDiscardResult.RECOVERY_MARKED
             else -> PendingOutputDiscardResult.UNRESOLVED
         }
     }
+
+    /**
+     * URI-only callers cannot prove allocation identity. Fail closed and let REGISTERED/family
+     * recovery own the row instead of reading and blessing a possible replacement.
+     */
+    internal fun discardPendingOutput(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputDiscardResult = pendingOutputAllocation(uri)?.let { allocation ->
+        discardPendingOutput(context, allocation, discardJournal)
+    } ?: PendingOutputDiscardResult.UNRESOLVED
 
     /**
      * Commits capture-family delete intent before the UI acknowledges deletion.
@@ -751,8 +826,21 @@ object MediaStoreWriter {
     }
 
     /** Durable reject/delete path for any output the app has already classified as failed. */
+    internal fun reserveRejectedOutputCleanup(): PendingRejectedOutputCleanupReservation? =
+        rejectedOutputOwner.reserve()?.let(::PendingRejectedOutputCleanupReservation)
+
+    internal fun dispatchRejectedOutput(
+        context: Context,
+        allocation: PendingOutputAllocation,
+        onComplete: (PendingOutputDiscardResult) -> Unit = {},
+    ): RejectedOutputCleanupDispatch = rejectedOutputOwner.dispatch(
+        RejectedOutput(context.applicationContext, allocation),
+        onComplete,
+    )
+
     internal fun discardRejectedOutput(context: Context, uri: Uri): PendingOutputDiscardResult =
-        rejectedOutputOwner.discard(RejectedOutput(context.applicationContext, uri))
+        pendingOutputAllocation(uri)?.let { discardPendingOutput(context, it) }
+            ?: PendingOutputDiscardResult.UNRESOLVED
 
     internal fun retryRejectedOutputs(): Int = rejectedOutputOwner.retryUnresolved()
 
@@ -1313,7 +1401,7 @@ object MediaStoreWriter {
     }
 
     /** Atomically refuses a row that changed after the replay identity query. */
-    private fun discardDeleteCondition(
+    internal fun discardDeleteCondition(
         identity: PendingDiscardIdentity,
     ): Pair<String, Array<String>> {
         val clauses = mutableListOf(
@@ -1330,13 +1418,17 @@ object MediaStoreWriter {
             identity.relativePath,
             identity.mimeType,
         )
-        identity.ownerPackageName?.let { owner ->
+        if (identity.ownerPackageName == null) {
+            clauses += "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} IS NULL"
+        } else {
             clauses += "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
-            args += owner
+            args += identity.ownerPackageName
         }
-        identity.dateTaken?.let { dateTaken ->
+        if (identity.dateTaken == null) {
+            clauses += "${MediaStore.MediaColumns.DATE_TAKEN} IS NULL"
+        } else {
             clauses += "${MediaStore.MediaColumns.DATE_TAKEN} = ?"
-            args += dateTaken.toString()
+            args += identity.dateTaken.toString()
         }
         return clauses.joinToString(" AND ") to args.toTypedArray()
     }
@@ -1594,7 +1686,161 @@ internal fun deletedFamilyQuery(
     )
 }
 
-/** Finite process owner for discard attempts whose URI marker and provider delete both failed. */
+internal const val REJECTED_OUTPUT_CLEANUP_WORKER_COUNT = 2
+internal const val REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY = 8
+
+internal enum class RejectedOutputCleanupDispatch { ACCEPTED, OVERFLOW, SHUTDOWN }
+
+/** One slot reserved before Camera2 may create a RAW output requiring failed-row cleanup. */
+internal class RejectedOutputCleanupReservation<T> internal constructor(
+    private val owner: RejectedOutputCleanupCapacityOwner<T>,
+) {
+    private val terminal = AtomicBoolean(false)
+
+    fun submit(output: T, onComplete: (PendingOutputDiscardResult) -> Unit = {}): Boolean {
+        if (!terminal.compareAndSet(false, true)) return false
+        return owner.submitReserved(output, onComplete)
+    }
+
+    fun cancel(): Boolean {
+        if (!terminal.compareAndSet(false, true)) return false
+        owner.releaseReservation()
+        return true
+    }
+}
+
+internal class PendingRejectedOutputCleanupReservation internal constructor(
+    private val reservation: RejectedOutputCleanupReservation<MediaStoreWriter.RejectedOutput>,
+) {
+    fun submit(
+        context: Context,
+        allocation: PendingOutputAllocation,
+        onComplete: (PendingOutputDiscardResult) -> Unit = {},
+    ): Boolean = reservation.submit(
+        MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
+        onComplete,
+    )
+
+    fun cancel(): Boolean = reservation.cancel()
+}
+
+/** Process-finite non-inline cleanup owner with durable unresolved identity retention. */
+internal class RejectedOutputCleanupCapacityOwner<T>(
+    workerCount: Int,
+    backlogCapacity: Int,
+    private val admissionLimit: Int,
+    private val ownershipLimit: Int = admissionLimit * 2,
+    threadFactory: java.util.concurrent.ThreadFactory = rejectedOutputCleanupThreadFactory(),
+    private val discardEffect: (T) -> PendingOutputDiscardResult,
+) {
+    private val lock = Any()
+    private val unresolved = LinkedHashSet<T>()
+    private val executor = java.util.concurrent.ThreadPoolExecutor(
+        workerCount,
+        workerCount,
+        0L,
+        java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.ArrayBlockingQueue(backlogCapacity),
+        threadFactory,
+        java.util.concurrent.ThreadPoolExecutor.AbortPolicy(),
+    )
+    private val admission = java.util.concurrent.Semaphore(workerCount + backlogCapacity, true)
+
+    init {
+        require(workerCount > 0)
+        require(backlogCapacity > 0)
+        require(admissionLimit > 0)
+        require(ownershipLimit >= admissionLimit)
+    }
+
+    fun reserve(): RejectedOutputCleanupReservation<T>? = synchronized(lock) {
+        if (unresolved.size >= admissionLimit || !admission.tryAcquire()) null
+        else RejectedOutputCleanupReservation(this)
+    }
+
+    fun dispatch(
+        output: T,
+        onComplete: (PendingOutputDiscardResult) -> Unit = {},
+    ): RejectedOutputCleanupDispatch {
+        val reservation = reserve() ?: return RejectedOutputCleanupDispatch.OVERFLOW
+        return if (reservation.submit(output, onComplete)) {
+            RejectedOutputCleanupDispatch.ACCEPTED
+        } else {
+            RejectedOutputCleanupDispatch.SHUTDOWN
+        }
+    }
+
+    internal fun submitReserved(
+        output: T,
+        onComplete: (PendingOutputDiscardResult) -> Unit,
+    ): Boolean = try {
+        executor.execute {
+            val result = runCatching { discardEffect(output) }
+                .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
+            rememberResult(output, result)
+            try {
+                runCatching { onComplete(result) }
+            } finally {
+                releaseReservation()
+            }
+        }
+        true
+    } catch (_: java.util.concurrent.RejectedExecutionException) {
+        rememberResult(output, PendingOutputDiscardResult.UNRESOLVED)
+        runCatching { onComplete(PendingOutputDiscardResult.UNRESOLVED) }
+        releaseReservation()
+        false
+    }
+
+    private fun rememberResult(output: T, result: PendingOutputDiscardResult) = synchronized(lock) {
+        if (result == PendingOutputDiscardResult.UNRESOLVED) {
+            check(output in unresolved || unresolved.size < ownershipLimit) {
+                "already-admitted rejected-output ownership exhausted"
+            }
+            unresolved.add(output)
+        } else {
+            unresolved.remove(output)
+        }
+    }
+
+    fun retryUnresolved(): Int {
+        val pending = synchronized(lock) { unresolved.toList() }
+        pending.forEach { output ->
+            val reservation = synchronized(lock) {
+                if (admission.tryAcquire()) RejectedOutputCleanupReservation(this) else null
+            }
+            reservation?.submit(output)
+        }
+        return unresolvedCount()
+    }
+
+    fun canAdmit(): Boolean = synchronized(lock) {
+        unresolved.size < admissionLimit && admission.availablePermits() > 0
+    }
+
+    internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
+
+    internal fun releaseReservation() {
+        admission.release()
+    }
+
+    internal fun admittedCount(): Int =
+        executor.maximumPoolSize + executor.queue.remainingCapacity() + executor.queue.size -
+            admission.availablePermits()
+
+    internal fun shutdownNowForTest() = executor.shutdownNow()
+}
+
+private fun rejectedOutputCleanupThreadFactory(): java.util.concurrent.ThreadFactory {
+    val sequence = java.util.concurrent.atomic.AtomicInteger()
+    return java.util.concurrent.ThreadFactory { task ->
+        Thread(task, "rejected-output-cleanup-${sequence.incrementAndGet()}").apply {
+            isDaemon = true
+        }
+    }
+}
+
+/** Legacy pure owner retained only for its existing unit-contract coverage; production is async. */
 internal class BoundedRejectedOutputOwner<T>(
     private val admissionLimit: Int,
     private val ownershipLimit: Int = admissionLimit * 2,
@@ -1603,18 +1849,11 @@ internal class BoundedRejectedOutputOwner<T>(
     private val lock = Any()
     private val unresolved = LinkedHashSet<T>()
 
-    init {
-        require(admissionLimit > 0)
-        require(ownershipLimit >= admissionLimit)
-    }
-
     fun discard(output: T): PendingOutputDiscardResult {
         val result = runCatching { discardEffect(output) }
             .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
         synchronized(lock) {
             if (result == PendingOutputDiscardResult.UNRESOLVED) {
-                // Admission closes at the soft limit, while bounded headroom owns siblings/tails
-                // accepted before that edge. Never silently evict the exact identity at the edge.
                 check(output in unresolved || unresolved.size < ownershipLimit) {
                     "already-admitted rejected-output ownership exhausted"
                 }
@@ -1627,13 +1866,11 @@ internal class BoundedRejectedOutputOwner<T>(
     }
 
     fun retryUnresolved(): Int {
-        val pending = synchronized(lock) { unresolved.toList() }
-        pending.forEach(::discard)
+        synchronized(lock) { unresolved.toList() }.forEach(::discard)
         return unresolvedCount()
     }
 
     fun canAdmit(): Boolean = synchronized(lock) { unresolved.size < admissionLimit }
-
     internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
 }
 
