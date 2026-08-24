@@ -461,6 +461,153 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
+    fun `native create return cannot race exact owner binding or admit a replacement`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val input = Any()
+        val publicationEntered = CountDownLatch(1)
+        val allowPublication = CountDownLatch(1)
+        val closeDone = CountDownLatch(1)
+        val revoked = AtomicBoolean(false)
+        val result = AtomicReference<NativeAcquisitionPublicationResult<Any>>()
+        val creator = Thread {
+            result.set(
+                gate.runNativeWithPublication(
+                    block = { input },
+                    publicationOwner = { returned ->
+                        assertSame(input, returned)
+                        publicationEntered.countDown()
+                        allowPublication.await()
+                        NativeAcquisitionPublicationOwner(input) { revoked.set(true) }
+                    },
+                ),
+            )
+        }
+        val closer = Thread {
+            gate.close()
+            closeDone.countDown()
+        }
+        val replacementEntered = AtomicBoolean(false)
+        val replacementResult = AtomicReference<NativeAcquisitionResult>()
+        val replacement = Thread {
+            replacementResult.set(gate.runNativeWithResult { replacementEntered.set(true) })
+        }
+
+        creator.start()
+        assertTrue(publicationEntered.await(5, TimeUnit.SECONDS))
+        closer.start()
+        assertFalse(closeDone.await(25, TimeUnit.MILLISECONDS))
+
+        allowPublication.countDown()
+        creator.join(5_000)
+        closer.join(5_000)
+        replacement.start()
+        replacement.join(5_000)
+
+        assertSame(input, result.get().value)
+        assertTrue(revoked.get())
+        assertFalse(replacementEntered.get())
+        assertEquals(NativeAcquisitionResult.REJECTED, replacementResult.get())
+    }
+
+    @Test
+    fun `native start return publishes under gate before terminal revocation`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val input = Any()
+        val revoked = AtomicBoolean(false)
+        val created = gate.runNativeWithPublication(
+            block = { input },
+            publicationOwner = { NativeAcquisitionPublicationOwner(input) { revoked.set(true) } },
+        )
+        val token = checkNotNull(created.token)
+        val nativeReturned = CountDownLatch(1)
+        val allowStartPublication = CountDownLatch(1)
+        val publicationEntered = CountDownLatch(1)
+        val closeDone = CountDownLatch(1)
+        val published = AtomicBoolean(false)
+        val startResult = AtomicReference<NativeAcquisitionResult>()
+        val starter = Thread {
+            startResult.set(
+                gate.runPublishedNativeWithResult(
+                    token = token,
+                    block = { nativeReturned.countDown() },
+                    publish = {
+                        publicationEntered.countDown()
+                        allowStartPublication.await()
+                        published.set(true)
+                    },
+                ),
+            )
+        }
+        val closer = Thread {
+            gate.close()
+            closeDone.countDown()
+        }
+
+        starter.start()
+        assertTrue(nativeReturned.await(5, TimeUnit.SECONDS))
+        assertTrue(publicationEntered.await(5, TimeUnit.SECONDS))
+        closer.start()
+        assertFalse(closeDone.await(25, TimeUnit.MILLISECONDS))
+
+        allowStartPublication.countDown()
+        starter.join(5_000)
+        closer.join(5_000)
+
+        assertEquals(NativeAcquisitionResult.RETURNED_CURRENT, startResult.get())
+        assertTrue(published.get())
+        assertTrue(revoked.get())
+        var laterNative = false
+        assertFalse(gate.runNativeIfSafe { laterNative = true })
+        assertFalse(laterNative)
+    }
+
+    @Test
+    fun `stop timeout quarantine retains before abandon and excludes competing acquisition`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val input = Any()
+        val revokeEntered = CountDownLatch(1)
+        val allowAbandon = CountDownLatch(1)
+        val abandoned = AtomicBoolean(false)
+        val created = gate.runNativeWithPublication(
+            block = { input },
+            publicationOwner = {
+                NativeAcquisitionPublicationOwner(input) {
+                    // close() has already transferred this owner into its process-long retained set
+                    // while still holding the gate. Model the controller's abandonment callback.
+                    revokeEntered.countDown()
+                    allowAbandon.await()
+                    abandoned.set(true)
+                }
+            },
+        )
+        val token = checkNotNull(created.token)
+        val timeoutDone = CountDownLatch(1)
+        val timeout = Thread {
+            assertTrue(gate.quarantineNativePublication(token))
+            timeoutDone.countDown()
+        }
+        val replacementEntered = AtomicBoolean(false)
+        val replacementResult = AtomicReference<NativeAcquisitionResult>()
+        val replacement = Thread {
+            replacementResult.set(gate.runNativeWithResult { replacementEntered.set(true) })
+        }
+
+        timeout.start()
+        assertTrue(revokeEntered.await(5, TimeUnit.SECONDS))
+        replacement.start()
+        assertFalse(timeoutDone.await(25, TimeUnit.MILLISECONDS))
+        assertFalse(abandoned.get())
+
+        allowAbandon.countDown()
+        timeout.join(5_000)
+        replacement.join(5_000)
+
+        assertTrue(abandoned.get())
+        assertFalse(replacementEntered.get())
+        assertEquals(NativeAcquisitionResult.REJECTED, replacementResult.get())
+    }
+
+    @Test
     fun `interrupted drain observation returns false and restores interrupt status`() {
         val gate = RecorderQuarantineAdmissionGate()
         val entered = CountDownLatch(1)

@@ -9,7 +9,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import me.hletrd.telecampro.video.NativeAcquisitionResult
+import me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate
 
 // The production name of the thread-backed process-busy retry fallback (StandbyAudioController.kt).
 private const val FALLBACK_THREAD_NAME = "StandbyAudioRetryFallback"
@@ -52,10 +52,8 @@ class StandbyAudioControllerTest {
         canStart: () -> Boolean = { true },
         threadLauncher: StandbyThreadLauncher = StandbyThreadLauncher { _, task -> task(); true },
         reserveProcessAdmission: () -> (() -> Unit)? = { {} },
-        runNativeAcquisition: ((() -> Unit) -> NativeAcquisitionResult) = { block ->
-            block()
-            NativeAcquisitionResult.RETURNED_CURRENT
-        },
+        nativeProcessGate: StandbyNativeProcessGate =
+            RecorderStandbyNativeProcessGate(RecorderQuarantineAdmissionGate()),
         retryScheduler: StandbyRetryScheduler? = null,
         processBusyRetryFallback: StandbyRetryScheduler? = null,
         stopDispatcher: StandbyStopDispatcher = StandbyStopDispatcher { task -> task() },
@@ -101,7 +99,7 @@ class StandbyAudioControllerTest {
                     unsafeEffect()
                 },
                 reserveProcessAdmission = reserveProcessAdmission,
-                runNativeAcquisition = runNativeAcquisition,
+                nativeProcessGate = nativeProcessGate,
                 retainQuarantinedInput = { owner ->
                     retained += owner
                     retainEffect(owner)
@@ -575,6 +573,7 @@ class StandbyAudioControllerTest {
             onStopTimeout = { value, exactOwner ->
                 assertTrue(value === input)
                 timedOutOwners += exactOwner
+                exactOwner.abandon(value)
             },
         )
         assertTrue(owner.bind(input))
@@ -846,15 +845,14 @@ class StandbyAudioControllerTest {
     fun `native create return revoked by quarantine retains exact input without cleanup`() {
         val input = FakeInput()
         var setupCalls = 0
+        val processGate = RecorderQuarantineAdmissionGate()
         val fixture = fixture(
             setup = StandbyAudioSetup {
                 setupCalls++
+                processGate.close()
                 StandbyAudioSetupResult.Ready(input)
             },
-            runNativeAcquisition = { block ->
-                block()
-                NativeAcquisitionResult.RETURNED_REVOKED
-            },
+            nativeProcessGate = RecorderStandbyNativeProcessGate(processGate),
         )
 
         fixture.controller.setEnabled(true)
@@ -877,25 +875,27 @@ class StandbyAudioControllerTest {
 
     @Test
     fun `native start return revoked by quarantine retains started input without stop or release`() {
-        val input = FakeInput()
-        var acquisitions = 0
+        val processGate = RecorderQuarantineAdmissionGate()
+        val input = object : StandbyAudioInput {
+            var starts = 0
+            var stops = 0
+            var releases = 0
+            override fun start() {
+                starts++
+                processGate.close()
+            }
+            override fun read(samples: ShortArray): Int = error("read is not admitted")
+            override fun stop() { stops++ }
+            override fun release() { releases++ }
+        }
         val fixture = fixture(
             setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
-            runNativeAcquisition = { block ->
-                block()
-                acquisitions++
-                if (acquisitions == 1) {
-                    NativeAcquisitionResult.RETURNED_CURRENT
-                } else {
-                    NativeAcquisitionResult.RETURNED_REVOKED
-                }
-            },
+            nativeProcessGate = RecorderStandbyNativeProcessGate(processGate),
         )
 
         fixture.controller.setEnabled(true)
         fixture.controller.setEnabled(true)
 
-        assertEquals(2, acquisitions)
         assertEquals(1, input.starts)
         assertEquals(0, input.stops)
         assertEquals(0, input.releases)
@@ -962,7 +962,7 @@ class StandbyAudioControllerTest {
                     { processGate.finishStandby(token) }
                 }
             },
-            runNativeAcquisition = { block -> processGate.runNativeWithResult(block = block) },
+            nativeProcessGate = RecorderStandbyNativeProcessGate(processGate),
             stopDispatcher = StandbyStopDispatcher { task ->
                 stopThreads += Thread(task, "blocked-standby-stop").apply {
                     isDaemon = true
@@ -974,7 +974,6 @@ class StandbyAudioControllerTest {
                 RecordingTeardownCancellation { deadline.compareAndSet(action, null) }
             },
             stopTimeoutMs = 1L,
-            retainEffect = { processGate.close() },
         )
 
         fixture.controller.setEnabled(true)
@@ -1253,7 +1252,7 @@ class StandbyAudioControllerTest {
 
     @Test
     fun `primary constructor defaults admit and complete a generation standalone`() {
-        // Omits reserveProcessAdmission/runNativeAcquisition/processBusyRetryFallback so the
+        // Omits reserveProcessAdmission/nativeProcessGate/processBusyRetryFallback so the
         // production defaults themselves execute: unguarded admission (with its no-op release),
         // direct native acquisition, and the thread-backed fallback constructed at init.
         val input = FakeInput()

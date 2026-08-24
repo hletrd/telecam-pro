@@ -14,6 +14,10 @@ import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioReadOutcome
 import me.hletrd.telecampro.video.ColorProfiles
 import me.hletrd.telecampro.video.NativeAcquisitionResult
+import me.hletrd.telecampro.video.NativeAcquisitionPublicationOwner
+import me.hletrd.telecampro.video.NativeAcquisitionPublicationResult
+import me.hletrd.telecampro.video.NativeAcquisitionPublicationToken
+import me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
 import me.hletrd.telecampro.video.AudioLevelFrame
 import me.hletrd.telecampro.video.accumulateChannelPeaks
@@ -79,6 +83,90 @@ internal fun interface StandbyStopDispatcher {
     fun dispatch(task: () -> Unit)
 }
 
+/** Exact create/start publication boundary shared by production and deterministic JVM fixtures. */
+internal interface StandbyNativeProcessGate {
+    fun create(
+        block: () -> StandbyAudioSetupResult,
+        publicationOwner: (StandbyAudioSetupResult) -> NativeAcquisitionPublicationOwner?,
+    ): NativeAcquisitionPublicationResult<StandbyAudioSetupResult>
+
+    fun start(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult
+
+    fun finishRelease(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult
+
+    fun finish(token: NativeAcquisitionPublicationToken?)
+    fun quarantine(token: NativeAcquisitionPublicationToken): Boolean
+}
+
+internal class RecorderStandbyNativeProcessGate(
+    private val gate: RecorderQuarantineAdmissionGate,
+) : StandbyNativeProcessGate {
+    override fun create(
+        block: () -> StandbyAudioSetupResult,
+        publicationOwner: (StandbyAudioSetupResult) -> NativeAcquisitionPublicationOwner?,
+    ): NativeAcquisitionPublicationResult<StandbyAudioSetupResult> =
+        gate.runNativeWithPublication(block = block, publicationOwner = publicationOwner)
+
+    override fun start(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult = gate.runPublishedNativeWithResult(token, block, publish)
+
+    override fun finishRelease(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult =
+        gate.runPublishedNativeWithResult(token, block, publish, retire = true)
+
+    override fun finish(token: NativeAcquisitionPublicationToken?) = gate.finishNativePublication(token)
+
+    override fun quarantine(token: NativeAcquisitionPublicationToken): Boolean =
+        gate.quarantineNativePublication(token)
+}
+
+private object ProcessStandbyNativeProcessGate : StandbyNativeProcessGate {
+    override fun create(
+        block: () -> StandbyAudioSetupResult,
+        publicationOwner: (StandbyAudioSetupResult) -> NativeAcquisitionPublicationOwner?,
+    ): NativeAcquisitionPublicationResult<StandbyAudioSetupResult> =
+        UnsafeRecorderQuarantine.runNativeAcquisitionWithPublication(block, publicationOwner)
+
+    override fun start(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult =
+        UnsafeRecorderQuarantine.runPublishedNativeAcquisitionWithResult(token, block, publish)
+
+    override fun finishRelease(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult =
+        UnsafeRecorderQuarantine.runPublishedNativeAcquisitionWithResult(
+            token,
+            block,
+            publish,
+            retire = true,
+        )
+
+    override fun finish(token: NativeAcquisitionPublicationToken?) =
+        UnsafeRecorderQuarantine.finishNativeAcquisitionPublication(token)
+
+    override fun quarantine(token: NativeAcquisitionPublicationToken): Boolean =
+        UnsafeRecorderQuarantine.quarantineNativeAcquisitionPublication(token)
+}
+
 /** Strong process-long owner for one standby input whose native lifetime became uncertain. */
 internal data class QuarantinedStandbyInput(
     val input: StandbyAudioInput,
@@ -100,7 +188,18 @@ internal class StandbyInputTerminationOwner<T : Any>(
     private val stop: (T) -> Unit,
     private val stopDeadlineScheduler: RecordingTeardownScheduler = processStandbyStopScheduler,
     private val stopTimeoutMs: Long = STANDBY_STOP_TIMEOUT_MS,
-    private val onStopTimeout: (T, StandbyInputTerminationOwner<T>) -> Unit = { _, _ -> },
+    private val runNativeOperation: ((() -> Unit) -> NativeAcquisitionResult) = { block ->
+        block()
+        NativeAcquisitionResult.RETURNED_CURRENT
+    },
+    private val finishNativeRelease: ((() -> Unit, () -> Unit) -> NativeAcquisitionResult) = { block, publish ->
+        block()
+        publish()
+        NativeAcquisitionResult.RETURNED_CURRENT
+    },
+    private val onStopTimeout: (T, StandbyInputTerminationOwner<T>) -> Unit = { value, owner ->
+        owner.abandon(value)
+    },
 ) {
     private val lock = Any()
     private val stopCompleted = CountDownLatch(1)
@@ -192,14 +291,24 @@ internal class StandbyInputTerminationOwner<T : Any>(
                 finished = true
                 false
             } else {
-                input = null
-                finished = true
-                started = false
-                starting = false
                 true
             }
         }
-        if (releaseNow) runCatching { release(value) }
+        if (releaseNow) {
+            finishNativeRelease(
+                { runCatching { release(value) } },
+                {
+                    synchronized(lock) {
+                        if (!abandoned && input === value) {
+                            input = null
+                            finished = true
+                            started = false
+                            starting = false
+                        }
+                    }
+                },
+            )
+        }
         if (interrupted) Thread.currentThread().interrupt()
     }
 
@@ -241,11 +350,13 @@ internal class StandbyInputTerminationOwner<T : Any>(
             timeoutMs = stopTimeoutMs,
             failure = { java.util.concurrent.TimeoutException("Standby AudioRecord.stop timed out") },
             onTimeout = {
-                if (abandon(value)) onStopTimeout(value, this)
+                // The controller's process transaction must close native admission and install
+                // strong exact-input retention before its registered revocation abandons us.
+                onStopTimeout(value, this)
             },
         )
         if (!deadline.arm()) return
-        runCatching { stop(value) }
+        runNativeOperation { runCatching { stop(value) } }
         // A timeout owns abandonment and already released logical stop waiters. A late return must
         // not overwrite that terminal or authorize release of the retained native input.
         if (deadline.complete()) stopCompleted.countDown()
@@ -386,10 +497,8 @@ internal class StandbyAudioController(
     private val onUnavailable: (StandbyAudioUnavailable) -> Unit,
     private val onUnsafeNative: () -> Unit = {},
     private val reserveProcessAdmission: () -> (() -> Unit)? = { {} },
-    private val runNativeAcquisition: ((() -> Unit) -> NativeAcquisitionResult) = { block ->
-        block()
-        NativeAcquisitionResult.RETURNED_CURRENT
-    },
+    private val nativeProcessGate: StandbyNativeProcessGate =
+        RecorderStandbyNativeProcessGate(RecorderQuarantineAdmissionGate()),
     private val retainQuarantinedInput: (QuarantinedStandbyInput) -> Unit = {},
 ) {
     internal constructor(
@@ -438,10 +547,7 @@ internal class StandbyAudioController(
                 { UnsafeRecorderQuarantine.finishStandbyAdmission(admission) }
             }
         },
-        runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisitionWithResult,
-        retainQuarantinedInput = { owner ->
-            UnsafeRecorderQuarantine.quarantineNativeGraph(owner)
-        },
+        nativeProcessGate = ProcessStandbyNativeProcessGate,
     )
 
     private val ownership = StandbyMeterOwnership<CountDownLatch>()
@@ -500,14 +606,28 @@ internal class StandbyAudioController(
                 createRelease = createRelease,
             )
         } ?: return
+        val nativePublication = AtomicReference<NativeAcquisitionPublicationToken?>(null)
         val terminationOwner = StandbyInputTerminationOwner<StandbyAudioInput>(
             generationId = owner.id,
             stopDispatcher = stopDispatcher,
             stop = StandbyAudioInput::stop,
             stopDeadlineScheduler = stopDeadlineScheduler,
             stopTimeoutMs = stopTimeoutMs,
-            onStopTimeout = { input, exactOwner ->
-                retainUnsafeInput(input, exactOwner, owner.release)
+            runNativeOperation = { block ->
+                nativeProcessGate.start(checkNotNull(nativePublication.get()), block) {}
+            },
+            finishNativeRelease = { block, publish ->
+                nativeProcessGate.finishRelease(
+                    checkNotNull(nativePublication.get()),
+                    block,
+                    publish,
+                )
+            },
+            onStopTimeout = { _, _ ->
+                // The publication token exists before start can succeed. Its terminal transaction
+                // closes admission and strongly retains the exact input before revocation abandons
+                // the owner and releases this generation's logical waiter.
+                nativeProcessGate.quarantine(checkNotNull(nativePublication.get()))
             },
         )
         check(liveInputTermination.compareAndSet(null, terminationOwner)) {
@@ -528,62 +648,56 @@ internal class StandbyAudioController(
                     processBusy = true
                     return@meterTask
                 }
-                var setup: StandbyAudioSetupResult? = null
-                when (runNativeAcquisition {
-                    setup = runCatching { audioSetup.create() }.getOrElse {
-                        StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
-                    }
-                }) {
+                val setupPublication = nativeProcessGate.create(
+                    block = {
+                        runCatching { audioSetup.create() }.getOrElse {
+                            StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
+                        }
+                    },
+                    publicationOwner = { setup ->
+                        val input = (setup as? StandbyAudioSetupResult.Ready)?.input
+                            ?: return@create null
+                        check(terminationOwner.bind(input)) {
+                            "standby input owner rejected its generation"
+                        }
+                        val exactOwner = QuarantinedStandbyInput(input, terminationOwner)
+                        NativeAcquisitionPublicationOwner(
+                            retainedOwner = exactOwner,
+                            onRevoked = {
+                                revokeUnsafeInput(exactOwner, owner.release)
+                            },
+                        )
+                    },
+                )
+                when (setupPublication.acquisition) {
                     NativeAcquisitionResult.REJECTED -> return@meterTask
-                    NativeAcquisitionResult.RETURNED_REVOKED -> {
-                        val revokedInput = (setup as? StandbyAudioSetupResult.Ready)?.input
-                            ?: return@meterTask
-                        audioInput = revokedInput
-                        check(terminationOwner.bind(revokedInput)) {
-                            "standby input owner rejected revoked setup generation"
-                        }
-                        check(terminationOwner.abandon(revokedInput)) {
-                            "standby input owner could not abandon revoked setup generation"
-                        }
-                        retainUnsafeInput(revokedInput, terminationOwner, owner.release)
-                        return@meterTask
-                    }
+                    NativeAcquisitionResult.RETURNED_REVOKED -> return@meterTask
                     NativeAcquisitionResult.RETURNED_CURRENT -> Unit
                 }
-                when (val result = checkNotNull(setup)) {
+                when (val result = checkNotNull(setupPublication.value)) {
                     is StandbyAudioSetupResult.Failure -> {
                         generationFailure = result.reason
                         return@meterTask
                     }
                     is StandbyAudioSetupResult.Ready -> {
                         audioInput = result.input
-                        check(terminationOwner.bind(result.input)) {
-                            "standby input owner rejected its generation"
-                        }
+                        nativePublication.set(checkNotNull(setupPublication.token))
                     }
                 }
                 if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
                 var startFailed = false
                 val input = checkNotNull(audioInput)
                 if (!terminationOwner.beginStart(input)) return@meterTask
-                var startResult = NativeAcquisitionResult.REJECTED
-                try {
-                    startResult = runNativeAcquisition {
+                val startResult = nativeProcessGate.start(
+                    token = checkNotNull(nativePublication.get()),
+                    block = {
                         startFailed = runCatching { input.start() }.isFailure
-                    }
-                } finally {
-                    terminationOwner.finishStart(
-                        value = input,
-                        succeeded = startResult == NativeAcquisitionResult.RETURNED_CURRENT && !startFailed,
-                    )
-                }
-                if (startResult == NativeAcquisitionResult.RETURNED_REVOKED) {
-                    check(terminationOwner.abandon(input)) {
-                        "standby input owner could not abandon revoked start generation"
-                    }
-                    retainUnsafeInput(input, terminationOwner, owner.release)
-                    return@meterTask
-                }
+                    },
+                    publish = {
+                        terminationOwner.finishStart(value = input, succeeded = !startFailed)
+                    },
+                )
+                if (startResult == NativeAcquisitionResult.RETURNED_REVOKED) return@meterTask
                 if (startResult == NativeAcquisitionResult.REJECTED) return@meterTask
                 if (startFailed) {
                     generationFailure = StandbyAudioFailureReason.START
@@ -642,6 +756,7 @@ internal class StandbyAudioController(
             } finally {
                 // Count the latch only after release on every path, including early returns.
                 audioInput?.let { input -> terminationOwner.finishAndRelease(input, StandbyAudioInput::release) }
+                nativeProcessGate.finish(nativePublication.get())
                 liveInputTermination.compareAndSet(terminationOwner, null)
                 runCatching { releaseProcessAdmission?.invoke() }
                 completeGeneration(owner, generationFailure, retryForProcessBusy = processBusy)
@@ -656,16 +771,16 @@ internal class StandbyAudioController(
         }
     }
 
-    /** One terminal path shared by revoked create/start and a timed-out native stop. */
-    private fun retainUnsafeInput(
-        input: StandbyAudioInput,
-        terminationOwner: StandbyInputTerminationOwner<StandbyAudioInput>,
+    /** Runs only after the process gate has strongly retained this exact input/termination owner. */
+    private fun revokeUnsafeInput(
+        exactOwner: QuarantinedStandbyInput,
         logicalRelease: CountDownLatch,
     ) {
-        nativeTerminal.set(true)
-        runCatching {
-            retainQuarantinedInput(QuarantinedStandbyInput(input, terminationOwner))
+        check(exactOwner.terminationOwner.abandon(exactOwner.input)) {
+            "standby input owner could not abandon revoked generation"
         }
+        nativeTerminal.set(true)
+        runCatching { retainQuarantinedInput(exactOwner) }
         // Logical waiters may proceed only far enough to observe process quarantine and refuse REC.
         // The concrete native input remains strongly retained and is never stopped/released here.
         logicalRelease.countDown()

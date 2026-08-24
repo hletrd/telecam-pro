@@ -1093,6 +1093,26 @@ internal enum class NativeAcquisitionResult {
     RETURNED_REVOKED,
 }
 
+/**
+ * Exact process-gate identity for a native object that survived its creating call.
+ *
+ * The token stays current through every later native publication and ordinary teardown. Terminal
+ * close instead moves its concrete [NativeAcquisitionPublicationOwner.retainedOwner] into the
+ * process-long revoked set before invoking the owner's no-cleanup callback.
+ */
+internal class NativeAcquisitionPublicationToken internal constructor(internal val epoch: Long)
+
+internal data class NativeAcquisitionPublicationOwner(
+    val retainedOwner: Any,
+    val onRevoked: () -> Unit,
+)
+
+internal data class NativeAcquisitionPublicationResult<T>(
+    val acquisition: NativeAcquisitionResult,
+    val value: T?,
+    val token: NativeAcquisitionPublicationToken?,
+)
+
 /** Typed finite/terminal process-gate refusal; Engine decides replay versus restart-required. */
 internal enum class NativeAcquisitionRefusalPhase { EGL_CONTEXT, PREVIEW_OUTPUT, CAMERA_GRAPH }
 
@@ -1120,6 +1140,8 @@ internal class RecorderQuarantineAdmissionGate {
     private var pendingToken: UnsafeRecorderAdmissionToken? = null
     private var activeToken: UnsafeRecorderAdmissionToken? = null
     private var standbyToken: UnsafeStandbyAdmissionToken? = null
+    private val nativePublications = LinkedHashMap<Long, NativeAcquisitionPublicationOwner>()
+    private val revokedNativePublications = mutableListOf<NativeAcquisitionPublicationOwner>()
     private data class ReplayObserver(
         val tokenEpoch: Long,
         val owner: Any,
@@ -1243,6 +1265,128 @@ internal class RecorderQuarantineAdmissionGate {
         }
     }
 
+    /**
+     * Runs one native creator and publishes its concrete termination owner under the process lock.
+     * A close competing after the native return therefore sees either no object yet, or the exact
+     * strongly retained object plus its revocation callback; there is no return-to-bind gap.
+     */
+    fun <T> runNativeWithPublication(
+        owner: Any? = null,
+        block: () -> T,
+        publicationOwner: (T) -> NativeAcquisitionPublicationOwner?,
+    ): NativeAcquisitionPublicationResult<T> {
+        val admitted = lock.withLock {
+            val foreignActiveRecorder = activeToken?.owner?.let { it !== owner } == true
+            if (quarantined.get() || pendingToken != null || foreignActiveRecorder) {
+                false
+            } else {
+                nativeAcquisitions++
+                true
+            }
+        }
+        if (!admitted) {
+            return NativeAcquisitionPublicationResult(
+                acquisition = NativeAcquisitionResult.REJECTED,
+                value = null,
+                token = null,
+            )
+        }
+        val value = try {
+            block()
+        } catch (failure: Throwable) {
+            lock.withLock {
+                nativeAcquisitions--
+                check(nativeAcquisitions >= 0) { "Native admission count underflow" }
+                if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
+            }
+            throw failure
+        }
+        return lock.withLock {
+            nativeAcquisitions--
+            check(nativeAcquisitions >= 0) { "Native admission count underflow" }
+            if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
+            val exactOwner = publicationOwner(value)
+            if (quarantined.get()) {
+                if (exactOwner != null) {
+                    revokedNativePublications += exactOwner
+                    exactOwner.onRevoked()
+                }
+                NativeAcquisitionPublicationResult(
+                    acquisition = NativeAcquisitionResult.RETURNED_REVOKED,
+                    value = value,
+                    token = null,
+                )
+            } else {
+                val publicationToken = exactOwner?.let {
+                    NativeAcquisitionPublicationToken(epoch.incrementAndGet()).also { token ->
+                        nativePublications[token.epoch] = it
+                    }
+                }
+                NativeAcquisitionPublicationResult(
+                    acquisition = NativeAcquisitionResult.RETURNED_CURRENT,
+                    value = value,
+                    token = publicationToken,
+                )
+            }
+        }
+    }
+
+    /**
+     * Runs native work for one exact published owner and commits its caller-visible completion while
+     * still under the process lock. Close either follows that publication and revokes the owner, or
+     * wins first and makes the late native return inert.
+     */
+    fun runPublishedNativeWithResult(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+        retire: Boolean = false,
+    ): NativeAcquisitionResult {
+        val admitted = lock.withLock {
+            if (quarantined.get() || nativePublications[token.epoch] == null) {
+                false
+            } else {
+                nativeAcquisitions++
+                true
+            }
+        }
+        if (!admitted) return NativeAcquisitionResult.REJECTED
+        try {
+            block()
+        } catch (failure: Throwable) {
+            lock.withLock {
+                nativeAcquisitions--
+                check(nativeAcquisitions >= 0) { "Native admission count underflow" }
+                if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
+            }
+            throw failure
+        }
+        return lock.withLock {
+            nativeAcquisitions--
+            check(nativeAcquisitions >= 0) { "Native admission count underflow" }
+            if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
+            if (quarantined.get() || nativePublications[token.epoch] == null) {
+                NativeAcquisitionResult.RETURNED_REVOKED
+            } else {
+                publish()
+                if (retire) nativePublications.remove(token.epoch)
+                NativeAcquisitionResult.RETURNED_CURRENT
+            }
+        }
+    }
+
+    /** Ordinary cleanup alone retires a current publication; revoked owners remain process-long. */
+    fun finishNativePublication(token: NativeAcquisitionPublicationToken?) {
+        if (token == null) return
+        lock.withLock { nativePublications.remove(token.epoch) }
+    }
+
+    /** Stop-timeout terminal: close and retain before the registered callback exposes abandonment. */
+    fun quarantineNativePublication(token: NativeAcquisitionPublicationToken): Boolean = lock.withLock {
+        if (nativePublications[token.epoch] == null && !quarantined.get()) return@withLock false
+        close()
+    }
+
     /** Token-specific setup lease: bookkeeping under lock, native work outside it. */
     fun runPendingNative(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean {
         val admitted = lock.withLock {
@@ -1336,6 +1480,12 @@ internal class RecorderQuarantineAdmissionGate {
                 pendingToken = null
                 activeToken = null
                 standbyToken = null
+                nativePublications.values.forEach { exactOwner ->
+                    // Retention is installed before abandonment can wake a REC/lifecycle waiter.
+                    revokedNativePublications += exactOwner
+                    exactOwner.onRevoked()
+                }
+                nativePublications.clear()
                 removeReplayObserversLocked { true }
             } else {
                 emptyList()
@@ -1400,6 +1550,27 @@ internal object UnsafeRecorderQuarantine {
     /** Typed sibling for native creators that must retain an object returned after revocation. */
     fun runNativeAcquisitionWithResult(block: () -> Unit): NativeAcquisitionResult =
         admissionGate.runNativeWithResult(block = block)
+
+    fun <T> runNativeAcquisitionWithPublication(
+        block: () -> T,
+        publicationOwner: (T) -> NativeAcquisitionPublicationOwner?,
+    ): NativeAcquisitionPublicationResult<T> =
+        admissionGate.runNativeWithPublication(block = block, publicationOwner = publicationOwner)
+
+    fun runPublishedNativeAcquisitionWithResult(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+        retire: Boolean = false,
+    ): NativeAcquisitionResult =
+        admissionGate.runPublishedNativeWithResult(token, block, publish, retire)
+
+    fun finishNativeAcquisitionPublication(token: NativeAcquisitionPublicationToken?) {
+        admissionGate.finishNativePublication(token)
+    }
+
+    fun quarantineNativeAcquisitionPublication(token: NativeAcquisitionPublicationToken): Boolean =
+        admissionGate.quarantineNativePublication(token)
 
     fun runPendingNativeSetup(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.runPendingNative(token, block)
