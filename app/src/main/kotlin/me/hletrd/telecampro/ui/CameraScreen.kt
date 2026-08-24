@@ -2825,6 +2825,36 @@ internal fun Modifier.focalRailViewportScroll(scrollState: ScrollState): Modifie
     trailingEdgeFadeScrollHint(scrollState).horizontalScroll(scrollState)
 
 /** One rail chip: identical box, semantics, and plate treatment for a lens pick and a zoom mark. */
+internal data class FocalRailVisualColors(
+    val container: Color,
+    val border: Color,
+    val label: Color,
+)
+
+/** Enabled and disabled rail states keep distinct visual vocabularies as well as semantics. */
+internal fun focalRailVisualColors(presentation: FocalRailState): FocalRailVisualColors = when {
+    presentation.enabled && presentation.selected -> FocalRailVisualColors(
+        container = CameraColors.TextPrimary,
+        border = CameraColors.AffordanceEdge,
+        label = Color.Black,
+    )
+    presentation.enabled -> FocalRailVisualColors(
+        container = HudPlate,
+        border = CameraColors.AffordanceEdge,
+        label = CameraColors.TextPrimary,
+    )
+    presentation.selected -> FocalRailVisualColors(
+        container = CameraColors.TextPrimary.copy(alpha = 0.12f),
+        border = CameraColors.TextPrimary.copy(alpha = 0.12f),
+        label = CameraColors.TextPrimary.copy(alpha = 0.38f),
+    )
+    else -> FocalRailVisualColors(
+        container = HudPlate,
+        border = CameraColors.TextPrimary.copy(alpha = 0.12f),
+        label = CameraColors.TextPrimary.copy(alpha = 0.38f),
+    )
+}
+
 @Composable
 internal fun RailChip(
     label: String,
@@ -2837,6 +2867,7 @@ internal fun RailChip(
     val description = contentDescription
     val interactionSource = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
+    val colors = focalRailVisualColors(presentation)
     val selectionDescription = stringResource(
         when (presentation.state) {
             CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING -> R.string.a11y_unavailable_while_recording
@@ -2883,17 +2914,14 @@ internal fun RailChip(
                 // Render the outer owner's indication inside the visual pill's clip.
                 .clip(CircleShape)
                 .indication(interactionSource, indication)
-                .background(
-                    if (presentation.selected) CameraColors.TextPrimary
-                    else HudPlate,
-                )
-                .border(1.dp, CameraColors.AffordanceEdge, CircleShape)
+                .background(colors.container)
+                .border(1.dp, colors.border, CircleShape)
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = label,
-                color = if (presentation.selected) Color.Black else CameraColors.TextPrimary,
+                color = colors.label,
                 // SemiBold(600) vs Medium(500): a weight step that actually RENDERS.
                 // The old Bold/SemiBold pair resolved to one bundled face (600), so the
                 // selection was carried by the filled pill alone (BACKLOG UI16).
@@ -2901,7 +2929,6 @@ internal fun RailChip(
                     12.sp,
                     if (presentation.selected) FontWeight.SemiBold else FontWeight.Medium,
                 ),
-                modifier = Modifier.alpha(if (presentation.enabled) 1f else 0.38f),
             )
         }
     }

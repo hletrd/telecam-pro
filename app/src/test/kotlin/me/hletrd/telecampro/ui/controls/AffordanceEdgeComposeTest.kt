@@ -9,13 +9,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+import me.hletrd.telecampro.ui.CameraControlSelectionState
+import me.hletrd.telecampro.ui.FocalRailState
+import me.hletrd.telecampro.ui.RailChip
+import me.hletrd.telecampro.ui.focalRailVisualColors
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -55,6 +61,52 @@ class AffordanceEdgeComposeTest {
         assertTrue("disabled edge $disabled was not quieter than enabled $enabled", disabled < enabled)
     }
 
+    @Test
+    fun `focal rail keeps enabled edge strong and disabled states quiet`() {
+        val enabled = railState(selected = false, enabled = true)
+        val disabled = railState(selected = false, enabled = false)
+        val selectedDisabled = railState(selected = true, enabled = false)
+        assertTrue(focalRailVisualColors(enabled).border == CameraColors.AffordanceEdge)
+        assertEquals(0.12f, focalRailVisualColors(disabled).border.alpha, 0.002f)
+        assertEquals(0.12f, focalRailVisualColors(selectedDisabled).container.alpha, 0.002f)
+        assertEquals(0.38f, focalRailVisualColors(selectedDisabled).label.alpha, 0.002f)
+
+        compose.setContent {
+            TeleCamProTheme {
+                Row(Modifier.background(CameraColors.Pill).padding(16.dp)) {
+                    RailChip(
+                        label = "1×",
+                        contentDescription = "enabled",
+                        presentation = enabled,
+                        onClick = {},
+                        glyphRotation = 0f,
+                        modifier = Modifier.testTag("rail-enabled"),
+                    )
+                    RailChip(
+                        label = "3×",
+                        contentDescription = "disabled",
+                        presentation = disabled,
+                        onClick = {},
+                        glyphRotation = 0f,
+                        modifier = Modifier.testTag("rail-disabled"),
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val enabledContrast = renderedRailEdgeContrast("rail-enabled")
+        val disabledContrast = renderedRailEdgeContrast("rail-disabled")
+        // The circular 1 dp stroke is antialiased in the mdpi capture, so the rendered sample is
+        // necessarily below the token's exact 3:1 math (pinned separately above for FilterChip and
+        // in HudContrastTest). It must still remain materially strong and distinct from disabled.
+        assertTrue("enabled rail edge contrast was $enabledContrast", enabledContrast >= 2.5)
+        assertTrue(
+            "disabled edge $disabledContrast was not quieter than enabled $enabledContrast",
+            disabledContrast < enabledContrast,
+        )
+    }
+
     @androidx.compose.runtime.Composable
     private fun Chip(tag: String, selected: Boolean, enabled: Boolean) {
         FilterChip(
@@ -76,6 +128,26 @@ class AffordanceEdgeComposeTest {
         }
         return edgePixels.maxOf { contrast(it, CameraColors.Pill) }
     }
+
+    private fun renderedRailEdgeContrast(tag: String): Double {
+        val pixels = compose.onNodeWithTag(tag).captureToImage().toPixelMap()
+        val center = pixels.width / 2
+        val edgePixels = (center - 2..center + 2).flatMap { x ->
+            (7..minOf(17, pixels.height - 1)).map { y -> pixels[x, y] }
+        }
+        return edgePixels.maxOf { contrast(it, CameraColors.Pill) }
+    }
+
+    private fun railState(selected: Boolean, enabled: Boolean) = FocalRailState(
+        selected = selected,
+        enabled = enabled,
+        state = when {
+            !enabled -> CameraControlSelectionState.CAMERA_RECONFIGURING
+            selected -> CameraControlSelectionState.SELECTED
+            else -> CameraControlSelectionState.NOT_SELECTED
+        },
+        accessibilityRole = Role.RadioButton,
+    )
 
     private fun contrast(first: Color, second: Color): Double {
         fun luminance(color: Color): Double {
