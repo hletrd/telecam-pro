@@ -103,7 +103,6 @@ me/hletrd/telecampro/ui/controls/ProControlsKt$*
 me/hletrd/telecampro/ui/controls/ComposableSingletons$ProControlsKt
 me/hletrd/telecampro/ui/controls/ProSheetKt
 me/hletrd/telecampro/ui/controls/ProSheetKt$*
-me/hletrd/telecampro/ui/controls/ComposableSingletons$ProSheetKt
 me/hletrd/telecampro/ui/overlays/OverlaysKt
 me/hletrd/telecampro/ui/review/MediaReviewKt
 me/hletrd/telecampro/ui/review/MediaReviewKt$*
