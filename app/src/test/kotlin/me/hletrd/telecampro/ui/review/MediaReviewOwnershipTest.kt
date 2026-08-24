@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -31,6 +32,17 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class MediaReviewOwnershipTest {
+
+    @Test
+    fun `decoded still load owns ready pixels and null fails closed`() {
+        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val ready = reviewBitmapLoad(bitmap)
+
+        assertTrue(ready is ReviewBitmapLoad.Ready)
+        (ready as ReviewBitmapLoad.Ready).bitmap.dispose()
+        assertTrue(bitmap.isRecycled)
+        assertEquals(ReviewBitmapLoad.Failed, reviewBitmapLoad(null))
+    }
     @get:Rule
     val compose = createComposeRule()
 

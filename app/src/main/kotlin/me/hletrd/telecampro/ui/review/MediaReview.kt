@@ -347,17 +347,18 @@ private class ReviewBitmapRequest(
     val context: Context = processReviewContext(context)
 }
 
-private sealed interface ReviewBitmapLoad {
+internal sealed interface ReviewBitmapLoad {
     data class Ready(val bitmap: ReviewBitmap) : ReviewBitmapLoad
     data object Failed : ReviewBitmapLoad
 }
 
+internal fun reviewBitmapLoad(decoded: Bitmap?): ReviewBitmapLoad =
+    decoded?.let { ReviewBitmapLoad.Ready(ReviewBitmap(it)) } ?: ReviewBitmapLoad.Failed
+
 /** Two finite workers bound unpublished 3000px ARGB results while one poisoned decoder is retired. */
 private val reviewBitmapDecodeLane = LatestReviewSetupLane<ReviewBitmapRequest, ReviewBitmapLoad>(
     work = { request ->
-        decodeReviewBitmap(request.context, request.uri, request.maxDim)
-            ?.let { ReviewBitmapLoad.Ready(ReviewBitmap(it)) }
-            ?: ReviewBitmapLoad.Failed
+        reviewBitmapLoad(decodeReviewBitmap(request.context, request.uri, request.maxDim))
     },
     release = { result -> if (result is ReviewBitmapLoad.Ready) result.bitmap.dispose() },
 )
