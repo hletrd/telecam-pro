@@ -695,7 +695,8 @@ private fun MemoryPresetRow(
             .clip(RoundedCornerShape(8.dp))
             // The idle-row surface: one-off at 0.05, the quietest wash in the app and the other site
             // CameraColors.Block's KDoc explicitly refuses to absorb. (The 0.18 alongside it is an
-            // AMBER tint, not the white AffordanceEdge — same number, unrelated colour.)
+            // Independent quiet AMBER active-row wash, unrelated to the stronger white
+            // AffordanceEdge interactive-boundary token.)
             .background(if (active) CameraColors.ManualActive.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
             // The active row is already tinted amber; a neutral white border over that tint read as
             // a smudge rather than a selection. Idle takes the shared decorative hairline.
