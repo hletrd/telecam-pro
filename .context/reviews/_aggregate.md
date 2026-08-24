@@ -1,4 +1,97 @@
-# Aggregate deep review — cycle 26
+# Aggregate deep review — cycle 27
+
+Date: 2026-08-24
+Reviewed HEAD: `5486239`
+
+## Current-cycle review provenance
+
+Six concurrent review lanes covered every required perspective plus the repository's registered
+QA adversary. Closely related roles shared agents but wrote separate provenance files:
+
+- code reviewer, architect, critic, and feature-development reviewer
+- performance reviewer and causal tracer
+- security reviewer and debugger
+- verifier and test engineer
+- documentation specialist
+- native Compose designer and QA adversary
+
+The reviewers inventoried all 420 tracked paths: 95 production Kotlin files, 189 host-test files,
+four instrumented probes, two debug hosts, 30 Python files, two shell files, manifests, resources,
+Gradle/release inputs, and active documentation. Every candidate was checked against committed HEAD.
+The unrelated dirty `CameraEngine.kt` line was excluded with `git show HEAD:<path>`. There were no
+agent failures. Final sweeps covered camera/media ownership, independent-family liveness, release
+reproducibility, provenance, security/privacy, responsive accessibility, documentation, and tests.
+
+## Current-cycle deduplicated findings
+
+### AGG27-01 — the authoritative host gate depends on ignored, uncommitted documents
+
+- **Severity / confidence:** High / High
+- **Classification:** Confirmed release/test reproducibility defect
+- **Cross-agent agreement:** verifier and test engineer
+- **Evidence:** `.gitignore:63-69` ignores top-level `docs/*.md`, while HEAD omits
+  `docs/play-store-listing.md`, `docs/BACKLOG.md`, and `docs/TESTING.md` even though
+  `tools/check_docs.py:38-59,314,377-384,1028-1036` opens them unconditionally and
+  `tools/verify_host.py:68-72` always invokes that checker. A `git archive HEAD` reproduction fails
+  immediately with `FileNotFoundError`.
+- **Failure:** a fresh clone cannot run the documented authoritative host gate; local success relies
+  on private ignored files that may differ from the reviewed commit.
+- **Required fix:** make private-document checks explicitly optional when absent while keeping
+  committed/public checks authoritative, and add an exported-HEAD contract test proving the gate's
+  tracked prerequisites are self-contained.
+
+### AGG27-02 — family retirement holds the global registry across synchronous marker removal
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed cross-family liveness regression
+- **Cross-agent agreement:** verifier and test engineer
+- **Evidence:** publication and producer admission acquire `familyAuthorityRegistryLock` at
+  `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:97-101,122-129`.
+  Retirement retains that lock at `:516-530` while `SharedPreferencesFamilyMarkerStore.remove`
+  performs synchronous `Editor.commit()` at `:1279`.
+- **Failure:** a delayed family-A fsync blocks unrelated family-B publication, saved callback,
+  review update, retained-snapshot release, and new producer registration.
+- **Required fix:** serialize final claims recheck and marker removal with a same-family authority
+  lock; keep the global registry lock limited to short map/user-count bookkeeping. Add deterministic
+  blocked-remove/unrelated-family and same-family ordering tests.
+
+### AGG27-03 — file-only sibling promotion retains the deleted output's provenance
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed provenance/presentation correctness defect
+- **Cross-agent agreement:** verifier and test engineer
+- **Evidence:** `storage/LatestCaptureReducer.kt:319-345` assigns provenance per output, but
+  `ui/CaptureOutputTracker.kt:25-43,75-108,259-280` drops it. After FILE_ONLY deletion promotes a
+  sibling, `CameraViewModel.kt:3378-3388` updates URI/scope without `lastMediaProvenance`.
+- **Failure:** a mixed owned/owner-null family can promote an unverified DNG while still displaying
+  and announcing app-owned provenance, or retain the inverse false warning.
+- **Required fix:** carry per-output `MediaProvenance` through tracking and deletion plans, then
+  publish survivor URI, provenance, and scope as one state packet. Test both mixed-ownership orders.
+
+### AGG27-04 — output-format chips become unreachable on narrow large-font layouts
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed responsive-accessibility defect
+- **Cross-agent agreement:** designer and QA adversary
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProControls.kt:954-977`
+  renders HEIF/JPEG/DNG in the only plain non-scrollable settings chip row. The fixed tab rail and
+  page padding at `ProSheet.kt:269-299` leave roughly 212 dp on a 320 dp screen, while existing 2x
+  font coverage does not exercise this row.
+- **Failure:** the trailing DNG choice can be clipped with no scroll/bring-into-view path, blocking
+  low-vision users from selecting a supported capture format.
+- **Required fix:** reuse the RTL-aware horizontal-scroll/overflow affordance without exclusive
+  `selectableGroup` semantics, bring selected chips into view, and add a 320 dp, 2x-font Compose
+  reachability test.
+
+## Current-cycle accounting
+
+- New review findings: **4**
+- Raw specialist findings: **8** (four deduplicated pairs)
+- Deduplicated root causes: **4**
+- Agent failures: **0**
+- Deferred findings: **0**
+
+## Archived cycle-26 aggregate
 
 Date: 2026-08-24
 Reviewed HEAD: `242c805`
