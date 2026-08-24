@@ -64,44 +64,55 @@ class MainActivityTouchDispatchTest {
     }
 
     @Test
-    fun `obscuration mid gesture sends one cancel and next clean gesture starts fresh`() {
-        RobolectricEglSentinels.ensure()
-        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
-        val activity = controller.get()
-        try {
-            val actions = mutableListOf<Int>()
-            installTouchTarget(activity) { actions += it.actionMasked }
-            val cleanDown = event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER)
-            val obscuredMove = event(
-                MotionEvent.ACTION_MOVE,
-                MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED,
-                MotionEvent.TOOL_TYPE_FINGER,
-            )
-            val taintedCleanUp = event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER)
-            val nextDown = event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER)
-            val nextUp = event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER)
+    fun `either obscuration edge sends one clean cancel and next gesture starts fresh`() {
+        listOf(
+            MotionEvent.FLAG_WINDOW_IS_OBSCURED,
+            MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED,
+        ).forEach { obscurationFlag ->
+            RobolectricEglSentinels.ensure()
+            val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+            val activity = controller.get()
             try {
-                assertTrue(activity.dispatchTouchEvent(cleanDown))
-                assertFalse(activity.dispatchTouchEvent(obscuredMove))
-                assertFalse(activity.dispatchTouchEvent(taintedCleanUp))
-                assertTrue(activity.dispatchTouchEvent(nextDown))
-                assertTrue(activity.dispatchTouchEvent(nextUp))
-            } finally {
-                listOf(cleanDown, obscuredMove, taintedCleanUp, nextDown, nextUp)
-                    .forEach(MotionEvent::recycle)
-            }
+                val childEvents = mutableListOf<MotionEvent>()
+                installTouchTarget(activity) { childEvents += MotionEvent.obtain(it) }
+                val cleanDown = event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER)
+                val obscuredMove = event(
+                    MotionEvent.ACTION_MOVE,
+                    obscurationFlag,
+                    MotionEvent.TOOL_TYPE_FINGER,
+                )
+                val taintedCleanUp = event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER)
+                val nextDown = event(MotionEvent.ACTION_DOWN, 0, MotionEvent.TOOL_TYPE_FINGER)
+                val nextUp = event(MotionEvent.ACTION_UP, 0, MotionEvent.TOOL_TYPE_FINGER)
+                try {
+                    assertTrue(activity.dispatchTouchEvent(cleanDown))
+                    assertFalse(activity.dispatchTouchEvent(obscuredMove))
+                    assertFalse(activity.dispatchTouchEvent(taintedCleanUp))
+                    assertTrue(activity.dispatchTouchEvent(nextDown))
+                    assertTrue(activity.dispatchTouchEvent(nextUp))
+                } finally {
+                    listOf(cleanDown, obscuredMove, taintedCleanUp, nextDown, nextUp)
+                        .forEach(MotionEvent::recycle)
+                }
 
-            assertEquals(
-                listOf(
-                    MotionEvent.ACTION_DOWN,
-                    MotionEvent.ACTION_CANCEL,
-                    MotionEvent.ACTION_DOWN,
-                    MotionEvent.ACTION_UP,
-                ),
-                actions,
-            )
-        } finally {
-            controller.destroy()
+                assertEquals(
+                    listOf(
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_CANCEL,
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_UP,
+                    ),
+                    childEvents.map { it.actionMasked },
+                )
+                val cancel = childEvents.single { it.actionMasked == MotionEvent.ACTION_CANCEL }
+                assertEquals(0, cancel.flags and obscurationFlag)
+                assertEquals(1, cancel.pointerCount)
+                assertEquals(10f, cancel.getX(0), 0f)
+                assertEquals(InputDevice.SOURCE_TOUCHSCREEN, cancel.source)
+                childEvents.forEach(MotionEvent::recycle)
+            } finally {
+                controller.destroy()
+            }
         }
     }
 

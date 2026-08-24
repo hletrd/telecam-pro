@@ -131,6 +131,36 @@ internal fun savePendingAudioRequestState(
 /** One side-effect-free decision seam for the Activity's full- and partial-overlay boundary. */
 internal fun touchEventIsUnobscured(flags: Int): Boolean = flags and OBSCURED_TOUCH_FLAGS == 0
 
+/**
+ * Terminates an already-admitted child stream without re-presenting the hostile overlay flags to
+ * DecorView's independent filter. Pointer identity/coordinates and device/source timing remain the
+ * exact edge that caused cancellation; ACTION_CANCEL cannot activate a control.
+ */
+internal fun unobscuredCancelOf(event: MotionEvent): MotionEvent {
+    val properties = Array(event.pointerCount) { index ->
+        MotionEvent.PointerProperties().also { event.getPointerProperties(index, it) }
+    }
+    val coordinates = Array(event.pointerCount) { index ->
+        MotionEvent.PointerCoords().also { event.getPointerCoords(index, it) }
+    }
+    return MotionEvent.obtain(
+        event.downTime,
+        event.eventTime,
+        MotionEvent.ACTION_CANCEL,
+        event.pointerCount,
+        properties,
+        coordinates,
+        event.metaState,
+        event.buttonState,
+        event.xPrecision,
+        event.yPrecision,
+        event.deviceId,
+        event.edgeFlags,
+        event.source,
+        event.flags and OBSCURED_TOUCH_FLAGS.inv(),
+    )
+}
+
 /** AndroidX turns a synchronous SendIntentException into a canceled result carrying this marker. */
 internal fun convertedSendIntentExceptionMarker(
     action: String?,
@@ -248,9 +278,8 @@ class MainActivity : ComponentActivity() {
         val action = event.actionMasked
         if (!touchEventIsUnobscured(event.flags)) {
             if (unobscuredTouchStreamActive && !touchStreamTainted) {
-                MotionEvent.obtain(event).also { cancel ->
+                unobscuredCancelOf(event).also { cancel ->
                     try {
-                        cancel.action = MotionEvent.ACTION_CANCEL
                         super.dispatchTouchEvent(cancel)
                     } finally {
                         cancel.recycle()
