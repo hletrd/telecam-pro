@@ -167,6 +167,56 @@ korean_strings = {
     for element in ET.parse(ROOT / "app/src/main/res/values-ko/strings.xml").getroot()
     if element.tag == "string"
 }
+approved_nontranslatable_resources = {
+    "app_name",
+    "label_iso",
+    "label_wb",
+    "label_ss",
+    "label_ev",
+    "label_af",
+    "label_nr",
+    "label_fps",
+    "label_fn",
+    "label_open_gate",
+    "phone_oppo_find_x9_ultra",
+    "phone_oppo_find_x9_pro",
+    "phone_vivo_x200_ultra",
+    "phone_vivo_x300_ultra",
+    "converter_hasselblad_300",
+    "converter_hasselblad_230",
+    "converter_zeiss_200",
+    "converter_zeiss_400",
+}
+default_resource_root = ET.parse(ROOT / "app/src/main/res/values/strings.xml").getroot()
+korean_resource_root = ET.parse(ROOT / "app/src/main/res/values-ko/strings.xml").getroot()
+actual_nontranslatable_resources = {
+    element.attrib["name"]
+    for element in default_resource_root
+    if element.tag in {"string", "plurals"}
+    and element.attrib.get("translatable") == "false"
+}
+check(
+    actual_nontranslatable_resources == approved_nontranslatable_resources,
+    "translation exceptions match the closed abbreviation and identity allow list",
+    str(sorted(actual_nontranslatable_resources ^ approved_nontranslatable_resources)),
+)
+korean_resource_names = {
+    (element.tag, element.attrib["name"])
+    for element in korean_resource_root
+    if element.tag in {"string", "plurals"}
+}
+missing_korean_resources = sorted(
+    (element.tag, element.attrib["name"])
+    for element in default_resource_root
+    if element.tag in {"string", "plurals"}
+    and element.attrib.get("translatable") != "false"
+    and (element.tag, element.attrib["name"]) not in korean_resource_names
+)
+check(
+    not missing_korean_resources,
+    "every translatable string and plural has a Korean peer",
+    str(missing_korean_resources),
+)
 required_current_copy = screenshot_manifest.get("required_current_copy", {})
 copy_mismatches = {
     key: (expected, default_strings.get(key))

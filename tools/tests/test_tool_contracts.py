@@ -1013,6 +1013,58 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_ordinary_nontranslatable_prose(self) -> None:
+        def mark_prose_nontranslatable(root: Path) -> None:
+            path = root / "app/src/main/res/values/strings.xml"
+            text = path.read_text(encoding="utf-8")
+            marker = '<string name="settings_tab_shoot">Shoot</string>'
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(
+                    marker,
+                    '<string name="settings_tab_shoot" translatable="false">Shoot</string>',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            mark_prose_nontranslatable,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  translation exceptions match the closed abbreviation and identity allow list",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_default_only_translatable_resource(self) -> None:
+        def add_default_only_resource(root: Path) -> None:
+            path = root / "app/src/main/res/values/strings.xml"
+            text = path.read_text(encoding="utf-8")
+            marker = "</resources>"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(
+                    marker,
+                    '    <string name="unapproved_default_only">English only</string>\n</resources>',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            add_default_only_resource,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  every translatable string and plural has a Korean peer",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_ready_runbook_for_stale_screenshots(self) -> None:
         def mark_runbook_ready(root: Path) -> None:
             path = root / "docs/play-console-submit.md"
