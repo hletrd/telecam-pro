@@ -134,6 +134,23 @@ class ExternalNavigationTest {
     }
 
     @Test
+    fun `privacy URL follows Korean and English context locale`() {
+        assertEquals(PRIVACY_POLICY_URL, privacyPolicyUrl(Locale.ENGLISH))
+        assertEquals(PRIVACY_POLICY_URL, privacyPolicyUrl(Locale.JAPANESE))
+        assertEquals(PRIVACY_POLICY_KO_URL, privacyPolicyUrl(Locale.KOREAN))
+
+        val koConfig = Configuration(context.resources.configuration).apply {
+            setLocale(Locale.KOREAN)
+        }
+        val koContext = RecordingContext(context.createConfigurationContext(koConfig))
+        assertEquals(
+            ExternalLaunchOutcome.LAUNCHED,
+            launchExternal(koContext, ExternalNavigationTarget.PRIVACY_POLICY),
+        )
+        assertEquals(PRIVACY_POLICY_KO_URL, koContext.launchedIntent.data.toString())
+    }
+
+    @Test
     fun `security exception on policy-blocked permission gate is assertive and retains Settings focus`() {
         val failure = mutableStateOf<ExternalNavigationFailure?>(null)
         compose.setContent {

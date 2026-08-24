@@ -703,6 +703,18 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(failure, result.stdout)
 
+    def test_committed_export_rejects_missing_korean_policy_route(self) -> None:
+        def remove_korean_route(root: Path) -> None:
+            path = root / "privacy-policy/index.html"
+            text = path.read_text(encoding="utf-8")
+            marker = '<section id="ko" class="policy-language" lang="ko"'
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, '<section class="policy-language" lang="ko"', 1), encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(remove_korean_route)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FAIL  published privacy page exposes a Korean language section", result.stdout)
+
     def test_committed_export_rejects_a_stale_release_minification_comment(self) -> None:
         def claim_release_minification_is_off(root: Path) -> None:
             path = root / "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt"

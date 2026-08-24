@@ -270,6 +270,13 @@ privacy_md = read("PRIVACY.md")
 privacy_html = read("privacy-policy/index.html")
 manifest = read("app/src/main/AndroidManifest.xml")
 
+check('<section id="en"' in privacy_html and 'lang="en"' in privacy_html,
+      "published privacy page exposes an English language section")
+check('<section id="ko"' in privacy_html and 'lang="ko"' in privacy_html,
+      "published privacy page exposes a Korean language section")
+check('hreflang="en"' in privacy_html and 'hreflang="ko"' in privacy_html,
+      "published privacy page links both policy languages")
+
 declared = set(re.findall(r"android\.permission\.([A-Z_]+)", manifest))
 declared -= {"INTERNET", "ACCESS_NETWORK_STATE"}  # removed at merge by tools:node="remove"
 
@@ -323,6 +330,7 @@ check(
 privacy_presentations = {
     "PRIVACY.md": re.sub(r"\s+", " ", privacy_md).casefold(),
     "privacy-policy/index.html": re.sub(r"\s+", " ", privacy_html).casefold(),
+    "Korean published policy": re.sub(r"\s+", " ", privacy_html),
     "English in-app policy": default_strings["privacy_fallback_body"].casefold(),
     "Korean in-app policy": korean_strings["privacy_fallback_body"],
 }
@@ -331,6 +339,7 @@ privacy_metadata_facts = {
     "privacy-policy/index.html": (
         "camera make and model", "lens", "exposure", "time of the shot", "no location",
     ),
+    "Korean published policy": ("카메라 제조사와 모델", "렌즈", "노출", "촬영 시간", "위치 정보는 들어가지"),
     "English in-app policy": ("camera", "lens", "exposure", "time metadata", "no location"),
     "Korean in-app policy": ("카메라", "렌즈", "노출", "촬영 시간", "위치 정보는 포함되지"),
 }
@@ -339,6 +348,7 @@ privacy_library_facts = {
     "privacy-policy/index.html": (
         "read your library on this device", "does not send anything anywhere",
     ),
+    "Korean published policy": ("이 기기에서 라이브러리를 읽을 수 있지만", "어떤 데이터도 전송하지 않습니다"),
     "English in-app policy": (
         "reads your library on this device only", "does not send anything anywhere",
     ),

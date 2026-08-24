@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.annotation.StringRes
 import androidx.core.net.toUri
+import java.util.Locale
 import me.hletrd.telecampro.R
 
 internal enum class ExternalNavigationTarget {
@@ -58,7 +59,7 @@ internal fun launchExternal(
         )
         ExternalNavigationTarget.PRIVACY_POLICY -> Intent(
             Intent.ACTION_VIEW,
-            PRIVACY_POLICY_URL.toUri(),
+            privacyPolicyUrl(context.resources.configuration.locales[0]).toUri(),
         )
     }
     if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -92,4 +93,8 @@ internal fun ExternalNavigationFailure.messageRes(): Int = when (target) {
     }
 }
 
+internal fun privacyPolicyUrl(locale: Locale): String =
+    if (locale.language == Locale.KOREAN.language) PRIVACY_POLICY_KO_URL else PRIVACY_POLICY_URL
+
 internal const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
+internal const val PRIVACY_POLICY_KO_URL = "${PRIVACY_POLICY_URL}#ko"

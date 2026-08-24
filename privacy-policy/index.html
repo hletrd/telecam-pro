@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <meta name="description" content="TeleCam Pro does not collect or share personal data. No ads, analytics, tracking, accounts, cloud sync, or Internet permission.">
+  <link rel="canonical" href="https://hletrd.github.io/telecam-pro/privacy-policy/">
+  <link rel="alternate" hreflang="en" href="https://hletrd.github.io/telecam-pro/privacy-policy/#en">
+  <link rel="alternate" hreflang="ko" href="https://hletrd.github.io/telecam-pro/privacy-policy/#ko">
+  <link rel="alternate" hreflang="x-default" href="https://hletrd.github.io/telecam-pro/privacy-policy/">
   <title>Privacy Policy · TeleCam Pro</title>
   <!--
     Self-contained by design: a privacy policy must not hand a visitor's IP to a third party, so
@@ -156,11 +160,32 @@
       color: var(--muted);
       font-size: 0.9375rem;
     }
+
+    .language-nav {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 2rem;
+      font-size: 0.9375rem;
+    }
+
+    .policy-language { scroll-margin-top: 1rem; }
+
+    .policy-language + .policy-language {
+      margin-top: 4rem;
+      padding-top: 3rem;
+      border-top: 1px solid var(--line);
+    }
   </style>
 </head>
 <body>
   <main>
-    <h1>Privacy Policy</h1>
+    <nav class="language-nav" aria-label="Policy language">
+      <a href="#en" lang="en" hreflang="en">English</a>
+      <a href="#ko" lang="ko" hreflang="ko">한국어</a>
+    </nav>
+
+    <section id="en" class="policy-language" lang="en" aria-labelledby="en-title">
+    <h1 id="en-title">Privacy Policy</h1>
     <p class="updated">TeleCam Pro — last updated 24 August 2026</p>
 
     <section class="summary">
@@ -275,6 +300,122 @@
       TeleCam Pro is an independent app and is not affiliated with, endorsed by, or sponsored by
       OPPO, Hasselblad, or any hardware maker.
     </p>
+    </section>
+
+    <section id="ko" class="policy-language" lang="ko" aria-labelledby="ko-title">
+      <h1 id="ko-title">개인정보처리방침</h1>
+      <p class="updated">TeleCam Pro — 최종 업데이트: 2026년 8월 24일</p>
+
+      <section class="summary">
+        <p>
+          TeleCam Pro는 개인정보를 수집하거나 공유하지 않습니다. 광고, 분석, 추적, 계정,
+          클라우드 동기화, 인터넷 권한도 없습니다.
+        </p>
+      </section>
+
+      <p>
+        TeleCam Pro는 Android 휴대폰과 태블릿용 카메라 앱입니다. 이 방침은 앱이 요청하는
+        권한, 촬영 미디어, 데이터 처리 방법을 설명합니다.
+      </p>
+
+      <h2>앱이 요청하는 권한</h2>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">권한</th>
+            <th scope="col">사용 목적</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">카메라</th>
+            <td>뷰파인더를 표시하고 사진과 동영상을 촬영합니다.</td>
+          </tr>
+          <tr>
+            <th scope="row">마이크</th>
+            <td>
+              사용자가 오디오 녹음을 켜면 동영상에 소리를 담습니다. 동영상 모드에서 녹화
+              대기 중 입력 레벨 미터가 보일 때에도 마이크를 사용합니다.
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">사진 및 동영상</th>
+            <td>
+              앱 내 갤러리에서 현재 패키지가 소유한 미디어와 DCIM/TeleCamPro에 있는 소유자
+              없는 파일을 찾습니다. 소유자 없는 파일은 경로, TeleCam 파일명 형식, 미디어
+              컬렉션, 확장자, MIME 형식이 모두 맞아야 합니다. 이 조건으로 기존 TeleCam 형식
+              파일임은 확인할 수 있지만 만든 앱은 확인할 수 없습니다. 따라서 리뷰 화면에
+              출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다. 리뷰할 항목이
+              없는 상태에서 갤러리 버튼을 눌렀을 때만 권한을 요청합니다. 거부해도 현재 설치에서
+              만든 미디어는 계속 사용할 수 있습니다. 라이브러리는 이 기기에서만 읽습니다.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        마이크 입력은 기기에서 처리합니다. 화면에 보이는 대기 레벨 미터는 입력을 음량 값으로만
+        바꾸며 오디오를 저장하지 않습니다. 녹음한 오디오는 기기의 동영상 파일에 남습니다.
+        개발자는 이 데이터를 업로드하거나 수집하지 않으며 제3자와 공유하지 않습니다.
+      </p>
+
+      <p>
+        Android가 다른 창에 완전히 또는 부분적으로 가려졌다고 표시한 터치 입력은 카메라,
+        설정, 권한, 삭제 조작에 닿기 전에 차단합니다. 가려짐 표시가 없는 일반 터치, 스타일러스,
+        마우스, 접근성, 시스템 입력은 Android의 기본 방식대로 처리합니다.
+      </p>
+
+      <h2>촬영한 사진과 동영상</h2>
+      <p>
+        사진과 동영상은 Android MediaStore를 통해 DCIM/TeleCamPro에 저장합니다. TeleCam Pro를
+        삭제하면 설정은 지워지지만 공유 미디어 저장소의 촬영물은 남습니다. 앱은 촬영물을
+        업로드하거나 백업하지 않습니다. 촬영물은 TeleCam Pro, 갤러리 앱, 파일 관리자에서
+        삭제할 수 있습니다.
+      </p>
+      <p>
+        촬영물에는 카메라 제조사와 모델, 렌즈, 노출, 촬영 시간 등 일반적인 사진 메타데이터가
+        들어가지만 위치 정보는 들어가지 않습니다. 앱은 위치 권한을 요청하지 않고 GPS 태그도
+        기록하지 않으므로 촬영 위치를 사진에 남길 수 없습니다.
+      </p>
+
+      <h2>데이터 수집 및 공유</h2>
+      <p>
+        앱에는 분석, 비정상 종료 보고, 광고, 추적 SDK가 없습니다. 이름, 연락처, 위치, 식별자,
+        사용 데이터도 수집하지 않습니다.
+      </p>
+      <p>
+        사진 및 동영상 접근 권한을 허용하면 앱이 이 기기에서 라이브러리를 읽을 수 있지만 어떤
+        데이터도 전송하지 않습니다. 앱에는 인터넷 권한이 없으므로 읽은 내용을 외부로 보낼 수
+        없습니다. 갤러리는 현재 패키지가 소유한 미디어와 DCIM/TeleCamPro에서 조건이 맞는 소유자
+        없는 기존 TeleCam 형식 파일만 찾습니다. 소유자 없는 파일은 만든 앱을 확인할 수 없으므로
+        리뷰 화면에 출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다.
+      </p>
+
+      <h2>아동</h2>
+      <p>
+        이 앱은 일반 카메라 도구이며 아동을 대상으로 하지 않습니다. 아동을 포함한 어떤 사용자의
+        데이터도 수집하지 않습니다.
+      </p>
+
+      <h2>방침 변경</h2>
+      <p>방침이 바뀌면 이 URL에 새 최종 업데이트 날짜와 함께 게시합니다.</p>
+
+      <h2>앱 정보</h2>
+      <p>
+        TeleCam Pro는
+        <a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro">Google Play</a>에서
+        받을 수 있으며 소스 코드는 <a href="https://github.com/hletrd/telecam-pro">GitHub</a>에
+        공개되어 있습니다. 이 페이지의 모든 설명은 해당 소스에서 확인할 수 있습니다.
+      </p>
+
+      <h2>문의</h2>
+      <p>이 방침에 관한 문의: <a href="mailto:01@0101010101.com">01@0101010101.com</a></p>
+
+      <p class="colophon">
+        TeleCam Pro는 독립 앱이며 OPPO, Hasselblad 또는 다른 하드웨어 제조사와 제휴하지 않았고,
+        이들로부터 보증이나 후원을 받지 않습니다.
+      </p>
+    </section>
   </main>
 </body>
 </html>
