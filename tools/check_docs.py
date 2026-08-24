@@ -184,6 +184,87 @@ check(
     "phone screenshot manifest records a valid fail-closed recapture state",
 )
 
+# Tablet screenshots need the same committed ownership as phone screenshots. The checked-in files
+# predate immutable debug provenance, so their honest default is blocked even though their labels
+# currently agree with the source resources. A future promotion needs all three source identities;
+# an asset commit records stored bytes, not the APK that drew them.
+tablet_screenshot_root = ROOT / "docs/assets/play/screenshots/tablet"
+tablet_manifest_path = tablet_screenshot_root / "asset-validity.json"
+tablet_manifest = json.loads(tablet_manifest_path.read_text(encoding="utf-8"))
+tablet_screenshots = sorted(
+    path.relative_to(ROOT).as_posix()
+    for path in tablet_screenshot_root.glob("*.png")
+)
+tablet_manifest_assets = tablet_manifest.get("assets", {})
+check(
+    tablet_manifest.get("schema_version") == 1
+    and tablet_manifest.get("asset_set") == "play-tablet-screenshots"
+    and sorted(tablet_manifest_assets) == tablet_screenshots,
+    "tablet screenshot manifest owns every checked-in tablet PNG",
+)
+tablet_digest_mismatches = [
+    relative
+    for relative, expected in tablet_manifest_assets.items()
+    if not (ROOT / relative).is_file()
+    or hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() != expected
+]
+check(
+    not tablet_digest_mismatches,
+    "tablet screenshot bytes match the validity manifest",
+    str(tablet_digest_mismatches),
+)
+
+tablet_required_current_copy = tablet_manifest.get("required_current_copy", {})
+tablet_copy_mismatches = {
+    key: (expected, default_strings.get(key))
+    for key, expected in tablet_required_current_copy.items()
+    if default_strings.get(key) != expected
+}
+check(
+    bool(tablet_required_current_copy) and not tablet_copy_mismatches,
+    "tablet screenshot recapture copy matches current resources",
+    str(tablet_copy_mismatches),
+)
+
+tablet_blocking_assets = tablet_manifest.get("blocking_assets", [])
+tablet_recapture = tablet_manifest.get("required_recapture", {})
+tablet_ready = tablet_manifest.get("submission_ready") is True
+tablet_provenance_ready = all(
+    re.fullmatch(pattern, tablet_recapture.get(field) or "")
+    for field, pattern in (
+        ("source_commit", r"[0-9a-f]{40}"),
+        ("immutable_source_manifest_digest", r"[0-9a-f]{64}"),
+        ("apk_sha256", r"[0-9a-f]{64}"),
+    )
+)
+tablet_blocked_manifest_valid = (
+    not tablet_ready
+    and tablet_blocking_assets == tablet_screenshots
+    and not tablet_provenance_ready
+)
+tablet_ready_manifest_valid = (
+    tablet_ready
+    and not tablet_blocking_assets
+    and tablet_provenance_ready
+)
+tablet_history = tablet_manifest.get("historical_capture", {})
+tablet_history_is_honest = (
+    tablet_history.get("asset_commit") == "8d5f461913a124e11b7b62ae4c64c2e69faad25f"
+    and tablet_history.get("source_commit") is None
+    and tablet_history.get("immutable_source_manifest_digest") is None
+    and tablet_history.get("apk_sha256") is None
+    and "not immutable capture provenance" in tablet_history.get("note", "")
+)
+check(
+    (tablet_blocked_manifest_valid or tablet_ready_manifest_valid)
+    and tablet_history_is_honest
+    and tablet_recapture.get("source_owner") == "immutable-debug-worktree-v1"
+    and tablet_recapture.get("source_manifest_schema") == 2
+    and tablet_recapture.get("orientation") == "landscape"
+    and tablet_recapture.get("pixel_size") == [1920, 1200],
+    "tablet screenshot manifest records a valid fail-closed provenance state",
+)
+
 # Launcher, Play, feature, and README assets must carry one recognizable public mark. The launcher
 # used to ship an unrelated cyan-gradient lens/chevron while every public surface used this
 # black/blue telescope and barrel.
@@ -242,6 +323,29 @@ def stale_screenshot_semantics_are_explicit(authority: str) -> bool:
     )
 
 
+def tablet_screenshot_authority_matches_manifest(authority: str) -> bool:
+    section_match = re.search(
+        r"### Tablet screenshots(.*?)(?=\n### |\n## |\Z)",
+        authority,
+        re.S,
+    )
+    if section_match is None:
+        return False
+    section = section_match.group(1)
+    names_every_asset = all(path.rsplit("/", 1)[-1] in section for path in tablet_screenshots)
+    names_manifest = "screenshots/tablet/asset-validity.json" in section
+    if tablet_blocked_manifest_valid:
+        return names_every_asset and names_manifest and "NOT SUBMISSION-READY" in section
+    if tablet_ready_manifest_valid:
+        return (
+            names_every_asset
+            and names_manifest
+            and "NOT SUBMISSION-READY" not in section
+            and "SUBMISSION-READY" in section
+        )
+    return False
+
+
 # The console sheet is tracked and is the operator's upload authority, so its fail-closed state must
 # remain checked in a clean committed export even though the unrelated store listing is private.
 check(
@@ -251,6 +355,10 @@ check(
 check(
     stale_screenshot_semantics_are_explicit(submit),
     "committed submission sheet explains every stale phone screenshot",
+)
+check(
+    tablet_screenshot_authority_matches_manifest(submit),
+    "committed submission sheet matches tablet screenshot readiness",
 )
 
 if listing is None:
@@ -1459,8 +1567,24 @@ check(
     and "TopBarScope" not in camera_screen,
     "CameraScreen keeps one full-width top-bar layout and no deleted operator-rail guidance",
 )
+committed_tablet_guidance_match = re.search(
+    r"### Tablet screenshots(.*?)(?=\n## Device Catalog)",
+    submit,
+    re.S,
+)
+committed_tablet_guidance = (
+    committed_tablet_guidance_match.group(1) if committed_tablet_guidance_match else ""
+)
+check(
+    bool(committed_tablet_guidance_match)
+    and "operator RAIL layout" not in committed_tablet_guidance
+    and "controls in their own column" not in committed_tablet_guidance
+    and "Camera controls keep the same homes" in committed_tablet_guidance
+    and "settings panel may dock as a side sheet" in committed_tablet_guidance,
+    "committed tablet asset guidance keeps the deleted operator rail retired",
+)
 if listing is None:
-    skip_private("active tablet asset guidance keeps the deleted operator rail retired", "docs/play-store-listing.md")
+    skip_private("private tablet asset guidance keeps the deleted operator rail retired", "docs/play-store-listing.md")
 else:
     tablet_guidance_match = re.search(
         r"### Tablet screenshots(.*?)\nBoth tablet slots",
@@ -1474,7 +1598,7 @@ else:
         and "controls in their own column" not in tablet_guidance
         and "Camera controls keep the same homes" in tablet_guidance
         and "settings panel may dock as a side sheet" in tablet_guidance,
-        "active tablet asset guidance keeps the deleted operator rail retired",
+        "private tablet asset guidance keeps the deleted operator rail retired",
     )
 stale_handset_rotation_guidance = (
     "Since the activity stopped locking orientation",

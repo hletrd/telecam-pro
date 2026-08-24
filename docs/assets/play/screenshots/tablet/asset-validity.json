@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "asset_set": "play-tablet-screenshots",
+  "submission_ready": false,
+  "blocking_assets": [
+    "docs/assets/play/screenshots/tablet/02-shooting.png",
+    "docs/assets/play/screenshots/tablet/03-focus.png",
+    "docs/assets/play/screenshots/tablet/04-lens.png",
+    "docs/assets/play/screenshots/tablet/05-video-settings.png"
+  ],
+  "assets": {
+    "docs/assets/play/screenshots/tablet/02-shooting.png": "46884e0a72e554c346700d105a22aec693daa4f45923338e3aeee121aab6e0bf",
+    "docs/assets/play/screenshots/tablet/03-focus.png": "b9f75d54753b65f309f7574e4d9e34dd3e38203e900e16d79d5dc39126869e4f",
+    "docs/assets/play/screenshots/tablet/04-lens.png": "6e8f8b531eb0e2d07511ddfa4486349464218703cbbbbd7c7ff4ea232fc73c2f",
+    "docs/assets/play/screenshots/tablet/05-video-settings.png": "31eca5ce90b61a080cef91301d64afcd36266203e1fac18deba4c61d6075758c"
+  },
+  "historical_capture": {
+    "asset_commit": "8d5f461913a124e11b7b62ae4c64c2e69faad25f",
+    "date": "2026-08-09",
+    "device_model": "TB331FC",
+    "locale": "en-US",
+    "orientation": "landscape",
+    "source_commit": null,
+    "immutable_source_manifest_digest": null,
+    "apk_sha256": null,
+    "note": "The asset commit records the recapture and device observations, but not the exact installed source or APK. It is historical context, not immutable capture provenance."
+  },
+  "required_current_copy": {
+    "settings_tab_shoot": "Shoot",
+    "label_output": "Output",
+    "label_still_quality": "Still Quality",
+    "label_drive": "Drive",
+    "label_self_timer": "Self-Timer",
+    "settings_tab_focus": "Focus",
+    "label_spot_size": "Spot Size",
+    "label_af_lock": "AF Lock",
+    "label_peaking": "Peaking",
+    "settings_tab_lens": "Lens",
+    "label_phone": "Phone",
+    "label_converter": "Converter",
+    "label_stabilization": "Stabilization",
+    "settings_tab_video": "Video",
+    "label_codec": "Codec",
+    "label_resolution": "Resolution",
+    "label_bitrate": "Bitrate",
+    "label_gamma": "Gamma",
+    "label_record_audio": "Record Audio"
+  },
+  "required_recapture": {
+    "device_class": "sw600dp+ Android tablet",
+    "locale": "en-US",
+    "orientation": "landscape",
+    "source_owner": "immutable-debug-worktree-v1",
+    "source_manifest_schema": 2,
+    "source_commit": null,
+    "immutable_source_manifest_digest": null,
+    "apk_sha256": null,
+    "pixel_size": [
+      1920,
+      1200
+    ]
+  }
+}

@@ -638,6 +638,31 @@ question has to be re-answered in Play Console at submission; no repo change can
     hint — but a handheld TELE capture against a distant subject would make the three viewfinder
     frames consistent. Replace it with a PORTRAIT capture, TELE lit, and re-crop with the box above.
 
+### Tablet screenshots — **NOT SUBMISSION-READY**
+
+The four tracked 1920×1200 landscape frames are historical TB331FC captures. Their asset commit
+records the stored recapture, but it did not record the exact source commit, immutable debug
+source-manifest digest, or APK SHA-256 that drew them. That is not immutable capture provenance, so
+all four are blocked from Play upload even though their visible labels currently agree with the
+resource authority:
+
+- `screenshots/tablet/02-shooting.png`
+- `screenshots/tablet/03-focus.png`
+- `screenshots/tablet/04-lens.png`
+- `screenshots/tablet/05-video-settings.png`
+
+`screenshots/tablet/asset-validity.json` pins every tracked tablet PNG digest, the copy each future
+recapture must show, the incomplete historical record, and the fail-closed readiness verdict. This
+committed sheet and `python3 tools/check_docs.py` are the clean-clone authority; the optional private
+listing document is not required to discover the block.
+
+To replace the set, capture all four frames in `en-US` landscape on a sw600dp+ Android tablet from
+the exact immutable-debug APK printed by `tools/build_immutable_debug.py`. Record its full source
+commit, schema-2 source-manifest digest, and APK SHA-256 in the tablet manifest, update all four PNG
+digests, and clear the blocking list only after the checker passes. Do not promote a partial recut or
+infer source identity from the asset commit. Camera controls keep the same homes when the tablet
+turns; the settings panel may dock as a side sheet, but there is no separate operator rail.
+
 ## Device Catalog
 
 **The app is no longer single-device.** Hardware is resolved by enumerating Camera2 capabilities
@@ -721,9 +746,10 @@ and must not turn historical device evidence into exact-current-artifact verific
    review read the repo, found no checklist entry and no record, and graded the dimension a D on the
    reasonable inference that an unrecorded step was an unperformed one. Re-confirm on any release
    that changes the media permissions; leave alone otherwise.
-6. Upload the icon and feature graphic. **Do not upload the six checked-in phone screenshots:**
-   frames 02 and 06 are stale. This step remains blocked until `asset-validity.json` says
-   `submission_ready=true`, carries the immutable recapture source-manifest/APK digests, and
+6. Upload the icon and feature graphic. **Do not upload any checked-in phone or tablet
+   screenshots:** phone frames 02 and 06 are stale, and all four tablet frames lack immutable
+   capture provenance. This step remains blocked until both screenshot validity manifests say
+   `submission_ready=true`, carry the required immutable recapture identities, and
    `python3 tools/check_docs.py` passes.
 7. Set the device catalog per the Device Catalog section above (open vs staged is an owner call).
 8. Review Play's automated checks and pre-launch report.
