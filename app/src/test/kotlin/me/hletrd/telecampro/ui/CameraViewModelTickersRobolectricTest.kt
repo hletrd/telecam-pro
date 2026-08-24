@@ -8,6 +8,7 @@ import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.ZoomEngineOverrides
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -40,10 +41,26 @@ class CameraViewModelTickersRobolectricTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private lateinit var engine: CameraEngine
     private lateinit var vm: CameraViewModel
+    private val submittedZooms = mutableListOf<Float>()
+    private val notedZooms = mutableListOf<Float>()
+    private val boostEdges = mutableListOf<Pair<Boolean, Boolean>>()
 
     @Before fun setUp() {
         RobolectricEglSentinels.ensure() // GlPipeline field init reads EGL14.EGL_NO_SURFACE
-        engine = CameraEngine(app)
+        submittedZooms.clear()
+        notedZooms.clear()
+        boostEdges.clear()
+        engine = CameraEngine(
+            app,
+            zoomOverrides = ZoomEngineOverrides(
+                setZoomTarget = {},
+                submitZoom = submittedZooms::add,
+                noteRequestZoom = notedZooms::add,
+                setSmoothPreviewBoost = { active, _, _, submitExact ->
+                    boostEdges += active to submitExact
+                },
+            ),
+        )
         vm = CameraViewModel(app, engine)
         // Land init's own throttled apply (refreshProgramAppSide schedules one at +40 ms) so each
         // test starts from a settled applyScheduled=false window.
@@ -125,6 +142,32 @@ class CameraViewModelTickersRobolectricTest {
         assertEquals(1.5f, vm.state.value.controls.zoomRatio)
         idleFor(16)
         assertEquals(1.5f, vm.state.value.controls.zoomRatio)
+    }
+
+    @Test fun `production timers land each movement burst once and leave end state only`() {
+        vm.onZoomRatio(2f)
+        assertEquals(listOf(2f), notedZooms)
+        assertEquals(emptyList<Float>(), submittedZooms)
+        assertEquals(listOf(true to true), boostEdges)
+
+        idleFor(250)
+        assertEquals(listOf(2f), submittedZooms)
+
+        // A same-direction re-pinch inside the 700 ms tail does not create a new start edge. The
+        // 16 ms coalescer still forwards its newest ratio, and movement after the first landing
+        // reopens exactly one later quiet submit.
+        vm.onZoomRatio(2.25f)
+        vm.onZoomRatio(2.5f)
+        idleFor(16)
+        assertEquals(listOf(2f, 2.25f, 2.5f), notedZooms)
+        idleFor(249)
+        assertEquals(listOf(2f), submittedZooms)
+        idleFor(1)
+        assertEquals(listOf(2f, 2.5f), submittedZooms)
+
+        idleFor(450)
+        assertEquals(listOf(true to true, false to false), boostEdges)
+        assertEquals("700 ms end must not duplicate the landed ratio", listOf(2f, 2.5f), submittedZooms)
     }
 
     // ---- Self-timer countdown ----

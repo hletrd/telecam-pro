@@ -96,6 +96,14 @@ internal data class StabilizationEngineOverrides(
     val reopen: () -> Unit,
 )
 
+/** Host-only observation edges for the real zoom interaction/timer chain. */
+internal data class ZoomEngineOverrides(
+    val setZoomTarget: (Float) -> Unit,
+    val submitZoom: (Float) -> Unit,
+    val noteRequestZoom: (Float) -> Unit,
+    val setSmoothPreviewBoost: (Boolean, Float, Float?, Boolean) -> Unit,
+)
+
 private data class RecorderSetupOwner(
     val terminal: RecorderSetupFinalizationOwner<VideoRecorder>,
     val processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
@@ -109,6 +117,7 @@ class CameraEngine internal constructor(
     private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
     private val familyDeletionMarkerOverrides: FamilyDeletionMarkerEngineOverrides? = null,
     private val stabilizationOverrides: StabilizationEngineOverrides? = null,
+    private val zoomOverrides: ZoomEngineOverrides? = null,
 ) {
 
     /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
@@ -3885,12 +3894,13 @@ class CameraEngine internal constructor(
         } else {
             null
         }
-        controller?.setSmoothPreviewBoost(
-            active,
-            finalZoom = exact,
-            halZoom = wideAim,
-            submitExactWhenFpsUnchanged = transition.submitExact,
-        )
+        zoomOverrides?.setSmoothPreviewBoost?.invoke(active, exact, wideAim, transition.submitExact)
+            ?: controller?.setSmoothPreviewBoost(
+                active,
+                finalZoom = exact,
+                halZoom = wideAim,
+                submitExactWhenFpsUnchanged = transition.submitExact,
+            )
         // (The low-light frame-rate help lives in applyExposure's ALWAYS-on preview exposure cap —
         // an earlier gesture-scoped trade here mutated the real program values, so a still captured
         // right after a zoom inherited the traded short-exposure/high-ISO pair.)
@@ -3943,7 +3953,7 @@ class CameraEngine internal constructor(
         // The PREVIEW zooms instantly: GL crops the last frame to the requested ratio and
         // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
         // so per-tick HAL submits made zoom read as ~5 fps no matter how smooth the input was).
-        gl.setZoomTarget(z)
+        zoomOverrides?.setZoomTarget?.invoke(z) ?: gl.setZoomTarget(z)
         // A moving tick never submits to the HAL: only GL follows it immediately. The START edge
         // pre-buys a slightly wide field (÷ZOOM_GESTURE_MARGIN), while the quiet landing or END edge
         // lands the exact ratio. requestRatio still carries exact z so stills never inherit the aim.
@@ -3953,12 +3963,14 @@ class CameraEngine internal constructor(
             interactionActive = zoomInteractionState.active,
         )
         if (plan.submitNow) {
-            controller?.setZoomRatio(plan.controlsZoomRatio)
+            zoomOverrides?.submitZoom?.invoke(plan.controlsZoomRatio)
+                ?: controller?.setZoomRatio(plan.controlsZoomRatio)
         } else {
             // A swallowed tick must STILL update the controller's still-request truth: the
             // viewfinder (GL target) already frames z, and a shutter press during the gesture
             // window would otherwise capture the PREVIOUS tick's ratio (aggregate AGG3-27).
-            controller?.noteRequestZoom(plan.controlsZoomRatio)
+            zoomOverrides?.noteRequestZoom?.invoke(plan.controlsZoomRatio)
+                ?: controller?.noteRequestZoom(plan.controlsZoomRatio)
         }
     }
 
@@ -3975,9 +3987,11 @@ class CameraEngine internal constructor(
     fun landExactZoom() {
         val transition = landQuietZoom(zoomInteractionState)
         if (!transition.submitExact) return
-        val currentController = controller ?: return
+        val currentController = controller
+        if (zoomOverrides == null && currentController == null) return
         zoomInteractionState = transition.next
-        currentController.setZoomRatio(controls.zoomRatio)
+        zoomOverrides?.submitZoom?.invoke(controls.zoomRatio)
+            ?: currentController?.setZoomRatio(controls.zoomRatio)
     }
 
     /**
@@ -4007,9 +4021,9 @@ class CameraEngine internal constructor(
         // flush), so a single-flush downward FINDER_MIN_ZOOM crossing otherwise left GL drawing an
         // overview the UI gate had dropped (verification S1, 2026-07-30).
         pushTeleFinder()
-        gl.setZoomTarget(z)
+        zoomOverrides?.setZoomTarget?.invoke(z) ?: gl.setZoomTarget(z)
         // Still-request truth must follow even though no repeating submit happens here.
-        controller?.noteRequestZoom(z)
+        zoomOverrides?.noteRequestZoom?.invoke(z) ?: controller?.noteRequestZoom(z)
     }
 
     @Volatile private var zoomInteractionState = ZoomInteractionState()
