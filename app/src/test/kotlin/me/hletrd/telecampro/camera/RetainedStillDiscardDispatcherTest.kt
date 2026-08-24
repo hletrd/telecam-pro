@@ -7,6 +7,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.FamilyDeletionRetirementResult
+import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -60,6 +64,19 @@ class RetainedStillDiscardDispatcherTest {
             ),
         )
         assertTrue(terminalFinished.await(5, TimeUnit.SECONDS))
+
+        val fallbackFinished = CountDownLatch(1)
+        assertEquals(
+            RetainedStillDiscardDispatch.ACCEPTED,
+            dispatchDeletedFamilyRetirement(
+                facade = staleEngine,
+                task = Runnable { fallbackFinished.countDown() },
+                overflowRescan = Runnable {
+                    error("accepted process fallback must not request overflow rescan")
+                },
+            ),
+        )
+        assertTrue(fallbackFinished.await(5, TimeUnit.SECONDS))
     }
 
     @Test
@@ -192,6 +209,209 @@ class RetainedStillDiscardDispatcherTest {
         } finally {
             releaseWorker.countDown()
             facade.shutdown()
+        }
+    }
+
+    @Test
+    fun `retirement registry is bounded rollback-safe and listener isolated`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            RetainedStillRetirementRegistry(maxRegistrations = 0)
+        }
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_030_000_000L, 30L)
+        val secondFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_030_000_001L, 31L)
+        val registry = RetainedStillRetirementRegistry(maxRegistrations = 2)
+        val delivered = AtomicInteger()
+        val failing = RetainedStillRetirementListener { error("one stale owner failed") }
+        val healthy = RetainedStillRetirementListener { delivered.incrementAndGet() }
+
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            registry.register(family, failing),
+        )
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            registry.register(family, healthy),
+        )
+        assertEquals(0, registry.reconcile(family, FamilyDeletionRetirementResult.RETAINED))
+        assertEquals(2, registry.registrationCount())
+        assertEquals(2, registry.reconcile(family, FamilyDeletionRetirementResult.RETIRED))
+        assertEquals(1, delivered.get())
+        assertEquals(0, registry.registrationCount())
+
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            registry.register(secondFamily, healthy),
+        )
+        assertTrue(registry.unregister(secondFamily, healthy))
+        assertFalse(registry.unregister(secondFamily, healthy))
+        assertEquals(0, registry.registrationCount())
+    }
+
+    @Test
+    fun `process retirement registration rolls back marker-only and publishes exact owner`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_030_000_002L, 32L)
+        val markerOnly = ProcessRetainedStillDiscardOwner.registerFamilyRetirement(family, null)
+        assertEquals(RetainedStillRetirementRegistrationResult.REGISTERED, markerOnly)
+        ProcessRetainedStillDiscardOwner.rollbackFamilyRetirementRegistration(
+            family,
+            listener = null,
+            registration = markerOnly,
+        )
+
+        val delivered = AtomicInteger()
+        val listener = RetainedStillRetirementListener { retired ->
+            assertEquals(family, retired)
+            delivered.incrementAndGet()
+        }
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            ProcessRetainedStillDiscardOwner.registerFamilyRetirement(family, listener),
+        )
+        assertEquals(
+            0,
+            ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(
+                family,
+                FamilyDeletionRetirementResult.RETAINED,
+            ),
+        )
+        assertEquals(
+            1,
+            ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(
+                family,
+                FamilyDeletionRetirementResult.ALREADY_ABSENT,
+            ),
+        )
+        assertEquals(1, delivered.get())
+    }
+
+    @Test
+    fun `accepted old Engine rescan reconciles pending replacement Engine exactly once`() {
+        val familyA = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_031_000_000L, 31L)
+        val familyB = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_031_000_001L, 32L)
+        val familyC = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_031_000_002L, 33L)
+        val replacementOwner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxUnresolvedDiscards = 1,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+        )
+        replacementOwner.registerCaptureFamily(32, familyB)
+        replacementOwner.markCaptureDeletedInMemory(32)
+        replacementOwner.completeDeletionDurability(32, durable = true)
+        replacementOwner.markCaptureProducersTerminal(32)
+        assertTrue(replacementOwner.ownRetainedForAsyncDiscard("content://replacement/late", 32))
+        assertFalse(replacementOwner.canAdmitCapture())
+
+        val registry = RetainedStillRetirementRegistry(maxRegistrations = 2)
+        val replacementDeliveries = AtomicInteger()
+        val oldListener = RetainedStillRetirementListener { }
+        val replacementListener = RetainedStillRetirementListener { retired ->
+            assertEquals(familyB, retired)
+            replacementDeliveries.incrementAndGet()
+            replacementOwner.retireDeletedFamily(retired)
+        }
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            registry.register(familyA, oldListener),
+        )
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            registry.register(familyB, replacementListener),
+        )
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.ALREADY_REGISTERED,
+            registry.register(familyB, replacementListener),
+        )
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED,
+            registry.register(familyC, RetainedStillRetirementListener { }),
+        )
+
+        val activeEntered = CountDownLatch(1)
+        val releaseActive = CountDownLatch(1)
+        val queuedFinished = CountDownLatch(1)
+        val oldRescanEntered = CountDownLatch(1)
+        val releaseOldRescan = CountDownLatch(1)
+        val fillerFinished = CountDownLatch(1)
+        val replacementRescanFinished = CountDownLatch(1)
+        val replacementRescans = AtomicInteger()
+        val capacity = RetainedStillDiscardCapacityOwner(
+            workerCount = 1,
+            backlogCapacity = 1,
+            threadFactory = ThreadFactory { task ->
+                Thread(task, "test-cross-engine-retirement").apply { isDaemon = true }
+            },
+        )
+        val oldEngine = RetainedStillDiscardDispatcher(capacity)
+        val replacementEngine = RetainedStillDiscardDispatcher(capacity)
+        try {
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                oldEngine.dispatch(
+                    Runnable {
+                        activeEntered.countDown()
+                        releaseActive.await()
+                    },
+                ),
+            )
+            assertTrue(activeEntered.await(5, TimeUnit.SECONDS))
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                oldEngine.dispatch(Runnable { queuedFinished.countDown() }),
+            )
+            assertEquals(
+                RetainedStillDiscardDispatch.OVERFLOW,
+                oldEngine.dispatchRetirement(
+                    Runnable { error("overflowed old Engine task ran") },
+                    Runnable {
+                        oldRescanEntered.countDown()
+                        releaseOldRescan.await()
+                        registry.reconcile(familyA, FamilyDeletionRetirementResult.RETIRED)
+                        // The process scan also retired B. Publication must reach B's exact local
+                        // owner even though this accepted closure came from Engine A.
+                        registry.reconcile(familyB, FamilyDeletionRetirementResult.RETIRED)
+                    },
+                ),
+            )
+
+            releaseActive.countDown()
+            assertTrue(queuedFinished.await(5, TimeUnit.SECONDS))
+            assertTrue(oldRescanEntered.await(5, TimeUnit.SECONDS))
+            // Keep the lane full while B overflows behind A's already-accepted rescan.
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                replacementEngine.dispatch(Runnable { fillerFinished.countDown() }),
+            )
+            assertEquals(
+                RetainedStillDiscardDispatch.OVERFLOW,
+                replacementEngine.dispatchRetirement(
+                    Runnable { error("overflowed replacement Engine task ran") },
+                    Runnable {
+                        replacementRescans.incrementAndGet()
+                        registry.reconcile(familyB, FamilyDeletionRetirementResult.ALREADY_ABSENT)
+                        replacementRescanFinished.countDown()
+                    },
+                ),
+            )
+
+            releaseOldRescan.countDown()
+            assertTrue(fillerFinished.await(5, TimeUnit.SECONDS))
+            assertTrue(replacementRescanFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(1, replacementRescans.get())
+            assertEquals(1, replacementDeliveries.get())
+            assertEquals(0, replacementOwner.unresolvedDiscardCount())
+            assertTrue(replacementOwner.canAdmitCapture())
+            assertEquals(0, registry.registrationCount())
+            assertEquals(
+                0,
+                registry.reconcile(familyB, FamilyDeletionRetirementResult.ALREADY_ABSENT),
+            )
+            assertEquals(1, replacementDeliveries.get())
+        } finally {
+            releaseActive.countDown()
+            releaseOldRescan.countDown()
+            oldEngine.shutdown()
+            replacementEngine.shutdown()
         }
     }
 

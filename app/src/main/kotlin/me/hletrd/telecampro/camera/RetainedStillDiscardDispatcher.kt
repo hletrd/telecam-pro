@@ -1,11 +1,15 @@
 package me.hletrd.telecampro.camera
 
+import java.util.IdentityHashMap
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.FamilyDeletionRetirementResult
+import me.hletrd.telecampro.storage.MediaStoreWriter
 
 internal enum class RetainedStillDiscardDispatch {
     ACCEPTED,
@@ -172,6 +176,88 @@ internal class RetainedStillDiscardCapacityOwner(
 internal const val RETAINED_STILL_DISCARD_WORKER_COUNT = 2
 internal const val RETAINED_STILL_DISCARD_BACKLOG_CAPACITY = 8
 
+/** Exact local bookkeeping owner notified after one durable family marker is retired. */
+internal fun interface RetainedStillRetirementListener {
+    fun onFamilyRetired(family: CaptureFamilyKey)
+}
+
+internal enum class RetainedStillRetirementRegistrationResult {
+    REGISTERED,
+    ALREADY_REGISTERED,
+    CAPACITY_EXHAUSTED,
+}
+
+/**
+ * Bounded process authority joining durable marker retirement to every exact local Engine owner.
+ *
+ * Registration precedes the durable marker commit, so a process scan can never observe a marker
+ * whose local continuation is still unknown. Listener identity makes repeated deletion callbacks
+ * idempotent. A retired family is removed before delivery; duplicate/late results therefore do no
+ * work, while a listener failure cannot prevent another Engine owner from reconciling.
+ */
+internal class RetainedStillRetirementRegistry(
+    private val maxRegistrations: Int,
+) {
+    private val lock = Any()
+    private val listenersByFamily = LinkedHashMap<
+        CaptureFamilyKey,
+        IdentityHashMap<RetainedStillRetirementListener, Unit>,
+    >()
+    private var registrationCount = 0
+
+    init {
+        require(maxRegistrations > 0)
+    }
+
+    fun register(
+        family: CaptureFamilyKey,
+        listener: RetainedStillRetirementListener,
+    ): RetainedStillRetirementRegistrationResult = synchronized(lock) {
+        val listeners = listenersByFamily[family]
+        if (listeners?.containsKey(listener) == true) {
+            return@synchronized RetainedStillRetirementRegistrationResult.ALREADY_REGISTERED
+        }
+        if (registrationCount >= maxRegistrations) {
+            return@synchronized RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED
+        }
+        val familyListeners = listeners ?: IdentityHashMap<RetainedStillRetirementListener, Unit>()
+            .also { listenersByFamily[family] = it }
+        familyListeners[listener] = Unit
+        registrationCount += 1
+        RetainedStillRetirementRegistrationResult.REGISTERED
+    }
+
+    /** Rolls back only a registration newly installed for a marker commit that then failed. */
+    fun unregister(
+        family: CaptureFamilyKey,
+        listener: RetainedStillRetirementListener,
+    ): Boolean = synchronized(lock) {
+        val listeners = listenersByFamily[family] ?: return@synchronized false
+        if (listeners.remove(listener) == null) return@synchronized false
+        registrationCount -= 1
+        if (listeners.isEmpty()) listenersByFamily.remove(family)
+        true
+    }
+
+    fun reconcile(
+        family: CaptureFamilyKey,
+        result: FamilyDeletionRetirementResult,
+    ): Int {
+        if (result != FamilyDeletionRetirementResult.RETIRED &&
+            result != FamilyDeletionRetirementResult.ALREADY_ABSENT
+        ) return 0
+        val listeners = synchronized(lock) {
+            val removed = listenersByFamily.remove(family)?.keys?.toList().orEmpty()
+            registrationCount -= removed.size
+            removed
+        }
+        listeners.forEach { listener -> runCatching { listener.onFamilyRetired(family) } }
+        return listeners.size
+    }
+
+    internal fun registrationCount(): Int = synchronized(lock) { registrationCount }
+}
+
 /**
  * One finite dispatch boundary for deletion retirement, including a producer that becomes terminal
  * after its old Engine facade has closed. Overflow never falls back inline; its process-conflated
@@ -193,6 +279,10 @@ internal object ProcessRetainedStillDiscardOwner {
         workerCount = RETAINED_STILL_DISCARD_WORKER_COUNT,
         backlogCapacity = RETAINED_STILL_DISCARD_BACKLOG_CAPACITY,
     )
+    private val retirementRegistry = RetainedStillRetirementRegistry(
+        maxRegistrations = MediaStoreWriter.MAX_DELETED_FAMILY_MARKERS,
+    )
+    private val markerOnlyRetirementListener = RetainedStillRetirementListener { }
 
     fun capacity(workerCount: Int, backlogCapacity: Int): RetainedStillDiscardCapacityOwner {
         require(workerCount == RETAINED_STILL_DISCARD_WORKER_COUNT) {
@@ -203,6 +293,35 @@ internal object ProcessRetainedStillDiscardOwner {
         }
         return capacityOwner
     }
+
+    /**
+     * Installs local continuation ownership before the durable marker can become visible. A family
+     * without live Engine bookkeeping still registers the process marker-only sentinel so every
+     * current-process marker participates in the same bounded authority.
+     */
+    fun registerFamilyRetirement(
+        family: CaptureFamilyKey,
+        listener: RetainedStillRetirementListener?,
+    ): RetainedStillRetirementRegistrationResult = retirementRegistry.register(
+        family,
+        listener ?: markerOnlyRetirementListener,
+    )
+
+    fun rollbackFamilyRetirementRegistration(
+        family: CaptureFamilyKey,
+        listener: RetainedStillRetirementListener?,
+        registration: RetainedStillRetirementRegistrationResult,
+    ) {
+        if (registration == RetainedStillRetirementRegistrationResult.REGISTERED) {
+            retirementRegistry.unregister(family, listener ?: markerOnlyRetirementListener)
+        }
+    }
+
+    /** Exact and scan completions share this idempotent local-publication boundary. */
+    fun reconcileFamilyRetirement(
+        family: CaptureFamilyKey,
+        result: FamilyDeletionRetirementResult,
+    ): Int = retirementRegistry.reconcile(family, result)
 
     /**
      * A still-family producer registered before Engine release may become terminal only after its

@@ -134,6 +134,13 @@ class CameraEngine internal constructor(
         discard = { uri -> MediaStoreWriter.discardPendingOutput(context, uri) },
         persistDeletionIntent = { family -> MediaStoreWriter.markFamilyDeleted(context, family) },
     )
+    // Process rescans may retire a marker created by another Engine generation. Register this exact
+    // local owner before the marker commit so whichever worker proves retirement clears the right
+    // unresolved rows/tombstones and republishes this Engine's admission truth.
+    private val retainedStillRetirementListener = RetainedStillRetirementListener { family ->
+        retainedStillDeletionOwner.retireDeletedFamily(family)
+        onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+    }
     // Deleted-still provider work is process-finite across Engine replacement. A rejected task stays
     // owned by the durable capture-family tombstone for launch recovery; it never runs inline on a
     // camera, UI, or teardown thread.
@@ -4165,8 +4172,25 @@ class CameraEngine internal constructor(
         val liveStillId = intent.liveStillCaptureId
         val publications = liveStillId?.let(retainedStillDeletionOwner::markCaptureDeletedInMemory).orEmpty()
         val task = Runnable {
-            val durable = MediaStoreWriter.markFamilyDeletedResult(context, intent.familyKey) ==
+            // Registration MUST precede the marker commit. A producer lease can become terminal on
+            // another Engine/thread immediately afterward, allowing an already-accepted process
+            // rescan to remove this marker before our family-specific retirement task is queued.
+            val retirementListener = retainedStillRetirementListener.takeIf { liveStillId != null }
+            val retirementRegistration = ProcessRetainedStillDiscardOwner.registerFamilyRetirement(
+                intent.familyKey,
+                retirementListener,
+            )
+            val durable = retirementRegistration !=
+                RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED &&
+                MediaStoreWriter.markFamilyDeletedResult(context, intent.familyKey) ==
                 me.hletrd.telecampro.storage.FamilyDeletionMarkResult.DURABLE
+            if (!durable) {
+                ProcessRetainedStillDiscardOwner.rollbackFamilyRetirementRegistration(
+                    intent.familyKey,
+                    retirementListener,
+                    retirementRegistration,
+                )
+            }
             if (liveStillId != null) {
                 retainedStillDeletionOwner.completeDeletionDurability(liveStillId, durable)
             }
@@ -4218,21 +4242,12 @@ class CameraEngine internal constructor(
                 family,
                 producersTerminal,
             )
-            if (liveStillCaptureId != null && locallyDeletedTerminalFamily == family &&
-                (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETIRED ||
-                    result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.ALREADY_ABSENT)
-            ) {
-                retainedStillDeletionOwner.retireDeletedCapture(liveStillCaptureId, family)
-            }
+            ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(family, result)
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         }
         val overflowRescan = Runnable {
             MediaStoreWriter.retireCurrentProcessFamilyDeletions(context).forEach { (candidate, result) ->
-                if (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETIRED ||
-                    result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.ALREADY_ABSENT
-                ) {
-                    retainedStillDeletionOwner.retireDeletedFamily(candidate)
-                }
+                ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(candidate, result)
             }
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         }
