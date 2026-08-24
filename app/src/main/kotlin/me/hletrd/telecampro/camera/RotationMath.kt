@@ -174,9 +174,9 @@ object RotationMath {
      * gravity, CCW-POSITIVE — see [captureRotationDegrees]). The GL pipeline already bakes the
      * sensor rotation + afocal 180° into the recorded frames, so the hint carries ONLY the
      * device-tilt term — the same term the still matrix applies: BACK = −dev (device-confirmed via
-     * the 2026-07-25 landscape still), FRONT = +dev. NOTE: a held-landscape clip check in an
-     * external player (not in-app review, which re-applies the container rotation itself) is still
-     * an open Residual Field Check for the hint specifically (docs/BACKLOG.md).
+     * the 2026-07-25 landscape still), FRONT = +dev. Committed FIELD_CHECKS B1
+     * (docs/FIELD_CHECKS.md) records held portrait and both landscape clips playing upright in an
+     * external player; that closed rotation end to end. Re-run B1 after changing this hint.
      */
     fun videoOrientationHint(deviceOrientation: Int, frontFacing: Boolean = false): Int =
         if (frontFacing) normalize(deviceOrientation) else normalize(-deviceOrientation)

@@ -51,8 +51,9 @@ object FrontMirrorConvention {
      * ATTRIBUTE, i.e. the output's own horizontal axis, and a pulled front still read unreversed
      * on device).
      *
-     * The tap mapping's ROTATION term remains uncalibrated on the front route; this fixes only the
-     * mirror half. See the front residual checks in docs/BACKLOG.md.
+     * The tap mapping's ROTATION term remains OPEN on a rotated front-camera window; this fixes only
+     * the mirror half. Committed docs/FIELD_CHECKS.md A4 owns the runnable large-screen 90°/270°
+     * calibration procedure and is the clean-clone status authority.
      */
     @Suppress("UNUSED_PARAMETER")
     fun meteringMirrorX(frontRoute: Boolean, streamPreMirrored: Boolean): Boolean = frontRoute

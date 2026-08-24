@@ -894,14 +894,15 @@ fun CameraScreen(
             }
 
             // Loupe Overview border: frames a re-draw of the FULL current-camera stream, not a 1x
-            // camera feed. Exact predicate: user toggle + Photo + 4:3 + TELE + active punch-in. The
-            // shared teleFinderVisible predicate is the same gate the engine resolves for GL, so the
-            // border and overview content cannot drift. The rect comes from the same pure finderRect
+            // camera feed. Exact predicate: user toggle + active punch-in + (TELE or unified zoom
+            // >= 3x). Photo additionally requires 4:3; Video ignores the unrelated still aspect.
+            // The shared teleFinderVisible predicate is the same gate the engine resolves for GL,
+            // so the border and overview content cannot drift. The rect comes from the same pure finderRect
             // the GL scissor uses — sized from the FULL aspect box, with a right inset and measured
             // bottom-chrome clearance (the previous padding-before-fillMaxWidth chain shrank it ~6% below
             // the GL content box). Absolute anchor + absolute offset: the GL box has no layout
             // direction, so the
-            // border must not mirror to bottom-right under RTL system locales. Square corners trace
+            // border must not mirror to bottom-left under RTL system locales. Square corners trace
             // the sharp GL scissor rect.
             if (finderVisible) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {

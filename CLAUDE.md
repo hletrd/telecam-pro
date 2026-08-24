@@ -379,9 +379,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   behind the bar is live camera content.
 - **The REC tally border must follow the panel's rounded corners.** A square full-screen border's
   corner segments fall OUTSIDE the visible display area and vanish. Read the radius from the
-  WindowInsets RoundedCorner API and scale ×1.2 — the glass corner is a continuous-curvature
-  squircle, and a circular arc at the nominal radius reads visibly tighter (user-compared on
-  device).
+  WindowInsets RoundedCorner API and use the platform radius unscaled. The former ×1.2 multiplier
+  was device-rejected on 2026-07-29: it turns the circular arc too early, shortens the straight runs,
+  and leaves visible gaps along the sides. The tally is an edge indicator, so following the reported
+  panel radius takes priority over approximating the glass's continuous-curvature squircle.
 - **Analysis readback is FBO-downsampled (2026-07-14).** The scopes/AE readback used to
   `glReadPixels` the FULL preview framebuffer (~33 MB at 4K) every 5th frame — a periodic GL-thread
   stall that read as preview/zoom stutter, and it metered peaking/zebra overlay pixels. It now
