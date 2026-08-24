@@ -30,10 +30,13 @@ class QuickFnEnabledTest {
 
     @Test
     fun `session-reconfiguring slots disable while recording`() {
-        for (slot in listOf(FnSlot.TRANSFER, FnSlot.TELECONVERTER, FnSlot.STABILIZATION, FnSlot.AUDIO_SCENE)) {
+        for (slot in listOf(FnSlot.TRANSFER, FnSlot.TELECONVERTER, FnSlot.AUDIO_SCENE)) {
             assertTrue("$slot idle", quickFnEnabled(slot, idle))
             assertFalse("$slot recording", quickFnEnabled(slot, recording.copy(mode = CaptureMode.VIDEO)))
         }
+        // Stabilization stays unavailable until exact route capabilities arrive; advertising a
+        // guessed Standard/Active profile is the defect this projection prevents.
+        assertFalse(quickFnEnabled(FnSlot.STABILIZATION, idle))
     }
 
     @Test
@@ -44,7 +47,11 @@ class QuickFnEnabledTest {
         // which the OSD reports as OIS OFF, so a hot chip could contradict the OSD for one frame.
         for (slot in listOf(FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE)) {
             assertFalse("$slot in photo", quickFnEnabled(slot, idle.copy(mode = CaptureMode.PHOTO)))
-            assertTrue("$slot in video", quickFnEnabled(slot, idle))
+            if (slot == FnSlot.STABILIZATION) {
+                assertFalse("$slot waits for route caps", quickFnEnabled(slot, idle))
+            } else {
+                assertTrue("$slot in video", quickFnEnabled(slot, idle))
+            }
         }
         // Slots that act in both modes are untouched by the new axis.
         for (slot in listOf(FnSlot.ISO, FnSlot.WB, FnSlot.FOCUS, FnSlot.TELECONVERTER)) {

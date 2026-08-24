@@ -204,10 +204,9 @@ class PerformQuickFnTest {
             encoderInventoryLoaded = true,
             tenBitEncodeAvailable = true,
         )
-        assertEquals(
-            listOf("onVideoStabMode(${VideoStabMode.OFF})"),
-            dispatched(FnSlot.STABILIZATION, idleVideo), // default ENHANCED -> OFF
-        )
+        // Exact stabilization choices arrive with route caps; before then the quick action is inert
+        // rather than cycling through profiles this camera may not advertise.
+        assertEquals(emptyList<String>(), dispatched(FnSlot.STABILIZATION, idleVideo))
         assertEquals(listOf("onDriveMode(${DriveMode.BURST})"), dispatched(FnSlot.DRIVE, idle))
         assertEquals(listOf("onGridType(${GridType.GOLDEN})"), dispatched(FnSlot.GRID, idle))
         assertEquals(

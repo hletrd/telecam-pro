@@ -101,6 +101,7 @@ import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.availableVideoStabModes
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ControlAvailability
@@ -1246,6 +1247,8 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
     SectionHeader(stringResource(R.string.section_stabilization))
+    val videoStabChoices = state.caps?.let { availableVideoStabModes(it.videoStabModes) }
+        ?: listOf(state.videoStabMode)
     Captioned(
         when (state.videoStabMode) {
             // null, not "Off": the selected chip already says Off, and a caption restating the
@@ -1259,13 +1262,13 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     ) {
         SegmentedSelector(
             label = stringResource(R.string.label_mode),
-            options = VideoStabMode.entries,
+            options = videoStabChoices,
             selected = state.videoStabMode,
             labelFor = { labelContext.localizedLabel(it) },
             onSelect = actions::onVideoStabMode,
             // Same REC guard as the Lens/TC rows above (CR4-6): onVideoStabMode refuses mid-REC with
             // a toast, so a visually-hot selector here silently no-oped while its siblings greyed out.
-            enabled = recordingMutable,
+            enabled = recordingMutable && videoStabChoices.size > 1,
         )
     }
     if (state.caps?.oisAvailable == true) {

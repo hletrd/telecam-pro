@@ -32,6 +32,35 @@ class CaptureCapabilitiesTest {
     }
 
     @Test
+    fun `visible stabilization choices exactly follow advertised modes`() {
+        assertEquals(listOf(VideoStabMode.OFF), availableVideoStabModes(intArrayOf(off)))
+        assertEquals(
+            listOf(VideoStabMode.OFF, VideoStabMode.STANDARD),
+            availableVideoStabModes(intArrayOf(off, on)),
+        )
+        assertEquals(
+            VideoStabMode.entries,
+            availableVideoStabModes(intArrayOf(off, on, preview)),
+        )
+    }
+
+    @Test
+    fun `requested stabilization normalizes to the applied visible mode`() {
+        assertEquals(
+            VideoStabMode.OFF,
+            VideoStabMode.ENHANCED.normalizedForAvailableModes(intArrayOf(off)),
+        )
+        assertEquals(
+            VideoStabMode.STANDARD,
+            VideoStabMode.ENHANCED.normalizedForAvailableModes(intArrayOf(off, on)),
+        )
+        assertEquals(
+            VideoStabMode.ENHANCED,
+            VideoStabMode.ENHANCED.normalizedForAvailableModes(intArrayOf(off, on, preview)),
+        )
+    }
+
+    @Test
     fun `vendor hi-res needs at least twice the active-array area`() {
         // The active array IS the binned readout: near-array sizes (the 4096×3072-vs-4080×3064
         // class) must NOT read as remosaic, while a genuine 4×-area full-sensor size must.

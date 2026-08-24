@@ -561,6 +561,28 @@ internal fun videoStabControlModeFor(videoStabModes: IntArray, mode: VideoStabMo
     return if (mode == VideoStabMode.ENHANCED && videoStabModes.contains(on)) on else off
 }
 
+/** User-visible stabilization choices that map one-to-one onto advertised HAL modes. */
+fun availableVideoStabModes(videoStabModes: IntArray): List<VideoStabMode> = buildList {
+    add(VideoStabMode.OFF)
+    if (videoStabModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)) {
+        add(VideoStabMode.STANDARD)
+    }
+    if (videoStabModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)) {
+        add(VideoStabMode.ENHANCED)
+    }
+}
+
+/** Resolves persisted/requested state to the label that describes the mode the HAL can apply. */
+fun VideoStabMode.normalizedForAvailableModes(videoStabModes: IntArray): VideoStabMode {
+    val available = availableVideoStabModes(videoStabModes)
+    if (this in available) return this
+    return if (this == VideoStabMode.ENHANCED && VideoStabMode.STANDARD in available) {
+        VideoStabMode.STANDARD
+    } else {
+        VideoStabMode.OFF
+    }
+}
+
 /**
  * Extracts sorted distinct fixed rates from plain lower/upper pairs. Android Range getters throw
  * "not mocked" on the JVM, so both capability flattening and tests share this Android-free core.

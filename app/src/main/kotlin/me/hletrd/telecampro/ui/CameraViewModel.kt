@@ -71,6 +71,7 @@ import me.hletrd.telecampro.camera.resolveTeleZoomTransition
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
+import me.hletrd.telecampro.camera.normalizedForAvailableModes
 import me.hletrd.telecampro.camera.PendingControlsDisposition
 import me.hletrd.telecampro.camera.acceptedOpticsAuxState
 import me.hletrd.telecampro.camera.controlAvailability
@@ -2875,6 +2876,8 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun reconcileZoomToCaps(caps: CameraCaps) {
         val current = _state.value
+        val normalizedVideoStabMode =
+            current.videoStabMode.normalizedForAvailableModes(caps.videoStabModes)
         val range = caps.zoomRatioRange
         // Carry the outgoing lens's exposure across the aperture change before normalizing, exactly
         // as the engine already did at its own caps-install seam (same pure seed, same inputs — the
@@ -2907,7 +2910,16 @@ class CameraViewModel @JvmOverloads constructor(
             current.lens
         }
         _state.update {
-            it.copy(caps = caps, lens = lens, controls = normalizedControls)
+            it.copy(
+                caps = caps,
+                lens = lens,
+                controls = normalizedControls,
+                videoStabMode = normalizedVideoStabMode,
+            )
+        }
+        if (normalizedVideoStabMode != current.videoStabMode) {
+            engine.setVideoStabMode(normalizedVideoStabMode)
+            scheduleSettingsSave()
         }
         pendingControls = pendingControls?.let { pending ->
             normalizeControlsForRoute(
@@ -2946,8 +2958,13 @@ class CameraViewModel @JvmOverloads constructor(
         // repeating request immediately) — a visible stabilization discontinuity baked into the
         // file. Same gate as every other session-reconfiguring control.
         if (rejectIfRecording()) return
-        engine.setVideoStabMode(mode)
-        _state.update { it.copy(videoStabMode = mode) }
+        val current = _state.value
+        val normalized = current.caps?.let {
+            mode.normalizedForAvailableModes(it.videoStabModes)
+        } ?: return
+        if (normalized == current.videoStabMode) return
+        engine.setVideoStabMode(normalized)
+        _state.update { it.copy(videoStabMode = normalized) }
         markChanged(FnSlot.STABILIZATION)
         scheduleSettingsSave()
     }
