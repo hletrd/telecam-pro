@@ -203,6 +203,140 @@ class CameraViewModelRobolectricTest {
         assertEquals(MediaDeleteScope.FILE_ONLY, state.lastMediaDeleteScope)
     }
 
+    @Test fun `ownerless review freezes for system consent and approval never issues direct delete`() {
+        val (v, _) = createViewModel()
+        val uri = Uri.parse("content://media/external/images/media/41")
+        assertTrue(
+            captureTracker(v).seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput(
+                        output = uri,
+                        kind = CaptureOutputKind.DISPLAYABLE,
+                        provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                    ),
+                ),
+                preferredOutput = uri,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        setState(v) {
+            it.copy(
+                lastMediaUri = uri,
+                lastMediaProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+            )
+        }
+
+        assertEquals(
+            OwnerlessMediaDeletePreparation.CONSENT_REQUIRED,
+            v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
+        )
+        assertTrue(v.state.value.ownerlessDeleteConsentPending)
+        assertTrue(v.state.value.cameraInputBlocked)
+        assertNull(v.state.value.lastMediaUri)
+        assertEquals(
+            OwnerlessMediaDeletePreparation.REJECTED,
+            v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
+        )
+
+        // RESULT_OK means MediaStore's PendingIntent already completed deletion. This edge clears
+        // tracker/UI ownership synchronously and performs no ContentResolver.delete call.
+        v.onOwnerlessMediaDeleteConsentResult(OwnerlessMediaDeleteConsentResult.APPROVED)
+        assertFalse(v.state.value.ownerlessDeleteConsentPending)
+        assertNull(v.state.value.lastMediaUri)
+        assertEquals(CameraStatusMessage.DELETED, v.state.value.status?.message)
+    }
+
+    @Test fun `app-owned review stays on direct deletion and ownerless callers cannot bypass consent`() {
+        val (v, _) = createViewModel()
+        val ownerless = Uri.parse("content://media/external/images/media/43")
+        assertTrue(
+            captureTracker(v).seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput(
+                        ownerless,
+                        CaptureOutputKind.DISPLAYABLE,
+                        MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                    ),
+                ),
+                preferredOutput = ownerless,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        v.onDeleteLastMedia(ownerless, MediaProvenance.LEGACY_FORMAT_UNVERIFIED)
+        assertEquals(
+            CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
+            v.state.value.status?.message,
+        )
+        assertTrue(captureTracker(v).isCurrentReviewOutput(ownerless))
+
+        val owned = Uri.parse("content://media/external/images/media/42")
+        captureTracker(v).record(42, owned, CaptureOutputKind.DISPLAYABLE)
+        assertEquals(
+            OwnerlessMediaDeletePreparation.DIRECT_APP_OWNED,
+            v.prepareOwnerlessMediaDelete(owned, MediaProvenance.APP_OWNED),
+        )
+        assertFalse(v.state.value.ownerlessDeleteConsentPending)
+    }
+
+    @Test fun `delete authorization routing and terminal results preserve provenance honestly`() {
+        assertEquals(
+            MediaDeleteAuthorizationRoute.DIRECT_APP_OWNED,
+            mediaDeleteAuthorizationRoute(
+                trackedProvenance = MediaProvenance.APP_OWNED,
+                presentedProvenance = MediaProvenance.APP_OWNED,
+            ),
+        )
+        // Either the tracker or the frozen review identifying an ownerless row must win over a stale
+        // APP_OWNED value on the other side of the UI boundary.
+        assertEquals(
+            MediaDeleteAuthorizationRoute.SYSTEM_CONSENT,
+            mediaDeleteAuthorizationRoute(
+                trackedProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                presentedProvenance = MediaProvenance.APP_OWNED,
+            ),
+        )
+        assertEquals(
+            MediaDeleteAuthorizationRoute.SYSTEM_CONSENT,
+            mediaDeleteAuthorizationRoute(
+                trackedProvenance = null,
+                presentedProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            ),
+        )
+
+        assertEquals(
+            OwnerlessMediaDeleteResolution(false, CameraStatusMessage.DELETED),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.APPROVED,
+                KnownOutputProviderDisposition.PRESENT,
+            ),
+        )
+        assertEquals(
+            OwnerlessMediaDeleteResolution(true, CameraStatusMessage.DELETE_CANCELED),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.CANCELED,
+                KnownOutputProviderDisposition.PRESENT,
+            ),
+        )
+        assertEquals(
+            OwnerlessMediaDeleteResolution(false, CameraStatusMessage.FILE_ALREADY_REMOVED),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.CANCELED,
+                KnownOutputProviderDisposition.ALREADY_ABSENT,
+            ),
+        )
+        assertEquals(
+            OwnerlessMediaDeleteResolution(
+                true,
+                CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
+            ),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
+                KnownOutputProviderDisposition.UNKNOWN,
+            ),
+        )
+    }
+
     @Test fun `superseded delete survivor preserves newer packet and selects gallery retry`() {
         val oldUri = Uri.parse("content://media/old")
         val newerUri = Uri.parse("content://media/newer")

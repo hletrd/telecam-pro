@@ -146,7 +146,10 @@ class PerformQuickFnTest {
         override fun onVolumeKeyAction(action: HardwareKeyAction) = hit("onVolumeKeyAction")
         override fun onHalfPressAction(action: HardwareKeyAction) = hit("onHalfPressAction")
         override fun onQuickButtonAction(action: HardwareKeyAction) = Unit
-        override fun onDeleteLastMedia(uri: android.net.Uri) = hit("onDeleteLastMedia")
+        override fun onDeleteLastMedia(
+            uri: android.net.Uri,
+            provenance: me.hletrd.telecampro.storage.MediaProvenance,
+        ) = hit("onDeleteLastMedia")
         override fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean {
             hit("onReviewOpenChange")
             return false

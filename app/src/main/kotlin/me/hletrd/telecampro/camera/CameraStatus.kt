@@ -63,6 +63,9 @@ enum class CameraStatusMessage {
     MEMORY_SLOT_EMPTY,
     MEMORY_SLOT_LOADED,
     DELETED,
+    DELETE_CANCELED,
+    FILE_ALREADY_REMOVED,
+    DELETE_AUTHORIZATION_UNAVAILABLE,
     SOME_FILES_NOT_DELETED_RETRY_GALLERY,
     COULD_NOT_DELETE_FILE,
 }
@@ -104,6 +107,8 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.FINISHING_PREVIOUS_CLIP,
         CameraStatusMessage.RECORDING_WITHOUT_AUDIO,
         CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON,
+        CameraStatusMessage.DELETE_CANCELED,
+        CameraStatusMessage.FILE_ALREADY_REMOVED,
         -> CameraStatusSeverity.INFO
 
         CameraStatusMessage.VIDEO_SAVED,
@@ -162,6 +167,7 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.VIDEO_SAVE_FAILED,
         CameraStatusMessage.STANDBY_MICROPHONE_UNAVAILABLE,
         CameraStatusMessage.CUSTOM_WB_MEASUREMENT_FAILED,
+        CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
         CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
         CameraStatusMessage.COULD_NOT_DELETE_FILE,
         -> CameraStatusSeverity.ERROR

@@ -209,6 +209,26 @@ package has no unverified descriptor and retains its normal capture-family delet
 Record the Android build, provider package/version, row owner before/after, import/reinstall path, and
 observed UI/delete scope. This check establishes provider semantics only for that measured build.
 
+### E2. Owner-null system delete consent — ◯ OPEN 2026-08-24
+
+Use the disposable valid owner-null row from E1. From its in-app review, choose Delete and approve
+the app confirmation. Android must then own a second, system-rendered confirmation for that exact
+file; do not substitute an app-owned row, because the current package can delete those directly and
+would not exercise the consent route.
+
+- Cancel the system confirmation once. Confirm the same origin-unverified file remains reviewable
+  and the app reports cancellation without attempting a direct delete.
+- Repeat and approve. Confirm the system removes only that exact URI, the app reports deletion, and
+  any sibling formats remain on disk/reviewable.
+- Repeat with the row removed by another gallery while the system surface is opening. Confirm the
+  app does not restore a phantom review handle and reports that the file was already removed.
+
+**Pass:** owner-unverified deletion always uses `MediaStore.createDeleteRequest`; cancellation and
+launch failure preserve the exact file, approval performs no redundant resolver delete, and an
+authoritatively absent row is not restored. Record API level, provider version, and the observed
+system copy for API 33 and the target API 36 device. Host/Robolectric coverage cannot close this
+check because only a real MediaProvider can prove the consent and disappearance semantics.
+
 ---
 
 ## Recording results

@@ -193,6 +193,12 @@ internal class CaptureOutputTracker<T>(
         ?.let(deleteScopeByCapture::get)
         ?: MediaDeleteScope.FILE_ONLY
 
+    /** Exact restore-authorship truth carried beside [output]'s deletion ownership. */
+    @Synchronized
+    fun provenanceFor(output: T): MediaProvenance? = captureByOutput[output]
+        ?.takeIf { output in outputsByCapture[it].orEmpty() }
+        ?.let { provenanceByOutput[output] }
+
     /**
      * Replaces the open-review pin with the exact family that owns [output]. A failed replacement
      * releases the old pin and returns false so callers can truthfully fall back to file-only copy.

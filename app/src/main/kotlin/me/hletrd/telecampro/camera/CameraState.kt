@@ -1517,6 +1517,9 @@ data class CameraUiState(
     val lastMediaProvenance: MediaProvenance = MediaProvenance.APP_OWNED,
     // Canonical live/restored families can delete every known sibling; legacy filenames cannot.
     val lastMediaDeleteScope: MediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+    // An owner-unverified restored row is frozen while Android's MediaStore-owned delete-consent
+    // surface is in flight. This is a real full-screen input owner even after review closes.
+    val ownerlessDeleteConsentPending: Boolean = false,
     /** False only for a genuine fail-closed still-output ownership condition. */
     val stillCaptureAdmissionAvailable: Boolean = true,
     val histogramData: HistogramData? = null,

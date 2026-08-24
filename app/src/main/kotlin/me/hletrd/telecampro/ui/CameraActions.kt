@@ -199,7 +199,11 @@ interface CameraActions {
     fun onVolumeKeyAction(action: HardwareKeyAction)
     fun onHalfPressAction(action: HardwareKeyAction)
     fun onQuickButtonAction(action: HardwareKeyAction)
-    fun onDeleteLastMedia(uri: android.net.Uri)
+    /** Deletes the frozen review URI through the authority required by its exact restore provenance. */
+    fun onDeleteLastMedia(
+        uri: android.net.Uri,
+        provenance: me.hletrd.telecampro.storage.MediaProvenance,
+    )
 
     /**
      * The full-screen media-review overlay opened/closed for its frozen [uri]. Returns true only

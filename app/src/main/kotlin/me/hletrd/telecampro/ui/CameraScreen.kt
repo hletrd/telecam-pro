@@ -466,7 +466,8 @@ fun CameraScreen(
     var sheetOpenRequestId by remember { mutableLongStateOf(0L) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
-    val modalVisible = sheetVisible || fnOverlayVisible || (state.reviewOpen && reviewUri != null)
+    val modalVisible = sheetVisible || fnOverlayVisible ||
+        (state.reviewOpen && reviewUri != null) || state.ownerlessDeleteConsentPending
 
     // MainActivity owns hardware camera keys outside Compose. Mirror every full-screen modal into
     // CameraUiState so volume/camera/zoom/focus input cannot operate the hidden viewfinder behind it.
@@ -1469,7 +1470,7 @@ fun CameraScreen(
                 reviewUri = null
             },
             onDelete = {
-                actions.onDeleteLastMedia(frozenReviewUri)
+                actions.onDeleteLastMedia(frozenReviewUri, reviewProvenance)
                 actions.onReviewOpenChange(false, frozenReviewUri)
                 reviewUri = null
             },

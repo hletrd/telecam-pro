@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -14,6 +15,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
@@ -64,6 +66,8 @@ import me.hletrd.telecampro.ui.CameraViewModel
 import me.hletrd.telecampro.ui.ExternalNavigationFailure
 import me.hletrd.telecampro.ui.ExternalNavigationRecovery
 import me.hletrd.telecampro.ui.ExternalNavigationTarget
+import me.hletrd.telecampro.ui.OwnerlessMediaDeleteConsentResult
+import me.hletrd.telecampro.ui.OwnerlessMediaDeletePreparation
 import me.hletrd.telecampro.ui.PrivacyPolicyFallbackDialog
 import me.hletrd.telecampro.ui.externalNavigationFailure
 import me.hletrd.telecampro.ui.launchExternal
@@ -295,6 +299,17 @@ class MainActivity : ComponentActivity() {
                         null -> Unit
                     }
                 }
+                val ownerlessDeleteLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartIntentSenderForResult(),
+                ) { result ->
+                    vm.onOwnerlessMediaDeleteConsentResult(
+                        if (result.resultCode == android.app.Activity.RESULT_OK) {
+                            OwnerlessMediaDeleteConsentResult.APPROVED
+                        } else {
+                            OwnerlessMediaDeleteConsentResult.CANCELED
+                        },
+                    )
+                }
 
                 LaunchedEffect(Unit) {
                     if (!hasCameraPermission && !cameraPermanentlyDenied) {
@@ -332,6 +347,36 @@ class MainActivity : ComponentActivity() {
                                 requestMicrophoneThen(
                                     action = PendingAudioAction.ENABLE_AUDIO,
                                 ) { vm.onToggleRecordAudio(true) }
+                            }
+
+                            override fun onDeleteLastMedia(
+                                uri: android.net.Uri,
+                                provenance: me.hletrd.telecampro.storage.MediaProvenance,
+                            ) {
+                                when (vm.prepareOwnerlessMediaDelete(uri, provenance)) {
+                                    OwnerlessMediaDeletePreparation.DIRECT_APP_OWNED ->
+                                        vm.onDeleteLastMedia(uri, provenance)
+                                    OwnerlessMediaDeletePreparation.REJECTED -> Unit
+                                    OwnerlessMediaDeletePreparation.CONSENT_REQUIRED -> {
+                                        val request = runCatching {
+                                            val pendingIntent = MediaStore.createDeleteRequest(
+                                                contentResolver,
+                                                listOf(uri),
+                                            )
+                                            IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                                        }.getOrElse {
+                                            vm.onOwnerlessMediaDeleteConsentResult(
+                                                OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
+                                            )
+                                            return
+                                        }
+                                        if (runCatching { ownerlessDeleteLauncher.launch(request) }.isFailure) {
+                                            vm.onOwnerlessMediaDeleteConsentResult(
+                                                OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             // Declared EXPLICITLY rather than left to `by vm`: a device-verified

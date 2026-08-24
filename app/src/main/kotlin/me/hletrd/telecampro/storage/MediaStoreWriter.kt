@@ -850,6 +850,16 @@ object MediaStoreWriter {
         )?.use { cursor -> cursor.moveToFirst() }
     }.getOrNull()
 
+    /** Read-only exact-row truth used after a system-owned delete-consent surface returns. */
+    internal fun knownOutputPresence(
+        context: Context,
+        uri: Uri,
+    ): KnownOutputProviderDisposition = when (mediaRowExists(context, uri)) {
+        true -> KnownOutputProviderDisposition.PRESENT
+        false -> KnownOutputProviderDisposition.ALREADY_ABSENT
+        null -> KnownOutputProviderDisposition.UNKNOWN
+    }
+
     /**
      * Deletes every untracked row belonging to one exact versioned capture family.
      *

@@ -285,6 +285,15 @@ class CameraViewModel @JvmOverloads constructor(
     // Owns every processed/raw URI for a capture and tombstones deleted ids so a late save callback
     // cannot resurrect a sibling after the user deleted the frozen review shot.
     private val captureOutputs = CaptureOutputTracker<Uri>(CAPTURE_OUTPUT_HISTORY)
+    // Main-thread owner for the exact file frozen while Android's system delete-consent surface is
+    // active. The provider result may arrive after a newer capture, so completion always rechecks
+    // this object identity before restoring or publishing UI state.
+    private var pendingOwnerlessMediaDelete: PendingOwnerlessMediaDelete? = null
+
+    private data class PendingOwnerlessMediaDelete(
+        val uri: Uri,
+        val plan: CaptureDeletePlan<Uri>,
+    )
 
     // The plain zoom-glide state (pending / ease / interacting / flush-scheduled) as one tested holder
     // so every optics-scale remap door invalidates it through the single invalidateOpticsDerivedState() owner
@@ -3358,7 +3367,118 @@ class CameraViewModel @JvmOverloads constructor(
         _state.update { it.copy(cameraInputBlocked = blocked) }
     }
 
-    override fun onDeleteLastMedia(uri: Uri) {
+    /**
+     * Freezes one owner-unverified row for an Activity-owned MediaStore delete request.
+     *
+     * The frozen review provenance is supplied by Compose, while the tracker is the stronger live
+     * authority when it still owns the URI. Either one saying owner-unverified selects consent; an
+     * ownerless row can therefore never fall through to the direct app-owned delete path merely
+     * because its bounded tracker entry disappeared.
+     */
+    internal fun prepareOwnerlessMediaDelete(
+        uri: Uri,
+        presentedProvenance: MediaProvenance,
+    ): OwnerlessMediaDeletePreparation {
+        val route = mediaDeleteAuthorizationRoute(
+            trackedProvenance = captureOutputs.provenanceFor(uri),
+            presentedProvenance = presentedProvenance,
+        )
+        if (route == MediaDeleteAuthorizationRoute.DIRECT_APP_OWNED) {
+            return OwnerlessMediaDeletePreparation.DIRECT_APP_OWNED
+        }
+        if (pendingOwnerlessMediaDelete != null) {
+            return OwnerlessMediaDeletePreparation.REJECTED
+        }
+
+        val rawPlan = captureOutputs.beginDelete(uri)
+        val plan = rawPlan.copy(
+            // A pin can fail only after bounded-history loss. Preserve the frozen review's
+            // unverified authorship instead of defaulting a canceled request back to APP_OWNED.
+            provenanceByOutput = rawPlan.provenanceByOutput +
+                (uri to MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
+            deleteScope = MediaDeleteScope.FILE_ONLY,
+            outputs = setOf(uri),
+        )
+        pendingOwnerlessMediaDelete = PendingOwnerlessMediaDelete(uri, plan)
+        _state.update { current ->
+            current.copy(
+                lastMediaUri = current.lastMediaUri.takeUnless { it == uri },
+                lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+                ownerlessDeleteConsentPending = true,
+                cameraInputBlocked = true,
+            )
+        }
+        return OwnerlessMediaDeletePreparation.CONSENT_REQUIRED
+    }
+
+    /** Activity result edge. Approval is already terminal provider work; never delete a second time. */
+    internal fun onOwnerlessMediaDeleteConsentResult(result: OwnerlessMediaDeleteConsentResult) {
+        val pending = pendingOwnerlessMediaDelete ?: return
+        if (result == OwnerlessMediaDeleteConsentResult.APPROVED) {
+            completeOwnerlessMediaDelete(
+                pending,
+                ownerlessMediaDeleteResolution(
+                    result,
+                    KnownOutputProviderDisposition.ALREADY_ABSENT,
+                ),
+            )
+            return
+        }
+
+        val application = getApplication<Application>()
+        val dispatch = mediaDeleteDispatcher.dispatch(
+            Runnable {
+                val presence = MediaStoreWriter.knownOutputPresence(application, pending.uri)
+                mainHandler.post {
+                    if (!cleared && pendingOwnerlessMediaDelete === pending) {
+                        completeOwnerlessMediaDelete(
+                            pending,
+                            ownerlessMediaDeleteResolution(result, presence),
+                        )
+                    }
+                }
+            },
+        )
+        if (dispatch != ViewModelMediaDeleteDispatch.ACCEPTED) {
+            // No provider worker was available. UNKNOWN preserves the exact review handle for a
+            // later attempt; it never guesses that cancellation/failure deleted the row.
+            completeOwnerlessMediaDelete(
+                pending,
+                ownerlessMediaDeleteResolution(result, KnownOutputProviderDisposition.UNKNOWN),
+            )
+        }
+    }
+
+    private fun completeOwnerlessMediaDelete(
+        pending: PendingOwnerlessMediaDelete,
+        resolution: OwnerlessMediaDeleteResolution,
+    ) {
+        if (pendingOwnerlessMediaDelete !== pending) return
+        pendingOwnerlessMediaDelete = null
+        val restored = captureOutputs.restoreDeleteSurvivors(
+            pending.plan,
+            if (resolution.restoreExactFile) setOf(pending.uri) else emptySet(),
+        )
+        _state.update { current ->
+            val terminal = current.copy(ownerlessDeleteConsentPending = false)
+            if (restored != null && captureOutputs.isCurrentReviewOutput(restored.output)) {
+                terminal.withDeleteSurvivor(restored)
+            } else {
+                terminal
+            }
+        }
+        showStatus(resolution.status)
+    }
+
+    override fun onDeleteLastMedia(uri: Uri, provenance: MediaProvenance) {
+        if (mediaDeleteAuthorizationRoute(captureOutputs.provenanceFor(uri), provenance) ==
+            MediaDeleteAuthorizationRoute.SYSTEM_CONSENT
+        ) {
+            // Defense in depth for direct/non-Activity callers: only MainActivity can own the
+            // platform IntentSender result, so never attempt an unauthorized resolver delete here.
+            showStatus(CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE)
+            return
+        }
         // Freeze ownership and tombstone the id BEFORE the Binder calls. Any slower HEIF/JPEG/DNG
         // callback for the shot is then rejected and deleted instead of replacing the thumbnail.
         val deletePlan = captureOutputs.beginDelete(uri)
@@ -3767,6 +3887,68 @@ internal fun deleteResultStatus(
 ): CameraStatusMessage =
     if (knownProviderDeletionComplete && untrackedSweep.complete) CameraStatusMessage.DELETED
     else CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY
+
+/** Which owner is authorized to perform the exact frozen review-file deletion. */
+internal enum class MediaDeleteAuthorizationRoute {
+    DIRECT_APP_OWNED,
+    SYSTEM_CONSENT,
+}
+
+internal fun mediaDeleteAuthorizationRoute(
+    trackedProvenance: MediaProvenance?,
+    presentedProvenance: MediaProvenance,
+): MediaDeleteAuthorizationRoute = if (
+    trackedProvenance == MediaProvenance.LEGACY_FORMAT_UNVERIFIED ||
+    presentedProvenance == MediaProvenance.LEGACY_FORMAT_UNVERIFIED
+) {
+    MediaDeleteAuthorizationRoute.SYSTEM_CONSENT
+} else {
+    MediaDeleteAuthorizationRoute.DIRECT_APP_OWNED
+}
+
+internal enum class OwnerlessMediaDeletePreparation {
+    DIRECT_APP_OWNED,
+    CONSENT_REQUIRED,
+    REJECTED,
+}
+
+internal enum class OwnerlessMediaDeleteConsentResult {
+    APPROVED,
+    CANCELED,
+    LAUNCH_FAILED,
+}
+
+internal data class OwnerlessMediaDeleteResolution(
+    val restoreExactFile: Boolean,
+    val status: CameraStatusMessage,
+)
+
+/**
+ * Reduces the system result with fresh provider truth. RESULT_OK means createDeleteRequest already
+ * completed the deletion; every other outcome restores unless absence is authoritative.
+ */
+internal fun ownerlessMediaDeleteResolution(
+    result: OwnerlessMediaDeleteConsentResult,
+    presence: KnownOutputProviderDisposition,
+): OwnerlessMediaDeleteResolution = when {
+    result == OwnerlessMediaDeleteConsentResult.APPROVED -> OwnerlessMediaDeleteResolution(
+        restoreExactFile = false,
+        status = CameraStatusMessage.DELETED,
+    )
+    presence == KnownOutputProviderDisposition.ALREADY_ABSENT ||
+        presence == KnownOutputProviderDisposition.DELETED -> OwnerlessMediaDeleteResolution(
+        restoreExactFile = false,
+        status = CameraStatusMessage.FILE_ALREADY_REMOVED,
+    )
+    result == OwnerlessMediaDeleteConsentResult.CANCELED -> OwnerlessMediaDeleteResolution(
+        restoreExactFile = true,
+        status = CameraStatusMessage.DELETE_CANCELED,
+    )
+    else -> OwnerlessMediaDeleteResolution(
+        restoreExactFile = true,
+        status = CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
+    )
+}
 
 /** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */
 internal fun cameraRoutePublishedState(

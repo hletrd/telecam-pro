@@ -224,6 +224,9 @@
     <string name="status_memory_slot_empty">%1$s empty</string>
     <string name="status_memory_slot_loaded">%1$s loaded</string>
     <string name="status_deleted">Deleted</string>
+    <string name="status_delete_canceled">Delete canceled</string>
+    <string name="status_file_already_removed">File was already removed</string>
+    <string name="status_delete_authorization_unavailable">Could not open the system delete confirmation</string>
     <string name="status_some_files_not_deleted_retry_gallery">Some files could not be deleted. Retry in Gallery.</string>
     <string name="status_could_not_delete_file">Could not delete file</string>
     <string name="value_phone">Phone</string>

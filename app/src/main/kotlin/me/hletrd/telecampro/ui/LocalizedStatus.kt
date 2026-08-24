@@ -69,6 +69,9 @@ internal fun CameraStatusMessage.stringResourceId(): Int = when (this) {
     CameraStatusMessage.MEMORY_SLOT_EMPTY -> R.string.status_memory_slot_empty
     CameraStatusMessage.MEMORY_SLOT_LOADED -> R.string.status_memory_slot_loaded
     CameraStatusMessage.DELETED -> R.string.status_deleted
+    CameraStatusMessage.DELETE_CANCELED -> R.string.status_delete_canceled
+    CameraStatusMessage.FILE_ALREADY_REMOVED -> R.string.status_file_already_removed
+    CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE -> R.string.status_delete_authorization_unavailable
     CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY -> R.string.status_some_files_not_deleted_retry_gallery
     CameraStatusMessage.COULD_NOT_DELETE_FILE -> R.string.status_could_not_delete_file
 }
