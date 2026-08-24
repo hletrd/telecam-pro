@@ -13,6 +13,7 @@ import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CameraPolicyPublication
+import me.hletrd.telecampro.camera.CameraPolicyPublicationGate
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
@@ -29,6 +30,7 @@ import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.cameraPolicyPublishedState
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
@@ -933,6 +935,51 @@ class CameraViewModelRobolectricTest {
         assertNull(v.state.value.openReview)
         assertFalse(v.state.value.reviewOpen)
         assertFalse(v.state.value.cameraInputBlocked)
+    }
+
+    @Test fun `older admitted policy terminal cannot repaint newer committed truth`() {
+        val gate = CameraPolicyPublicationGate()
+        val frozenReview = me.hletrd.telecampro.camera.OpenReviewPresentation(
+            uri = Uri.parse("content://telecam.test/pinned-policy-review"),
+            provenance = MediaProvenance.APP_OWNED,
+            deleteScope = MediaDeleteScope.FILE_ONLY,
+        )
+        val state = AtomicReference(
+            CameraUiState(
+                openReview = frozenReview,
+                cameraInputBlocked = true,
+                cameraPolicyBlocked = false,
+            ),
+        )
+        val olderAdmitted = CountDownLatch(1)
+        val resumeOlder = CountDownLatch(1)
+        val olderResult = AtomicReference<Boolean>()
+        val older = Thread {
+            olderResult.set(
+                gate.publish(
+                    publication = CameraPolicyPublication(1L, true),
+                    afterAdmission = {
+                        olderAdmitted.countDown()
+                        assertTrue(resumeOlder.await(2, TimeUnit.SECONDS))
+                    },
+                ) { blocked ->
+                    state.updateAndGet { cameraPolicyPublishedState(it, blocked) }
+                },
+            )
+        }.apply { start() }
+        assertTrue(olderAdmitted.await(2, TimeUnit.SECONDS))
+
+        assertTrue(gate.publish(CameraPolicyPublication(2L, false)) { blocked ->
+            state.updateAndGet { cameraPolicyPublishedState(it, blocked) }
+        })
+        resumeOlder.countDown()
+        older.join(2_000)
+
+        assertFalse(older.isAlive)
+        assertFalse("superseded admitted callback committed", olderResult.get())
+        assertFalse(state.get().cameraPolicyBlocked)
+        assertTrue("policy truth released another input owner", state.get().cameraInputBlocked)
+        assertEquals(frozenReview, state.get().openReview)
     }
 
     @Test fun `review gate covers every starting and active video combination`() {

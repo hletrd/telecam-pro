@@ -26,6 +26,7 @@ import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
 import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CameraReadyPublicationGate
+import me.hletrd.telecampro.camera.CameraPolicyPublicationGate
 import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.recalledCameraRoute
@@ -36,6 +37,7 @@ import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
+import me.hletrd.telecampro.camera.cameraPolicyPublishedState
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorEffect
@@ -199,7 +201,7 @@ class CameraViewModel private constructor(
     ) : this(app, engine, latestCaptureRestoreOverrides, Unit)
 
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
-    private val cameraPolicyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0L)
+    private val cameraPolicyPublicationGate = CameraPolicyPublicationGate()
 
     // The focus-ruler loupe assist owns `punchIn` transiently; these keep the operator's own value
 
@@ -1080,15 +1082,8 @@ class CameraViewModel private constructor(
         // thread — StateFlow.update is thread-safe.
         engine.onTimelapseRun = { running -> _state.update { it.copy(timelapseRunning = running) } }
         engine.onCameraPolicyBlocked = { publication ->
-            val previous = cameraPolicyPublicationSequence.getAndAccumulate(
-                publication.sequence,
-                ::maxOf,
-            )
-            if (publication.sequence > previous) {
-                _state.update {
-                    if (it.cameraPolicyBlocked == publication.blocked) it
-                    else it.copy(cameraPolicyBlocked = publication.blocked)
-                }
+            cameraPolicyPublicationGate.publish(publication) { blocked ->
+                _state.update { cameraPolicyPublishedState(it, blocked) }
             }
         }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRoute = route) } }

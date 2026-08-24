@@ -1326,6 +1326,45 @@ internal class CameraReadyPublicationGate(
         }
 }
 
+/**
+ * Linearizes camera-policy terminals across Engine callback threads and the ViewModel StateFlow.
+ *
+ * Sequence admission is deliberately allowed before [commit] takes the short publication monitor:
+ * a newer callback may therefore overtake an admitted older callback. The exact sequence is checked
+ * again inside that monitor immediately before the state mutation, so the older callback is inert if
+ * that happens. If a newer callback advances the sequence while an older commit is already running,
+ * its commit queues behind the older one and necessarily writes last. Both orders preserve newest
+ * truth without requiring the StateFlow reducer to treat a prior admission check as a lifetime lease.
+ */
+internal class CameraPolicyPublicationGate(
+    private val monitor: Any = Any(),
+) {
+    private val latestSequence = java.util.concurrent.atomic.AtomicLong(0L)
+
+    fun publish(
+        publication: CameraPolicyPublication,
+        /** Deterministic interleave seam; production leaves this empty. */
+        afterAdmission: () -> Unit = {},
+        commit: (blocked: Boolean) -> Unit,
+    ): Boolean {
+        val previous = latestSequence.getAndAccumulate(publication.sequence, ::maxOf)
+        if (publication.sequence <= previous) return false
+        afterAdmission()
+        return synchronized(monitor) {
+            if (latestSequence.get() != publication.sequence) {
+                false
+            } else {
+                commit(publication.blocked)
+                true
+            }
+        }
+    }
+}
+
+/** Changes only camera-policy truth; modal-input and pinned-review owners remain byte-identical. */
+internal fun cameraPolicyPublishedState(current: CameraUiState, blocked: Boolean): CameraUiState =
+    if (current.cameraPolicyBlocked == blocked) current else current.copy(cameraPolicyBlocked = blocked)
+
 /** One ordered tap-point ownership event crossing the engine/ViewModel thread boundary. */
 data class TapFocusPublication(
     val sequence: Long,
