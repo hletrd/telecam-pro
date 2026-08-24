@@ -115,6 +115,7 @@ me/hletrd/telecampro/ui/review/VideoPlaybackSetupResult
 me/hletrd/telecampro/ui/review/VideoPlaybackSetupResult$*
 me/hletrd/telecampro/ui/review/VideoInfo
 me/hletrd/telecampro/ui/review/ReviewMetadata
+me/hletrd/telecampro/ui/review/GalleryThumbRequest
 me/hletrd/telecampro/ui/review/ReviewMediaState
 me/hletrd/telecampro/ui/review/ReviewMediaState$*
 me/hletrd/telecampro/ui/theme/ThemeKt
