@@ -605,6 +605,42 @@ class StandbyAudioControllerTest {
         assertEquals(0, releases.get())
     }
 
+    @Test
+    fun `default timeout fallback abandons the exact input`() {
+        val stopTasks = ArrayDeque<() -> Unit>()
+        val timeout = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+        val stopEntered = CountDownLatch(1)
+        val releaseStop = CountDownLatch(1)
+        val input = Any()
+        val owner = StandbyInputTerminationOwner(
+            generationId = 76L,
+            stopDispatcher = StandbyStopDispatcher { stopTasks.addLast(it) },
+            stop = { _: Any ->
+                stopEntered.countDown()
+                releaseStop.await(2, TimeUnit.SECONDS)
+            },
+            stopDeadlineScheduler = RecordingTeardownScheduler { _, action ->
+                timeout.set(action)
+                RecordingTeardownCancellation {}
+            },
+            stopTimeoutMs = 1L,
+        )
+        assertTrue(owner.bind(input))
+        assertTrue(owner.beginStart(input))
+        owner.finishStart(input, succeeded = true)
+        owner.requestStop()
+
+        val stop = stopTasks.removeFirst()
+        val worker = Thread(stop)
+        worker.start()
+        assertTrue(stopEntered.await(2, TimeUnit.SECONDS))
+        checkNotNull(timeout.get()).invoke()
+
+        assertTrue(owner.isAbandoned())
+        releaseStop.countDown()
+        worker.join(2_000)
+    }
+
     private fun awaitThreadWait(thread: Thread): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
         while (System.nanoTime() < deadline) {

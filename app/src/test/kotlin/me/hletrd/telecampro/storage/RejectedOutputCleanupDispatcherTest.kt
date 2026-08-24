@@ -101,6 +101,20 @@ class RejectedOutputCleanupDispatcherTest {
         owner.shutdownNowForTest()
     }
 
+    @Test
+    fun `direct dispatch reports shutdown without inline cleanup`() {
+        var effects = 0
+        val owner = owner<String> {
+            effects++
+            PendingOutputDiscardResult.DELETED
+        }
+        owner.shutdownNowForTest()
+
+        assertEquals(RejectedOutputCleanupDispatch.SHUTDOWN, owner.dispatch("shutdown.dng"))
+        assertEquals(0, effects)
+        assertEquals(1, owner.unresolvedCount())
+    }
+
     private fun <T> owner(
         effect: (T) -> PendingOutputDiscardResult,
     ) = RejectedOutputCleanupCapacityOwner(

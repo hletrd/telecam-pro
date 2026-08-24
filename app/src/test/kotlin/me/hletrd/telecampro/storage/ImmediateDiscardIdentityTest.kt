@@ -5,6 +5,12 @@ import android.net.Uri
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
 import java.util.UUID
+import me.hletrd.telecampro.capture.DngWriteResult
+import me.hletrd.telecampro.capture.PendingDngPublication
+import me.hletrd.telecampro.video.FinalizedRecordingValidation
+import me.hletrd.telecampro.video.FrozenRecordingStorage
+import me.hletrd.telecampro.video.RecordingStorageEffects
+import me.hletrd.telecampro.video.completeFrozenRecordingStorage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -86,6 +92,57 @@ class ImmediateDiscardIdentityTest {
             PendingOutputDiscardResult.UNRESOLVED,
             MediaStoreWriter.discardRejectedOutput(context, legacyUri),
         )
+    }
+
+    @Test
+    fun `allocation capture and mark reject missing or foreign provider truth`() {
+        val reader = MutableReader(PendingDiscardIdentityRead.Absent("external_primary", "v1"))
+        val journal = journal(reader)
+        assertNull(journal.captureAllocation(uri, family))
+
+        reader.current = PendingDiscardIdentityRead.Present(identity().copy(familyIdentity = "STILL|2|2"))
+        assertNull(journal.captureAllocation(uri, family))
+
+        reader.current = PendingDiscardIdentityRead.Present(identity())
+        val allocation = requireNotNull(journal.captureAllocation(uri, family))
+        reader.current = PendingDiscardIdentityRead.Unavailable
+        assertNull(journal.mark(allocation))
+        assertFalse(journal.mark(uri.toString()))
+        reader.current = PendingDiscardIdentityRead.Ambiguous
+        assertFalse(journal.mark(uri.toString()))
+    }
+
+    @Test
+    fun `DNG results and invalid recording preserve exact allocation`() {
+        val allocation = PendingOutputAllocation(uri, family, identity())
+        val pending = PendingDngPublication(allocation, 7, family, completionMarkerDurable = true)
+        val failure = IllegalStateException("failed")
+        assertEquals(pending, DngWriteResult.Complete(pending).publication)
+        assertEquals(allocation, DngWriteResult.Rejected(allocation, failure).allocation)
+        assertEquals(failure, DngWriteResult.Failed(failure).failure)
+
+        var deletedAllocation: PendingOutputAllocation? = null
+        var uriDeleteCalled = false
+        val result = completeFrozenRecordingStorage(
+            FrozenRecordingStorage(
+                outputUri = uri,
+                pendingAllocation = allocation,
+                muxerStarted = false,
+                wroteVideoSample = false,
+                failure = null,
+                finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED,
+            ),
+            RecordingStorageEffects(
+                validateVideoTrack = { true },
+                markComplete = { true },
+                publish = { true },
+                delete = { uriDeleteCalled = true },
+                deleteAllocation = { deletedAllocation = it },
+            ),
+        )
+        assertFalse(result.saved)
+        assertEquals(allocation, deletedAllocation)
+        assertFalse(uriDeleteCalled)
     }
 
     private fun journal(reader: PendingDiscardIdentityReader): PendingDiscardJournal {

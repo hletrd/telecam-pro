@@ -134,39 +134,6 @@ internal class RecorderStandbyNativeProcessGate(
         gate.quarantineNativePublication(token)
 }
 
-private object ProcessStandbyNativeProcessGate : StandbyNativeProcessGate {
-    override fun create(
-        block: () -> StandbyAudioSetupResult,
-        publicationOwner: (StandbyAudioSetupResult) -> NativeAcquisitionPublicationOwner?,
-    ): NativeAcquisitionPublicationResult<StandbyAudioSetupResult> =
-        UnsafeRecorderQuarantine.runNativeAcquisitionWithPublication(block, publicationOwner)
-
-    override fun start(
-        token: NativeAcquisitionPublicationToken,
-        block: () -> Unit,
-        publish: () -> Unit,
-    ): NativeAcquisitionResult =
-        UnsafeRecorderQuarantine.runPublishedNativeAcquisitionWithResult(token, block, publish)
-
-    override fun finishRelease(
-        token: NativeAcquisitionPublicationToken,
-        block: () -> Unit,
-        publish: () -> Unit,
-    ): NativeAcquisitionResult =
-        UnsafeRecorderQuarantine.runPublishedNativeAcquisitionWithResult(
-            token,
-            block,
-            publish,
-            retire = true,
-        )
-
-    override fun finish(token: NativeAcquisitionPublicationToken?) =
-        UnsafeRecorderQuarantine.finishNativeAcquisitionPublication(token)
-
-    override fun quarantine(token: NativeAcquisitionPublicationToken): Boolean =
-        UnsafeRecorderQuarantine.quarantineNativeAcquisitionPublication(token)
-}
-
 /** Strong process-long owner for one standby input whose native lifetime became uncertain. */
 internal data class QuarantinedStandbyInput(
     val input: StandbyAudioInput,
@@ -547,7 +514,7 @@ internal class StandbyAudioController(
                 { UnsafeRecorderQuarantine.finishStandbyAdmission(admission) }
             }
         },
-        nativeProcessGate = ProcessStandbyNativeProcessGate,
+        nativeProcessGate = UnsafeRecorderQuarantine,
     )
 
     private val ownership = StandbyMeterOwnership<CountDownLatch>()

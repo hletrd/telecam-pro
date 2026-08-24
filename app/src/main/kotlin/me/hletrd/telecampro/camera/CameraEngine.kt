@@ -5180,8 +5180,10 @@ class CameraEngine internal constructor(
                                     android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
                                     reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
                                     val submitted = checkNotNull(rejectedDngCleanup).submit(
-                                        context,
-                                        write.allocation,
+                                        MediaStoreWriter.RejectedOutput(
+                                            context.applicationContext,
+                                            write.allocation,
+                                        ),
                                     ) { _ ->
                                         runCatching {
                                             onStillCaptureAdmissionChanged?.invoke(

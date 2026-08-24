@@ -54,6 +54,20 @@ class DiagnosticTelemetryTest {
     }
 
     @Test
+    fun defaultGateCallAndPartialCadenceWindowRemainExecutable() {
+        val gate = ThreeADiagnosticLogGate()
+        assertTrue(gate.shouldEmit(0L, baseKey))
+
+        val accumulator = ZslSpikeAccumulator()
+        accumulator.recordFrame(10L)
+        val summary = accumulator.finish(510L)
+        assertEquals(1L, summary.frames)
+        assertEquals(500L, summary.durationMs)
+        assertEquals(1, summary.windows)
+        assertEquals(2, summary.minimumWindowFps)
+    }
+
+    @Test
     fun zslCadenceAccumulatesOneBoundedSummary() {
         val accumulator = ZslSpikeAccumulator()
         repeat(301) { frame -> accumulator.recordFrame(frame * 20L) }

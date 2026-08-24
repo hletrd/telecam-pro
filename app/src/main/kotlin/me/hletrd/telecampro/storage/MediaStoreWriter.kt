@@ -826,8 +826,8 @@ object MediaStoreWriter {
     }
 
     /** Durable reject/delete path for any output the app has already classified as failed. */
-    internal fun reserveRejectedOutputCleanup(): PendingRejectedOutputCleanupReservation? =
-        rejectedOutputOwner.reserve()?.let(::PendingRejectedOutputCleanupReservation)
+    internal fun reserveRejectedOutputCleanup(): RejectedOutputCleanupReservation<RejectedOutput>? =
+        rejectedOutputOwner.reserve()
 
     internal fun dispatchRejectedOutput(
         context: Context,
@@ -1707,21 +1707,6 @@ internal class RejectedOutputCleanupReservation<T> internal constructor(
         owner.releaseReservation()
         return true
     }
-}
-
-internal class PendingRejectedOutputCleanupReservation internal constructor(
-    private val reservation: RejectedOutputCleanupReservation<MediaStoreWriter.RejectedOutput>,
-) {
-    fun submit(
-        context: Context,
-        allocation: PendingOutputAllocation,
-        onComplete: (PendingOutputDiscardResult) -> Unit = {},
-    ): Boolean = reservation.submit(
-        MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
-        onComplete,
-    )
-
-    fun cancel(): Boolean = reservation.cancel()
 }
 
 /** Process-finite non-inline cleanup owner with durable unresolved identity retention. */

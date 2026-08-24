@@ -1526,7 +1526,8 @@ internal class RecorderQuarantineAdmissionGate {
     fun hasPendingRecorderSetup(): Boolean = lock.withLock { pendingToken != null }
 }
 
-internal object UnsafeRecorderQuarantine {
+internal object UnsafeRecorderQuarantine :
+    me.hletrd.telecampro.camera.StandbyNativeProcessGate {
     private val admissionGate = RecorderQuarantineAdmissionGate()
     private val retained = Collections.synchronizedList(mutableListOf<VideoRecorder>())
     private val retainedNativeOwners = Collections.synchronizedList(mutableListOf<Any>())
@@ -1577,6 +1578,34 @@ internal object UnsafeRecorderQuarantine {
 
     fun quarantineNativeAcquisitionPublication(token: NativeAcquisitionPublicationToken): Boolean =
         admissionGate.quarantineNativePublication(token)
+
+    override fun create(
+        block: () -> me.hletrd.telecampro.camera.StandbyAudioSetupResult,
+        publicationOwner: (
+            me.hletrd.telecampro.camera.StandbyAudioSetupResult,
+        ) -> NativeAcquisitionPublicationOwner?,
+    ): NativeAcquisitionPublicationResult<me.hletrd.telecampro.camera.StandbyAudioSetupResult> =
+        runNativeAcquisitionWithPublication(block, publicationOwner)
+
+    override fun start(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult =
+        runPublishedNativeAcquisitionWithResult(token, block, publish)
+
+    override fun finishRelease(
+        token: NativeAcquisitionPublicationToken,
+        block: () -> Unit,
+        publish: () -> Unit,
+    ): NativeAcquisitionResult =
+        runPublishedNativeAcquisitionWithResult(token, block, publish, retire = true)
+
+    override fun finish(token: NativeAcquisitionPublicationToken?) =
+        finishNativeAcquisitionPublication(token)
+
+    override fun quarantine(token: NativeAcquisitionPublicationToken): Boolean =
+        quarantineNativeAcquisitionPublication(token)
 
     fun runPendingNativeSetup(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.runPendingNative(token, block)

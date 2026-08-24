@@ -608,6 +608,80 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
+    fun `published native creator rejects after close without entering`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        assertTrue(gate.close())
+        var entered = false
+
+        val result = gate.runNativeWithPublication(
+            block = { entered = true; Any() },
+            publicationOwner = { NativeAcquisitionPublicationOwner(it) {} },
+        )
+
+        assertEquals(NativeAcquisitionResult.REJECTED, result.acquisition)
+        assertEquals(null, result.value)
+        assertEquals(null, result.token)
+        assertFalse(entered)
+    }
+
+    @Test
+    fun `published native creator failure drains admission and permits retry`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val failure = IllegalStateException("create failed")
+
+        val thrown = runCatching {
+            gate.runNativeWithPublication<Any>(
+                block = { throw failure },
+                publicationOwner = { NativeAcquisitionPublicationOwner(it) {} },
+            )
+        }.exceptionOrNull()
+
+        assertSame(failure, thrown)
+        assertTrue(gate.awaitNativeAcquisitionsDrained(1, TimeUnit.SECONDS))
+        val retry = gate.runNativeWithPublication(block = { "no owner" }, publicationOwner = { null })
+        assertEquals(NativeAcquisitionResult.RETURNED_CURRENT, retry.acquisition)
+        assertEquals("no owner", retry.value)
+        assertEquals(null, retry.token)
+    }
+
+    @Test
+    fun `stale publication rejects native work and creator failure leaves token current`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val created = gate.runNativeWithPublication(
+            block = { Any() },
+            publicationOwner = { NativeAcquisitionPublicationOwner(it) {} },
+        )
+        val token = checkNotNull(created.token)
+        gate.finishNativePublication(token)
+        var staleEntered = false
+        assertEquals(
+            NativeAcquisitionResult.REJECTED,
+            gate.runPublishedNativeWithResult(token, { staleEntered = true }, {}),
+        )
+        assertFalse(staleEntered)
+        assertFalse(gate.quarantineNativePublication(token))
+
+        val retry = gate.runNativeWithPublication(
+            block = { Any() },
+            publicationOwner = { NativeAcquisitionPublicationOwner(it) {} },
+        )
+        val retryToken = checkNotNull(retry.token)
+        val failure = IllegalStateException("start failed")
+        assertSame(
+            failure,
+            runCatching {
+                gate.runPublishedNativeWithResult(retryToken, { throw failure }, {})
+            }.exceptionOrNull(),
+        )
+        var published = false
+        assertEquals(
+            NativeAcquisitionResult.RETURNED_CURRENT,
+            gate.runPublishedNativeWithResult(retryToken, {}, { published = true }),
+        )
+        assertTrue(published)
+    }
+
+    @Test
     fun `interrupted drain observation returns false and restores interrupt status`() {
         val gate = RecorderQuarantineAdmissionGate()
         val entered = CountDownLatch(1)
