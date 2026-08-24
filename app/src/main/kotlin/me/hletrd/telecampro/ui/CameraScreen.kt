@@ -92,6 +92,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -3129,6 +3130,7 @@ private const val SNAPSHOT_IDEAL_OFFSET_DP = 76f
 
 /** Internal test probe; custom semantics keys are not exposed to accessibility services. */
 internal val ShutterVisualAlpha = SemanticsPropertyKey<Float>("ShutterVisualAlpha")
+internal val ShutterKeyboardFocused = SemanticsPropertyKey<Boolean>("ShutterKeyboardFocused")
 
 /** The single value applied to both the composed layer and its non-announced test probe. */
 internal fun shutterVisualAlpha(cameraHealthy: Boolean): Float = if (cameraHealthy) 1f else 0.35f
@@ -3156,13 +3158,14 @@ internal fun ShutterButton(
     val view = LocalView.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    var keyboardFocused by remember { mutableStateOf(false) }
     val shutterScale by animateFloatAsState(if (pressed) 0.9f else 1f, label = "shutterScale")
     val visualAlpha = shutterVisualAlpha(cameraHealthy)
     val activate = {
         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         onClick()
     }
-    Canvas(
+    Box(
         modifier = modifier
             .size(76.dp)
             .scale(shutterScale)
@@ -3174,6 +3177,7 @@ internal fun ShutterButton(
             // feedback — an earlier version of this comment promised a status message that the
             // enabled=shutterEnabled clickable below can never reach.
             .alpha(visualAlpha)
+            .onFocusChanged { keyboardFocused = it.isFocused }
             .clickable(
                 enabled = enabled,
                 interactionSource = interaction,
@@ -3200,6 +3204,7 @@ internal fun ShutterButton(
                 // the exact value already applied to the graphics layer without asking Robolectric
                 // to rasterize a custom Canvas, which it does not do.
                 this[ShutterVisualAlpha] = visualAlpha
+                this[ShutterKeyboardFocused] = keyboardFocused
                 onClick {
                     if (!enabled) return@onClick false
                     activate()
@@ -3207,24 +3212,43 @@ internal fun ShutterButton(
                 }
             },
     ) {
-        // Inset the ring by half the stroke: a centered stroke at minDimension/2 hangs 2 dp outside
-        // the canvas, and the unhealthy-dim `alpha(0.35f)` forces a clipping composition layer
-        // (alpha < 1 implies clip in Compose) — the overhang got sliced only while dimmed, reading
-        // as a faceted ring on the video shutter (user-reported 2026-07-25).
-        val ringStroke = 4.dp.toPx()
-        drawCircle(color = CameraColors.TextPrimary, radius = (size.minDimension - ringStroke) / 2f, style = Stroke(width = ringStroke))
-        when {
-            mode == CaptureMode.PHOTO -> drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension * 0.38f)
-            mode == CaptureMode.VIDEO && !isRecording -> drawCircle(color = CameraColors.Record, radius = size.minDimension * 0.38f)
-            else -> {
-                val rectSize = size.minDimension * 0.42f
-                drawRoundRect(
-                    color = CameraColors.Record,
-                    topLeft = Offset((size.width - rectSize) / 2f, (size.height - rectSize) / 2f),
-                    size = Size(rectSize, rectSize),
-                    cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
-                )
+        Canvas(Modifier.fillMaxSize()) {
+            // Inset the ring by half the stroke: a centered stroke at minDimension/2 hangs 2 dp outside
+            // the canvas, and the unhealthy-dim `alpha(0.35f)` forces a clipping composition layer
+            // (alpha < 1 implies clip in Compose) — the overhang got sliced only while dimmed, reading
+            // as a faceted ring on the video shutter (user-reported 2026-07-25).
+            val ringStroke = 4.dp.toPx()
+            drawCircle(color = CameraColors.TextPrimary, radius = (size.minDimension - ringStroke) / 2f, style = Stroke(width = ringStroke))
+            when {
+                mode == CaptureMode.PHOTO -> drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension * 0.38f)
+                mode == CaptureMode.VIDEO && !isRecording -> drawCircle(color = CameraColors.Record, radius = size.minDimension * 0.38f)
+                else -> {
+                    val rectSize = size.minDimension * 0.42f
+                    drawRoundRect(
+                        color = CameraColors.Record,
+                        topLeft = Offset((size.width - rectSize) / 2f, (size.height - rectSize) / 2f),
+                        size = Size(rectSize, rectSize),
+                        cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
+                    )
+                }
             }
+        }
+        ShutterFocusIndicator(keyboardFocused, Modifier.fillMaxSize())
+    }
+}
+
+/** Composed outside the custom Canvas so host capture and device snapshots can verify its paint. */
+@Composable
+internal fun ShutterFocusIndicator(focused: Boolean, modifier: Modifier = Modifier) {
+    Box(modifier) {
+        if (focused) {
+            // Black survives bright finder frames; Accent identifies focus on dark frames.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .border(5.dp, Color.Black, CircleShape)
+                    .border(2.dp, CameraColors.Accent, CircleShape),
+            )
         }
     }
 }
