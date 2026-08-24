@@ -466,20 +466,52 @@ private fun applyExifOrientation(context: Context, uri: Uri, decoded: Bitmap): B
                 )
         }
     }.getOrNull() ?: androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL
-    val matrix = android.graphics.Matrix()
-    when (orientation) {
-        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-        // Mirrored orientations never come from our save lanes (parity-preserving rotations only);
-        // leave them un-transformed rather than guessing a flip axis.
-        else -> return decoded
-    }
-    val rotated = runCatching {
-        Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+    val transform = reviewExifTransform(orientation) ?: return decoded
+    val transformed = runCatching {
+        applyReviewExifTransform(decoded, transform)
     }.getOrNull() ?: return decoded
-    if (rotated !== decoded) decoded.recycle()
-    return rotated
+    if (transformed !== decoded) decoded.recycle()
+    return transformed
+}
+
+internal data class ReviewExifTransform(val rotationDegrees: Float, val flipHorizontal: Boolean)
+
+/** Complete EXIF-orientation mapping for current app output and admitted ownerless legacy media. */
+internal fun reviewExifTransform(orientation: Int): ReviewExifTransform? = when (orientation) {
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL ->
+        ReviewExifTransform(0f, flipHorizontal = true)
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 ->
+        ReviewExifTransform(180f, flipHorizontal = false)
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_FLIP_VERTICAL ->
+        ReviewExifTransform(180f, flipHorizontal = true)
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_TRANSPOSE ->
+        ReviewExifTransform(90f, flipHorizontal = true)
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 ->
+        ReviewExifTransform(90f, flipHorizontal = false)
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_TRANSVERSE ->
+        ReviewExifTransform(270f, flipHorizontal = true)
+    androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 ->
+        ReviewExifTransform(270f, flipHorizontal = false)
+    else -> null
+}
+
+internal fun applyReviewExifTransform(decoded: Bitmap, transform: ReviewExifTransform): Bitmap {
+    val swapsDimensions = transform.rotationDegrees == 90f || transform.rotationDegrees == 270f
+    val outputWidth = if (swapsDimensions) decoded.height else decoded.width
+    val outputHeight = if (swapsDimensions) decoded.width else decoded.height
+    val matrix = android.graphics.Matrix().apply {
+        setTranslate(-decoded.width / 2f, -decoded.height / 2f)
+        postRotate(transform.rotationDegrees)
+        if (transform.flipHorizontal) postScale(-1f, 1f)
+        postTranslate(outputWidth / 2f, outputHeight / 2f)
+    }
+    val output = Bitmap.createBitmap(
+        outputWidth,
+        outputHeight,
+        decoded.config ?: Bitmap.Config.ARGB_8888,
+    )
+    android.graphics.Canvas(output).drawBitmap(decoded, matrix, null)
+    return output
 }
 
 private data class ReviewMetadata(
