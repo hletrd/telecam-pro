@@ -1,4 +1,55 @@
-# Aggregate deep review — cycle 25
+# Aggregate deep review — cycle 26
+
+Date: 2026-08-24
+Reviewed HEAD: `242c805`
+
+## Current-cycle review provenance
+
+The global agent pool exposed one fresh child-reviewer slot because prior cycle agents still
+occupied the remaining thread capacity. That reviewer performed one complete 419-path inventory and
+applied all required specialist perspectives, writing separate `code-reviewer`, `architect`,
+`perf-reviewer`, `tracer`, `security-reviewer`, `debugger`, `critic`, `verifier`, `test-engineer`,
+`document-specialist`, `designer`, and repository-specific `qa-adversary` artifacts. No perspective
+was omitted, and there were no agent failures.
+
+Coverage included all 95 production Kotlin modules, 189 host-test files, four instrumented probes,
+two debug hosts, 30 Python files, two shell files, manifests, resources, Gradle/release inputs, and
+active documentation. Production source, tools, configuration, and active product documentation are
+byte-identical to cycle 25's reviewed/gated `eca8df1`; only cycle 25's aggregate and completed
+convergence plan changed. The final sweep re-traced exact Camera2 teardown, still-family producer/
+publication/delete authority, recording/GL/review ownership, obscured-touch rejection, legacy-media
+provenance, release sealing, UI/accessibility, and documentation claims.
+
+## Current-cycle deduplicated findings
+
+No new confirmed, likely, or actionable manual-validation finding survived aggregation. All twelve
+review perspectives reported a clean current HEAD. Existing device-only residuals, accepted product
+decisions, and structural debt remain explicitly governed by `docs/BACKLOG.md` and
+`docs/FIELD_CHECKS.md`; they were not relabeled as new findings or silently treated as passed.
+
+## Current-cycle verification evidence
+
+- `:app:assembleDebug`, `:app:testDebugUnitTest`, and `:app:lintDebug`: passed.
+- Documentation checks: 111/111 passed; `git diff --check` passed.
+- The byte-identical cycle-25 production/tooling baseline additionally passed 1,854 host tests, 73
+  tool/release tests, 182 device-harness self-tests, Python compilation, XML parsing, and configured
+  static scans.
+- Device gates were not run because there was no current `ANDROID_SERIAL` and no device-mutation
+  authorization; no historical device result was promoted to current evidence.
+
+## Current-cycle accounting
+
+- New review findings: **0**
+- Deduplicated root causes: **0**
+- Agent failures: **0**
+- Deferred findings: **0**
+
+## Archived cycle-25 aggregate
+
+Date: 2026-08-24
+Reviewed HEAD: `eca8df1`
+
+## Current-cycle review provenance
 
 Date: 2026-08-24
 Reviewed HEAD: `eca8df1`
