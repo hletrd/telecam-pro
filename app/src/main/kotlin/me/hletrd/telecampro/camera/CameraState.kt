@@ -360,13 +360,6 @@ const val TELE_MAX_DISPLAY_ZOOM = 60f
 // and the Compose overlay (border) through [finderRect] so both boxes stay pixel-aligned.
 const val FINDER_FRACTION = 0.30f
 const val FINDER_SIDE_MARGIN = 0.03f
-// 0.14 → 0.22 (2026-07-29): once the box moved to the RIGHT edge it came alongside the focal rail,
-// whose last chip ran into it. The rail is a 48 dp row sitting just above the preview's bottom, so
-// the inset has to clear the rail's full height plus its breathing room, not just the edge.
-// REPLACED by FINDER_TOP_ANCHOR (2026-08-04): a bottom-relative inset cannot place the box against
-// screen-fixed chrome, because the preview box's bottom edge moves with its aspect while the chrome
-// does not. Kept only as finderRect's unused default so existing callers and tests still compile.
-const val FINDER_BOTTOM_MARGIN = 0.10f
 
 // How far below the preview's TOP edge the overview's top sits, as a fraction of the box WIDTH.
 // Device-measured on a 1440-wide phone: the placement that clears the focal rail by ~90 px lands
@@ -670,19 +663,18 @@ data class FinderRect(val x: Float, val y: Float, val width: Float, val height: 
 
 /**
  * The one geometry rule for the finder PIP, shared by the GL scissor/viewport (pixels) and the
- * Compose border overlay (dp): a [fraction]-sized box of the FULL preview box, inset from the left
- * by [sideMargin] and from the bottom by [bottomMargin], both as fractions of the short edge. The
- * larger bottom clearance keeps the same-stream overview above the persistent Fn/lens rail. Both
- * consumers MUST derive their rect from here — the original Compose modifier chain (`padding` before
- * `fillMaxWidth`) sized the border from padding-reduced constraints and drew it ~6% smaller than the
- * GL content box.
+ * Compose border overlay (dp): a [fraction]-sized box of the FULL preview box, inset from the right
+ * by [sideMargin]. Vertical placement takes the largest of the [topAnchor] law, the fractional
+ * bottom-clearance floor, and the caller's measured [bottomClearance], keeping the same-stream
+ * overview above persistent chrome on every aspect/window shape. Both consumers MUST derive their
+ * rect from here — the original Compose modifier chain (`padding` before `fillMaxWidth`) sized the
+ * border from padding-reduced constraints and drew it ~6% smaller than the GL content box.
  */
 fun finderRect(
     boxWidth: Float,
     boxHeight: Float,
     fraction: Float = FINDER_FRACTION,
     sideMargin: Float = FINDER_SIDE_MARGIN,
-    @Suppress("UNUSED_PARAMETER") bottomMargin: Float = FINDER_BOTTOM_MARGIN,
     topAnchor: Float = FINDER_TOP_ANCHOR,
     // How far the preview box extends BEHIND the bottom chrome, in the same units as the box, plus
     // whatever breathing room the caller wants. Negative or NaN means "not known" and falls back to

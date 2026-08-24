@@ -897,8 +897,8 @@ fun CameraScreen(
             // camera feed. Exact predicate: user toggle + Photo + 4:3 + TELE + active punch-in. The
             // shared teleFinderVisible predicate is the same gate the engine resolves for GL, so the
             // border and overview content cannot drift. The rect comes from the same pure finderRect
-            // the GL scissor uses — sized from the FULL aspect box, with independent side/bottom
-            // clearance (the previous padding-before-fillMaxWidth chain shrank the border ~6% below
+            // the GL scissor uses — sized from the FULL aspect box, with a right inset and measured
+            // bottom-chrome clearance (the previous padding-before-fillMaxWidth chain shrank it ~6% below
             // the GL content box). Absolute anchor + absolute offset: the GL box has no layout
             // direction, so the
             // border must not mirror to bottom-right under RTL system locales. Square corners trace

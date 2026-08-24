@@ -7,21 +7,20 @@ import org.junit.Test
 
 /**
  * Pins the single geometry rule the TELE finder PIP shares between the GL scissor/viewport
- * (pixels) and the Compose border overlay (dp): fraction of the FULL box, with independent side and
- * bottom clearances measured against the short edge. The regression this protects: the original
+ * (pixels) and the Compose border overlay (dp): fraction of the FULL box, with a right-side inset
+ * plus top-anchor and bottom-clearance placement. The regression this protects: the original
  * Compose chain applied `padding` BEFORE `fillMaxWidth`, sizing the border from padding-reduced
  * constraints — ~6% smaller than the GL content box.
  */
 class FinderGeometryTest {
 
     @Test
-    fun `box is the fraction of the full box with independent short-edge insets`() {
+    fun `box is the fraction of the full box with a short-edge side inset`() {
         val r = finderRect(
             boxWidth = 1000f,
             boxHeight = 750f,
             fraction = 0.30f,
             sideMargin = 0.03f,
-            bottomMargin = 0.10f,
         )
         assertEquals(300f, r.width, 1e-4f)
         assertEquals(225f, r.height, 1e-4f)
@@ -68,32 +67,52 @@ class FinderGeometryTest {
     }
 
     @Test
-    fun `size does not depend on either margin`() {
+    fun `size does not depend on placement inputs`() {
         // The regression case: the border must be fraction-of-FULL-box, not
         // fraction-of-(box minus 2 margins).
         val noMargin = finderRect(
             boxWidth = 1000f,
             boxHeight = 1500f,
             sideMargin = 0f,
-            bottomMargin = 0f,
+            topAnchor = 0.60f,
+            bottomClearance = 0f,
         )
         val withMargin = finderRect(
             boxWidth = 1000f,
             boxHeight = 1500f,
             sideMargin = 0.03f,
-            bottomMargin = 0.14f,
+            topAnchor = 0.49f,
+            bottomClearance = 300f,
         )
         assertEquals(noMargin.width, withMargin.width, 1e-4f)
         assertEquals(noMargin.height, withMargin.height, 1e-4f)
     }
 
     @Test
-    fun `side and top-anchor margins move only their own axes`() {
+    fun `side margin and top anchor move only their own axes`() {
         val baseline = finderRect(boxWidth = 1000f, boxHeight = 1500f, sideMargin = 0.03f, topAnchor = 0.60f)
+        val inset = finderRect(boxWidth = 1000f, boxHeight = 1500f, sideMargin = 0.05f, topAnchor = 0.60f)
         val raised = finderRect(boxWidth = 1000f, boxHeight = 1500f, sideMargin = 0.03f, topAnchor = 0.49f)
+        assertEquals(-20f, inset.x - baseline.x, 1e-4f)
+        assertEquals(baseline.y, inset.y, 1e-4f)
         assertEquals(baseline.x, raised.x, 1e-4f)
         // A SMALLER top anchor hangs the box higher, so its distance from the bottom grows.
         assertEquals(110f, raised.y - baseline.y, 1e-4f)
+    }
+
+    @Test
+    fun `measured bottom clearance wins without changing horizontal geometry`() {
+        val fallback = finderRect(boxWidth = 1000f, boxHeight = 1500f, topAnchor = 0.60f)
+        val measured = finderRect(
+            boxWidth = 1000f,
+            boxHeight = 1500f,
+            topAnchor = 0.60f,
+            bottomClearance = fallback.y + 80f,
+        )
+        assertEquals(fallback.x, measured.x, 1e-4f)
+        assertEquals(fallback.width, measured.width, 1e-4f)
+        assertEquals(fallback.height, measured.height, 1e-4f)
+        assertEquals(fallback.y + 80f, measured.y, 1e-4f)
     }
 
     @Test
