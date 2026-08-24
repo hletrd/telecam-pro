@@ -774,6 +774,10 @@ class CameraEngine internal constructor(
         // the packet; applyStabilization below then re-pushes the matching preview mirror.
         facing = restored.facing
         activeCameraRoute = restored.route
+        // Facing resolves the user's independent loupe intent against the active route. The
+        // rejected route was pushed optimistically, so restore both the live GL generation and
+        // RendererAssists' replay snapshot before any replacement generation can observe it.
+        pushPunchIn()
         controls = restored.controls
         teleconverterDeclaration = restored.declaration
         controller?.setTeleconverterMagnification(restored.declaration.magnification)
