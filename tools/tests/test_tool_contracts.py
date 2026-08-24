@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 
@@ -171,6 +172,49 @@ class DeviceProbeParityTest(unittest.TestCase):
         self.assertIn("MediaCodecList.REGULAR_CODECS", source)
         self.assertIn("MediaCodec.createByCodecName", source)
         self.assertNotIn("createEncoderByType", source)
+
+
+class BackupPolicyContractTest(unittest.TestCase):
+    def test_private_recovery_state_is_excluded_from_backup_and_device_transfer(self) -> None:
+        android = "http://schemas.android.com/apk/res/android"
+        application = ET.parse(REPO_ROOT / "app/src/main/AndroidManifest.xml").getroot().find(
+            "application"
+        )
+        if application is None:
+            self.fail("AndroidManifest.xml must declare an application")
+        self.assertEqual(application.attrib[f"{{{android}}}allowBackup"], "false")
+        self.assertEqual(
+            application.attrib[f"{{{android}}}dataExtractionRules"],
+            "@xml/data_extraction_rules",
+        )
+        self.assertEqual(
+            application.attrib[f"{{{android}}}fullBackupContent"],
+            "@xml/backup_rules",
+        )
+
+        current = ET.parse(
+            REPO_ROOT / "app/src/main/res/xml/data_extraction_rules.xml"
+        ).getroot()
+        required_exclusions = {("database", "."), ("sharedpref", ".")}
+        for section_name in ("cloud-backup", "device-transfer"):
+            section = current.find(section_name)
+            if section is None:
+                self.fail(f"data_extraction_rules.xml must declare {section_name}")
+            exclusions = {
+                (element.attrib.get("domain"), element.attrib.get("path"))
+                for element in section.findall("exclude")
+            }
+            self.assertTrue(
+                required_exclusions.issubset(exclusions),
+                f"{section_name} must exclude ordinary database and preference state",
+            )
+
+        legacy = ET.parse(REPO_ROOT / "app/src/main/res/xml/backup_rules.xml").getroot()
+        legacy_exclusions = {
+            (element.attrib.get("domain"), element.attrib.get("path"))
+            for element in legacy.findall("exclude")
+        }
+        self.assertTrue(required_exclusions.issubset(legacy_exclusions))
 
 
 class ConsolidatedHostGateTest(unittest.TestCase):

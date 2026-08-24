@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
+        <!-- Exact MediaStore URI recovery commands are installation-local and non-portable. -->
+        <exclude domain="database" path="." />
         <exclude domain="sharedpref" path="." />
     </cloud-backup>
     <device-transfer>
+        <!-- Some Android 12+ OEM transports can run even when allowBackup is false. -->
+        <exclude domain="database" path="." />
         <exclude domain="sharedpref" path="." />
     </device-transfer>
 </data-extraction-rules>

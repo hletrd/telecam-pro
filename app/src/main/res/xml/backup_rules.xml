@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
+    <!-- Keep installation-local exact MediaStore URI recovery commands on this device. -->
+    <exclude domain="database" path="." />
     <exclude domain="sharedpref" path="." />
 </full-backup-content>
