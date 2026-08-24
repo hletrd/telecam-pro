@@ -28,6 +28,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+/** Fresh/replayable compressed input used by bounds, pixel, and EXIF decode stages. */
+internal interface ReviewDecodeSource : Closeable {
+    fun openInputStream(): InputStream
+}
+
 /**
  * Process-wide byte authority for immutable compressed review sources.
  *
@@ -83,10 +88,10 @@ internal class ReviewSourceSpool(
     private val file: File,
     val sizeBytes: Long,
     private val lease: ReviewSourceByteBudget.Lease,
-) : Closeable {
+) : ReviewDecodeSource {
     private val closed = AtomicBoolean(false)
 
-    fun openInputStream(): InputStream {
+    override fun openInputStream(): InputStream {
         check(!closed.get()) { "review source spool is closed" }
         return FileInputStream(file)
     }
@@ -104,7 +109,7 @@ internal const val REVIEW_SOURCE_MAX_BYTES = 64L * 1024L * 1024L
 internal const val REVIEW_SOURCE_PROCESS_MAX_BYTES = 2L * REVIEW_SOURCE_MAX_BYTES
 
 /** Two maximum-size sources may coexist; smaller thumbnail/full requests share the residual bytes. */
-private val processReviewSourceBudget = ReviewSourceByteBudget(REVIEW_SOURCE_PROCESS_MAX_BYTES)
+internal val processReviewSourceBudget = ReviewSourceByteBudget(REVIEW_SOURCE_PROCESS_MAX_BYTES)
 
 /**
  * Copies one provider source into an immutable private spool with per-source and process bounds.

@@ -105,6 +105,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+import java.io.InputStream
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.max
@@ -340,6 +342,7 @@ private class ReviewBitmapRequest(
     context: Context,
     val uri: Uri,
     val maxDim: Int,
+    val provenance: MediaProvenance,
 ) {
     val context: Context = processReviewContext(context)
 }
@@ -355,7 +358,14 @@ internal fun reviewBitmapLoad(decoded: Bitmap?): ReviewBitmapLoad =
 /** Two finite workers bound unpublished 3000px ARGB results while one poisoned decoder is retired. */
 private val reviewBitmapDecodeLane = LatestReviewSetupLane<ReviewBitmapRequest, ReviewBitmapLoad>(
     work = { request ->
-        reviewBitmapLoad(decodeReviewBitmap(request.context, request.uri, request.maxDim))
+        reviewBitmapLoad(
+            decodeReviewBitmap(
+                request.context,
+                request.uri,
+                request.maxDim,
+                request.provenance,
+            ),
+        )
     },
     release = { result -> if (result is ReviewBitmapLoad.Ready) result.bitmap.dispose() },
 )
@@ -450,26 +460,63 @@ internal fun reviewDecodeSampleSize(width: Int, height: Int, maxDim: Int): Int? 
 internal fun reviewDecodedFitsBound(width: Int, height: Int, maxDim: Int): Boolean =
     width > 0 && height > 0 && maxDim > 0 && width <= maxDim && height <= maxDim
 
-private fun decodeReviewBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? = runCatching {
-    val source = context.contentResolver.openInputStream(uri)?.use { stream ->
-        spoolReviewSource(context.cacheDir, stream)
+/** Package-owned published rows are immutable by contract, so every stage may open a fresh handle. */
+internal class FreshProviderReviewSource(
+    private val openProviderInput: () -> InputStream?,
+) : ReviewDecodeSource {
+    override fun openInputStream(): InputStream =
+        openProviderInput() ?: throw java.io.IOException("Review provider returned no input stream")
+
+    override fun close() = Unit
+}
+
+/**
+ * Chooses the compressed-source trust boundary. Owner-unverified rows are copied once so bounds,
+ * pixels, and EXIF cannot observe different provider bytes; app-owned published rows avoid a
+ * whole-file compressed-size ceiling and use a fresh read-only handle for each stage.
+ */
+internal fun openReviewDecodeSource(
+    cacheDirectory: File,
+    provenance: MediaProvenance,
+    openProviderInput: () -> InputStream?,
+    unverifiedMaxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
+    budget: ReviewSourceByteBudget = processReviewSourceBudget,
+): ReviewDecodeSource? = when (provenance) {
+    MediaProvenance.APP_OWNED -> FreshProviderReviewSource(openProviderInput)
+    MediaProvenance.LEGACY_FORMAT_UNVERIFIED -> openProviderInput()?.use { stream ->
+        spoolReviewSource(cacheDirectory, stream, unverifiedMaxBytes, budget)
     }
-        ?: return@runCatching null
-    source.use sourceUse@ { spool ->
+}
+
+private fun decodeReviewBitmap(
+    context: Context,
+    uri: Uri,
+    maxDim: Int,
+    provenance: MediaProvenance,
+): Bitmap? = runCatching {
+    val source = openReviewDecodeSource(
+        cacheDirectory = context.cacheDir,
+        provenance = provenance,
+        openProviderInput = { context.contentResolver.openInputStream(uri) },
+    ) ?: return@runCatching null
+    source.use { decodeReviewBitmap(it, maxDim) }
+}.getOrNull()
+
+internal fun decodeReviewBitmap(source: ReviewDecodeSource, maxDim: Int): Bitmap? =
+    runCatching decode@ {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        spool.openInputStream().use { BitmapFactory.decodeStream(it, null, bounds) }
+        source.openInputStream().use { BitmapFactory.decodeStream(it, null, bounds) }
         val sample = reviewDecodeSampleSize(bounds.outWidth, bounds.outHeight, maxDim)
-            ?: return@sourceUse null
+            ?: return@decode null
         val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-        val decoded = spool.openInputStream().use { BitmapFactory.decodeStream(it, null, opts) }
-            ?: return@sourceUse null
+        val decoded = source.openInputStream().use { BitmapFactory.decodeStream(it, null, opts) }
+            ?: return@decode null
         if (!reviewDecodedFitsBound(decoded.width, decoded.height, maxDim)) {
             decoded.recycle()
-            return@sourceUse null
+            return@decode null
         }
-        applyExifOrientation(spool, decoded)
-    }
-}.getOrNull()
+        applyExifOrientation(source, decoded)
+    }.getOrNull()
 
 /**
  * Honors the file's EXIF orientation on the decoded pixels. The ordinary processed lanes
@@ -479,7 +526,7 @@ private fun decodeReviewBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap?
  * and its thumbnail while external viewers were correct (cycle-6 feature-dev review). The decode
  * above is already inSampleSize-capped, so the rotate runs on the bounded preview bitmap.
  */
-private fun applyExifOrientation(source: ReviewSourceSpool, decoded: Bitmap): Bitmap {
+private fun applyExifOrientation(source: ReviewDecodeSource, decoded: Bitmap): Bitmap {
     val orientation = runCatching {
         source.openInputStream().use { stream ->
             androidx.exifinterface.media.ExifInterface(stream)
@@ -622,6 +669,7 @@ private data class LoadedReview(val state: ReviewMediaState, val metadata: Revie
 private suspend fun loadReviewMedia(
     context: Context,
     uri: Uri,
+    provenance: MediaProvenance,
     descriptorOwner: Any,
     decodeOwner: Any,
 ): LoadedReview? {
@@ -651,7 +699,7 @@ private suspend fun loadReviewMedia(
             var decoded: ReviewMediaState? = null
             val bitmapOutcome = reviewBitmapDecodeLane.run(
                 decodeOwner,
-                ReviewBitmapRequest(context, uri, REVIEW_PREVIEW_MAX_DIM),
+                ReviewBitmapRequest(context, uri, REVIEW_PREVIEW_MAX_DIM, provenance),
             ) { result ->
                 decoded = when (result) {
                     is ReviewBitmapLoad.Ready -> ReviewMediaState.Ready.Still(result.bitmap)
@@ -722,6 +770,7 @@ private class GalleryThumbRequest(
     context: Context,
     val uri: Uri,
     val kind: ReviewMediaKind,
+    val provenance: MediaProvenance,
 ) {
     val context: Context = processReviewContext(context)
 }
@@ -730,7 +779,12 @@ private fun loadGalleryThumb(request: GalleryThumbRequest): GalleryThumbState {
     val bitmap = when (request.kind) {
         ReviewMediaKind.RAW -> return GalleryThumbState.Ready(ReviewMediaKind.RAW)
         ReviewMediaKind.VIDEO -> loadVideoThumbnail(request.context, request.uri, GALLERY_THUMB_MAX_DIM)
-        ReviewMediaKind.STILL -> decodeReviewBitmap(request.context, request.uri, GALLERY_THUMB_MAX_DIM)
+        ReviewMediaKind.STILL -> decodeReviewBitmap(
+            request.context,
+            request.uri,
+            GALLERY_THUMB_MAX_DIM,
+            request.provenance,
+        )
     }
     return bitmap
         ?.let { GalleryThumbState.Ready(request.kind, ReviewBitmap(it)) }
@@ -757,8 +811,8 @@ fun GalleryThumb(
     enabled: Boolean = true,
 ) {
     val context = LocalContext.current
-    val thumbOwner = remember(uri) { Any() }
-    val stateHolder = remember(uri) {
+    val thumbOwner = remember(uri, provenance) { Any() }
+    val stateHolder = remember(uri, provenance) {
         mutableStateOf<GalleryThumbState>(
             if (uri == null) GalleryThumbState.Empty else GalleryThumbState.Loading(),
         )
@@ -769,7 +823,7 @@ fun GalleryThumb(
         stateHolder.value = next.transferToComposition()
         if (previous !== next) previous.dispose()
     }
-    LaunchedEffect(uri) {
+    LaunchedEffect(uri, provenance) {
         if (uri != null) {
             var kind: ReviewMediaKind? = null
             when (galleryThumbKindLane.run(
@@ -785,7 +839,7 @@ fun GalleryThumb(
                     replaceState(GalleryThumbState.Loading(resolvedKind))
                     galleryThumbLane.run(
                         thumbOwner,
-                        GalleryThumbRequest(context, uri, resolvedKind),
+                        GalleryThumbRequest(context, uri, resolvedKind, provenance),
                         ::replaceState,
                     ).let { outcome ->
                         if (
@@ -1018,24 +1072,24 @@ fun MediaReviewOverlay(
     val a11yCloseReview = stringResource(R.string.a11y_close_review)
     val context = LocalContext.current
     var loadAttempt by remember(uri) { mutableIntStateOf(0) }
-    val descriptorOwner = remember(uri) { Any() }
-    val decodeOwner = remember(uri) { Any() }
-    val mediaStateHolder = remember(uri) {
+    val descriptorOwner = remember(uri, provenance) { Any() }
+    val decodeOwner = remember(uri, provenance) { Any() }
+    val mediaStateHolder = remember(uri, provenance) {
         mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading)
     }
     var mediaState by mediaStateHolder
-    var metadata by remember(uri) { mutableStateOf<ReviewMetadata?>(null) }
+    var metadata by remember(uri, provenance) { mutableStateOf<ReviewMetadata?>(null) }
     fun replaceMediaState(next: ReviewMediaState) {
         val previous = mediaStateHolder.value
         mediaStateHolder.value = next.transferToComposition()
         if (previous !== next) previous.dispose()
     }
-    LaunchedEffect(uri, loadAttempt) {
+    LaunchedEffect(uri, provenance, loadAttempt) {
         replaceMediaState(ReviewMediaState.Loading)
         metadata = null
         var loaded: LoadedReview? = null
         try {
-            loaded = loadReviewMedia(context, uri, descriptorOwner, decodeOwner)
+            loaded = loadReviewMedia(context, uri, provenance, descriptorOwner, decodeOwner)
             loaded?.let { result ->
                 metadata = result.metadata
                 replaceMediaState(result.state)
