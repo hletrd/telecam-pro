@@ -104,6 +104,15 @@ internal data class ZoomEngineOverrides(
     val setSmoothPreviewBoost: (Boolean, Float, Float?, Boolean) -> Unit,
 )
 
+internal fun interface TimelapseCancellation {
+    fun cancel()
+}
+
+/** Host-only scheduler edge for the real interval-run ownership and live-period chain. */
+internal data class TimelapseEngineOverrides(
+    val schedule: (delaySeconds: Long, action: () -> Unit) -> TimelapseCancellation?,
+)
+
 private data class RecorderSetupOwner(
     val terminal: RecorderSetupFinalizationOwner<VideoRecorder>,
     val processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
@@ -118,6 +127,7 @@ class CameraEngine internal constructor(
     private val familyDeletionMarkerOverrides: FamilyDeletionMarkerEngineOverrides? = null,
     private val stabilizationOverrides: StabilizationEngineOverrides? = null,
     private val zoomOverrides: ZoomEngineOverrides? = null,
+    private val timelapseOverrides: TimelapseEngineOverrides? = null,
 ) {
 
     /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
@@ -235,7 +245,7 @@ class CameraEngine internal constructor(
     }
     // Drives interval (timelapse) capture off the camera/UI threads.
     private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
-    @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
+    @Volatile private var timelapseFuture: TimelapseCancellation? = null
     private val timelapseRun = CaptureSequenceGeneration()
     // Serializes run start/stop edges across the main and timelapse-scheduler threads (review
     // 2026-08-01): the flag + generation + listener edge must move together or a tick-thread stop
@@ -4221,7 +4231,6 @@ class CameraEngine internal constructor(
      * [ioExecutor] when encoding/storage is slower than [intervalSec].
      */
     private fun startTimelapse(requestedFormats: PhotoFormats) {
-        val period = intervalSec.coerceAtLeast(1).toLong()
         // Stop-old + claim-new + edge under ONE lock (review 2026-08-01): the tick thread's own
         // defensive stop raced a main-thread restart's check-then-act — it could kill the freshly
         // restarted generation, or interleave with the edge flag so timelapseRunning wedged true
@@ -4237,44 +4246,50 @@ class CameraEngine internal constructor(
             fun schedule(delaySeconds: Long) {
                 if (!timelapseRun.owns(generation)) return
                 val future = runCatching {
-                    timelapseScheduler.schedule(
-                        {
-                            if (!timelapseRun.owns(generation)) return@schedule
-                            val accepted = currentAcceptedCameraSession()
-                            if (accepted == null || driveMode != DriveMode.TIMELAPSE) {
-                                if (!paused && driveMode == DriveMode.TIMELAPSE) schedule(period)
-                                return@schedule
+                    val action = action@{
+                        if (!timelapseRun.owns(generation)) return@action
+                        val accepted = currentAcceptedCameraSession()
+                        if (accepted == null || driveMode != DriveMode.TIMELAPSE) {
+                            if (!paused && driveMode == DriveMode.TIMELAPSE) {
+                                schedule(currentTimelapseIntervalSeconds())
                             }
-                            val formats = requestedFormats.normalizedFor(accepted.outputs)
-                            if (!formats.wantsProcessedStill && !formats.dngRaw) {
-                                onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
-                                stopTimelapseIfOwns(generation)
-                                return@schedule
-                            }
-                            accepted.controller.capturePhoto(
-                                formats.wantsProcessedStill,
-                                formats.dngRaw,
-                                // Each tick is its own chain: this lambda runs on the timelapse
-                                // scheduler thread, so the tick snapshots its optics under the
-                                // monitor like every other dispatch (T1).
-                                photoCallback(
-                                    formats,
-                                    controls,
-                                    hiRes = accepted.outputs.hiRes,
-                                    optics = snapshotShotOptics(),
-                                ) {
-                                    if (timelapseRun.owns(generation)) schedule(period)
-                                },
-                            )
-                        },
-                        delaySeconds,
-                        java.util.concurrent.TimeUnit.SECONDS,
-                    )
+                            return@action
+                        }
+                        val formats = requestedFormats.normalizedFor(accepted.outputs)
+                        if (!formats.wantsProcessedStill && !formats.dngRaw) {
+                            onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
+                            stopTimelapseIfOwns(generation)
+                            return@action
+                        }
+                        accepted.controller.capturePhoto(
+                            formats.wantsProcessedStill,
+                            formats.dngRaw,
+                            // Each tick is its own chain: this lambda runs on the timelapse
+                            // scheduler thread, so the tick snapshots its optics under the
+                            // monitor like every other dispatch (T1).
+                            photoCallback(
+                                formats,
+                                controls,
+                                hiRes = accepted.outputs.hiRes,
+                                optics = snapshotShotOptics(),
+                            ) {
+                                if (timelapseRun.owns(generation)) {
+                                    schedule(currentTimelapseIntervalSeconds())
+                                }
+                            },
+                        )
+                    }
+                    timelapseOverrides?.schedule?.invoke(delaySeconds, action)
+                        ?: timelapseScheduler.schedule(
+                            action,
+                            delaySeconds,
+                            java.util.concurrent.TimeUnit.SECONDS,
+                        ).let { scheduled -> TimelapseCancellation { scheduled.cancel(false) } }
                 }.getOrNull() ?: return
                 if (timelapseRun.owns(generation)) {
                     timelapseFuture = future
                 } else {
-                    future.cancel(false)
+                    future.cancel()
                 }
             }
         }
@@ -4290,7 +4305,7 @@ class CameraEngine internal constructor(
 
     private fun stopTimelapseLocked() {
         timelapseRun.stop()
-        timelapseFuture?.cancel(false)
+        timelapseFuture?.cancel()
         timelapseFuture = null
         // Edge-only: the many defensive stopTimelapse() calls (mode flips, pause, release) must not
         // spam run-state listeners when no run was live.
@@ -4299,6 +4314,8 @@ class CameraEngine internal constructor(
             onTimelapseRun?.invoke(false)
         }
     }
+
+    private fun currentTimelapseIntervalSeconds(): Long = intervalSec.coerceAtLeast(1).toLong()
 
 
     /**
