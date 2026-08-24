@@ -81,6 +81,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ```bash
 # authoritative non-device host gate (Android + coverage + Python tools/harness/docs)
 python3 tools/verify_host.py
+# :app:assembleDebugAndroidTest compiles/packages androidTest; it does not run or prove device behavior.
 
 # normal implementation gate; its Gradle APK is developer-only, never device evidence
 ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug

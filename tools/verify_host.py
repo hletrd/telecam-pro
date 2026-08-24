@@ -59,6 +59,7 @@ def main() -> int:
         [
             "./gradlew",
             ":app:assembleDebug",
+            ":app:assembleDebugAndroidTest",
             ":app:testDebugUnitTest",
             ":app:lintDebug",
             ":app:verifyPartitionACoverage",

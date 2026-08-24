@@ -1239,8 +1239,10 @@ python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :
 ```
 
 `python3 tools/verify_host.py` is the authoritative non-device host gate. It owns the debug build,
-JVM/Robolectric/Compose tests, lint, exact coverage contract, release/tool tests, coverage-tool
-tests, device-harness self-tests, documentation contracts, Python compilation, and diff checks.
+androidTest source compilation and packaging, JVM/Robolectric/Compose tests, lint, exact coverage
+contract, release/tool tests, coverage-tool tests, device-harness self-tests, documentation
+contracts, Python compilation, and diff checks. Its `:app:assembleDebugAndroidTest` phase compiles
+and packages the instrumented source set; it does not run those tests or prove device behavior.
 Individual Gradle tasks are focused developer subsets, not a repository-wide green result.
 
 Device evidence must use the APK printed by `tools/build_immutable_debug.py`. The wrapper freezes

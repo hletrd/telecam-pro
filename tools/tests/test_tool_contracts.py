@@ -222,6 +222,7 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
         for required in (
             ":app:assembleDebug",
+            ":app:assembleDebugAndroidTest",
             ":app:testDebugUnitTest",
             ":app:lintDebug",
             ":app:verifyPartitionACoverage",
@@ -236,6 +237,11 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         ):
             self.assertIn(required, source)
         self.assertIn('"JAVA_HOME": str(home)', source)
+        for authority_path in ("CLAUDE.md", "docs/ARCHITECTURE.md"):
+            authority = (REPO_ROOT / authority_path).read_text(encoding="utf-8")
+            self.assertIn(":app:assembleDebugAndroidTest", authority)
+            self.assertIn("does not run", authority)
+            self.assertIn("prove device behavior", authority)
 
     def test_diff_gate_rejects_staged_and_unstaged_whitespace_errors(self) -> None:
         command = load_verify_host().repository_diff_check_command()
