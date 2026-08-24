@@ -477,7 +477,7 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
-    fun `producer admitted during same-family absence query retains marker`() {
+    fun `producer lease installed at registry admission survives retirement query`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_027_500_000L, 275L)
         assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))
         val queryEntered = CountDownLatch(1)
@@ -545,6 +545,100 @@ class DeletedFamilyJournalTest {
             assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
         } finally {
             allowQuery.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `publication claim is visible at registry admission before family monitor wait`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_028_100_000L, 281L)
+        assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))
+        val admissionInstalled = CountDownLatch(1)
+        val allowMonitorWait = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val publication = executor.submit<String> {
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    context = context,
+                    family = family,
+                    deleted = { "discard" },
+                    unavailable = { "unavailable" },
+                    live = { "publish" },
+                    publicationRegistered = {
+                        admissionInstalled.countDown()
+                        assertTrue(allowMonitorWait.await(2, TimeUnit.SECONDS))
+                    },
+                )
+            }
+            assertTrue(admissionInstalled.await(2, TimeUnit.SECONDS))
+
+            // The publisher has joined the registry but deliberately has not attempted the family
+            // monitor yet. Its claim must already be visible to retirement at this exact boundary.
+            assertEquals(
+                FamilyDeletionRetirementResult.RETAINED,
+                MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { true },
+            )
+            assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
+
+            allowMonitorWait.countDown()
+            assertEquals("discard", publication.get(2, TimeUnit.SECONDS))
+        } finally {
+            allowMonitorWait.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `admissions after retirement seal wait and become post retirement work`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_028_200_000L, 282L)
+        val removeEntered = CountDownLatch(1)
+        val allowRemove = CountDownLatch(1)
+        val markerStore = BlockingRemoveFamilyMarkerStore(removeEntered, allowRemove)
+        val executor = Executors.newFixedThreadPool(3)
+
+        assertEquals(
+            FamilyDeletionMarkResult.DURABLE,
+            MediaStoreWriter.markFamilyDeletedResult(family, markerStore),
+        )
+
+        try {
+            val retirement = executor.submit<FamilyDeletionRetirementResult> {
+                MediaStoreWriter.retireFamilyDeletionMarker(
+                    family = family,
+                    producersTerminal = true,
+                    markerStore = markerStore,
+                    exactFamilyAbsent = { true },
+                )
+            }
+            assertTrue(removeEntered.await(2, TimeUnit.SECONDS))
+
+            val producer = executor.submit<CaptureFamilyProducerLease> {
+                MediaStoreWriter.registerStillFamilyProducer(family)
+            }
+            val publication = executor.submit<String> {
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    family = family,
+                    markerStore = markerStore,
+                    deleted = { "discard" },
+                    unavailable = { "unavailable" },
+                    live = { "post-retirement-publish" },
+                )
+            }
+
+            assertThrows(TimeoutException::class.java) {
+                producer.get(100, TimeUnit.MILLISECONDS)
+            }
+            assertThrows(TimeoutException::class.java) {
+                publication.get(100, TimeUnit.MILLISECONDS)
+            }
+
+            allowRemove.countDown()
+            assertEquals(FamilyDeletionRetirementResult.RETIRED, retirement.get(2, TimeUnit.SECONDS))
+            producer.get(2, TimeUnit.SECONDS).close()
+            assertEquals("post-retirement-publish", publication.get(2, TimeUnit.SECONDS))
+        } finally {
+            allowRemove.countDown()
             executor.shutdownNow()
         }
     }

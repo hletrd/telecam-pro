@@ -76,10 +76,11 @@ object MediaStoreWriter {
 
     private class FamilyJournalAuthority(
         val monitor: Any = Any(),
-        // Claims register here BEFORE waiting for [monitor]. Retirement takes this exact-family
-        // lock for its final claim recheck plus marker removal, so slow preference I/O never owns
-        // the global registry while a queued same-family producer/publication remains visible.
-        val claimMonitor: Any = Any(),
+        // This monitor protects only the finite admission transition. Retirement seals an empty
+        // state here before slow marker removal, then opens it again before releasing [monitor]. A
+        // registrant that observes the seal waits on [monitor] and becomes a post-retirement
+        // admission; it never waits while owning the process-wide registry.
+        val admissionMonitor: Any = Any(),
         var users: Int = 0,
         // Registered before Camera2 receives the still request and retained until every possible
         // HEIF/JPEG/DNG continuation is terminal. Unlike an Engine-local capture id, this survives
@@ -90,6 +91,7 @@ object MediaStoreWriter {
         // count after its exact-family absence query, so it cannot erase the durable veto in front
         // of an old-Engine publication that is already queued behind it.
         var publicationClaims: Int = 0,
+        var retirementSealed: Boolean = false,
     )
 
     private inline fun <T> withFamilyJournalAuthority(
@@ -98,19 +100,39 @@ object MediaStoreWriter {
         onRegistered: () -> Unit = {},
         block: (FamilyJournalAuthority) -> T,
     ): T {
+        var publicationInstalled = false
         val authority = synchronized(familyAuthorityRegistryLock) {
             familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
                 it.users += 1
+                if (publication) synchronized(it.admissionMonitor) {
+                    if (!it.retirementSealed) {
+                        it.publicationClaims += 1
+                        publicationInstalled = true
+                    }
+                }
             }
         }
-        if (publication) synchronized(authority.claimMonitor) {
-            authority.publicationClaims += 1
-        }
         return try {
-            onRegistered()
-            synchronized(authority.monitor) { block(authority) }
+            if (publication && !publicationInstalled) {
+                // Retirement already sealed its claim-free decision. Wait without the registry,
+                // then install as a new post-retirement admission before observing the marker.
+                synchronized(authority.monitor) {
+                    synchronized(authority.admissionMonitor) {
+                        check(!authority.retirementSealed) {
+                            "sealed family admission escaped retirement"
+                        }
+                        authority.publicationClaims += 1
+                        publicationInstalled = true
+                    }
+                    onRegistered()
+                    block(authority)
+                }
+            } else {
+                onRegistered()
+                synchronized(authority.monitor) { block(authority) }
+            }
         } finally {
-            if (publication) synchronized(authority.claimMonitor) {
+            if (publicationInstalled) synchronized(authority.admissionMonitor) {
                 check(authority.publicationClaims > 0) { "family publication claim underflow" }
                 authority.publicationClaims -= 1
             }
@@ -130,14 +152,33 @@ object MediaStoreWriter {
      */
     internal fun registerStillFamilyProducer(family: CaptureFamilyKey): CaptureFamilyProducerLease {
         val key = deletedFamilyJournalKey(family)
+        var producerInstalled = false
         val authority = synchronized(familyAuthorityRegistryLock) {
             familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
                 it.users += 1
+                synchronized(it.admissionMonitor) {
+                    if (!it.retirementSealed) {
+                        it.producerLeases += 1
+                        producerInstalled = true
+                    }
+                }
             }
         }
-        synchronized(authority.claimMonitor) { authority.producerLeases += 1 }
+        if (!producerInstalled) {
+            // A producer arriving after the retirement decision is sealed is not retroactively
+            // covered by that decision. It waits, without the registry, and starts a new family
+            // admission only after marker retirement has completed.
+            synchronized(authority.monitor) {
+                synchronized(authority.admissionMonitor) {
+                    check(!authority.retirementSealed) {
+                        "sealed family producer escaped retirement"
+                    }
+                    authority.producerLeases += 1
+                }
+            }
+        }
         return CaptureFamilyProducerLease {
-            synchronized(authority.claimMonitor) {
+            synchronized(authority.admissionMonitor) {
                 check(authority.producerLeases > 0) { "family producer lease underflow" }
                 authority.producerLeases -= 1
             }
@@ -505,7 +546,7 @@ object MediaStoreWriter {
         if (!producersTerminal) return FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
         val key = deletedFamilyJournalKey(family)
         return withFamilyJournalAuthority(key) { authority ->
-            if (synchronized(authority.claimMonitor) { authority.producerLeases > 0 }) {
+            if (synchronized(authority.admissionMonitor) { authority.producerLeases > 0 }) {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
             }
             // SharedPreferences reads are thread-safe. Exact-family authority supplies the required
@@ -524,7 +565,7 @@ object MediaStoreWriter {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
             }
 
-            synchronized(authority.claimMonitor) {
+            val sealedResult = synchronized(authority.admissionMonitor) {
                 if (authority.producerLeases > 0) {
                     return@synchronized FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
                 }
@@ -534,17 +575,30 @@ object MediaStoreWriter {
                 if (authority.publicationClaims > 0) {
                     FamilyDeletionRetirementResult.RETAINED
                 } else {
-                    // Capacity-changing removal still uses the metadata RMW lock, but both locks
-                    // are family-local or metadata-only: neither is the global registry lock.
-                    synchronized(familyJournalMetadataLock) {
-                        if (!markerStore.contains(key)) {
-                            FamilyDeletionRetirementResult.ALREADY_ABSENT
-                        } else if (markerStore.remove(key)) {
-                            FamilyDeletionRetirementResult.RETIRED
-                        } else {
-                            FamilyDeletionRetirementResult.RETAINED
-                        }
+                    // This is the linearization point. Later registrants wait on the exact-family
+                    // owner and become post-retirement admissions; earlier ones are counted above.
+                    authority.retirementSealed = true
+                    null
+                }
+            }
+            if (sealedResult != null) return@withFamilyJournalAuthority sealedResult
+
+            try {
+                // Capacity-changing removal still uses the metadata RMW lock. Neither it nor the
+                // slow preference commit owns the global registry or admission monitor.
+                synchronized(familyJournalMetadataLock) {
+                    if (!markerStore.contains(key)) {
+                        FamilyDeletionRetirementResult.ALREADY_ABSENT
+                    } else if (markerStore.remove(key)) {
+                        FamilyDeletionRetirementResult.RETIRED
+                    } else {
+                        FamilyDeletionRetirementResult.RETAINED
                     }
+                }
+            } finally {
+                synchronized(authority.admissionMonitor) {
+                    check(authority.retirementSealed) { "family retirement seal lost" }
+                    authority.retirementSealed = false
                 }
             }
         }
