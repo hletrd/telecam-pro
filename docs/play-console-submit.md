@@ -195,12 +195,14 @@ Use this sheet for the parts that must be entered manually in Play Console.
 >   is now treated as authoritative and owed no glyph rotation.
 >
 > **What v1.0.1 (`versionCode 3`) added over v1.0 — already published, listed for the record:**
-> - **Korean UI.** 131 strings became resources with a `ko` translation, and the app declares
+> - **Korean UI.** 126 strings became resources with a `ko` translation, and the app declares
 >   `localeConfig` so the platform treats it as locale-aware — without that, an explicit
 >   `cmd locale set-app-locales ko-KR` left the UI in English with the Korean resources unused in the
 >   APK. Camera-standard abbreviations (ISO, WB, SS, EV, AF, NR, FPS, Fn, Open Gate) are
 >   `translatable="false"`: Korean camera bodies print them in Latin too, so that DECLARES the intent
->   rather than suppressing the lint warning that asked.
+>   rather than suppressing the lint warning that asked. The count is source-derived from the
+>   published versionCode-3 pin `bcbeaf0c`: its `values-ko/strings.xml` contains exactly 126
+>   `<string>` entries.
 > - **Top chrome no longer collides.** In VIDEO the button row shifts down to clear the preview edge
 >   while the OSD row was pinned at a fixed 60 dp, so the buttons landed on top of it — measured on
 >   PMA110 as buttons y=332-500 over OSD text at y=391-436, with STEADY/LOUPE/battery squeezed into
