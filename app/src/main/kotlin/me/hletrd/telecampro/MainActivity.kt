@@ -82,6 +82,38 @@ private const val READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION =
 private const val OBSCURED_TOUCH_FLAGS =
     MotionEvent.FLAG_WINDOW_IS_OBSCURED or MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED
 
+private const val PENDING_AUDIO_ACTION_STATE_KEY = "pending_audio_action"
+private const val MICROPHONE_RATIONALE_STATE_KEY = "microphone_rationale_visible"
+
+internal data class PendingAudioRequestState(
+    val action: PendingAudioAction,
+    val rationaleVisible: Boolean,
+)
+
+/** Activity Result restores its callback after recreation; this restores the command it consumes. */
+internal fun restorePendingAudioRequestState(state: Bundle?): PendingAudioRequestState? {
+    val actionName = state?.getString(PENDING_AUDIO_ACTION_STATE_KEY) ?: return null
+    val action = PendingAudioAction.entries.firstOrNull { it.name == actionName } ?: return null
+    return PendingAudioRequestState(
+        action = action,
+        rationaleVisible = state.getBoolean(MICROPHONE_RATIONALE_STATE_KEY),
+    )
+}
+
+internal fun savePendingAudioRequestState(
+    state: Bundle,
+    action: PendingAudioAction?,
+    rationaleVisible: Boolean,
+) {
+    if (action == null) {
+        state.remove(PENDING_AUDIO_ACTION_STATE_KEY)
+        state.remove(MICROPHONE_RATIONALE_STATE_KEY)
+        return
+    }
+    state.putString(PENDING_AUDIO_ACTION_STATE_KEY, action.name)
+    state.putBoolean(MICROPHONE_RATIONALE_STATE_KEY, rationaleVisible)
+}
+
 /** One side-effect-free decision seam for the Activity's full- and partial-overlay boundary. */
 internal fun touchEventIsUnobscured(flags: Int): Boolean = flags and OBSCURED_TOUCH_FLAGS == 0
 
@@ -255,6 +287,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        restorePendingAudioRequestState(savedInstanceState)?.let { restored ->
+            pendingAudioAction = restored.action
+            showMicrophoneRationale = restored.rationaleVisible
+            // The restored rationale or system permission surface still owns camera input until
+            // its exact continuation terminates.
+            vm.onCameraInputBlockedChange(true)
+        }
         lockPortraitOnHandsets()
         // Both bars are pinned DARK — meaning "this bar sits on a dark background", which is how
         // the system decides to draw LIGHT (white) icons: SystemBarStyle.dark sets
@@ -328,7 +367,7 @@ class MainActivity : ComponentActivity() {
                     // The system permission dialog has released its full-screen input ownership.
                     vm.onCameraInputBlockedChange(false)
                     hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
-                    val action = pendingAudioAction
+                    val action = pendingAudioAction ?: return@rememberLauncherForActivityResult
                     pendingAudioAction = null
                     if (!granted) {
                         declineMicrophone(action)
@@ -337,7 +376,6 @@ class MainActivity : ComponentActivity() {
                     when (action) {
                         PendingAudioAction.ENABLE_AUDIO -> vm.onToggleRecordAudio(true)
                         PendingAudioAction.START_RECORDING -> vm.onToggleRecording()
-                        null -> Unit
                     }
                 }
                 val ownerlessDeleteLauncher = rememberLauncherForActivityResult(
@@ -746,6 +784,11 @@ class MainActivity : ComponentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        savePendingAudioRequestState(outState, pendingAudioAction, showMicrophoneRationale)
+        super.onSaveInstanceState(outState)
     }
 
     private fun isShutterKey(keyCode: Int): Boolean =
