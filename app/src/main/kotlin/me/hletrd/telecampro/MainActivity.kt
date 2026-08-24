@@ -5,9 +5,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -47,7 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import me.hletrd.telecampro.ui.controls.MinTouchTarget48
 import androidx.core.content.edit
-import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -59,6 +56,12 @@ import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraScreen
 import me.hletrd.telecampro.ui.CameraViewModel
+import me.hletrd.telecampro.ui.ExternalNavigationFailure
+import me.hletrd.telecampro.ui.ExternalNavigationRecovery
+import me.hletrd.telecampro.ui.ExternalNavigationTarget
+import me.hletrd.telecampro.ui.PrivacyPolicyFallbackDialog
+import me.hletrd.telecampro.ui.externalNavigationFailure
+import me.hletrd.telecampro.ui.launchExternal
 import me.hletrd.telecampro.ui.windowFollowsDevice
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
@@ -243,6 +246,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             TeleCamProTheme {
                 val state by vm.state.collectAsState()
+                var externalFailure by remember { mutableStateOf<ExternalNavigationFailure?>(null) }
+                var showPrivacyFallback by remember { mutableStateOf(false) }
+                val openExternal: (ExternalNavigationTarget) -> Unit = { target ->
+                    externalFailure = externalNavigationFailure(target, launchExternal(this, target))
+                }
 
                 val cameraLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
@@ -379,8 +387,10 @@ class MainActivity : ComponentActivity() {
                             permanentlyDenied = true,
                             policyBlocked = true,
                             onRequest = {},
-                            onOpenSettings = ::openAppSettings,
-                            onOpenPrivacy = ::openPrivacyPolicy,
+                            onOpenSettings = { openExternal(ExternalNavigationTarget.APP_SETTINGS) },
+                            onOpenPrivacy = { openExternal(ExternalNavigationTarget.PRIVACY_POLICY) },
+                            externalFailure = externalFailure,
+                            onOpenPrivacyInApp = { showPrivacyFallback = true },
                         )
                     } else {
                     CameraScreen(state = state, actions = permissionAwareActions, modifier = Modifier.fillMaxSize())
@@ -404,9 +414,14 @@ class MainActivity : ComponentActivity() {
                     PermissionGate(
                         permanentlyDenied = cameraPermanentlyDenied,
                         onRequest = { cameraLauncher.launch(arrayOf(Manifest.permission.CAMERA)) },
-                        onOpenSettings = ::openAppSettings,
-                        onOpenPrivacy = ::openPrivacyPolicy,
+                        onOpenSettings = { openExternal(ExternalNavigationTarget.APP_SETTINGS) },
+                        onOpenPrivacy = { openExternal(ExternalNavigationTarget.PRIVACY_POLICY) },
+                        externalFailure = externalFailure,
+                        onOpenPrivacyInApp = { showPrivacyFallback = true },
                     )
+                }
+                if (showPrivacyFallback) {
+                    PrivacyPolicyFallbackDialog(onDismiss = { showPrivacyFallback = false })
                 }
             }
         }
@@ -748,18 +763,7 @@ class MainActivity : ComponentActivity() {
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
-    private fun openAppSettings() {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { startActivity(intent) }
-    }
-
-    private fun openPrivacyPolicy() {
-        runCatching { startActivity(Intent(Intent.ACTION_VIEW, PRIVACY_POLICY_URL.toUri())) }
-    }
-
     private companion object {
-        const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
         const val PERMISSION_PREFS_NAME = "permission_state"
         const val CAMERA_REQUESTED_BEFORE_KEY = "camera_requested_before"
 
@@ -843,6 +847,8 @@ internal fun PermissionGate(
     onRequest: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPrivacy: () -> Unit,
+    externalFailure: ExternalNavigationFailure? = null,
+    onOpenPrivacyInApp: () -> Unit = {},
 ) {
     // Styled with the app's own black-chrome palette instead of stock Material accents — this is
     // the first screen a new user sees, and a default-blue filled button is exactly what "would
@@ -892,6 +898,10 @@ internal fun PermissionGate(
                     Text(stringResource(R.string.action_privacy_policy), color = CameraColors.TextSecondary)
                 }
             }
+            ExternalNavigationRecovery(
+                failure = externalFailure,
+                onOpenPrivacyInApp = onOpenPrivacyInApp,
+            )
         }
     }
 }

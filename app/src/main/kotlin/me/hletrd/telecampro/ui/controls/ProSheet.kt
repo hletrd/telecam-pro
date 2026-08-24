@@ -2,8 +2,6 @@ package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.R
 
-import android.content.Context
-import android.content.Intent
 import android.util.Range
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -73,7 +71,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import me.hletrd.telecampro.camera.AfSpotSize
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FrameLineType
@@ -113,6 +110,13 @@ import me.hletrd.telecampro.camera.hiResToggleEnabled
 import me.hletrd.telecampro.camera.videoBitRate
 import me.hletrd.telecampro.camera.rawSelectable
 import me.hletrd.telecampro.ui.CameraActions
+import me.hletrd.telecampro.ui.ExternalLaunchOutcome
+import me.hletrd.telecampro.ui.ExternalNavigationFailure
+import me.hletrd.telecampro.ui.ExternalNavigationRecovery
+import me.hletrd.telecampro.ui.ExternalNavigationTarget
+import me.hletrd.telecampro.ui.PrivacyPolicyFallbackDialog
+import me.hletrd.telecampro.ui.externalNavigationFailure
+import me.hletrd.telecampro.ui.launchExternal
 import me.hletrd.telecampro.ui.modalFocusBoundary
 import me.hletrd.telecampro.ui.formatZoomMultiplier
 import me.hletrd.telecampro.ui.resolve
@@ -174,7 +178,7 @@ internal data class ProSheetTabSelection(val tab: ProSheetTab, val selected: Boo
 // (proSheetTabSelection/proSheetUsesSideLayout and the per-slot quick-Fn readout/dispatch live in
 // FnQuickActions.kt, beside the ControlCycles.kt cycle helpers — non-composable so they stay
 // host-testable apart from Compose emission; this file owns only Compose emission and the
-// Intent-launching privacy-policy opener.)
+// external-navigation boundary.)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -194,8 +198,17 @@ internal fun ProSheet(
     // values instead (zoom→1×, EV→0, exposure-MODE flips) with no affordance saying so: the same
     // FnSlot behaved differently per surface (cycle-6 designer D-01).
     onSelectManualDial: (DialType) -> Unit = {},
+    externalLauncher: ((ExternalNavigationTarget) -> ExternalLaunchOutcome)? = null,
 ) {
     var selectedTab by remember { mutableStateOf(initialTab) }
+    var externalFailure by remember(openRequestId) { mutableStateOf<ExternalNavigationFailure?>(null) }
+    var showPrivacyFallback by remember(openRequestId) { mutableStateOf(false) }
+    val context = LocalContext.current
+    val openPrivacy = {
+        val outcome = externalLauncher?.invoke(ExternalNavigationTarget.PRIVACY_POLICY)
+            ?: launchExternal(context, ExternalNavigationTarget.PRIVACY_POLICY)
+        externalFailure = externalNavigationFailure(ExternalNavigationTarget.PRIVACY_POLICY, outcome)
+    }
     // A fixed, NON-draggable bottom panel — NOT Material3's ModalBottomSheet. The sheet let the whole
     // dialog be dragged upward past its rest position (the "bounce" the user saw), and Material3 1.4.0
     // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
@@ -322,12 +335,21 @@ internal fun ProSheet(
                             ProSheetTab.VIDEO -> VideoTab(state, actions)
                             ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
                             ProSheetTab.ASSISTS -> AssistsTab(state, actions)
-                            ProSheetTab.ADVANCED -> AdvancedTab(state, actions)
+                            ProSheetTab.ADVANCED -> AdvancedTab(
+                                state = state,
+                                actions = actions,
+                                externalFailure = externalFailure,
+                                onOpenPrivacy = openPrivacy,
+                                onOpenPrivacyInApp = { showPrivacyFallback = true },
+                            )
                         }
                     }
                 }
             }
         }
+    }
+    if (showPrivacyFallback) {
+        PrivacyPolicyFallbackDialog(onDismiss = { showPrivacyFallback = false })
     }
 }
 
@@ -1561,15 +1583,24 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
 }
 
 @Composable
-private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
+private fun AdvancedTab(
+    state: CameraUiState,
+    actions: CameraActions,
+    externalFailure: ExternalNavigationFailure?,
+    onOpenPrivacy: () -> Unit,
+    onOpenPrivacyInApp: () -> Unit,
+) {
     val labelContext = LocalContext.current
-    val context = LocalContext.current
     TabTitle(stringResource(R.string.settings_tab_setup))
     SectionHeader(stringResource(R.string.section_app))
     LabelValueRow(
         label = stringResource(R.string.action_privacy_policy),
         valueLabel = stringResource(R.string.action_view),
-        onClick = { openPrivacyPolicy(context) },
+        onClick = onOpenPrivacy,
+    )
+    ExternalNavigationRecovery(
+        failure = externalFailure,
+        onOpenPrivacyInApp = onOpenPrivacyInApp,
     )
     // Own section eyebrow (UI review #43): a dim TextSecondary block at the uniform gap directly
     // under the interactive Privacy Policy row wore the exact shape of that row's caption while
@@ -1830,9 +1861,3 @@ private fun MiniTextButton(
 
 // (The next* cycle helpers and auto-exposure readout text live in ControlCycles.kt — shared with
 // ManualDials/CameraScreen so the cycle orders can't drift between surfaces.)
-
-private fun openPrivacyPolicy(context: Context) {
-    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, PRIVACY_POLICY_URL.toUri())) }
-}
-
-private const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
