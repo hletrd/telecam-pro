@@ -2,9 +2,25 @@ package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpticsDeclarationTransactionTest {
+    @Test
+    fun `other phone declaration rejects invalid measured host focal`() {
+        listOf(Float.NaN, Float.POSITIVE_INFINITY, 0f, -1f).forEach { invalidHost ->
+            val declaration = teleconverterDeclaration(
+                phone = PhoneModel.OTHER,
+                profile = TeleconverterProfile.GENERIC_2,
+                customMagnification = TELECONVERTER_MAGNIFICATION,
+                measuredOtherHostEquivMm = invalidHost,
+            )
+
+            assertTrue(declaration.hostTeleEquivMm.isFinite())
+            assertEquals(LensChoice.TELE3X.targetEquivMm, declaration.hostTeleEquivMm, 0f)
+        }
+    }
+
     @Test
     fun `named phone declaration owns host focal even when caller supplies outgoing host`() {
         val recalled = teleconverterDeclaration(

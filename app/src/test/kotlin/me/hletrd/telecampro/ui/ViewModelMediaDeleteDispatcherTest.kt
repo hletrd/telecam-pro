@@ -25,6 +25,31 @@ class ViewModelMediaDeleteDispatcherTest {
         )
 
         assertTrue(first === second)
+
+        val taskFinished = CountDownLatch(1)
+        val workerName = java.util.concurrent.atomic.AtomicReference<String>()
+        val workerDaemon = AtomicBoolean()
+        val facade = ViewModelMediaDeleteDispatcher(
+            VIEW_MODEL_MEDIA_DELETE_WORKER_COUNT,
+            VIEW_MODEL_MEDIA_DELETE_BACKLOG_CAPACITY,
+        )
+        try {
+            assertEquals(
+                ViewModelMediaDeleteDispatch.ACCEPTED,
+                facade.dispatch(
+                    Runnable {
+                        workerName.set(Thread.currentThread().name)
+                        workerDaemon.set(Thread.currentThread().isDaemon)
+                        taskFinished.countDown()
+                    },
+                ),
+            )
+            assertTrue(taskFinished.await(5, TimeUnit.SECONDS))
+            assertTrue(workerName.get().startsWith("vm-media-delete-"))
+            assertTrue(workerDaemon.get())
+        } finally {
+            facade.shutdown()
+        }
     }
 
     @Test
@@ -99,8 +124,8 @@ class ViewModelMediaDeleteDispatcherTest {
                 replacement.shutdown()
             }
 
-            assertEquals(1, capacity.activeTaskCount())
-            assertEquals(1, capacity.queuedTaskCount())
+            assertEquals(1, oldViewModel.activeTaskCount())
+            assertEquals(1, oldViewModel.queuedTaskCount())
             assertEquals(1, createdThreads.get())
             assertFalse(overflowRan.get())
 
