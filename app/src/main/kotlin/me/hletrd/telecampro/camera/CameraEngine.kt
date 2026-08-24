@@ -84,6 +84,18 @@ internal data class FamilyDeletionMarkerEngineOverrides(
     val capacityOwner: FamilyDeletionMarkerCapacityOwner,
 )
 
+/**
+ * Narrow host-test seam for the stabilization transaction owned by [CameraEngine.setVideoStabMode].
+ * Production leaves this null and therefore reads accepted Camera2 capabilities and executes the
+ * real request/session effects. Tests replace the three hardware-facing edges while still driving
+ * the public Engine entry, stored intent, guard ordering, and exact effect cardinality.
+ */
+internal data class StabilizationEngineOverrides(
+    val videoStabModes: IntArray?,
+    val apply: () -> Unit,
+    val reopen: () -> Unit,
+)
+
 private data class RecorderSetupOwner(
     val terminal: RecorderSetupFinalizationOwner<VideoRecorder>,
     val processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
@@ -96,6 +108,7 @@ class CameraEngine internal constructor(
     private val recordingPreNativeOverrides: RecordingPreNativeEngineOverrides? = null,
     private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
     private val familyDeletionMarkerOverrides: FamilyDeletionMarkerEngineOverrides? = null,
+    private val stabilizationOverrides: StabilizationEngineOverrides? = null,
 ) {
 
     /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
@@ -1587,17 +1600,17 @@ class CameraEngine internal constructor(
     fun setVideoStabMode(m: VideoStabMode) {
         if (videoStabMode == m) return
         val requiresReconfigure = videoStabModeChangeRequiresReconfigure(
-            videoStabModes = caps?.videoStabModes,
+            videoStabModes = stabilizationOverrides?.videoStabModes ?: caps?.videoStabModes,
             before = videoStabMode,
             after = m,
         )
         videoStabMode = m
         if (!requiresReconfigure) return
-        applyStabilization()
+        stabilizationOverrides?.apply?.invoke() ?: applyStabilization()
         // CONTROL_VIDEO_STABILIZATION_MODE is advertised as a session key on the Find X9 Ultra tele.
         // Request-only updates work, but the HAL can select a different OIS/EIS pipeline at configure
         // time, so recreate the session when the user changes the stabilization class.
-        reopenForSession()
+        stabilizationOverrides?.reopen?.invoke() ?: reopenForSession()
     }
     fun setFalseColor(enabled: Boolean) {
         rendererAssists.setFalseColor(enabled)
