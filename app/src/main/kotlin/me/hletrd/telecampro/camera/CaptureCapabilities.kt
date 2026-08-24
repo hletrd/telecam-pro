@@ -436,6 +436,8 @@ data class CameraCaps(
                 hiResUsesMaxResolutionMode = maxResJpeg != null,
                 largestYuvSize = yuvSize,
                 largestYuvMinFrameDurationNs = yuvSize?.let { size ->
+                    // Zero is Camera2's explicit "unavailable" sentinel. Preserve it so the deep
+                    // repeating-reader admission can fail closed rather than inventing fluidity.
                     runCatching { map?.getOutputMinFrameDuration(ImageFormat.YUV_420_888, size) }
                         .getOrNull() ?: 0L
                 } ?: 0L,

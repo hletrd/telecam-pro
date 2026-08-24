@@ -686,8 +686,11 @@ class CameraController(context: Context) {
             // ZSL_RING_DEPTH+2 full-res reader (~5 x 19 MB gralloc) on a device whose repeating
             // request would be throttled by it wastes exactly the memory such a device is short of,
             // and zslStreamingActive would refuse to fill it anyway (verification 2026-08-02).
-            val deepZsl = useYuv && plan.useDeepZslReader &&
-                zslStreamKeepsPreviewFluid(caps.largestYuvMinFrameDurationNs)
+            val deepZsl = deepZslReaderEnabled(
+                useYuv = useYuv,
+                planAllowsDeepReader = plan.useDeepZslReader,
+                minFrameDurationNs = caps.largestYuvMinFrameDurationNs,
+            )
             size?.let {
                 val reader = ImageReader.newInstance(
                     it.width, it.height,
@@ -2646,11 +2649,19 @@ internal fun sessionAttemptPlan(
  * serves slowly would cap the default photo viewfinder — the pseudo-ZSL ring buys 0 ms shutter lag,
  * never at the cost of the finder. PMA110 advertises ~33 ms here (its measured 29-31 fps); anything
  * that cannot sustain [ZSL_STREAM_MIN_FPS] keeps the reader OFF the repeating targets and simply
- * takes a real capture per shot. An unreported (0) duration is treated as "no constraint", matching
- * how every other absent Camera2 value is read in this file.
+ * takes a real capture per shot. Camera2 defines zero as "minimum frame duration is not available";
+ * unavailable timing is not evidence that a ~95 MB repeating stream can hold the finder floor, so
+ * it fails closed to the shallow reader and ordinary real-capture path.
  */
 internal fun zslStreamKeepsPreviewFluid(minFrameDurationNs: Long): Boolean =
-    minFrameDurationNs <= 0L || minFrameDurationNs <= 1_000_000_000L / ZSL_STREAM_MIN_FPS
+    minFrameDurationNs > 0L && minFrameDurationNs <= 1_000_000_000L / ZSL_STREAM_MIN_FPS
+
+/** Allocation/session seam: a deep reader needs both route intent and proof-positive timing. */
+internal fun deepZslReaderEnabled(
+    useYuv: Boolean,
+    planAllowsDeepReader: Boolean,
+    minFrameDurationNs: Long,
+): Boolean = useYuv && planAllowsDeepReader && zslStreamKeepsPreviewFluid(minFrameDurationNs)
 
 /** Floor for the viewfinder while the ZSL reader streams; below this the ring is not worth it. */
 internal const val ZSL_STREAM_MIN_FPS = 24L

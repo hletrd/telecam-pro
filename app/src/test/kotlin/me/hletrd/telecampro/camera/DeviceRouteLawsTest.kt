@@ -112,8 +112,9 @@ class ZslStreamFluidityTest {
     }
 
     @Test
-    fun `an unreported duration is treated as no constraint`() {
-        assertTrue(zslStreamKeepsPreviewFluid(0L))
+    fun `an unavailable duration cannot prove a deep repeating reader is fluid`() {
+        assertFalse(zslStreamKeepsPreviewFluid(0L))
+        assertFalse(zslStreamKeepsPreviewFluid(-1L))
     }
 
     @Test
@@ -121,6 +122,14 @@ class ZslStreamFluidityTest {
         // 50 ms = 20 fps, 100 ms = 10 fps: both below the 24 fps floor.
         assertFalse(zslStreamKeepsPreviewFluid(50_000_000L))
         assertFalse(zslStreamKeepsPreviewFluid(100_000_000L))
+    }
+
+    @Test
+    fun `deep allocation needs YUV plan authority and positive timing evidence`() {
+        assertTrue(deepZslReaderEnabled(true, true, 33_333_333L))
+        assertFalse(deepZslReaderEnabled(true, true, 0L))
+        assertFalse(deepZslReaderEnabled(true, false, 33_333_333L))
+        assertFalse(deepZslReaderEnabled(false, true, 33_333_333L))
     }
 }
 
