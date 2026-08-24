@@ -1,3 +1,144 @@
+## Review-plan-fix cycle 28 aggregate
+
+Date: 2026-08-24
+Reviewed HEAD: `7e44ab07ddc243c06d916406db699f91bfe0893f`
+
+### Review provenance and coverage
+
+Five fresh concurrent agents covered every required specialist perspective plus the repository's
+QA-adversary role:
+
+- code-reviewer, architect, and test-engineer;
+- perf-reviewer and tracer;
+- security-reviewer and debugger;
+- critic, designer, and QA adversary; and
+- verifier and document-specialist.
+
+Each perspective inventoried and swept the complete 422-path committed repository: all 95
+production Kotlin files, 190 host-test files, four instrumented probes, two debug hosts, 30 Python
+files, two shell tools, manifests/resources, Gradle and immutable-release inputs, committed
+documentation, and packaged assets. Review ran in a clean clone of `origin/main`; the shared main
+worktree and its unrelated incorrect `CameraEngine.kt` delta remained untouched. There were no
+agent failures.
+
+### Deduplicated findings
+
+#### AGG28-01 — family claim/producer registration has a retirement linearization gap
+
+- **Severity / confidence:** High / High
+- **Classification:** Confirmed correctness and deleted-media durability defect
+- **Cross-agent agreement:** code reviewer, architect, critic, verifier, document specialist,
+  test engineer, and QA adversary
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:101-108`
+  increments the authority user count under `familyAuthorityRegistryLock`, releases it, and only
+  afterward increments `publicationClaims` under `claimMonitor`; producer admission has the same
+  split at `:133-138`. Retirement at `:505-543` sees only the later claim counters and can remove
+  the durable marker while a registrant is paused in that gap. Current tests at
+  `app/src/test/kotlin/me/hletrd/telecampro/storage/DeletedFamilyJournalTest.kt:479-550` begin only
+  after the vulnerable increment.
+- **Failure:** retirement can erase a family's deletion veto before an admitted publication or
+  producer becomes visible, after which a late sibling may take the live publication path. The
+  current still pipeline's outer producer lease masks the publication form, but the documented
+  authority abstraction and producer admission are not self-contained or linearizable.
+- **Required fix:** make registry membership and the corresponding claim/lease one atomic admission
+  transition without holding the global registry across preference/provider I/O; add deterministic
+  publication and producer regressions for the exact admission boundary.
+
+#### AGG28-02 — stale partial-delete delivery promises an in-app retry for a superseded capture
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed asynchronous presentation/correctness defect
+- **Cross-agent agreement:** code reviewer, architect, and test engineer
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:3365-3391`
+  rechecks survivor ownership before updating state, but chooses retry copy from the earlier
+  worker-local `restored != null`. `CaptureOutputTracker.kt:378-388` can return a survivor before a
+  newer capture becomes owner, and no test covers supersession between restoration and main-thread
+  delivery.
+- **Failure:** capture B correctly remains the last-capture owner, yet the UI tells the user to open
+  the app's capture and retry deletion for capture A; the app now opens B, while A is reachable only
+  in the system Gallery.
+- **Required fix:** derive survivor publication and retry destination from one delivery-time
+  ownership decision, choosing the Gallery message when the survivor was superseded; add both race
+  and ordinary-path tests.
+
+#### AGG28-03 — committed-export docs gate skips a public screenshot/runbook invariant
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed release-gate fail-open defect
+- **Cross-agent agreement:** code reviewer, architect, and test engineer
+- **Evidence:** `tools/check_docs.py:129-190` nests checks for the tracked
+  `docs/play-console-submit.md` under availability of private `docs/play-store-listing.md`.
+  `tools/tests/test_tool_contracts.py:146-201` proves only a successful exported-tree run, not that
+  mutations of public screenshot readiness are rejected.
+- **Failure:** a fresh clone can pass when the committed console runbook contradicts
+  `docs/assets/play/screenshots/asset-validity.json`, including telling an operator to upload stale
+  assets, solely because the unrelated private listing is absent.
+- **Required fix:** always validate the committed console runbook against the manifest and make
+  only listing-specific checks optional; add exported-tree negative fixtures for both readiness
+  directions.
+
+#### AGG28-04 — non-unity recording gain computes and allocates discarded RMS levels per buffer
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed hot-path inefficiency; device-visible magnitude needs profiling
+- **Cross-agent agreement:** performance reviewer and tracer
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt:773-880` calls
+  `applyGainAndLevel` on every PCM buffer whenever gain differs from `1f`, although level delivery
+  is admitted only every 100 ms. The helper at `:2029-2072` creates buffer views, a `DoubleArray`,
+  and a `FloatArray` and accumulates RMS even when the caller discards the result.
+- **Failure:** a long 4K take at non-unity gain incurs continuous avoidable CPU/allocation pressure
+  on the audio encoder lane, increasing GC/contention risk without changing encoded samples or the
+  10 Hz meter.
+- **Required fix:** separate allocation-free in-place gain from optional level measurement (or make
+  measurement explicitly conditional), preserve clamp/partial-frame/channel semantics, and test
+  measured and unmeasured paths.
+
+#### AGG28-05 — published privacy page contradicts owner-null legacy restore behavior
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed public privacy-copy inconsistency
+- **Source:** document specialist
+- **Evidence:** `privacy-policy/index.html:201-207` accurately discloses owner-null TeleCam-format
+  candidates, matching `PRIVACY.md:19`, `docs/play-data-safety.md:21-24`, and
+  `storage/LatestCaptureReducer.kt:58-65,184-205`; the same page at `:243-245` instead says the app
+  looks only for captures it saved itself.
+- **Failure:** users and Play reviewers receive mutually exclusive descriptions of the exact media
+  library scan the app performs.
+- **Required fix:** replace the absolute sentence with the shared current-package plus owner-null
+  unverified/file-only wording and add a documentation parity assertion for this obsolete claim.
+
+#### AGG28-06 — Privacy Policy and permission-recovery navigation failures are silent
+
+- **Severity / confidence:** Medium / High
+- **Classification:** Confirmed missing error-state UX; triggering device policy needs manual validation
+- **Source:** designer
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/ui/controls/ProSheet.kt:1563-1573,1834-1838`
+  and `MainActivity.kt:751-759,880-894` discard `ACTION_VIEW` and app-settings launch failures.
+  There is no localized failure copy, in-app privacy fallback, or regression for an absent/blocked
+  handler.
+- **Failure:** on a managed/kiosk device, the only policy link or primary permission-recovery CTA
+  can appear tappable yet do nothing, trapping touch, keyboard, and switch-access users without an
+  explanation.
+- **Required fix:** centralize external-intent outcomes, show localized assertive feedback while
+  retaining focus, provide an in-app privacy-policy fallback, and test unresolved and
+  `SecurityException` paths.
+
+### Prompt-1 verification evidence
+
+- `ANDROID_HOME=/Users/hletrd/Library/Android/sdk python3 tools/verify_host.py`: passed, including
+  debug assembly, lint, 1,855 JVM/Robolectric/Compose tests, 99.82% Partition-A coverage, tool and
+  device-harness self-tests, public-clone documentation checks, Python compilation, and diff checks.
+- No physical-device check was run and no historical device result was promoted to current evidence.
+
+### Current-cycle accounting
+
+- Raw specialist findings: **17**
+- Deduplicated root causes: **6**
+- Agent failures: **0**
+- Deferred findings: **0**
+
+## Archived cycle-27 aggregate
+
 # Aggregate deep review — cycle 27
 
 Date: 2026-08-24
