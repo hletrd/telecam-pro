@@ -7,15 +7,14 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
-import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.ShutterTimer
-import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.availableTransfers
 
 /**
  * The SINGLE home of the enum tap-cycle orders and the auto-exposure readout text shared by the
@@ -53,14 +52,6 @@ internal fun nextDriveMode(mode: DriveMode): DriveMode = when (mode) {
     DriveMode.BURST -> DriveMode.AEB
     DriveMode.AEB -> DriveMode.TIMELAPSE
     DriveMode.TIMELAPSE -> DriveMode.SINGLE
-}
-
-internal fun nextTransfer(transfer: ColorTransfer): ColorTransfer = when (transfer) {
-    ColorTransfer.HLG -> ColorTransfer.SLOG3
-    ColorTransfer.SLOG3 -> ColorTransfer.SLOG3_CINE
-    ColorTransfer.SLOG3_CINE -> ColorTransfer.LOGC3
-    ColorTransfer.LOGC3 -> ColorTransfer.SDR
-    ColorTransfer.SDR -> ColorTransfer.HLG
 }
 
 internal fun nextAudioScene(scene: AudioScene): AudioScene = when (scene) {
@@ -228,7 +219,8 @@ internal fun fnSlotAppliesTo(slot: FnSlot, mode: CaptureMode): Boolean = when (s
  * photo Fn list can still contain one.
  */
 internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlotAppliesTo(slot, state.mode) && when (slot) {
-    FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
+    FnSlot.TRANSFER -> !state.isRecording && state.encoderInventoryLoaded &&
+        availableTransfers(state.videoCodec, state.tenBitEncodeAvailable).size > 1
     // The TC toggle is a rear-only optics door: onToggleTeleconverter also refuses while FRONT
     // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
     // only toasts on tap — exactly the drift this predicate's contract forbids.

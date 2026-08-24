@@ -8,6 +8,7 @@ import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.WbMode
+import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.ui.CameraActions
@@ -126,7 +127,12 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         )
         FnSlot.PEAKING -> actions.onTogglePeaking(!state.focusPeaking)
         FnSlot.ZEBRA -> actions.onToggleZebra(!state.zebra)
-        FnSlot.TRANSFER -> actions.onTransfer(nextTransfer(state.transfer))
+        FnSlot.TRANSFER -> actions.onTransfer(
+            nextAvailable(
+                state.transfer,
+                availableTransfers(state.videoCodec, state.tenBitEncodeAvailable),
+            ),
+        )
         FnSlot.AUDIO_SCENE -> actions.onAudioScene(nextAudioScene(state.audioScene))
         FnSlot.GRID -> actions.onGridType(nextGridType(state.grid))
         FnSlot.LEVEL -> actions.onToggleLevel(!state.level)

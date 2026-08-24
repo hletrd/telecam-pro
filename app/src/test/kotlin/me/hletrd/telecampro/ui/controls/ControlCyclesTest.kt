@@ -4,7 +4,6 @@ import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
-import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FlashMode
@@ -69,16 +68,6 @@ class ControlCyclesTest {
         assertEquals(DriveMode.TIMELAPSE, nextDriveMode(DriveMode.AEB))
         assertEquals(DriveMode.SINGLE, nextDriveMode(DriveMode.TIMELAPSE))
         assertClosedCycle(DriveMode.entries, ::nextDriveMode)
-    }
-
-    @Test
-    fun transferCycle() {
-        assertEquals(ColorTransfer.SLOG3, nextTransfer(ColorTransfer.HLG))
-        assertEquals(ColorTransfer.SLOG3_CINE, nextTransfer(ColorTransfer.SLOG3))
-        assertEquals(ColorTransfer.LOGC3, nextTransfer(ColorTransfer.SLOG3_CINE))
-        assertEquals(ColorTransfer.SDR, nextTransfer(ColorTransfer.LOGC3))
-        assertEquals(ColorTransfer.HLG, nextTransfer(ColorTransfer.SDR))
-        assertClosedCycle(ColorTransfer.entries, ::nextTransfer)
     }
 
     @Test

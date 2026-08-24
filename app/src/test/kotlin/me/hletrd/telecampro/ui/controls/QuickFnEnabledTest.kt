@@ -19,7 +19,13 @@ class QuickFnEnabledTest {
 
     // Video mode: the session-reconfiguring slots below are video-only (fnSlotAppliesTo), so an
     // idle PHOTO baseline would be testing the mode gate rather than the mid-REC gate.
-    private val idle = CameraUiState(isRecording = false, videoCodec = VideoCodec.HEVC, mode = CaptureMode.VIDEO)
+    private val idle = CameraUiState(
+        isRecording = false,
+        videoCodec = VideoCodec.HEVC,
+        mode = CaptureMode.VIDEO,
+        encoderInventoryLoaded = true,
+        tenBitEncodeAvailable = true,
+    )
     private val recording = CameraUiState(isRecording = true, videoCodec = VideoCodec.HEVC)
 
     @Test
@@ -78,8 +84,10 @@ class QuickFnEnabledTest {
     }
 
     @Test
-    fun `transfer additionally requires HEVC`() {
+    fun `transfer requires loaded Main10 HEVC choices`() {
         assertFalse(quickFnEnabled(FnSlot.TRANSFER, idle.copy(videoCodec = VideoCodec.AVC)))
+        assertFalse(quickFnEnabled(FnSlot.TRANSFER, idle.copy(encoderInventoryLoaded = false)))
+        assertFalse(quickFnEnabled(FnSlot.TRANSFER, idle.copy(tenBitEncodeAvailable = false)))
         assertTrue(quickFnEnabled(FnSlot.TRANSFER, idle.copy(videoCodec = VideoCodec.HEVC)))
     }
 

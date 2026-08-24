@@ -199,7 +199,11 @@ class PerformQuickFnTest {
         // The video-only cycles need a VIDEO state: performQuickFn re-checks quickFnEnabled, which
         // now carries fnSlotAppliesTo — in photo these taps mutated video settings that could not
         // affect the still (and STABILIZATION's chip then contradicted the OSD's OIS reading).
-        val idleVideo = idle.copy(mode = CaptureMode.VIDEO)
+        val idleVideo = idle.copy(
+            mode = CaptureMode.VIDEO,
+            encoderInventoryLoaded = true,
+            tenBitEncodeAvailable = true,
+        )
         assertEquals(
             listOf("onVideoStabMode(${VideoStabMode.OFF})"),
             dispatched(FnSlot.STABILIZATION, idleVideo), // default ENHANCED -> OFF
@@ -211,6 +215,10 @@ class PerformQuickFnTest {
             dispatched(FnSlot.FRAME_LINES, idle),
         )
         assertEquals(listOf("onTransfer(${ColorTransfer.SLOG3})"), dispatched(FnSlot.TRANSFER, idleVideo))
+        assertEquals(
+            emptyList<String>(),
+            dispatched(FnSlot.TRANSFER, idleVideo.copy(tenBitEncodeAvailable = false)),
+        )
         assertEquals(
             listOf("onAudioScene(${AudioScene.SOUND_FOCUS})"),
             dispatched(FnSlot.AUDIO_SCENE, idleVideo),
