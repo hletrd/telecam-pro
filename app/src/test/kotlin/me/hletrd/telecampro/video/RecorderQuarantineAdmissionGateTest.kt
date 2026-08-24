@@ -431,6 +431,36 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
+    fun `typed native result distinguishes pre-entry rejection from revoked return`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val result = java.util.concurrent.atomic.AtomicReference<NativeAcquisitionResult>()
+        val worker = Thread {
+            result.set(
+                gate.runNativeWithResult {
+                    entered.countDown()
+                    release.await()
+                },
+            )
+        }
+
+        worker.start()
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        assertTrue(gate.close())
+        release.countDown()
+        worker.join(5_000)
+
+        assertEquals(NativeAcquisitionResult.RETURNED_REVOKED, result.get())
+        var rejectedBlockRan = false
+        assertEquals(
+            NativeAcquisitionResult.REJECTED,
+            gate.runNativeWithResult { rejectedBlockRan = true },
+        )
+        assertFalse(rejectedBlockRan)
+    }
+
+    @Test
     fun `interrupted drain observation returns false and restores interrupt status`() {
         val gate = RecorderQuarantineAdmissionGate()
         val entered = CountDownLatch(1)

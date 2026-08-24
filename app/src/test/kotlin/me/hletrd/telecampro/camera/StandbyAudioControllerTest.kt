@@ -9,6 +9,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import me.hletrd.telecampro.video.NativeAcquisitionResult
 
 // The production name of the thread-backed process-busy retry fallback (StandbyAudioController.kt).
 private const val FALLBACK_THREAD_NAME = "StandbyAudioRetryFallback"
@@ -40,6 +41,8 @@ class StandbyAudioControllerTest {
         val fallbackScheduled: ArrayDeque<() -> Unit>,
         val available: MutableList<Unit>,
         val unavailable: MutableList<StandbyAudioUnavailable>,
+        val retained: MutableList<QuarantinedStandbyInput>,
+        val unsafeNative: MutableList<Unit>,
     )
 
     private fun fixture(
@@ -49,15 +52,26 @@ class StandbyAudioControllerTest {
         canStart: () -> Boolean = { true },
         threadLauncher: StandbyThreadLauncher = StandbyThreadLauncher { _, task -> task(); true },
         reserveProcessAdmission: () -> (() -> Unit)? = { {} },
-        runNativeAcquisition: ((() -> Unit) -> Boolean) = { block -> block(); true },
+        runNativeAcquisition: ((() -> Unit) -> NativeAcquisitionResult) = { block ->
+            block()
+            NativeAcquisitionResult.RETURNED_CURRENT
+        },
         retryScheduler: StandbyRetryScheduler? = null,
         processBusyRetryFallback: StandbyRetryScheduler? = null,
         stopDispatcher: StandbyStopDispatcher = StandbyStopDispatcher { task -> task() },
+        stopDeadlineScheduler: RecordingTeardownScheduler = RecordingTeardownScheduler { _, _ ->
+            RecordingTeardownCancellation {}
+        },
+        stopTimeoutMs: Long = 1_500L,
+        retainEffect: (QuarantinedStandbyInput) -> Unit = {},
+        unsafeEffect: () -> Unit = {},
     ): Fixture {
         val scheduled = ArrayDeque<() -> Unit>()
         val fallbackScheduled = ArrayDeque<() -> Unit>()
         val available = mutableListOf<Unit>()
         val unavailable = mutableListOf<StandbyAudioUnavailable>()
+        val retained = mutableListOf<QuarantinedStandbyInput>()
+        val unsafeNative = mutableListOf<Unit>()
         return Fixture(
             controller = StandbyAudioController(
                 audioGain = { 1f },
@@ -78,15 +92,27 @@ class StandbyAudioControllerTest {
                     true
                 },
                 stopDispatcher = stopDispatcher,
+                stopDeadlineScheduler = stopDeadlineScheduler,
+                stopTimeoutMs = stopTimeoutMs,
                 onAvailable = { available += Unit },
                 onUnavailable = unavailable::add,
+                onUnsafeNative = {
+                    unsafeNative += Unit
+                    unsafeEffect()
+                },
                 reserveProcessAdmission = reserveProcessAdmission,
                 runNativeAcquisition = runNativeAcquisition,
+                retainQuarantinedInput = { owner ->
+                    retained += owner
+                    retainEffect(owner)
+                },
             ),
             scheduled = scheduled,
             fallbackScheduled = fallbackScheduled,
             available = available,
             unavailable = unavailable,
+            retained = retained,
+            unsafeNative = unsafeNative,
         )
     }
 
@@ -758,6 +784,178 @@ class StandbyAudioControllerTest {
 
         assertEquals(0, input.starts)
         assertEquals(1, input.releases)
+    }
+
+    @Test
+    fun `native create return revoked by quarantine retains exact input without cleanup`() {
+        val input = FakeInput()
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(input)
+            },
+            runNativeAcquisition = { block ->
+                block()
+                NativeAcquisitionResult.RETURNED_REVOKED
+            },
+        )
+
+        fixture.controller.setEnabled(true)
+        fixture.controller.setEnabled(true)
+
+        assertEquals(1, setupCalls)
+        assertEquals(0, input.starts)
+        assertEquals(0, input.stops)
+        assertEquals(0, input.releases)
+        assertEquals(1, fixture.retained.size)
+        assertTrue(fixture.retained.single().input === input)
+        assertEquals(1L, fixture.retained.single().terminationOwner.generationId)
+        assertTrue(fixture.retained.single().terminationOwner.isAbandoned())
+        assertEquals(1, fixture.unsafeNative.size)
+        // The revoked generation completed logically, so REC cannot inherit a stale release latch.
+        val claim = fixture.controller.beginRecording()
+        assertTrue(claim.admitted)
+        assertEquals(null, claim.release)
+    }
+
+    @Test
+    fun `native start return revoked by quarantine retains started input without stop or release`() {
+        val input = FakeInput()
+        var acquisitions = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            runNativeAcquisition = { block ->
+                block()
+                acquisitions++
+                if (acquisitions == 1) {
+                    NativeAcquisitionResult.RETURNED_CURRENT
+                } else {
+                    NativeAcquisitionResult.RETURNED_REVOKED
+                }
+            },
+        )
+
+        fixture.controller.setEnabled(true)
+        fixture.controller.setEnabled(true)
+
+        assertEquals(2, acquisitions)
+        assertEquals(1, input.starts)
+        assertEquals(0, input.stops)
+        assertEquals(0, input.releases)
+        assertEquals(1, fixture.retained.size)
+        assertTrue(fixture.retained.single().input === input)
+        assertTrue(fixture.retained.single().terminationOwner.isAbandoned())
+        assertEquals(1, fixture.unsafeNative.size)
+    }
+
+    @Test
+    fun `hung standby stop deadline quarantines once and makes late return inert`() {
+        val processGate = me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate()
+        val processOwner = Any()
+        val readEntered = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val stopEntered = CountDownLatch(1)
+        val releaseStop = CountDownLatch(1)
+        val stopReturned = CountDownLatch(1)
+        val workerFinished = CountDownLatch(1)
+        val deadline = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+        val stopThreads = mutableListOf<Thread>()
+        var setupCalls = 0
+        val input = object : StandbyAudioInput {
+            var starts = 0
+            var stops = 0
+            var releases = 0
+
+            override fun start() { starts++ }
+            override fun read(samples: ShortArray): Int {
+                readEntered.countDown()
+                releaseRead.await(5, TimeUnit.SECONDS)
+                return -1
+            }
+            override fun stop() {
+                stops++
+                stopEntered.countDown()
+                releaseStop.await(5, TimeUnit.SECONDS)
+                stopReturned.countDown()
+            }
+            override fun release() { releases++ }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(input)
+            },
+            recorderAbsent = { true },
+            canStart = { !processGate.isQuarantined() },
+            threadLauncher = StandbyThreadLauncher { name, task ->
+                Thread(
+                    {
+                        try {
+                            task()
+                        } finally {
+                            workerFinished.countDown()
+                        }
+                    },
+                    name,
+                ).apply { isDaemon = true }.start()
+                true
+            },
+            reserveProcessAdmission = {
+                processGate.reserveStandby(processOwner)?.let { token ->
+                    { processGate.finishStandby(token) }
+                }
+            },
+            runNativeAcquisition = { block -> processGate.runNativeWithResult(block = block) },
+            stopDispatcher = StandbyStopDispatcher { task ->
+                stopThreads += Thread(task, "blocked-standby-stop").apply {
+                    isDaemon = true
+                    start()
+                }
+            },
+            stopDeadlineScheduler = RecordingTeardownScheduler { _, action ->
+                deadline.set(action)
+                RecordingTeardownCancellation { deadline.compareAndSet(action, null) }
+            },
+            stopTimeoutMs = 1L,
+            retainEffect = { processGate.close() },
+        )
+
+        fixture.controller.setEnabled(true)
+        assertTrue(readEntered.await(2, TimeUnit.SECONDS))
+        val claim = fixture.controller.beginRecording()
+        assertTrue(claim.admitted)
+        assertTrue(stopEntered.await(2, TimeUnit.SECONDS))
+        val logicalRelease = checkNotNull(claim.release)
+        assertFalse(logicalRelease.await(20, TimeUnit.MILLISECONDS))
+
+        checkNotNull(deadline.getAndSet(null)).invoke()
+
+        assertTrue(logicalRelease.await(2, TimeUnit.SECONDS))
+        assertEquals(1, fixture.retained.size)
+        assertTrue(fixture.retained.single().input === input)
+        assertTrue(fixture.retained.single().terminationOwner.isAbandoned())
+        assertEquals(1, fixture.unsafeNative.size)
+        assertTrue(processGate.isQuarantined())
+        assertEquals(null, processGate.snapshot(Any()))
+        assertEquals(null, processGate.reserveStandby(Any()))
+
+        // Pause/replacement/re-enable cannot create a second microphone after terminal quarantine.
+        fixture.controller.disable()
+        fixture.controller.setEnabled(true)
+        assertEquals(1, setupCalls)
+        assertEquals(1, input.starts)
+        assertEquals(1, input.stops)
+
+        // A native stop and read returning after the deadline cannot authorize input release.
+        releaseStop.countDown()
+        assertTrue(stopReturned.await(2, TimeUnit.SECONDS))
+        releaseRead.countDown()
+        assertTrue(workerFinished.await(2, TimeUnit.SECONDS))
+        stopThreads.forEach { it.join(2_000) }
+        assertEquals(0, input.releases)
+        assertEquals(1, fixture.retained.size)
+        assertEquals(1, fixture.unsafeNative.size)
     }
 
     @Test
