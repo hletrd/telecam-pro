@@ -1052,6 +1052,19 @@ check(
     and "manifest carries no" in claude,
     "committed orientation authority joins absent manifest restriction to handset runtime lock",
 )
+ui_snapshot_activity = read(
+    "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt"
+)
+check(
+    "internal fun ComponentActivity.enableTeleCamEdgeToEdge()" in main_activity
+    and "statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)" in main_activity
+    and "navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)" in main_activity
+    and main_activity.count("enableTeleCamEdgeToEdge()") >= 2
+    and "import me.hletrd.telecampro.enableTeleCamEdgeToEdge" in ui_snapshot_activity
+    and "enableTeleCamEdgeToEdge()" in ui_snapshot_activity
+    and re.search(r"(?m)^\s*enableEdgeToEdge\(\s*\)\s*$", ui_snapshot_activity) is None,
+    "snapshot host pins dark system bars through the production helper",
+)
 if backlog is None:
     skip_private("release board records the removed orientation restriction", "docs/BACKLOG.md")
 else:
@@ -1450,6 +1463,36 @@ check(
 # historical backlog label so none can independently revive the old "structurally impossible" rule.
 gl_pipeline = read("app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt")
 field_checks = read("docs/FIELD_CHECKS.md")
+rotation_math = read("app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt")
+front_mirror = read("app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt")
+check(
+    "FIELD_CHECKS B1" in rotation_math
+    and "docs/FIELD_CHECKS.md" in rotation_math
+    and "closed rotation end to end" in rotation_math
+    and "still an open Residual Field Check" not in rotation_math
+    and "B1. Landscape video playback orientation — ✅ PASSED" in field_checks
+    and "rotation is now closed end to end" in field_checks,
+    "RotationMath keeps committed B1 video rotation evidence closed",
+)
+check(
+    "ROTATION term remains OPEN" in front_mirror
+    and "docs/FIELD_CHECKS.md A4" in front_mirror
+    and "large-screen 90°/270°" in front_mirror
+    and "A4. Front tap-AF window-rotation axis — ◯ OPEN" in field_checks,
+    "FrontMirrorConvention points to committed open A4 calibration",
+)
+rec_border_start = claude.index("- **The REC tally border must follow")
+rec_border_end = claude.index("\n- **Analysis readback", rec_border_start)
+rec_border_authority = claude[rec_border_start:rec_border_end]
+check(
+    "platform radius unscaled" in rec_border_authority
+    and "former ×1.2 multiplier" in rec_border_authority
+    and "device-rejected" in rec_border_authority
+    and "Use the radius the panel REPORTS, unscaled" in camera_screen
+    and "scale ×1.2" not in rec_border_authority
+    and "radius by 1.2" not in rec_border_authority,
+    "REC border authority keeps the device-accepted platform radius unscaled",
+)
 check(
     "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)" in gl_pipeline
     and "window-rotation term" in claude
@@ -1493,17 +1536,24 @@ check(
 obsolete_finder_contracts = (
     "TELE + Photo + 4:3 + loupe",
     "toggle && TELE && PHOTO && 4:3",
+    "user toggle + Photo + 4:3 + TELE + active punch-in",
     "overview only ever draws under Photo + 4:3 + Teleconverter",
     "Mode is a finder-gate input (photo-only)",
     "finder PIP is 4:3-only",
 )
 check(
     not any(
-        obsolete in "\n".join((camera_actions, camera_engine, gl_pipeline, loupe_compose_test))
+        obsolete in "\n".join(
+            (camera_actions, camera_engine, gl_pipeline, loupe_compose_test, camera_screen)
+        )
         for obsolete in obsolete_finder_contracts
     )
     and "active loupe + (TELE or unified zoom >= 3x)" in loupe_compose_test
-    and "Video ignoring still aspect" in loupe_compose_test,
+    and "Video ignoring still aspect" in loupe_compose_test
+    and "active punch-in + (TELE or unified zoom" in camera_screen
+    and ">= 3x). Photo additionally requires 4:3; Video ignores" in camera_screen
+    and "must not mirror to bottom-left under RTL system locales" in camera_screen
+    and "must not mirror to bottom-right under RTL system locales" not in camera_screen,
     "Loupe source and Compose-test guidance rejects the superseded Photo/TELE-only gate",
 )
 

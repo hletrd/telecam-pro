@@ -68,14 +68,24 @@ def run_documentation_gate_from_committed_export(
             "docs/ARCHITECTURE.md",
             "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
+            "app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
+            "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt",
             "app/src/main/res/values/strings.xml",
             "app/src/main/res/values-ko/strings.xml",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
+        # check_docs.py validates the newest completed plan. Overlay the live public plan set too,
+        # otherwise a pre-commit test can validate stale HEAD while the direct documentation gate
+        # correctly evaluates the current completion record.
+        for source in (REPO_ROOT / "docs/plans").glob("*.md"):
+            shutil.copy2(source, staging / source.relative_to(REPO_ROOT))
         if mutate is not None:
             mutate(staging)
 
@@ -386,6 +396,22 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "active open FIELD_CHECKS references name a runnable field-check identity",
             result.stdout,
         )
+        self.assertIn(
+            "snapshot host pins dark system bars through the production helper",
+            result.stdout,
+        )
+        self.assertIn(
+            "RotationMath keeps committed B1 video rotation evidence closed",
+            result.stdout,
+        )
+        self.assertIn(
+            "FrontMirrorConvention points to committed open A4 calibration",
+            result.stdout,
+        )
+        self.assertIn(
+            "REC border authority keeps the device-accepted platform radius unscaled",
+            result.stdout,
+        )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
 
     def test_committed_export_rejects_stale_agp_zsl_and_field_reference_facts(self) -> None:
@@ -448,6 +474,98 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  Loupe Overview authorities match the executable right-inset corner",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_bare_snapshot_edge_to_edge(self) -> None:
+        def restore_bare_edge_to_edge(root: Path) -> None:
+            path = root / "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt"
+            text = path.read_text(encoding="utf-8")
+            marker = "        enableTeleCamEdgeToEdge()\n"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, "        enableEdgeToEdge()\n", 1), encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(restore_bare_edge_to_edge)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  snapshot host pins dark system bars through the production helper",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_stale_live_loupe_laws(self) -> None:
+        def restore_stale_loupe_comment(root: Path) -> None:
+            path = root / "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt"
+            text = path.read_text(encoding="utf-8")
+            current_gate = (
+                "user toggle + active punch-in + (TELE or unified zoom\n"
+                "            // >= 3x). Photo additionally requires 4:3; Video ignores the unrelated still aspect."
+            )
+            stale_gate = "user toggle + Photo + 4:3 + TELE + active punch-in."
+            self.assertIn(current_gate, text)
+            self.assertIn("must not mirror to bottom-left under RTL system locales", text)
+            path.write_text(
+                text.replace(current_gate, stale_gate, 1).replace(
+                    "must not mirror to bottom-left under RTL system locales",
+                    "must not mirror to bottom-right under RTL system locales",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(restore_stale_loupe_comment)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  Loupe source and Compose-test guidance rejects the superseded Photo/TELE-only gate",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_rotation_kdoc_status_drift(self) -> None:
+        fixtures = (
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt",
+                "closed rotation end to end",
+                "left rotation open",
+                "FAIL  RotationMath keeps committed B1 video rotation evidence closed",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt",
+                "ROTATION term remains OPEN",
+                "ROTATION term is CLOSED",
+                "FAIL  FrontMirrorConvention points to committed open A4 calibration",
+            ),
+        )
+        for relative, current, stale, failure in fixtures:
+            with self.subTest(relative=relative):
+                def drift_status(
+                    root: Path,
+                    relative: str = relative,
+                    current: str = current,
+                    stale: str = stale,
+                ) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(drift_status)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(failure, result.stdout)
+
+    def test_committed_export_rejects_retired_rec_border_multiplier(self) -> None:
+        def restore_multiplier(root: Path) -> None:
+            path = root / "CLAUDE.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "use the platform radius unscaled"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, "scale ×1.2", 1), encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(restore_multiplier)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  REC border authority keeps the device-accepted platform radius unscaled",
             result.stdout,
         )
 
