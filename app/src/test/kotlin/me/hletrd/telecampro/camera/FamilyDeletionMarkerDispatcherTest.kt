@@ -157,6 +157,18 @@ class FamilyDeletionMarkerDispatcherTest {
     }
 
     @Test
+    fun `reservation accounting fails closed on an impossible extra release`() {
+        val owner = FamilyDeletionMarkerCapacityOwner(workerCount = 1, backlogCapacity = 1)
+        try {
+            assertThrows(IllegalStateException::class.java) {
+                owner.releaseReservation()
+            }
+        } finally {
+            owner.shutdownNowForTest()
+        }
+    }
+
+    @Test
     fun `unused reservation cancellation releases capacity without executing work`() {
         val dispatcher = isolatedDispatcher(workerCount = 1, backlogCapacity = 1)
         try {

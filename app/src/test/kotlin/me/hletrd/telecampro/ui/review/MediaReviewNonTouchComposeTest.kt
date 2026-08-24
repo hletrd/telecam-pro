@@ -100,6 +100,32 @@ class MediaReviewNonTouchComposeTest {
     @Test
     fun `arrow panning follows physical image directions in RTL`() = assertArrowPanning(rtl = true)
 
+    @Test
+    fun `directional navigation exposes every cardinal position`() {
+        show(rtl = false)
+        val node = compose.onNodeWithTag("review").requestFocus().assertIsFocused()
+
+        fun press(key: Key, count: Int) {
+            repeat(count) {
+                node.performKeyInput { pressKey(key) }
+                compose.waitForIdle()
+            }
+        }
+
+        press(Key.DirectionLeft, 3)
+        node.assert(hasStateDescription(ReviewStillPosition.LEFT.name))
+        press(Key.DirectionRight, 3)
+        node.assert(hasStateDescription(ReviewStillPosition.CENTER.name))
+        press(Key.DirectionRight, 3)
+        node.assert(hasStateDescription(ReviewStillPosition.RIGHT.name))
+        press(Key.DirectionLeft, 3)
+        press(Key.DirectionUp, 2)
+        node.assert(hasStateDescription(ReviewStillPosition.TOP.name))
+        press(Key.DirectionDown, 2)
+        press(Key.DirectionDown, 2)
+        node.assert(hasStateDescription(ReviewStillPosition.BOTTOM.name))
+    }
+
     private fun assertArrowPanning(rtl: Boolean) {
         show(rtl)
         val node = compose.onNodeWithTag("review").requestFocus().assertIsFocused()

@@ -29,6 +29,13 @@ class CameraUiPolicyTest {
     }
 
     @Test
+    fun `review target default finalization axis preserves the two-axis contract`() {
+        assertTrue(reviewTargetEnabled(recordingStarting = false, recording = false))
+        assertFalse(reviewTargetEnabled(recordingStarting = true, recording = false))
+        assertFalse(reviewTargetEnabled(recordingStarting = false, recording = true))
+    }
+
+    @Test
     fun `standby meter owns mic only while armed Video level is visible`() {
         fun allowed(
             started: Boolean = true,

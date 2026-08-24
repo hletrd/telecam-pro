@@ -152,6 +152,31 @@ class MediaReviewGestureTest {
     }
 
     @Test
+    fun `position classifies every image region and its one-third boundaries`() {
+        val geometry = reviewStillGeometry(1200, 800, 1600, 900)
+        val scale = 4f
+        val cases = mapOf(
+            Offset.Zero to ReviewStillPosition.CENTER,
+            Offset(601f, 0f) to ReviewStillPosition.LEFT,
+            Offset(-601f, 0f) to ReviewStillPosition.RIGHT,
+            Offset(0f, 317f) to ReviewStillPosition.TOP,
+            Offset(0f, -317f) to ReviewStillPosition.BOTTOM,
+            Offset(601f, 317f) to ReviewStillPosition.TOP_LEFT,
+            Offset(-601f, 317f) to ReviewStillPosition.TOP_RIGHT,
+            Offset(601f, -317f) to ReviewStillPosition.BOTTOM_LEFT,
+            Offset(-601f, -317f) to ReviewStillPosition.BOTTOM_RIGHT,
+        )
+
+        cases.forEach { (offset, expected) ->
+            assertEquals("offset=$offset", expected, geometry.position(scale, offset))
+        }
+
+        assertEquals(ReviewStillPosition.CENTER, geometry.position(scale, Offset(599f, 316f)))
+        assertEquals(ReviewStillPosition.TOP_LEFT, geometry.position(scale, Offset(600f, 317f)))
+        assertEquals(ReviewStillPosition.CENTER, geometry.position(1f, Offset(99_999f, 99_999f)))
+    }
+
+    @Test
     fun `size and orientation transition reclamps the prior maximum`() {
         val landscapeViewport = reviewStillGeometry(1200, 800, 1600, 900)
         val portraitViewport = reviewStillGeometry(800, 1200, 1600, 900)
