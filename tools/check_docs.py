@@ -184,6 +184,44 @@ check(
     "phone screenshot manifest records a valid fail-closed recapture state",
 )
 
+# Launcher, Play, feature, and README assets must carry one recognizable public mark. The launcher
+# used to ship an unrelated cyan-gradient lens/chevron while every public surface used this
+# black/blue telescope and barrel.
+launcher_bg = read("app/src/main/res/drawable/ic_launcher_background.xml")
+launcher_fg = read("app/src/main/res/drawable/ic_launcher_foreground.xml")
+launcher_mono = read("app/src/main/res/drawable/ic_launcher_monochrome.xml")
+store_icon = read("docs/assets/play/icon-512.svg")
+feature_graphic = read("docs/assets/play/feature-graphic.svg")
+readme_logo = read("docs/assets/logo.svg")
+for label, vector in (
+    ("launcher background", launcher_bg),
+    ("launcher foreground", launcher_fg),
+    ("launcher monochrome", launcher_mono),
+):
+    ET.fromstring(vector)
+    check(
+        'android:width="108dp"' in vector and 'android:height="108dp"' in vector,
+        f"{label} keeps the adaptive-icon 108dp viewport",
+    )
+check(
+    "#FF0B0B0D" in launcher_bg and "gradient" not in launcher_bg.casefold(),
+    "launcher uses the public mark black field",
+)
+check(
+    all(marker in launcher_fg for marker in ("#FF4C9AFF", "M48.6,70.2", "M44.55,82.35"))
+    and all(marker in store_icon for marker in ("#4C9AFF", 'x="72" y="104"', 'x="66" y="122"'))
+    and all(marker in feature_graphic for marker in ("#4C9AFF", 'x="72" y="104"', 'x="66" y="122"')),
+    "launcher and public assets share the blue telescope barrel mark",
+)
+check(
+    "M48.6,70.2" in launcher_mono and "M44.55,82.35" in launcher_mono,
+    "themed launcher keeps the telescope barrel silhouette",
+)
+check(
+    'aria-label="TeleCam Pro logo"' in readme_logo and "300mm tick marks" not in readme_logo,
+    "README logo metadata names the current TeleCam Pro brand",
+)
+
 def screenshot_authority_matches_manifest(authority: str) -> bool:
     if stale_manifest_valid:
         return "NOT SUBMISSION-READY" in authority
