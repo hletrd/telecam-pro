@@ -242,6 +242,68 @@ class DfAdb(Adb):
 
 
 class RunnerHelpersTest(unittest.TestCase):
+    @staticmethod
+    def _adb_result(returncode: int, stderr: str = "", stdout: bytes = b""):
+        return SimpleNamespace(
+            returncode=returncode,
+            stderr=stderr.encode(),
+            stdout=stdout,
+        )
+
+    def test_adb_reconnects_endpoint_transport_failure_and_returns_retry(self) -> None:
+        responses = [
+            self._adb_result(1, "error: device offline"),
+            self._adb_result(0, stdout=b"connected"),
+            self._adb_result(0, stdout=b"ok\n"),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "dtest.adb.subprocess.run", side_effect=responses,
+        ) as run, patch("dtest.adb.time.sleep"):
+            adb = Adb("127.0.0.1:5555", Path(temp_dir))
+
+            self.assertEqual(adb.shell("true"), "ok")
+            self.assertEqual(run.call_args_list[1].args[0], ["adb", "connect", "127.0.0.1:5555"])
+
+    def test_adb_reconnect_failure_reports_latest_retry_stderr(self) -> None:
+        responses = [
+            self._adb_result(1, "error: device offline"),
+            self._adb_result(1, "connect failed"),
+            self._adb_result(1, "error: device unauthorized"),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "dtest.adb.subprocess.run", side_effect=responses,
+        ), patch("dtest.adb.time.sleep"):
+            adb = Adb("127.0.0.1:5555", Path(temp_dir))
+
+            with self.assertRaisesRegex(AdbError, "device unauthorized"):
+                adb.shell("true")
+
+    def test_adb_remote_not_found_and_usb_offline_do_not_reconnect(self) -> None:
+        for serial, error in (
+            ("127.0.0.1:5555", "/system/bin/sh: sha256sum: not found"),
+            ("USB123", "error: device offline"),
+        ):
+            with self.subTest(serial=serial), tempfile.TemporaryDirectory() as temp_dir, patch(
+                "dtest.adb.subprocess.run",
+                return_value=self._adb_result(1, error),
+            ) as run:
+                adb = Adb(serial, Path(temp_dir))
+
+                with self.assertRaises(AdbError):
+                    adb.shell("sha256sum")
+                self.assertEqual(run.call_count, 1)
+
+    def test_adb_reconnect_timeout_is_typed(self) -> None:
+        first = self._adb_result(1, "error: device offline")
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "dtest.adb.subprocess.run",
+            side_effect=[first, __import__("subprocess").TimeoutExpired("adb connect", 15)],
+        ), patch("dtest.adb.time.sleep"):
+            adb = Adb("127.0.0.1:5555", Path(temp_dir))
+
+            with self.assertRaisesRegex(AdbError, "timeout during reconnect retry"):
+                adb.shell("true")
+
     def test_resumed_activity_parses_and_expands_android_component(self) -> None:
         class ActivityAdb(Adb):
             def shell(self, cmd: str, timeout: int = 60) -> str:

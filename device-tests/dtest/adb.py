@@ -249,6 +249,20 @@ class Adb:
 
     # -- transport ---------------------------------------------------------
 
+    def _reconnectable_transport_failure(self, error: str) -> bool:
+        """Return true only for host transport failures on connect-capable endpoints."""
+        if ":" not in self.serial:
+            return False
+        normalized = error.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "protocol fault",
+                "device offline",
+                f"device '{self.serial.lower()}' not found",
+            )
+        )
+
     def _run(self, *args: str, binary: bool = False, timeout: int = 60) -> bytes | str:
         cmd = ["adb", "-s", self.serial, *args]
         try:
@@ -259,7 +273,7 @@ class Adb:
             err = out.stderr.decode(errors="replace").strip()
             # One reconnect attempt: the loopback proxy drops with "protocol fault"
             # and a plain re-connect recovers it every time (never kill-server).
-            if "protocol fault" in err or "device offline" in err or "not found" in err:
+            if self._reconnectable_transport_failure(err):
                 try:
                     subprocess.run(["adb", "connect", self.serial], capture_output=True, timeout=15)
                     time.sleep(2)
@@ -268,6 +282,7 @@ class Adb:
                     # The retry must fail with the same typed error as the first attempt.
                     raise AdbError(f"adb timeout during reconnect retry: {' '.join(args)}") from e
             if out.returncode != 0:
+                err = out.stderr.decode(errors="replace").strip()
                 raise AdbError(f"adb {' '.join(args)} failed: {err[:300]}")
         return out.stdout if binary else out.stdout.decode(errors="replace")
 
