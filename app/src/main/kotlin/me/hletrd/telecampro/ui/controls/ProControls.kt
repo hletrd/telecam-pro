@@ -690,6 +690,10 @@ internal fun ToggleRow(
     }
 }
 
+/** One responsive breakpoint shared by static-value and dropdown-value rows. */
+internal fun labelValueUsesStackedLayout(contentWidthDp: Float, fontScale: Float): Boolean =
+    !contentWidthDp.isFinite() || !fontScale.isFinite() || fontScale >= 1.5f || contentWidthDp < 240f
+
 /** Label + clickable value row (e.g. "Camera Override  Default"), used for one-off advanced rows.
  *  [enabled] dims the row and drops the click, like every other lockable-control surface — a hot
  *  row over a locked action reads as (and previously was) an unguarded mutation path. */
@@ -723,7 +727,7 @@ internal fun LabelValueRow(
         // pair cannot reserve a trustworthy trailing affordance (the Korean Privacy label used to
         // consume the visible "View" action), so reflow instead of shrinking or clipping either
         // semantic value. End alignment is logical and therefore mirrors correctly in RTL.
-        val stacked = LocalDensity.current.fontScale >= 1.5f || availableWidth < 240.dp
+        val stacked = labelValueUsesStackedLayout(availableWidth.value, LocalDensity.current.fontScale)
         if (stacked) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 SettingsRowLabel(label, enabled = enabled)
@@ -799,50 +803,46 @@ internal fun <T> DropdownRow(
     val accessibility = dropdownSettingSemantics(label, labelFor(selected))
     val selectedDescription = stringResource(R.string.a11y_selected)
     val notSelectedDescription = stringResource(R.string.a11y_not_selected)
-    Box(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .sizeIn(minHeight = 48.dp)
-                .clickable(
-                    enabled = enabled,
-                    role = Role.DropdownList,
-                    onClick = { expanded = true },
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val stacked = labelValueUsesStackedLayout(maxWidth.value, LocalDensity.current.fontScale)
+        val alpha = if (enabled) 1f else DISABLED_ROW_ALPHA
+        val triggerModifier = Modifier
+            .fillMaxWidth()
+            .sizeIn(minHeight = 48.dp)
+            .clickable(
+                enabled = enabled,
+                role = Role.DropdownList,
+                onClick = { expanded = true },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = accessibility.label
+                stateDescription = accessibility.state
+                role = Role.DropdownList
+                if (!enabled) disabled()
+            }
+        if (stacked) {
+            Column(modifier = triggerModifier) {
+                SettingsRowLabel(label, enabled = enabled)
+                DropdownSelectedValue(
+                    value = labelFor(selected),
+                    color = CameraColors.Accent.copy(alpha = alpha),
+                    stacked = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
                 )
-                .semantics(mergeDescendants = true) {
-                    contentDescription = accessibility.label
-                    stateDescription = accessibility.state
-                    role = Role.DropdownList
-                    if (!enabled) disabled()
-                },
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val alpha = if (enabled) 1f else DISABLED_ROW_ALPHA
-            SettingsRowLabel(label, enabled = enabled)
-            // The value block is the row's TRAILING column and must stay pinned to the end, like
-            // every LabelValueRow. Without a weight it took its intrinsic width, so a long value
-            // ("OPPO Find X9 Ultra" on the Phone row) consumed all the free space, SpaceBetween had
-            // none left to distribute, and the value ran on directly after the label — reading as
-            // left-aligned (user-reported 2026-07-28). Weighted + End-aligned, it fills the
-            // remainder and sits right; `fill = false` keeps SHORT values hugging the edge instead
-            // of stretching a transparent box across the row.
+            }
+        } else {
             Row(
-                modifier = Modifier.weight(1f, fill = false),
-                horizontalArrangement = Arrangement.End,
+                modifier = triggerModifier,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    labelFor(selected),
+                SettingsRowLabel(label, enabled = enabled)
+                DropdownSelectedValue(
+                    value = labelFor(selected),
                     color = CameraColors.Accent.copy(alpha = alpha),
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.End,
+                    stacked = false,
                     modifier = Modifier.weight(1f, fill = false),
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                DropdownCaret(color = CameraColors.Accent.copy(alpha = alpha))
             }
         }
         DropdownMenu(
@@ -869,7 +869,9 @@ internal fun <T> DropdownRow(
                             labelFor(option),
                             color = if (isSelected) CameraColors.Accent else CameraColors.TextPrimary,
                             style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
+                            maxLines = 2,
+                            softWrap = true,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     },
                     onClick = {
@@ -879,6 +881,36 @@ internal fun <T> DropdownRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DropdownSelectedValue(
+    value: String,
+    color: Color,
+    stacked: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // The trailing block is shared by the wide and compact triggers. Wide keeps the historical
+    // one-line value; compact gives the selected declaration the full row and a second line so the
+    // distinguishing model suffix cannot disappear behind the fixed caret.
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            value,
+            color = color,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = if (stacked) 2 else 1,
+            softWrap = stacked,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        DropdownCaret(color = color)
     }
 }
 
