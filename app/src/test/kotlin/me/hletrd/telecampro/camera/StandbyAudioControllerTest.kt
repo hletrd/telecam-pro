@@ -550,6 +550,62 @@ class StandbyAudioControllerTest {
         assertTrue(workerDone.await(2, TimeUnit.SECONDS))
     }
 
+    @Test
+    fun `stop timeout wakes an already waiting worker without releasing abandoned input`() {
+        val stopTasks = ArrayDeque<() -> Unit>()
+        val stopEntered = CountDownLatch(1)
+        val releaseStop = CountDownLatch(1)
+        val deadline = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+        val input = Any()
+        val releases = AtomicInteger()
+        val timedOutOwners = mutableListOf<StandbyInputTerminationOwner<Any>>()
+        val owner = StandbyInputTerminationOwner(
+            generationId = 75L,
+            stopDispatcher = StandbyStopDispatcher { task -> stopTasks.addLast(task) },
+            stop = { value: Any ->
+                assertTrue(value === input)
+                stopEntered.countDown()
+                releaseStop.await(2, TimeUnit.SECONDS)
+            },
+            stopDeadlineScheduler = RecordingTeardownScheduler { _, action ->
+                deadline.set(action)
+                RecordingTeardownCancellation { deadline.compareAndSet(action, null) }
+            },
+            stopTimeoutMs = 1L,
+            onStopTimeout = { value, exactOwner ->
+                assertTrue(value === input)
+                timedOutOwners += exactOwner
+            },
+        )
+        assertTrue(owner.bind(input))
+        assertTrue(owner.beginStart(input))
+        owner.finishStart(input, succeeded = true)
+        owner.requestStop()
+
+        val worker = Thread(
+            { owner.finishAndRelease(input) { releases.incrementAndGet() } },
+            "standby-timeout-waiter",
+        )
+        worker.start()
+        assertTrue(awaitThreadWait(worker))
+
+        val stopThread = Thread(stopTasks.removeFirst(), "standby-timeout-stop")
+        stopThread.start()
+        assertTrue(stopEntered.await(2, TimeUnit.SECONDS))
+        checkNotNull(deadline.getAndSet(null)).invoke()
+
+        worker.join(2_000)
+        assertFalse(worker.isAlive)
+        assertTrue(owner.isAbandoned())
+        assertEquals(listOf(owner), timedOutOwners)
+        assertEquals(0, releases.get())
+
+        releaseStop.countDown()
+        stopThread.join(2_000)
+        assertFalse(stopThread.isAlive)
+        assertEquals(0, releases.get())
+    }
+
     private fun awaitThreadWait(thread: Thread): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
         while (System.nanoTime() < deadline) {
