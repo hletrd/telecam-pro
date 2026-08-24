@@ -62,16 +62,38 @@ class EngineCallbackSinkTest {
         val caller = thread(start = true) { acquired() }
         assertTrue(entered.await(5, TimeUnit.SECONDS))
 
+        val closeAttempted = CountDownLatch(1)
         val closer = thread(start = true) {
+            closeAttempted.countDown()
             sink.closeAndDrain()
             closeReturned.set(true)
         }
-        Thread.sleep(25)
-        assertFalse(closeReturned.get())
-
-        release.countDown()
-        caller.join(5_000)
-        closer.join(5_000)
+        try {
+            assertTrue(closeAttempted.await(5, TimeUnit.SECONDS))
+            // Do not infer blocking from a fixed sleep: on a loaded host the closer might simply
+            // not have been scheduled yet, letting a broken no-op close false-pass. Wait until it
+            // either enters the lock's wait state or terminates; termination while the callback
+            // owns its read lease is the regression this test exists to catch.
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            var observedBlocked = false
+            while (System.nanoTime() < deadline) {
+                when (closer.state) {
+                    Thread.State.WAITING,
+                    Thread.State.BLOCKED -> {
+                        observedBlocked = true
+                        break
+                    }
+                    Thread.State.TERMINATED -> break
+                    else -> Thread.yield()
+                }
+            }
+            assertTrue("close never blocked behind the admitted callback", observedBlocked)
+            assertFalse(closeReturned.get())
+        } finally {
+            release.countDown()
+            caller.join(5_000)
+            closer.join(5_000)
+        }
         assertFalse(caller.isAlive)
         assertFalse(closer.isAlive)
         assertTrue(closeReturned.get())
