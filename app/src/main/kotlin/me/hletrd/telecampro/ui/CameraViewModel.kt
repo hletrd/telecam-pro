@@ -120,6 +120,7 @@ import me.hletrd.telecampro.storage.KnownOutputDeletionResult
 import me.hletrd.telecampro.storage.KnownOutputProviderDisposition
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.RestoredCapture
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioRouteAvailability
@@ -131,6 +132,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.lang.ref.WeakReference
 
 internal data class OwnerlessMediaDeleteOverrides(
     val createDeleteRequest: (ContentResolver, Uri) -> PendingIntent = { resolver, uri ->
@@ -145,27 +147,54 @@ internal data class OwnerlessMediaDeleteOverrides(
     ),
 )
 
+/** Constructor-time provider/queue seams for deterministic latest-capture restore tests. */
+internal data class LatestCaptureRestoreOverrides(
+    val submit: (Runnable) -> Boolean,
+    val postCompletion: (Runnable) -> Boolean,
+    val query: () -> RestoredCapture<Uri>?,
+)
+
+/** The potentially wedged provider call retains application Context, never its ViewModel owner. */
+private fun latestCaptureRestoreQuery(context: Context): () -> RestoredCapture<Uri>? {
+    val applicationContext = context.applicationContext
+    return { MediaStoreWriter.latestOwnCapture(applicationContext) }
+}
+
 /** Holds [CameraUiState] and turns [CameraActions] into [CameraEngine] calls. UI-thread only. */
 // The engine is a defaulted constructor parameter (the ONE test seam this class exposes): host
-// tests inject or observe it while production behavior is unchanged. @JvmOverloads emits the
-// plain (Application) overload that androidx's reflective AndroidViewModelFactory requires — the
-// viewModels() construction path never sees the two-arg constructor.
-class CameraViewModel @JvmOverloads constructor(
+// tests inject or observe it while production behavior is unchanged. The public @JvmOverloads
+// constructor emits the plain (Application) overload that AndroidViewModelFactory requires; the
+// private primary additionally admits constructor-time provider seams without exposing them to it.
+class CameraViewModel private constructor(
     app: Application,
-    private val engine: CameraEngine = CameraEngine(app),
+    private val engine: CameraEngine,
+    private val latestCaptureRestoreOverrides: LatestCaptureRestoreOverrides?,
+    @Suppress("UNUSED_PARAMETER") privateConstructorMarker: Unit,
 ) : AndroidViewModel(app), CameraActions {
+
+    @JvmOverloads
+    constructor(
+        app: Application,
+        engine: CameraEngine = CameraEngine(app),
+    ) : this(app, engine, null, Unit)
 
     internal constructor(
         app: Application,
         engine: CameraEngine,
         ownerlessMediaDeleteOverrides: OwnerlessMediaDeleteOverrides,
-    ) : this(app, engine) {
+    ) : this(app, engine, null, Unit) {
         // Construction/init performs no review deletion. Retire the unused default facade, then
         // install the deterministic provider seams before a test can freeze its first review.
         mediaDeleteDispatcher.shutdown()
         this.ownerlessMediaDeleteOverrides = ownerlessMediaDeleteOverrides
         mediaDeleteDispatcher = ownerlessMediaDeleteOverrides.dispatcher
     }
+
+    internal constructor(
+        app: Application,
+        engine: CameraEngine,
+        latestCaptureRestoreOverrides: LatestCaptureRestoreOverrides,
+    ) : this(app, engine, latestCaptureRestoreOverrides, Unit)
 
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
 
@@ -689,6 +718,14 @@ class CameraViewModel @JvmOverloads constructor(
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "vm-io").apply { isDaemon = true }
     }
+    private val latestCaptureRestoreOwner = LatestCaptureRestoreOwner(
+        submit = latestCaptureRestoreOverrides?.submit
+            ?: { task -> runCatching { ioExecutor.execute(task) }.isSuccess },
+        postCompletion = latestCaptureRestoreOverrides?.postCompletion ?: mainHandler::post,
+        query = latestCaptureRestoreOverrides?.query
+            ?: latestCaptureRestoreQuery(app),
+        publish = ::publishLatestCapture,
+    )
     private var ownerlessMediaDeleteOverrides = OwnerlessMediaDeleteOverrides()
     private var mediaDeleteDispatcher = ownerlessMediaDeleteOverrides.dispatcher
     @Volatile private var cleared = false
@@ -1143,27 +1180,33 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun restoreLatestPublishedCapture() {
-        // Legacy filenames stay one-file delete scopes. The ViewModel's ordered I/O lane also keeps
-        // this query serialized with review deletion; shutdown rejection simply means teardown won.
-        runCatching {
-            ioExecutor.execute execute@{
-                val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@execute
-                val preferred = restored.preferred.output
-                if (!captureOutputs.seedRestoredCapture(restored)) return@execute
-                val deleteScope = captureOutputs.deleteScopeFor(preferred)
-                _state.update {
-                    if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
-                        it.copy(
-                            lastMediaUri = preferred,
-                            lastMediaProvenance = restored.preferred.provenance,
-                            lastMediaDeleteScope = deleteScope,
-                        )
-                    } else {
-                        it
-                    }
+        // A live review owner already makes another provider query useless. The owner below closes
+        // the check-to-submit race with one active request plus one conflated latest intent.
+        if (_state.value.lastMediaUri != null) return
+        latestCaptureRestoreOwner.request()
+    }
+
+    /** Main-thread publication for one exact owner completion; true drops its pending duplicate. */
+    private fun publishLatestCapture(restored: RestoredCapture<Uri>): Boolean {
+        if (cleared) return true
+        val preferred = restored.preferred.output
+        if (captureOutputs.seedRestoredCapture(restored)) {
+            val deleteScope = captureOutputs.deleteScopeFor(preferred)
+            _state.update {
+                if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
+                    it.copy(
+                        lastMediaUri = preferred,
+                        lastMediaProvenance = restored.preferred.provenance,
+                        lastMediaDeleteScope = deleteScope,
+                    )
+                } else {
+                    it
                 }
             }
         }
+        // A live capture may have won while the provider query ran. Either owner satisfies restore;
+        // only a still-empty state needs the one request conflated behind this completion.
+        return _state.value.lastMediaUri != null
     }
 
     /** On launch, restore persisted pro settings (if the user enabled "Remember settings"). */
@@ -3988,6 +4031,9 @@ class CameraViewModel @JvmOverloads constructor(
     override fun onCleared() {
         cleared = true
         infoRefresh.stop()
+        // Completion posts and teardown share main. Close first so a queued provider result cannot
+        // publish, then remove its already-posted Runnable with every other stale ViewModel task.
+        latestCaptureRestoreOwner.close()
         recordingAttemptGeneration++
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
@@ -4271,6 +4317,116 @@ internal class LifecycleInfoRefresh<T : Any>(
         pendingGeneration = null
         inFlightGeneration = nextGeneration
         Completion(publish, nextGeneration?.let(::Request))
+    }
+}
+
+internal data class LatestCaptureRestoreSnapshot(
+    val inFlightRequests: Int,
+    val pendingRequests: Int,
+    val closed: Boolean,
+)
+
+/**
+ * VM-lifetime latest-capture restore admission: one provider query plus one conflated intent.
+ *
+ * [submit] targets the existing serial `vm-io` lane. [postCompletion] and [close] must target the
+ * same serialized owner thread (main in production), which makes clear-first completion inert and
+ * publish-first completion precede teardown without holding this short state lock across UI work.
+ * Repeated requests retain no caller Runnable or callback graph: one Boolean means "query current
+ * provider truth once more after this query." A successful [publish] satisfies and drops that bit;
+ * null/failure or an ownership-rejected result runs exactly one latest follow-up.
+ */
+internal class LatestCaptureRestoreOwner<T : Any>(
+    private val submit: (Runnable) -> Boolean,
+    private val postCompletion: (Runnable) -> Boolean,
+    private val query: () -> T?,
+    private val publish: (T) -> Boolean,
+) {
+    private data class Request(val generation: Long)
+
+    private val lock = Any()
+    private var generation = 0L
+    private var inFlight: Request? = null
+    private var pending = false
+    private var closed = false
+
+    fun request() {
+        val request = synchronized(lock) {
+            if (closed) return
+            if (inFlight != null) {
+                pending = true
+                null
+            } else {
+                Request(++generation).also { inFlight = it }
+            }
+        }
+        request?.let(::dispatch)
+    }
+
+    /** Invalidates active/posted completion identity and drops the one not-yet-submitted intent. */
+    fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            generation += 1
+            inFlight = null
+            pending = false
+        }
+    }
+
+    internal fun snapshot(): LatestCaptureRestoreSnapshot = synchronized(lock) {
+        LatestCaptureRestoreSnapshot(
+            inFlightRequests = if (inFlight == null) 0 else 1,
+            pendingRequests = if (pending) 1 else 0,
+            closed = closed,
+        )
+    }
+
+    private fun dispatch(request: Request) {
+        // The executor queue / Binder stack owns only the application-safe query plus a WEAK path
+        // back to this VM-local coordinator. Once the ViewModel is retired, a wedged provider call
+        // cannot keep its state/callback graph alive merely to report a result no one may publish.
+        val owner = WeakReference(this)
+        val ownedQuery = query
+        val ownedPostCompletion = postCompletion
+        val accepted = runCatching {
+            submit(
+                Runnable {
+                    val value = runCatching(ownedQuery).getOrNull()
+                    val liveOwner = owner.get() ?: return@Runnable
+                    val posted = runCatching {
+                        ownedPostCompletion(Runnable { liveOwner.complete(request, value) })
+                    }.getOrDefault(false)
+                    if (!posted) liveOwner.retireWithoutPublication(request)
+                },
+            )
+        }.getOrDefault(false)
+        if (!accepted) retireWithoutPublication(request)
+    }
+
+    /** Runs on the serialized completion/close owner thread (main in production). */
+    private fun complete(request: Request, value: T?) {
+        val current = synchronized(lock) { !closed && inFlight == request }
+        if (!current) return
+        val satisfied = value?.let { runCatching { publish(it) }.getOrDefault(false) } == true
+        finish(request, allowPending = !satisfied)?.let(::dispatch)
+    }
+
+    /** Submit/post refusal never runs provider or publication work inline. */
+    private fun retireWithoutPublication(request: Request) {
+        finish(request, allowPending = true)?.let(::dispatch)
+    }
+
+    private fun finish(request: Request, allowPending: Boolean): Request? = synchronized(lock) {
+        if (closed || inFlight != request) return@synchronized null
+        val runNext = allowPending && pending
+        pending = false
+        if (runNext) {
+            Request(++generation).also { inFlight = it }
+        } else {
+            inFlight = null
+            null
+        }
     }
 }
 

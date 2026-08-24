@@ -36,11 +36,16 @@ import me.hletrd.telecampro.storage.DiscardMarkerCleanupDisposition
 import me.hletrd.telecampro.storage.KnownOutputDeletionResult
 import me.hletrd.telecampro.storage.KnownOutputProviderDisposition
 import me.hletrd.telecampro.storage.MediaProvenance
+import me.hletrd.telecampro.storage.RestoredCapture
+import me.hletrd.telecampro.storage.RestoredCaptureOutput
+import me.hletrd.telecampro.storage.RestoredDeleteScope
 import me.hletrd.telecampro.storage.SettingsStore
+import me.hletrd.telecampro.storage.StoredMediaOutputKind
 import me.hletrd.telecampro.video.CodecComponent
 import me.hletrd.telecampro.video.CodecInventory
 import me.hletrd.telecampro.video.buildCodecInventory
 import java.time.Duration
+import java.util.ArrayDeque
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -77,6 +82,18 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(RobolectricTestRunner::class)
 class CameraViewModelRobolectricTest {
+
+    private class QueuedTasks {
+        private val tasks = ArrayDeque<Runnable>()
+
+        fun submit(task: Runnable): Boolean {
+            tasks.addLast(task)
+            return true
+        }
+
+        fun runNext() = tasks.removeFirst().run()
+        fun size(): Int = tasks.size
+    }
 
     private val app: Application = ApplicationProvider.getApplicationContext()
     private var vm: CameraViewModel? = null
@@ -147,6 +164,10 @@ class CameraViewModelRobolectricTest {
 
     // ---- Construction / init contract ----
 
+    @Test fun `AndroidViewModelFactory retains the public Application constructor`() {
+        assertNotNull(CameraViewModel::class.java.getConstructor(Application::class.java))
+    }
+
     @Test fun `fresh launch publishes the documented CameraUiState defaults`() {
         val (v, _) = createViewModel()
         val s = v.state.value
@@ -167,6 +188,95 @@ class CameraViewModelRobolectricTest {
         assertEquals(ExposureMode.PROGRAM, s.controls.exposureMode)
         assertTrue(s.controls.programAppSide)
         assertEquals(1f, s.controls.zoomRatio)
+    }
+
+    @Test fun `production gallery action bounds repeated restore requests and drops satisfied tail`() {
+        RobolectricEglSentinels.ensure()
+        val provider = QueuedTasks()
+        val completion = QueuedTasks()
+        val restoredUri = Uri.parse("content://media/external/images/media/501")
+        val output = RestoredCaptureOutput(
+            output = restoredUri,
+            kind = StoredMediaOutputKind.DISPLAYABLE,
+            displayName = "TCP_20260824_120000_001.heic",
+            provenance = MediaProvenance.APP_OWNED,
+        )
+        var queries = 0
+        val e = CameraEngine(app)
+        val v = CameraViewModel(
+            app,
+            e,
+            LatestCaptureRestoreOverrides(
+                submit = provider::submit,
+                postCompletion = completion::submit,
+                query = {
+                    queries += 1
+                    RestoredCapture(
+                        preferred = output,
+                        outputs = listOf(output),
+                        familyKey = null,
+                        deleteScope = RestoredDeleteScope.FILE_ONLY,
+                    )
+                },
+            ),
+        )
+        vm = v
+        engine = e
+
+        repeat(100) { v.onGalleryAccessRequested() }
+
+        assertEquals(1, provider.size())
+        provider.runNext()
+        assertEquals(1, completion.size())
+        completion.runNext()
+
+        assertEquals(1, queries)
+        assertEquals(restoredUri, v.state.value.lastMediaUri)
+        assertEquals(0, provider.size())
+    }
+
+    @Test fun `ViewModel clear makes an already-posted restore completion inert`() {
+        RobolectricEglSentinels.ensure()
+        val provider = QueuedTasks()
+        val completion = QueuedTasks()
+        val restoredUri = Uri.parse("content://media/external/images/media/502")
+        val output = RestoredCaptureOutput(
+            output = restoredUri,
+            kind = StoredMediaOutputKind.DISPLAYABLE,
+            displayName = "TCP_20260824_120000_002.heic",
+            provenance = MediaProvenance.APP_OWNED,
+        )
+        val e = CameraEngine(app)
+        val v = CameraViewModel(
+            app,
+            e,
+            LatestCaptureRestoreOverrides(
+                submit = provider::submit,
+                postCompletion = completion::submit,
+                query = {
+                    RestoredCapture(
+                        preferred = output,
+                        outputs = listOf(output),
+                        familyKey = null,
+                        deleteScope = RestoredDeleteScope.FILE_ONLY,
+                    )
+                },
+            ),
+        )
+        vm = v
+        engine = e
+
+        repeat(20) { v.onGalleryAccessRequested() }
+        provider.runNext()
+        assertEquals(1, completion.size())
+
+        clearViewModel(v)
+        vm = null
+        engine = null
+        completion.runNext()
+
+        assertNull(v.state.value.lastMediaUri)
+        assertEquals(0, provider.size())
     }
 
     @Test fun `ordinary partial delete restores survivor with ownership-safe gallery retry`() {
