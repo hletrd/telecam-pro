@@ -212,6 +212,7 @@ class CameraController(context: Context) {
     private var tapResetPending = false
     // Throttle counter for the 3A-state diagnostic log (AE/AF convergence on the standalone tele).
     private var threeAFrame = 0
+    private val threeADiagnosticLogGate = ThreeADiagnosticLogGate()
     // Live AE-resolved (ISO, exposureNs) surfaced to the UI so the Shutter/ISO chips can show what AE
     // chose in auto mode. Reported only on change (see startPreview's repeating callback) so a steady
     // scene doesn't spam recomposition.
@@ -1089,12 +1090,13 @@ class CameraController(context: Context) {
                             onAfState?.invoke(afState)
                         }
                     }
-                    // Diagnostic: log what 3A is actually doing (throttled ~1/sec) so we can tell
-                    // whether AE/AF are converging on the standalone tele or effectively inert.
-                    // Debug builds only — release users don't need per-second camera telemetry
-                    // in logcat (minor capability disclosure + log spam; security review).
+                    // Diagnostic: sample at most once/second, but emit only a bucketed state change
+                    // (paced to >=3 s) or a 15 s heartbeat. ColorOS drops ALL later diagnostics at
+                    // 300 process rows; an unbounded one-row/second trace erased the second half of
+                    // the committed ten-minute A5 soak, including the faults it existed to capture.
                     if (BuildConfig.DEBUG && (firstDiagnosticResultPending || threeAFrame % 30 == 0)) {
-                        if (firstDiagnosticResultPending) StartupTrace.finish("firstCameraResult")
+                        val firstDiagnosticResult = firstDiagnosticResultPending
+                        if (firstDiagnosticResult) StartupTrace.finish("firstCameraResult")
                         firstDiagnosticResultPending = false
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)
@@ -1119,7 +1121,34 @@ class CameraController(context: Context) {
                         } else {
                             controls.zoomRatio
                         }
-                        Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
+                        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                        val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                        val key = ThreeADiagnosticKey(
+                            opticsGeneration = requestOpticsGeneration,
+                            requestGeneration = requestGeneration,
+                            mode = requestMode,
+                            aeState = ae,
+                            afState = af,
+                            afMode = afMode,
+                            isoStops = diagnosticStopBucket(iso?.toLong()),
+                            exposureStops = diagnosticStopBucket(exposureNs),
+                            focusCentidiopters = (lastFocusDistance * 100f).toInt(),
+                            ois = ois,
+                            videoStabilization = vstab,
+                            flashMode = flashMode,
+                            flashState = flashState,
+                            requestedVideoStabilization = videoStabHalMode,
+                            teleconverter = teleconverterMode,
+                            effectiveZoomCentipercent = (effectiveZoom * 100f).toInt(),
+                        )
+                        if (threeADiagnosticLogGate.shouldEmit(
+                                nowMs = android.os.SystemClock.uptimeMillis(),
+                                key = key,
+                                force = firstDiagnosticResult,
+                            )
+                        ) {
+                            Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=$iso expNs=$exposureNs lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
+                        }
                     }
                 }
             }
@@ -1579,36 +1608,34 @@ class CameraController(context: Context) {
         return false
     }
 
-    // DEBUG-only per-second YUV fps logging (the S4a measurement instrument, kept for device
-    // evidence collection — streaming itself is route-owned now, so the toggle only logs).
+    // DEBUG-only bounded YUV cadence accumulator (the S4a/A5 measurement instrument). Per-second
+    // rows spent ColorOS's 300-row quota before a ten-minute soak ended; enable/end are now the only
+    // rows, with every interval accumulated in constant memory for the terminal summary.
     @Volatile private var zslSpikeEnabled = false
-    private var spikeFrames = 0
-    private var spikeWindowStartMs = 0L
+    private var zslSpikeAccumulator = ZslSpikeAccumulator()
 
     fun setZslSpike(enabled: Boolean) {
         if (!BuildConfig.DEBUG) return
         postToCamera {
             if (zslSpikeEnabled == enabled) return@postToCamera
             zslSpikeEnabled = enabled
-            spikeFrames = 0
-            spikeWindowStartMs = 0L
-            Log.i(TAG, "ZslSpike: fps logging ${if (enabled) "ENABLED" else "disabled"}")
+            if (enabled) {
+                zslSpikeAccumulator = ZslSpikeAccumulator()
+                Log.i(TAG, "ZslSpike: cadence accumulation ENABLED")
+            } else {
+                val summary = zslSpikeAccumulator.finish(android.os.SystemClock.uptimeMillis())
+                Log.i(
+                    TAG,
+                    "ZslSpike: disabled frames=${summary.frames} durationMs=${summary.durationMs} " +
+                        "avgFps=${summary.averageFps} windows=${summary.windows} " +
+                        "minFps=${summary.minimumWindowFps} maxFps=${summary.maximumWindowFps}",
+                )
+            }
         }
     }
 
     private fun onSpikeFrame() {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (spikeWindowStartMs == 0L) {
-            spikeWindowStartMs = now
-            spikeFrames = 0
-        }
-        spikeFrames++
-        val elapsed = now - spikeWindowStartMs
-        if (elapsed >= 1_000L) {
-            Log.i(TAG, "ZslSpike: yuv ${spikeFrames * 1000L / elapsed} fps ($spikeFrames frames / $elapsed ms)")
-            spikeWindowStartMs = now
-            spikeFrames = 0
-        }
+        zslSpikeAccumulator.recordFrame(android.os.SystemClock.uptimeMillis())
     }
 
     // Camera-thread pacing state for the sensor fast path (see updateControls).
