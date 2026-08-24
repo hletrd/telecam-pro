@@ -239,15 +239,24 @@ class ModalFocusComposeTest {
 
         val close = compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_review))
         close.assertIsFocused()
-        compose.onNodeWithContentDescription(
+        val delete = compose.onNodeWithContentDescription(
             context.getString(R.string.review_delete_file_title).removeSuffix("?"),
-        ).requestFocus().performKeyInput { pressKey(Key.Enter) }
+        )
+        delete.requestFocus().performKeyInput { pressKey(Key.Enter) }
         compose.onNode(isDialog()).assertExists()
         compose.onNode(hasText(context.getString(R.string.action_cancel)).and(hasAnyAncestor(isDialog())))
             .requestFocus()
             .assertIsFocused()
         compose.runOnIdle { backDispatcher.onBackPressed() }
         compose.onNode(isDialog()).assertDoesNotExist()
+        delete.assertIsFocused()
+
+        delete.performKeyInput { pressKey(Key.Enter) }
+        compose.onNode(isDialog()).assertExists()
+        compose.onNode(hasText(context.getString(R.string.action_cancel)).and(hasAnyAncestor(isDialog())))
+            .performClick()
+        compose.onNode(isDialog()).assertDoesNotExist()
+        delete.assertIsFocused()
 
         compose.runOnIdle { backDispatcher.onBackPressed() }
         assertEquals(1, closes)

@@ -1051,14 +1051,24 @@ fun MediaReviewOverlay(
     val reviewZoomDescription = stringResource(R.string.a11y_review_zoom, reviewScaleLabel(scale))
     var offset by remember { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var deleteFocusReturn by remember { mutableIntStateOf(0) }
+    val deleteFocusRequester = remember { FocusRequester() }
+    val dismissDelete = {
+        confirmDelete = false
+        deleteFocusReturn++
+        Unit
+    }
     val playbackRetirement = remember(uri) { AtomicReference<(() -> Unit)?>(null) }
-    BackHandler(enabled = confirmDelete) { confirmDelete = false }
+    BackHandler(enabled = confirmDelete, onBack = dismissDelete)
     BackHandler(enabled = !confirmDelete) {
         playbackRetirement.getAndSet(null)?.invoke()
         onClose()
     }
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
+    LaunchedEffect(deleteFocusReturn) {
+        if (deleteFocusReturn > 0) deleteFocusRequester.requestFocus()
+    }
     // In-review playback (videos): a TextureView + MediaPlayer — NOT VideoView, whose SurfaceView
     // sits behind the window and is occluded by this overlay's opaque black background (the same
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
@@ -1727,6 +1737,7 @@ fun MediaReviewOverlay(
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
+                .focusRequester(deleteFocusRequester)
                 .statusBarsPadding()
                 .padding(12.dp)
                 .size(48.dp)
@@ -1767,7 +1778,7 @@ fun MediaReviewOverlay(
                 confirmDelete = false
                 onDelete()
             },
-            onDismiss = { confirmDelete = false },
+            onDismiss = dismissDelete,
         )
     }
 }
