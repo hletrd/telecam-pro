@@ -20,6 +20,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
+import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import kotlin.math.PI
@@ -105,7 +106,12 @@ class ShutterFocusComposeTest {
     }
 
     @Test
-    fun `running timelapse paints a stop shape on the production shutter`() {
+    fun `running capture sequences paint full-strength stop shapes`() {
+        val recordingRecovery = CameraUiState(
+            mode = CaptureMode.VIDEO,
+            cameraReady = false,
+            isRecording = true,
+        )
         compose.setContent {
             TeleCamProTheme {
                 Column(Modifier.background(Color.Black)) {
@@ -125,15 +131,29 @@ class ShutterFocusComposeTest {
                         onClick = {},
                         modifier = Modifier.testTag("running-timelapse"),
                     )
+                    ShutterButton(
+                        mode = recordingRecovery.mode,
+                        isRecording = recordingRecovery.isRecording,
+                        timerCountdownSec = 0,
+                        cameraHealthy = recordingRecovery.primaryShutterHealthy,
+                        enabled = recordingRecovery.primaryShutterEnabled,
+                        onClick = {},
+                        modifier = Modifier.testTag("recording-recovery"),
+                    )
                 }
             }
         }
         compose.waitForIdle()
         val idle = compose.onNodeWithTag("idle-timelapse").captureToImage().toPixelMap()
         val running = compose.onNodeWithTag("running-timelapse").captureToImage().toPixelMap()
+        val recording = compose.onNodeWithTag("recording-recovery").captureToImage().toPixelMap()
         val center = idle.width / 2 to idle.height / 2
         assertTrue("running stop paint must replace the idle photo disc", idle[center.first, center.second] != running[center.first, center.second])
         assertTrue("running stop center must use non-text record red", contrast(running[center.first, center.second], Color.Black) >= 3.0)
+        assertTrue(
+            "recording recovery must keep non-text Stop contrast",
+            contrast(recording[center.first, center.second], Color.Black) >= 3.0,
+        )
     }
 
     private fun contrast(first: Color, second: Color): Double {

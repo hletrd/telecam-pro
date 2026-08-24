@@ -3145,13 +3145,13 @@ internal fun ShutterButton(
         modifier = modifier
             .size(76.dp)
             .scale(shutterScale)
-            // Camera down (opening, reconfiguring, or recovery exhausted): the tap would be
-            // declined anyway — dim the button so it stops LOOKING ready in front of a black
-            // viewfinder. It is also DISABLED in that state (shutterEnabled folds in cameraReady,
-            // so the only healthy-false-but-enabled case is a running self-timer, whose tap
-            // cancels): the tap is swallowed, not declined with a message. The dimming IS the
-            // feedback — an earlier version of this comment promised a status message that the
-            // enabled=shutterEnabled clickable below can never reach.
+            // Camera down (opening, reconfiguring, or recovery exhausted): a NEW capture/start
+            // would be declined anyway, so dim the button instead of making it look ready in front
+            // of a black viewfinder. Already-owned REC and timelapse work keeps full-strength Stop
+            // paint through that transition; a running self-timer remains the sole
+            // healthy-false-but-enabled case because its full-screen countdown already carries the
+            // cancellation state. An unavailable new action is swallowed, not declined with a
+            // status message, so this dimming is its feedback.
             .alpha(visualAlpha)
             .onFocusChanged { keyboardFocused = it.isFocused }
             .clickable(

@@ -163,7 +163,7 @@ class CameraStateTest {
     }
 
     @Test
-    fun `record stop remains enabled through a camera health transition`() {
+    fun `record stop remains healthy and enabled through a camera health transition`() {
         val recording = CameraUiState(
             mode = CaptureMode.VIDEO,
             cameraReady = false,
@@ -171,6 +171,7 @@ class CameraStateTest {
             photoSessionOutputs = PhotoSessionOutputs(),
         )
 
+        assertTrue(recording.primaryShutterHealthy)
         assertTrue(recording.primaryShutterEnabled)
     }
 

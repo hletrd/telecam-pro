@@ -108,13 +108,13 @@ class CameraAdmissionPresentationComposeTest {
         compose.onNodeWithTag("admission-refused").assert(
             SemanticsMatcher.expectValue(ShutterVisualAlpha, 0.35f),
         )
-        // Timer Cancel and REC Stop keep their enabled behavior even while camera health keeps the
-        // same dimmed graphics-layer presentation as before this change.
+        // Timer Cancel remains enabled but dimmed because the countdown owns its visible state.
+        // REC and timelapse Stop are already-owned work and retain full-strength paint.
         compose.onNodeWithTag("countdown").assert(
             SemanticsMatcher.expectValue(ShutterVisualAlpha, 0.35f),
         )
         compose.onNodeWithTag("recording-stop").assert(
-            SemanticsMatcher.expectValue(ShutterVisualAlpha, 0.35f),
+            SemanticsMatcher.expectValue(ShutterVisualAlpha, 1f),
         )
         compose.onNodeWithTag("timelapse-stop")
             .assertContentDescriptionEquals("Stop timelapse")

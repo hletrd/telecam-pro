@@ -1607,7 +1607,7 @@ data class CameraUiState(
     val stillCaptureReady: Boolean
         get() = cameraReady && photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable
     val primaryShutterHealthy: Boolean
-        get() = timelapseRunning || cameraReady && (
+        get() = timelapseRunning || isRecording || cameraReady && (
             mode == CaptureMode.VIDEO ||
                 (photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable)
         )
