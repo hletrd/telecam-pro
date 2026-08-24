@@ -23,6 +23,18 @@
             android:exported="true"
             android:permission="android.permission.DUMP"
             android:theme="@android:style/Theme.NoDisplay" />
+
+        <!-- Compose's debug-only AARs contribute two exported host activities. Keep Studio/shell
+             preview launch available behind the same signature-only boundary as our own evidence
+             surfaces, and keep the UI-test host strictly in-process. Release has neither class. -->
+        <activity
+            android:name="androidx.compose.ui.tooling.PreviewActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            android:exported="false"
+            tools:replace="android:exported" />
     </application>
 
 </manifest>

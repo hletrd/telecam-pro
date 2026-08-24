@@ -2,6 +2,7 @@ package me.hletrd.telecampro
 
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
@@ -17,6 +18,36 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
 class DebugCameraControlSecurityTest {
+    @Test fun `merged debug manifest exposes only the launcher and DUMP protected activities`() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val activities = app.packageManager
+            .getPackageInfo(app.packageName, PackageManager.GET_ACTIVITIES)
+            .activities
+            .orEmpty()
+            .associate { it.name to (it.exported to it.permission) }
+
+        assertEquals(
+            mapOf(
+                MainActivity::class.java.name to (true to null),
+                DebugCameraControlActivity::class.java.name to (true to "android.permission.DUMP"),
+                "me.hletrd.telecampro.ui.UiSnapshotActivity" to (true to "android.permission.DUMP"),
+                "androidx.compose.ui.tooling.PreviewActivity" to (true to "android.permission.DUMP"),
+                "androidx.activity.ComponentActivity" to (false to null),
+            ),
+            activities.filterKeys {
+                it == MainActivity::class.java.name ||
+                    it == DebugCameraControlActivity::class.java.name ||
+                    it == "me.hletrd.telecampro.ui.UiSnapshotActivity" ||
+                    it == "androidx.compose.ui.tooling.PreviewActivity" ||
+                    it == "androidx.activity.ComponentActivity"
+            },
+        )
+        assertTrue(activities.keys.containsAll(listOf(
+            "androidx.compose.ui.tooling.PreviewActivity",
+            "androidx.activity.ComponentActivity",
+        )))
+    }
+
     @Test fun `merged debug manifest protects the exported control hook with DUMP`() {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val info = app.packageManager.getActivityInfo(
@@ -78,4 +109,3 @@ class DebugCameraControlSecurityTest {
         )
     }
 }
-
