@@ -7,6 +7,8 @@ import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.video.AudioRouteAvailability
 import me.hletrd.telecampro.video.AudioRouteStatus
 import me.hletrd.telecampro.video.AudioOverloadState
+import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.encoderSelectionAdmitsTransfer
 
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
@@ -986,6 +988,31 @@ internal fun captureFamilyTraceAdmission(
     recordingSnapshot -> CaptureFamilyTraceAdmission(settlement = true)
     selected == DriveMode.SINGLE -> CaptureFamilyTraceAdmission(registration = true, settlement = true)
     else -> CaptureFamilyTraceAdmission()
+}
+
+/** One production decision shared by REC admission and rollback regressions. */
+internal data class RecordingEncoderAdmission(
+    val candidates: List<EncoderSelection> = emptyList(),
+    val failure: CameraStatusMessage? = null,
+)
+
+internal fun recordingEncoderAdmission(
+    frameRateAvailable: Boolean,
+    codec: VideoCodec,
+    transfer: ColorTransfer,
+    candidates: List<EncoderSelection>,
+): RecordingEncoderAdmission {
+    if (!frameRateAvailable) {
+        return RecordingEncoderAdmission(failure = CameraStatusMessage.SELECTED_FPS_UNAVAILABLE)
+    }
+    val admitted = candidates.filter {
+        it.codec == codec && encoderSelectionAdmitsTransfer(it, transfer)
+    }
+    return if (admitted.isEmpty()) {
+        RecordingEncoderAdmission(failure = CameraStatusMessage.SELECTED_CODEC_UNAVAILABLE)
+    } else {
+        RecordingEncoderAdmission(candidates = admitted)
+    }
 }
 
 /**

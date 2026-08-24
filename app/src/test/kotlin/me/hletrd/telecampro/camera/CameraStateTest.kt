@@ -1,7 +1,9 @@
 package me.hletrd.telecampro.camera
 
 import android.hardware.camera2.CameraMetadata
+import android.media.MediaFormat
 import android.util.Size
+import me.hletrd.telecampro.video.EncoderSelection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -208,6 +210,43 @@ class CameraStateTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun `recording encoder admission owns fps codec and transfer failures`() {
+        val hevcMain10 = EncoderSelection(
+            codec = VideoCodec.HEVC,
+            codecName = "test-main10",
+            mime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val avc = EncoderSelection(
+            codec = VideoCodec.AVC,
+            codecName = "test-avc",
+            mime = MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
+
+        assertEquals(
+            CameraStatusMessage.SELECTED_FPS_UNAVAILABLE,
+            recordingEncoderAdmission(false, VideoCodec.HEVC, ColorTransfer.HLG, listOf(hevcMain10)).failure,
+        )
+        assertEquals(
+            CameraStatusMessage.SELECTED_CODEC_UNAVAILABLE,
+            recordingEncoderAdmission(true, VideoCodec.AVC, ColorTransfer.HLG, listOf(avc)).failure,
+        )
+        assertEquals(
+            listOf(hevcMain10),
+            recordingEncoderAdmission(true, VideoCodec.HEVC, ColorTransfer.HLG, listOf(hevcMain10, avc))
+                .candidates,
+        )
+        assertEquals(
+            listOf(avc),
+            recordingEncoderAdmission(true, VideoCodec.AVC, ColorTransfer.SDR, listOf(hevcMain10, avc))
+                .candidates,
+        )
     }
 
     @Test

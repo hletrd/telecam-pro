@@ -12,10 +12,10 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.camera.recordingEncoderAdmission
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.video.EncoderSelection
 import me.hletrd.telecampro.video.CodecInventory
-import me.hletrd.telecampro.video.encoderSelectionAdmitsTransfer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -247,10 +247,17 @@ class ModeRollbackOwnershipRobolectricTest {
         forceOwnedRollback(engine, ColorTransfer.HLG)
         assertEquals(VideoCodec.HEVC, field(engine, "videoCodec"))
         assertEquals(listOf(hevc), field(engine, "videoEncoderCandidates"))
+        val recAdmission = recordingEncoderAdmission(
+            frameRateAvailable = true,
+            codec = field(engine, "videoCodec") as VideoCodec,
+            transfer = engineTransfer(engine),
+            candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+                .filterIsInstance<EncoderSelection>(),
+        )
+        assertEquals(null, recAdmission.failure)
         assertEquals(
             listOf(hevc),
-            (field(engine, "videoEncoderCandidates") as List<*>).filterIsInstance<EncoderSelection>()
-                .filter { encoderSelectionAdmitsTransfer(it, engineTransfer(engine)) },
+            recAdmission.candidates,
         )
         assertEquals(VideoCodec.HEVC, viewModel.state.value.videoCodec)
         assertEquals(ColorTransfer.HLG, viewModel.state.value.transfer)

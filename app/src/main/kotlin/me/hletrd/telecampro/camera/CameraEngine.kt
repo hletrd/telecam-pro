@@ -5046,21 +5046,21 @@ class CameraEngine internal constructor(
                 onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
                 return false
             }
-            if (videoFrameRate !in VideoFrameRate.availableFor(caps, videoSize, videoCodec)) {
-                // Bare "<X> unavailable" like every sibling status in this file; the copula was the one
-                // status that read as a sentence in a register of clipped labels.
-                onStatus?.invoke(CameraStatusMessage.SELECTED_FPS_UNAVAILABLE.status())
-                return false
-            }
-            val encoderCandidates = videoEncoderCandidates.filter {
-                it.codec == videoCodec && me.hletrd.telecampro.video.encoderSelectionAdmitsTransfer(it, transfer)
-            }.ifEmpty {
-                onStatus?.invoke(CameraStatusMessage.SELECTED_CODEC_UNAVAILABLE.status())
+            val encoderAdmission = recordingEncoderAdmission(
+                frameRateAvailable = videoFrameRate in VideoFrameRate.availableFor(caps, videoSize, videoCodec),
+                codec = videoCodec,
+                transfer = transfer,
+                candidates = videoEncoderCandidates,
+            )
+            encoderAdmission.failure?.let { failure ->
+                // Bare "<X> unavailable" like every sibling status in this file; the copula was the
+                // one status that read as a sentence in a register of clipped labels.
+                onStatus?.invoke(failure.status())
                 return false
             }
             RecordingAdmissionSnapshot(
                 acceptedSession = acceptedSession,
-                encoderCandidates = encoderCandidates,
+                encoderCandidates = encoderAdmission.candidates,
                 isCurrent = { currentAcceptedRecordingSession() === acceptedSession },
             )
         }
