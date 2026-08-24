@@ -306,12 +306,13 @@ Accessed from GL + audio/video threads:
   optics intent still owns convergence; superseded work remains a no-op. External callbacks run after
   unlocking.
 - **Video-pipeline transaction packet**: codec, exact ordered encoder candidates, the operator's
-  retained next-Video transfer, and the active Camera2/GL transfer are snapshotted as one immutable
-  selection inside every optics baseline. Interactive codec/transfer changes use one Engine command;
-  settings/MR installs the same packet inside `setResolvedOptics`. A failed source-precision reopen
-  restores the complete Engine tuple and publishes codec plus retained transfer to the ViewModel
-  before settings persistence, so Ready/REC can never observe AVC candidates with HLG source truth
-  or UI HLG over an accepted SDR session.
+  retained next-Video transfer, and the active Camera2/GL transfer publish as one immutable selection
+  under an independent monotonic pipeline-publication generation. Interactive codec/transfer changes
+  use one Engine command; settings/MR installs the same packet inside `setResolvedOptics`. A failed
+  source-precision reopen restores its baseline only while it still owns that generation; otherwise
+  the newer packet survives in Engine, GL, the generation-checked ViewModel publication, persistence,
+  and REC admission. Ready/REC therefore cannot observe AVC candidates with HLG source truth or UI
+  HLG over an accepted SDR session.
 - **Ready publication ordering**: every Ready/Not-Ready event carries a monotonic publication sequence.
   The ViewModel compares it again inside the StateFlow reducer, closing the check-to-write race so an
   older Ready event cannot overwrite newer Not-Ready state.
@@ -386,8 +387,11 @@ Accessed from GL + audio/video threads:
   metadata without a CameraService lookup.
 - **Recording admission and failure**: VideoRecorder owns its video/audio threads and muxer lock; GL
   writes frames to its exactly-once-owned codec input Surface. The caller synchronously reserves the
-  in-flight/topology owners and publishes optimistic Starting. The serial recorder executor snapshots
-  the accepted controller/session plus process token, then dispatches pending-row insert/registration
+  in-flight/topology owners and publishes optimistic Starting. Under one Engine-monitor boundary the
+  serial recorder executor freezes the complete REC packet: accepted controller/session, video size,
+  selected frame/capture rate, codec, accepted transfer, and exact ordered encoder candidates. Native
+  GL/recorder setup consumes that immutable packet rather than re-reading live fields. It also claims
+  the process token, then dispatches pending-row insert/registration
   to the process-wide pre-native allocator under an already-armed deadline and yields; it does not
   execute provider work. Stop/pause/release/timeout retire that generation immediately, while a late
   provider return is cleanup/recovery-only. A claimed row re-enters the recorder executor for the

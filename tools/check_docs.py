@@ -165,6 +165,9 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
                 or saw_plte
                 or saw_idat
                 or saw_iend
+                # PNG's relative-order grammar places tRNS after PLTE. A truecolor image may omit
+                # PLTE entirely, but once transparency has appeared no palette may follow it.
+                or b"tRNS" in seen_ancillary
                 or ihdr[3] == 6
                 or length == 0
                 or length > 256 * 3
@@ -1997,6 +2000,7 @@ check(
 # inverted. Join executable code, current authority, rerunnable field criteria, and the preserved
 # historical backlog label so none can independently revive the old "structurally impossible" rule.
 gl_pipeline = read("app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt")
+flip_renderer = read("app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt")
 field_checks = read("docs/FIELD_CHECKS.md")
 rotation_math = read("app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt")
 front_mirror = read("app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt")
@@ -2030,13 +2034,41 @@ check(
 )
 check(
     "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)" in gl_pipeline
+    and "raw and 180° inverted relative to the corrected main" in gl_pipeline
+    and "not an upright or pre-converter-world reference" in gl_pipeline
+    and "same converter-fed stream" in flip_renderer
+    and "making it raw and inverted relative to the main view" in flip_renderer
     and "window-rotation term" in claude
     and "raw, inverted field" in claude
     and "The Loupe Overview draws UPRIGHT" not in claude
-    and "world the right way up in the corner" not in claude
+    and all(
+        stale not in "\n".join((claude, architecture, flip_renderer, gl_pipeline))
+        for stale in (
+            "operator wants UPRIGHT",
+            "UPRIGHT, deliberately NOT carrying",
+            "world the right way up in the corner",
+            "world sits the right way up in the corner",
+            "upright overview stands in for the PRE-CONVERTER world",
+        )
+    )
     and "one-call `rotationOverrideDeg`" in field_checks
     and "raw, inverted field" in field_checks,
     "committed Loupe Overview criteria match the per-draw orientation authority",
+)
+check(
+    all(
+        phrase in claude and phrase in architecture
+        for phrase in (
+            "monotonic pipeline-publication generation",
+            "complete REC packet",
+            "selected frame/capture rate",
+            "exact ordered encoder candidates",
+        )
+    )
+    and "Rollback restores its baseline packet only" in claude
+    and "restores its baseline only while it still owns that generation" in architecture
+    and "A failed source-precision reopen restores the complete Engine tuple" not in architecture,
+    "pipeline rollback and REC authorities preserve independent packet ownership",
 )
 if backlog is None:
     skip_private("Loupe history labels the superseded orientation rule", "docs/BACKLOG.md")

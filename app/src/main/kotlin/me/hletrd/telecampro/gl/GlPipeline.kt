@@ -1090,23 +1090,17 @@ class GlPipeline(
                                 // of our own (moot today — the finder requires TC, which the front
                                 // route forces off).
                                 mirrorX = false,
-                                // UPRIGHT, deliberately NOT carrying the afocal 180° the main view
-                                // gets (user-specified 2026-07-28, restated three times). The
-                                // overview is an orientation reference: the operator wants the
-                                // world the right way up in the corner while the magnified main
-                                // view is the converter-corrected image.
+                                // Deliberately omit the afocal 180° applied to the magnified main
+                                // view, while retaining the window term. Today both draws consume
+                                // the SAME converter-fed stream, so this overview truthfully shows
+                                // that stream raw and 180° inverted relative to the corrected main
+                                // view. It is not an upright or pre-converter-world reference.
                                 //
-                                // HONESTY NOTE — this is only fully right once the overview is a
-                                // real WIDE stream. Today it re-draws the SAME converter-fed frame
-                                // (single-stream), so with the converter physically mounted this
-                                // box shows the raw, inverted field. The genuinely correct version
-                                // is the second-stream wide finder already on the BACKLOG; that
-                                // stream comes off a lens the converter is NOT clamped to, and is
-                                // upright for real rather than by declining a rotation.
-                                // The overview deliberately declines the afocal 180° so the world sits
-                                // the right way up in the corner (user-specified 2026-07-28). "Upright"
-                                // is relative to the WINDOW, not the device, so a rotated window still
-                                // owes its own term — this stays 0 on any phone.
+                                // A genuinely upright overview requires the future second WIDE
+                                // stream from a lens the converter is not clamped to. Window-relative
+                                // uprightness applies only to that future source; this same-stream
+                                // exception merely declines the afocal term. The window term stays
+                                // 0 on a portrait-locked phone.
                                 rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),
                             )
                             // iPhone-style framing hint: a thin rectangle inside the overview
@@ -1124,8 +1118,9 @@ class GlPipeline(
                                     (zoomTarget / halZoom.coerceAtLeast(0.01f)).coerceAtLeast(0.01f),
                                 centerTexX = loupeX,
                                 centerTexY = loupeY,
-                                // TELE: the upright overview stands in for the PRE-CONVERTER world,
-                                // so the hint marks the main view's field on that scale — a 4.3×
+                                // TELE: although today's overview pixels are the raw/inverted
+                                // converter-fed stream, the framing rectangle still expresses the
+                                // main view's field on the declared pre-converter scale — a 4.3×
                                 // converter shrinks it 4.3× beyond the loupe fraction
                                 // (operator-specified 2026-07-31; see loupeHintRect).
                                 fieldScale = finderFieldScale,

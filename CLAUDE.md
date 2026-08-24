@@ -864,11 +864,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   transaction before clearing Ready, recheck it on `setupExecutor`, and converge through
   `reconfigureCamera`. Never restore a transaction-less close/open shortcut: it can pair an outgoing
   selection/capability snapshot with a newer mode/lens generation.
-- **Video codec/candidates/transfer are one rollback packet.** The operator's next-Video curve is
-  retained separately from Photo's active SDR transfer; one `setVideoPipeline` command owns live
-  codec/curve changes, and settings/MR puts the same immutable selection inside `setResolvedOptics`.
-  Rollback restores codec, ordered candidates, requested transfer, and active Camera2/GL transfer
-  before publishing UI truth or allowing the next REC admission.
+- **Video codec/candidates/transfer are one independently owned rollback packet.** The operator's
+  next-Video curve is retained separately from Photo's active SDR transfer; one
+  `setVideoPipeline` command publishes codec, ordered candidates, requested transfer, and active
+  Camera2/GL transfer under a monotonic pipeline-publication generation, while settings/MR puts the
+  same immutable selection inside `setResolvedOptics`. Rollback restores its baseline packet only
+  while that optics transaction still owns the pipeline generation; a newer codec/curve command
+  survives in Engine, GL, the generation-checked ViewModel publication, and the next REC admission.
 - **Ready binds controller, generations, and accepted still outputs atomically.** Every optics intent
   publishes Not-Ready with its desired generation. Only the synchronized terminal commit may install
   the Ready controller, exact session generation, actual processed/RAW reader mask, and Ready bit,
@@ -902,9 +904,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **REC readiness comes from the first successful real encoder swap, not surface allocation or
   `VideoRecorder.start()` returning.** Candidate create/bind/restore remains pending until a real
   camera frame draws, presents, swaps, and restores preview ownership. Queue attach before recorder
-  publication and consume its exactly-once `Result`. Recording admission
-  snapshots the accepted Camera2 controller/session before mic handoff and atomically rechecks it at
-  publication. Until attach succeeds the UI is stoppable/locked but shows no tally or timer. An owned
+  publication and consume its exactly-once `Result`. Under one Engine-monitor boundary, recording
+  admission freezes the complete REC packet: accepted Camera2 controller/session, video size,
+  selected frame/capture rate, codec, accepted transfer, and exact ordered encoder candidates. That
+  immutable packet is carried through GL/native recorder setup rather than re-reading independently
+  mutable fields, and its session ownership is atomically rechecked at publication. Until attach
+  succeeds the UI is stoppable/locked but shows no tally or timer. An owned
   Camera2 failure claims and ordered-finalizes the recorder before recovery; do not let camera errors
   leave phantom REC/audio/UI state. Only the in-flight latch/topology reservation and optimistic
   "starting" UI are synchronous on the caller. The recorder executor snapshots the accepted session

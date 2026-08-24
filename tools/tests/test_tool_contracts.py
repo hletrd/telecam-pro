@@ -79,6 +79,7 @@ def run_documentation_gate_from_committed_export(
             "app/src/main/kotlin/me/hletrd/telecampro/camera/RotationMath.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/ZoomSubmitPlan.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/gl/FrontMirrorConvention.kt",
+            "app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt",
             "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt",
@@ -614,6 +615,40 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
             result.stdout,
         )
+
+    def test_committed_export_rejects_stale_loupe_source_and_pipeline_ownership_claims(self) -> None:
+        fixtures = (
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt",
+                "making it raw and inverted relative to the main view",
+                "the operator wants UPRIGHT",
+                "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
+                "It is not an upright or pre-converter-world reference.",
+                "The operator wants UPRIGHT.",
+                "FAIL  committed Loupe Overview criteria match the per-draw orientation authority",
+            ),
+            (
+                "docs/ARCHITECTURE.md",
+                "restores its baseline only while it still owns that generation",
+                "always restores its baseline packet",
+                "FAIL  pipeline rollback and REC authorities preserve independent packet ownership",
+            ),
+        )
+        for relative, current, stale, failure in fixtures:
+            with self.subTest(relative=relative):
+                def regress(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(regress)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(failure, result.stdout)
 
     def test_committed_export_rejects_appops_gap_marked_open(self) -> None:
         def restore_open_gap(root: Path) -> None:
@@ -1354,6 +1389,11 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             ("non-letter", chunk(b"12x4", b""), False),
             ("reserved-bit", chunk(b"abcd", b""), False),
             ("late-trns", chunk(b"tRNS", b"\0" * 6), False),
+            (
+                "trns-before-plte",
+                chunk(b"tRNS", b"\0" * 6) + chunk(b"PLTE", b"\0\0\0"),
+                True,
+            ),
             ("late-srgb", chunk(b"sRGB", b"\0"), False),
             ("late-iccp", chunk(b"iCCP", b"test\0\0" + zlib.compress(b"profile")), False),
             ("malformed-srgb", chunk(b"sRGB", b"\4"), True),
