@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalInputModeManager
@@ -22,6 +22,11 @@ import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+import kotlin.math.PI
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -73,26 +78,30 @@ class ShutterFocusComposeTest {
             )
             val focused = compose.onNodeWithTag(tag).captureToImage().toPixelMap()
 
-            val edge = buildList {
-                for (x in 0 until focused.width) {
-                    for (y in 0 until focused.height) {
-                        if (x < 7 || x >= focused.width - 7 || y < 7 || y >= focused.height - 7) {
-                            add(x to y)
-                        }
-                    }
-                }
+            val diameter = minOf(focused.width, focused.height).toFloat()
+            val radiusRange = if (frame == Color.White) {
+                diameter * 0.43f..diameter * 0.50f // black outer ring
+            } else {
+                diameter * 0.38f..diameter * 0.45f // inset Accent ring
             }
-            val changedEdge = edge.filter { (x, y) -> before[x, y] != focused[x, y] }
-            assertTrue("$name production shutter focus must change rendered edge pixels", changedEdge.isNotEmpty())
-            val strongest = changedEdge.maxBy { (x, y) -> contrast(focused[x, y], frame) }
-            val renderedColor = focused[strongest.first, strongest.second]
-            val renderedContrast = contrast(renderedColor, frame)
+            val coveredBins = focusRingContrastBins(
+                before = before,
+                focused = focused,
+                frame = frame,
+                radiusRange = radiusRange,
+            )
             assertTrue(
-                "$name rendered production keyline contrast was $renderedContrast " +
-                    "at #${renderedColor.toArgb().toUInt().toString(16)}",
-                renderedContrast >= 3.0,
+                "$name rendered focus ring covered only $coveredBins/$FOCUS_RING_ANGLE_BINS angular bins",
+                focusRingCoverageSufficient(coveredBins),
             )
         }
+    }
+
+    @Test
+    fun `focus ring coverage rejects a pixel and short arc but accepts a circumference`() {
+        assertTrue(!focusRingCoverageSufficient(1))
+        assertTrue(!focusRingCoverageSufficient(FOCUS_RING_ANGLE_BINS / 4))
+        assertTrue(focusRingCoverageSufficient(FOCUS_RING_REQUIRED_BINS))
     }
 
     @Test
@@ -137,5 +146,34 @@ class ShutterFocusComposeTest {
         val lighter = maxOf(luminance(first), luminance(second))
         val darker = minOf(luminance(first), luminance(second))
         return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private fun focusRingContrastBins(
+        before: PixelMap,
+        focused: PixelMap,
+        frame: Color,
+        radiusRange: ClosedFloatingPointRange<Float>,
+    ): Int {
+        val centerX = (focused.width - 1) / 2f
+        val centerY = (focused.height - 1) / 2f
+        return (0 until FOCUS_RING_ANGLE_BINS).count { bin ->
+            val angle = 2.0 * PI * (bin + 0.5) / FOCUS_RING_ANGLE_BINS
+            val start = radiusRange.start.roundToInt()
+            val end = radiusRange.endInclusive.roundToInt()
+            (start..end).any { radius ->
+                val x = (centerX + cos(angle).toFloat() * radius).roundToInt()
+                val y = (centerY + sin(angle).toFloat() * radius).roundToInt()
+                x in 0 until focused.width && y in 0 until focused.height &&
+                    before[x, y] != focused[x, y] && contrast(focused[x, y], frame) >= 3.0
+            }
+        }
+    }
+
+    private fun focusRingCoverageSufficient(coveredBins: Int): Boolean =
+        coveredBins >= FOCUS_RING_REQUIRED_BINS
+
+    private companion object {
+        const val FOCUS_RING_ANGLE_BINS = 72
+        val FOCUS_RING_REQUIRED_BINS = ceil(FOCUS_RING_ANGLE_BINS * 0.8).toInt()
     }
 }
