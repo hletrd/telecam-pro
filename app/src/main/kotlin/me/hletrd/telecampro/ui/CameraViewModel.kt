@@ -3305,6 +3305,17 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     override fun onReviewOpenChange(open: Boolean, uri: Uri): Boolean {
+        if (open && !reviewTargetEnabled(
+                recordingStarting = _state.value.isRecordingStarting,
+                recording = _state.value.isRecording,
+            )
+        ) {
+            // Defense in depth for non-Compose callers. A review would remove the visible Stop
+            // control, block its hardware-key twin through modal ownership, and may autoplay an
+            // older video's speaker audio into the still-live recording microphone.
+            showStatus(CameraStatusMessage.STOP_RECORDING_FIRST)
+            return false
+        }
         // A one-shot timer must never finish behind a full-screen review. Cancel before pinning or
         // publishing modal ownership so no scheduler tick can race the visible transition.
         if (open) cancelCountdown()

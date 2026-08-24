@@ -66,6 +66,16 @@ import kotlin.math.sin
 internal fun windowFollowsDevice(smallestScreenWidthDp: Int): Boolean = smallestScreenWidthDp >= 600
 
 /**
+ * Full-screen review must never take the only visible Stop control away from a live video take.
+ * Timelapse is deliberately absent from this policy: reviewing a completed interval frame while
+ * the unattended run continues is an established workflow and does not own AudioRecord/REC chrome.
+ */
+internal fun reviewTargetEnabled(
+    recordingStarting: Boolean,
+    recording: Boolean,
+): Boolean = !recordingStarting && !recording
+
+/**
  * PROGRESS statuses describe a condition that is either true or false right now, so an EVENT ends
  * them — never a timer. [CAMERA_STARTING_STATUS] is the one the app emits: the owner reported
  * "starting the camera takes a long time" on a device whose session configures in ~950 ms, and the

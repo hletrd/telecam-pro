@@ -51,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -71,6 +72,7 @@ import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -642,6 +644,7 @@ fun GalleryThumb(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     provenance: MediaProvenance = MediaProvenance.APP_OWNED,
+    enabled: Boolean = true,
 ) {
     val context = LocalContext.current
     val thumbOwner = remember(uri) { Any() }
@@ -669,16 +672,21 @@ fun GalleryThumb(
     Box(
         modifier = modifier
             .size(52.dp)
+            // Keep the last-capture identity visible while REC owns the camera, but do not present
+            // a live affordance that opens an opaque review over the only Stop control. The whole
+            // target dims together; the stored thumbnail remains recognizable as state, not action.
+            .alpha(if (enabled) 1f else 0.35f)
             .clip(RoundedCornerShape(14.dp))
             .background(CameraColors.Pill)
             .border(1.dp, CameraColors.Hairline, RoundedCornerShape(14.dp))
             .semantics {
                 contentDescription = galleryDesc
                 role = Role.Button
+                if (!enabled) disabled()
             }
             // Null is an actionable restore state: the caller requests contextual visual-media
             // access and re-runs the previous-install capture query.
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         val t = content.bitmap

@@ -1277,6 +1277,10 @@ fun CameraScreen(
                 val reviewOpenUri = state.lastMediaUri
                 val reviewOpenScope = state.lastMediaDeleteScope
                 val reviewOpenProvenance = state.lastMediaProvenance
+                val reviewEnabled = reviewTargetEnabled(
+                    recordingStarting = state.isRecordingStarting,
+                    recording = state.isRecording,
+                )
                 val onOpenReview = remember(reviewOpenUri, reviewOpenScope, reviewOpenProvenance) {
                     {
                         if (reviewOpenUri != null) {
@@ -1304,6 +1308,7 @@ fun CameraScreen(
                     lastMediaUri = state.lastMediaUri,
                     lastMediaProvenance = state.lastMediaProvenance,
                     onOpenReview = onOpenReview,
+                    reviewEnabled = reviewEnabled,
                     onShutter = onShutter,
                     onSnapshot = actions::onCapturePhoto,
                     cameraHealthy = state.primaryShutterHealthy,
@@ -2936,6 +2941,7 @@ private fun ShutterRow(
     lastMediaUri: android.net.Uri?,
     lastMediaProvenance: MediaProvenance,
     onOpenReview: () -> Unit,
+    reviewEnabled: Boolean,
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
     modifier: Modifier = Modifier,
@@ -2956,6 +2962,7 @@ private fun ShutterRow(
             uri = lastMediaUri,
             provenance = lastMediaProvenance,
             onClick = onOpenReview,
+            enabled = reviewEnabled,
             modifier = Modifier.align(Alignment.CenterStart).rotate(glyphRotation),
         )
         // The shutter/stop control is anchored at the EXACT box center so it never moves when the

@@ -44,6 +44,7 @@ import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -102,6 +103,21 @@ class CameraViewModelRobolectricTest {
         CameraViewModel::class.java.getDeclaredMethod("onCleared")
             .apply { isAccessible = true }
             .invoke(v)
+    }
+
+    private fun setRecordingPresentation(
+        v: CameraViewModel,
+        recording: Boolean,
+        starting: Boolean,
+    ) {
+        @Suppress("UNCHECKED_CAST")
+        val state = CameraViewModel::class.java.getDeclaredField("_state")
+            .apply { isAccessible = true }
+            .get(v) as MutableStateFlow<CameraUiState>
+        state.value = state.value.copy(
+            isRecording = recording,
+            isRecordingStarting = starting,
+        )
     }
 
     @After fun tearDown() {
@@ -576,6 +592,24 @@ class CameraViewModelRobolectricTest {
 
         assertNull("review leaked a late capture attempt", v.state.value.status)
         assertEquals(0, v.state.value.shutterFlashTick)
+    }
+
+    @Test fun `review refuses starting and active video without acquiring modal ownership`() {
+        val (v, _) = createViewModel()
+        val uri = Uri.parse("content://telecam.test/previous-video")
+
+        for ((recording, starting) in listOf(true to true, true to false)) {
+            setRecordingPresentation(v, recording = recording, starting = starting)
+            assertFalse(v.onReviewOpenChange(true, uri))
+            assertFalse(v.state.value.reviewOpen)
+            assertFalse(v.state.value.cameraInputBlocked)
+            assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+        }
+
+        setRecordingPresentation(v, recording = false, starting = false)
+        assertFalse("untracked fixture family is not pinnable", v.onReviewOpenChange(true, uri))
+        assertTrue("idle review must still acquire modal ownership", v.state.value.reviewOpen)
+        assertTrue(v.state.value.cameraInputBlocked)
     }
 
     // ---- Mode change ----

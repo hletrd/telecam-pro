@@ -14,11 +14,15 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.ViewfinderFocusActionAvailability
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+import me.hletrd.telecampro.ui.review.GalleryThumb
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -136,6 +140,42 @@ class CameraAdmissionPresentationComposeTest {
         availability.value = ViewfinderFocusActionAvailability(true, true)
         compose.waitForIdle()
         assertEquals(listOf("Focus at center", "Reset focus point"), customActionLabels())
+    }
+
+    @Test
+    fun `review target is enabled only outside starting and active video capture`() {
+        val activations = IntArray(3)
+        val states = listOf(
+            false to false,
+            true to false,
+            false to true,
+        )
+        compose.setContent {
+            TeleCamProTheme {
+                Column {
+                    states.forEachIndexed { index, (starting, recording) ->
+                        GalleryThumb(
+                            uri = null,
+                            onClick = { activations[index]++ },
+                            enabled = reviewTargetEnabled(starting, recording),
+                            modifier = Modifier.testTag("review-$index"),
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("review-0").assertIsEnabled().performClick()
+        listOf(1, 2).forEach { index ->
+            compose.onNodeWithTag("review-$index")
+                .assertIsNotEnabled()
+                // Raw pointer input proves the disabled visual target cannot be activated even
+                // when an automation/accessibility client bypasses semantic performClick.
+                .performTouchInput { click() }
+        }
+        compose.waitForIdle()
+        assertEquals(listOf(1, 0, 0), activations.toList())
     }
 
     private fun customActionLabels(): List<String> = compose.onNodeWithTag("viewfinder")
