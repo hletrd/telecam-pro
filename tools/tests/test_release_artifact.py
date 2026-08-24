@@ -468,10 +468,11 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             root = Path(temp_dir)
             attestation, aab, commit = self.fixture(root)
             with zipfile.ZipFile(aab, "a") as bundle:
-                bundle.writestr(
-                    "base/root/META-INF/version-control-info.textproto",
-                    f'repositories {{ revision: "{"b" * 40}" }}\n',
-                )
+                with self.assertWarnsRegex(UserWarning, "Duplicate name"):
+                    bundle.writestr(
+                        "base/root/META-INF/version-control-info.textproto",
+                        f'repositories {{ revision: "{"b" * 40}" }}\n',
+                    )
 
             failures = release.check_release_identity(root, attestation, run=self.runner(commit))
 
@@ -482,11 +483,12 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             root = Path(temp_dir)
             attestation, aab, commit = self.fixture(root)
             with zipfile.ZipFile(aab, "a") as bundle:
-                bundle.writestr(
-                    release.PROVENANCE_MEMBER,
-                    "schema=2\nevidence=external-wrapper-required\n" +
-                        f"commit={commit}\ntree={'d' * 40}\n",
-                )
+                with self.assertWarnsRegex(UserWarning, "Duplicate name"):
+                    bundle.writestr(
+                        release.PROVENANCE_MEMBER,
+                        "schema=2\nevidence=external-wrapper-required\n" +
+                            f"commit={commit}\ntree={'d' * 40}\n",
+                    )
             self.refresh_attestation(attestation, aab)
 
             failures = release.check_release_identity(
@@ -510,11 +512,12 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             self.assertIsNone(release.packaged_source_provenance(malformed))
 
             with zipfile.ZipFile(aab, "a") as bundle:
-                bundle.writestr(
-                    release.PROVENANCE_MEMBER,
-                    "schema=2\nevidence=external-wrapper-required\n" +
-                        f"commit={commit}\ntree={self.TREE}\n",
-                )
+                with self.assertWarnsRegex(UserWarning, "Duplicate name"):
+                    bundle.writestr(
+                        release.PROVENANCE_MEMBER,
+                        "schema=2\nevidence=external-wrapper-required\n" +
+                            f"commit={commit}\ntree={self.TREE}\n",
+                    )
             self.assertIsNone(release.packaged_source_provenance(aab))
 
     def test_unexpected_provenance_namespace_member_fails_closed(self) -> None:
