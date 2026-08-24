@@ -68,8 +68,10 @@ class DropdownSemanticsComposeTest {
     )
 
     private fun assertOpenMenuSelection(expected: String) {
+        val selectableGroup = SemanticsMatcher.keyIsDefined(SemanticsProperties.SelectableGroup)
         val selectedMatcher = SemanticsMatcher.expectValue(SemanticsProperties.Selected, true)
             .and(hasAnyAncestor(isPopup()))
+        compose.onAllNodes(selectableGroup.and(hasAnyAncestor(isPopup()))).assertCountEquals(1)
         compose.onAllNodes(selectedMatcher).assertCountEquals(1)
         Option.entries.forEach { value ->
             val isSelected = labels.getValue(value) == expected
@@ -78,6 +80,7 @@ class DropdownSemanticsComposeTest {
                 .assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, isSelected))
                 .assert(hasStateDescription(if (isSelected) selectedDescription else notSelectedDescription))
                 .assert(hasClickAction())
+                .assert(hasAnyAncestor(selectableGroup))
         }
         compose.onAllNodes(hasClickAction().and(hasAnyAncestor(isPopup())))
             .assertCountEquals(Option.entries.size)

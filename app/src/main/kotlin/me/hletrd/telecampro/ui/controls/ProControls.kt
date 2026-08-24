@@ -850,7 +850,11 @@ internal fun <T> DropdownRow(
             onDismissRequest = { expanded = false },
             containerColor = CameraColors.Pill,
             // Long catalogs must scroll INSIDE the menu rather than run off the panel.
-            modifier = Modifier.heightIn(max = 320.dp),
+            // The leaves identify themselves as radio buttons; this parent completes that contract
+            // so accessibility services can expose one mutually-exclusive set with position/count.
+            modifier = Modifier
+                .heightIn(max = 320.dp)
+                .selectableGroup(),
         ) {
             options.forEach { option ->
                 val isSelected = option == selected
