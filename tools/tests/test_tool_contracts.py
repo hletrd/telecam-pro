@@ -389,8 +389,14 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             ),
             (
                 "CLAUDE.md",
+                "age <= 400 ms",
+                "age <= 250 ms",
+                "FAIL  active pseudo-ZSL freshness references match executable truth",
+            ),
+            (
+                "docs/ARCHITECTURE.md",
+                "age <= 400 ms",
                 "age < 400 ms",
-                "age < 250 ms",
                 "FAIL  active pseudo-ZSL freshness references match executable truth",
             ),
             (

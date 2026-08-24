@@ -374,19 +374,30 @@ zsl_age_ns = int(zsl_age_ns_match.group(1).replace("_", ""))
 if zsl_age_ns % 1_000_000 != 0:
     raise ValueError("ZSL frame age must be an exact millisecond fact")
 zsl_age_ms = zsl_age_ns // 1_000_000
+zsl_rejection_match = re.search(
+    r"ageNs\s*(>=|>)\s*ZSL_MAX_FRAME_AGE_NS",
+    zsl_source,
+)
+if zsl_rejection_match is None:
+    raise ValueError("ZSL frame-age rejection comparator missing")
+zsl_doc_comparator = "<" if zsl_rejection_match.group(1) == ">=" else "<="
 zsl_consumers = {
-    "CLAUDE": re.search(r"age < (\d+) ms", read("CLAUDE.md")),
-    "Architecture": re.search(r"age < (\d+) ms", architecture_version_doc),
-    "CameraEngine": re.search(
-        r"mid-clip snapshot serve a frame up to (\d+) ms old",
-        read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"),
-    ),
+    "CLAUDE": re.search(r"age\s*(<=|<)\s*(\d+) ms", read("CLAUDE.md")),
+    "Architecture": re.search(r"age\s*(<=|<)\s*(\d+) ms", architecture_version_doc),
 }
 check(
-    all(match and int(match.group(1)) == zsl_age_ms for match in zsl_consumers.values()),
+    all(
+        match and match.group(1) == zsl_doc_comparator and int(match.group(2)) == zsl_age_ms
+        for match in zsl_consumers.values()
+    ) and bool(
+        re.search(
+            rf"mid-clip snapshot serve a frame up to {zsl_age_ms} ms old",
+            read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"),
+        ),
+    ),
     "active pseudo-ZSL freshness references match executable truth",
     ", ".join(
-        f"{label}={match.group(1) + 'ms' if match else '?'}"
+        f"{label}={match.group(1) + match.group(2) + 'ms' if match else '?'}"
         for label, match in zsl_consumers.items()
     ),
 )
