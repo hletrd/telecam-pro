@@ -14,6 +14,7 @@ Run before touching docs/play-store-listing.md, PRIVACY.md, or privacy-policy/in
 from __future__ import annotations
 
 import hashlib
+import datetime
 import json
 import pathlib
 import re
@@ -315,6 +316,9 @@ min_sdk = re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)
 # the catalog pin. Make the catalog the source of truth and compare both public surfaces plus the
 # project authority table against it.
 catalog = read("gradle/libs.versions.toml")
+catalog_agp = re.search(r'^agp\s*=\s*"([^"]+)"', catalog, re.MULTILINE)
+assert catalog_agp, "agp missing from version catalog"
+agp_version = catalog_agp.group(1)
 catalog_compose = re.search(r'^composeBom\s*=\s*"([^"]+)"', catalog, re.MULTILINE)
 assert catalog_compose, "composeBom missing from version catalog"
 compose_version = catalog_compose.group(1)
@@ -336,6 +340,60 @@ check(
     bool(claude_compose_table and claude_compose_table.group(1).strip() == compose_version),
     "CLAUDE Compose table matches version catalog",
     f"catalog={compose_version}, table={claude_compose_table.group(1).strip() if claude_compose_table else '?'}",
+)
+
+architecture_version_doc = read("docs/ARCHITECTURE.md")
+agp_consumers = {
+    "README": re.search(r"^\| AGP \| ([^|]+) \|$", readme, re.MULTILINE),
+    "CLAUDE": re.search(r"^\| AGP \| ([^|]+) \|", read("CLAUDE.md"), re.MULTILINE),
+    "Architecture": re.search(r"\bAGP ([0-9]+(?:\.[0-9]+)+),", architecture_version_doc),
+}
+check(
+    all(match and match.group(1).strip() == agp_version for match in agp_consumers.values()),
+    "all active AGP references match the version catalog",
+    ", ".join(
+        f"{label}={match.group(1).strip() if match else '?'}"
+        for label, match in agp_consumers.items()
+    ),
+)
+
+zsl_source = read("app/src/main/kotlin/me/hletrd/telecampro/camera/ZslAdmission.kt")
+zsl_age_ns_match = re.search(r"ZSL_MAX_FRAME_AGE_NS\s*=\s*([0-9_]+)L", zsl_source)
+assert zsl_age_ns_match, "ZSL_MAX_FRAME_AGE_NS missing"
+zsl_age_ns = int(zsl_age_ns_match.group(1).replace("_", ""))
+assert zsl_age_ns % 1_000_000 == 0, "ZSL frame age must be an exact millisecond fact"
+zsl_age_ms = zsl_age_ns // 1_000_000
+zsl_consumers = {
+    "CLAUDE": re.search(r"age < (\d+) ms", read("CLAUDE.md")),
+    "Architecture": re.search(r"age < (\d+) ms", architecture_version_doc),
+    "CameraEngine": re.search(
+        r"mid-clip snapshot serve a frame up to (\d+) ms old",
+        read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"),
+    ),
+}
+check(
+    all(match and int(match.group(1)) == zsl_age_ms for match in zsl_consumers.values()),
+    "active pseudo-ZSL freshness references match executable truth",
+    ", ".join(
+        f"{label}={match.group(1) + 'ms' if match else '?'}"
+        for label, match in zsl_consumers.items()
+    ),
+)
+
+normalized_architecture = re.sub(r"\s+", " ", architecture_version_doc)
+unresolved_field_references = [
+    match.group(0).strip()
+    for pattern in (
+        r"[^.]{0,160}\b(?:remains|still) open\b[^.]{0,160}FIELD_CHECKS\.md",
+        r"[^.]{0,160}FIELD_CHECKS\.md[^.]{0,160}\b(?:remains|still) open\b",
+    )
+    for match in re.finditer(pattern, normalized_architecture, re.I)
+    if re.search(r"\b[A-E]\d\b", match.group(0)) is None
+]
+check(
+    not unresolved_field_references,
+    "active open FIELD_CHECKS references name a runnable field-check identity",
+    " | ".join(unresolved_field_references),
 )
 
 for rel in (
@@ -976,16 +1034,41 @@ check(
     "committed host-gate authorities document the consolidated non-device suite",
 )
 completed_plans = []
-for plan_path in sorted((ROOT / "docs/plans").glob("*.md")):
+malformed_completed_plans = []
+plan_identity_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})-rpf-cycle(\d+)\.md$")
+for plan_path in (ROOT / "docs/plans").glob("*.md"):
     plan_text = plan_path.read_text(encoding="utf-8")
     if re.search(r"^Status:\s*complete\b", plan_text, re.M):
-        completed_plans.append((plan_path, plan_text))
-latest_completed_plan = completed_plans[-1] if completed_plans else None
+        match = plan_identity_pattern.fullmatch(plan_path.name)
+        if match is None:
+            malformed_completed_plans.append(plan_path)
+            continue
+        try:
+            plan_date = datetime.date.fromisoformat(match.group(1))
+        except ValueError:
+            malformed_completed_plans.append(plan_path)
+            continue
+        completed_plans.append(((plan_date, int(match.group(2))), plan_path, plan_text))
+check(
+    not malformed_completed_plans,
+    "completed implementation plans carry sortable date and numeric-cycle identities",
+    ", ".join(path.name for path in sorted(malformed_completed_plans)),
+)
+identity_counts: dict[tuple[datetime.date, int], int] = {}
+for identity, _, _ in completed_plans:
+    identity_counts[identity] = identity_counts.get(identity, 0) + 1
+duplicate_plan_identities = sorted(identity for identity, count in identity_counts.items() if count > 1)
+check(
+    not duplicate_plan_identities,
+    "completed implementation plan identities are unique",
+    ", ".join(f"{date.isoformat()}/cycle{cycle}" for date, cycle in duplicate_plan_identities),
+)
+latest_completed_plan = max(completed_plans, key=lambda item: item[0]) if completed_plans else None
 check(
     latest_completed_plan is not None
-    and "python3 tools/verify_host.py" in latest_completed_plan[1],
+    and "python3 tools/verify_host.py" in latest_completed_plan[2],
     "latest completed implementation plan names the authoritative host gate",
-    latest_completed_plan[0].relative_to(ROOT).as_posix() if latest_completed_plan else "none",
+    latest_completed_plan[1].relative_to(ROOT).as_posix() if latest_completed_plan else "none",
 )
 sdk_authority = read("tools/android_sdk.py")
 verify_host_source = read("tools/verify_host.py")

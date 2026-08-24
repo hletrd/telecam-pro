@@ -5,6 +5,7 @@ import io
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -63,8 +64,8 @@ def run_documentation_gate_from_committed_export(
             "docs/ARCHITECTURE.md",
             "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
+            "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
-            "docs/plans/2026-08-24-rpf-cycle33.md",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
         if mutate is not None:
@@ -319,7 +320,51 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "build field and harness workflows share one clean-clone Android SDK authority",
             result.stdout,
         )
+        self.assertIn("all active AGP references match the version catalog", result.stdout)
+        self.assertIn("active pseudo-ZSL freshness references match executable truth", result.stdout)
+        self.assertIn(
+            "active open FIELD_CHECKS references name a runnable field-check identity",
+            result.stdout,
+        )
         self.assertRegex(result.stdout, r"\d+ private checks skipped")
+
+    def test_committed_export_rejects_stale_agp_zsl_and_field_reference_facts(self) -> None:
+        fixtures = (
+            (
+                "docs/ARCHITECTURE.md",
+                "AGP 9.3.2",
+                "AGP 9.3.1",
+                "FAIL  all active AGP references match the version catalog",
+            ),
+            (
+                "CLAUDE.md",
+                "age < 400 ms",
+                "age < 250 ms",
+                "FAIL  active pseudo-ZSL freshness references match executable truth",
+            ),
+            (
+                "docs/ARCHITECTURE.md",
+                "No logical-camera bisect is scheduled in the\nexhaustive committed `docs/FIELD_CHECKS.md` ledger",
+                "A logical-camera bisect remains open in the\ncommitted `docs/FIELD_CHECKS.md`",
+                "FAIL  active open FIELD_CHECKS references name a runnable field-check identity",
+            ),
+        )
+        for relative, current, stale, failure in fixtures:
+            with self.subTest(relative=relative, failure=failure):
+                def make_stale(
+                    root: Path,
+                    relative: str = relative,
+                    current: str = current,
+                    stale: str = stale,
+                ) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(make_stale)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(failure, result.stdout)
 
     def test_committed_export_rejects_a_stale_release_minification_comment(self) -> None:
         def claim_release_minification_is_off(root: Path) -> None:
@@ -343,8 +388,19 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         )
 
     def test_committed_export_rejects_a_completed_plan_without_authoritative_host_evidence(self) -> None:
+        baseline, _ = run_documentation_gate_from_committed_export()
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+
         def remove_authoritative_command(root: Path) -> None:
-            path = root / "docs/plans/2026-08-24-rpf-cycle33.md"
+            completed = []
+            pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})-rpf-cycle(\d+)\.md$")
+            for path in (root / "docs/plans").glob("*.md"):
+                text = path.read_text(encoding="utf-8")
+                match = pattern.fullmatch(path.name)
+                if match and re.search(r"^Status:\s*complete\b", text, re.M):
+                    completed.append(((match.group(1), int(match.group(2))), path))
+            self.assertTrue(completed)
+            path = max(completed, key=lambda item: item[0])[1]
             text = path.read_text(encoding="utf-8")
             self.assertIn("python3 tools/verify_host.py", text)
             path.write_text(
@@ -359,6 +415,67 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "FAIL  latest completed implementation plan names the authoritative host gate",
             result.stdout,
         )
+
+    def test_completed_plan_ordering_uses_date_then_numeric_cycle(self) -> None:
+        cases = (
+            ("2099-01-01-rpf-cycle9.md", "2099-01-01-rpf-cycle10.md"),
+            ("2099-01-01-rpf-cycle99.md", "2099-01-01-rpf-cycle100.md"),
+            ("2099-01-01-rpf-cycle100.md", "2099-01-02-rpf-cycle1.md"),
+        )
+        for older, newer in cases:
+            with self.subTest(older=older, newer=newer):
+                def add_ordering_fixture(root: Path, older: str = older, newer: str = newer) -> None:
+                    plans = root / "docs/plans"
+                    (plans / older).write_text(
+                        "Status: complete\npython3 tools/verify_host.py\n",
+                        encoding="utf-8",
+                    )
+                    (plans / newer).write_text("Status: complete\n", encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(add_ordering_fixture)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  latest completed implementation plan names the authoritative host gate",
+                    result.stdout,
+                )
+                self.assertIn(newer, result.stdout)
+
+    def test_incomplete_newer_plan_does_not_replace_completed_evidence(self) -> None:
+        def add_incomplete_plan(root: Path) -> None:
+            (root / "docs/plans/2099-01-01-rpf-cycle100.md").write_text(
+                "Status: in progress\n",
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(add_incomplete_plan)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_malformed_or_ambiguous_completed_plan_identity_fails_closed(self) -> None:
+        def add_malformed(root: Path) -> None:
+            (root / "docs/plans/2099-01-01-rpf-cycleoops.md").write_text(
+                "Status: complete\npython3 tools/verify_host.py\n",
+                encoding="utf-8",
+            )
+
+        malformed, _ = run_documentation_gate_from_committed_export(add_malformed)
+        self.assertNotEqual(malformed.returncode, 0, malformed.stdout + malformed.stderr)
+        self.assertIn(
+            "FAIL  completed implementation plans carry sortable date and numeric-cycle identities",
+            malformed.stdout,
+        )
+
+        def add_ambiguous(root: Path) -> None:
+            for name in ("2099-01-01-rpf-cycle99.md", "2099-01-01-rpf-cycle099.md"):
+                (root / f"docs/plans/{name}").write_text(
+                    "Status: complete\npython3 tools/verify_host.py\n",
+                    encoding="utf-8",
+                )
+
+        ambiguous, _ = run_documentation_gate_from_committed_export(add_ambiguous)
+        self.assertNotEqual(ambiguous.returncode, 0, ambiguous.stdout + ambiguous.stderr)
+        self.assertIn("FAIL  completed implementation plan identities are unique", ambiguous.stdout)
 
     def test_committed_export_rejects_mandatory_absent_private_context(self) -> None:
         def require_private_context(root: Path) -> None:

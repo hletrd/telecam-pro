@@ -4079,7 +4079,7 @@ class CameraEngine internal constructor(
                         // the "never during REC" half of that invariant must be spelled out rather
                         // than left to the fact that video happens to route to a standalone camera
                         // today — a debug camera override (or the backlogged logical-video move)
-                        // would otherwise let a mid-clip snapshot serve a frame up to 250 ms old.
+                        // would otherwise let a mid-clip snapshot serve a frame up to 400 ms old.
                         allowZsl = !singleShot,
                     )
                 }

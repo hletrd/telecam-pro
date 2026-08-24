@@ -65,7 +65,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Loupe Overview intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. Motion arming, provider, and evidence epoch publish as one atomic replay record. |
 | `StandbyAudioController.kt` | Owns the armed-video standby meter lifecycle, bounded AudioRecord recreation, and exact `StandbyMeterOwnership` handoff to REC. All engine dependencies are live lambdas so a retired meter generation cannot reclaim a newer intent. |
 | `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
-| `ZslAdmission.kt` | Pure serve/refuse predicate for the LOGICAL/FRONT-route pseudo-ZSL ring: a buffered frame is served only when its ACTUAL sensor values match the still's INTENDED values within 1/6 stop (plus zoom within 2%, age < 250 ms, app-side AE-OFF, processed-only, no AE-flash, no live gesture, SINGLE drive). Refusal in low light is the DESIGN — the fluidity cap deliberately diverges preview from intent there, so a real full-quality capture must run (see CLAUDE.md). |
+| `ZslAdmission.kt` | Pure serve/refuse predicate for the LOGICAL/FRONT-route pseudo-ZSL ring: a buffered frame is served only when its ACTUAL sensor values match the still's INTENDED values within 1/6 stop (plus zoom within 2%, age < 400 ms, app-side AE-OFF, processed-only, no AE-flash, no live gesture, SINGLE drive). Refusal in low light is the DESIGN — the fluidity cap deliberately diverges preview from intent there, so a real full-quality capture must run (see CLAUDE.md). |
 | `StartupTrace.kt` | Debug-only cold-start stopwatch against a `resume`-origin clock. BUFFERS its marks and emits ONE line at `finish()` because ColorOS's 300-row per-process log quota silently eats per-mark logging; armed idempotently in `CameraEngine.resume` and disarmed on every path that returns without a real open. |
 | `Teleconverter.kt` | The optics catalog as a PAIR: `PhoneModel` and compatible `TeleconverterProfile`s. `detectPhone(Build.MODEL)` is catalog preselection only; `DeviceProfile.resolve` is the other sanctioned model seam and gates measured quirks. Camera capabilities/routes remain enumerated. |
 | `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
@@ -583,8 +583,10 @@ freezes its UPWARD motion (`previewBrightnessSimulationSaturated`) because the m
 longer represent the intent. S/ISO/M previews are therefore brightness-accurate up to that bound but
 deliberately NOT noise/motion-blur-WYSIWYG (the alternative is a sub-1 fps viewfinder). The 4 s ceiling was
 bisected on the standalone TELE camera only and is applied to EVERY route as a conservative
-assumption. A logical-camera bisect remains open in the committed `docs/FIELD_CHECKS.md`; the
-optional private `docs/BACKLOG.md`, when present, may carry additional maintainer history.
+assumption. The standalone TELE bisect is the only direct device evidence: the logical-camera route
+remains conservatively clamped but unmeasured. No logical-camera bisect is scheduled in the
+exhaustive committed `docs/FIELD_CHECKS.md` ledger; do not describe this cross-route policy as direct
+device proof. The optional private `docs/BACKLOG.md`, when present, may carry maintainer history.
 
 **Telephoto detection (CameraSelector2.select):**
 - Enumerates all cameras and picks the one with focal length **closest to 70 mm** (not the longest; the 230 mm 10× is ruled out).
@@ -1248,7 +1250,7 @@ All values clamped to hardware ranges (CameraCaps gates what's supported).
 See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup details.
 
 **Quick reference:**
-- Kotlin / Compose compiler 2.4.10, AGP 9.3.1, Gradle 9.7.1
+- Kotlin / Compose compiler 2.4.10, AGP 9.3.2, Gradle 9.7.1
 - Android SDK Platform / compileSdk 37; targetSdk 36 / minSdk 33 (API 36 is Android 16; API 33 is Android 13, the floor since the 2026-08-01 multi-device decision)
 - SDK Build Tools 36.0.0 (the AGP 9.3 default); compile and runtime API levels are intentionally decoupled
 - JDK 21 required; set JAVA_HOME for CLI builds

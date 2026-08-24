@@ -217,7 +217,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   presses at 0 ms delivery lag**; a dark M-mode 2 s shot served **none** and ran a real capture whose
   EXIF read a true 2.0 s. **The dark refusal is the DESIGN, not a gap — the user has explicitly
   accepted it.** `ZslAdmission.kt` admits a buffered frame only when its ACTUAL sensor values match
-  the still's INTENDED values within 1/6 stop (plus zoom within 2 %, age < 250 ms, app-side AE-OFF,
+  the still's INTENDED values within 1/6 stop (plus zoom within 2 %, age < 400 ms, app-side AE-OFF,
   processed-only, no AE-flash, no live gesture); in low light the fluidity cap deliberately diverges
   the preview from intent, so admission MUST fail and a full-quality real capture MUST run. **Do not
   "fix" the dark path by widening the tolerance** — that silently trades the user's exposure for
