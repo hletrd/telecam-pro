@@ -872,6 +872,10 @@ internal fun <T> DropdownRow(
                             maxLines = 2,
                             softWrap = true,
                             overflow = TextOverflow.Ellipsis,
+                            // Claim the menu item's text slot explicitly. In RTL, intrinsic-only
+                            // measurement can otherwise collapse this slot to 18 px beside the
+                            // Material menu padding even though the popup has room for both lines.
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     },
                     onClick = {
@@ -907,7 +911,10 @@ private fun DropdownSelectedValue(
             softWrap = stacked,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.End,
-            modifier = Modifier.weight(1f, fill = false),
+            // Fill the weighted slot. `fill = false` lets the RTL/intrinsic pass collapse this
+            // text to the caret's residual minimum (18 px in the compact 2x-font fixture), so the
+            // glyphs overflow even though the trigger itself owns ample width.
+            modifier = Modifier.weight(1f),
         )
         Spacer(modifier = Modifier.width(6.dp))
         DropdownCaret(color = color)

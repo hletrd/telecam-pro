@@ -99,7 +99,14 @@ class DropdownResponsiveComposeTest {
             assertTrue("text layout action refused", action(layouts))
         }
         assertEquals(1, layouts.size)
-        assertTrue("text had visual overflow", !layouts.single().hasVisualOverflow)
+        val layout = layouts.single()
+        val ellipsized = (0 until layout.lineCount).filter(layout::isLineEllipsized)
+        assertTrue(
+            "text had visual overflow: size=${layout.size} lines=${layout.lineCount} " +
+                "width=${layout.didOverflowWidth} height=${layout.didOverflowHeight} " +
+                "ellipsized=$ellipsized",
+            !layout.hasVisualOverflow,
+        )
     }
 
     private fun assertStackedTrigger(label: String) {
