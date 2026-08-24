@@ -949,6 +949,30 @@ check(
     "device harness requires the printed clean-or-dirty immutable debug artifact",
 )
 
+# Keep the harness's non-coverage inventory honest about the distinction between an asserted case,
+# a diagnostic instrumented probe, and device evidence that is already closed. The old text said an
+# instrumented pinch test was future work even though the probe existed, then called manually closed
+# front mirror/rotation signs verification-pending.
+pinch_probe = read(
+    "app/src/androidTest/kotlin/me/hletrd/telecampro/PinchGestureProbeTest.kt"
+)
+known_noncoverage = device_test_readme.split("## Known non-coverage (deliberate)", 1)[1]
+check(
+    "PinchGestureProbeTest" in known_noncoverage
+    and "diagnostic rather than a pass/fail test" in known_noncoverage
+    and "pinch feel remains" in known_noncoverage
+    and "Instrumented Espresso tests could add this later" not in known_noncoverage
+    and "automated subject-text mirror assertion" in known_noncoverage
+    and "already device-verified" in known_noncoverage
+    and "not sign verification" in known_noncoverage
+    and "verification-pending" not in known_noncoverage
+    and "MotionEvent.ACTION_POINTER_DOWN" in pinch_probe
+    and "injectInputEvent" in pinch_probe
+    and "Front stills were confirmed unreversed on device" in field_checks
+    and "front capture-ROTATION sign is DEVICE-VERIFIED" in architecture,
+    "device harness non-coverage distinguishes probes from closed device evidence",
+)
+
 # Exact UI names come from resources, not from a second hand-maintained spelling in prose. The
 # screenshot validity manifest already treats the superseded pair as blocking; current architecture
 # UX policy, QA runbook, and device selectors must therefore use the same resource-backed names.

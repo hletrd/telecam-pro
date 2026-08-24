@@ -56,6 +56,7 @@ def run_documentation_gate_from_committed_export(
             "CLAUDE.md",
             "privacy-policy/index.html",
             "docs/ARCHITECTURE.md",
+            "device-tests/README.md",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
         if mutate is not None:
@@ -340,6 +341,50 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  committed submission sheet matches phone screenshot readiness",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_a_missing_current_pinch_probe(self) -> None:
+        def erase_pinch_probe(root: Path) -> None:
+            path = root / "device-tests/README.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "`PinchGestureProbeTest` injects a real two-pointer gesture"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "An instrumented test could be added later", 1),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(erase_pinch_probe)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  device harness non-coverage distinguishes probes from closed device evidence",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_reopening_verified_front_signs(self) -> None:
+        def reopen_front_signs(root: Path) -> None:
+            path = root / "device-tests/README.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "The PMA110 mirror and capture-rotation signs are\n  already device-verified"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(
+                    marker,
+                    "The PMA110 mirror and capture-rotation signs stay\n  verification-pending",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(reopen_front_signs)
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  device harness non-coverage distinguishes probes from closed device evidence",
             result.stdout,
         )
 

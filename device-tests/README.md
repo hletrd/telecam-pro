@@ -185,18 +185,21 @@ present; the smoke command with that flag is the intentional cold-start path.
 
 ## Known non-coverage (deliberate)
 
-- Real two-finger pinch (adb cannot inject multitouch) — zoom is exercised via presets;
-  pinch feel needs a human. Instrumented Espresso tests could add this later.
+- The external adb harness cannot inject multitouch, so its asserted zoom cases use presets.
+  `PinchGestureProbeTest` injects a real two-pointer gesture through instrumented UiAutomation and
+  logs zoom/frame-gap evidence, but it is diagnostic rather than a pass/fail test; pinch feel remains
+  a human judgment.
 - Hardware camera-control button (`adb input keyevent` does not reach the app — device fact).
 - Manual-exposure LONG shots (S/M-mode 4 s ceiling): still a human/host concern — the 4 s
   HAL ceiling clamps are host-tested in `app/src/test/`. `tele_dng_parity` (cycle 7) does
   drive the ISO/shutter rulers with closed-loop tick drags (readout re-read after every
   swipe; probed 42 px/stop, ~28 px slop, LEFT = higher), but only to short, safe stops.
-- Front (selfie) camera mirror/rotation SIGNS — `per_lens_still_geometry` now automates the
-  front flip, capture, geometry, and accepted-route facts (cycle 7), but the saved-still
-  MIRROR truth (unmirrored subject text) remains a human check: it was manually QA-verified
-  2026-07-23 (`.context/reviews/qa-adversary.md`) and the signs stay verification-pending in
-  `docs/BACKLOG.md`.
+- Front (selfie) camera automated subject-text mirror assertion — `per_lens_still_geometry`
+  automates the front flip, capture, geometry, and accepted-route facts (cycle 7), but it cannot
+  judge whether saved subject text is reversed. The PMA110 mirror and capture-rotation signs are
+  already device-verified: saved-still mirror truth was manually confirmed 2026-07-23, and held
+  front capture rotation was device-verified 2026-07-25. The remaining gap is an automated
+  legible-subject oracle, not sign verification.
 - Hi-res (200 MP remosaic) stills — dormant on PMA110: the capability is not exposed to
   third-party Camera2 (probed 2026-07-22, see CLAUDE.md), so there is nothing on this device
   for a case to exercise. The admission seams are host-tested in `app/src/test/`.
