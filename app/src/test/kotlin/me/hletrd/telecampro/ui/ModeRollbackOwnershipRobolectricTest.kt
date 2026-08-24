@@ -14,6 +14,8 @@ import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.CodecInventory
+import me.hletrd.telecampro.video.encoderSelectionAdmitsTransfer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -40,17 +42,19 @@ class ModeRollbackOwnershipRobolectricTest {
         vm = viewModel
         // Drain constructor-time capability publication before installing the accepted fixture.
         shadowOf(Looper.getMainLooper()).idle()
-        engine.setVideoEncoders(
-            listOf(
-                EncoderSelection(
-                    VideoCodec.HEVC,
-                    "test-main10",
-                    MediaFormat.MIMETYPE_VIDEO_HEVC,
-                    hardwareAccelerated = true,
-                    main10 = true,
-                ),
-            ),
+        // Keep a late real-platform inventory callback from overwriting the deterministic fixture.
+        setBoolean(viewModel, "cleared", true)
+        val main10 = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-main10",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
         )
+        engine.setVideoEncoders(listOf(main10))
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(main10),
+        )))
         val controller = CameraController(app)
         setField(engine, "controller", controller)
         setField(engine, "readyController", controller)
@@ -58,6 +62,7 @@ class ModeRollbackOwnershipRobolectricTest {
         setBoolean(engine, "previewReady", true)
         setBoolean(engine, "videoMode", mode == CaptureMode.VIDEO)
         setField(engine, "transfer", acceptedTransfer)
+        setField(engine, "requestedVideoTransfer", requestedTransfer)
         setBoolean(viewModel, "lifecycleStarted", true)
         state(viewModel).value = state(viewModel).value.copy(
             cameraReady = true,
@@ -65,16 +70,26 @@ class ModeRollbackOwnershipRobolectricTest {
             transfer = requestedTransfer,
             videoCodec = VideoCodec.HEVC,
             tenBitEncodeAvailable = true,
+            encoderInventoryLoaded = true,
+            availableVideoCodecs = listOf(VideoCodec.HEVC),
             recordAudio = true,
         )
         viewModel.onStandbyAudioMeterVisibilityChanged(true)
         return viewModel to engine
     }
 
-    private fun forceOwnedRollback(engine: CameraEngine, acceptedTransfer: ColorTransfer) {
+    private fun forceOwnedRollback(
+        engine: CameraEngine,
+        acceptedTransfer: ColorTransfer,
+        requestedTransfer: ColorTransfer = acceptedTransfer,
+    ) {
         val generation = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
         val baseline = checkNotNull(field(engine, "opticsRollbackBaseline"))
         assertEquals(acceptedTransfer, field(baseline, "transfer"))
+        assertEquals(
+            requestedTransfer,
+            field(checkNotNull(field(baseline, "videoPipeline")), "requestedTransfer"),
+        )
         val transactionType = CameraEngine::class.java.declaredClasses
             .single { it.simpleName == "OpticsTransaction" }
         val transaction = transactionType.declaredConstructors.single()
@@ -84,6 +99,7 @@ class ModeRollbackOwnershipRobolectricTest {
             .apply { isAccessible = true }
             .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
         assertEquals(acceptedTransfer, engineTransfer(engine))
+        assertEquals(requestedTransfer, field(engine, "requestedVideoTransfer"))
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -138,7 +154,7 @@ class ModeRollbackOwnershipRobolectricTest {
         )
         assertTrue(standbyWanted(engine))
 
-        forceOwnedRollback(engine, ColorTransfer.SDR)
+        forceOwnedRollback(engine, ColorTransfer.SDR, ColorTransfer.HLG)
 
         assertEquals(CaptureMode.PHOTO, viewModel.state.value.mode)
         assertEquals(ColorTransfer.SDR, engineTransfer(engine))
@@ -148,14 +164,14 @@ class ModeRollbackOwnershipRobolectricTest {
 
     @Test
     fun `failed direct transfer reopen restores the accepted pre-mutation transfer`() {
-        val (_, engine) = createAccepted(
+        val (viewModel, engine) = createAccepted(
             CaptureMode.VIDEO,
             acceptedTransfer = ColorTransfer.SDR,
             requestedTransfer = ColorTransfer.SDR,
         )
         val generationBefore = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
 
-        engine.setTransfer(ColorTransfer.HLG)
+        viewModel.onTransfer(ColorTransfer.HLG)
 
         assertEquals(ColorTransfer.HLG, engineTransfer(engine))
         assertEquals(
@@ -164,6 +180,64 @@ class ModeRollbackOwnershipRobolectricTest {
         )
         forceOwnedRollback(engine, ColorTransfer.SDR)
         assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertEquals(ColorTransfer.SDR, viewModel.state.value.transfer)
+        assertEquals(VideoCodec.HEVC, viewModel.state.value.videoCodec)
+        assertTrue(engineReady(engine))
+    }
+
+    @Test
+    fun `failed HLG to SDR reopen restores visible and active HLG`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+
+        viewModel.onTransfer(ColorTransfer.SDR)
+
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        forceOwnedRollback(engine, ColorTransfer.HLG)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertEquals(ColorTransfer.HLG, viewModel.state.value.transfer)
+        assertTrue(engineReady(engine))
+    }
+
+    @Test
+    fun `failed HEVC HLG to AVC SDR restores complete encoder tuple`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+        val hevc = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-main10",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val avc = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(hevc),
+            VideoCodec.AVC to listOf(avc),
+        )))
+        state(viewModel).value = state(viewModel).value.copy(
+            encoderInventoryLoaded = true,
+            availableVideoCodecs = listOf(VideoCodec.HEVC, VideoCodec.AVC),
+        )
+
+        viewModel.onVideoCodec(VideoCodec.AVC)
+
+        assertEquals(VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        forceOwnedRollback(engine, ColorTransfer.HLG)
+        assertEquals(VideoCodec.HEVC, field(engine, "videoCodec"))
+        assertEquals(listOf(hevc), field(engine, "videoEncoderCandidates"))
+        assertEquals(
+            listOf(hevc),
+            (field(engine, "videoEncoderCandidates") as List<*>).filterIsInstance<EncoderSelection>()
+                .filter { encoderSelectionAdmitsTransfer(it, engineTransfer(engine)) },
+        )
+        assertEquals(VideoCodec.HEVC, viewModel.state.value.videoCodec)
+        assertEquals(ColorTransfer.HLG, viewModel.state.value.transfer)
         assertTrue(engineReady(engine))
     }
 

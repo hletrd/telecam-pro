@@ -293,6 +293,8 @@ class CameraEngine internal constructor(
     // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
     @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
     @Volatile private var transfer = ColorTransfer.HLG
+    /** Operator's next-Video curve; Photo keeps this while its active GL/Camera2 transfer is SDR. */
+    @Volatile private var requestedVideoTransfer = ColorTransfer.HLG
     // Latest controller-published GL brightness-simulation gain (see wireController), cached so a
     // replacement GL generation is re-seeded with the live value in the gl.start callback —
     // GlPipeline drops posts before start, and the controller's change gate won't republish.
@@ -473,10 +475,18 @@ class CameraEngine internal constructor(
         seedGlZoom()
     }
 
+    private data class VideoPipelineSelection(
+        val codec: VideoCodec,
+        val candidates: List<EncoderSelection>,
+        val requestedTransfer: ColorTransfer,
+        val activeTransfer: ColorTransfer,
+    )
+
     private data class OpticsSnapshot(
         val videoMode: Boolean,
         /** Exact accepted Engine/GL transfer; mode changes derive this optimistically. */
         val transfer: ColorTransfer,
+        val videoPipeline: VideoPipelineSelection,
         val lens: LensChoice,
         val teleconverter: Boolean,
         val facing: CameraFacing,
@@ -544,6 +554,12 @@ class CameraEngine internal constructor(
     private fun currentOpticsSnapshot(): OpticsSnapshot = OpticsSnapshot(
         videoMode = videoMode,
         transfer = transfer,
+        videoPipeline = VideoPipelineSelection(
+            codec = videoCodec,
+            candidates = videoEncoderCandidates,
+            requestedTransfer = requestedVideoTransfer,
+            activeTransfer = transfer,
+        ),
         lens = lensChoice,
         teleconverter = teleconverterMode,
         facing = facing,
@@ -771,6 +787,9 @@ class CameraEngine internal constructor(
         // setTransfer() would interpret this as a fresh session request and could reopen the
         // already-restored controller while rollback is publishing Ready.
         transfer = before.transfer
+        requestedVideoTransfer = before.videoPipeline.requestedTransfer
+        videoCodec = before.videoPipeline.codec
+        videoEncoderCandidates = before.videoPipeline.candidates
         if (recorder == null) gl.setTransfer(before.transfer)
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
@@ -800,6 +819,8 @@ class CameraEngine internal constructor(
         onOpticsRollback?.invoke(
             OpticsRollbackPublication(
                 mode = restored.mode,
+                transfer = before.videoPipeline.requestedTransfer,
+                videoCodec = before.videoPipeline.codec,
                 lens = restored.lens,
                 teleconverter = restored.teleconverter,
                 facing = restored.facing,
@@ -2206,6 +2227,7 @@ class CameraEngine internal constructor(
             beginOpticsTransaction {
                 videoMode = enabled
                 transfer = targetTransfer
+                if (enabled) requestedVideoTransfer = resolvedTransfer
                 lensChoice = resolvedLens
                 controls = modeControls
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
@@ -2217,6 +2239,7 @@ class CameraEngine internal constructor(
             synchronized(this) {
                 videoMode = enabled
                 transfer = targetTransfer
+                if (enabled) requestedVideoTransfer = resolvedTransfer
                 lensChoice = resolvedLens
                 controls = modeControls
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
@@ -2331,6 +2354,8 @@ class CameraEngine internal constructor(
         resolvedPhotoExposureTimeNs: Long,
         recalledVideoSize: Size?,
         resolvedTransfer: ColorTransfer,
+        resolvedVideoCodec: VideoCodec,
+        resolvedVideoEncoderCandidates: List<EncoderSelection>,
     ): Boolean {
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
         val declaration = teleconverterDeclaration(
@@ -2357,6 +2382,11 @@ class CameraEngine internal constructor(
         )
         val transaction = beginOpticsTransaction {
             videoMode = enabledVideo
+            requestedVideoTransfer = resolvedTransfer
+            videoCodec = resolvedVideoCodec
+            videoEncoderCandidates = resolvedVideoEncoderCandidates
+                .filter { it.codec == resolvedVideoCodec }
+                .distinctBy { it.codecName }
             transfer = if (enabledVideo) resolvedTransfer else ColorTransfer.SDR
             lensChoice = resolvedLens
             teleconverterMode = routeTeleconverter
@@ -2471,38 +2501,55 @@ class CameraEngine internal constructor(
      * for the next recording; stopRecording/pause re-apply it). See docs/reviews record-pipeline #4.
      */
     fun setTransfer(t: ColorTransfer) {
-        val resolved = if (videoCodec == VideoCodec.HEVC) {
-            if (t == ColorTransfer.SDR || videoEncoderCandidates.any { it.main10 }) t
-            else ColorTransfer.SDR
+        setVideoPipeline(videoEncoderCandidates, t, fallbackCodec = videoCodec)
+    }
+
+    /**
+     * One immutable codec/candidate/curve command. A source-precision boundary change owns one
+     * optics generation, and rollback restores this complete tuple rather than a hybrid pipeline.
+     */
+    fun setVideoPipeline(
+        candidates: List<EncoderSelection>,
+        requestedTransfer: ColorTransfer,
+        fallbackCodec: VideoCodec = videoCodec,
+    ) {
+        val codec = candidates.firstOrNull()?.codec ?: fallbackCodec
+        val normalizedCandidates = candidates
+            .filter { it.codec == codec }
+            .distinctBy { it.codecName }
+        val resolved = if (codec == VideoCodec.HEVC) {
+            if (
+                requestedTransfer == ColorTransfer.SDR ||
+                normalizedCandidates.any { it.main10 }
+            ) requestedTransfer else ColorTransfer.SDR
         } else {
             ColorTransfer.SDR
         }
-        val previousTransfer = transfer
-        // Log = a GL-baked standard curve (proven architecture, inherited from the removed O-Log2
-        // option). The native com.oplus.log.video.mode key was tried twice and is effectively INERT
-        // for a third-party Camera2 session: the HAL accepts it ("applied" logs) but neither the
-        // preview nor the RECORDED stream is scene-referred — device-tested 2026-07-09 with
-        // TEMPLATE_PREVIEW and TEMPLATE_RECORD repeating requests (the clip came out plain 709; the
-        // earlier "file looked log" was the BT.2020 full-range container tag being misread by
-        // players as a washed look). So the GL path stays: encoder gets the selected curve, the
-        // preview shows it flat, and Gamma Display Assist shows the normal display-referred image
-        // instead. The debug-only native-log experiment that used to sit here, and the vendor
-        // request key it drove, were REMOVED 2026-08-04: they existed to keep a scene-referred
-        // vendor stream reachable, and that path is now declined, so the experiment could never
-        // have graduated into anything.
-        // The transfer is a SESSION input (it decides 10-bit), not just a GL/encoder setting, so
-        // a change that flips that answer has to reconfigure or the new curve rides the old buffers.
-        val tenBitChanged = tenBitSessionWanted(videoMode, previousTransfer) !=
-            tenBitSessionWanted(videoMode, resolved)
+        val activeTransfer = if (videoMode) resolved else ColorTransfer.SDR
+        val targetPipeline = VideoPipelineSelection(
+            codec = codec,
+            candidates = normalizedCandidates,
+            requestedTransfer = resolved,
+            activeTransfer = activeTransfer,
+        )
+        val tenBitChanged = tenBitSessionWanted(videoMode, transfer) !=
+            tenBitSessionWanted(videoMode, activeTransfer)
+        val publish = {
+            videoCodec = targetPipeline.codec
+            videoEncoderCandidates = targetPipeline.candidates
+            requestedVideoTransfer = targetPipeline.requestedTransfer
+            transfer = targetPipeline.activeTransfer
+        }
         if (tenBitChanged && recorder == null) {
-            val transaction = beginOpticsTransaction { transfer = resolved }.first
-            gl.setTransfer(resolved)
+            val transaction = beginOpticsTransaction(publish).first
+            gl.setTransfer(activeTransfer)
             reopenForSession(transaction)
         } else {
-            transfer = resolved
-            if (recorder == null) gl.setTransfer(resolved)
+            synchronized(this) { publish() }
+            if (recorder == null) gl.setTransfer(activeTransfer)
         }
     }
+
     fun setPeaking(enabled: Boolean) {
         rendererAssists.setPeaking(enabled)
     }
@@ -2854,23 +2901,16 @@ class CameraEngine internal constructor(
     }
     fun setIntervalSec(s: Int) { intervalSec = normalizeTimelapseIntervalSeconds(s) }
     fun setVideoCodec(c: VideoCodec) {
-        videoCodec = c
-        if (videoEncoderCandidates.any { it.codec != c }) videoEncoderCandidates = emptyList()
-        if (c != VideoCodec.HEVC && transfer != ColorTransfer.SDR) setTransfer(ColorTransfer.SDR)
+        setVideoPipeline(
+            candidates = videoEncoderCandidates.filter { it.codec == c },
+            requestedTransfer = requestedVideoTransfer,
+            fallbackCodec = c,
+        )
     }
 
     /** Installs every exact component eligible for the selected codec/transfer, in attempt order. */
     fun setVideoEncoders(candidates: List<EncoderSelection>) {
-        val codec = candidates.firstOrNull()?.codec
-        videoEncoderCandidates = if (codec == null) {
-            emptyList()
-        } else {
-            candidates.filter { it.codec == codec }.distinctBy { it.codecName }
-        }
-        codec?.let { videoCodec = it }
-        if (codec != null && codec != VideoCodec.HEVC && transfer != ColorTransfer.SDR) {
-            setTransfer(ColorTransfer.SDR)
-        }
+        setVideoPipeline(candidates, requestedVideoTransfer)
     }
     fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
 

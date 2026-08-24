@@ -305,6 +305,13 @@ Accessed from GL + audio/video threads:
   commit as one state. A rejected same-route terminal commit queues reconfiguration only when its
   optics intent still owns convergence; superseded work remains a no-op. External callbacks run after
   unlocking.
+- **Video-pipeline transaction packet**: codec, exact ordered encoder candidates, the operator's
+  retained next-Video transfer, and the active Camera2/GL transfer are snapshotted as one immutable
+  selection inside every optics baseline. Interactive codec/transfer changes use one Engine command;
+  settings/MR installs the same packet inside `setResolvedOptics`. A failed source-precision reopen
+  restores the complete Engine tuple and publishes codec plus retained transfer to the ViewModel
+  before settings persistence, so Ready/REC can never observe AVC candidates with HLG source truth
+  or UI HLG over an accepted SDR session.
 - **Ready publication ordering**: every Ready/Not-Ready event carries a monotonic publication sequence.
   The ViewModel compares it again inside the StateFlow reducer, closing the check-to-write race so an
   older Ready event cannot overwrite newer Not-Ready state.

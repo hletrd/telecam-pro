@@ -22,6 +22,9 @@ internal data class AcceptedOpticsAuxState(
 /** Complete Engine -> UI rollback publication for one generation-owned optics transaction. */
 data class OpticsRollbackPublication(
     val mode: CaptureMode,
+    /** Restored next-Video selection, distinct from Photo's active SDR session transfer. */
+    val transfer: ColorTransfer,
+    val videoCodec: VideoCodec,
     val lens: LensChoice,
     val teleconverter: Boolean,
     val facing: CameraFacing,

@@ -934,6 +934,8 @@ class CameraViewModel private constructor(
                 _state.update {
                     it.copy(
                         mode = rollback.mode,
+                        transfer = rollback.transfer,
+                        videoCodec = rollback.videoCodec,
                         lens = rollback.lens,
                         teleconverterMode = rollback.teleconverter,
                         facing = rollback.facing,
@@ -1375,6 +1377,11 @@ class CameraViewModel private constructor(
             },
         ).normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
+        val restoredVideoCandidates = if (inventoryLoaded) {
+            encoderInventory.candidatesFor(safeCodec, safeTransfer)
+        } else {
+            emptyList()
+        }
         // Converter declaration, resolution, and hidden Photo exposure join ONE optics transaction.
         // A synchronous REC refusal mutates none of them; an asynchronous failure restores the
         // complete phone/profile/custom/host packet from the generation-owned baseline.
@@ -1386,7 +1393,9 @@ class CameraViewModel private constructor(
             resolvedControls = cSynced,
             resolvedPhotoExposureTimeNs = photoExposureTimeNs,
             recalledVideoSize = restoredVideoSize,
-            resolvedTransfer = if (e.mode == CaptureMode.VIDEO) safeTransfer else ColorTransfer.SDR,
+            resolvedTransfer = safeTransfer,
+            resolvedVideoCodec = safeCodec,
+            resolvedVideoEncoderCandidates = restoredVideoCandidates,
         )
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
@@ -1411,13 +1420,6 @@ class CameraViewModel private constructor(
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(exposureAnalysisRequired(cSynced))
-        if (inventoryLoaded) {
-            engine.setVideoEncoders(
-                encoderInventory.candidatesFor(safeCodec, safeTransfer),
-            )
-        } else {
-            engine.setVideoCodec(safeCodec)
-        }
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
@@ -1658,23 +1660,6 @@ class CameraViewModel private constructor(
         // decorator calling through after a grant) cannot regress review state. Without media
         // access the query still returns this install's own rows — same behavior as launch.
         restoreLatestPublishedCapture()
-    }
-
-    private fun applyEngineTransfer(
-        mode: CaptureMode = _state.value.mode,
-        transfer: ColorTransfer = _state.value.transfer,
-        codec: VideoCodec = _state.value.videoCodec,
-        tenBitEncodeAvailable: Boolean = _state.value.tenBitEncodeAvailable,
-    ) {
-        // Gamma/Log monitoring is a VIDEO concern. Keeping O-Log selected for the next clip must not
-        // make the still-photo viewfinder look flat/log.
-        //
-        // Normalized HERE as well as at the state writers because this is the one choke point every
-        // writer funnels through — seed, settings restore, the live picker, and MR recall alike. A
-        // gamma the encoder cannot honestly carry must never reach the wire regardless of which of
-        // them produced it.
-        val safe = transfer.normalizedForEncoder(codec, tenBitEncodeAvailable)
-        engine.setTransfer(if (mode == CaptureMode.VIDEO) safe else ColorTransfer.SDR)
     }
 
     private fun publishStatus(status: CameraStatus?) {
@@ -2357,11 +2342,14 @@ class CameraViewModel private constructor(
         )
         if (!current.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
         if (current.encoderInventoryLoaded) {
-            engine.setVideoEncoders(
+            engine.setVideoPipeline(
                 encoderInventory.candidatesFor(current.videoCodec, safeTransfer),
+                safeTransfer,
+                current.videoCodec,
             )
+        } else {
+            engine.setTransfer(safeTransfer)
         }
-        applyEngineTransfer(current.mode, safeTransfer, current.videoCodec)
         _state.update { it.copy(transfer = safeTransfer) }
         markChanged(FnSlot.TRANSFER)
         scheduleSettingsSave()
@@ -2617,12 +2605,10 @@ class CameraViewModel private constructor(
             inventory.tenBitEncodeAvailable,
         )
         val safeFormats = requestedFormats.normalizedForEncoder(inventory.heifEncodeAvailable)
-        engine.setVideoEncoders(inventory.candidatesFor(safeCodec, safeTransfer))
-        applyEngineTransfer(
-            before.mode,
+        engine.setVideoPipeline(
+            inventory.candidatesFor(safeCodec, safeTransfer),
             safeTransfer,
             safeCodec,
-            inventory.tenBitEncodeAvailable,
         )
         engine.setRawWanted(safeFormats.dngRaw)
         _state.update {
@@ -2875,8 +2861,7 @@ class CameraViewModel private constructor(
         )
         val candidates = encoderInventory.candidatesFor(codec, safeTransfer)
         if (candidates.isEmpty()) return
-        engine.setVideoEncoders(candidates)
-        applyEngineTransfer(current.mode, safeTransfer, codec)
+        engine.setVideoPipeline(candidates, safeTransfer, codec)
         _state.update {
             it.copy(
                 videoCodec = codec,

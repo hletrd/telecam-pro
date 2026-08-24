@@ -864,6 +864,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   transaction before clearing Ready, recheck it on `setupExecutor`, and converge through
   `reconfigureCamera`. Never restore a transaction-less close/open shortcut: it can pair an outgoing
   selection/capability snapshot with a newer mode/lens generation.
+- **Video codec/candidates/transfer are one rollback packet.** The operator's next-Video curve is
+  retained separately from Photo's active SDR transfer; one `setVideoPipeline` command owns live
+  codec/curve changes, and settings/MR puts the same immutable selection inside `setResolvedOptics`.
+  Rollback restores codec, ordered candidates, requested transfer, and active Camera2/GL transfer
+  before publishing UI truth or allowing the next REC admission.
 - **Ready binds controller, generations, and accepted still outputs atomically.** Every optics intent
   publishes Not-Ready with its desired generation. Only the synchronized terminal commit may install
   the Ready controller, exact session generation, actual processed/RAW reader mask, and Ready bit,
