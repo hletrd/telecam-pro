@@ -121,6 +121,55 @@ class RetainedStillDiscardDispatcherTest {
     }
 
     @Test
+    fun `live family retirement submissions stay inside finite process capacity`() {
+        val releaseWorker = CountDownLatch(1)
+        val workerEntered = CountDownLatch(1)
+        val overflowRan = AtomicBoolean()
+        val capacity = RetainedStillDiscardCapacityOwner(
+            workerCount = 1,
+            backlogCapacity = 1,
+            threadFactory = ThreadFactory { task ->
+                Thread(task, "test-family-retirement").apply { isDaemon = true }
+            },
+        )
+        val facade = RetainedStillDiscardDispatcher(capacity)
+        try {
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                dispatchDeletedFamilyRetirement(
+                    facade,
+                    Runnable {
+                        workerEntered.countDown()
+                        releaseWorker.await()
+                    },
+                ),
+            )
+            assertTrue(workerEntered.await(5, TimeUnit.SECONDS))
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                dispatchDeletedFamilyRetirement(facade, Runnable {}),
+            )
+
+            repeat(32) {
+                assertEquals(
+                    RetainedStillDiscardDispatch.OVERFLOW,
+                    dispatchDeletedFamilyRetirement(
+                        facade,
+                        Runnable { overflowRan.set(true) },
+                    ),
+                )
+            }
+
+            assertEquals(1, capacity.activeTaskCount())
+            assertEquals(1, capacity.queuedTaskCount())
+            assertFalse(overflowRan.get())
+        } finally {
+            releaseWorker.countDown()
+            facade.shutdown()
+        }
+    }
+
+    @Test
     fun `blocked provider stays finite across repeated Engine replacement`() {
         val releaseProvider = CountDownLatch(1)
         val providerEntered = CountDownLatch(1)

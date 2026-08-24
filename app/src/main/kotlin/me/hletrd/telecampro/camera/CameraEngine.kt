@@ -4200,13 +4200,13 @@ class CameraEngine internal constructor(
             }
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         }
-        if (runCatching { ioExecutor.execute(task) }.isFailure) {
-            // Accepted process-owned DNG publication can finish after this old Engine has shut its
-            // io executor. Its producer lease was registered before release, so route the terminal
-            // retirement continuation to the existing finite process provider lane. Rejection is
-            // safe: the durable family marker remains launch recovery's exact veto.
-            ProcessRetainedStillDiscardOwner.dispatchRegisteredProducerTerminal(task)
-        }
+        // Retirement is provider/journal work, not still encoding. Keep every continuation on the
+        // existing finite process lane even while this Engine is live; a blocked ioExecutor must
+        // not accumulate one closure per independently completed RAW-only shot. Shutdown retries
+        // through the process owner because the producer lease predates the stale facade. Overflow
+        // is safe: a durable marker remains launch recovery's veto, and an absent marker needs no
+        // work.
+        dispatchDeletedFamilyRetirement(retainedStillDiscardDispatcher, task)
     }
 
     /**

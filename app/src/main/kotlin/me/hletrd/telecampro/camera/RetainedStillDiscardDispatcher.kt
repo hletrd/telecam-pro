@@ -87,6 +87,20 @@ internal class RetainedStillDiscardCapacityOwner(
 internal const val RETAINED_STILL_DISCARD_WORKER_COUNT = 2
 internal const val RETAINED_STILL_DISCARD_BACKLOG_CAPACITY = 8
 
+/**
+ * One finite dispatch boundary for deletion retirement, including a producer that becomes terminal
+ * after its old Engine facade has closed. Live overflow deliberately does not fall back elsewhere:
+ * a durable marker remains launch recovery's owner, and an absent marker needs no retirement work.
+ */
+internal fun dispatchDeletedFamilyRetirement(
+    facade: RetainedStillDiscardDispatcher,
+    task: Runnable,
+): RetainedStillDiscardDispatch = when (val result = facade.dispatch(task)) {
+    RetainedStillDiscardDispatch.SHUTDOWN ->
+        ProcessRetainedStillDiscardOwner.dispatchRegisteredProducerTerminal(task)
+    else -> result
+}
+
 /** Process-lifetime capacity prevents blocked ContentResolver calls multiplying with Engines. */
 internal object ProcessRetainedStillDiscardOwner {
     private val capacityOwner = RetainedStillDiscardCapacityOwner(
