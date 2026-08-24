@@ -4263,14 +4263,14 @@ class CameraEngine internal constructor(
                 producersTerminal,
             )
             ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(family, result)
-            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
-        }
-        val overflowRescan = Runnable {
-            MediaStoreWriter.retireCurrentProcessFamilyDeletions(context).forEach { (candidate, result) ->
-                ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(candidate, result)
+            if (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETRYABLE) {
+                ProcessRetainedStillDiscardOwner.requestRetirementRetry(context)
             }
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         }
+        // This process-owned closure retains application context only. It can outlive this Engine
+        // after overflow or a retryable provider result without keeping the old callback graph alive.
+        val overflowRescan = ProcessRetainedStillDiscardOwner.currentProcessRetirementRescan(context)
         // Retirement is provider/journal work, not still encoding. Keep every continuation on the
         // existing finite process lane even while this Engine is live; a blocked ioExecutor must
         // not accumulate one closure per independently completed RAW-only shot. Shutdown retries
@@ -6556,6 +6556,9 @@ class CameraEngine internal constructor(
                 "$unresolvedDeletedStills deleted still output(s) remain pending durable discard",
             )
         }
+        ProcessRetainedStillDiscardOwner.releaseFamilyRetirementListener(
+            retainedStillRetirementListener,
+        )
         if (routeAvailabilityRegistered) {
             runCatching { manager.unregisterAvailabilityCallback(routeAvailabilityCallback) }
             routeAvailabilityRegistered = false

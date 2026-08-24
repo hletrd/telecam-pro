@@ -1,13 +1,16 @@
 package me.hletrd.telecampro.camera
 
+import android.content.Context
 import java.util.IdentityHashMap
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CurrentProcessFamilyRetirementScan
 import me.hletrd.telecampro.storage.FamilyDeletionRetirementResult
 import me.hletrd.telecampro.storage.MediaStoreWriter
 
@@ -175,6 +178,9 @@ internal class RetainedStillDiscardCapacityOwner(
 
 internal const val RETAINED_STILL_DISCARD_WORKER_COUNT = 2
 internal const val RETAINED_STILL_DISCARD_BACKLOG_CAPACITY = 8
+internal const val RETAINED_STILL_RETIREMENT_MAX_LISTENERS_PER_FAMILY = 4
+internal const val RETAINED_STILL_RETIREMENT_RETRY_INITIAL_MS = 250L
+internal const val RETAINED_STILL_RETIREMENT_RETRY_MAX_MS = 30_000L
 
 /** Exact local bookkeeping owner notified after one durable family marker is retired. */
 internal fun interface RetainedStillRetirementListener {
@@ -191,12 +197,15 @@ internal enum class RetainedStillRetirementRegistrationResult {
  * Bounded process authority joining durable marker retirement to every exact local Engine owner.
  *
  * Registration precedes the durable marker commit, so a process scan can never observe a marker
- * whose local continuation is still unknown. Listener identity makes repeated deletion callbacks
- * idempotent. A retired family is removed before delivery; duplicate/late results therefore do no
- * work, while a listener failure cannot prevent another Engine owner from reconciling.
+ * whose local continuation is still unknown. [maxFamilies] is measured in the same distinct-key
+ * unit as the durable journal; [maxListenersPerFamily] independently bounds Engine-generation
+ * fan-out. Listener identity makes repeated deletion callbacks idempotent. A retired family is
+ * removed before delivery; duplicate/late results therefore do no work, while a listener failure
+ * cannot prevent another Engine owner from reconciling.
  */
 internal class RetainedStillRetirementRegistry(
-    private val maxRegistrations: Int,
+    private val maxFamilies: Int,
+    private val maxListenersPerFamily: Int,
 ) {
     private val lock = Any()
     private val listenersByFamily = LinkedHashMap<
@@ -206,7 +215,8 @@ internal class RetainedStillRetirementRegistry(
     private var registrationCount = 0
 
     init {
-        require(maxRegistrations > 0)
+        require(maxFamilies > 0)
+        require(maxListenersPerFamily > 0)
     }
 
     fun register(
@@ -217,7 +227,10 @@ internal class RetainedStillRetirementRegistry(
         if (listeners?.containsKey(listener) == true) {
             return@synchronized RetainedStillRetirementRegistrationResult.ALREADY_REGISTERED
         }
-        if (registrationCount >= maxRegistrations) {
+        if (listeners == null && listenersByFamily.size >= maxFamilies) {
+            return@synchronized RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED
+        }
+        if (listeners != null && listeners.size >= maxListenersPerFamily) {
             return@synchronized RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED
         }
         val familyListeners = listeners ?: IdentityHashMap<RetainedStillRetirementListener, Unit>()
@@ -239,6 +252,21 @@ internal class RetainedStillRetirementRegistry(
         true
     }
 
+    /** Demotes one released Engine without disturbing marker-only or replacement-Engine owners. */
+    fun unregisterListener(listener: RetainedStillRetirementListener): Int = synchronized(lock) {
+        var removed = 0
+        val families = listenersByFamily.entries.iterator()
+        while (families.hasNext()) {
+            val entry = families.next()
+            if (entry.value.remove(listener) != null) {
+                registrationCount -= 1
+                removed += 1
+            }
+            if (entry.value.isEmpty()) families.remove()
+        }
+        removed
+    }
+
     fun reconcile(
         family: CaptureFamilyKey,
         result: FamilyDeletionRetirementResult,
@@ -256,6 +284,66 @@ internal class RetainedStillRetirementRegistry(
     }
 
     internal fun registrationCount(): Int = synchronized(lock) { registrationCount }
+
+    internal fun familyCount(): Int = synchronized(lock) { listenersByFamily.size }
+}
+
+/**
+ * Constant-memory delayed owner for retryable current-process retirement scans.
+ *
+ * New requests replace the pending scan while one deadline is armed. Each accepted deadline
+ * advances an exponential delay up to [maxDelayMs]; a scan with no retryable outcomes resets it.
+ * Provider work is submitted to the existing finite discard lane rather than run on this timer.
+ */
+internal class RetainedStillRetirementRetryOwner(
+    private val initialDelayMs: Long,
+    private val maxDelayMs: Long,
+    private val schedule: (delayMs: Long, task: Runnable) -> Boolean,
+    private val submit: (Runnable) -> RetainedStillDiscardDispatch,
+) {
+    private val lock = Any()
+    private var pending: Runnable? = null
+    private var deadlineArmed = false
+    private var nextDelayMs = initialDelayMs
+
+    init {
+        require(initialDelayMs > 0L)
+        require(maxDelayMs >= initialDelayMs)
+    }
+
+    fun request(task: Runnable): Boolean {
+        val delay = synchronized(lock) {
+            pending = task
+            if (deadlineArmed) return true
+            deadlineArmed = true
+            val selected = nextDelayMs
+            nextDelayMs = (nextDelayMs * 2L).coerceAtMost(maxDelayMs)
+            selected
+        }
+        val accepted = runCatching {
+            schedule(delay, Runnable { fire() })
+        }.getOrDefault(false)
+        if (!accepted) synchronized(lock) { deadlineArmed = false }
+        return accepted
+    }
+
+    fun resetBackoff() = synchronized(lock) {
+        nextDelayMs = initialDelayMs
+    }
+
+    private fun fire() {
+        val task = synchronized(lock) {
+            deadlineArmed = false
+            pending.also { pending = null }
+        } ?: return
+        submit(task)
+    }
+
+    internal fun pendingCount(): Int = synchronized(lock) {
+        if (pending != null || deadlineArmed) 1 else 0
+    }
+
+    internal fun nextDelayMs(): Long = synchronized(lock) { nextDelayMs }
 }
 
 /**
@@ -280,9 +368,23 @@ internal object ProcessRetainedStillDiscardOwner {
         backlogCapacity = RETAINED_STILL_DISCARD_BACKLOG_CAPACITY,
     )
     private val retirementRegistry = RetainedStillRetirementRegistry(
-        maxRegistrations = MediaStoreWriter.MAX_DELETED_FAMILY_MARKERS,
+        maxFamilies = MediaStoreWriter.MAX_DELETED_FAMILY_MARKERS,
+        maxListenersPerFamily = RETAINED_STILL_RETIREMENT_MAX_LISTENERS_PER_FAMILY,
     )
     private val markerOnlyRetirementListener = RetainedStillRetirementListener { }
+    private val retirementRetryScheduler = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "retained-still-retirement-retry").apply { isDaemon = true }
+    }
+    private val retirementRetryOwner = RetainedStillRetirementRetryOwner(
+        initialDelayMs = RETAINED_STILL_RETIREMENT_RETRY_INITIAL_MS,
+        maxDelayMs = RETAINED_STILL_RETIREMENT_RETRY_MAX_MS,
+        schedule = { delayMs, task ->
+            runCatching {
+                retirementRetryScheduler.schedule(task, delayMs, TimeUnit.MILLISECONDS)
+            }.isSuccess
+        },
+        submit = { task -> capacityOwner.dispatchRetirement(task, task) },
+    )
 
     fun capacity(workerCount: Int, backlogCapacity: Int): RetainedStillDiscardCapacityOwner {
         require(workerCount == RETAINED_STILL_DISCARD_WORKER_COUNT) {
@@ -317,11 +419,37 @@ internal object ProcessRetainedStillDiscardOwner {
         }
     }
 
+    /** A released Engine no longer needs admission publication and must not stay process-reachable. */
+    fun releaseFamilyRetirementListener(listener: RetainedStillRetirementListener): Int =
+        retirementRegistry.unregisterListener(listener)
+
     /** Exact and scan completions share this idempotent local-publication boundary. */
     fun reconcileFamilyRetirement(
         family: CaptureFamilyKey,
         result: FamilyDeletionRetirementResult,
     ): Int = retirementRegistry.reconcile(family, result)
+
+    /** Process-only closure: delayed/overflow retries never capture an Engine or its callback graph. */
+    fun currentProcessRetirementRescan(context: Context): Runnable {
+        val applicationContext = context.applicationContext
+        return Runnable { runCurrentProcessRetirementRescan(applicationContext) }
+    }
+
+    /** Arms one conflated delayed retry after an accepted attempt returned retryable uncertainty. */
+    fun requestRetirementRetry(context: Context): Boolean =
+        retirementRetryOwner.request(currentProcessRetirementRescan(context))
+
+    private fun runCurrentProcessRetirementRescan(context: Context) {
+        val scan = MediaStoreWriter.retireCurrentProcessFamilyDeletionsResult(context)
+        scan.results.forEach { (family, result) ->
+            reconcileFamilyRetirement(family, result)
+        }
+        if (retirementScanRequiresRetry(scan)) {
+            requestRetirementRetry(context)
+        } else {
+            retirementRetryOwner.resetBackoff()
+        }
+    }
 
     /**
      * A still-family producer registered before Engine release may become terminal only after its
@@ -333,6 +461,14 @@ internal object ProcessRetainedStillDiscardOwner {
         overflowRescan: Runnable,
     ): RetainedStillDiscardDispatch = capacityOwner.dispatchRetirement(task, overflowRescan)
 }
+
+/** Only uncertainty/contention retries on a timer; authoritative live rows wait for mutation. */
+internal fun retirementRescanRequiresRetry(
+    results: Iterable<FamilyDeletionRetirementResult>,
+): Boolean = results.any { it == FamilyDeletionRetirementResult.RETRYABLE }
+
+internal fun retirementScanRequiresRetry(scan: CurrentProcessFamilyRetirementScan): Boolean =
+    scan.retryableFailure || retirementRescanRequiresRetry(scan.results.values)
 
 private fun retainedStillDiscardThreadFactory(): ThreadFactory {
     val sequence = AtomicInteger()

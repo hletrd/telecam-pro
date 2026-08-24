@@ -9,7 +9,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.CurrentProcessFamilyRetirementScan
 import me.hletrd.telecampro.storage.FamilyDeletionRetirementResult
+import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -215,11 +217,14 @@ class RetainedStillDiscardDispatcherTest {
     @Test
     fun `retirement registry is bounded rollback-safe and listener isolated`() {
         assertThrows(IllegalArgumentException::class.java) {
-            RetainedStillRetirementRegistry(maxRegistrations = 0)
+            RetainedStillRetirementRegistry(maxFamilies = 0, maxListenersPerFamily = 1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RetainedStillRetirementRegistry(maxFamilies = 1, maxListenersPerFamily = 0)
         }
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_030_000_000L, 30L)
         val secondFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_030_000_001L, 31L)
-        val registry = RetainedStillRetirementRegistry(maxRegistrations = 2)
+        val registry = RetainedStillRetirementRegistry(maxFamilies = 2, maxListenersPerFamily = 2)
         val delivered = AtomicInteger()
         val failing = RetainedStillRetirementListener { error("one stale owner failed") }
         val healthy = RetainedStillRetirementListener { delivered.incrementAndGet() }
@@ -233,6 +238,7 @@ class RetainedStillDiscardDispatcherTest {
             registry.register(family, healthy),
         )
         assertEquals(0, registry.reconcile(family, FamilyDeletionRetirementResult.RETAINED))
+        assertEquals(0, registry.reconcile(family, FamilyDeletionRetirementResult.RETRYABLE))
         assertEquals(2, registry.registrationCount())
         assertEquals(2, registry.reconcile(family, FamilyDeletionRetirementResult.RETIRED))
         assertEquals(1, delivered.get())
@@ -245,6 +251,107 @@ class RetainedStillDiscardDispatcherTest {
         assertTrue(registry.unregister(secondFamily, healthy))
         assertFalse(registry.unregister(secondFamily, healthy))
         assertEquals(0, registry.registrationCount())
+    }
+
+    @Test
+    fun `registry bounds distinct families separately from listener fanout`() {
+        val maxFamilies = MediaStoreWriter.MAX_DELETED_FAMILY_MARKERS
+        val registry = RetainedStillRetirementRegistry(
+            maxFamilies = maxFamilies,
+            maxListenersPerFamily = 2,
+        )
+        val oldEngine = RetainedStillRetirementListener { }
+        val replacements = mutableListOf<RetainedStillRetirementListener>()
+        val families = (0 until maxFamilies).map { index ->
+            CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_032_000_000L + index, index.toLong())
+        }
+
+        families.forEach { family ->
+            val replacement = RetainedStillRetirementListener { }
+            replacements += replacement
+            assertEquals(
+                RetainedStillRetirementRegistrationResult.REGISTERED,
+                registry.register(family, oldEngine),
+            )
+            assertEquals(
+                RetainedStillRetirementRegistrationResult.REGISTERED,
+                registry.register(family, replacement),
+            )
+        }
+        assertEquals(maxFamilies, registry.familyCount())
+        assertEquals(maxFamilies * 2, registry.registrationCount())
+
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED,
+            registry.register(families.first(), RetainedStillRetirementListener { }),
+        )
+        val sixtyFifth = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_033_000_000L, 65L)
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED,
+            registry.register(sixtyFifth, RetainedStillRetirementListener { }),
+        )
+
+        // Releasing the old Engine removes only its compact local-owner registrations. The exact
+        // replacement owners remain, and retiring one family authoritatively reclaims family space.
+        assertEquals(maxFamilies, registry.unregisterListener(oldEngine))
+        assertEquals(maxFamilies, registry.registrationCount())
+        assertEquals(1, registry.reconcile(families.first(), FamilyDeletionRetirementResult.RETIRED))
+        assertEquals(maxFamilies - 1, registry.familyCount())
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            registry.register(sixtyFifth, RetainedStillRetirementListener { }),
+        )
+    }
+
+    @Test
+    fun `retry owner conflates scans and exponentially backs off without retrying live rows`() {
+        val scheduled = mutableListOf<Pair<Long, Runnable>>()
+        val effects = mutableListOf<String>()
+        val owner = RetainedStillRetirementRetryOwner(
+            initialDelayMs = 10L,
+            maxDelayMs = 40L,
+            schedule = { delay, task -> scheduled += delay to task; true },
+            submit = { task -> task.run(); RetainedStillDiscardDispatch.ACCEPTED },
+        )
+
+        assertTrue(owner.request(Runnable { effects += "superseded" }))
+        assertTrue(owner.request(Runnable { effects += "latest" }))
+        assertEquals(1, scheduled.size)
+        assertEquals(1, owner.pendingCount())
+        assertEquals(20L, owner.nextDelayMs())
+        val firstDeadline = scheduled.removeAt(0).second
+        firstDeadline.run()
+        firstDeadline.run() // duplicate timer delivery is inert after the pending task is consumed
+        assertEquals(listOf("latest"), effects)
+        assertEquals(0, owner.pendingCount())
+
+        owner.request(Runnable { effects += "second" })
+        assertEquals(20L, scheduled.single().first)
+        scheduled.removeAt(0).second.run()
+        owner.request(Runnable { effects += "third" })
+        assertEquals(40L, scheduled.single().first)
+        owner.resetBackoff()
+        assertEquals(10L, owner.nextDelayMs())
+
+        assertTrue(
+            retirementRescanRequiresRetry(
+                listOf(FamilyDeletionRetirementResult.RETRYABLE),
+            ),
+        )
+        assertFalse(
+            retirementRescanRequiresRetry(
+                listOf(
+                    FamilyDeletionRetirementResult.RETAINED,
+                    FamilyDeletionRetirementResult.PRODUCERS_ACTIVE,
+                    FamilyDeletionRetirementResult.RETIRED,
+                ),
+            ),
+        )
+        assertTrue(
+            retirementScanRequiresRetry(
+                CurrentProcessFamilyRetirementScan(emptyMap(), retryableFailure = true),
+            ),
+        )
     }
 
     @Test
@@ -282,6 +389,24 @@ class RetainedStillDiscardDispatcherTest {
             ),
         )
         assertEquals(1, delivered.get())
+
+        val releasedFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_030_000_003L, 33L)
+        assertEquals(
+            RetainedStillRetirementRegistrationResult.REGISTERED,
+            ProcessRetainedStillDiscardOwner.registerFamilyRetirement(releasedFamily, listener),
+        )
+        assertEquals(
+            1,
+            ProcessRetainedStillDiscardOwner.releaseFamilyRetirementListener(listener),
+        )
+        assertEquals(
+            0,
+            ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(
+                releasedFamily,
+                FamilyDeletionRetirementResult.RETIRED,
+            ),
+        )
+        assertEquals(1, delivered.get())
     }
 
     @Test
@@ -302,7 +427,7 @@ class RetainedStillDiscardDispatcherTest {
         assertTrue(replacementOwner.ownRetainedForAsyncDiscard("content://replacement/late", 32))
         assertFalse(replacementOwner.canAdmitCapture())
 
-        val registry = RetainedStillRetirementRegistry(maxRegistrations = 2)
+        val registry = RetainedStillRetirementRegistry(maxFamilies = 2, maxListenersPerFamily = 2)
         val replacementDeliveries = AtomicInteger()
         val oldListener = RetainedStillRetirementListener { }
         val replacementListener = RetainedStillRetirementListener { retired ->

@@ -553,7 +553,7 @@ object MediaStoreWriter {
             // same-key ordering; taking the global capacity/RMW lock here would couple an unrelated
             // family's publication or absence query to a slow synchronous commit.
             val markerPresent = runCatching { markerStore.contains(key) }.getOrNull()
-                ?: return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
+                ?: return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETRYABLE
             if (!markerPresent) {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.ALREADY_ABSENT
             }
@@ -561,8 +561,10 @@ object MediaStoreWriter {
             // The exact-family authority prevents a same-family re-mark from being erased, while
             // unrelated families remain free to commit their own deletion markers during provider
             // I/O. Never place this unbounded Binder query under the global metadata monitor.
-            if (runCatching(exactFamilyAbsent).getOrNull() != true) {
-                return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
+            when (runCatching(exactFamilyAbsent).getOrNull()) {
+                false -> return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
+                null -> return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETRYABLE
+                true -> Unit
             }
 
             val sealedResult = synchronized(authority.admissionMonitor) {
@@ -573,7 +575,7 @@ object MediaStoreWriter {
                 // arrived during the absence query, retain the marker: after we release the exact
                 // authority that publication must observe the durable delete and discard its row.
                 if (authority.publicationClaims > 0) {
-                    FamilyDeletionRetirementResult.RETAINED
+                    FamilyDeletionRetirementResult.RETRYABLE
                 } else {
                     // This is the linearization point. Later registrants wait on the exact-family
                     // owner and become post-retirement admissions; earlier ones are counted above.
@@ -586,15 +588,17 @@ object MediaStoreWriter {
             try {
                 // Capacity-changing removal still uses the metadata RMW lock. Neither it nor the
                 // slow preference commit owns the global registry or admission monitor.
-                synchronized(familyJournalMetadataLock) {
-                    if (!markerStore.contains(key)) {
-                        FamilyDeletionRetirementResult.ALREADY_ABSENT
-                    } else if (markerStore.remove(key)) {
-                        FamilyDeletionRetirementResult.RETIRED
-                    } else {
-                        FamilyDeletionRetirementResult.RETAINED
+                runCatching {
+                    synchronized(familyJournalMetadataLock) {
+                        if (!markerStore.contains(key)) {
+                            FamilyDeletionRetirementResult.ALREADY_ABSENT
+                        } else if (markerStore.remove(key)) {
+                            FamilyDeletionRetirementResult.RETIRED
+                        } else {
+                            FamilyDeletionRetirementResult.RETRYABLE
+                        }
                     }
-                }
+                }.getOrDefault(FamilyDeletionRetirementResult.RETRYABLE)
             } finally {
                 synchronized(authority.admissionMonitor) {
                     check(authority.retirementSealed) { "family retirement seal lost" }
@@ -645,15 +649,24 @@ object MediaStoreWriter {
     internal fun retireCurrentProcessFamilyDeletions(
         context: Context,
         subDirs: List<String> = CAPTURE_SUBDIRS,
-    ): Map<CaptureFamilyKey, FamilyDeletionRetirementResult> {
+    ): Map<CaptureFamilyKey, FamilyDeletionRetirementResult> =
+        retireCurrentProcessFamilyDeletionsResult(context, subDirs).results
+
+    /** Preserves a journal-enumeration failure so the process retry owner cannot mistake it for empty. */
+    internal fun retireCurrentProcessFamilyDeletionsResult(
+        context: Context,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): CurrentProcessFamilyRetirementScan {
         val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
         val ownedEntries = runCatching {
             preferences.all
                 .filterValues { owner -> owner == processJournalOwner }
                 .toSortedMap()
-        }.getOrElse { return emptyMap() }
+        }.getOrElse {
+            return CurrentProcessFamilyRetirementScan(emptyMap(), retryableFailure = true)
+        }
         val batch = boundedDeletedFamilyBatch(ownedEntries, MAX_DELETED_FAMILY_MARKERS)
-        return buildMap {
+        val results = buildMap {
             batch.entries.forEach { (rawKey, _) ->
                 val family = parseDeletedFamilyJournalKey(rawKey) ?: return@forEach
                 put(
@@ -667,6 +680,7 @@ object MediaStoreWriter {
                 )
             }
         }
+        return CurrentProcessFamilyRetirementScan(results, retryableFailure = false)
     }
 
     /** Fast shared-preference read used by launch restoration and recovery. */
@@ -1394,8 +1408,16 @@ internal enum class FamilyDeletionRetirementResult {
     RETIRED,
     ALREADY_ABSENT,
     PRODUCERS_ACTIVE,
+    /** An exact provider row authoritatively remains; retry only after another mutation edge. */
     RETAINED,
+    /** Marker/query/publication uncertainty may clear without another family mutation. */
+    RETRYABLE,
 }
+
+internal data class CurrentProcessFamilyRetirementScan(
+    val results: Map<CaptureFamilyKey, FamilyDeletionRetirementResult>,
+    val retryableFailure: Boolean,
+)
 
 internal data class DeletedFamilyQuery(val selection: String, val args: Array<String>)
 

@@ -157,7 +157,7 @@ class DeletedFamilyJournalTest {
             MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { false },
         )
         assertEquals(
-            FamilyDeletionRetirementResult.RETAINED,
+            FamilyDeletionRetirementResult.RETRYABLE,
             MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { null },
         )
         assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
@@ -564,7 +564,7 @@ class DeletedFamilyJournalTest {
             assertTrue(publicationRegistered.await(2, TimeUnit.SECONDS))
 
             allowQuery.countDown()
-            assertEquals(FamilyDeletionRetirementResult.RETAINED, retirement.get(2, TimeUnit.SECONDS))
+            assertEquals(FamilyDeletionRetirementResult.RETRYABLE, retirement.get(2, TimeUnit.SECONDS))
             assertEquals("discard", publication.get(2, TimeUnit.SECONDS))
             assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
         } finally {
@@ -600,7 +600,7 @@ class DeletedFamilyJournalTest {
             // The publisher has joined the registry but deliberately has not attempted the family
             // monitor yet. Its claim must already be visible to retirement at this exact boundary.
             assertEquals(
-                FamilyDeletionRetirementResult.RETAINED,
+                FamilyDeletionRetirementResult.RETRYABLE,
                 MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { true },
             )
             assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
@@ -684,6 +684,38 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
+    fun `transient marker removal is retryable and later retirement reclaims capacity`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_028_300_000L, 283L)
+        val markerStore = FlakyRemoveFamilyMarkerStore()
+        assertEquals(
+            FamilyDeletionMarkResult.DURABLE,
+            MediaStoreWriter.markFamilyDeletedResult(family, markerStore),
+        )
+
+        assertEquals(
+            FamilyDeletionRetirementResult.RETRYABLE,
+            MediaStoreWriter.retireFamilyDeletionMarker(
+                family = family,
+                producersTerminal = true,
+                markerStore = markerStore,
+                exactFamilyAbsent = { true },
+            ),
+        )
+        assertEquals(1, markerStore.size())
+
+        assertEquals(
+            FamilyDeletionRetirementResult.RETIRED,
+            MediaStoreWriter.retireFamilyDeletionMarker(
+                family = family,
+                producersTerminal = true,
+                markerStore = markerStore,
+                exactFamilyAbsent = { true },
+            ),
+        )
+        assertEquals(0, markerStore.size())
+    }
+
+    @Test
     fun `deleted family query binds paths owner then every exact output name`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_300_000L, 3L)
         val query = deletedFamilyQuery(family, listOf("TeleCamPro", "Legacy"), "me.test")
@@ -749,6 +781,27 @@ class DeletedFamilyJournalTest {
         override fun remove(key: String): Boolean {
             removeEntered.countDown()
             check(allowRemove.await(2, TimeUnit.SECONDS))
+            markers.remove(key)
+            return true
+        }
+    }
+
+    private class FlakyRemoveFamilyMarkerStore : FamilyDeletionMarkerStore {
+        private val markers = ConcurrentHashMap<String, String>()
+        private var removalAttempts = 0
+
+        override fun contains(key: String): Boolean = markers.containsKey(key)
+
+        override fun size(): Int = markers.size
+
+        override fun put(key: String, owner: String): Boolean {
+            markers[key] = owner
+            return true
+        }
+
+        override fun remove(key: String): Boolean {
+            removalAttempts += 1
+            if (removalAttempts == 1) return false
             markers.remove(key)
             return true
         }

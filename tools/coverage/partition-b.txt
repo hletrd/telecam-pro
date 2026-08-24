@@ -35,6 +35,9 @@ me/hletrd/telecampro/camera/CaptureCapabilitiesKt
 me/hletrd/telecampro/camera/VideoFrameRate$Companion
 me/hletrd/telecampro/camera/CameraSelector2
 me/hletrd/telecampro/camera/StandbyAudioController
+# Process lifetime owner constructs an Android-Context MediaStore rescan and a real scheduled
+# executor. Its registry and retry state machines remain separate host-tested Partition-A classes.
+me/hletrd/telecampro/camera/ProcessRetainedStillDiscardOwner
 # Compiler-generated closure bodies OF that Context constructor, which JaCoCo attributes as
 # separate `_init_$lambda$N` methods: the onAvailable {} and Log.w onUnavailable defaults
 # (android.util.Log throws on host), Context.checkSelfPermission, the meter Thread launcher,
