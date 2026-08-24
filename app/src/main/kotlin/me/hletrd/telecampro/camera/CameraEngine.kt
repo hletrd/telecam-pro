@@ -79,6 +79,11 @@ internal data class RecordingStorageEngineOverrides(
     val capacityOwner: RecordingStorageCapacityOwner,
 )
 
+/** Injects only the finite pre-marker family capacity behind one Engine's admission facade. */
+internal data class FamilyDeletionMarkerEngineOverrides(
+    val capacityOwner: FamilyDeletionMarkerCapacityOwner,
+)
+
 private data class RecorderSetupOwner(
     val terminal: RecorderSetupFinalizationOwner<VideoRecorder>,
     val processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
@@ -90,6 +95,7 @@ class CameraEngine internal constructor(
     private val context: Context,
     private val recordingPreNativeOverrides: RecordingPreNativeEngineOverrides? = null,
     private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
+    private val familyDeletionMarkerOverrides: FamilyDeletionMarkerEngineOverrides? = null,
 ) {
 
     /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
@@ -139,6 +145,18 @@ class CameraEngine internal constructor(
         workerCount = STILL_PUBLICATION_WORKER_COUNT,
         backlogCapacity = STILL_PUBLICATION_BACKLOG_CAPACITY,
     )
+    // Delete intent must become durable before provider deletion or UI acknowledgement, but it must
+    // not queue behind a wedged bitmap/HEIF/provider call on ioExecutor. Reserve one exact family
+    // BEFORE publishing the Engine tombstone; overflow can then restore review without claiming a
+    // recovery owner that does not exist yet. Every Engine facade shares one finite process lane.
+    private val familyDeletionMarkerDispatcher = familyDeletionMarkerOverrides?.let {
+        FamilyDeletionMarkerDispatcher(it.capacityOwner)
+    } ?: FamilyDeletionMarkerDispatcher(
+        workerCount = FAMILY_DELETION_MARKER_WORKER_COUNT,
+        backlogCapacity = FAMILY_DELETION_MARKER_BACKLOG_CAPACITY,
+    )
+    private val familyDeletionCompletions =
+        FamilyDeletionCompletionRegistry<CaptureFamilyDeleteDurability>()
     // Deleted-family veto lives with the still lane, not the UI callback graph. A retained output
     // can complete after ViewModel.onCleared; its durable discard must remain owned by this Engine.
     private val retainedStillDeletionOwner = RetainedStillDeletionOwner<android.net.Uri>(
@@ -4243,49 +4261,90 @@ class CameraEngine internal constructor(
             onComplete(CaptureFamilyDeleteDurability.NOT_REQUIRED)
             return
         }
+        // Capacity owns one exact family before any Engine tombstone exists. A rejected Delete has
+        // no durable recovery continuation, so fail immediately and let the ViewModel restore the
+        // frozen review handle; never enqueue or run marker/provider work on this caller thread.
+        val markerAdmission = familyDeletionMarkerDispatcher.reserve(intent.familyKey)
+        val markerReservation = markerAdmission.reservation
+        if (markerAdmission.dispatch != FamilyDeletionMarkerDispatch.ACCEPTED || markerReservation == null) {
+            runCatching { onComplete(CaptureFamilyDeleteDurability.FAILED) }
+            return
+        }
+        // The queued process task owns only this compact registry/token. ViewModel teardown closes
+        // and drains the registry before clearing UI ownership, so an accepted old task cannot retain
+        // or call its stale callback graph after detach.
+        val completionRegistry = familyDeletionCompletions
+        val completionToken = completionRegistry.register(onComplete)
+        if (completionToken == null) {
+            markerReservation.cancel()
+            return
+        }
+        val complete: (CaptureFamilyDeleteDurability) -> Unit = { result ->
+            completionRegistry.complete(completionToken, result)
+        }
         val liveStillId = intent.liveStillCaptureId
         val publications = liveStillId?.let(retainedStillDeletionOwner::markCaptureDeletedInMemory).orEmpty()
         val task = Runnable {
-            // Registration MUST precede the marker commit. A producer lease can become terminal on
-            // another Engine/thread immediately afterward, allowing an already-accepted process
-            // rescan to remove this marker before our family-specific retirement task is queued.
-            val retirementListener = retainedStillRetirementListener.takeIf { liveStillId != null }
-            val retirementRegistration = ProcessRetainedStillDiscardOwner.registerFamilyRetirement(
-                intent.familyKey,
-                retirementListener,
-            )
-            val durable = retirementRegistration !=
-                RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED &&
-                MediaStoreWriter.markFamilyDeletedResult(context, intent.familyKey) ==
-                me.hletrd.telecampro.storage.FamilyDeletionMarkResult.DURABLE
-            if (!durable) {
-                ProcessRetainedStillDiscardOwner.rollbackFamilyRetirementRegistration(
+            var terminal = CaptureFamilyDeleteDurability.FAILED
+            try {
+                // Registration MUST precede the marker commit. A producer lease can become terminal
+                // on another Engine/thread immediately afterward, allowing an already-accepted
+                // process rescan to remove this marker before our family-specific retirement task.
+                val retirementListener = retainedStillRetirementListener.takeIf { liveStillId != null }
+                val retirementRegistration = ProcessRetainedStillDiscardOwner.registerFamilyRetirement(
                     intent.familyKey,
                     retirementListener,
-                    retirementRegistration,
                 )
-            }
-            if (liveStillId != null) {
-                retainedStillDeletionOwner.completeDeletionDurability(liveStillId, durable)
-            }
-            if (durable) {
-                publications.forEach { output -> dispatchDeletedStillDiscard(output, checkNotNull(liveStillId)) }
-                if (liveStillId != null &&
-                    retainedStillDeletionOwner.deletedFamilyIfProducersTerminal(liveStillId) == intent.familyKey
-                ) {
-                    scheduleDeletedFamilyRetirement(intent.familyKey, liveStillId)
+                val durable = retirementRegistration !=
+                    RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED &&
+                    MediaStoreWriter.markFamilyDeletedResult(context, intent.familyKey) ==
+                    me.hletrd.telecampro.storage.FamilyDeletionMarkResult.DURABLE
+                if (!durable) {
+                    ProcessRetainedStillDiscardOwner.rollbackFamilyRetirementRegistration(
+                        intent.familyKey,
+                        retirementListener,
+                        retirementRegistration,
+                    )
                 }
+                if (liveStillId != null) {
+                    retainedStillDeletionOwner.completeDeletionDurability(liveStillId, durable)
+                }
+                terminal = if (durable) {
+                    CaptureFamilyDeleteDurability.DURABLE
+                } else {
+                    CaptureFamilyDeleteDurability.FAILED
+                }
+                if (durable) {
+                    publications.forEach { output ->
+                        dispatchDeletedStillDiscard(output, checkNotNull(liveStillId))
+                    }
+                    if (liveStillId != null &&
+                        retainedStillDeletionOwner.deletedFamilyIfProducersTerminal(liveStillId) ==
+                        intent.familyKey
+                    ) {
+                        scheduleDeletedFamilyRetirement(intent.familyKey, liveStillId)
+                    }
+                }
+            } catch (failure: Throwable) {
+                if (liveStillId != null) {
+                    retainedStillDeletionOwner.completeDeletionDurability(liveStillId, false)
+                }
+                Log.e("CameraEngine", "Family deletion durability failed", failure)
+            } finally {
+                runCatching {
+                    onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                }
+                complete(terminal)
             }
-            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
-            onComplete(
-                if (durable) CaptureFamilyDeleteDurability.DURABLE
-                else CaptureFamilyDeleteDurability.FAILED,
-            )
         }
-        if (runCatching { ioExecutor.execute(task) }.isFailure) {
+        if (!markerReservation.submit(task)) {
+            // Submission after a successful reservation is an executor-infrastructure failure, not
+            // ordinary capacity overflow. The in-memory tombstone already won, so preserve the
+            // historical fail-closed admission behavior rather than pretending rollback is safe
+            // against a late sibling that may already have observed it.
             if (liveStillId != null) retainedStillDeletionOwner.completeDeletionDurability(liveStillId, false)
             onStillCaptureAdmissionChanged?.invoke(false)
-            onComplete(CaptureFamilyDeleteDurability.FAILED)
+            complete(CaptureFamilyDeleteDurability.FAILED)
         }
     }
 
@@ -6514,6 +6573,7 @@ class CameraEngine internal constructor(
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
     fun detachCallbacks() {
+        familyDeletionCompletions.closeAndDrain()
         callbackSink.closeAndDrain()
         launchRecoverySubscription?.cancel()
         launchRecoverySubscription = null
@@ -6524,6 +6584,7 @@ class CameraEngine internal constructor(
     fun release() {
         // Terminal before state/executor teardown: either an in-flight acquisition completes before
         // this close (and the stop below owns it), or close wins and no later task can call gl.start.
+        familyDeletionCompletions.closeAndDrain()
         terminalAcquisitionGate.close()
         cancelRecorderSetupReplay()
         routeAvailabilityReleased.set(true)
@@ -6623,6 +6684,7 @@ class CameraEngine internal constructor(
         activeRecordingTopologyLease.set(0L)
         setupExecutor.shutdown()
         ioExecutor.shutdown()
+        familyDeletionMarkerDispatcher.shutdown()
         stillPublicationDispatcher.shutdown()
         retainedStillDiscardDispatcher.shutdown()
         recorderExecutor.shutdown()
