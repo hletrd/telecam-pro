@@ -1,3 +1,171 @@
+# Aggregated deep review — cycle 40
+
+Date: 2026-08-24
+Reviewed revision: `f7b1bd7f09278eda43737835fabb57874badf18a` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle40.2BfF76`
+
+## Coverage and aggregation
+
+Six parallel specialist groups covered code-reviewer, architect, performance, tracer, security,
+debugger, critic, verifier, test engineer, document specialist, and native Android designer. The
+designer also fanned out a focused controls audit; a second designer pass in the test/document group
+provided an independent zero-finding check. No additional repository-local reviewer agent was
+registered. The groups inventoried all 495 tracked paths, read the complete committed authorities,
+examined their relevant implementation, tests, tooling, resources, and cross-file interactions, and
+completed final missed-issue sweeps. The native Compose UI was reviewed from source, semantics,
+resources, host tests, and the device-harness contracts; browser automation is not applicable. No
+device behavior was run or inferred.
+
+The 12 raw specialist findings deduplicate to eight current root causes. The broken host gate has
+agreement across four specialist groups, and the stale Loupe consumer guidance has agreement across
+critic/verifier and test/document specialists. Highest severity and confidence are preserved.
+
+## Findings
+
+### AGG40-01 — cycle-39 closeout makes the authoritative host gate deterministically red
+
+- **Severity / confidence:** Medium / High
+- **Sources:** code-reviewer/architect, security/debugger, critic/verifier,
+  test-engineer/document-specialist (**cross-agent agreement**)
+- **Status:** confirmed quality-gate and completion-evidence defect.
+- **Evidence:** `docs/plans/2026-08-24-rpf-cycle39.md:5,39-48,54-73` marks the plan complete and
+  claims every configured gate is green, but never names or records
+  `python3 tools/verify_host.py`. `tools/check_docs.py:1093-1134` deliberately selects the newest
+  completed dated cycle plan and requires that exact authoritative command. Current HEAD therefore
+  fails `python3 tools/check_docs.py` (121 checks, one failure), and the red committed-export
+  baseline causes three failures in `tools/tests/test_tool_contracts.py:337-389,500-527,554-563`.
+- **Failure:** a clean-clone maintainer runs the documented authoritative gate after cycle 39; all
+  expensive Android work can pass before the tooling/document phase rejects the checked-in closeout,
+  contradicting the durable green claim and blocking a legitimate commit/push cycle.
+- **Plan direction:** append a truthful correction to the cycle-39 plan naming the exact canonical
+  command, run it after the corrected closeout is present, and record only the resulting evidence.
+  Keep the checker and negative contracts intact.
+
+### AGG40-02 — exclusive selectors and one-shot MR actions expose checkbox semantics
+
+- **Severity / confidence:** Medium / High
+- **Source:** independent designer/controls audit
+- **Status:** confirmed accessibility interaction-model defect.
+- **Evidence:** `ui/controls/ProControls.kt:281-365,901-978` declares selector groups but renders
+  each exclusive option as Material3 `FilterChip`, whose composed role is Checkbox. The app adds a
+  description but does not replace that role. `ui/controls/ProSheet.kt:730-745` likewise renders the
+  one-shot MR Save/Update command as an always-unselected FilterChip. The true multi-select photo
+  format chips are the interaction model that should remain checkbox-like.
+- **Failure:** TalkBack or Switch Access presents P/S/ISO/M and other mutually exclusive choices as
+  independent checkboxes, while Save/Update sounds like persistent unchecked state instead of an
+  immediate button action.
+- **Plan direction:** give exclusive options radio-button semantics, the MR command button
+  semantics, retain checkbox semantics for genuine multi-select formats, and add composed-tree role
+  regressions for all three models.
+
+### AGG40-03 — manual rulers announce one changing value at two consecutive accessibility stops
+
+- **Severity / confidence:** Low / High
+- **Source:** independent designer/controls audit
+- **Status:** confirmed accessibility-noise defect.
+- **Evidence:** `ui/controls/ManualDials.kt:887-920,924-1268,1377-1389` emits a semantic
+  `RulerReadout` immediately before a fully named/value-described adjustable `RulerSlider`. The
+  settings slider already clears its mirrored visible header from semantics at
+  `ui/controls/ProControls.kt:404-427`.
+- **Failure:** every focus/shutter/ISO/WB/EV/zoom ruler makes assistive-technology users traverse and
+  hear the same live value twice before reaching the control.
+- **Plan direction:** make `RulerReadout` accessibility-decorative, leave the complete contract on
+  `RulerSlider`, and assert one value-bearing adjustable node per open ruler.
+
+### AGG40-04 — the debug snapshot host reintroduces the known system-bar contrast bug
+
+- **Severity / confidence:** Low / High
+- **Source:** independent designer
+- **Status:** confirmed debug visual-evidence defect; production `MainActivity` is correct.
+- **Evidence:** `app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt:59-72` calls bare
+  `enableEdgeToEdge()` under the unconditionally dark app theme. Production explicitly passes dark
+  status/navigation styles at `MainActivity.kt:245-258` after device evidence proved that the bare
+  call follows system night mode and can produce black icons on the dark viewfinder. The snapshot
+  device harness consumes this activity but does not check window appearance.
+- **Failure:** the supposedly deterministic visual fixture produces different, potentially unreadable
+  system chrome on system-light and system-dark devices, weakening screenshot evidence.
+- **Plan direction:** share the explicit dark-system-bar setup with the snapshot activity and add a
+  source contract rejecting a bare snapshot-host call.
+
+### AGG40-05 — Loupe Overview's live Compose comment asserts retired visibility and RTL laws
+
+- **Severity / confidence:** Low / High
+- **Sources:** critic/verifier, test-engineer/document-specialist (**cross-agent agreement**)
+- **Status:** confirmed maintainability/documentation-code mismatch; runtime behavior is correct.
+- **Evidence:** `ui/CameraScreen.kt:896-905` says the exact gate is Photo + 4:3 + TELE + punch-in and
+  says the border must not mirror to bottom-right. `camera/CameraState.kt:614-643` actually admits
+  TELE or unified zoom >= 3x, applies 4:3 only to Photo, and ignores still aspect in Video. The
+  right-inset geometry means RTL mirroring would incorrectly move the box to bottom-left. The
+  obsolete-contract scan at `tools/check_docs.py:1493-1507` omits `CameraScreen.kt`.
+- **Failure:** a maintainer following the nearest live-source guidance can remove valid Video or
+  converterless overview behavior or invert the physical RTL law while the documentation gate stays
+  green.
+- **Plan direction:** correct the comment to the shared predicate and absolute right-inset law, add
+  `CameraScreen.kt` to both Loupe contracts, and add a negative fixture for the stale wording.
+
+### AGG40-06 — rotation/mirroring KDoc misstates closed versus open field evidence
+
+- **Severity / confidence:** Low / High
+- **Source:** code-reviewer/architect
+- **Status:** confirmed source-authority drift; no runtime defect alleged.
+- **Evidence:** `camera/RotationMath.kt:172-180` calls held-landscape external-player validation an
+  open residual and points only to absent private `docs/BACKLOG.md`, while committed
+  `docs/FIELD_CHECKS.md:101-139` records B1 passed and rotation closed end to end.
+  `gl/FrontMirrorConvention.kt:38-58` correctly calls the rotated-window calibration open but again
+  points only to the absent backlog; committed A4 at `docs/FIELD_CHECKS.md:47-90` is the runnable
+  clean-clone authority.
+- **Failure:** clean-clone maintainers are directed to repeat closed B1 work while the real open A4
+  calibration is obscured next to sensitive sign/axis code.
+- **Plan direction:** cite committed B1 as closed and A4 as open in live KDoc, replace private-only
+  operational pointers, and contract-check the open/closed wording.
+
+### AGG40-07 — the top-level REC-border authority mandates a rejected radius multiplier
+
+- **Severity / confidence:** Low / High
+- **Source:** independent designer
+- **Status:** confirmed authority/source drift; current rendering follows the later device fix.
+- **Evidence:** `CLAUDE.md:380-384` instructs maintainers to scale the rounded-corner radius by 1.2,
+  while `ui/CameraScreen.kt:977-1001` deliberately uses the platform radius unscaled and records the
+  later 2026-07-29 device result that 1.2 turns the arc too early and leaves side gaps. The nearby
+  summary at `CLAUDE.md:389-391` no longer preserves the multiplier.
+- **Failure:** following the top-level authority restores the exact device-rejected REC border
+  geometry while host tests can stay green.
+- **Plan direction:** correct the authority to the unscaled `RoundedCorner.radius`, preserve the
+  device rationale, and add a narrow source/document contract rejecting the retired multiplier.
+
+### AGG40-08 — seven lint warnings remain neither fixed nor strictly deferred
+
+- **Severity / confidence:** Low / High
+- **Source:** test-engineer/document-specialist
+- **Status:** confirmed gate-hygiene and completion-evidence defect.
+- **Evidence:** current `:app:lintDebug` reports seven warnings: Compose `ModifierParameter` at
+  `ui/overlays/Overlays.kt:601-606`; `PluralsCandidate` at `res/values/strings.xml:74`;
+  `NotShrinkingResources` at `app/build.gradle.kts:563-566`; `UseKtx` at
+  `ui/review/MediaReview.kt:498-514`; and three `UseKtx` warnings at
+  `storage/MediaStoreWriter.kt:429-437,1402-1412`. None appears in the latest plan's strict warning
+  deferral record, while that plan claims no actionable warning appeared.
+- **Failure:** permanent gate noise hides newly introduced warnings and leaves completion evidence
+  inconsistent with the generated report.
+- **Plan direction:** root-fix all behavior-preserving warnings, preserving synchronous durability
+  and exact bitmap behavior; if any genuinely cannot be fixed, record its original lint identity,
+  reason, and reopening criterion under the strict deferred rules instead of suppressing it.
+
+## Agent failures
+
+None. Every available reviewer returned and wrote its provenance report.
+
+## Totals
+
+- Raw specialist findings: 12
+- Deduplicated current findings: 8
+- Severity: 2 Medium, 6 Low
+- Confidence: 8 High
+- Deferred findings: none at review stage; Prompt 2 must schedule or explicitly defer every item.
+
+---
+
+<!-- Prior aggregate retained in place as non-destructive review history. -->
+
 # Aggregated deep review — cycle 39
 
 Date: 2026-08-24
