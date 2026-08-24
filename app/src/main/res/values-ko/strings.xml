@@ -212,7 +212,6 @@
     <string name="status_memory_slot_empty">%1$s: 비어 있음</string>
     <string name="status_memory_slot_loaded">%1$s 불러오기 완료</string>
     <string name="status_deleted">삭제했습니다</string>
-    <string name="status_some_files_not_deleted_retry_capture">일부 파일을 삭제하지 못했습니다. 촬영 결과를 열고 다시 시도하세요.</string>
     <string name="status_some_files_not_deleted_retry_gallery">일부 파일을 삭제하지 못했습니다. 갤러리에서 다시 시도하세요.</string>
     <string name="status_could_not_delete_file">파일을 삭제하지 못했습니다</string>
     <string name="value_phone">휴대폰</string>

@@ -133,7 +133,7 @@ class CameraViewModelRobolectricTest {
         assertEquals(1f, s.controls.zoomRatio)
     }
 
-    @Test fun `ordinary partial delete publishes survivor and capture retry from one decision`() {
+    @Test fun `ordinary partial delete restores survivor with ownership-safe gallery retry`() {
         val survivorUri = Uri.parse("content://media/survivor")
         val tracker = CaptureOutputTracker<Uri>(maxCaptureHistory = 4)
         assertTrue(
@@ -152,16 +152,16 @@ class CameraViewModelRobolectricTest {
         val plan = tracker.beginDelete(survivorUri)
         val survivor = checkNotNull(tracker.restoreDeleteSurvivors(plan, setOf(survivorUri)))
 
-        val delivery = resolveDeleteSurvivorDelivery(
+        val state = resolveDeleteSurvivorState(
             current = CameraUiState(),
             survivor = survivor,
             captureOutputs = tracker,
         )
 
-        assertEquals(DeleteRetryDestination.CAPTURE, delivery.retryDestination)
-        assertEquals(survivorUri, delivery.state.lastMediaUri)
-        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, delivery.state.lastMediaProvenance)
-        assertEquals(MediaDeleteScope.FILE_ONLY, delivery.state.lastMediaDeleteScope)
+        assertEquals(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY, deleteResultStatus(false))
+        assertEquals(survivorUri, state.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, state.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, state.lastMediaDeleteScope)
     }
 
     @Test fun `superseded delete survivor preserves newer packet and selects gallery retry`() {
@@ -180,17 +180,22 @@ class CameraViewModelRobolectricTest {
             lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
         )
 
-        val delivery = resolveDeleteSurvivorDelivery(
+        val state = resolveDeleteSurvivorState(
             current = newerState,
             survivor = restored,
             captureOutputs = tracker,
         )
 
-        assertEquals(DeleteRetryDestination.GALLERY, delivery.retryDestination)
-        assertEquals(newerState, delivery.state)
-        assertEquals(newerUri, delivery.state.lastMediaUri)
-        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, delivery.state.lastMediaProvenance)
-        assertEquals(MediaDeleteScope.FILE_ONLY, delivery.state.lastMediaDeleteScope)
+        assertEquals(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY, deleteResultStatus(false))
+        assertEquals(newerState, state)
+        assertEquals(newerUri, state.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, state.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, state.lastMediaDeleteScope)
+    }
+
+    @Test fun `delete result reports success only when no survivor remains`() {
+        assertEquals(CameraStatusMessage.DELETED, deleteResultStatus(true))
+        assertEquals(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY, deleteResultStatus(false))
     }
 
     @Test fun `engine route publication installs explicit external truth without hidden tele`() {

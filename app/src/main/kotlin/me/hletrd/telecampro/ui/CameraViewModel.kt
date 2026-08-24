@@ -3373,25 +3373,19 @@ class CameraViewModel @JvmOverloads constructor(
                 )
             }
             mainHandler.post {
-                var survivorDelivery = DeleteSurvivorDelivery(
-                    state = _state.value,
-                    retryDestination = DeleteRetryDestination.GALLERY,
-                )
                 if (restored != null) {
                     _state.update { current ->
-                        resolveDeleteSurvivorDelivery(
+                        resolveDeleteSurvivorState(
                             current = current,
                             survivor = restored,
                             captureOutputs = captureOutputs,
-                        ).also { survivorDelivery = it }.state
+                        )
                     }
                 }
-                showStatus(
-                    when {
-                        survivors.isEmpty() -> CameraStatusMessage.DELETED.status()
-                        else -> survivorDelivery.retryDestination.message.status()
-                    },
-                )
+                // A later capture can replace review ownership immediately after the survivor
+                // decision. Gallery is the one retry route that stays truthful across that race;
+                // capture-specific copy would point at whichever newer thumbnail won.
+                showStatus(deleteResultStatus(survivors.isEmpty()).status())
             }
             } }.isSuccess
             if (!accepted) mainHandler.post { showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE) }
@@ -3637,33 +3631,19 @@ internal fun CameraUiState.withDeleteSurvivor(
     lastMediaDeleteScope = survivor.deleteScope,
 )
 
-/** Where the operator can reach a survivor after a partial asynchronous delete. */
-internal enum class DeleteRetryDestination(val message: CameraStatusMessage) {
-    CAPTURE(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_CAPTURE),
-    GALLERY(CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY),
-}
-
-/** One delivery-time decision for both last-capture publication and its matching retry copy. */
-internal data class DeleteSurvivorDelivery(
-    val state: CameraUiState,
-    val retryDestination: DeleteRetryDestination,
-)
-
-internal fun resolveDeleteSurvivorDelivery(
+/** Restores a survivor only while it still owns the review entry at StateFlow publication time. */
+internal fun resolveDeleteSurvivorState(
     current: CameraUiState,
     survivor: CaptureDeleteSurvivor<Uri>,
     captureOutputs: CaptureOutputTracker<Uri>,
-): DeleteSurvivorDelivery = if (captureOutputs.isCurrentReviewOutput(survivor.output)) {
-    DeleteSurvivorDelivery(
-        state = current.withDeleteSurvivor(survivor),
-        retryDestination = DeleteRetryDestination.CAPTURE,
-    )
-} else {
-    DeleteSurvivorDelivery(
-        state = current,
-        retryDestination = DeleteRetryDestination.GALLERY,
-    )
-}
+): CameraUiState = if (captureOutputs.isCurrentReviewOutput(survivor.output)) {
+    current.withDeleteSurvivor(survivor)
+} else current
+
+/** Gallery remains valid even if a newer capture replaces the in-app review owner. */
+internal fun deleteResultStatus(survivorsEmpty: Boolean): CameraStatusMessage =
+    if (survivorsEmpty) CameraStatusMessage.DELETED
+    else CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY
 
 /** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */
 internal fun cameraRoutePublishedState(

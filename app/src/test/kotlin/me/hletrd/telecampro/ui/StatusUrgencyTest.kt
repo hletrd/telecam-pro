@@ -35,7 +35,6 @@ class StatusUrgencyTest {
             CameraStatusMessage.DNG_SAVE_FAILED,
             CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE,
             CameraStatusMessage.COULD_NOT_DELETE_FILE,
-            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_CAPTURE,
             CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
         ).forEach {
             val status = it.status()

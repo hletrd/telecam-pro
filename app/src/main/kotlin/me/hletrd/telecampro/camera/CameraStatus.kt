@@ -63,7 +63,6 @@ enum class CameraStatusMessage {
     MEMORY_SLOT_EMPTY,
     MEMORY_SLOT_LOADED,
     DELETED,
-    SOME_FILES_NOT_DELETED_RETRY_CAPTURE,
     SOME_FILES_NOT_DELETED_RETRY_GALLERY,
     COULD_NOT_DELETE_FILE,
 }
@@ -163,7 +162,6 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.VIDEO_SAVE_FAILED,
         CameraStatusMessage.STANDBY_MICROPHONE_UNAVAILABLE,
         CameraStatusMessage.CUSTOM_WB_MEASUREMENT_FAILED,
-        CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_CAPTURE,
         CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
         CameraStatusMessage.COULD_NOT_DELETE_FILE,
         -> CameraStatusSeverity.ERROR
