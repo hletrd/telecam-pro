@@ -615,6 +615,25 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_committed_export_rejects_appops_gap_marked_open(self) -> None:
+        def restore_open_gap(root: Path) -> None:
+            path = root / "docs/play-console-submit.md"
+            text = path.read_text(encoding="utf-8")
+            marker = "This gap is closed in the current build"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(marker, "This is an open UX gap", 1),
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(restore_open_gap)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  historical AppOps matrix does not contradict the current blocked-camera disclosure",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_bare_snapshot_edge_to_edge(self) -> None:
         def restore_bare_edge_to_edge(root: Path) -> None:
             path = root / "app/src/debug/kotlin/me/hletrd/findx9tele/ui/UiSnapshotActivity.kt"

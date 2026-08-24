@@ -216,6 +216,12 @@ def png_metadata(relative: str) -> tuple[int, int, int, int] | None:
 # ---- store copy: Play's hard limits, and the wrapping trap -------------------------------------
 listing = read_private("docs/play-store-listing.md")
 submit = read("docs/play-console-submit.md")
+check(
+    "This is an open UX gap" not in submit
+    and "Historical pre-fix observation" in submit
+    and "This gap is closed in the current build" in submit,
+    "historical AppOps matrix does not contradict the current blocked-camera disclosure",
+)
 
 # The phone screenshot set is device evidence, not generic artwork. Its manifest pins the exact
 # checked-in bytes and the source copy those frames must show. A changed PNG or resource string must

@@ -383,13 +383,14 @@ impossible on half the tested encoder families, which is why `fc43953` and earli
 | `fc43953` and earlier | `Main`, `yuv420p` (8-bit) | `bt2020nc / arib-std-b67 / bt2020` — HLG claim |
 | this cut | `Main`, `yuv420p` | `bt709 / bt709 / bt709` — matches the stream |
 
-**A device may block the camera for ONE app while the permission reads granted.** The TB331FC
-arrived with `appops CAMERA: ignore` at the UID level and `REVOKED_COMPAT` on the permission, so
-`checkSelfPermission` returned GRANTED while `openCamera` was rejected with `Camera "0" disabled by
-policy` — the stock camera worked. The app did not crash and correctly disabled the shutter, but it
-said NOTHING, leaving a black viewfinder with no explanation. **This is an open UX gap** (see
-BACKLOG): the permission gate is satisfied, so the existing "Enable camera access in Settings" copy
-never appears. Realistic on managed/work devices and OEM privacy managers.
+**Historical pre-fix observation: a device may block the camera for ONE app while the permission
+reads granted.** On this matrix's superseded cut, the TB331FC arrived with `appops CAMERA: ignore` at
+the UID level and `REVOKED_COMPAT` on the permission, so `checkSelfPermission` returned GRANTED while
+`openCamera` was rejected with `Camera "0" disabled by policy` — the stock camera worked. That cut
+did not crash and correctly disabled the shutter, but it said nothing and left a black viewfinder.
+This gap is closed in the current build: the AppOps-confirmed path shows "Camera blocked for this app
+on this device." plus Settings, as recorded in the current release delta at lines 281–287 above.
+The original condition remains realistic on managed/work devices and OEM privacy managers.
 
 **Honesty limits of the Android 13 coverage.** It is an emulator with a synthetic camera, so it
 proves API-level compatibility, Camera2 enumeration, session bring-up, the encoder paths, and the
