@@ -106,6 +106,20 @@ class ModeRollbackOwnershipRobolectricTest {
     }
 
     @Test
+    fun `external permission surface releases and restores standby microphone ownership`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+        assertTrue(standbyWanted(engine))
+
+        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, true)
+        assertTrue(viewModel.state.value.cameraInputBlocked)
+        assertFalse(standbyWanted(engine))
+
+        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, false)
+        assertFalse(viewModel.state.value.cameraInputBlocked)
+        assertTrue(standbyWanted(engine))
+    }
+
+    @Test
     fun `failed Photo to Video restores SDR drops standby and Ready`() {
         val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
         assertFalse(standbyWanted(engine))

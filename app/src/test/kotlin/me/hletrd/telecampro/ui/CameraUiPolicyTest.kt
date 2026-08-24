@@ -44,7 +44,8 @@ class CameraUiPolicyTest {
                 me.hletrd.telecampro.camera.CaptureMode.VIDEO,
             audio: Boolean = true,
             recording: Boolean = false,
-        ) = standbyAudioMeterShouldRun(started, visible, mode, audio, recording)
+            unobscured: Boolean = true,
+        ) = standbyAudioMeterShouldRun(started, visible, mode, audio, recording, unobscured)
 
         assertTrue(allowed())
         assertFalse(allowed(visible = false))
@@ -52,6 +53,7 @@ class CameraUiPolicyTest {
         assertFalse(allowed(mode = me.hletrd.telecampro.camera.CaptureMode.PHOTO))
         assertFalse(allowed(audio = false))
         assertFalse(allowed(recording = true))
+        assertFalse(allowed(unobscured = false))
     }
 
     @Test

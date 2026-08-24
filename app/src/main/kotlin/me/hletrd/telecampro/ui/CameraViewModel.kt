@@ -1629,6 +1629,7 @@ class CameraViewModel private constructor(
             mode = s.mode,
             recordAudio = s.recordAudio,
             recording = s.isRecording,
+            unobscured = !s.cameraInputBlocked,
         )
         if (!forceRestart && enabled == standbyMeterEnabled) return
         standbyMeterEnabled = enabled
@@ -3504,12 +3505,17 @@ class CameraViewModel private constructor(
         // the important part: a newly composed CameraScreen may release COMPOSE_MODAL without
         // releasing an Activity-owned permission surface restored across recreation.
         if (blocked) cancelCountdown()
-        synchronized(cameraInputBlockOwnerLock) {
+        val changed = synchronized(cameraInputBlockOwnerLock) {
             val updated = cameraInputBlockOwnersAfter(cameraInputBlockOwners, owner, blocked)
-            if (updated == cameraInputBlockOwners) return
-            cameraInputBlockOwners = updated
-            _state.update { it.copy(cameraInputBlocked = updated.isNotEmpty()) }
+            if (updated == cameraInputBlockOwners) {
+                false
+            } else {
+                cameraInputBlockOwners = updated
+                _state.update { it.copy(cameraInputBlocked = updated.isNotEmpty()) }
+                true
+            }
         }
+        if (changed) refreshStandbyAudioMeter()
     }
 
     /**
@@ -4217,7 +4223,9 @@ internal fun standbyAudioMeterShouldRun(
     mode: CaptureMode,
     recordAudio: Boolean,
     recording: Boolean,
-): Boolean = lifecycleStarted && visible && mode == CaptureMode.VIDEO && recordAudio && !recording
+    unobscured: Boolean = true,
+): Boolean = lifecycleStarted && visible && unobscured &&
+    mode == CaptureMode.VIDEO && recordAudio && !recording
 
 /** A delayed async REC admission result may mutate only the optimistic UI attempt that submitted it. */
 internal fun recordingAttemptOwnsGeneration(
