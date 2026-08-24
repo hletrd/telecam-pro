@@ -198,7 +198,10 @@ internal class RecordingPreNativeAllocationAttempt<T : Any>(
         if (cancelNow) value.cancel()
     }
 
-    fun deliver(result: Result<T?>): RecordingPreNativeDelivery {
+    fun deliver(
+        result: Result<T?>,
+        onRetirementClaimed: () -> Unit = {},
+    ): RecordingPreNativeDelivery {
         var late: T? = null
         var retire = false
         val delivery = synchronized(lock) {
@@ -221,7 +224,7 @@ internal class RecordingPreNativeAllocationAttempt<T : Any>(
             }
         }
         late?.let(onLateValue)
-        if (retire) onRetired()
+        if (retire) completeRetirement(onRetirementClaimed)
         return delivery
     }
 
@@ -233,7 +236,7 @@ internal class RecordingPreNativeAllocationAttempt<T : Any>(
     }
 
     /** Returns true only for the edge that retired this attempt and released its admission owners. */
-    fun retire(): Boolean {
+    fun retire(onRetirementClaimed: () -> Unit = {}): Boolean {
         var late: T? = null
         var cancel: RecordingPreNativeCancellation? = null
         val retired = synchronized(lock) {
@@ -251,8 +254,17 @@ internal class RecordingPreNativeAllocationAttempt<T : Any>(
         if (!retired) return false
         cancel?.cancel()
         late?.let(onLateValue)
-        onRetired()
+        completeRetirement(onRetirementClaimed)
         return true
+    }
+
+    /** Publishes winner-only terminal effects before releasing result/admission observers. */
+    private fun completeRetirement(onRetirementClaimed: () -> Unit) {
+        try {
+            onRetirementClaimed()
+        } finally {
+            onRetired()
+        }
     }
 
     internal fun isRetired(): Boolean = synchronized(lock) { state == State.RETIRED }

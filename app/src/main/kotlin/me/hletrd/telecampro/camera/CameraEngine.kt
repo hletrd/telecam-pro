@@ -4731,7 +4731,7 @@ class CameraEngine internal constructor(
                 ?: RECORDER_ALLOCATION_TIMEOUT_MS,
             failure = { java.util.concurrent.TimeoutException("Pending video allocation timed out") },
             onTimeout = { failure ->
-                if (attempt.retire()) {
+                attempt.retire {
                     android.util.Log.e("CameraEngine", "REC allocation timed out", failure)
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                 }
@@ -4754,13 +4754,15 @@ class CameraEngine internal constructor(
                     MediaStoreWriter.createPendingVideo(context, name, "video/mp4")
                 }
             }
-            when (attempt.deliver(result)) {
+            when (attempt.deliver(result) {
+                onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+            }) {
                 RecordingPreNativeDelivery.READY -> {
                     // The provider return and watchdog race independently. Only the deadline's
                     // completion winner may schedule native setup; a timeout that already flipped
                     // its state makes this allocated row stale even if onTimeout has not run yet.
                     if (!allocationDeadline.complete()) {
-                        if (attempt.retire()) {
+                        attempt.retire {
                             onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                         }
                         return@allocationTask
@@ -4821,13 +4823,13 @@ class CameraEngine internal constructor(
                             completeAttempt(ok)
                         }
                     }.isSuccess
-                    if (!continuationAccepted && attempt.retire()) {
-                        onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                    if (!continuationAccepted) {
+                        attempt.retire {
+                            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                        }
                     }
                 }
-                RecordingPreNativeDelivery.FAILED -> {
-                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
-                }
+                RecordingPreNativeDelivery.FAILED -> Unit
                 RecordingPreNativeDelivery.STALE -> Unit
             }
         }
@@ -4836,7 +4838,7 @@ class CameraEngine internal constructor(
                 ?: ProcessRecordingPreNativeAllocator.dispatch(allocationTask)
         }
             .getOrElse { failure ->
-                if (attempt.retire()) {
+                attempt.retire {
                     android.util.Log.e("CameraEngine", "REC allocation dispatch failed", failure)
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                 }
@@ -4848,7 +4850,9 @@ class CameraEngine internal constructor(
             RecordingPreNativeDispatch.OVERFLOW,
             RecordingPreNativeDispatch.SHUTDOWN,
             -> {
-                if (attempt.retire()) onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                attempt.retire {
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
             }
         }
         return true

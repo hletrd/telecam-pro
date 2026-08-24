@@ -156,6 +156,32 @@ class RecordingPreNativeAllocationTest {
     }
 
     @Test
+    fun `winner terminal effect precedes admission result for retire and failed delivery`() {
+        val retireEvents = mutableListOf<String>()
+        val retired = RecordingPreNativeAllocationAttempt<String>(
+            onRetired = { retireEvents += "result" },
+            onLateValue = { error("no value expected") },
+        )
+
+        assertTrue(retired.retire { retireEvents += "status" })
+        assertEquals(listOf("status", "result"), retireEvents)
+        assertFalse(retired.retire { error("loser callback must not run") })
+
+        val deliveryEvents = mutableListOf<String>()
+        val failed = RecordingPreNativeAllocationAttempt<String>(
+            onRetired = { deliveryEvents += "result" },
+            onLateValue = { error("failure must not invent a value") },
+        )
+        assertEquals(
+            RecordingPreNativeDelivery.FAILED,
+            failed.deliver(Result.failure(IllegalStateException("provider"))) {
+                deliveryEvents += "status"
+            },
+        )
+        assertEquals(listOf("status", "result"), deliveryEvents)
+    }
+
+    @Test
     fun `allocator saturation is bounded and canceled backlog frees capacity`() {
         val releaseWorkers = CountDownLatch(1)
         val workersEntered = CountDownLatch(2)
