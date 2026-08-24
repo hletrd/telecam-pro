@@ -175,6 +175,53 @@ private fun teleconverterProfileLabel(profile: TeleconverterProfile): String = s
     TeleconverterProfile.CUSTOM -> R.string.converter_custom
 })
 
+/**
+ * Production Phone declaration row shared by [LensTab] and its responsive contract tests.
+ *
+ * Keeping the catalog and localized labels inside this wrapper prevents a generic [DropdownRow]
+ * test from passing while the real Phone consumer is wired to a different option or resource.
+ */
+@Composable
+internal fun PhoneModelDropdown(
+    selected: PhoneModel,
+    onSelect: (PhoneModel) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val labels = PhoneModel.entries.associateWith { phoneModelLabel(it) }
+    DropdownRow(
+        label = stringResource(R.string.label_phone),
+        options = PhoneModel.entries,
+        selected = selected,
+        labelFor = labels::getValue,
+        onSelect = onSelect,
+        modifier = modifier,
+        enabled = enabled,
+    )
+}
+
+/** Production Converter declaration row, including the selected phone's compatible catalog. */
+@Composable
+internal fun TeleconverterProfileDropdown(
+    phone: PhoneModel,
+    selected: TeleconverterProfile,
+    onSelect: (TeleconverterProfile) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val options = phone.converters()
+    val labels = options.associateWith { teleconverterProfileLabel(it) }
+    DropdownRow(
+        label = stringResource(R.string.label_converter),
+        options = options,
+        selected = selected,
+        labelFor = labels::getValue,
+        onSelect = onSelect,
+        modifier = modifier,
+        enabled = enabled,
+    )
+}
+
 internal data class ProSheetTabSelection(val tab: ProSheetTab, val selected: Boolean)
 
 // (proSheetTabSelection/proSheetUsesSideLayout and the per-slot quick-Fn readout/dispatch live in
@@ -1247,12 +1294,8 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // converter decides the magnification. Dropdowns, not chips — the flat catalog of every brand's
     // optics read as a scrolling smear (user-rejected). Only the PHONE is ever resolved
     // automatically; passive glass cannot announce itself.
-    val phoneLabels = PhoneModel.entries.associateWith { phoneModelLabel(it) }
-    DropdownRow(
-        label = stringResource(R.string.label_phone),
-        options = PhoneModel.entries,
+    PhoneModelDropdown(
         selected = state.phoneModel,
-        labelFor = phoneLabels::getValue,
         onSelect = actions::onPhoneModel,
         enabled = rearOpticsMutable,
     )
@@ -1285,14 +1328,11 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             }
         },
     ) {
-        val converterLabels = state.phoneModel.converters().associateWith { teleconverterProfileLabel(it) }
-        DropdownRow(
-            label = stringResource(R.string.label_converter),
-            // Narrowed to this phone's kits plus the fits-anything entries, so a converter that
-            // cannot physically clamp on is not offerable in the first place.
-            options = state.phoneModel.converters(),
+        // Narrowed to this phone's kits plus the fits-anything entries, so a converter that cannot
+        // physically clamp on is not offerable in the first place.
+        TeleconverterProfileDropdown(
+            phone = state.phoneModel,
             selected = state.teleconverterProfile,
-            labelFor = converterLabels::getValue,
             onSelect = actions::onTeleconverterProfile,
             enabled = rearOpticsMutable,
         )
