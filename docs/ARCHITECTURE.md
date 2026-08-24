@@ -72,7 +72,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
 | `LaunchMediaRecoveryCoordinator.kt` | Process-wide single-flight launch recovery. Engine generations hold cancellable identity-keyed subscribers rather than workers. Recovery runs one bounded family/rejected-output preflight, independent 64-row `_ID`-ordered Images and Video pages, then indexed 64-entry durable-DISCARD pages. A separate process watchdog terminally exhausts the one worker after 120 s without interrupting or replacing a wedged provider call; its late return is inert and every current/later subscriber receives the same typed failure until process restart. Returned per-row failures retain their markers and advance only after the ordinary retry budget. |
 | `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. Only live still families enter this gate; video and restored families carry durable delete identity without claiming a late-still producer. The in-memory tombstone is synchronous, while family-journal durability runs on the ordered I/O lane. |
-| `RetainedStillDiscardDispatcher.kt` | Per-Engine closeable admission facade over one process-lifetime finite provider lane (two daemon workers + eight backlog slots) for retained deleted-still rows. Accepted tasks keep their exact old-Engine deletion identity; overflow/shutdown never run ContentResolver inline, and the durable family tombstone leaves refused work owned by launch recovery. |
+| `RetainedStillDiscardDispatcher.kt` | Per-Engine closeable admission facade over one process-lifetime finite provider lane (two daemon workers + eight backlog slots) for retained deleted-still rows. Accepted tasks keep their exact old-Engine deletion identity; overflow/shutdown never run ContentResolver inline. Ordinary refused row work remains launch-recovery-owned, while retirement overflow sets one process-conflated rescan signal that re-arms after worker completion and rechecks the bounded current-process family journal. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
@@ -119,6 +119,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ExternalNavigation.kt` | Typed framework boundary for Privacy Policy and app-settings launches. Distinguishes launched, unresolved, and security-blocked outcomes so managed-device failures cannot disappear silently. |
 | `ExternalNavigationUi.kt` | Localized assertive recovery UI for failed external navigation plus the bundled in-app privacy-policy fallback used when browser access is absent or blocked. |
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
+| `ViewModelMediaDeleteDispatcher.kt` | Per-ViewModel closeable facade over one process-lifetime ordered provider lane (one daemon worker + eight backlog slots) for review-family and rejected-late-sibling deletion. Replacement cannot multiply capacity; overflow/shutdown runs nothing inline and leaves the durable family marker as recovery truth, while file-only refusal restores its exact retry handle. |
 | `LocalizedStatus.kt` / `LocalizedLabels.kt` / `controls/LocalizedControlLabels.kt` | Presentation-time English/Korean resource resolution for typed statuses and domain/control identities. |
 | `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids, canonical `CaptureFamilyKey`, media kind, delete scope, and every processed/RAW sibling. Family truth is registered before still callbacks or video allocation. It distinguishes live-still late producers from video/restored families, seeds canonical prior-process identity below live ids, and pins one open-review family outside ordinary history. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
@@ -250,13 +251,14 @@ Two critical consequences of the afocal converter drive the entire design:
 |---|---|---|
 | **Main (UI)** | Android framework | Compose recomposition, ViewModel StateFlow updates, lifecycle callbacks (onStart/onStop). |
 | **mainHandler work** (main-thread Handler) | CameraViewModel | Lifecycle-owned periodic record/level/orientation/info updates, bounded zoom easing, and transient countdown/reticle work. `onStart` owns recurring registration and `onStop` removes it. |
+| **review media-delete dispatcher** (process-wide one worker + eight FIFO backlog slots) | `ProcessViewModelMediaDeleteOwner`; each CameraViewModel owns one closeable admission facade | Serial exact-family sweeps, known-output deletes, and rejected-late-sibling disposal. Accepted old-ViewModel work keeps its frozen identity; replacement shares the same finite capacity. Refusal never blocks or calls MediaProvider inline: a whole-family marker stays durable for recovery, file-only review ownership is restored for retry, and terminal UI copy points to Gallery. |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
 | **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and invokes the synchronous DNG byte write while the RAW Image is valid. |
 | **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, and serialized generation-owned mode/lens/session reconfiguration. Debug diagnostics are queued behind the initial route/open work. |
 | **ioExecutor** (single-thread) | CameraEngine / StillCapturePipeline | Deferred processed-still decoding, crop/rotation, shared HEIF/JPEG EXIF composition, encoding, processed publication, and mixed-output/sequence DNG publication after the live-Image write is complete. |
 | **still-publication dispatcher** (process-wide two workers + two backlog slots) | `ProcessStillPublicationOwner`; CameraEngine owns one closeable admission facade | RAW-only SINGLE DNG publication after synchronous byte write and COMPLETE-marker attempt. Admission is non-blocking and finite across Engine generations. Accepted tails retain exact capture-family callback identity; their final marker check, provider publication, and saved callback run under the process-wide exact-family authority shared with Delete. Overflow/facade shutdown reports delayed recovery, terminally releases the live family continuation, leaves complete bytes private, and never calls MediaProvider inline. |
 | **media-recovery executor** (one process-wide daemon + one watchdog daemon) | `ProcessLaunchMediaRecovery`; Engines own cancellable subscribers | Single-flight launch-only recovery with bounded retry/backoff: one family/rejected-output preflight, independent 64-row monotonic Images and Video pages, then indexed SQLite DISCARD pages that read at most 65 rows. Legacy import commits once before paging; failed preference cleanup never repeats the full import. DISCARD-authority unavailability retains the row and retries as QUERY before any probe/adoption/publication. An exhausted returned-failure page retains its markers and advances. A separate 120 s watchdog terminally poisons a non-returning provider worker without interrupting or replacing it, makes late completion inert, and delivers the same typed failure to every current/later subscriber until process restart; that terminal still gates the safe latest-family query. |
-| **retained-still discard dispatcher** (process-wide two workers + eight backlog slots) | `ProcessRetainedStillDiscardOwner`; CameraEngine owns one closeable admission facade | Provider retirement/discard for completed late stills and every deleted-family retirement recheck. Retirement never enters the Engine's unbounded still-encoding queue, so independently completed RAW tails cannot accumulate behind a wedged encode. Accepted old-Engine work finishes under its exact deletion owner. A process producer registered before release may submit its final retirement recheck directly to this same finite lane after the old facade closes. Overflow or facade shutdown performs no inline provider work; the durable family tombstone remains the launch-recovery continuation. |
+| **retained-still discard dispatcher** (process-wide two workers + eight backlog slots + one conflated retirement-rescan signal) | `ProcessRetainedStillDiscardOwner`; CameraEngine owns one closeable admission facade | Provider retirement/discard for completed late stills and every deleted-family retirement recheck. Retirement never enters the Engine's unbounded still-encoding queue, so independently completed RAW tails cannot accumulate behind a wedged encode. Accepted old-Engine work finishes under its exact deletion owner. A process producer registered before release may submit its final retirement recheck directly to this same finite lane after the old facade closes. Ordinary discard overflow remains durably launch-recovery-owned. Retirement overflow performs no inline provider work: one constant-memory signal re-arms after capacity frees, scans at most the journal's 64 current-process markers, and re-evaluates each exact family's producer/publication leases and pending+published provider absence before removal. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Serial accepted-session/process-token preflight, post-allocation mic/native setup, and checked recorder drain/muxer/native-owner finalization. It dispatches but never performs pending-row allocation; Engine release waits only for current native classification, never for pre/post-native provider work. |
 | **recording pre-native allocation** (process-wide two workers + four backlog slots) | CameraEngine / `ProcessRecordingPreNativeAllocator` | Pending MediaStore video-row insert/registration before native setup. Its deadline is armed before dispatch; Stop, pause, release, or timeout retire admission without interrupting the uncancellable Binder call. Late results can only enter bounded cleanup/recovery. |
 | **recording-storage dispatcher** (process-wide two workers + eight FIFO backlog slots) | `ProcessRecordingStorageOwner`; CameraEngine owns one admission facade | Frozen post-native extractor validation and MediaStore COMPLETE/publish/delete tails. Admission is non-blocking; overflow/facade shutdown leaves the finalized pending row private for launch recovery. A blocked provider call cannot occupy the REC/native lane, and Engine recreation cannot multiply active workers or queued tails. |
@@ -423,9 +425,11 @@ Accessed from GL + audio/video threads:
   A same-route settings/MR recall normalizes against the installed caps before its terminal fast
   commit, uses that packet for Engine/controller/zoom state, and queues the generation-owned caps
   reconciliation before Ready. A structural recall waits for the target route's caps and normalizes
-  there; outgoing caps never clamp a different target route. Superseded callbacks are rejected by
-  optics generation. Request builders still set only advertised values and omit AE/AF regions when
-  the corresponding maximum is zero.
+  there; outgoing caps never clamp a different target route. Phone identity, converter/profile/custom
+  value, and host focal travel as one `TeleconverterDeclaration` in that transaction and its rollback
+  snapshot, keeping UI, MR rows, Engine shot optics, and EXIF input on the same packet. Superseded
+  callbacks are rejected by optics generation. Request builders still set only advertised values and
+  omit AE/AF regions when the corresponding maximum is zero.
 - **Capability-driven control admission**: one `ControlAvailability` projection derives visible enum
   choices and enablement from the same exact AE/AF/AWB, antibanding, edge, noise-reduction, effect,
   manual/range, flash, and region facts used by normalization. ProSheet filters its selectors;
@@ -1056,18 +1060,22 @@ before waiting. A publication keeps that authority through its marker decision, 
 and the saved callback. Thus a
 replacement Engine's Delete either commits first and routes the late row to durable DISCARD, or waits
 for the old publication to finish; in the latter ordering Delete's exact-name untracked-row sweep
-includes pending and published siblings, so the publication winner is still deleted. A queued
+includes pending and published siblings, so the publication winner is still deleted. The sweep
+reports discovered, deleted, unresolved, and query-failed state separately; terminal UI success
+requires both zero known survivors and an authoritative complete sweep, otherwise the durable marker
+is retained and the status offers the race-safe Gallery retry. A queued
 publication also prevents an absence proof from retiring its marker in front of it. Retirement seals
 a claim-free decision before slow marker removal; a later registrant waits without the global registry
 and begins only as a post-retirement admission. Only short
 registry/capacity bookkeeping is global; provider calls, callback work, and retry sleeps block only
 the exact family, preserving unrelated-family progress. Only a live still id enters the retained-
 late-sibling gate, so deleting video or restored media cannot poison still admission. Delete then
-attempts every known sibling and immediately rejects a late callback through durable DISCARD
-ownership. Provider disposal of that completed late still enters one process-lifetime two-worker/
-eight-backlog dispatcher through the Engine's closeable facade; overflow or Engine shutdown never
-falls back to inline ContentResolver work, because the durable family tombstone already owns retry at
-the next launch. If only some resolver
+routes the exact-family sweep plus every known sibling, and rejected late callbacks, through one
+process-lifetime ordered one-worker/eight-backlog provider lane shared by ViewModel generations.
+Overflow or ViewModel shutdown never falls back to inline ContentResolver work: the durable family
+tombstone owns retry at the next launch, while a refused file-only delete restores the exact review
+handle. Engine-owned disposal of a retained completed still separately enters the two-worker/
+eight-backlog retained-still dispatcher. If only some resolver
 deletions succeed, `restoreDeleteSurvivors` reconstructs the surviving subset under the original
 capture id and restores its best review owner with explicit retry copy; only a survivor that cannot be
 restored falls back to a Gallery retry message. RAW remains metadata-only in review; no Bayer decoding

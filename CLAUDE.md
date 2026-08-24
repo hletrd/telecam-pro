@@ -909,8 +909,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   values. Apply AE and AF metering regions independently only when each advertised maximum is positive;
   a zero maximum means omit that request key. Same-route settings/MR recall must normalize one complete
   packet against the installed route before its terminal commit and publish caps reconciliation before
-  Ready; structural recall waits for target-route caps, never outgoing caps. Restored settings and every
-  live update must show the value the selected camera can actually apply.
+  Ready; structural recall waits for target-route caps, never outgoing caps. The recalled phone,
+  converter/profile/custom value, and host focal are one declaration inside that generation-owned
+  packet: synchronous refusal mutates none of it, owned async failure restores all of it, and a
+  superseded rollback restores nothing. Restored settings and every live update must show the value
+  the selected camera can actually apply.
 - **Settings, Fn cycles, and quick rulers share one capability projection.** Build visible choices and
   entry flags from the exact AE/AF/AWB, antibanding, edge, noise-reduction, effect, flash, manual/range,
   and AE/AF-region facts used by request normalization. Filter ProSheet choices, cycle only inside the
