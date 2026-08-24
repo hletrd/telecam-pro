@@ -137,6 +137,8 @@ internal data class ReviewSpoolCleanupReport(
 internal class ReviewSpoolDirectoryOwner(
     private val processToken: String = UUID.randomUUID().toString().replace("-", "").take(16),
     private val scanLimit: Int = REVIEW_STALE_SPOOL_SCAN_LIMIT,
+    /** Deterministic create-race seam; production leaves it empty. */
+    private val beforeCreateDirectory: ((java.nio.file.Path) -> Unit)? = null,
 ) {
     init {
         require(processToken.matches(Regex("[0-9a-f]{16}"))) { "review spool token must be 16 hex characters" }
@@ -153,6 +155,7 @@ internal class ReviewSpoolDirectoryOwner(
         val path = directory.toPath()
         val attributes = runCatching {
             if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                beforeCreateDirectory?.invoke(path)
                 Files.createDirectory(path)
             }
             Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)

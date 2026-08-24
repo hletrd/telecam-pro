@@ -150,6 +150,20 @@ class ReviewSourceSpoolTest {
     }
 
     @Test
+    fun `ordinary unverified spool admits with production byte and process budget defaults`() {
+        val directory = temporaryFolder.newFolder("default-admission")
+
+        val source = requireNotNull(
+            spoolReviewSource(directory, ByteArrayInputStream(byteArrayOf(1, 2, 3))),
+        )
+
+        assertEquals(3L, source.sizeBytes)
+        assertArrayEquals(byteArrayOf(1, 2, 3), source.openInputStream().use { it.readBytes() })
+        source.close()
+        assertFalse(source.exists())
+    }
+
+    @Test
     fun `retired request keeps exact admission until its blocked worker cleans up`() = runBlocking {
         val directory = temporaryFolder.newFolder("retired")
         val budget = ReviewSourceByteBudget(12L)
@@ -230,6 +244,26 @@ class ReviewSourceSpoolTest {
         assertEquals(ReviewSpoolCleanupReport(examined = 1, deleted = 1), replacementOwner.cleanupReport())
         orphan.close() // releases the simulated dead process's test-only byte lease
         assertEquals(0L, budget.usedBytes())
+    }
+
+    @Test
+    fun `directory create race adopts the no-follow directory that won`() {
+        val cacheRoot = temporaryFolder.newFolder("create-race-cache")
+        var racedPath: java.nio.file.Path? = null
+        val owner = ReviewSpoolDirectoryOwner(
+            processToken = "bbbbbbbbbbbbbbbb",
+            beforeCreateDirectory = { path ->
+                racedPath = path
+                Files.createDirectory(path)
+            },
+        )
+
+        val location = requireNotNull(owner.prepare(cacheRoot))
+
+        assertEquals(racedPath, location.directory.toPath())
+        assertTrue(location.directory.isDirectory)
+        assertFalse(Files.isSymbolicLink(location.directory.toPath()))
+        assertEquals(ReviewSpoolCleanupReport(0, 0), owner.cleanupReport())
     }
 
     @Test
