@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -864,13 +865,6 @@ fun MediaReviewOverlay(
         }.isSuccess
     }
 
-    fun setReviewScale(target: Float): Boolean {
-        scale = target.coerceIn(1f, 12f)
-        offset = Offset.Zero
-        dismissDrag = 0f
-        return true
-    }
-
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
@@ -882,6 +876,33 @@ fun MediaReviewOverlay(
             },
         contentAlignment = Alignment.Center,
     ) {
+        val stillImage = (mediaState as? ReviewMediaState.Ready.Still)?.bitmap?.image
+        val stillGeometry = remember(
+            constraints.maxWidth,
+            constraints.maxHeight,
+            stillImage?.width,
+            stillImage?.height,
+        ) {
+            reviewStillGeometry(
+                viewportWidth = constraints.maxWidth,
+                viewportHeight = constraints.maxHeight,
+                bitmapWidth = stillImage?.width ?: 0,
+                bitmapHeight = stillImage?.height ?: 0,
+            )
+        }
+        val clampedReviewOffset = stillGeometry.clampOffset(offset, scale)
+        // Size/orientation and async decode transitions can change fitted travel without a pointer
+        // event. Draw with the derived clamp immediately, then publish it back into gesture state.
+        LaunchedEffect(stillGeometry, scale) {
+            if (offset != clampedReviewOffset) offset = clampedReviewOffset
+        }
+        fun setReviewScale(target: Float): Boolean {
+            val next = target.takeIf { it.isFinite() }?.coerceIn(1f, 12f) ?: 1f
+            scale = next
+            offset = stillGeometry.clampOffset(Offset.Zero, next)
+            dismissDrag = 0f
+            return true
+        }
         val bottomActionVisible =
             (videoInfo != null && playbackAction != null) || mediaState is ReviewMediaState.Ready.Still
         val metadataMaxWidth = reviewBottomMetadataMaxWidthDp(
@@ -893,7 +914,7 @@ fun MediaReviewOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-            .pointerInput(gestureMediaReady, videoInfo != null, playbackUiState) {
+            .pointerInput(gestureMediaReady, videoInfo != null, playbackUiState, stillGeometry) {
                 if (!gestureMediaReady) return@pointerInput
                 // ONE gesture loop owns pinch + pan + swipe-dismiss + tap/double-tap/long-press.
                 // Two sibling pointerInput blocks fought here exactly like CameraScreen's tap-vs-
@@ -902,7 +923,7 @@ fun MediaReviewOverlay(
                 // never fired. Merged, tap-vs-pinch-vs-drag is decided on finger-up (the pattern in
                 // CameraScreen.kt's viewfinder loop) and long-press/double-tap are timed inline.
                 val isVideo = videoInfo != null
-                var lastTapUptime = 0L
+                var firstTapCandidate: ReviewTapCandidate? = null
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downTime = down.uptimeMillis
@@ -929,9 +950,16 @@ fun MediaReviewOverlay(
                         if (event == null) {
                             // Long-press (stills): a motionless hold zooms 8× to the point; a later
                             // drag then pans (scale > 1) through the same loop.
-                            scale = 8f
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            offset = (center - down.position) * scale
+                            val previousScale = scale
+                            val previousOffset = offset
+                            val next = 8f
+                            scale = next
+                            offset = stillGeometry.centerOn(
+                                point = down.position,
+                                targetScale = next,
+                                currentScale = previousScale,
+                                currentOffset = previousOffset,
+                            )
                             longFired = true
                             continue
                         }
@@ -950,10 +978,15 @@ fun MediaReviewOverlay(
                         // Pinch-zoom is a stills-only focus check; a video plays at fit size.
                         if (!isVideo && zoom != 1f) {
                             zoomed = true
-                            scale = (scale * zoom).coerceIn(1f, 12f)
+                            val next = (scale * zoom).takeIf { it.isFinite() }
+                                ?.coerceIn(1f, 12f)
+                                ?: scale.takeIf { it.isFinite() }?.coerceIn(1f, 12f)
+                                ?: 1f
+                            scale = next
+                            offset = stillGeometry.clampOffset(offset, next)
                         }
                         if (scale > 1f) {
-                            offset += pan
+                            offset = stillGeometry.clampOffset(offset + pan, scale)
                             dismissDrag = 0f
                         } else {
                             offset = Offset.Zero
@@ -972,23 +1005,43 @@ fun MediaReviewOverlay(
                             if (playbackUiState != VideoPlaybackUiState.PREPARING) {
                                 toggleVideoPlayback()
                             }
-                        } else if (down.uptimeMillis - lastTapUptime < viewConfiguration.doubleTapTimeoutMillis) {
-                            // Double tap (stills): cycle review zoom, centered on the tap. Measured
-                            // first-tap-up → second-tap-down, matching detectTapGestures.
-                            val next = nextReviewScale(scale)
-                            scale = next
-                            offset = if (next <= 1f) Offset.Zero
-                            else (Offset(size.width / 2f, size.height / 2f) - tapPos) * next
-                            lastTapUptime = 0L
                         } else {
-                            // First tap of a potential double; a lone tap on a still does nothing.
-                            lastTapUptime = upTime
+                            val tapDecision = reviewTapSequenceDecision(
+                                previous = firstTapCandidate,
+                                cleanTap = true,
+                                downTimeMillis = downTime,
+                                upTimeMillis = upTime,
+                                position = tapPos,
+                                minimumIntervalMillis = viewConfiguration.doubleTapMinTimeMillis,
+                                maximumIntervalMillis = viewConfiguration.doubleTapTimeoutMillis,
+                                maximumDistance = viewConfiguration.touchSlop,
+                            )
+                            firstTapCandidate = tapDecision.nextCandidate
+                            if (tapDecision.isDoubleTap) {
+                                val previousScale = scale
+                                val previousOffset = offset
+                                val next = nextReviewScale(scale)
+                                scale = next
+                                offset = if (next <= 1f) Offset.Zero
+                                else stillGeometry.centerOn(
+                                    point = tapPos,
+                                    targetScale = next,
+                                    currentScale = previousScale,
+                                    currentOffset = previousOffset,
+                                )
+                            }
                         }
                         dismissDrag = 0f
-                    } else if (scale <= 1f) {
-                        if (abs(dismissDrag) > size.height * 0.16f) onClose() else dismissDrag = 0f
                     } else {
-                        dismissDrag = 0f
+                        // A drag, pinch, or long press owns this gesture and breaks any pending tap
+                        // pair; the next clean tap starts a fresh candidate.
+                        if (!isVideo) firstTapCandidate = null
+                        if (scale <= 1f) {
+                            if (abs(dismissDrag) > size.height * 0.16f) onClose()
+                            else dismissDrag = 0f
+                        } else {
+                            dismissDrag = 0f
+                        }
                     }
                 }
                 },
@@ -1227,27 +1280,21 @@ fun MediaReviewOverlay(
         } else {
         val still = mediaState as? ReviewMediaState.Ready.Still
         if (still != null) {
-            Image(
+            ReviewStillImage(
                 bitmap = still.bitmap.image,
                 contentDescription = stringResource(R.string.a11y_photo_review),
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        translationX = offset.x,
-                        translationY = offset.y + dismissDrag,
-                        alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
+                scale = scale,
+                offset = offset,
+                dismissDrag = dismissDrag,
+                geometry = stillGeometry,
+                modifier = Modifier.semantics {
+                    stateDescription = reviewZoomDescription
+                    customActions = listOf(
+                        CustomAccessibilityAction(zoom4Action) { setReviewScale(4f) },
+                        CustomAccessibilityAction(zoom8Action) { setReviewScale(8f) },
+                        CustomAccessibilityAction(resetZoomAction) { setReviewScale(1f) },
                     )
-                    .semantics {
-                        stateDescription = reviewZoomDescription
-                        customActions = listOf(
-                            CustomAccessibilityAction(zoom4Action) { setReviewScale(4f) },
-                            CustomAccessibilityAction(zoom8Action) { setReviewScale(8f) },
-                            CustomAccessibilityAction(resetZoomAction) { setReviewScale(1f) },
-                        )
-                    },
+                },
             )
         } else {
             val criticalState = when (val current = mediaState) {
@@ -1645,10 +1692,172 @@ private fun PlaybackGlyph(playing: Boolean) {
     }
 }
 
+/** Composed still transform; raw state is clamped again at the final draw boundary. */
+@Composable
+internal fun ReviewStillImage(
+    bitmap: ImageBitmap,
+    contentDescription: String,
+    scale: Float,
+    offset: Offset,
+    dismissDrag: Float,
+    geometry: ReviewStillGeometry,
+    modifier: Modifier = Modifier,
+    onTransformApplied: ((ReviewStillTransform) -> Unit)? = null,
+) {
+    val transform = reviewStillTransform(scale, offset, dismissDrag, geometry)
+    SideEffect { onTransformApplied?.invoke(transform) }
+    Image(
+        bitmap = bitmap,
+        contentDescription = contentDescription,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer(
+                scaleX = transform.scale,
+                scaleY = transform.scale,
+                translationX = transform.translation.x,
+                translationY = transform.translation.y,
+                alpha = transform.alpha,
+            )
+            .then(modifier),
+    )
+}
+
+internal data class ReviewStillTransform(
+    val scale: Float,
+    val translation: Offset,
+    val alpha: Float,
+)
+
+internal fun reviewStillTransform(
+    scale: Float,
+    offset: Offset,
+    dismissDrag: Float,
+    geometry: ReviewStillGeometry,
+): ReviewStillTransform {
+    val renderedScale = scale.takeIf { it.isFinite() }?.coerceIn(1f, 12f) ?: 1f
+    val translated = geometry.clampOffset(offset, renderedScale)
+    val safeDismissDrag = dismissDrag.takeIf { it.isFinite() } ?: 0f
+    return ReviewStillTransform(
+        scale = renderedScale,
+        translation = Offset(translated.x, translated.y + safeDismissDrag),
+        alpha = (1f - abs(safeDismissDrag) / 1400f).coerceIn(0.3f, 1f),
+    )
+}
+
 internal fun nextReviewScale(current: Float): Float = when {
     current < 1.5f -> 4f
     current < 6f -> 8f
     else -> 1f
+}
+
+/** Fitted still bounds in viewport pixels, shared by drawing and every gesture mutation. */
+internal data class ReviewStillGeometry(
+    val viewportWidth: Float,
+    val viewportHeight: Float,
+    val fittedWidth: Float,
+    val fittedHeight: Float,
+) {
+    fun panBounds(scale: Float): Offset {
+        val safeScale = scale.takeIf { it.isFinite() }?.coerceAtLeast(1f) ?: 1f
+        return Offset(
+            x = ((fittedWidth * safeScale - viewportWidth) / 2f).coerceAtLeast(0f),
+            y = ((fittedHeight * safeScale - viewportHeight) / 2f).coerceAtLeast(0f),
+        )
+    }
+
+    fun clampOffset(candidate: Offset, scale: Float): Offset {
+        if (!candidate.x.isFinite() || !candidate.y.isFinite()) return Offset.Zero
+        val bounds = panBounds(scale)
+        return Offset(
+            x = candidate.x.coerceIn(-bounds.x, bounds.x),
+            y = candidate.y.coerceIn(-bounds.y, bounds.y),
+        )
+    }
+
+    /** Centers the content under a viewport-space point across an arbitrary zoom transition. */
+    fun centerOn(
+        point: Offset,
+        targetScale: Float,
+        currentScale: Float = 1f,
+        currentOffset: Offset = Offset.Zero,
+    ): Offset {
+        if (!point.x.isFinite() || !point.y.isFinite()) return Offset.Zero
+        val safeTargetScale = targetScale.takeIf { it.isFinite() }?.coerceAtLeast(1f) ?: 1f
+        val safeCurrentScale = currentScale.takeIf { it.isFinite() }?.coerceAtLeast(1f) ?: 1f
+        val ownedOffset = clampOffset(currentOffset, safeCurrentScale)
+        val scaleChange = safeTargetScale / safeCurrentScale
+        val centered = Offset(
+            x = (viewportWidth / 2f - point.x + ownedOffset.x) * scaleChange,
+            y = (viewportHeight / 2f - point.y + ownedOffset.y) * scaleChange,
+        )
+        return clampOffset(centered, safeTargetScale)
+    }
+}
+
+/** Mirrors [ContentScale.Fit] for the bitmap drawn by the review Image. Invalid input fails closed. */
+internal fun reviewStillGeometry(
+    viewportWidth: Int,
+    viewportHeight: Int,
+    bitmapWidth: Int,
+    bitmapHeight: Int,
+): ReviewStillGeometry {
+    if (viewportWidth <= 0 || viewportHeight <= 0 || bitmapWidth <= 0 || bitmapHeight <= 0) {
+        return ReviewStillGeometry(0f, 0f, 0f, 0f)
+    }
+    val viewportW = viewportWidth.toFloat()
+    val viewportH = viewportHeight.toFloat()
+    val fitScale = minOf(viewportW / bitmapWidth, viewportH / bitmapHeight)
+    return ReviewStillGeometry(
+        viewportWidth = viewportW,
+        viewportHeight = viewportH,
+        fittedWidth = bitmapWidth * fitScale,
+        fittedHeight = bitmapHeight * fitScale,
+    )
+}
+
+internal data class ReviewTapCandidate(
+    val upTimeMillis: Long,
+    val position: Offset,
+)
+
+internal data class ReviewTapSequenceDecision(
+    val isDoubleTap: Boolean,
+    val nextCandidate: ReviewTapCandidate?,
+)
+
+/**
+ * One still-gesture owner's double-tap reducer. Non-tap gestures cancel the sequence; an invalid
+ * clean tap becomes the next first tap so ordinary tap chaining matches platform gesture behavior.
+ */
+internal fun reviewTapSequenceDecision(
+    previous: ReviewTapCandidate?,
+    cleanTap: Boolean,
+    downTimeMillis: Long,
+    upTimeMillis: Long,
+    position: Offset,
+    minimumIntervalMillis: Long,
+    maximumIntervalMillis: Long,
+    maximumDistance: Float,
+): ReviewTapSequenceDecision {
+    if (!cleanTap || !position.x.isFinite() || !position.y.isFinite()) {
+        return ReviewTapSequenceDecision(isDoubleTap = false, nextCandidate = null)
+    }
+    val interval = previous?.let { downTimeMillis - it.upTimeMillis }
+    val distance = previous?.let { (position - it.position).getDistance() }
+    val accepted = minimumIntervalMillis >= 0L &&
+        maximumIntervalMillis >= minimumIntervalMillis &&
+        previous != null && interval != null && distance != null &&
+        interval in minimumIntervalMillis..maximumIntervalMillis &&
+        maximumDistance.isFinite() && maximumDistance >= 0f && distance <= maximumDistance
+    return if (accepted) {
+        ReviewTapSequenceDecision(isDoubleTap = true, nextCandidate = null)
+    } else {
+        ReviewTapSequenceDecision(
+            isDoubleTap = false,
+            nextCandidate = ReviewTapCandidate(upTimeMillis, position),
+        )
+    }
 }
 
 internal fun reviewScaleLabel(scale: Float): String = when {
