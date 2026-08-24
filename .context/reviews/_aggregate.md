@@ -1,3 +1,130 @@
+# Aggregated deep review — cycle 53
+
+Date: 2026-08-25
+Reviewed revision: `fcf7ba2ca856fe8885373eb75677c3057173e6d6` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle53.cJwfCJ`
+
+## Coverage and aggregation
+
+Three parallel specialist lanes covered every required perspective: code-reviewer, performance-
+reviewer, security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. The team concurrency ceiling prevented separate
+workers for every title, so the required roles were explicitly combined rather than dropped. Each
+lane read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md`, inventoried all 546 tracked
+paths, examined its complete specialist surface and cross-file interactions, and performed a final
+missed-file sweep. Browser automation was not applicable to this native Jetpack Compose app, and
+device/deployment action was forbidden. Every reviewer returned; there were no agent failures.
+
+The reports produced six raw findings. The mutable app-owned review-source issue was independently
+confirmed by two lanes and is merged below at the highest confidence. The deduplicated result is five
+findings: one High and four Medium; all five have High confidence in the defective mechanism, while
+the destructive provider-reassignment precondition remains a device/manual evidence boundary.
+
+## Deduplicated findings
+
+### AGG53-01 — standby native acquisition can escape quarantine publication ownership
+
+- **Severity / confidence:** High / High.
+- **Source:** security-reviewer/debugger.
+- **Evidence:** `VideoRecorder.kt:1211-1243` returns only a momentary
+  `NativeAcquisitionResult.RETURNED_CURRENT` after leaving the process gate.
+  `StandbyAudioController.kt:531-584` binds a new input and publishes start completion only after
+  that result escapes the gate, while ordinary cleanup remains at `:642-648`. Quarantine may close
+  between the return and bind/`finishStart`. The stop-timeout path at
+  `StandbyAudioController.kt:238-251` conversely exposes `abandoned` before its production callback
+  closes process admission at `:659-672` / `VideoRecorder.kt:1431-1437`.
+- **Failure:** a create/start call returns current, quarantine wins before caller publication, then
+  the controller publishes or ordinarily cleans the input after native cleanup has been declared
+  unsafe. During a stop timeout, replacement acquisition can enter after abandonment but before
+  global quarantine closes, multiplying an uncertain graph.
+- **Fix direction:** make concrete create/start publication an exact process-gate transaction, with
+  a token that atomically commits the termination owner or classifies/retains it as revoked. Close
+  process admission and install strong retention before exposing stop-timeout abandonment or waking
+  logical waiters. Deterministically test both return-to-bind gaps and the timeout competition.
+
+### AGG53-02 — immediate DISCARD delete does not consume the identity it just persisted
+
+- **Severity / confidence:** Medium / High for the unsafe mechanism; real URI reuse remains a field
+  precondition.
+- **Source:** security-reviewer/debugger.
+- **Evidence:** `PendingDiscardJournal.kt:33-79` records the identity currently occupying a URI but
+  accepts no expected allocation/family identity. `MediaStoreWriter.kt:453-475` then calls ordinary
+  `delete(context, uri)`; `:827-849` uses `expectedIdentity = null`, so it is unconditional.
+  Identity-conditioned deletion exists only during later replay. The replay predicate omits nullable
+  expected owner/date columns instead of requiring `IS NULL`. Callers such as
+  `StillCapturePipeline.kt:382-396` possess a family key but pass only the URI.
+- **Failure:** a provider/gallery removes or reassigns row A before marker creation, or between marker
+  commit and immediate deletion. The caller can bless and/or unconditionally delete row B, then clear
+  A's marker. A remap differing only in a stored-null field can also evade the replay predicate.
+- **Fix direction:** carry immutable allocation/family identity into marker creation, return the
+  committed record, and use its full null-safe predicate for the immediate delete. Fail closed across
+  provider-version changes; test reassignment before mark and after mark/before delete.
+
+### AGG53-03 — DNG failure cleanup can block the Camera2 callback while the RAW Image stays live
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance/concurrency/tracer.
+- **Evidence:** `CameraEngine.kt:5076-5087` invokes synchronous `saveDng` from the Camera2 callback.
+  `StillCapturePipeline.kt:336-367` handles a failed write by calling `discardRejectedOutput(uri)`
+  before return. `MediaStoreWriter.kt:453-475,1597-1637` performs marker retries, sleeps, provider
+  delete/probe work, and exact-row identity/SQLite work synchronously. `CameraController.kt:2149-2193`
+  closes the RAW Image only after the app callback returns.
+- **Failure:** a partial DNG write plus slow or wedged MediaProvider holds an ImageReader slot and the
+  Camera2 handler while identity queries, retries, sleeps, delete, and probes run; repeating results,
+  watchdogs, 3A, and later captures queue behind it.
+- **Fix direction:** reserve a process-finite rejected-output cleanup owner before capture and hand
+  failed URIs to it after DNG byte work, so the camera callback can close the Image immediately while
+  durable fail-closed cleanup continues off-thread. Block the fake identity reader in a test and
+  prove callback/Image completion plus eventual exact cleanup ownership.
+
+### AGG53-04 — app-owned review reopens mutable provider bytes for bounds, pixels, and EXIF
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** code-reviewer/architect/critic/verifier/test-engineer and
+  security-reviewer/debugger.
+- **Evidence:** `MediaReview.kt:463-486` maps `APP_OWNED` provenance to
+  `FreshProviderReviewSource`; every `openInputStream()` resolves the provider again. Bounds, pixels,
+  and EXIF are opened independently at `:514-547`. `APP_OWNED` proves provider attribution, not
+  immutable bytes. `ReviewDecodeSourceTest.kt:28-59` requires three opens but keeps them byte-
+  identical; only the unverified spool has a mutation test.
+- **Failure:** bounds sees a small JPEG and selects `inSampleSize=1`; a consented gallery edit makes
+  the pixel open expose a 100–200 MP JPEG, so BitmapFactory attempts the full allocation before the
+  post-decode size check. A third byte identity can independently supply unrelated EXIF orientation.
+- **Fix direction:** consume one immutable compressed snapshot for every provenance class. Preserve
+  valid >64 MiB app-owned hi-res support with a disk-aware policy or truthful fallback, while bounds,
+  pixels, and EXIF share one frozen identity. Test alternating small/large/EXIF sources and a valid
+  above-64-MiB trusted fixture.
+
+### AGG53-05 — continuous debug telemetry exhausts the measured ColorOS log quota during A5
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance/concurrency/tracer/document/designer.
+- **Evidence:** `CameraController.kt:1060-1123` logs a full `3A:` row every 30 repeating results for
+  the lifetime of a debug session. `:1582-1609` can add one sustained-YUV row per second.
+  `CLAUDE.md:1054-1065` records a 300-row per-process ColorOS quota, while
+  `docs/FIELD_CHECKS.md:106-127` requires a ten-minute debug soak whose later gaps, errors, and
+  recovery evidence must survive.
+- **Failure:** 30 fps produces roughly 300 3A rows in five minutes before startup/session/fault rows;
+  even 15 fps reaches the budget during the ten-minute run. The optional one-Hz probe makes loss
+  faster, silently dropping the second half's evidence.
+- **Fix direction:** change-gate a bucketed compact 3A tuple with a long heartbeat and accumulate
+  sustained-YUV cadence into a bounded summary rather than per-second rows. Add a pure ten-minute
+  budget test covering continuous debug producers and reserving space for faults/gaps.
+
+## Verified non-findings and limits
+
+- Cycle-52 fixes for StateFlow policy ordering, rollback effects after monitor release, PNG bounds,
+  standby revoked/timeout classification, versioned DISCARD replay, stale spool cleanup, duplicate
+  Compose focus owners, and Korean release history are present and are not refiled.
+- The isolated baseline debug gate passed `:app:assembleDebug`, `:app:testDebugUnitTest`, and
+  `:app:lintDebug`. One reviewer independently passed the authoritative host gate; another passed
+  focused UI/review/storage/audio tests and documentation checks.
+- No device, deploy, MediaProvider reset, native fault injection, Camera2/GL fault injection,
+  physical converter, or production signing action ran. Field checks A3/A4/A5/D1/E1/E2/E3 remain
+  manual evidence obligations.
+
+---
+
 # Aggregated deep review — cycle 52
 
 Date: 2026-08-25
