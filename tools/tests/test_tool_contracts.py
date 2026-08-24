@@ -63,12 +63,15 @@ def run_documentation_gate_from_committed_export(
             "tools/build_immutable_release.py",
             "README.md",
             "CLAUDE.md",
+            "PRIVACY.md",
             "privacy-policy/index.html",
             "docs/ARCHITECTURE.md",
             "docs/FIELD_CHECKS.md",
             "device-tests/README.md",
             "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
             "app/src/debug/kotlin/me/hletrd/findx9tele/ui/CameraScreenPreview.kt",
+            "app/src/main/res/values/strings.xml",
+            "app/src/main/res/values-ko/strings.xml",
         ):
             shutil.copy2(REPO_ROOT / relative, staging / relative)
         if mutate is not None:
@@ -415,6 +418,31 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     stale: str = stale,
                 ) -> None:
                     path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(make_stale)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(failure, result.stdout)
+
+    def test_committed_export_rejects_privacy_fact_drift(self) -> None:
+        fixtures = (
+            (
+                "camera make and model",
+                "camera model",
+                "FAIL  PRIVACY.md discloses capture metadata and no location",
+            ),
+            (
+                "READ your library on this device",
+                "uses your library",
+                "FAIL  PRIVACY.md discloses on-device library read without transmission",
+            ),
+        )
+        for current, stale, failure in fixtures:
+            with self.subTest(failure=failure):
+                def make_stale(root: Path, current: str = current, stale: str = stale) -> None:
+                    path = root / "PRIVACY.md"
                     text = path.read_text(encoding="utf-8")
                     self.assertIn(current, text)
                     path.write_text(text.replace(current, stale, 1), encoding="utf-8")

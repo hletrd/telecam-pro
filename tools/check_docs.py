@@ -136,6 +136,11 @@ default_strings = {
     for element in ET.parse(ROOT / "app/src/main/res/values/strings.xml").getroot()
     if element.tag == "string"
 }
+korean_strings = {
+    element.attrib["name"]: "".join(element.itertext())
+    for element in ET.parse(ROOT / "app/src/main/res/values-ko/strings.xml").getroot()
+    if element.tag == "string"
+}
 required_current_copy = screenshot_manifest.get("required_current_copy", {})
 copy_mismatches = {
     key: (expected, default_strings.get(key))
@@ -314,6 +319,40 @@ check(
     ),
     "privacy docs disclose ownerless legacy candidates without an own-captures-only claim",
 )
+
+privacy_presentations = {
+    "PRIVACY.md": re.sub(r"\s+", " ", privacy_md).casefold(),
+    "privacy-policy/index.html": re.sub(r"\s+", " ", privacy_html).casefold(),
+    "English in-app policy": default_strings["privacy_fallback_body"].casefold(),
+    "Korean in-app policy": korean_strings["privacy_fallback_body"],
+}
+privacy_metadata_facts = {
+    "PRIVACY.md": ("camera make and model", "lens", "exposure", "time of the shot", "no location"),
+    "privacy-policy/index.html": (
+        "camera make and model", "lens", "exposure", "time of the shot", "no location",
+    ),
+    "English in-app policy": ("camera", "lens", "exposure", "time metadata", "no location"),
+    "Korean in-app policy": ("카메라", "렌즈", "노출", "촬영 시간", "위치 정보는 포함되지"),
+}
+privacy_library_facts = {
+    "PRIVACY.md": ("read your library on this device", "does not send anything anywhere"),
+    "privacy-policy/index.html": (
+        "read your library on this device", "does not send anything anywhere",
+    ),
+    "English in-app policy": (
+        "reads your library on this device only", "does not send anything anywhere",
+    ),
+    "Korean in-app policy": ("기기에서만 라이브러리를 읽으며", "어디에도 전송하지 않습니다"),
+}
+for label, presentation in privacy_presentations.items():
+    check(
+        all(fact in presentation for fact in privacy_metadata_facts[label]),
+        f"{label} discloses capture metadata and no location",
+    )
+    check(
+        all(fact in presentation for fact in privacy_library_facts[label]),
+        f"{label} discloses on-device library read without transmission",
+    )
 
 # ---- version facts must match the build, not a memory of it ------------------------------------
 gradle = read("app/build.gradle.kts")

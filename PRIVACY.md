@@ -32,10 +32,18 @@ Photos and videos are saved in `DCIM/TeleCamPro` through Android MediaStore. Uni
 removes its settings but leaves captures in shared media storage. TeleCam Pro does not upload or
 back up captures. Delete them in TeleCam Pro, a gallery app, or a file manager.
 
+Captures carry ordinary photographic metadata — camera make and model, lens, exposure, and the time
+of the shot — and no location. The app requests no location permission and writes no GPS tags, so a
+photo taken with it cannot record where you were.
+
 ## Data collection and sharing
 
 The app has no analytics, crash reporting, advertising, or tracking SDKs. It does not collect names,
 contacts, location, identifiers, or usage data.
+
+Granting photo and video access lets the app READ your library on this device; it does not send
+anything anywhere. The app has no Internet permission at all, so it has no way to transmit what it
+reads. The gallery applies the owner and legacy-format limits described above.
 
 ## Children
 
