@@ -72,8 +72,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
@@ -118,6 +120,11 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
@@ -131,6 +138,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.unifiedZoom
 import me.hletrd.telecampro.camera.AfIndication
 import me.hletrd.telecampro.camera.AspectRatio
@@ -352,6 +360,31 @@ internal fun Modifier.viewfinderFocusSemantics(
     }
 }
 
+internal fun Modifier.viewfinderKeyboardActions(
+    availability: ViewfinderFocusActionAvailability,
+    onFocusAtCenter: () -> Unit,
+    onResetFocusPoint: () -> Unit,
+): Modifier = this
+    .onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+            Key.Enter, Key.NumPadEnter, Key.Spacebar, Key.DirectionCenter -> {
+                if (!availability.focusAtCenter) return@onPreviewKeyEvent false
+                onFocusAtCenter()
+                true
+            }
+            Key.Backspace, Key.Delete -> {
+                if (!availability.resetFocusPoint) return@onPreviewKeyEvent false
+                onResetFocusPoint()
+                true
+            }
+            else -> false
+        }
+    }
+    .focusable(enabled = availability.focusAtCenter || availability.resetFocusPoint)
+
+private enum class ModalFocusOrigin { SETTINGS, FUNCTION_MENU, GALLERY }
+
 /**
  * One quiet state description on the durable viewfinder node.
  *
@@ -447,6 +480,11 @@ fun CameraScreen(
     // ProSheet, so the old tab's unkeyed remember survives unless this identity advances.
     var sheetOpenRequestId by remember { mutableLongStateOf(0L) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
+    val settingsFocusRequester = remember { FocusRequester() }
+    val functionMenuFocusRequester = remember { FocusRequester() }
+    val galleryFocusRequester = remember { FocusRequester() }
+    val focusRestoreScope = rememberCoroutineScope()
+    var modalFocusOrigin by remember { mutableStateOf<ModalFocusOrigin?>(null) }
     val currentActions = rememberUpdatedState(actions)
     val modalVisible = sheetVisible || fnOverlayVisible ||
         state.openReview != null || state.ownerlessDeleteConsentPending
@@ -455,6 +493,15 @@ fun CameraScreen(
     // CameraUiState so volume/camera/zoom/focus input cannot operate the hidden viewfinder behind it.
     LaunchedEffect(modalVisible) {
         currentActions.value.onCameraInputBlockedChange(modalVisible)
+    }
+    LaunchedEffect(state.openReview) {
+        if (state.openReview != null) {
+            if (modalFocusOrigin == null) modalFocusOrigin = ModalFocusOrigin.GALLERY
+        } else if (modalFocusOrigin == ModalFocusOrigin.GALLERY) {
+            modalFocusOrigin = null
+            repeat(2) { withFrameNanos { } }
+            galleryFocusRequester.requestFocus()
+        }
     }
     LaunchedEffect(detailsVisible, modalVisible) {
         val exposed = detailsVisible && !modalVisible
@@ -475,10 +522,20 @@ fun CameraScreen(
     }
 
     fun openSheet(tab: ProSheetTab) {
+        modalFocusOrigin = ModalFocusOrigin.SETTINGS
         currentActions.value.onCameraInputBlockedChange(true)
         sheetInitialTab = tab
         sheetOpenRequestId += 1L
         sheetVisible = true
+    }
+
+    fun restoreFocusAfterModal(requester: FocusRequester) {
+        focusRestoreScope.launch {
+            // One frame applies modal removal/finder re-enablement; the second addresses the opener
+            // after its focus target participates in the new tree.
+            repeat(2) { withFrameNanos { } }
+            requester.requestFocus()
+        }
     }
 
     fun selectManualDial(type: DialType) {
@@ -587,7 +644,9 @@ fun CameraScreen(
         modifier = modifier
             .fillMaxSize()
             .background(CameraColors.Background)
-            .finderFocusEnabled(!modalVisible)
+            // Apply the exclusion owner only while a modal exists. Leaving a canFocus=true parent
+            // focusProperties node installed after close intercepted exact opener requesters.
+            .then(if (modalVisible) Modifier.finderFocusEnabled(false) else Modifier)
             .then(if (modalVisible) Modifier.clearAndSetSemantics { } else Modifier),
     ) {
         // LIVE since 2026-08-04. This stayed dormant while "GL sampling, capture masks, tap mapping
@@ -721,15 +780,31 @@ fun CameraScreen(
                 levelRollDegrees = state.levelRoll,
                 deviceOrientation = state.deviceOrientation,
             )
+            var viewfinderKeyboardFocused by remember { mutableStateOf(false) }
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
+                    .onFocusChanged { viewfinderKeyboardFocused = it.isFocused }
+                    .then(
+                        if (viewfinderKeyboardFocused) {
+                            Modifier
+                                .border(3.dp, Color.Black)
+                                .border(1.dp, CameraColors.Accent)
+                        } else {
+                            Modifier
+                        },
+                    )
                     .viewfinderFocusSemantics(
                         contentDescription = a11yCameraViewfinder,
                         stateDescription = viewfinderStateDescription,
                         availability = focusActionAvailability,
                         focusAtCenterLabel = a11yFocusAtCenter,
                         resetFocusPointLabel = a11yResetFocusPoint,
+                        onFocusAtCenter = { currentActions.value.onTapFocus(0.5f, 0.5f) },
+                        onResetFocusPoint = { currentActions.value.onResetFocusPoint() },
+                    )
+                    .viewfinderKeyboardActions(
+                        availability = focusActionAvailability,
                         onFocusAtCenter = { currentActions.value.onTapFocus(0.5f, 0.5f) },
                         onResetFocusPoint = { currentActions.value.onResetFocusPoint() },
                     )
@@ -1211,6 +1286,7 @@ fun CameraScreen(
             onOpenSheet = {
                 openSheet(sheetInitialTab) // reopen to the remembered last tab
             },
+            settingsModifier = Modifier.focusRequester(settingsFocusRequester),
             compact = !detailsVisible,
             onToggleDisp = {
                 openManualDial = null
@@ -1269,9 +1345,11 @@ fun CameraScreen(
                 glyphRotation = overlayRotation,
                 compact = !detailsVisible,
                 onOpenFnMenu = {
+                    modalFocusOrigin = ModalFocusOrigin.FUNCTION_MENU
                     currentActions.value.onCameraInputBlockedChange(true)
                     fnOverlayVisible = true
                 },
+                fnButtonModifier = Modifier.focusRequester(functionMenuFocusRequester),
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
@@ -1302,18 +1380,21 @@ fun CameraScreen(
                         val entryAnchor = fnEntryAnchor(overlayRotation.roundToInt())
                         CompactFnButton(
                             onClick = {
+                                modalFocusOrigin = ModalFocusOrigin.FUNCTION_MENU
                                 currentActions.value.onCameraInputBlockedChange(true)
                                 fnOverlayVisible = true
                             },
                             glyphRotation = overlayRotation,
-                            modifier = when (entryAnchor) {
+                            modifier = Modifier
+                                .focusRequester(functionMenuFocusRequester)
+                                .then(when (entryAnchor) {
                                 FnEntryAnchor.START -> Modifier
                                     .align(AbsoluteAlignment.CenterLeft)
                                     .absolutePadding(left = 12.dp)
                                 FnEntryAnchor.END -> Modifier
                                     .align(AbsoluteAlignment.CenterRight)
                                     .absolutePadding(right = 12.dp)
-                            },
+                                }),
                         )
                     }
                 }
@@ -1339,6 +1420,7 @@ fun CameraScreen(
                 val onOpenReview = remember(reviewOpenUri) {
                     {
                         if (reviewOpenUri != null) {
+                            modalFocusOrigin = ModalFocusOrigin.GALLERY
                             currentActions.value.onReviewOpenChange(true, reviewOpenUri)
                             Unit
                         } else {
@@ -1358,6 +1440,7 @@ fun CameraScreen(
                     lastMediaUri = state.lastMediaUri,
                     lastMediaProvenance = state.lastMediaProvenance,
                     onOpenReview = onOpenReview,
+                    galleryModifier = Modifier.focusRequester(galleryFocusRequester),
                     reviewEnabled = reviewEnabled,
                     onShutter = onShutter,
                     onSnapshot = actions::onCapturePhoto,
@@ -1423,7 +1506,11 @@ fun CameraScreen(
             initialTab = sheetInitialTab,
             openRequestId = sheetOpenRequestId,
             onTabChange = { sheetInitialTab = it },
-            onDismiss = { sheetVisible = false },
+            onDismiss = {
+                sheetVisible = false
+                modalFocusOrigin = null
+                restoreFocusAfterModal(settingsFocusRequester)
+            },
             onSelectManualDial = ::selectManualDial,
         )
     }
@@ -1433,7 +1520,11 @@ fun CameraScreen(
             state = state,
             actions = actions,
             onSelectManualDial = ::selectManualDial,
-            onDismiss = { fnOverlayVisible = false },
+            onDismiss = {
+                fnOverlayVisible = false
+                modalFocusOrigin = null
+                restoreFocusAfterModal(functionMenuFocusRequester)
+            },
             glyphRotation = overlayRotation,
         )
     }
@@ -1565,6 +1656,7 @@ private fun TopBar(
     state: CameraUiState,
     actions: CameraActions,
     onOpenSheet: () -> Unit,
+    settingsModifier: Modifier = Modifier,
     compact: Boolean,
     onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1677,7 +1769,10 @@ private fun TopBar(
                 activeRoute = state.activeCameraRoute,
             )
             DispButton(infoHidden = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
-            GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
+            GearButton(
+                onClick = onOpenSheet,
+                modifier = settingsModifier.rotate(glyphRotation),
+            )
         }
     }
 }
@@ -3031,6 +3126,7 @@ private fun ShutterRow(
     lastMediaUri: android.net.Uri?,
     lastMediaProvenance: MediaProvenance,
     onOpenReview: () -> Unit,
+    galleryModifier: Modifier = Modifier,
     reviewEnabled: Boolean,
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
@@ -3053,7 +3149,7 @@ private fun ShutterRow(
             provenance = lastMediaProvenance,
             onClick = onOpenReview,
             enabled = reviewEnabled,
-            modifier = Modifier.align(Alignment.CenterStart).rotate(glyphRotation),
+            modifier = galleryModifier.align(Alignment.CenterStart).rotate(glyphRotation),
         )
         // The shutter/stop control is anchored at the EXACT box center so it never moves when the
         // in-REC snapshot dot appears (cycle-6 D-10: the old centered Row re-centered the pair at

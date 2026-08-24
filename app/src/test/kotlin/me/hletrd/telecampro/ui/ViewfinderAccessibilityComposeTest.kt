@@ -11,12 +11,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.requestFocus
+import androidx.compose.ui.test.isNotFocusable
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import java.util.Locale
@@ -157,6 +166,53 @@ class ViewfinderAccessibilityComposeTest {
             assertEquals(if (state == AfIndication.FOCUSED || state == AfIndication.FAILED) 1 else 0,
                 terminalAnnouncements)
         }
+    }
+
+    @Test
+    fun `viewfinder keyboard target performs admitted center and reset actions`() {
+        var focusActions = 0
+        var resetActions = 0
+        val availability = mutableStateOf(ViewfinderFocusActionAvailability(true, true))
+        compose.setContent {
+            LocalInputModeManager.current.requestInputMode(InputMode.Keyboard)
+            TeleCamProTheme {
+                Box(
+                    Modifier
+                        .size(200.dp)
+                        .testTag("keyboard-viewfinder")
+                        .viewfinderFocusSemantics(
+                            contentDescription = "Camera viewfinder",
+                            availability = availability.value,
+                            focusAtCenterLabel = "Focus at center",
+                            resetFocusPointLabel = "Reset focus point",
+                            onFocusAtCenter = { focusActions++ },
+                            onResetFocusPoint = { resetActions++ },
+                        )
+                        .viewfinderKeyboardActions(
+                            availability = availability.value,
+                            onFocusAtCenter = { focusActions++ },
+                            onResetFocusPoint = { resetActions++ },
+                        ),
+                )
+            }
+        }
+
+        val finder = compose.onNodeWithTag("keyboard-viewfinder")
+        finder.requestFocus().assertIsFocused().performKeyInput {
+            pressKey(Key.Enter)
+            pressKey(Key.Spacebar)
+            pressKey(Key.DirectionCenter)
+            pressKey(Key.Delete)
+            pressKey(Key.Backspace)
+        }
+        assertEquals(3, focusActions)
+        assertEquals(2, resetActions)
+
+        availability.value = ViewfinderFocusActionAvailability(false, false)
+        compose.waitForIdle()
+        compose.onNodeWithTag("keyboard-viewfinder").assert(isNotFocusable())
+        assertEquals(3, focusActions)
+        assertEquals(2, resetActions)
     }
 
     @Composable

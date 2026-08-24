@@ -219,6 +219,7 @@ fun ManualDialCluster(
     // No default: an empty lambda here silently disables the compact tray's only Fn entry point,
     // and a dead button is indistinguishable from a working one until it is pressed.
     onOpenFnMenu: () -> Unit,
+    fnButtonModifier: Modifier = Modifier,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
@@ -312,7 +313,8 @@ fun ManualDialCluster(
                 openDial = openDial,
                 onSelect = onSelectDial,
                 actions = actions,
-                onOpenFnMenu = onOpenFnMenu,
+            onOpenFnMenu = onOpenFnMenu,
+            fnButtonModifier = fnButtonModifier,
                 availability = availability,
                 glyphRotation = glyphRotation,
             )
@@ -327,6 +329,7 @@ private fun DialChipRow(
     onSelect: (DialType) -> Unit,
     actions: CameraActions,
     onOpenFnMenu: () -> Unit,
+    fnButtonModifier: Modifier,
     availability: ControlAvailability,
     glyphRotation: Float,
     modifier: Modifier = Modifier,
@@ -350,7 +353,11 @@ private fun DialChipRow(
             // the turn; there the already-rotated layout leaves this anchor at its raw start edge.
             val entryAnchor = fnEntryAnchor(glyphRotation.roundToInt())
             if (entryAnchor == FnEntryAnchor.START) {
-                CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+                CompactFnButton(
+                    onClick = onOpenFnMenu,
+                    glyphRotation = glyphRotation,
+                    modifier = fnButtonModifier,
+                )
             }
             Row(
                 modifier = Modifier
@@ -375,7 +382,11 @@ private fun DialChipRow(
                 }
             }
             if (entryAnchor == FnEntryAnchor.END) {
-                CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+                CompactFnButton(
+                    onClick = onOpenFnMenu,
+                    glyphRotation = glyphRotation,
+                    modifier = fnButtonModifier,
+                )
             }
         }
     }

@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui
 
 import android.content.Context
 import android.net.Uri
+import android.view.View
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.layout.Arrangement
@@ -31,16 +32,21 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import java.lang.reflect.Proxy
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.OpenReviewPresentation
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.WbMode
@@ -304,6 +310,119 @@ class ModalFocusComposeTest {
             .assertIsSelected()
         compose.onNodeWithText(context.getString(R.string.label_mode)).assertExists()
         compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_settings))
+            .assertIsFocused()
+    }
+
+    @Test
+    fun `production settings and Fn close restore their exact opener`() {
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    CameraScreen(
+                        state = CameraUiState(),
+                        actions = actions,
+                        previewViewFactory = { View(it) },
+                        windowRotationOverrideDeg = 0,
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val settings = compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_open_settings),
+        )
+        settings.requestFocus().performClick()
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_settings))
+            .assertIsFocused()
+            .performClick()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_open_settings),
+            useUnmergedTree = true,
+        )
+            .assertIsFocused()
+
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_open_settings))
+            .performClick()
+        compose.onRoot().performTouchInput { click(Offset(10f, 10f)) }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_open_settings),
+            useUnmergedTree = true,
+        ).assertIsFocused()
+
+        val functionMenu = compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_open_function_menu),
+        )
+        functionMenu.requestFocus().performClick()
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_function_menu))
+            .assertIsFocused()
+        compose.runOnIdle { backDispatcher.onBackPressed() }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_open_function_menu),
+            useUnmergedTree = true,
+        )
+            .assertIsFocused()
+    }
+
+    @Test
+    fun `production review close restores the gallery opener`() {
+        val uri = Uri.parse("content://telecam.invalid/focus-origin.jpg")
+        val state = mutableStateOf(
+            CameraUiState(
+                lastMediaUri = uri,
+                lastMediaProvenance = MediaProvenance.APP_OWNED,
+            ),
+        )
+        val reviewActions = Proxy.newProxyInstance(
+            CameraActions::class.java.classLoader,
+            arrayOf(CameraActions::class.java),
+        ) { _, method, args ->
+            if (method.name == "onReviewOpenChange") {
+                val open = args?.get(0) as Boolean
+                state.value = state.value.copy(
+                    openReview = if (open) {
+                        OpenReviewPresentation(
+                            uri = uri,
+                            provenance = MediaProvenance.APP_OWNED,
+                            deleteScope = MediaDeleteScope.FILE_ONLY,
+                        )
+                    } else {
+                        null
+                    },
+                )
+            }
+            if (method.returnType == java.lang.Boolean.TYPE) false else null
+        } as CameraActions
+        compose.setContent {
+            KeyboardMode {
+                TeleCamProTheme {
+                    CameraScreen(
+                        state = state.value,
+                        actions = reviewActions,
+                        previewViewFactory = { View(it) },
+                        windowRotationOverrideDeg = 0,
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val gallery = compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_review_last_photo),
+        )
+        gallery.requestFocus().performClick()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_review))
+            .assertIsFocused()
+            .performClick()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription(
+            context.getString(R.string.a11y_review_last_photo),
+            useUnmergedTree = true,
+        )
             .assertIsFocused()
     }
 }
