@@ -18,12 +18,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.channels.Channels
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -98,7 +98,13 @@ internal class ReviewSourceSpool(
 
     override fun openInputStream(): InputStream {
         check(!closed.get()) { "review source spool is closed" }
-        return FileInputStream(file)
+        return Channels.newInputStream(
+            Files.newByteChannel(
+                file.toPath(),
+                StandardOpenOption.READ,
+                LinkOption.NOFOLLOW_LINKS,
+            ),
+        )
     }
 
     internal fun exists(): Boolean = file.exists()
@@ -111,9 +117,11 @@ internal class ReviewSourceSpool(
 }
 
 internal const val REVIEW_SOURCE_MAX_BYTES = 64L * 1024L * 1024L
-internal const val REVIEW_SOURCE_PROCESS_MAX_BYTES = 2L * REVIEW_SOURCE_MAX_BYTES
+internal const val REVIEW_TRUSTED_SOURCE_MAX_BYTES = 512L * 1024L * 1024L
+internal const val REVIEW_SOURCE_PROCESS_MAX_BYTES = 2L * REVIEW_TRUSTED_SOURCE_MAX_BYTES
 internal const val REVIEW_SPOOL_DIRECTORY_NAME = "review-sources-v1"
 internal const val REVIEW_STALE_SPOOL_SCAN_LIMIT = 64
+private const val REVIEW_TRUSTED_DISK_SHARE = 4L
 private const val REVIEW_SPOOL_PREFIX = "review-source-"
 private val REVIEW_SPOOL_FILE = Regex("^review-source-[0-9a-f]{16}-[0-9]+\\.bin$")
 
@@ -202,6 +210,17 @@ internal val processReviewSourceBudget = ReviewSourceByteBudget(REVIEW_SOURCE_PR
 internal val processReviewSpoolDirectoryOwner = ReviewSpoolDirectoryOwner()
 
 /**
+ * A trusted app-owned still may be a full-sensor JPEG larger than the strict unverified ceiling.
+ * Admit at most one quarter of currently usable cache storage, capped at a bounded trusted
+ * snapshot. Even all four finite review workers cannot consume more than the free space they each
+ * observed, and the exact process byte budget independently admits at most two hard-cap sources.
+ */
+internal fun trustedReviewSourceMaxBytes(usableBytes: Long): Long {
+    if (usableBytes <= 0L) return 0L
+    return (usableBytes / REVIEW_TRUSTED_DISK_SHARE).coerceAtMost(REVIEW_TRUSTED_SOURCE_MAX_BYTES)
+}
+
+/**
  * Copies one provider source into an immutable private spool with per-source and process bounds.
  * Every failure path deletes the partial file and releases the exact bytes already admitted.
  */
@@ -222,7 +241,12 @@ internal fun spoolReviewSource(
         spoolFile = file
         var total = 0L
         val buffer = ByteArray(64 * 1024)
-        FileOutputStream(file).use { output ->
+        Files.newOutputStream(
+            file.toPath(),
+            StandardOpenOption.WRITE,
+            StandardOpenOption.TRUNCATE_EXISTING,
+            LinkOption.NOFOLLOW_LINKS,
+        ).use { output ->
             while (true) {
                 val read = input.read(buffer)
                 if (read < 0) break

@@ -460,20 +460,11 @@ internal fun reviewDecodeSampleSize(width: Int, height: Int, maxDim: Int): Int? 
 internal fun reviewDecodedFitsBound(width: Int, height: Int, maxDim: Int): Boolean =
     width > 0 && height > 0 && maxDim > 0 && width <= maxDim && height <= maxDim
 
-/** Package-owned published rows are immutable by contract, so every stage may open a fresh handle. */
-internal class FreshProviderReviewSource(
-    private val openProviderInput: () -> InputStream?,
-) : ReviewDecodeSource {
-    override fun openInputStream(): InputStream =
-        openProviderInput() ?: throw java.io.IOException("Review provider returned no input stream")
-
-    override fun close() = Unit
-}
-
 /**
- * Chooses the compressed-source trust boundary. Owner-unverified rows are copied once so bounds,
- * pixels, and EXIF cannot observe different provider bytes; app-owned published rows avoid a
- * whole-file compressed-size ceiling and use a fresh read-only handle for each stage.
+ * Freezes one compressed identity for bounds, pixels, and EXIF regardless of provenance.
+ * Owner-unverified rows keep the strict 64 MiB default. App-owned rows may use the larger trusted
+ * ceiling only when current private-cache capacity can retain it; refusal leaves the existing
+ * truthful failed-review/external-view fallback rather than reopening mutable provider bytes.
  */
 internal fun openReviewDecodeSource(
     cacheDirectory: File,
@@ -482,18 +473,21 @@ internal fun openReviewDecodeSource(
     unverifiedMaxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
     budget: ReviewSourceByteBudget = processReviewSourceBudget,
     spoolDirectoryOwner: ReviewSpoolDirectoryOwner = processReviewSpoolDirectoryOwner,
-): ReviewDecodeSource? = when (provenance) {
-    MediaProvenance.APP_OWNED -> FreshProviderReviewSource(openProviderInput)
-    MediaProvenance.LEGACY_FORMAT_UNVERIFIED -> spoolDirectoryOwner.prepare(cacheDirectory)?.let { location ->
-        openProviderInput()?.use { stream ->
-            spoolReviewSource(
-                cacheDirectory = location.directory,
-                input = stream,
-                maxBytes = unverifiedMaxBytes,
-                budget = budget,
-                filePrefix = location.filePrefix,
-            )
-        }
+): ReviewDecodeSource? {
+    val location = spoolDirectoryOwner.prepare(cacheDirectory) ?: return null
+    val maxBytes = when (provenance) {
+        MediaProvenance.APP_OWNED -> trustedReviewSourceMaxBytes(location.directory.usableSpace)
+        MediaProvenance.LEGACY_FORMAT_UNVERIFIED -> unverifiedMaxBytes
+    }
+    if (maxBytes <= 0L) return null
+    return openProviderInput()?.use { stream ->
+        spoolReviewSource(
+            cacheDirectory = location.directory,
+            input = stream,
+            maxBytes = maxBytes,
+            budget = budget,
+            filePrefix = location.filePrefix,
+        )
     }
 }
 

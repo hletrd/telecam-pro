@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.review
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
@@ -26,7 +27,7 @@ class ReviewDecodeSourceTest {
     val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun `trusted valid JPEG above unverified spool ceiling decodes through fresh handles`() {
+    fun `trusted valid JPEG above unverified spool ceiling decodes from one frozen spool`() {
         val cache = temporaryFolder.newFolder("trusted-cache")
         val jpeg = temporaryFolder.newFile("trusted-large.jpg")
         val seed = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).apply {
@@ -41,6 +42,7 @@ class ReviewDecodeSourceTest {
         RandomAccessFile(jpeg, "rw").use { file ->
             file.setLength(REVIEW_SOURCE_MAX_BYTES + 1L)
         }
+        val budget = ReviewSourceByteBudget(REVIEW_SOURCE_MAX_BYTES + 1L)
         var opens = 0
         val source = openReviewDecodeSource(
             cacheDirectory = cache,
@@ -49,14 +51,89 @@ class ReviewDecodeSourceTest {
                 opens++
                 FileInputStream(jpeg)
             },
+            budget = budget,
+            spoolDirectoryOwner = ReviewSpoolDirectoryOwner("3333333333333333"),
         )
 
-        val decoded = requireNotNull(source).use { decodeReviewBitmap(it, maxDim = 240) }
+        val frozen = requireNotNull(source) as ReviewSourceSpool
+        assertEquals(REVIEW_SOURCE_MAX_BYTES + 1L, frozen.sizeBytes)
+        assertEquals(REVIEW_SOURCE_MAX_BYTES + 1L, budget.usedBytes())
+        val decoded = frozen.use { decodeReviewBitmap(it, maxDim = 240) }
 
         assertNotNull(decoded)
         decoded?.recycle()
-        assertTrue("bounds, pixels, and EXIF need fresh provider handles", opens >= 3)
-        assertFalse(cache.listFiles().orEmpty().any { it.name.startsWith("review-source-") })
+        assertEquals("provider must be consumed once", 1, opens)
+        assertEquals(0L, budget.usedBytes())
+        assertTrue(File(cache, REVIEW_SPOOL_DIRECTORY_NAME).listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `trusted alternating provider freezes bounds pixels and EXIF from its first identity`() {
+        val cache = temporaryFolder.newFolder("trusted-alternating-cache")
+        val boundsSource = jpegFixture(
+            name = "small-bounds.jpg",
+            width = 16,
+            height = 24,
+            color = Color.BLUE,
+            orientation = ExifInterface.ORIENTATION_ROTATE_90,
+        )
+        val pixelSource = jpegFixture(
+            name = "large-pixels.jpg",
+            width = 64,
+            height = 32,
+            color = Color.RED,
+            orientation = ExifInterface.ORIENTATION_NORMAL,
+        )
+        val exifSource = jpegFixture(
+            name = "changed-exif.jpg",
+            width = 64,
+            height = 32,
+            color = Color.GREEN,
+            orientation = ExifInterface.ORIENTATION_ROTATE_180,
+        )
+        val identities = listOf(boundsSource, pixelSource, exifSource)
+        var opens = 0
+        val source = requireNotNull(
+            openReviewDecodeSource(
+                cacheDirectory = cache,
+                provenance = MediaProvenance.APP_OWNED,
+                openProviderInput = {
+                    FileInputStream(identities[opens.coerceAtMost(identities.lastIndex)]).also {
+                        opens++
+                    }
+                },
+                budget = ReviewSourceByteBudget(2L * 1024L * 1024L),
+                spoolDirectoryOwner = ReviewSpoolDirectoryOwner("4444444444444444"),
+            ),
+        )
+
+        val decoded = source.use { decodeReviewBitmap(it, maxDim = 128) }
+
+        assertEquals("later mutable provider identities must never be opened", 1, opens)
+        assertNotNull(decoded)
+        requireNotNull(decoded)
+        assertEquals(24, decoded.width)
+        assertEquals(16, decoded.height)
+        decoded.recycle()
+    }
+
+    @Test
+    fun `trusted disk policy admits hi res while retaining a bounded free space share`() {
+        val justAboveUnverified = REVIEW_SOURCE_MAX_BYTES + 1L
+
+        assertEquals(
+            justAboveUnverified,
+            trustedReviewSourceMaxBytes(justAboveUnverified * 4L),
+        )
+        assertEquals(
+            REVIEW_TRUSTED_SOURCE_MAX_BYTES,
+            trustedReviewSourceMaxBytes(Long.MAX_VALUE),
+        )
+        assertEquals(
+            2L * REVIEW_TRUSTED_SOURCE_MAX_BYTES,
+            REVIEW_SOURCE_PROCESS_MAX_BYTES,
+        )
+        assertEquals(0L, trustedReviewSourceMaxBytes(0L))
     }
 
     @Test
@@ -110,5 +187,27 @@ class ReviewDecodeSourceTest {
         assertEquals(1, opens)
         assertEquals(0L, budget.usedBytes())
         assertTrue(File(cache, REVIEW_SPOOL_DIRECTORY_NAME).listFiles().orEmpty().isEmpty())
+    }
+
+    private fun jpegFixture(
+        name: String,
+        width: Int,
+        height: Int,
+        color: Int,
+        orientation: Int,
+    ): File {
+        val file = temporaryFolder.newFile(name)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(color)
+        }
+        FileOutputStream(file).use { output ->
+            assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 95, output))
+        }
+        bitmap.recycle()
+        ExifInterface(file).apply {
+            setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            saveAttributes()
+        }
+        return file
     }
 }
