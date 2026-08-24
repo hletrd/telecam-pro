@@ -1728,7 +1728,12 @@ class CameraController(context: Context) {
      * zoom-out margin the GL crop needs, and writing that wide value into [controls] instead would
      * frame every still in the gesture ~17% wide.
      */
-    fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null, halZoom: Float? = null) {
+    fun setSmoothPreviewBoost(
+        active: Boolean,
+        finalZoom: Float? = null,
+        halZoom: Float? = null,
+        submitExactWhenFpsUnchanged: Boolean = true,
+    ) {
         postToCamera {
             // Land the caller's exact zoom INSIDE the same rebuild that flips the boost. The old
             // rebuild-then-correct order at gesture end submitted the stale start-edge wide aim
@@ -1739,9 +1744,9 @@ class CameraController(context: Context) {
             }
             val wire = halZoom ?: finalZoom
             if (smoothPreviewBoost == active) {
-                // Boost state already correct (duplicate gesture edge): still honor the exact zoom
-                // without a full rebuild.
-                if (wire != null) submitZoomFastPath(wire)
+                // A re-pinch inside the previous tail keeps the boost state but still needs its new
+                // edge target. A duplicate end after an exact quiet landing does not.
+                if (wire != null && submitExactWhenFpsUnchanged) submitZoomFastPath(wire)
                 return@postToCamera
             }
             smoothPreviewBoost = active
@@ -1755,9 +1760,18 @@ class CameraController(context: Context) {
             // `gestureActive` (ZSL refusal) and the next natural rebuild stay correct.
             // `caps` is lateinit: if the flip somehow precedes configure we cannot decide, so fall
             // through to the rebuild — the conservative side is the OLD behaviour, never a skip.
-            if (this::caps.isInitialized && !boostFlipChangesFpsDecision(pinAutoFps, controls, caps)) {
-                if (wire != null) submitZoomFastPath(wire)
-                return@postToCamera
+            val fpsDecisionChanges = if (this::caps.isInitialized) {
+                boostFlipChangesFpsDecision(pinAutoFps, controls, caps)
+            } else {
+                null
+            }
+            when (resolveZoomBoostFlipApply(fpsDecisionChanges, submitExactWhenFpsUnchanged)) {
+                ZoomBoostFlipApply.STATE_ONLY -> return@postToCamera
+                ZoomBoostFlipApply.FAST_PATH -> {
+                    if (wire != null) submitZoomFastPath(wire)
+                    return@postToCamera
+                }
+                ZoomBoostFlipApply.REBUILD -> Unit
             }
             // Rebuild path (video-P / flash-metered P only): startPreview derives the wire zoom from
             // `controls`, i.e. the EXACT ratio, so those two routes start a gesture without the

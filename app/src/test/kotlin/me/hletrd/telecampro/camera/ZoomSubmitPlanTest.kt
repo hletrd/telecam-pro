@@ -6,55 +6,52 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the HAL zoom-submit decision (moving suppression + wide aim) from CameraEngine.setZoomRatio.
+ * Pins moving suppression, the actual gesture-edge aim, and complete interaction-tail ownership.
  * These rules took three rounds of on-device "pinch stutter" reports to converge; a future edit to
- * the suppression rule, margin, or interaction branch must fail here, not on the device.
+ * the suppression, margin, landing, or end branch must fail here, not on the device.
  */
 class ZoomSubmitPlanTest {
 
     private val margin = 1.2f
-    private fun plan(
+    private fun plan(z: Float, active: Boolean) = resolveHalZoomSubmit(z, active)
+
+    private fun edge(
         z: Float,
-        active: Boolean,
         lower: Float? = 1f,
         upper: Float? = 10f,
-    ) = resolveHalZoomSubmit(z, active, margin, lower, upper)
+    ) = resolveZoomGestureEdgeTarget(z, margin, lower, upper)
 
     @Test
     fun `idle submit is exact and unconditional`() {
         val p = plan(3f, active = false)
         assertTrue(p.submitNow)
-        assertEquals(3f, p.halTarget, 0f)
+        assertEquals(3f, p.controlsZoomRatio, 0f)
     }
 
     @Test
-    fun `mid-gesture target aims wide by the margin`() {
-        val p = plan(6f, active = true)
-        assertEquals(6f / margin, p.halTarget, 1e-6f)
+    fun `actual start edge aims wide by the margin`() {
+        assertEquals(6f / margin, edge(6f), 1e-6f)
     }
 
     @Test
     fun `wide aim clamps at the range lower edge`() {
-        val p = plan(1.1f, active = true)
-        assertEquals(1f, p.halTarget, 0f) // 1.1/1.2 < lower → clamped
+        assertEquals(1f, edge(1.1f), 0f) // 1.1/1.2 < lower → clamped
     }
 
     @Test
     fun `wide aim clamps at the range upper edge`() {
-        val p = plan(13f, active = true)
-        assertEquals(10f, p.halTarget, 0f)
+        assertEquals(10f, edge(13f), 0f)
     }
 
     @Test
     fun `unknown range leaves the wide aim unclamped`() {
-        val p = plan(6f, active = true, lower = null, upper = null)
-        assertEquals(6f / margin, p.halTarget, 1e-6f)
+        assertEquals(6f / margin, edge(6f, lower = null, upper = null), 1e-6f)
     }
 
     @Test
     fun `inverted or non-finite range fails open instead of throwing`() {
-        assertEquals(5f, plan(6f, active = true, lower = 10f, upper = 1f).halTarget, 0f)
-        assertEquals(5f, plan(6f, active = true, lower = Float.NaN, upper = 10f).halTarget, 0f)
+        assertEquals(5f, edge(6f, lower = 10f, upper = 1f), 0f)
+        assertEquals(5f, edge(6f, lower = Float.NaN, upper = 10f), 0f)
         assertEquals(5f, clampToOrderedBounds(5f, Float.NEGATIVE_INFINITY, 10f), 0f)
     }
 
@@ -69,17 +66,9 @@ class ZoomSubmitPlanTest {
     }
 
     @Test
-    fun `a moving gesture still reports the wide aim for the edge that does submit`() {
-        // halTarget stays meaningful while suppressed: the gesture-START edge submits it to pre-buy
-        // the zoom-out margin the GL crop lives on for the rest of the gesture.
-        assertEquals(4f / margin, plan(4f, active = true).halTarget, 1e-6f)
-    }
-
-    @Test
-    fun `gesture end always submits regardless of elapsed time`() {
+    fun `idle tick submits regardless of elapsed time`() {
         val p = plan(4f, active = false)
         assertTrue(p.submitNow)
-        assertEquals(4f, p.halTarget, 0f)
     }
 
     // ---- controlsZoomRatio: the still-request truth (8e12013 exact-ratio invariant + AGG3-27) ----
@@ -91,7 +80,6 @@ class ZoomSubmitPlanTest {
     fun `mid-gesture wide aim still carries the exact ratio for stills`() {
         val p = plan(4f, active = true)
         assertFalse(p.submitNow)
-        assertEquals(4f / margin, p.halTarget, 1e-6f)
         assertEquals(4f, p.controlsZoomRatio, 0f)
     }
 
@@ -103,9 +91,78 @@ class ZoomSubmitPlanTest {
     }
 
     @Test
-    fun `idle submit carries the same exact ratio in both fields`() {
+    fun `idle submit carries the exact ratio`() {
         val p = plan(4f, active = false)
-        assertEquals(4f, p.halTarget, 0f)
         assertEquals(4f, p.controlsZoomRatio, 0f)
+    }
+
+    // ---- Complete start / quiet / re-pinch / end ownership -------------------------------
+
+    @Test
+    fun `fresh start submits an edge and end before quiet submits exact`() {
+        val start = startZoomInteraction()
+        assertTrue(start.next.active)
+        assertFalse(start.next.exactLanded)
+        assertTrue(start.submitExact)
+
+        val end = endZoomInteraction(start.next)
+        assertFalse(end.next.active)
+        assertTrue(end.submitExact)
+    }
+
+    @Test
+    fun `quiet landing owns exact so no-FPS end is state-only`() {
+        val start = startZoomInteraction()
+        val quiet = landQuietZoom(start.next)
+        assertTrue(quiet.submitExact)
+        assertTrue(quiet.next.exactLanded)
+
+        val end = endZoomInteraction(quiet.next)
+        assertFalse(end.submitExact)
+        assertEquals(ZoomInteractionState(), end.next)
+    }
+
+    @Test
+    fun `quiet timer outside an interaction is inert`() {
+        val quiet = landQuietZoom(ZoomInteractionState())
+        assertFalse(quiet.submitExact)
+        assertEquals(ZoomInteractionState(), quiet.next)
+    }
+
+    @Test
+    fun `repinch after quiet spends the landing and end must submit again`() {
+        val quiet = landQuietZoom(startZoomInteraction().next)
+        val repinch = startZoomInteraction()
+        assertTrue(quiet.next.exactLanded)
+        assertFalse(repinch.next.exactLanded)
+        assertTrue(endZoomInteraction(repinch.next).submitExact)
+    }
+
+    @Test
+    fun `no-FPS tail skips an already-landed exact submit`() {
+        assertEquals(
+            ZoomBoostFlipApply.STATE_ONLY,
+            resolveZoomBoostFlipApply(fpsDecisionChanges = false, submitExactWhenFpsUnchanged = false),
+        )
+    }
+
+    @Test
+    fun `no-FPS tail submits exact when quiet did not land`() {
+        assertEquals(
+            ZoomBoostFlipApply.FAST_PATH,
+            resolveZoomBoostFlipApply(fpsDecisionChanges = false, submitExactWhenFpsUnchanged = true),
+        )
+    }
+
+    @Test
+    fun `FPS-changing and unknown routes rebuild regardless of quiet landing`() {
+        assertEquals(
+            ZoomBoostFlipApply.REBUILD,
+            resolveZoomBoostFlipApply(fpsDecisionChanges = true, submitExactWhenFpsUnchanged = false),
+        )
+        assertEquals(
+            ZoomBoostFlipApply.REBUILD,
+            resolveZoomBoostFlipApply(fpsDecisionChanges = null, submitExactWhenFpsUnchanged = false),
+        )
     }
 }

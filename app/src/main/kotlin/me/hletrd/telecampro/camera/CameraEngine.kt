@@ -701,7 +701,7 @@ class CameraEngine internal constructor(
      * avoiding both the stale low-light FPS pin and a second corrective rebuild.
      */
     private fun finishRetainedControllerOpticsRemap(expectedController: CameraController) {
-        zoomInteractionActive = false
+        zoomInteractionState = ZoomInteractionState()
         gl.setZoomTarget(controls.zoomRatio)
         expectedController.commitRetainedOpticsControls(controls)
     }
@@ -1911,7 +1911,7 @@ class CameraEngine internal constructor(
         // rebuild) cannot leave the NEXT gesture's leading edge seeing a stale mid-gesture state
         // (AGG4-2 — the flag used to survive every mode/lens/TC remap and defeat the leading-edge
         // exact submit for one gesture).
-        zoomInteractionActive = false
+        zoomInteractionState = ZoomInteractionState()
         val ctrl = CameraController(context)
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
@@ -3873,25 +3873,24 @@ class CameraEngine internal constructor(
      * the loop re-converges to its preferred program point on its own (≤0.35 stop/tick).
      */
     fun setZoomInteraction(active: Boolean) {
-        zoomInteractionActive = active
-        // ONE submit per boost flip: the boost's own preview rebuild carries the current exact
-        // ratio, so no separate corrective submit runs. The old rebuild-then-correct order at
-        // gesture end paid two ~180 ms repeating-request stalls back to back AND transiently
-        // re-submitted the stale mid-gesture wide-aimed ratio — real frames and the video encoder
-        // saw the wrong framing for a beat. The start edge now carries the wide aim, every moving
-        // tick is GL-only, and the quiet landing or end edge carries the next exact HAL ratio.
-        // The STARTING edge carries the wide aim. Mid-gesture submits are suppressed entirely now
-        // (resolveHalZoomSubmit), so this is the only submit that can pre-buy the zoom-out margin
-        // the GL crop lives on for the rest of the gesture; the ENDING edge lands exact.
-        // `finalZoom` stays the exact ratio either way — it is the still-request truth.
+        val transition = if (active) startZoomInteraction() else endZoomInteraction(zoomInteractionState)
+        zoomInteractionState = transition.next
+        // Start carries the wide aim. Moving ticks are GL/still-truth only. A quiet timer can land
+        // exact before the boost tail ends; if it did, the no-FPS-change end clears state without
+        // resubmitting the identical ratio. Routes that restore FPS still rebuild at the end.
         val exact = controls.zoomRatio
         val wideAim = if (active) {
             val r = caps?.zoomRatioRange
-            clampToOrderedBounds(exact / ZOOM_GESTURE_MARGIN, r?.lower, r?.upper)
+            resolveZoomGestureEdgeTarget(exact, ZOOM_GESTURE_MARGIN, r?.lower, r?.upper)
         } else {
             null
         }
-        controller?.setSmoothPreviewBoost(active, finalZoom = exact, halZoom = wideAim)
+        controller?.setSmoothPreviewBoost(
+            active,
+            finalZoom = exact,
+            halZoom = wideAim,
+            submitExactWhenFpsUnchanged = transition.submitExact,
+        )
         // (The low-light frame-rate help lives in applyExposure's ALWAYS-on preview exposure cap —
         // an earlier gesture-scoped trade here mutated the real program values, so a still captured
         // right after a zoom inherited the traded short-exposure/high-ISO pair.)
@@ -3948,13 +3947,10 @@ class CameraEngine internal constructor(
         // lands the exact ratio. requestRatio still carries exact z so stills never inherit the aim.
         val plan = resolveHalZoomSubmit(
             requestedZoom = z,
-            interactionActive = zoomInteractionActive,
-            gestureMargin = ZOOM_GESTURE_MARGIN,
-            rangeLower = r?.lower,
-            rangeUpper = r?.upper,
+            interactionActive = zoomInteractionState.active,
         )
         if (plan.submitNow) {
-            controller?.setZoomRatio(plan.halTarget, requestRatio = plan.controlsZoomRatio)
+            controller?.setZoomRatio(plan.controlsZoomRatio)
         } else {
             // A swallowed tick must STILL update the controller's still-request truth: the
             // viewfinder (GL target) already frames z, and a shutter press during the gesture
@@ -3972,8 +3968,11 @@ class CameraEngine internal constructor(
      * are unchanged, so this does not recreate the back-to-back double-stall c92eada removed.
      */
     fun landExactZoom() {
-        if (!zoomInteractionActive) return
-        controller?.setZoomRatio(controls.zoomRatio)
+        val transition = landQuietZoom(zoomInteractionState)
+        if (!transition.submitExact) return
+        val currentController = controller ?: return
+        zoomInteractionState = transition.next
+        currentController.setZoomRatio(controls.zoomRatio)
     }
 
     /**
@@ -4008,7 +4007,7 @@ class CameraEngine internal constructor(
         controller?.noteRequestZoom(z)
     }
 
-    @Volatile private var zoomInteractionActive = false
+    @Volatile private var zoomInteractionState = ZoomInteractionState()
 
     // ---- Photo ----
 
@@ -6421,7 +6420,7 @@ class CameraEngine internal constructor(
         // clearer of this flag), so a background mid-gesture left it stale-true across the whole
         // next foreground session's first gesture (AGG4-2). Resume covers the no-reopen path
         // (controller still installed); wireController covers every reopen.
-        zoomInteractionActive = false
+        zoomInteractionState = ZoomInteractionState()
         coldStartRetryGate.cancel()
         gyro.start()
         if (!started) {

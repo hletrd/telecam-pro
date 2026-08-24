@@ -4,21 +4,18 @@ package me.hletrd.telecampro.camera
  * One HAL zoom-submit decision for a zoom tick (see [resolveHalZoomSubmit]).
  * [controlsZoomRatio] is the EXACT requested ratio the controller's still-request truth must carry
  * for this tick REGARDLESS of [submitNow] — a shutter press during a moving gesture must frame
- * what the viewfinder shows, never the previous tick's ratio and never the wide-aimed [halTarget].
+ * what the viewfinder shows, never the previous tick's ratio.
  */
 internal data class ZoomSubmitPlan(
-    val halTarget: Float,
     val submitNow: Boolean,
     val controlsZoomRatio: Float,
 )
 
 /**
- * The HAL half of a zoom tick, as a pure decision so suppression/wide-aim rules are unit-testable
+ * The HAL half of a zoom tick, as a pure decision so moving suppression is unit-testable
  * (this exact logic took three rounds of on-device "pinch stutter" reports to converge — see
  * CLAUDE.md's setRepeatingRequest-stall fact):
  *
- * - Mid-gesture the target is aimed slightly WIDE (÷[gestureMargin], clamped to the advertised
- *   range) so the GL crop keeps field for instant zoom-out.
  * - **A MOVING gesture submits NOTHING.** Device measurement 2026-07-27: 12 zoom submits over
  *   ~4.2 s stalled the preview for ≥1794 ms total (six gaps ≥200 ms, individual gaps to 413 ms,
  *   and gaps under 200 ms are not even logged) — the "frame rate drops while zooming" report. The
@@ -27,28 +24,74 @@ internal data class ZoomSubmitPlan(
  *   repeating-request SWAP itself and not to how tightly swaps are packed. So the fix is to stop
  *   swapping while the finger moves, not to space the swaps out. A ViewModel-owned quiet-window
  *   landing separately lands the exact ratio when the finger PAUSES.
- * - Outside a gesture (or the moment one ends) the EXACT ratio submits unconditionally.
+ * - Outside a gesture the EXACT ratio submits unconditionally.
  *
- * A moving gesture therefore costs exactly TWO swaps — one at each edge — instead of one per
- * A gesture therefore costs edge/landing swaps only, never periodic moving-tick swaps. The cost,
- * accepted deliberately: with no mid-gesture submit the HAL field is frozen at
- * the edge's wide-aimed target, so the preview softens progressively as the user zooms IN (GL is
- * upscaling) and runs out of field entirely if they zoom OUT past [gestureMargin]. The gesture-START
- * submit is what pre-buys that margin, which is why it must be the wide-aimed one.
+ * Gesture edge, quiet-landing, and boost-tail submissions have separate owners; this function does
+ * not model them. It only guarantees that periodic moving ticks never touch Camera2 while their
+ * exact ratio continues to update still-request truth.
  */
 internal fun resolveHalZoomSubmit(
     requestedZoom: Float,
     interactionActive: Boolean,
+): ZoomSubmitPlan = ZoomSubmitPlan(
+    submitNow = !interactionActive,
+    controlsZoomRatio = requestedZoom,
+)
+
+/** The actual gesture-start Camera2 target: pre-buy one bounded margin of wider source field. */
+internal fun resolveZoomGestureEdgeTarget(
+    exactZoom: Float,
     gestureMargin: Float,
     rangeLower: Float?,
     rangeUpper: Float?,
-): ZoomSubmitPlan {
-    val halTarget = if (interactionActive) {
-        val wide = requestedZoom / gestureMargin
-        clampToOrderedBounds(wide, rangeLower, rangeUpper)
+): Float = clampToOrderedBounds(exactZoom / gestureMargin, rangeLower, rangeUpper)
+
+internal data class ZoomInteractionState(
+    val active: Boolean = false,
+    val exactLanded: Boolean = false,
+)
+
+internal data class ZoomInteractionTransition(
+    val next: ZoomInteractionState,
+    val submitExact: Boolean,
+)
+
+/** A fresh edge, including a re-pinch during the old boost tail, spends the previous exact landing. */
+internal fun startZoomInteraction(): ZoomInteractionTransition = ZoomInteractionTransition(
+    next = ZoomInteractionState(active = true),
+    submitExact = true,
+)
+
+/** The quiet timer lands once only while an interaction is live. */
+internal fun landQuietZoom(state: ZoomInteractionState): ZoomInteractionTransition =
+    if (state.active) {
+        ZoomInteractionTransition(
+            next = state.copy(exactLanded = true),
+            submitExact = true,
+        )
     } else {
-        requestedZoom
+        ZoomInteractionTransition(next = state, submitExact = false)
     }
-    val submitNow = !interactionActive
-    return ZoomSubmitPlan(halTarget = halTarget, submitNow = submitNow, controlsZoomRatio = requestedZoom)
+
+/** End needs an exact zoom-only submit only when no quiet landing already put it on the wire. */
+internal fun endZoomInteraction(state: ZoomInteractionState): ZoomInteractionTransition =
+    ZoomInteractionTransition(
+        next = ZoomInteractionState(),
+        submitExact = state.active && !state.exactLanded,
+    )
+
+internal enum class ZoomBoostFlipApply {
+    STATE_ONLY,
+    FAST_PATH,
+    REBUILD,
+}
+
+/** Route-specific boost-tail work after exact-framing ownership is known. */
+internal fun resolveZoomBoostFlipApply(
+    fpsDecisionChanges: Boolean?,
+    submitExactWhenFpsUnchanged: Boolean,
+): ZoomBoostFlipApply = when {
+    fpsDecisionChanges != false -> ZoomBoostFlipApply.REBUILD
+    submitExactWhenFpsUnchanged -> ZoomBoostFlipApply.FAST_PATH
+    else -> ZoomBoostFlipApply.STATE_ONLY
 }
