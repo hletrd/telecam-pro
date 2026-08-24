@@ -1035,6 +1035,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   settles the live capture family exactly once and keeps the structurally complete private row for
   launch recovery; provider work never falls back inline and complete DNG bytes are never deleted for
   lack of live publication capacity.
+  A failed DNG write also does not turn into provider work on that callback: RAW admission reserves
+  one process-finite rejected-output slot before Camera2 dispatch, and the failure returns an exact
+  creation-time allocation packet to that two-worker/eight-backlog owner. MediaStore identity reads,
+  DISCARD SQLite commits, retry sleeps, delete/probe work, and completion callbacks therefore run
+  only after the live `Image` can close; saturation/shutdown keeps REGISTERED recovery truth and
+  never falls back inline.
 - **A logged `CameraAccessException` may have NO app frame in it — read the stack before believing
   the app did something (2026-08-09).** Rapid Photo↔Video / front-rear churn logs
   `E CameraCaptureSession: CAMERA_ERROR (3) ... Function not implemented (-38)`, which reads like an
@@ -1061,8 +1067,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `setRepeatingRequest` stalls and real wedges, and normal cadence is not news. (2) `StartupTrace`
   BUFFERS its marks and emits the whole cold start as ONE line at `finish()` — a requirement, not
   tidiness: per-mark logging gets silently eaten before it reaches logcat. Same rule for the
-  `FocusConfidence` trace (change-gated + 2 s heartbeat). **Any new per-frame or per-tick log must be
-  change-gated or thresholded.** (This quota is also what made the removed OPPO CameraUnit SDK's
+  `FocusConfidence` trace (change-gated + 2 s heartbeat). The debug 3A trace likewise samples a
+  bucketed state tuple, paces changes to at least 3 s, and uses a 15 s stable heartbeat (41 rows over
+  the ten-minute A5 soak; no more than 201 under continuous tuple changes). The sustained-YUV probe
+  accumulates cadence in constant memory and emits only enable + terminal summary rows. **Any new
+  per-frame or per-tick log must be change-gated or thresholded.** (This quota is also what made the removed OPPO CameraUnit SDK's
   200+ startup rows decisive — see that bullet.)
 - **Cold start is instrumented, and the measured budget is `resume → first camera frame ≈ 544 ms`
   (debug, 2026-07-25).** `camera/StartupTrace.kt` marks `openCamera → onOpened →
