@@ -43,4 +43,21 @@ class LevelDeviationTest {
         assertEquals(-20f, levelDeviationDegrees(350f, 10), 1e-4f)
         assertEquals(20f, levelDeviationDegrees(10f, 350), 1e-4f)
     }
+
+    @Test
+    fun `accessibility state is quiet and coarsened to level left and right buckets`() {
+        assertEquals(
+            HorizonAccessibilityState(HorizonAccessibilityDirection.LEVEL, 0),
+            horizonAccessibilityState(0.49f),
+        )
+        assertEquals(
+            HorizonAccessibilityState(HorizonAccessibilityDirection.LEFT, 5),
+            horizonAccessibilityState(-0.5f),
+        )
+        assertEquals(
+            HorizonAccessibilityState(HorizonAccessibilityDirection.RIGHT, 5),
+            horizonAccessibilityState(6.1f),
+        )
+        assertEquals(null, horizonAccessibilityState(Float.NaN))
+    }
 }

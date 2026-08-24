@@ -153,6 +153,9 @@
     <string name="a11y_autofocus_failed">자동 초점 실패</string>
     <string name="a11y_autofocus_searching">자동 초점 맞추는 중</string>
     <string name="a11y_focus_point">초점 지점</string>
+    <string name="a11y_horizon_level">수평 맞음</string>
+    <string name="a11y_horizon_tilt_left">왼쪽으로 %1$d° 기울어짐</string>
+    <string name="a11y_horizon_tilt_right">오른쪽으로 %1$d° 기울어짐</string>
     <string name="status_starting_camera">카메라를 시작하는 중…</string>
     <string name="status_preview_unavailable_reopen">미리보기를 사용할 수 없습니다. 앱을 다시 여세요.</string>
     <string name="status_preview_interrupted_recovering">미리보기가 중단되었습니다. 복구 중입니다.</string>

@@ -273,6 +273,41 @@ internal fun levelDeviationDegrees(rollDegrees: Float, deviceOrientation: Int): 
     return if (m > 180f) m - 360f else m
 }
 
+internal enum class HorizonAccessibilityDirection {
+    LEVEL,
+    LEFT,
+    RIGHT,
+}
+
+/**
+ * Quiet semantic projection of the continuously moving horizon gauge.
+ *
+ * The Canvas still follows the sensor exactly. Accessibility rounds a non-level result to
+ * five-degree buckets so a focus-inspected state does not churn at sensor rate; it deliberately is
+ * not a live region. The visual gauge's existing half-degree level threshold remains the one truth
+ * for the LEVEL state.
+ */
+internal data class HorizonAccessibilityState(
+    val direction: HorizonAccessibilityDirection,
+    val degrees: Int,
+)
+
+internal fun horizonAccessibilityState(deviationDegrees: Float): HorizonAccessibilityState? {
+    if (!deviationDegrees.isFinite()) return null
+    if (abs(deviationDegrees) < 0.5f) {
+        return HorizonAccessibilityState(HorizonAccessibilityDirection.LEVEL, 0)
+    }
+    val bucket = ((abs(deviationDegrees) / 5f).roundToInt() * 5).coerceIn(5, 180)
+    return HorizonAccessibilityState(
+        direction = if (deviationDegrees < 0f) {
+            HorizonAccessibilityDirection.LEFT
+        } else {
+            HorizonAccessibilityDirection.RIGHT
+        },
+        degrees = bucket,
+    )
+}
+
 /**
  * Horizon/level indicator. A static reference line marks true-horizontal; the [rollDegrees] line
  * rotates with device roll and turns YELLOW (Sony style) once within a small tolerance of level. In
@@ -329,6 +364,58 @@ internal enum class FocusReticleCue {
     CROSS,
 }
 
+internal data class FocusReticlePoint(val x: Float, val y: Float)
+
+internal data class FocusReticleSegment(
+    val start: FocusReticlePoint,
+    val end: FocusReticlePoint,
+)
+
+/** Exact line geometry and stroke ownership consumed by the terminal-cue Canvas draw. */
+internal data class FocusReticleCueGeometry(
+    val segments: List<FocusReticleSegment>,
+    val inkWidthPx: Float,
+    val keylineWidthPx: Float,
+)
+
+internal fun focusReticleCueGeometry(
+    cue: FocusReticleCue,
+    centerX: Float,
+    centerY: Float,
+    halfSizePx: Float,
+    inkWidthPx: Float,
+    keylineWidthPx: Float,
+): FocusReticleCueGeometry {
+    val segments = when (cue) {
+        FocusReticleCue.NONE -> emptyList()
+        FocusReticleCue.CHECK -> listOf(
+            FocusReticleSegment(
+                start = FocusReticlePoint(centerX - halfSizePx, centerY),
+                end = FocusReticlePoint(centerX - halfSizePx * 0.25f, centerY + halfSizePx * 0.7f),
+            ),
+            FocusReticleSegment(
+                start = FocusReticlePoint(centerX - halfSizePx * 0.25f, centerY + halfSizePx * 0.7f),
+                end = FocusReticlePoint(centerX + halfSizePx, centerY - halfSizePx * 0.8f),
+            ),
+        )
+        FocusReticleCue.CROSS -> listOf(
+            FocusReticleSegment(
+                start = FocusReticlePoint(centerX - halfSizePx, centerY - halfSizePx),
+                end = FocusReticlePoint(centerX + halfSizePx, centerY + halfSizePx),
+            ),
+            FocusReticleSegment(
+                start = FocusReticlePoint(centerX + halfSizePx, centerY - halfSizePx),
+                end = FocusReticlePoint(centerX - halfSizePx, centerY + halfSizePx),
+            ),
+        )
+    }
+    return FocusReticleCueGeometry(segments, inkWidthPx, keylineWidthPx)
+}
+
+internal val FocusReticleFocusedInk = Color(0xFF30D158)
+internal val FocusReticleFailedInk = Color(0xFFFF453A)
+internal val FocusReticleKeylineInk = Color.Black
+
 /** Non-color terminal-state channel kept pure so every AF state has deterministic coverage. */
 internal fun focusReticleCue(indication: AfIndication): FocusReticleCue = when (indication) {
     AfIndication.FOCUSED -> FocusReticleCue.CHECK
@@ -347,19 +434,14 @@ fun FocusReticle(
     // 300 mm this is the difference between a keeper and a soft frame the user can't judge on the
     // small live view. Yellow = tapped/scanning (the pre-verdict states).
     val color = when (indication) {
-        AfIndication.FOCUSED -> Color(0xFF30D158)
-        AfIndication.FAILED -> Color(0xFFFF453A)
+        AfIndication.FOCUSED -> FocusReticleFocusedInk
+        AfIndication.FAILED -> FocusReticleFailedInk
         AfIndication.SCANNING, AfIndication.IDLE -> CameraColors.ManualActive
     }
-    val focusDescription = stringResource(
-        when (indication) {
-            AfIndication.FOCUSED -> R.string.a11y_focus_locked
-            AfIndication.FAILED -> R.string.a11y_autofocus_failed
-            AfIndication.SCANNING -> R.string.a11y_autofocus_searching
-            AfIndication.IDLE -> R.string.a11y_focus_point
-        },
-    )
-    Canvas(modifier = modifier.semantics { contentDescription = focusDescription }) {
+    // Accessibility state belongs to the durable viewfinder identity in CameraScreen. This Canvas
+    // is visual-only; giving its fill-size caller another semantic identity created a second
+    // preview-sized focus stop, while FocusResultLiveRegion already owns terminal announcements.
+    Canvas(modifier = modifier) {
         val cx = point.first * size.width
         val cy = point.second * size.height
         val half = 32.dp.toPx()
@@ -380,39 +462,39 @@ fun FocusReticle(
             Offset(right, bottom) to Offset(right - corner, bottom),
             Offset(right, bottom) to Offset(right, bottom - corner),
         )
-        fun drawOutlinedLine(start: Offset, end: Offset, rounded: Boolean = false) {
+        fun drawOutlinedLine(
+            start: Offset,
+            end: Offset,
+            rounded: Boolean = false,
+            inkWidthPx: Float = strokeWidth,
+            keylineWidthPx: Float = outlineWidth,
+        ) {
             val cap = if (rounded) StrokeCap.Round else StrokeCap.Butt
             // Two-channel contrast over arbitrary preview pixels: bright state ink survives dark
             // detail, while its opaque black keyline survives bright or same-hue subjects.
-            drawLine(Color.Black, start, end, outlineWidth, cap = cap)
-            drawLine(color, start, end, strokeWidth, cap = cap)
+            drawLine(FocusReticleKeylineInk, start, end, keylineWidthPx, cap = cap)
+            drawLine(color, start, end, inkWidthPx, cap = cap)
         }
         bracketSegments.forEach { (start, end) -> drawOutlinedLine(start, end) }
 
         // Color remains the Sony-style fast glance channel; terminal geometry makes the same
         // verdict available to color-vision-deficient operators without adding prose to the finder.
-        val cueHalf = 9.dp.toPx()
-        when (focusReticleCue(indication)) {
-            FocusReticleCue.NONE -> Unit
-            FocusReticleCue.CHECK -> {
-                val start = Offset(cx - cueHalf, cy)
-                val middle = Offset(cx - cueHalf * 0.25f, cy + cueHalf * 0.7f)
-                val end = Offset(cx + cueHalf, cy - cueHalf * 0.8f)
-                drawOutlinedLine(start, middle, rounded = true)
-                drawOutlinedLine(middle, end, rounded = true)
-            }
-            FocusReticleCue.CROSS -> {
-                drawOutlinedLine(
-                    Offset(cx - cueHalf, cy - cueHalf),
-                    Offset(cx + cueHalf, cy + cueHalf),
-                    rounded = true,
-                )
-                drawOutlinedLine(
-                    Offset(cx + cueHalf, cy - cueHalf),
-                    Offset(cx - cueHalf, cy + cueHalf),
-                    rounded = true,
-                )
-            }
+        val cueGeometry = focusReticleCueGeometry(
+            cue = focusReticleCue(indication),
+            centerX = cx,
+            centerY = cy,
+            halfSizePx = 9.dp.toPx(),
+            inkWidthPx = strokeWidth,
+            keylineWidthPx = outlineWidth,
+        )
+        cueGeometry.segments.forEach { segment ->
+            drawOutlinedLine(
+                start = Offset(segment.start.x, segment.start.y),
+                end = Offset(segment.end.x, segment.end.y),
+                rounded = true,
+                inkWidthPx = cueGeometry.inkWidthPx,
+                keylineWidthPx = cueGeometry.keylineWidthPx,
+            )
         }
     }
 }

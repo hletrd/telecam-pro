@@ -162,6 +162,9 @@
     <string name="a11y_autofocus_failed">Autofocus failed</string>
     <string name="a11y_autofocus_searching">Autofocus searching</string>
     <string name="a11y_focus_point">Focus point</string>
+    <string name="a11y_horizon_level">Horizon level</string>
+    <string name="a11y_horizon_tilt_left">Horizon tilted left %1$d°</string>
+    <string name="a11y_horizon_tilt_right">Horizon tilted right %1$d°</string>
     <string name="status_starting_camera">Starting camera…</string>
     <string name="status_preview_unavailable_reopen">Preview unavailable. Reopen the app.</string>
     <string name="status_preview_interrupted_recovering">Preview interrupted. Recovering.</string>

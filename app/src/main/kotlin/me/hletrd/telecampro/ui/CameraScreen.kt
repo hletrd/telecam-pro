@@ -133,6 +133,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import me.hletrd.telecampro.camera.unifiedZoom
+import me.hletrd.telecampro.camera.AfIndication
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraUiState
@@ -194,11 +195,14 @@ import me.hletrd.telecampro.ui.overlays.FocusResultLiveRegion
 import me.hletrd.telecampro.ui.overlays.GridOverlay
 import me.hletrd.telecampro.ui.overlays.HistogramOverlay
 import me.hletrd.telecampro.ui.overlays.HudPlate
+import me.hletrd.telecampro.ui.overlays.HorizonAccessibilityDirection
 import me.hletrd.telecampro.ui.overlays.LevelOverlay
 import me.hletrd.telecampro.ui.overlays.RecordingIndicator
 import me.hletrd.telecampro.ui.overlays.StatusBar
 import me.hletrd.telecampro.ui.overlays.TimerCountdown
 import me.hletrd.telecampro.ui.overlays.WaveformOverlay
+import me.hletrd.telecampro.ui.overlays.horizonAccessibilityState
+import me.hletrd.telecampro.ui.overlays.levelDeviationDegrees
 import me.hletrd.telecampro.ui.review.GalleryThumb
 import me.hletrd.telecampro.ui.review.MediaReviewOverlay
 import me.hletrd.telecampro.ui.theme.CameraColors
@@ -325,6 +329,7 @@ internal fun SelfTimerCountdownOverlay(
 /** One semantics projection for the preview's capability-dependent focus commands. */
 internal fun Modifier.viewfinderFocusSemantics(
     contentDescription: String,
+    stateDescription: String? = null,
     availability: ViewfinderFocusActionAvailability,
     focusAtCenterLabel: String,
     resetFocusPointLabel: String,
@@ -332,6 +337,7 @@ internal fun Modifier.viewfinderFocusSemantics(
     onResetFocusPoint: () -> Unit,
 ): Modifier = semantics {
     this.contentDescription = contentDescription
+    stateDescription?.let { this.stateDescription = it }
     customActions = buildList {
         if (availability.focusAtCenter) {
             add(CustomAccessibilityAction(focusAtCenterLabel) {
@@ -345,6 +351,59 @@ internal fun Modifier.viewfinderFocusSemantics(
                 true
             })
         }
+    }
+}
+
+/**
+ * One quiet state description on the durable viewfinder node.
+ *
+ * AF keeps its current inspectable state here while [FocusResultLiveRegion] owns only terminal
+ * change announcements. The horizon uses five-degree buckets and no live region, so the sensor can
+ * update its Canvas freely without making accessibility speech chatter at frame rate.
+ */
+@Composable
+internal fun localizedViewfinderStateDescription(
+    afIndication: AfIndication,
+    afActive: Boolean,
+    levelEnabled: Boolean,
+    levelRollDegrees: Float,
+    deviceOrientation: Int,
+): String? {
+    val af = if (afActive) {
+        stringResource(
+            when (afIndication) {
+                AfIndication.FOCUSED -> R.string.a11y_focus_locked
+                AfIndication.FAILED -> R.string.a11y_autofocus_failed
+                AfIndication.SCANNING -> R.string.a11y_autofocus_searching
+                AfIndication.IDLE -> R.string.a11y_focus_point
+            },
+        )
+    } else {
+        null
+    }
+    val horizon = if (levelEnabled) {
+        horizonAccessibilityState(
+            levelDeviationDegrees(levelRollDegrees, deviceOrientation),
+        )?.let { state ->
+            when (state.direction) {
+                HorizonAccessibilityDirection.LEVEL -> stringResource(R.string.a11y_horizon_level)
+                HorizonAccessibilityDirection.LEFT -> stringResource(
+                    R.string.a11y_horizon_tilt_left,
+                    state.degrees,
+                )
+                HorizonAccessibilityDirection.RIGHT -> stringResource(
+                    R.string.a11y_horizon_tilt_right,
+                    state.degrees,
+                )
+            }
+        }
+    } else {
+        null
+    }
+    return when {
+        af != null && horizon != null -> stringResource(R.string.a11y_status_join, af, horizon)
+        af != null -> af
+        else -> horizon
     }
 }
 
@@ -672,11 +731,19 @@ fun CameraScreen(
                 afModes = state.caps?.afModes ?: IntArray(0),
                 tapFocusHeld = state.tapFocusHeld,
             )
+            val viewfinderStateDescription = localizedViewfinderStateDescription(
+                afIndication = state.afIndication,
+                afActive = state.tapPoint != null || state.tapFocusHeld,
+                levelEnabled = state.level,
+                levelRollDegrees = state.levelRoll,
+                deviceOrientation = state.deviceOrientation,
+            )
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
                     .viewfinderFocusSemantics(
                         contentDescription = a11yCameraViewfinder,
+                        stateDescription = viewfinderStateDescription,
                         availability = focusActionAvailability,
                         focusAtCenterLabel = a11yFocusAtCenter,
                         resetFocusPointLabel = a11yResetFocusPoint,
