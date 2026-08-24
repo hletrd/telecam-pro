@@ -805,6 +805,14 @@ internal fun GalleryThumbSurface(
     val galleryDesc = stringResource(
         galleryReviewContentDescription(state != GalleryThumbState.Empty, state.kind, provenance),
     )
+    val galleryState = stringResource(
+        when (state) {
+            GalleryThumbState.Empty -> R.string.a11y_gallery_state_empty
+            is GalleryThumbState.Loading -> R.string.a11y_gallery_state_loading
+            is GalleryThumbState.Ready -> R.string.a11y_gallery_state_ready
+            is GalleryThumbState.Failed -> R.string.a11y_gallery_state_failed
+        },
+    )
     Box(
         modifier = modifier
             .size(52.dp)
@@ -817,6 +825,7 @@ internal fun GalleryThumbSurface(
             .border(1.dp, CameraColors.Hairline, RoundedCornerShape(14.dp))
             .semantics {
                 contentDescription = galleryDesc
+                stateDescription = galleryState
                 role = Role.Button
                 if (!enabled) disabled()
             }

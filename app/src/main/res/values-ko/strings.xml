@@ -161,6 +161,10 @@
     <string name="a11y_review_last_video">마지막 동영상 보기</string>
     <string name="a11y_review_last_photo">마지막 사진 보기</string>
     <string name="a11y_review_last_capture">마지막 촬영 보기</string>
+    <string name="a11y_gallery_state_empty">촬영 항목 없음</string>
+    <string name="a11y_gallery_state_loading">썸네일 불러오는 중</string>
+    <string name="a11y_gallery_state_ready">썸네일 준비됨</string>
+    <string name="a11y_gallery_state_failed">썸네일을 불러올 수 없음</string>
     <string name="a11y_review_legacy_unverified_media">출처가 확인되지 않은 이전 TeleCam 형식 미디어 보기</string>
     <string name="a11y_lens_optical">%1$s 렌즈</string>
     <string name="a11y_lens_zoom">%1$s 줌</string>

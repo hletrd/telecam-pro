@@ -170,6 +170,10 @@
     <string name="a11y_review_last_video">Review last video</string>
     <string name="a11y_review_last_photo">Review last photo</string>
     <string name="a11y_review_last_capture">Review last capture</string>
+    <string name="a11y_gallery_state_empty">No capture available</string>
+    <string name="a11y_gallery_state_loading">Thumbnail loading</string>
+    <string name="a11y_gallery_state_ready">Thumbnail ready</string>
+    <string name="a11y_gallery_state_failed">Thumbnail unavailable</string>
     <string name="a11y_review_legacy_unverified_media">Review legacy TeleCam-format media; origin unverified</string>
     <string name="a11y_lens_optical">%1$s lens</string>
     <string name="a11y_lens_zoom">%1$s zoom</string>
