@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui.review
 
 import android.graphics.Bitmap
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.Modifier
@@ -10,6 +11,7 @@ import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -27,6 +29,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -52,6 +55,9 @@ class GalleryThumbComposeTest {
     fun `production gallery surface paints and names every thumbnail state truthfully`() {
         val readyPixels = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).apply {
             eraseColor(android.graphics.Color.MAGENTA)
+        }
+        val videoReadyPixels = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(android.graphics.Color.CYAN)
         }
         val states = listOf(
             Entry(
@@ -108,6 +114,12 @@ class GalleryThumbComposeTest {
                 R.string.a11y_review_last_photo,
                 R.string.a11y_gallery_state_ready,
             ),
+            Entry(
+                "video-ready",
+                GalleryThumbState.Ready(ReviewMediaKind.VIDEO, ReviewBitmap(videoReadyPixels)),
+                R.string.a11y_review_last_video,
+                R.string.a11y_gallery_state_ready,
+            ),
         )
 
         compose.setContent {
@@ -156,6 +168,48 @@ class GalleryThumbComposeTest {
             "ready bitmap pixels must replace the placeholder",
             ready[ready.width / 2, ready.height / 2] == Color.Magenta,
         )
+        val videoReady = compose.onNodeWithTag("video-ready").captureToImage().toPixelMap()
+        assertTrue(
+            "video-ready bitmap pixels must replace the placeholder",
+            videoReady[videoReady.width / 2, videoReady.height / 2] == Color.Cyan,
+        )
+    }
+
+    @Test
+    fun `disabled video ready keeps localized media and state truth`() {
+        val pixels = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        compose.setContent {
+            TeleCamProTheme {
+                GalleryThumbSurface(
+                    state = GalleryThumbState.Ready(
+                        ReviewMediaKind.VIDEO,
+                        ReviewBitmap(pixels),
+                    ),
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.testTag("disabled-video-ready"),
+                )
+            }
+        }
+
+        val context = RuntimeEnvironment.getApplication()
+        compose.onNodeWithTag("disabled-video-ready")
+            .assertIsNotEnabled()
+            .assertContentDescriptionEquals(context.getString(R.string.a11y_review_last_video))
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    context.getString(R.string.a11y_gallery_state_ready),
+                ),
+            )
+
+        val korean = context.createConfigurationContext(
+            Configuration(context.resources.configuration).apply {
+                setLocale(Locale.KOREAN)
+            },
+        )
+        assertEquals("마지막 동영상 보기", korean.getString(R.string.a11y_review_last_video))
+        assertEquals("썸네일 준비됨", korean.getString(R.string.a11y_gallery_state_ready))
     }
 
     private data class Entry(
