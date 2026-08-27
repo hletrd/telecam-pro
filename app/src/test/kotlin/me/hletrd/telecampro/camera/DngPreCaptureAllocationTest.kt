@@ -277,6 +277,39 @@ class DngPreCaptureAllocationTest {
     }
 
     @Test
+    fun `deadline winning after allocation delivery prevents Camera2 claim`() {
+        var timeout: (() -> Unit)? = null
+        val failures = CopyOnWriteArrayList<Throwable?>()
+        val late = CopyOnWriteArrayList<String>()
+        val retired = AtomicInteger()
+        val ready = AtomicInteger()
+        val owner = DngPreCaptureAllocation(
+            dispatch = { task ->
+                task()
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = { "content://media/dng/deadline-race" },
+            isCurrent = { true },
+            onReady = { ready.incrementAndGet() },
+            onLateValue = late::add,
+            onFailure = failures::add,
+            onRetired = { retired.incrementAndGet() },
+            deadlineScheduler = RecordingTeardownScheduler { _, action ->
+                timeout = action
+                RecordingTeardownCancellation {}
+            },
+            deadlineMs = 1L,
+            beforeDeadlineCompletion = { checkNotNull(timeout).invoke() },
+        )
+
+        assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+        assertTrue(failures.single() is java.util.concurrent.TimeoutException)
+        assertEquals(listOf("content://media/dng/deadline-race"), late.toList())
+        assertEquals(0, ready.get())
+        assertEquals(1, retired.get())
+    }
+
+    @Test
     fun `DNG process admission is exactly once and reusable after cancellation`() {
         val admission = DngPreCaptureAdmission()
         val first = requireNotNull(admission.tryAcquire())

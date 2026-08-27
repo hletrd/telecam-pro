@@ -129,6 +129,7 @@ class DiagnosticTelemetryTest {
 
         assertTrue(!recurringDiagnosticAllowed(debugEnabled = false, budget = budget))
         assertEquals(0, budget.usedRows())
+        assertTrue(!recurringDiagnosticAllowed(debugEnabled = false))
     }
 
     @Test

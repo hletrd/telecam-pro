@@ -200,11 +200,9 @@ object MediaStoreWriter {
         val allocation: PendingOutputAllocation,
     )
 
-    internal data class PendingIdentityRecovery(
-        val context: Context,
-        val uri: Uri,
-        val family: CaptureFamilyKey,
-    )
+    internal fun interface PendingIdentityRecovery {
+        fun recover(): PendingOutputDiscardResult
+    }
 
     private val rejectedOutputOwner = RejectedOutputCleanupCapacityOwner<RejectedOutput>(
         workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
@@ -229,16 +227,7 @@ object MediaStoreWriter {
             admissionLimit = MAX_PENDING_IDENTITY_RECOVERIES,
             ownershipLimit = MAX_PENDING_IDENTITY_RECOVERIES +
                 REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
-            discardEffect = { claim ->
-                recoverPendingAllocationIdentity(
-                    resolve = {
-                        PendingDiscardJournal(claim.context)
-                            .captureAllocation(claim.uri, claim.family)
-                            ?.also(::rememberPendingAllocation)
-                    },
-                    discard = { discardPendingOutput(claim.context, it) },
-                )
-            },
+            discardEffect = PendingIdentityRecovery::recover,
         )
 
     /**
@@ -459,9 +448,16 @@ object MediaStoreWriter {
             rememberPendingAllocation(allocation)
             return allocation
         }
-        identityReservation.submit(
-            PendingIdentityRecovery(context.applicationContext, uri, family),
-        )
+        val application = context.applicationContext
+        identityReservation.submit(PendingIdentityRecovery {
+            recoverPendingAllocationIdentity(
+                resolve = {
+                    PendingDiscardJournal(application).captureAllocation(uri, family)
+                        ?.also(::rememberPendingAllocation)
+                },
+                discard = { discardPendingOutput(application, it) },
+            )
+        })
         return null
     }
 
@@ -506,9 +502,16 @@ object MediaStoreWriter {
             rememberPendingAllocation(allocation)
             return allocation
         }
-        identityReservation.submit(
-            PendingIdentityRecovery(context.applicationContext, registered, family),
-        )
+        val application = context.applicationContext
+        identityReservation.submit(PendingIdentityRecovery {
+            recoverPendingAllocationIdentity(
+                resolve = {
+                    PendingDiscardJournal(application).captureAllocation(registered, family)
+                        ?.also(::rememberPendingAllocation)
+                },
+                discard = { discardPendingOutput(application, it) },
+            )
+        })
         return null
     }
 

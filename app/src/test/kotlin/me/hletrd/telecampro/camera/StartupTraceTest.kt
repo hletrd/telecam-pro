@@ -64,8 +64,10 @@ class StartupTraceTest {
     fun `finish records its own label then disarms`() {
         StartupTrace.disarm()
         val owner = checkNotNull(StartupTrace.begin())
+        assertEquals(owner, StartupTrace.currentOwner())
         StartupTrace.mark(owner, "openCamera")
         StartupTrace.finish(owner, "firstCameraResult")
+        assertEquals(null, StartupTrace.currentOwner())
         assertEquals(
             listOf("openCamera", "firstCameraResult"),
             StartupTrace.marksForTest().map { it.first },

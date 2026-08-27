@@ -65,4 +65,13 @@ class PendingAllocationIdentityRecoveryTest {
             owner.shutdownNowForTest()
         }
     }
+
+    @Test
+    fun `production identity claim executes its bounded recovery closure`() {
+        val claim = MediaStoreWriter.PendingIdentityRecovery {
+            PendingOutputDiscardResult.RECOVERY_MARKED
+        }
+
+        assertEquals(PendingOutputDiscardResult.RECOVERY_MARKED, claim.recover())
+    }
 }

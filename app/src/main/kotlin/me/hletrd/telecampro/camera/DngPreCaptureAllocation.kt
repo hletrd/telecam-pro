@@ -55,6 +55,7 @@ internal class DngPreCaptureAllocation<T : Any>(
     private val onClaimed: () -> Unit = {},
     private val deadlineScheduler: RecordingTeardownScheduler? = null,
     private val deadlineMs: Long = DNG_PRE_CAPTURE_ALLOCATION_TIMEOUT_MS,
+    private val beforeDeadlineCompletion: () -> Unit = {},
 ) {
     private val started = AtomicBoolean(false)
     private lateinit var attempt: RecordingPreNativeAllocationAttempt<T>
@@ -89,6 +90,7 @@ internal class DngPreCaptureAllocation<T : Any>(
                 RecordingPreNativeDelivery.READY -> {
                     // Provider return and timeout race independently. Only the deadline winner may
                     // transfer the row to Camera2; a losing return becomes ordinary late cleanup.
+                    beforeDeadlineCompletion()
                     if (allocationDeadline != null && !allocationDeadline.complete()) {
                         attempt.retire()
                         return@dispatch
