@@ -1612,7 +1612,13 @@ check(
         and "BuildConfig.DEBUG" in trace_admission_call.group(1)
         and "traceText!!" not in camera_engine
         and "traceText?.takeIf { traceAdmission.registration }" in camera_engine
-        and "traceText?.takeIf { traceAdmission.settlement }" in camera_engine
+        and (
+            "traceText?.takeIf { traceAdmission.settlement }" in camera_engine
+            or (
+                "traceText?.takeIf { traceSettlement }" in camera_engine
+                and "traceSettlement = traceAdmission.settlement" in camera_engine
+            )
+        )
     ),
     "release capture tracing is build-gated and nullable-safe at the production callback",
 )
