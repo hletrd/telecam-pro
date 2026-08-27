@@ -9,7 +9,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.util.Size
 import android.view.Surface
 import me.hletrd.telecampro.BuildConfig
@@ -843,7 +843,9 @@ class CameraEngine internal constructor(
             }
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
-        if (BuildConfig.DEBUG) Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
+        }
         // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
         // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
         runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
@@ -1282,7 +1284,7 @@ class CameraEngine internal constructor(
         // 2026-08-04, "loupe is sometimes just a transparent rectangle" on first launch at 3x/10x).
         // The change gate inside pushTeleFinder makes this free when the answer did not move.
         pushTeleFinder()
-        if (BuildConfig.DEBUG) {
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
             Log.i(
                 "CameraEngine",
                 "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
@@ -1728,7 +1730,9 @@ class CameraEngine internal constructor(
     // ---- Preview surface lifecycle ----
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
-        if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
+        }
         // Retain the TextureView edge before a finite recorder-setup refusal. TextureView does not
         // promise to repeat this callback when a process-wide setup token later retires.
         cancelRecorderSetupReplay()
@@ -1994,7 +1998,9 @@ class CameraEngine internal constructor(
     }
 
     fun onPreviewSurfaceDestroyed() {
-        if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
+        }
         cancelRecorderSetupReplay()
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
         val outgoing = previewSurface
@@ -2097,7 +2103,9 @@ class CameraEngine internal constructor(
                     width = width,
                     height = height,
                     onReady = {
-                        if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
+                        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                            Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
+                        }
                         handlePreviewReady(ownedGl, surface, surfaceGeneration)
                     },
                     onFailure = { failure ->
@@ -2243,7 +2251,7 @@ class CameraEngine internal constructor(
             }
         }
         if (me.hletrd.telecampro.BuildConfig.DEBUG) {
-            android.util.Log.w("CameraEngine", "Preview EGL failure", failure)
+            Log.w("CameraEngine", "Preview EGL failure", failure)
         }
     }
 
@@ -2909,7 +2917,7 @@ class CameraEngine internal constructor(
         zslSpikeLoggingWanted = enabled
         val ctrl = controller
         if (ctrl == null) {
-            android.util.Log.w("CameraEngine", "ZslSpike: no controller yet — cached, applies on next wire")
+            Log.w("CameraEngine", "ZslSpike: no controller yet — cached, applies on next wire")
             return
         }
         ctrl.setZslSpike(enabled)
@@ -3419,15 +3427,15 @@ class CameraEngine internal constructor(
             // Everything else about the health path is unchanged: Ready invalidated, a live
             // recording finalized and published, bounded recovery scheduled — resume() reopens
             // when the user returns, and a genuinely exhausted recovery still says so.
-            android.util.Log.w("CameraEngine", "Camera evicted by another client", failure)
+            Log.w("CameraEngine", "Camera evicted by another client", failure)
         } else if (policyBlocked) {
             // Suppressed for the same reason the eviction branch above suppresses it: we already
             // know what this is. "Recovering." promises an outcome the retries cannot deliver — a
             // policy block clears only when the user changes it — and the gate below says the true
             // thing once the budget is spent. The retries still run; only the false promise goes.
-            android.util.Log.w("CameraEngine", "Camera blocked for this app by policy", failure)
+            Log.w("CameraEngine", "Camera blocked for this app by policy", failure)
         } else {
-            android.util.Log.e("CameraEngine", "Active camera failure", failure)
+            Log.e("CameraEngine", "Active camera failure", failure)
             onStatus?.invoke(CameraStatusMessage.CAMERA_ERROR_RECOVERING.status())
         }
         outcome.second?.let { owned ->
@@ -4626,7 +4634,7 @@ class CameraEngine internal constructor(
             rejectedCleanup.cancel()
             releaseDngAdmission()
             snapshotLease?.release()
-            android.util.Log.e("CameraEngine", "DNG capture registration failed", failure)
+            Log.e("CameraEngine", "DNG capture registration failed", failure)
             onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
             return false
         }
@@ -4704,7 +4712,7 @@ class CameraEngine internal constructor(
             onLateValue = ::cleanLateAllocation,
             onFailure = { failure ->
                 failure?.let {
-                    android.util.Log.e("CameraEngine", "DNG preallocation failed", it)
+                    Log.e("CameraEngine", "DNG preallocation failed", it)
                 }
                 onStatus?.invoke(CameraStatusMessage.DNG_SAVE_FAILED.status())
             },
@@ -4807,7 +4815,7 @@ class CameraEngine internal constructor(
                 }
                 if (dispatched.isFailure) {
                     snapshotLease?.release()
-                    android.util.Log.e(
+                    Log.e(
                         "CameraEngine",
                         "Photo dispatch failed",
                         dispatched.exceptionOrNull(),
@@ -5533,7 +5541,7 @@ class CameraEngine internal constructor(
                                 }
                                 processedQueued = queued.isSuccess
                                 queued.onFailure { failure ->
-                                    android.util.Log.e("CameraEngine", "Photo save dispatch failed", failure)
+                                    Log.e("CameraEngine", "Photo save dispatch failed", failure)
                                     reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                                 }
                             } else {
@@ -5580,7 +5588,7 @@ class CameraEngine internal constructor(
                                     )
                                 }
                                 is DngWriteResult.Rejected -> {
-                                    android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
+                                    Log.e("CameraEngine", "DNG write failed", write.failure)
                                     reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
                                     check(write.allocation == dngAllocation) {
                                         "DNG rejection lost its preallocated identity"
@@ -5589,7 +5597,7 @@ class CameraEngine internal constructor(
                                 }
                                 is DngWriteResult.Failed -> {
                                     rejectedDngCleanup?.cancel()
-                                    android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
+                                    Log.e("CameraEngine", "DNG write failed", write.failure)
                                     reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
                                 }
                             }
@@ -5615,7 +5623,7 @@ class CameraEngine internal constructor(
                 var dngCleanupQueued = false
                 try {
                     if (formats.dngRaw) dngCleanupQueued = submitIncompleteDngCleanup()
-                    android.util.Log.e("CameraEngine", "Photo capture failed", t)
+                    Log.e("CameraEngine", "Photo capture failed", t)
                     reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
                     releaseDngAdmission()
@@ -5864,7 +5872,7 @@ class CameraEngine internal constructor(
             failure = { java.util.concurrent.TimeoutException("Pending video allocation timed out") },
             onTimeout = { failure ->
                 attempt.retire {
-                    android.util.Log.e("CameraEngine", "REC allocation timed out", failure)
+                    Log.e("CameraEngine", "REC allocation timed out", failure)
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                 }
             },
@@ -5945,7 +5953,7 @@ class CameraEngine internal constructor(
                                         name = name,
                                     )
                                 }.getOrElse { failure ->
-                                    android.util.Log.w("CameraEngine", "REC admission threw", failure)
+                                    Log.w("CameraEngine", "REC admission threw", failure)
                                     quarantineRecorderSetup(
                                         setupContext,
                                         failure,
@@ -5975,7 +5983,7 @@ class CameraEngine internal constructor(
         }
             .getOrElse { failure ->
                 attempt.retire {
-                    android.util.Log.e("CameraEngine", "REC allocation dispatch failed", failure)
+                    Log.e("CameraEngine", "REC allocation dispatch failed", failure)
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                 }
                 return true
@@ -6057,7 +6065,7 @@ class CameraEngine internal constructor(
                         )
                     }
                 } catch (t: Throwable) {
-                    android.util.Log.w("CameraEngine", "REC native admission threw", t)
+                    Log.w("CameraEngine", "REC native admission threw", t)
                     abortRecordingStart()
                     quarantineRecorderSetup(setupContext, t)
                     onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
@@ -6421,7 +6429,7 @@ class CameraEngine internal constructor(
             )
             return false
         }
-        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+        if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
             android.util.Log.i(
                 "CameraEngine",
                 "RecordingSpec: admitted stem=${name.substringBeforeLast('.')} " +
@@ -6593,7 +6601,7 @@ class CameraEngine internal constructor(
         }
         if (!claimed) return
         detachAndFinalizeRecording(ownedGl, rec, uri, captureId)
-        android.util.Log.e("CameraEngine", "Recording failed", failure)
+        Log.e("CameraEngine", "Recording failed", failure)
         onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
         onRecordingTerminated?.invoke(failure)
         ownedGl.setTransfer(transfer)
@@ -6754,7 +6762,7 @@ class CameraEngine internal constructor(
         onReleased: () -> Unit,
         onAbandoned: () -> Unit,
     ) {
-        android.util.Log.e("CameraEngine", "Renderer reset after encoder detach failure", failure)
+        Log.e("CameraEngine", "Renderer reset after encoder detach failure", failure)
         if (glOwners.owns(ownedGl)) {
             onStatus?.invoke(CameraStatusMessage.CAMERA_ERROR_RECOVERING.status())
             invalidateCameraReady()
@@ -6838,7 +6846,7 @@ class CameraEngine internal constructor(
             }
         }
         if (replaced) {
-            android.util.Log.e(
+            Log.e(
                 "CameraEngine",
                 "Abandoned retired GL owner; installed isolated replacement",
             )
@@ -7074,7 +7082,7 @@ class CameraEngine internal constructor(
             )
             publishProcessStillAdmission()
             presentRecordingStorageResult(terminal)
-            if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+            if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
                 android.util.Log.i(
                     "CameraEngine",
                     "RecordingStored: captureId=$captureId saved=${result.saved} " +
@@ -7097,7 +7105,7 @@ class CameraEngine internal constructor(
                     ),
                 )
                 if (me.hletrd.telecampro.BuildConfig.DEBUG) {
-                    android.util.Log.w(
+                    Log.w(
                         "CameraEngine",
                         "RecordingStored: captureId=$captureId retained=pending reason=storage-overflow",
                     )
@@ -7107,7 +7115,7 @@ class CameraEngine internal constructor(
                 // release() detached callbacks before closing this dispatcher. Retain the row for
                 // next-launch recovery without resurrecting UI from a terminal Engine.
                 if (me.hletrd.telecampro.BuildConfig.DEBUG) {
-                    android.util.Log.w(
+                    Log.w(
                         "CameraEngine",
                         "RecordingStored: captureId=$captureId retained=pending reason=engine-shutdown",
                     )
@@ -7132,7 +7140,7 @@ class CameraEngine internal constructor(
             val disposition = recordingPreNativeOverrides?.discardPendingOutput?.invoke(uri)
                 ?: pending.allocation?.let { MediaStoreWriter.discardPendingOutput(context, it) }
                 ?: MediaStoreWriter.discardPendingOutput(context, uri)
-            if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+            if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
                 android.util.Log.i(
                     "CameraEngine",
                     "RecordingAllocationRetired: captureId=$captureId reason=$reason " +
@@ -7145,7 +7153,7 @@ class CameraEngine internal constructor(
             RecordingStorageDispatch.OVERFLOW,
             RecordingStorageDispatch.SHUTDOWN,
             -> if (me.hletrd.telecampro.BuildConfig.DEBUG) {
-                android.util.Log.w(
+                Log.w(
                     "CameraEngine",
                     "RecordingAllocationRetired: captureId=$captureId reason=$reason retained=pending",
                 )
@@ -7201,7 +7209,7 @@ class CameraEngine internal constructor(
         runCatching { onAudioLevel?.invoke(me.hletrd.telecampro.video.AudioLevelFrame.EMPTY) }
         runCatching { onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()) }
         runCatching { onRecordingTerminated?.invoke(failure) }
-        android.util.Log.e(
+        Log.e(
             "CameraEngine",
             "Recording graph quarantined; process restart required (captureId=$captureId)",
             failure,

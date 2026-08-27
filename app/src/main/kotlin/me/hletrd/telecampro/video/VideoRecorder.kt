@@ -12,7 +12,7 @@ import android.media.MediaMuxer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
@@ -736,7 +736,7 @@ class VideoRecorder(private val context: Context) {
                     "vendor_audiorecord_focus_zoom;vendor_audiorecord_orientation",
             )
         }.getOrNull()
-        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+        if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
             Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
                 "trackSupport=[$support] echo=[$echo]")
         }

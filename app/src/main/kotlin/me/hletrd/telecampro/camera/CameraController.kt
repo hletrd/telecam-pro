@@ -20,7 +20,7 @@ import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.view.Surface
 import me.hletrd.telecampro.BuildConfig
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
@@ -759,12 +759,14 @@ class CameraController internal constructor(
                     session = s
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = useHlg
-                    if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
+                    if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                        Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
+                    }
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
                     // ambiguously enough to mis-parse — the characteristics query is the only
                     // authority, and on a multi-device build it decides what colour modes exist.
-                    if (BuildConfig.DEBUG) {
+                    if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                         Log.i(TAG, "DynamicRangeProfiles: " + caps.supportedDynamicRangeProfiles.sorted().joinToString { p ->
                             when (p) {
                                 DynamicRangeProfiles.STANDARD -> "STANDARD"
@@ -872,7 +874,9 @@ class CameraController internal constructor(
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return }
                     session = s
-                    if (BuildConfig.DEBUG) Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
+                    if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                        Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
+                    }
                     when (sessionStartDelivery(startHighSpeedPreview())) {
                         SessionStartDelivery.READY -> onReady.onReady(PhotoSessionOutputs())
                         SessionStartDelivery.ERROR ->
@@ -1519,7 +1523,9 @@ class CameraController internal constructor(
             // one shape that would otherwise be invisible in the ShutterLag logs.
             if (!timestampSourceReported) {
                 timestampSourceReported = true
-                Log.i(TAG, "SENSOR_TIMESTAMP source=${caps.timestampSource} (not REALTIME) — ZSL ages read System.nanoTime")
+                if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                    Log.i(TAG, "SENSOR_TIMESTAMP source=${caps.timestampSource} (not REALTIME) — ZSL ages read System.nanoTime")
+                }
             }
             System.nanoTime()
         }

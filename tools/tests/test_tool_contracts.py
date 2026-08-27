@@ -1554,19 +1554,26 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         fixtures = (
             (
                 "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt",
-                "if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = true))",
-                "if (BuildConfig.DEBUG)",
+                "import me.hletrd.telecampro.camera.DiagnosticLog as Log",
+                "import android.util.Log",
             ),
             (
                 "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
-                "if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = tapPublication != null))",
-                "if (BuildConfig.DEBUG)",
+                "import me.hletrd.telecampro.camera.DiagnosticLog as Log",
+                "import android.util.Log",
             ),
             (
                 "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
                 "    // ---- Photo ----",
-                '    private fun unclassifiedDebugMutation() { Log.i("Mutation", "unbudgeted") }\n\n' +
+                '    private fun unclassifiedDebugMutation() { android.util.Log.i("Mutation", "unbudgeted") }\n\n' +
                 "    // ---- Photo ----",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
+                "if (!me.hletrd.telecampro.camera.recurringDiagnosticAllowed(\n"
+                "                me.hletrd.telecampro.BuildConfig.DEBUG,\n"
+                "            )",
+                "if (!me.hletrd.telecampro.BuildConfig.DEBUG",
             ),
         )
         for relative, current, stale in fixtures:

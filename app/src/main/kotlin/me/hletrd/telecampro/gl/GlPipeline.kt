@@ -321,7 +321,11 @@ class GlPipeline(
             val admitted = UnsafeRecorderQuarantine.runNativeAcquisition(nativeAcquisitionOwner) {
                 egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
                     if (me.hletrd.telecampro.BuildConfig.DEBUG) {
-                        android.util.Log.e("GlPipeline", "EGL init failed; preview stays Not-Ready", failure)
+                        me.hletrd.telecampro.camera.DiagnosticLog.e(
+                            "GlPipeline",
+                            "EGL init failed; preview stays Not-Ready",
+                            failure,
+                        )
                     }
                     null
                 }
@@ -543,7 +547,7 @@ class GlPipeline(
         // Kept as the diagnosis trail for the inverted mirror roles: this trace proved the flag
         // reaches the GL thread while the selfie still read unmirrored — the stream itself is
         // pre-mirrored, so the preview draw needs no mirror and the encoder must un-mirror.
-        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+        if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
             android.util.Log.i("GlPipeline", "frontMirror: front=$front preMirrored=$streamPreMirrored")
         }
     }
@@ -877,6 +881,21 @@ class GlPipeline(
     }
 
     private val previewFrameTiming = me.hletrd.telecampro.camera.PreviewFrameTiming()
+    private val frameGapAccumulator = me.hletrd.telecampro.camera.FrameGapAccumulator()
+
+    private fun emitFrameGapSummary(summary: me.hletrd.telecampro.camera.FrameGapSummary) {
+        if (!me.hletrd.telecampro.camera.recurringDiagnosticAllowed(
+                me.hletrd.telecampro.BuildConfig.DEBUG,
+            )
+        ) {
+            return
+        }
+        android.util.Log.i(
+            "GlPipeline",
+            "FrameGap: count=${summary.count} maxMs=${summary.maximumMs} " +
+                "buckets=${summary.under400Ms}/${summary.under1Second}/${summary.atLeast1Second}",
+        )
+    }
 
     // Live-zoom compensation (see FlipRenderer.draw zoomComp): the UI's requested zoom vs the zoom
     // the HAL last REPORTED applying. The preview crops the difference immediately; camera frames
@@ -927,9 +946,7 @@ class GlPipeline(
             // it ate the startup trace and the focus-verdict trace outright). 200 ms still catches
             // what this line exists for: the ~180 ms setRepeatingRequest stalls and real stream
             // wedges. Normal cadence is NOT news.
-            if (producerGapMs != null) {
-                android.util.Log.i("GlPipeline", "FrameGap: $producerGapMs ms")
-            }
+            producerGapMs?.let { frameGapAccumulator.record(now, it) }?.let(::emitFrameGapSummary)
         }
         // Release builds use render timing too: setZoomTarget() consults it to decide whether the
         // preview is quiet enough for a cached redraw. Producer timing remains a separate DEBUG
@@ -1170,7 +1187,10 @@ class GlPipeline(
                             val sig = "${e.javaClass.simpleName}:${e.message}"
                             if (sig != lastFinderFailureSig) {
                                 lastFinderFailureSig = sig
-                                android.util.Log.w("GlPipeline", "FinderDrawFailed rect=$fx,$fy,${fw}x$fh of ${previewW}x$previewH: $sig")
+                                me.hletrd.telecampro.camera.DiagnosticLog.w(
+                                    "GlPipeline",
+                                    "FinderDrawFailed rect=$fx,$fy,${fw}x$fh of ${previewW}x$previewH: $sig",
+                                )
                             }
                         }
                     }
@@ -1750,6 +1770,7 @@ class GlPipeline(
         }
         if (analysisGeneration === ownedAnalysis) analysisGeneration = null
         resetEncoderTimestampBase()
+        frameGapAccumulator.finish()?.let(::emitFrameGapSummary)
         previewFrameTiming.reset()
         egl = null
         inited = false

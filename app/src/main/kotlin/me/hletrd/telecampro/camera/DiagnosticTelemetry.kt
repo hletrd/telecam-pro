@@ -29,14 +29,49 @@ internal class ProcessDiagnosticLogBudget(private val maxRows: Int) {
 }
 
 internal const val RECURRING_DIAGNOSTIC_ROW_BUDGET = 180
+internal const val RESERVED_DIAGNOSTIC_ROW_BUDGET = 120
 internal const val COLOR_OS_PROCESS_LOG_ROW_LIMIT = 300
 internal val processDiagnosticLogBudget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+internal val processReservedDiagnosticLogBudget =
+    ProcessDiagnosticLogBudget(RESERVED_DIAGNOSTIC_ROW_BUDGET)
 
 /** The only admission door for repeatable DEBUG information rows. Fault/error logs stay reserved. */
 internal fun recurringDiagnosticAllowed(
     debugEnabled: Boolean,
     budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
 ): Boolean = debugEnabled && budget.tryAcquire()
+
+/** Finite process allowance for warnings/errors that must not overrun ColorOS's real quota. */
+internal fun reservedDiagnosticAllowed(
+    budget: ProcessDiagnosticLogBudget = processReservedDiagnosticLogBudget,
+): Boolean = budget.tryAcquire()
+
+/** Every production warning/error crosses the finite reserved owner before touching logcat. */
+internal object DiagnosticLog {
+    fun d(tag: String, message: String) {
+        if (recurringDiagnosticAllowed(debugEnabled = true)) android.util.Log.d(tag, message)
+    }
+
+    fun i(tag: String, message: String) {
+        if (recurringDiagnosticAllowed(debugEnabled = true)) android.util.Log.i(tag, message)
+    }
+
+    fun w(tag: String, message: String) {
+        if (reservedDiagnosticAllowed()) android.util.Log.w(tag, message)
+    }
+
+    fun w(tag: String, message: String, failure: Throwable?) {
+        if (reservedDiagnosticAllowed()) android.util.Log.w(tag, message, failure)
+    }
+
+    fun e(tag: String, message: String) {
+        if (reservedDiagnosticAllowed()) android.util.Log.e(tag, message)
+    }
+
+    fun e(tag: String, message: String, failure: Throwable?) {
+        if (reservedDiagnosticAllowed()) android.util.Log.e(tag, message, failure)
+    }
+}
 
 /**
  * Tap-focus diagnostics are action-repeatable, so only a real scan/reset edge may spend one row.
@@ -77,6 +112,60 @@ internal class PreviewFrameTiming(
     fun reset() {
         lastRenderMs = 0L
         lastCameraFrameMs = 0L
+    }
+}
+
+internal data class FrameGapSummary(
+    val count: Int,
+    val maximumMs: Long,
+    val under400Ms: Int,
+    val under1Second: Int,
+    val atLeast1Second: Int,
+)
+
+/** Constant-memory bounded summaries for recurring producer stalls. */
+internal class FrameGapAccumulator(
+    private val summaryIntervalMs: Long = FRAME_GAP_SUMMARY_INTERVAL_MS,
+) {
+    private var lastSummaryMs = Long.MIN_VALUE
+    private var count = 0
+    private var maximumMs = 0L
+    private var under400Ms = 0
+    private var under1Second = 0
+    private var atLeast1Second = 0
+
+    init {
+        require(summaryIntervalMs > 0L)
+    }
+
+    fun record(nowMs: Long, gapMs: Long): FrameGapSummary? {
+        require(gapMs > PREVIEW_FRAME_GAP_THRESHOLD_MS)
+        count++
+        maximumMs = maxOf(maximumMs, gapMs)
+        when {
+            gapMs < 400L -> under400Ms++
+            gapMs < 1_000L -> under1Second++
+            else -> atLeast1Second++
+        }
+        if (lastSummaryMs != Long.MIN_VALUE && nowMs - lastSummaryMs < summaryIntervalMs) return null
+        lastSummaryMs = nowMs
+        return takeSummary()
+    }
+
+    fun finish(): FrameGapSummary? = if (count == 0) null else takeSummary()
+
+    private fun takeSummary() = FrameGapSummary(
+        count = count,
+        maximumMs = maximumMs,
+        under400Ms = under400Ms,
+        under1Second = under1Second,
+        atLeast1Second = atLeast1Second,
+    ).also {
+        count = 0
+        maximumMs = 0L
+        under400Ms = 0
+        under1Second = 0
+        atLeast1Second = 0
     }
 }
 
@@ -249,3 +338,4 @@ internal const val DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS = 3_000L
 internal const val DIAGNOSTIC_HEARTBEAT_MS = 15_000L
 internal const val ZSL_SPIKE_WINDOW_MS = 1_000L
 internal const val PREVIEW_FRAME_GAP_THRESHOLD_MS = 200L
+internal const val FRAME_GAP_SUMMARY_INTERVAL_MS = 15_000L

@@ -77,35 +77,6 @@ def read(rel: str) -> str:
 # same source block or match an explicit startup/session edge below. Adding a new bare Log.i/Log.d,
 # or deleting a recurring guard, therefore fails this gate instead of being hidden by occurrence
 # counts elsewhere in the file.
-DEBUG_ONE_SHOT_INFO_ANCHORS: dict[str, tuple[str, ...]] = {
-    "app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt": ("sourceHlg ->",),
-    "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt": ("frontMirror:",),
-    "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt": (
-        "CameraSessionAccepted:",
-        "LensInventory:",
-        "PreviewSurface:",
-        "RecordingSpec:",
-        "RecordingStored:",
-        "RecordingAllocationRetired:",
-        "MediaRecovery",
-    ),
-    "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt": (
-        "Session configured",
-        "DynamicRangeProfiles:",
-        "High-speed session configured",
-        "SENSOR_TIMESTAMP source=",
-    ),
-    "app/src/main/kotlin/me/hletrd/telecampro/camera/StartupTrace.kt": (
-        "internal var emit: (String) -> Unit",
-    ),
-    "app/src/main/kotlin/me/hletrd/telecampro/camera/VendorTagInspector.kt": ("Log.",),
-    "app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt": ("audioScene=",),
-}
-DEBUG_RESERVED_INFO_ANCHORS: dict[str, tuple[str, ...]] = {
-    "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt": ("FrameGap:",),
-}
-
-
 def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
     counts = {"recurring_budgeted": 0, "one_shot_session": 0, "reserved_fault": 0}
     unclassified: list[str] = []
@@ -114,17 +85,21 @@ def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
     for path in sorted(source_root.rglob("*.kt")):
         relative = path.relative_to(ROOT).as_posix()
         source = path.read_text(encoding="utf-8")
+        bounded_alias = (
+            "import me.hletrd.telecampro.camera.DiagnosticLog as Log" in source
+        )
         previous_end = 0
         for match in invocation.finditer(source):
             level = match.group("level")
             before = source[max(previous_end, match.start() - 1_200):match.start()]
-            around = source[max(0, match.start() - 1_800):match.start() + 1_400]
+            facade_prefix = source[max(0, match.start() - 24):match.start()]
             previous_end = match.end()
-            if relative.endswith("/VendorTagInspector.kt"):
-                counts["one_shot_session"] += 1
-                continue
-            if level in {"e", "w"}:
-                counts["reserved_fault"] += 1
+            bounded_facade = (
+                "Diagnostic" in facade_prefix
+                or (bounded_alias and not source[match.start():].startswith("android.util.Log."))
+            )
+            if bounded_facade:
+                counts["reserved_fault" if level in {"e", "w"} else "recurring_budgeted"] += 1
                 continue
             if (
                 "recurringDiagnosticAllowed" in before
@@ -133,11 +108,11 @@ def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
             ):
                 counts["recurring_budgeted"] += 1
                 continue
-            if any(anchor in around for anchor in DEBUG_RESERVED_INFO_ANCHORS.get(relative, ())):
+            if (
+                "reservedDiagnosticAllowed" in before
+                or "processReservedDiagnosticLogBudget.tryAcquire" in before
+            ):
                 counts["reserved_fault"] += 1
-                continue
-            if any(anchor in around for anchor in DEBUG_ONE_SHOT_INFO_ANCHORS.get(relative, ())):
-                counts["one_shot_session"] += 1
                 continue
             line = source.count("\n", 0, match.start()) + 1
             unclassified.append(f"{relative}:{line}:Log.{level}")
@@ -1712,9 +1687,9 @@ check(
     not unclassified_debug_logs
     and all(debug_log_classes[classification] > 0 for classification in (
         "recurring_budgeted",
-        "one_shot_session",
         "reserved_fault",
-    )),
+    ))
+    and debug_log_classes["one_shot_session"] == 0,
     "every production debug log site has an executable quota classification",
     ", ".join(unclassified_debug_logs[:8]),
 )

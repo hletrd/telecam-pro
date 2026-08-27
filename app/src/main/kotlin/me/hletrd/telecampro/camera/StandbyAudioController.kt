@@ -9,7 +9,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioReadOutcome
 import me.hletrd.telecampro.video.ColorProfiles

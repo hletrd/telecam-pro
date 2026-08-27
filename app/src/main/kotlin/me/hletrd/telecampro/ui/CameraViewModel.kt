@@ -9,7 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.util.Size
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel

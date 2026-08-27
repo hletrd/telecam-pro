@@ -49,6 +49,44 @@ class DiagnosticTelemetryTest {
     }
 
     @Test
+    fun `frame gaps emit bounded bucket summaries and retain a terminal remainder`() {
+        val gaps = FrameGapAccumulator(summaryIntervalMs = 1_000L)
+
+        assertEquals(
+            FrameGapSummary(1, 250L, 1, 0, 0),
+            gaps.record(0L, 250L),
+        )
+        assertEquals(null, gaps.record(100L, 500L))
+        assertEquals(null, gaps.record(200L, 1_200L))
+        assertEquals(
+            FrameGapSummary(3, 1_200L, 1, 1, 1),
+            gaps.record(1_000L, 300L),
+        )
+        assertEquals(null, gaps.finish())
+        assertEquals(null, gaps.record(1_100L, 700L))
+        assertEquals(FrameGapSummary(1, 700L, 0, 1, 0), gaps.finish())
+    }
+
+    @Test
+    fun `recurring and reserved owners make the complete process ceiling executable`() {
+        val recurring = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        val reserved = ProcessDiagnosticLogBudget(RESERVED_DIAGNOSTIC_ROW_BUDGET)
+
+        repeat(COLOR_OS_PROCESS_LOG_ROW_LIMIT * 2) {
+            recurringDiagnosticAllowed(debugEnabled = true, budget = recurring)
+            reservedDiagnosticAllowed(reserved)
+        }
+
+        assertEquals(RECURRING_DIAGNOSTIC_ROW_BUDGET, recurring.usedRows())
+        assertEquals(RESERVED_DIAGNOSTIC_ROW_BUDGET, reserved.usedRows())
+        assertEquals(
+            COLOR_OS_PROCESS_LOG_ROW_LIMIT,
+            recurring.usedRows() + reserved.usedRows(),
+        )
+        assertTrue(!reservedDiagnosticAllowed(reserved))
+    }
+
+    @Test
     fun stableTenMinuteSoakUsesOnlyFifteenSecondHeartbeats() {
         val gate = ThreeADiagnosticLogGate()
         var rows = 0

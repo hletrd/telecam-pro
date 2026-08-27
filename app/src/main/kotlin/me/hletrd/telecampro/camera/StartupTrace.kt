@@ -1,7 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import android.os.SystemClock
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import me.hletrd.telecampro.BuildConfig
 
 /**

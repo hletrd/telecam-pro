@@ -335,7 +335,10 @@ class FlipRenderer internal constructor(
 
     /** How the accepted camera session encoded its buffers; selects the shader source decode. */
     fun setSourceHlg(enabled: Boolean) {
-        if (sourceHlg != enabled && me.hletrd.telecampro.BuildConfig.DEBUG) {
+        if (
+            sourceHlg != enabled &&
+            me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        ) {
             android.util.Log.i("FlipRenderer", "sourceHlg -> $enabled (uniformLoc=$uSourceHlg)")
         }
         sourceHlg = enabled

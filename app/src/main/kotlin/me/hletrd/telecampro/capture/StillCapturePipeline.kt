@@ -7,7 +7,7 @@ import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import androidx.core.graphics.createBitmap
 import java.io.File
 import java.io.FileOutputStream

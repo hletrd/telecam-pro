@@ -9,7 +9,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Build
-import android.util.Log
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.util.Size
 
 /**
