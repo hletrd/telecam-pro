@@ -1,3 +1,175 @@
+# Aggregated deep review — cycle 55
+
+Date: 2026-08-27
+Reviewed revision: `121fcdf09265262ea1c5d2710bddb61b12c3a38f` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle55.32UR9V`
+
+## Coverage and aggregation
+
+Five provenance reports cover every required perspective: code-reviewer, performance-reviewer,
+security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. The environment thread ceiling admitted two
+parallel full-repository agents; the cycle owner explicitly completed the remaining three role groups
+locally in separate provenance files rather than dropping them. All lanes read the committed
+authorities, inventoried 562 tracked paths / 459 current review-relevant files, examined their full
+specialist surfaces and cross-file interactions, and performed final missed-file sweeps. Browser
+automation was not applicable to this native Jetpack Compose app. Every started reviewer returned;
+there were no agent failures.
+
+The reports produced 12 raw findings. Four reports independently found the missing DNG allocation
+deadline, and verifier/document reviewers independently found the incomplete diagnostic-budget
+boundary; those duplicates are merged at their highest signal. The deduplicated result is eight
+current findings: seven Medium and one Low, all High confidence in the defective mechanisms. Provider
+wedges and the rapid lifecycle startup interleave remain explicit fault-injection/manual occurrence
+boundaries rather than invented device evidence.
+
+## Deduplicated findings
+
+### AGG55-01 — rapid second DNG press can leave the shutter permanently false-disabled
+
+- **Severity / confidence:** Medium / High.
+- **Source:** code-reviewer/architect/critic.
+- **Evidence:** `CameraEngine.kt:4411-4415` publishes unavailable when the DNG singleton rejects a
+  second press, but `stillOutputAdmissionAvailable()` at `:4902-4903` omits that singleton. The
+  successful and error callback terminals release the lease at `:5391-5411` without republishing
+  recomputed availability.
+- **Failure:** a rapid second RAW press disables `CameraUiState.stillCaptureAdmissionAvailable`; the
+  first shot later completes and frees admission, but the primary shutter stays disabled until an
+  unrelated recovery event republishes it.
+- **Fix direction:** include DNG ownership in the authoritative still-admission projection and use
+  one exactly-once lease terminal that republishes after every release. Test the production
+  Engine/ViewModel second-press/success and second-press/error interleaves.
+
+### AGG55-02 — post-allocation Camera2 failures strand empty REGISTERED DNG rows
+
+- **Severity / confidence:** Medium / High.
+- **Source:** code-reviewer/architect/critic.
+- **Evidence:** DNG preallocation creates an exact durable row at `CameraEngine.kt:4466-4474`, but
+  `photoCallback` cancels its reserved rejected-output cleanup when RAW is unexpectedly null at
+  `:5383-5386` and on controller error/watchdog at `:5401-5411`.
+- **Failure:** session closure, capture refusal/failure, or watchdog after preallocation leaves an
+  empty `IS_PENDING=1` row until next launch. Repeated failures grow rows and journal work without
+  same-process cleanup/backpressure.
+- **Fix direction:** submit the frozen allocation through the already-reserved finite cleanup owner
+  on every no-complete-DNG terminal; cancel only when complete-byte ownership transferred. Test
+  refusal, watchdog/error, raw-null, saturation, and exactly-once cleanup.
+
+### AGG55-03 — provider-identity freeze failure drops a registered image/video row from live ownership
+
+- **Severity / confidence:** Medium / High.
+- **Source:** code-reviewer/architect/critic.
+- **Evidence:** `MediaStoreWriter.kt:390-453` inserts and durably REGISTERED-marks a pending image or
+  video before `PendingDiscardJournal.captureAllocation`; if the identity read is unavailable,
+  ambiguous, or mismatched (`PendingDiscardJournal.kt:32-41`), the factory collapses the result to
+  null and forgets the URI until a later process launch.
+- **Failure:** every retry during a provider identity outage can add another hidden row and durable
+  preference entry. The already-completed launch recovery cannot see these new rows, and the pending
+  journal has no same-process capacity bound.
+- **Fix direction:** return/retain typed `REGISTERED_WITHOUT_IDENTITY` truth in a finite process
+  recovery owner, retry non-destructively until exact identity exists, and fail new output admission
+  closed at capacity. Cover both image and video with unavailable/ambiguous/mismatched identities.
+
+### AGG55-04 — DNG provider allocation has no attempt deadline
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** performance/tracer, security/debugger, verifier/test-engineer, and
+  document-specialist/designer.
+- **Evidence:** `CameraEngine.kt:4411-4522` holds DNG, snapshot, cleanup, and family ownership around
+  `DngPreCaptureAllocation`; `DngPreCaptureAllocation.kt:40-97` has explicit cancellation but no
+  scheduler/deadline. The finite shared dispatcher cannot interrupt a running provider call
+  (`RecordingPreNativeAllocation.kt:27-80`), while the sibling REC path has an eight-second
+  first-wins deadline at `CameraEngine.kt:5616-5689`.
+- **Failure:** a foreground, same-route provider wedge keeps the shutter/family leases and one shared
+  allocator worker forever; cancellation/retry churn can consume the second worker and queue, also
+  starving REC allocation.
+- **Fix direction:** arm a first-wins DNG deadline before dispatch; timeout immediately settles
+  caller ownership and sends any late exact row to recovery cleanup. Test timeout/return/cancel races
+  and scheduler rejection through production wiring.
+
+### AGG55-05 — sequence-drive processed snapshots multiply across Engine replacement
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance/tracer.
+- **Evidence:** `ProcessedSnapshotBudget.kt:5-13` is process-wide for SINGLE only. BURST/AEB/
+  timelapse dispatch without a lease at `CameraEngine.kt:4624-4757`, then the callback retains a
+  full snapshot on an Engine-local unbounded `ioExecutor` at `:5238-5270`; `release()` merely calls
+  `shutdown()` at `:7391-7399` and cannot reclaim a blocked running task.
+- **Failure:** replacing the Activity/Engine while a sequence save is blocked admits another
+  full-resolution sequence snapshot and worker. Repetition grows heap/native state per Engine until
+  memory pressure or OOM despite the SINGLE process budget.
+- **Fix direction:** require every processed snapshot to consume process-wide capacity while keeping
+  sequence chaining for order. Test blocked old-Engine BURST/AEB/timelapse against replacement
+  admission and exact release.
+
+### AGG55-06 — throwing late-value cleanup skips pre-native retirement
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance/tracer.
+- **Evidence:** `RecordingPreNativeAllocationAttempt.retire` at
+  `RecordingPreNativeAllocation.kt:239-267` invokes `onLateValue` before `completeRetirement` without
+  `try/finally`. DNG retirement releases its admission/snapshot/family owners only in `onRetired`
+  (`CameraEngine.kt:4439-4519`); the same generic attempt owns the REC process token at
+  `:5630-5641`.
+- **Failure:** a cleanup/observer exception after an allocation-return-vs-cancel/timeout race exits
+  retirement early, permanently leaking DNG or REC admission even though the row remains durable.
+- **Fix direction:** guarantee `completeRetirement` in `finally`, retaining diagnostics without
+  suppressing ownership release. Test throwing late cleanup for DNG and video.
+
+### AGG55-07 — repeatable capture logs bypass the process diagnostic budget
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** verifier/test-engineer and document-specialist/designer.
+- **Evidence:** `DiagnosticTelemetryTest.kt:68-107` claims every recurring producer but models only
+  3A/focus/motion/hardware/ZSL-spike. Unbudgeted Single `CaptureFamily` rows live at
+  `CameraEngine.kt:4433-4438,5048-5053,5185-5192`; unbudgeted ZSL refusal/serve and three real-shot
+  `ShutterLag` rows live at `CameraController.kt:1558-1624,2106-2127,2228-2232`.
+- **Failure:** about 60 ordinary debug shots can spend ColorOS's measured 300-row quota, silently
+  dropping later frame-gap/recovery/fault evidence despite the green test claiming a 120-row reserve.
+- **Fix direction:** route every action-repeatable capture diagnostic through the shared owner (or a
+  bounded capture trace gate) and make the executable call-site inventory complete.
+
+### AGG55-08 — StartupTrace accepts stale controller/request generations
+
+- **Severity / confidence:** Low / High; exact lifecycle occurrence remains fault-injection/manual
+  validation.
+- **Source:** performance/tracer.
+- **Evidence:** `StartupTrace.kt:23-64` owns only a global running bit and accepts no token.
+  `CameraEngine.resume()` arms before asynchronous old-controller close completes at
+  `CameraEngine.kt:7035-7064`, while every controller request's first diagnostic callback can finish
+  that global trace at `CameraController.kt:1029-1034,1111-1119`.
+- **Failure:** a queued old first result after rapid background/foreground can finish the new resume
+  trace with mixed or one-mark timing, fabricating a fast cold-start measurement and suppressing the
+  real replacement result.
+- **Fix direction:** make `begin` return an opaque generation and require it on mark/finish; pass it
+  only to the controller/open/request created for that resume attempt. Test old-result/new-resume and
+  two-request races.
+
+## Verified non-findings and limits
+
+- The complete authoritative host gate passed: Android debug/androidTest assembly, all JVM/
+  Robolectric/Compose tests, debug lint, 99.83% Partition A coverage, 136 tool tests, nine coverage
+  tool tests, 195 device-harness self-tests, 155 documentation checks with 24 optional-private skips,
+  Python compilation, and `git diff --check`.
+- Cycle-54 standby native quarantine, review source immutability/spool accounting, and the bounded
+  diagnostic producers already behind the process owner were rechecked and not refiled.
+- No device, deployment, browser, MediaProvider mutation, native fault injection, destructive
+  filesystem action, or physical evidence action ran. Open checks A3/A4/A5/D1/E1/E2/E3 remain
+  evidence obligations, not deferred code findings.
+
+## AGENT FAILURES
+
+None.
+
+## Provenance
+
+- `.context/reviews/cycle55-code-architect-critic.md`
+- `.context/reviews/cycle55-perf-tracer.md`
+- `.context/reviews/cycle55-security-debugger.md`
+- `.context/reviews/cycle55-verifier-test.md`
+- `.context/reviews/cycle55-document-designer.md`
+
+---
+
 # Aggregated deep review — cycle 54
 
 Date: 2026-08-27
