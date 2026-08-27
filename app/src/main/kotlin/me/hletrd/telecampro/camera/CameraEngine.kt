@@ -4428,16 +4428,23 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
             return false
         }
+        fun releaseDngAdmission() {
+            if (dngAdmission.release()) {
+                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            }
+        }
+        // This process owner serializes every still route while provider allocation/Camera2/DNG
+        // bytes are in flight. Publish the edge immediately; the exact release helper restores it.
+        onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         val rejectedCleanup = MediaStoreWriter.reserveRejectedOutputCleanup() ?: run {
-            dngAdmission.release()
+            releaseDngAdmission()
             snapshotLease?.release()
-            onStillCaptureAdmissionChanged?.invoke(false)
             onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
             return false
         }
         val registered = runCatching { shotSpec(shotControls, hiRes, optics) }.getOrElse { failure ->
             rejectedCleanup.cancel()
-            dngAdmission.release()
+            releaseDngAdmission()
             snapshotLease?.release()
             android.util.Log.e("CameraEngine", "DNG capture registration failed", failure)
             onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
@@ -4453,7 +4460,7 @@ class CameraEngine internal constructor(
         fun settleBeforeCamera() {
             rejectedCleanup.cancel()
             snapshotLease?.release()
-            dngAdmission.release()
+            releaseDngAdmission()
             settleRegisteredStillShot(
                 registered = registered,
                 traceText = traceText,
@@ -4529,6 +4536,17 @@ class CameraEngine internal constructor(
             onClaimed = {
                 synchronized(dngPreCaptureAllocationLock) {
                     dngPreCaptureAllocations.remove(owner)
+                }
+            },
+            deadlineScheduler = RecordingTeardownScheduler { delayMs, action ->
+                runCatching {
+                    recorderWatchdog.schedule(
+                        action,
+                        delayMs,
+                        java.util.concurrent.TimeUnit.MILLISECONDS,
+                    )
+                }.getOrNull()?.let { future ->
+                    RecordingTeardownCancellation { future.cancel(false) }
                 }
             },
         )
@@ -4914,7 +4932,11 @@ class CameraEngine internal constructor(
     }
 
     internal fun stillOutputAdmissionAvailable(): Boolean =
-        retainedStillDeletionOwner.canAdmitCapture() && MediaStoreWriter.rejectedOutputAdmissionAvailable()
+        allStillOutputOwnersAvailable(
+            dng = ProcessDngPreCaptureAdmission.owner.canAdmit(),
+            retainedFamily = retainedStillDeletionOwner.canAdmitCapture(),
+            rejectedCleanup = MediaStoreWriter.rejectedOutputAdmissionAvailable(),
+        )
 
     /** Rechecks retirement after the UI/provider deletion tail; producer completion races safely. */
     internal fun reconcileDeletedFamilyAfterProviderMutation(
@@ -5234,6 +5256,26 @@ class CameraEngine internal constructor(
             }
             Unit
         }
+        fun releaseDngAdmission() {
+            if (dngPreCaptureLease?.release() == true) {
+                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            }
+        }
+        fun submitIncompleteDngCleanup(): Boolean {
+            val cleanup = rejectedDngCleanup ?: return false
+            val allocation = dngAllocation ?: run {
+                cleanup.cancel()
+                return false
+            }
+            return cleanup.submit(
+                MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
+            ) { _ ->
+                runCatching {
+                    onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                }
+                finishDng()
+            }
+        }
         // Status observers are UI-owned and must never strand a retained-snapshot lease or a
         // BURST/AEB/timelapse continuation if one is detached or throws during teardown.
         val reportStatus: (CameraStatus) -> Unit = { status ->
@@ -5373,20 +5415,10 @@ class CameraEngine internal constructor(
                                 is DngWriteResult.Rejected -> {
                                     android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
                                     reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
-                                    val submitted = checkNotNull(rejectedDngCleanup).submit(
-                                        MediaStoreWriter.RejectedOutput(
-                                            context.applicationContext,
-                                            write.allocation,
-                                        ),
-                                    ) { _ ->
-                                        runCatching {
-                                            onStillCaptureAdmissionChanged?.invoke(
-                                                stillOutputAdmissionAvailable(),
-                                            )
-                                        }
-                                        finishDng()
+                                    check(write.allocation == dngAllocation) {
+                                        "DNG rejection lost its preallocated identity"
                                     }
-                                    dngPublishQueued = submitted
+                                    dngPublishQueued = submitIncompleteDngCleanup()
                                 }
                                 is DngWriteResult.Failed -> {
                                     rejectedDngCleanup?.cancel()
@@ -5395,7 +5427,7 @@ class CameraEngine internal constructor(
                                 }
                             }
                         } else {
-                            rejectedDngCleanup?.cancel()
+                            dngPublishQueued = submitIncompleteDngCleanup()
                             reportStatus(CameraStatusMessage.DNG_CAPTURE_FAILED.status())
                         }
                     }
@@ -5405,7 +5437,7 @@ class CameraEngine internal constructor(
                 } finally {
                     // Pre-capture serialization ends with the live Camera2 callback, not with slow
                     // publication/cleanup tails; those have their own finite process owners.
-                    dngPreCaptureLease?.release()
+                    releaseDngAdmission()
                     if (!processedQueued) finishProcessed()
                     if (!dngPublishQueued) finishDng()
                     finishSequence()
@@ -5413,14 +5445,15 @@ class CameraEngine internal constructor(
             }
 
             override fun onError(t: Throwable) {
+                var dngCleanupQueued = false
                 try {
-                    rejectedDngCleanup?.cancel()
+                    if (formats.dngRaw) dngCleanupQueued = submitIncompleteDngCleanup()
                     android.util.Log.e("CameraEngine", "Photo capture failed", t)
                     reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
-                    dngPreCaptureLease?.release()
+                    releaseDngAdmission()
                     finishProcessed()
-                    finishDng()
+                    if (!dngCleanupQueued) finishDng()
                     finishSequence()
                 }
             }

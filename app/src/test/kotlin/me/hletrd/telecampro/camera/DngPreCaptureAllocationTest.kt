@@ -13,6 +13,14 @@ import org.junit.Test
 
 class DngPreCaptureAllocationTest {
     @Test
+    fun `still admission requires every process owner`() {
+        assertTrue(allStillOutputOwnersAvailable(dng = true, retainedFamily = true, rejectedCleanup = true))
+        assertFalse(allStillOutputOwnersAvailable(dng = false, retainedFamily = true, rejectedCleanup = true))
+        assertFalse(allStillOutputOwnersAvailable(dng = true, retainedFamily = false, rejectedCleanup = true))
+        assertFalse(allStillOutputOwnersAvailable(dng = true, retainedFamily = true, rejectedCleanup = false))
+    }
+
+    @Test
     fun `process admission singleton is executable and releases exactly`() {
         val lease = requireNotNull(ProcessDngPreCaptureAdmission.owner.tryAcquire())
         assertFalse(ProcessDngPreCaptureAdmission.owner.canAdmit())
@@ -204,6 +212,68 @@ class DngPreCaptureAllocationTest {
         } finally {
             dispatcher.shutdown()
         }
+    }
+
+    @Test
+    fun `allocation deadline retires current request and makes a later row cleanup only`() {
+        var timeout: (() -> Unit)? = null
+        var providerTask: (() -> Unit)? = null
+        val failures = CopyOnWriteArrayList<Throwable?>()
+        val late = CopyOnWriteArrayList<String>()
+        val retired = AtomicInteger()
+        val ready = AtomicInteger()
+        val owner = DngPreCaptureAllocation(
+            dispatch = { task ->
+                providerTask = task
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = { "content://media/dng/late-timeout" },
+            isCurrent = { true },
+            onReady = { ready.incrementAndGet() },
+            onLateValue = late::add,
+            onFailure = failures::add,
+            onRetired = { retired.incrementAndGet() },
+            deadlineScheduler = RecordingTeardownScheduler { _, action ->
+                timeout = action
+                RecordingTeardownCancellation {}
+            },
+            deadlineMs = 1L,
+        )
+
+        assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+        checkNotNull(timeout).invoke()
+        assertTrue(failures.single() is java.util.concurrent.TimeoutException)
+        assertEquals(1, retired.get())
+        checkNotNull(providerTask).invoke()
+        assertEquals(listOf("content://media/dng/late-timeout"), late.toList())
+        assertEquals(0, ready.get())
+        assertEquals(1, retired.get())
+    }
+
+    @Test
+    fun `deadline scheduler rejection fails before provider dispatch`() {
+        val failures = CopyOnWriteArrayList<Throwable?>()
+        val retired = AtomicInteger()
+        val providerDispatched = AtomicBoolean(false)
+        val owner = DngPreCaptureAllocation<String>(
+            dispatch = {
+                providerDispatched.set(true)
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = { "row" },
+            isCurrent = { true },
+            onReady = { error("rejected deadline cannot reach Camera2") },
+            onLateValue = { error("rejected deadline cannot allocate") },
+            onFailure = failures::add,
+            onRetired = { retired.incrementAndGet() },
+            deadlineScheduler = RecordingTeardownScheduler { _, _ -> null },
+            deadlineMs = 1L,
+        )
+
+        assertEquals(RecordingPreNativeDispatch.SHUTDOWN, owner.start())
+        assertFalse(providerDispatched.get())
+        assertTrue(failures.single() is java.util.concurrent.TimeoutException)
+        assertEquals(1, retired.get())
     }
 
     @Test
