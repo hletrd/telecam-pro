@@ -58,6 +58,7 @@ object MediaStoreWriter {
     private const val COMPLETION_MARK_BACKOFF_MS = 25L
     internal const val MAX_DELETED_FAMILY_MARKERS = 64
     internal const val MAX_REJECTED_OUTPUTS = 32
+    internal const val MAX_PENDING_IDENTITY_RECOVERIES = 32
     /**
      * Exact headroom for every output that can still reach rejection after the soft admission edge:
      * two process-wide retained processed snapshots at three siblings each; one Camera2 RAW-only
@@ -199,6 +200,12 @@ object MediaStoreWriter {
         val allocation: PendingOutputAllocation,
     )
 
+    internal data class PendingIdentityRecovery(
+        val context: Context,
+        val uri: Uri,
+        val family: CaptureFamilyKey,
+    )
+
     private val rejectedOutputOwner = RejectedOutputCleanupCapacityOwner<RejectedOutput>(
         workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
         backlogCapacity = REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
@@ -209,6 +216,30 @@ object MediaStoreWriter {
             REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
         discardEffect = { discardPendingOutput(it.context, it.allocation) },
     )
+
+    /**
+     * Exact owner for rows whose insert + REGISTERED commit succeeded before identity froze.
+     * A reservation is acquired before insert, so an identity outage can never grow hidden rows
+     * beyond this process bound. Recovery stays non-destructive until a later exact read succeeds.
+     */
+    private val pendingIdentityRecoveryOwner =
+        RejectedOutputCleanupCapacityOwner<PendingIdentityRecovery>(
+            workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
+            backlogCapacity = REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+            admissionLimit = MAX_PENDING_IDENTITY_RECOVERIES,
+            ownershipLimit = MAX_PENDING_IDENTITY_RECOVERIES +
+                REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+            discardEffect = { claim ->
+                recoverPendingAllocationIdentity(
+                    resolve = {
+                        PendingDiscardJournal(claim.context)
+                            .captureAllocation(claim.uri, claim.family)
+                            ?.also(::rememberPendingAllocation)
+                    },
+                    discard = { discardPendingOutput(claim.context, it) },
+                )
+            },
+        )
 
     /**
      * Reconstructs the newest package-owned row or recognized owner-null TeleCam-format candidate.
@@ -417,8 +448,21 @@ object MediaStoreWriter {
         discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
     ): PendingOutputAllocation? {
         val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
-        val uri = createPendingImage(context, displayName, mimeType, subDir) ?: return null
-        return discardJournal.captureAllocation(uri, family)?.also(::rememberPendingAllocation)
+        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: return null
+        val uri = createPendingImage(context, displayName, mimeType, subDir) ?: run {
+            identityReservation.cancel()
+            return null
+        }
+        val allocation = discardJournal.captureAllocation(uri, family)
+        if (allocation != null) {
+            identityReservation.cancel()
+            rememberPendingAllocation(allocation)
+            return allocation
+        }
+        identityReservation.submit(
+            PendingIdentityRecovery(context.applicationContext, uri, family),
+        )
+        return null
     }
 
     fun createPendingVideo(
@@ -436,6 +480,7 @@ object MediaStoreWriter {
         discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
     ): PendingOutputAllocation? {
         val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
+        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: return null
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
             put(MediaStore.Video.Media.MIME_TYPE, mimeType)
@@ -447,10 +492,24 @@ object MediaStoreWriter {
         }
         val uri = runCatching {
             context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        }.getOrNull() ?: return null
-        val registered = registerPending(context, uri) ?: return null
-        return discardJournal.captureAllocation(registered, family)
-            ?.also(::rememberPendingAllocation)
+        }.getOrNull() ?: run {
+            identityReservation.cancel()
+            return null
+        }
+        val registered = registerPending(context, uri) ?: run {
+            identityReservation.cancel()
+            return null
+        }
+        val allocation = discardJournal.captureAllocation(registered, family)
+        if (allocation != null) {
+            identityReservation.cancel()
+            rememberPendingAllocation(allocation)
+            return allocation
+        }
+        identityReservation.submit(
+            PendingIdentityRecovery(context.applicationContext, registered, family),
+        )
+        return null
     }
 
     internal fun pendingOutputAllocation(uri: Uri): PendingOutputAllocation? =
@@ -844,7 +903,11 @@ object MediaStoreWriter {
 
     internal fun retryRejectedOutputs(): Int = rejectedOutputOwner.retryUnresolved()
 
-    internal fun rejectedOutputAdmissionAvailable(): Boolean = rejectedOutputOwner.canAdmit()
+    internal fun retryPendingAllocationIdentities(): Int =
+        pendingIdentityRecoveryOwner.retryUnresolved()
+
+    internal fun rejectedOutputAdmissionAvailable(): Boolean =
+        rejectedOutputOwner.canAdmit() && pendingIdentityRecoveryOwner.canAdmit()
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
@@ -1073,6 +1136,7 @@ object MediaStoreWriter {
         // media cursor advances.
         if (!cursor.preflightComplete) {
             retryRejectedOutputs()
+            retryPendingAllocationIdentities()
             val report = cleanupDeletedFamilyJournal(context, subDirs)
             return OrphanRecoveryBatch(
                 report = report,
@@ -1688,6 +1752,12 @@ internal fun deletedFamilyQuery(
 
 internal const val REJECTED_OUTPUT_CLEANUP_WORKER_COUNT = 2
 internal const val REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY = 8
+
+/** Identity uncertainty is never destructive; only an exact later allocation may reach discard. */
+internal fun <T> recoverPendingAllocationIdentity(
+    resolve: () -> T?,
+    discard: (T) -> PendingOutputDiscardResult,
+): PendingOutputDiscardResult = resolve()?.let(discard) ?: PendingOutputDiscardResult.UNRESOLVED
 
 internal enum class RejectedOutputCleanupDispatch { ACCEPTED, OVERFLOW, SHUTDOWN }
 
