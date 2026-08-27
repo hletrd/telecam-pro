@@ -1505,7 +1505,9 @@ check(
     and "child_environment.pop(name, None)" in scoped_release_helper
     and scoped_release_helper.index("load_upload_key_prerequisite(args.root, os.environ)") <
         scoped_release_helper.index("sys.stdin.buffer.read")
-    and "MIN_STRONG_PASSWORD_LENGTH = 16" in scoped_release_helper
+    and "MIN_STRONG_PASSWORD_LENGTH = 20" in scoped_release_helper
+    and "MIN_STRONG_PASSWORD_CLASSES = 3" in scoped_release_helper
+    and "_has_monotonic_run(value)" in scoped_release_helper
     and "uploadKeyRotationApproved=false" in keystore_example
     and "uploadKeyCertificateSha256=<64 lowercase hex characters>" in keystore_example
     and "export TELECAMPRO_STORE_PASSWORD" not in keystore_example

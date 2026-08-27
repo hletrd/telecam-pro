@@ -28,7 +28,9 @@ KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
 STORE_FILE_ENV = "TELECAMPRO_STORE_FILE"
 SECRET_FIELDS = {"storePassword": STORE_PASSWORD_ENV, "keyPassword": KEY_PASSWORD_ENV}
 MAX_CREDENTIAL_BYTES = 64 * 1024
-MIN_STRONG_PASSWORD_LENGTH = 16
+MIN_STRONG_PASSWORD_LENGTH = 20
+MIN_STRONG_PASSWORD_CLASSES = 3
+MAX_MONOTONIC_RUN = 5
 APPROVAL_PROPERTY = "uploadKeyRotationApproved"
 FINGERPRINT_PROPERTY = "uploadKeyCertificateSha256"
 
@@ -46,6 +48,51 @@ class UploadKeyPrerequisite:
     certificate_sha256: str
 
 
+def _has_monotonic_run(value: str) -> bool:
+    """Reject human-memorable alphabetic/numeric walks without claiming entropy proof."""
+    run = 1
+    direction = 0
+    previous: str | None = None
+    for character in value.casefold():
+        if previous is None or not (
+            (previous.isascii() and previous.isalpha() and character.isascii() and character.isalpha())
+            or (previous.isascii() and previous.isdigit() and character.isascii() and character.isdigit())
+        ):
+            run = 1
+            direction = 0
+        else:
+            step = ord(character) - ord(previous)
+            if step in {-1, 1}:
+                if step == direction:
+                    run += 1
+                else:
+                    direction = step
+                    run = 2
+                if run > MAX_MONOTONIC_RUN:
+                    return True
+            else:
+                run = 1
+                direction = 0
+        previous = character
+    return False
+
+
+def _meets_generated_secret_floor(value: str) -> bool:
+    if len(value) < MIN_STRONG_PASSWORD_LENGTH or value != value.strip():
+        return False
+    classes = (
+        any(character.islower() for character in value),
+        any(character.isupper() for character in value),
+        any(character.isdigit() for character in value),
+        any(not character.isalnum() for character in value),
+    )
+    return (
+        sum(classes) >= MIN_STRONG_PASSWORD_CLASSES
+        and len(set(value)) > 1
+        and not _has_monotonic_run(value)
+    )
+
+
 def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
     if not payload or len(payload) > MAX_CREDENTIAL_BYTES:
         raise ScopedReleaseError("scoped signing credentials are missing or oversized")
@@ -58,12 +105,12 @@ def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        key, separator, value = line.partition("=")
+        key, separator, value = raw_line.partition("=")
         if not separator or key not in SECRET_FIELDS or key in values:
             raise ScopedReleaseError("scoped signing credentials have an invalid field set")
         if not value or any(ord(character) < 0x20 for character in value):
             raise ScopedReleaseError("scoped signing credentials contain an invalid value")
-        if len(value) < MIN_STRONG_PASSWORD_LENGTH or re.fullmatch(r"\d{6}", value):
+        if not _meets_generated_secret_floor(value):
             raise ScopedReleaseError("scoped signing credentials do not meet the strong-key policy")
         values[key] = value
     if values.keys() != SECRET_FIELDS.keys():

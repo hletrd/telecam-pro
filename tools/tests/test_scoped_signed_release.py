@@ -23,8 +23,8 @@ SPEC.loader.exec_module(scoped)
 
 class ScopedSignedReleaseTest(unittest.TestCase):
     def test_credentials_require_exact_strong_fields_without_echoing_values(self) -> None:
-        store = "store-password-with-entropy"
-        key = "key-password-with-entropy"
+        store = "Store-password-with-Entropy-7!"
+        key = "Key-password-with-Entropy-8!"
         self.assertEqual(
             {"storePassword": store, "keyPassword": key},
             scoped.parse_scoped_credentials(
@@ -34,9 +34,15 @@ class ScopedSignedReleaseTest(unittest.TestCase):
         invalid = (
             b"",
             b"storePassword=123456\nkeyPassword=123456\n",
-            b"storePassword=long-enough-password\n",
-            b"storePassword=long-enough-password\nstorePassword=duplicate-value\nkeyPassword=also-long-enough\n",
-            b"storePassword=long-enough-password\nkeyPassword=also-long-enough\nunknown=value\n",
+            b"storePassword=00000000000000000000\nkeyPassword=11111111111111111111\n",
+            b"storePassword=aaaaaaaaaaaaaaaaaaaa\nkeyPassword=bbbbbbbbbbbbbbbbbbbb\n",
+            b"storePassword=abcdefghijklmnopqrst\nkeyPassword=zyxwvutsrqponmlkjihg\n",
+            b"storePassword=only-two-classes-long\nkeyPassword=another-two-class-value\n",
+            b"storePassword= Strong-password-Value-7!\nkeyPassword=Key-password-with-Entropy-8!\n",
+            b"storePassword=Strong-password-Value-7! \nkeyPassword=Key-password-with-Entropy-8!\n",
+            b"storePassword=Strong-password-Value-7!\n",
+            b"storePassword=Strong-password-Value-7!\nstorePassword=Duplicate-password-Value-9!\nkeyPassword=Key-password-with-Entropy-8!\n",
+            b"storePassword=Strong-password-Value-7!\nkeyPassword=Key-password-with-Entropy-8!\nunknown=value\n",
         )
         for payload in invalid:
             with self.subTest(payload_length=len(payload)):
@@ -71,8 +77,8 @@ class ScopedSignedReleaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = self.fixture(Path(temp_dir), hashlib.sha256(certificate).hexdigest())
             credentials = {
-                "storePassword": "store-password-with-entropy",
-                "keyPassword": "key-password-with-entropy",
+                "storePassword": "Store-password-with-Entropy-7!",
+                "keyPassword": "Key-password-with-Entropy-8!",
             }
             ambient = {"PATH": os.environ.get("PATH", ""), "JAVA_HOME": ""}
 
@@ -95,8 +101,8 @@ class ScopedSignedReleaseTest(unittest.TestCase):
             self.assertNotIn(scoped.STORE_PASSWORD_ENV, ambient)
             self.assertNotIn(scoped.KEY_PASSWORD_ENV, ambient)
             all_arguments = [argument for command, _ in calls for argument in command]
-            self.assertNotIn("store-password-with-entropy", all_arguments)
-            self.assertNotIn("key-password-with-entropy", all_arguments)
+            self.assertNotIn("Store-password-with-Entropy-7!", all_arguments)
+            self.assertNotIn("Key-password-with-Entropy-8!", all_arguments)
             self.assertIn("-storepass:env", calls[0][0])
             self.assertIn(scoped.STORE_PASSWORD_ENV, calls[0][0])
             self.assertEqual(2, len(calls))
@@ -106,8 +112,8 @@ class ScopedSignedReleaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = self.fixture(Path(temp_dir), hashlib.sha256(certificate).hexdigest())
             credentials = {
-                "storePassword": "store-password-with-entropy",
-                "keyPassword": "key-password-with-entropy",
+                "storePassword": "Store-password-with-Entropy-7!",
+                "keyPassword": "Key-password-with-Entropy-8!",
             }
             calls = 0
 
