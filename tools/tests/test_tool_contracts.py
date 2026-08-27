@@ -1519,23 +1519,27 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     )
 
     def test_committed_export_rejects_release_capture_trace_contract_regressions(self) -> None:
-        def mutate_trace(root: Path, force_unwrap: bool) -> None:
+        def mutate_trace(root: Path, mutation: str) -> None:
             path = root / "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
             text = path.read_text(encoding="utf-8")
-            if force_unwrap:
-                needle = "traceText?.takeIf { traceAdmission.registration }"
+            if mutation == "unwrap":
+                needle = "traceText?.takeIf {"
                 self.assertIn(needle, text)
-                text = text.replace(needle, "traceText!!.takeIf { traceAdmission.registration }", 1)
-            else:
+                text = text.replace(needle, "traceText!!.takeIf {", 1)
+            elif mutation == "release":
                 needle = "me.hletrd.telecampro.BuildConfig.DEBUG,"
                 self.assertIn(needle, text)
                 text = text.replace(needle, "true,", 1)
+            else:
+                needle = "traceAdmission.registration && recurringDiagnosticAllowed("
+                self.assertIn(needle, text)
+                text = text.replace(needle, "traceAdmission.registration && (", 1)
             path.write_text(text, encoding="utf-8")
 
-        for force_unwrap in (False, True):
-            with self.subTest(force_unwrap=force_unwrap):
+        for mutation in ("release", "unwrap", "budget"):
+            with self.subTest(mutation=mutation):
                 result, _ = run_documentation_gate_from_committed_export(
-                    lambda root: mutate_trace(root, force_unwrap),
+                    lambda root: mutate_trace(root, mutation),
                 )
 
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
