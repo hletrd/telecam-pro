@@ -72,6 +72,76 @@ def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
+# Every production Log site receives one executable quota classification. Error/warning rows are
+# the reserved fault class. Informational rows must either have a recurring-budget admission in the
+# same source block or match an explicit startup/session edge below. Adding a new bare Log.i/Log.d,
+# or deleting a recurring guard, therefore fails this gate instead of being hidden by occurrence
+# counts elsewhere in the file.
+DEBUG_ONE_SHOT_INFO_ANCHORS: dict[str, tuple[str, ...]] = {
+    "app/src/main/kotlin/me/hletrd/telecampro/gl/FlipRenderer.kt": ("sourceHlg ->",),
+    "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt": ("frontMirror:",),
+    "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt": (
+        "CameraSessionAccepted:",
+        "LensInventory:",
+        "PreviewSurface:",
+        "RecordingSpec:",
+        "RecordingStored:",
+        "RecordingAllocationRetired:",
+        "MediaRecovery",
+    ),
+    "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt": (
+        "Session configured",
+        "DynamicRangeProfiles:",
+        "High-speed session configured",
+        "SENSOR_TIMESTAMP source=",
+    ),
+    "app/src/main/kotlin/me/hletrd/telecampro/camera/StartupTrace.kt": ("cold start (ms since resume)",),
+    "app/src/main/kotlin/me/hletrd/telecampro/camera/VendorTagInspector.kt": ("Log.",),
+    "app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt": ("audioScene=",),
+}
+DEBUG_RESERVED_INFO_ANCHORS: dict[str, tuple[str, ...]] = {
+    "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt": ("FrameGap:",),
+}
+
+
+def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
+    counts = {"recurring_budgeted": 0, "one_shot_session": 0, "reserved_fault": 0}
+    unclassified: list[str] = []
+    invocation = re.compile(r"(?:android\.util\.)?Log\.(?P<level>[vdiwe])\s*\(")
+    source_root = ROOT / "app/src/main/kotlin"
+    for path in sorted(source_root.rglob("*.kt")):
+        relative = path.relative_to(ROOT).as_posix()
+        source = path.read_text(encoding="utf-8")
+        previous_end = 0
+        for match in invocation.finditer(source):
+            level = match.group("level")
+            before = source[max(previous_end, match.start() - 1_200):match.start()]
+            around = source[max(0, match.start() - 1_800):match.start() + 1_400]
+            previous_end = match.end()
+            if relative.endswith("/VendorTagInspector.kt"):
+                counts["one_shot_session"] += 1
+                continue
+            if level in {"e", "w"}:
+                counts["reserved_fault"] += 1
+                continue
+            if (
+                "recurringDiagnosticAllowed" in before
+                or "tapFocusDiagnosticAllowed" in before
+                or "processDiagnosticLogBudget.tryAcquire" in before
+            ):
+                counts["recurring_budgeted"] += 1
+                continue
+            if any(anchor in around for anchor in DEBUG_RESERVED_INFO_ANCHORS.get(relative, ())):
+                counts["reserved_fault"] += 1
+                continue
+            if any(anchor in around for anchor in DEBUG_ONE_SHOT_INFO_ANCHORS.get(relative, ())):
+                counts["one_shot_session"] += 1
+                continue
+            line = source.count("\n", 0, match.start()) + 1
+            unclassified.append(f"{relative}:{line}:Log.{level}")
+    return counts, unclassified
+
+
 def read_private(rel: str) -> str | None:
     if rel not in PRIVATE_DOCS:
         raise ValueError(f"unregistered private document: {rel}")
@@ -1627,23 +1697,43 @@ check(
 )
 zoom_submit_plan = read("app/src/main/kotlin/me/hletrd/telecampro/camera/ZoomSubmitPlan.kt")
 camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
+camera_controller = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt")
 trace_admission_call = re.search(
     r"traceAdmission\s*=\s*captureFamilyTraceAdmission\((.*?)\)",
     camera_engine,
     re.S,
+)
+debug_log_classes, unclassified_debug_logs = debug_log_classification_inventory()
+check(
+    not unclassified_debug_logs
+    and all(debug_log_classes[classification] > 0 for classification in (
+        "recurring_budgeted",
+        "one_shot_session",
+        "reserved_fault",
+    )),
+    "every production debug log site has an executable quota classification",
+    ", ".join(unclassified_debug_logs[:8]),
+)
+check(
+    'if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = true))' in camera_controller
+    and 'Log.i(TAG, "Touch AF: scanning region $meteringPoint")' in camera_controller
+    and 'if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = tapPublication != null))'
+    in camera_engine
+    and 'Log.i("CameraEngine", "TapFocus: cleared")' in camera_engine,
+    "tap-focus scan and owned reset retain budgeted calibration evidence",
 )
 check(
     bool(
         trace_admission_call
         and "BuildConfig.DEBUG" in trace_admission_call.group(1)
         and "traceText!!" not in camera_engine
-        and camera_engine.count("traceText?.takeIf {") >= 3
-        and camera_engine.count("recurringDiagnosticAllowed") >= 3
+        and "traceAdmission.registration && recurringDiagnosticAllowed(" in camera_engine
+        and "traceSettlement && recurringDiagnosticAllowed(" in camera_engine
+        and "traceAdmission.registration && !registrationAlreadyTraced &&" in camera_engine
         and "traceSettlement = traceAdmission.settlement" in camera_engine
     ),
     "release capture tracing is build-gated and nullable-safe at the production callback",
 )
-camera_controller = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt")
 camera_view_model = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt")
 zoom_glide_state = read("app/src/main/kotlin/me/hletrd/telecampro/ui/ZoomGlideState.kt")
 zoom_submit_authority = "\n".join(

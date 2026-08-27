@@ -133,6 +133,26 @@ class DiagnosticTelemetryTest {
     }
 
     @Test
+    fun `tap scan and owned reset share the recurring ceiling and preserve fault reserve`() {
+        val budget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        var emitted = 0
+
+        repeat(COLOR_OS_PROCESS_LOG_ROW_LIMIT) {
+            if (tapFocusDiagnosticAllowed(debugEnabled = true, edgeOwned = true, budget = budget)) {
+                emitted++ // Touch AF: scanning
+            }
+            if (tapFocusDiagnosticAllowed(debugEnabled = true, edgeOwned = true, budget = budget)) {
+                emitted++ // TapFocus: cleared
+            }
+            assertTrue(!tapFocusDiagnosticAllowed(debugEnabled = true, edgeOwned = false, budget = budget))
+        }
+
+        assertEquals(RECURRING_DIAGNOSTIC_ROW_BUDGET, emitted)
+        assertEquals(120, COLOR_OS_PROCESS_LOG_ROW_LIMIT - budget.usedRows())
+        assertTrue(!tapFocusDiagnosticAllowed(debugEnabled = true, edgeOwned = true, budget = budget))
+    }
+
+    @Test
     fun harmlessSensorJitterStaysInsideOneSixthStopBucket() {
         assertEquals(diagnosticStopBucket(800L), diagnosticStopBucket(820L))
         assertEquals(diagnosticStopBucket(33_000_000L), diagnosticStopBucket(34_000_000L))

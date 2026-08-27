@@ -3153,7 +3153,9 @@ class CameraEngine internal constructor(
             }
             publication
         }
-        if (BuildConfig.DEBUG) Log.i("CameraEngine", "TapFocus: cleared")
+        if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = tapPublication != null)) {
+            Log.i("CameraEngine", "TapFocus: cleared")
+        }
         tapPublication?.let { onTapFocusChange?.invoke(it) }
     }
 

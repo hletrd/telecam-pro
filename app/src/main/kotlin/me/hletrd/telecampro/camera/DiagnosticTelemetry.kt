@@ -38,6 +38,16 @@ internal fun recurringDiagnosticAllowed(
     budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
 ): Boolean = debugEnabled && budget.tryAcquire()
 
+/**
+ * Tap-focus diagnostics are action-repeatable, so only a real scan/reset edge may spend one row.
+ * Empty clear calls remain silent and neither edge can bypass the process recurring-row ceiling.
+ */
+internal fun tapFocusDiagnosticAllowed(
+    debugEnabled: Boolean,
+    edgeOwned: Boolean,
+    budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
+): Boolean = edgeOwned && recurringDiagnosticAllowed(debugEnabled, budget)
+
 /** Change-gated diagnostic with a slow heartbeat and a floor for flapping state. */
 internal class DiagnosticChangeLogGate<T>(
     private val minimumChangeIntervalMs: Long = DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS,

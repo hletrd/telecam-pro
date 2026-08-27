@@ -1550,6 +1550,41 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_rejects_unclassified_repeatable_debug_logs(self) -> None:
+        fixtures = (
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt",
+                "if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = true))",
+                "if (BuildConfig.DEBUG)",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+                "if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = tapPublication != null))",
+                "if (BuildConfig.DEBUG)",
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+                "    // ---- Photo ----",
+                '    private fun unclassifiedDebugMutation() { Log.i("Mutation", "unbudgeted") }\n\n' +
+                "    // ---- Photo ----",
+            ),
+        )
+        for relative, current, stale in fixtures:
+            with self.subTest(relative=relative, stale=stale):
+                def mutate(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  every production debug log site has an executable quota classification",
+                    result.stdout,
+                )
+
     def test_committed_export_rejects_unscoped_or_unapproved_signing_procedures(self) -> None:
         fixtures = (
             (

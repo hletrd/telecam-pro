@@ -1187,7 +1187,9 @@ class CameraController internal constructor(
             // focus is held. Cancel-then-start is more reliable than a bare START when the AF engine
             // is mid-scan (common in CONTINUOUS mode).
             if (tapAfTriggerRequired) {
-                if (BuildConfig.DEBUG) Log.i(TAG, "Touch AF: scanning region $meteringPoint")
+                if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = true)) {
+                    Log.i(TAG, "Touch AF: scanning region $meteringPoint")
+                }
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
                 s.capture(builder.build(), callback, handler)
                 tapRequestStarted = true
