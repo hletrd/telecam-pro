@@ -153,6 +153,14 @@ class DiagnosticTelemetryTest {
     }
 
     @Test
+    fun `tap focus default process budget path still short circuits disabled and empty edges`() {
+        // Omit the budget argument deliberately: this executes Kotlin's production default bridge
+        // without consuming the process singleton in either short-circuited case.
+        assertTrue(!tapFocusDiagnosticAllowed(debugEnabled = false, edgeOwned = true))
+        assertTrue(!tapFocusDiagnosticAllowed(debugEnabled = true, edgeOwned = false))
+    }
+
+    @Test
     fun harmlessSensorJitterStaysInsideOneSixthStopBucket() {
         assertEquals(diagnosticStopBucket(800L), diagnosticStopBucket(820L))
         assertEquals(diagnosticStopBucket(33_000_000L), diagnosticStopBucket(34_000_000L))

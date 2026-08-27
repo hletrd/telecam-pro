@@ -199,4 +199,36 @@ class StartupTraceTest {
         assertEquals(listOf("fresh-open", "fresh-result"), StartupTrace.marksForTest().map { it.first })
         assertEquals(1, emitted.size)
     }
+
+    @Test
+    fun `Engine owner current drops absent and globally retired attempts`() {
+        val engine = EngineStartupTraceOwnership()
+        assertNull(engine.current())
+
+        val active = checkNotNull(engine.begin())
+        assertSame(active, engine.current())
+        StartupTrace.disarm(active)
+        assertNull(engine.current())
+        assertNull(engine.current())
+    }
+
+    @Test
+    fun `null mismatched and globally retired controller claims stay unbound`() {
+        val engine = EngineStartupTraceOwnership()
+
+        assertNull(engine.claimController(StartupTrace.Owner(Long.MAX_VALUE)))
+
+        val nullClaimOwner = checkNotNull(engine.begin())
+        assertNull(engine.claimController(null))
+        assertTrue(!StartupTrace.owns(nullClaimOwner))
+
+        val current = checkNotNull(engine.begin())
+        val foreign = StartupTrace.Owner(current.generation + 1_000L)
+        assertNull(engine.claimController(foreign))
+        assertSame(current, engine.current())
+
+        StartupTrace.disarm(current)
+        assertNull(engine.claimController(current))
+        assertNull(engine.current())
+    }
 }

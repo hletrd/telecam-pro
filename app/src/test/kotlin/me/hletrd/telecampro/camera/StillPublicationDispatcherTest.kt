@@ -46,6 +46,14 @@ class StillPublicationDispatcherTest {
     @Test
     fun `raw-only transfer is direct and rejected mixed transfer stays recovery-only`() {
         val events = mutableListOf<String>()
+        assertFalse(
+            transferCompletedDngPublication(
+                order = DngPublicationTransfer.NONE,
+                enqueueAfterProcessed = { error("no DNG cannot enqueue") },
+                publication = { error("no DNG cannot publish") },
+                onTransferRejected = { error("no DNG has no recovery tail") },
+            ),
+        )
         assertTrue(
             transferCompletedDngPublication(
                 order = DngPublicationTransfer.DIRECT,
