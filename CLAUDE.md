@@ -1027,15 +1027,21 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   and only an unresolvable survivor falls back to a Gallery retry message.
   Destructive identity is frozen after REGISTERED. If that provider read is unavailable, ambiguous,
   or mismatched, a reservation acquired before insert transfers the row to one finite process owner;
-  it retries non-destructively and closes new image/video admission at capacity rather than forgetting
-  rows until restart.
+  one daemon scheduler retries it non-destructively with bounded exponential backoff and one
+  scheduled/in-flight retry per claim. An exact identity authorizes DISCARD; stable provider absence
+  clears only the REGISTERED metadata; ambiguity/mismatch/unavailability remain fail-closed. The
+  owner closes new image/video admission at capacity rather than forgetting rows until restart, and
+  every reserve/retry/terminal edge publishes through the process admission signal so a replacement
+  Engine cannot miss capacity reopening.
 - **DNG publication does not hold the camera callback.** `DngCreator.writeImage` and the durable
   `COMPLETE` marker attempt remain synchronous while the RAW `Image` is valid; `saveDng` returns a
   frozen `PendingDngPublication` carrying whether that commit succeeded. Only `publishDng`
   (including the durable gate, resolver retry backoff, and callbacks) leaves the camera thread.
-  RAW-only SINGLE tails use one process-wide finite owner (two daemon workers + two backlog slots)
-  shared across Engine generations; mixed-output and sequence drives preserve their processed-save
-  ordering on `ioExecutor`. Capacity overflow, facade shutdown, queue rejection, or marker exhaustion
+  EVERY completed DNG tail uses one process-wide finite owner (two daemon workers + two backlog
+  slots) shared across Engine generations. RAW-only SINGLE/BURST/AEB/timelapse transfer directly;
+  mixed-output tails queue only a lightweight transfer behind their processed sibling's terminal on
+  `ioExecutor`, then publish on that same process owner. Capacity overflow, facade shutdown, transfer
+  rejection, or marker exhaustion
   settles the live capture family exactly once and keeps the structurally complete private row for
   launch recovery; provider work never falls back inline and complete DNG bytes are never deleted for
   lack of live publication capacity.
@@ -1048,8 +1054,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   DNG allocation itself has an 8 s first-wins deadline before Camera2 dispatch. Timeout or scheduler
   rejection releases capture/family/snapshot admission immediately; a late exact row remains bounded
   cleanup/recovery work. Once Camera2 owns the request, every no-complete-DNG terminal transfers the
-  preallocated row through its reserved cleanup, and exact DNG lease release republishes complete
-  shutter-admission truth.
+  preallocated row through its reserved cleanup. DNG and MediaStore capacity are exact closeable
+  process subscriptions: acquire/release/reserve/retry terminals recompute the combined shutter gate
+  for every current Engine, while detach drains the old callback before its graph is cleared.
 - **A logged `CameraAccessException` may have NO app frame in it — read the stack before believing
   the app did something (2026-08-09).** Rapid Photo↔Video / front-rear churn logs
   `E CameraCaptureSession: CAMERA_ERROR (3) ... Function not implemented (-38)`, which reads like an
@@ -1082,9 +1089,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   accumulates cadence in constant memory and emits only enable + terminal summary rows. **Any new
   per-frame or per-tick log must be change-gated or thresholded.** (This quota is also what made the removed OPPO CameraUnit SDK's
   200+ startup rows decisive — see that bullet.)
-  Capture-family edges, ShutterLag/ZSL decisions, standby/audio shape, hardware, zoom, motion, focus,
-  and 3A additionally cross one 180-row process admission door, preserving 120 rows for startup,
-  frame gaps, recovery, and faults even after repeated shutter actions.
+  Capture-family edges, ShutterLag/ZSL decisions, standby/audio shape, hardware, zoom, motion,
+  focus-confidence, Touch-AF scan/reset, and 3A additionally cross one 180-row process admission
+  door, preserving 120 rows for startup, frame gaps, recovery, and faults even after repeated
+  shutter/focus actions. An executable source inventory classifies every production DEBUG log as
+  budgeted recurring, one-shot startup/session, or reserved fault evidence.
 - **Cold start is instrumented, and the measured budget is `resume → first camera frame ≈ 544 ms`
   (debug, 2026-07-25).** `camera/StartupTrace.kt` marks `openCamera → onOpened →
   createCaptureSession → onConfigured → previewRequestBuilt → firstCameraResult` against a
@@ -1104,10 +1113,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   conditions: Ready, rollback/exhaustion, pause, or a newer status ends them. A timer is wrong both
   ways: too long makes a fast transition read slow, too short claims ready before it is. Measure the
   pipeline before believing a latency report, and measure the pill too.
-  Each armed measurement owns an opaque resume generation carried only by its CameraController;
-  marks, finish, and disarm require that owner, and only the latest repeating-request generation may
-  finish it. A queued callback from a pre-pause or replaced request cannot fabricate the next
-  resume's timing.
+  Each armed measurement belongs first to one exact Engine resume/open transaction. That Engine
+  passes the opaque owner explicitly through GL/preflight/retry/open and binds it only after its one
+  CameraController is installed; wiring never samples a mutable process-global owner. Pause,
+  release, quarantine, supersession, GL replacement, or a second controller revokes the exact owner.
+  Marks, finish, and disarm require it, and only the latest repeating-request generation may finish
+  it, so a queued callback from a pre-pause/replaced controller cannot fabricate the next resume.
 - **`FLASH_STATE` LIES about the torch, and preview LUMA is not a light meter in any AE-active mode
   (2026-07-25).** This HAL reports `flashState = 3` (FIRED) on frames where the lamp is physically
   dark, so "state != 3" is NOT a torch discriminator — only a human eye, or a luma read taken under
