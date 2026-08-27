@@ -30,6 +30,7 @@ import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -583,9 +584,14 @@ class ModalFocusComposeTest {
         }
         compose.waitForIdle()
 
-        val gallery = compose.onNodeWithContentDescription(
-            context.getString(R.string.a11y_review_last_photo),
-        )
+        val galleryDescription = context.getString(R.string.a11y_review_last_photo)
+        // Gallery kind resolution crosses the finite review worker. Compose idleness does not own
+        // that IO dispatcher, so wait for the production opener rather than racing its first frame.
+        compose.waitUntil(timeoutMillis = 5_000L) {
+            compose.onAllNodesWithContentDescription(galleryDescription)
+                .fetchSemanticsNodes().size == 1
+        }
+        val gallery = compose.onNodeWithContentDescription(galleryDescription)
         gallery.requestFocus().performClick()
         compose.waitForIdle()
         compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_review))
