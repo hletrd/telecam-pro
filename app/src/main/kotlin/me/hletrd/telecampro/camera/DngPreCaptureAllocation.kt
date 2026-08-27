@@ -16,6 +16,32 @@ internal fun allStillOutputOwnersAvailable(
     rejectedCleanup: Boolean,
 ): Boolean = dng && retainedFamily && rejectedCleanup
 
+/**
+ * One ordered publication owner for an Engine's combined still-admission truth.
+ *
+ * [snapshot] and [deliver] run inside the same monitor. An older process-signal callback therefore
+ * cannot compute one value, pause, and arrive after a newer constituent edge. Engine-local owners
+ * use the same entry point, so no direct publication can leave the delivered-state cache stale.
+ */
+internal class StillAdmissionPublication(
+    private val snapshot: () -> Boolean,
+    private val deliver: (Boolean) -> Unit,
+) {
+    private val lock = Any()
+    private var delivered: Boolean? = null
+
+    fun publish() = synchronized(lock) {
+        val current = snapshot()
+        if (delivered == current) return@synchronized
+        delivered = current
+        deliver(current)
+    }
+
+    fun reset() = synchronized(lock) {
+        delivered = null
+    }
+}
+
 /** Android-free exactly-once lease for one DNG allocation + Camera2/save lifetime. */
 internal class DngPreCaptureAdmission {
     private val occupied = AtomicBoolean(false)

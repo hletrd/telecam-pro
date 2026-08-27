@@ -21,6 +21,54 @@ class DngPreCaptureAllocationTest {
     }
 
     @Test
+    fun `combined publication serializes an older callback before newer truth`() {
+        val current = AtomicBoolean(false)
+        val events = CopyOnWriteArrayList<Boolean>()
+        val olderEntered = CountDownLatch(1)
+        val releaseOlder = CountDownLatch(1)
+        val publication = StillAdmissionPublication(
+            snapshot = current::get,
+            deliver = { available ->
+                if (!available) {
+                    olderEntered.countDown()
+                    releaseOlder.await()
+                }
+                events += available
+            },
+        )
+        val older = Thread(publication::publish).apply { start() }
+        assertTrue(olderEntered.await(2, TimeUnit.SECONDS))
+        current.set(true)
+        val newer = Thread(publication::publish).apply { start() }
+
+        newer.join(50L)
+        assertTrue("newer delivery must wait behind the admitted older publication", newer.isAlive)
+        releaseOlder.countDown()
+        older.join(2_000L)
+        newer.join(2_000L)
+
+        assertEquals(listOf(false, true), events.toList())
+    }
+
+    @Test
+    fun `local and process edges share one cache and reset replays current truth`() {
+        val current = AtomicBoolean(true)
+        val events = mutableListOf<Boolean>()
+        val publication = StillAdmissionPublication(current::get, events::add)
+
+        publication.publish()
+        publication.publish()
+        current.set(false)
+        publication.publish()
+        current.set(true)
+        publication.publish()
+        publication.reset()
+        publication.publish()
+
+        assertEquals(listOf(true, false, true, true), events)
+    }
+
+    @Test
     fun `process admission singleton is executable and releases exactly`() {
         val lease = requireNotNull(ProcessDngPreCaptureAdmission.owner.tryAcquire())
         assertFalse(ProcessDngPreCaptureAdmission.owner.canAdmit())

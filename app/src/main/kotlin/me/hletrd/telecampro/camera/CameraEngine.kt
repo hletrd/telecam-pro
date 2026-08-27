@@ -206,17 +206,13 @@ class CameraEngine internal constructor(
     private val processStillAdmissionSubscriptionLock = Any()
     private var dngAdmissionSubscription: ProcessAdmissionSubscription? = null
     private var storageAdmissionSubscription: ProcessAdmissionSubscription? = null
-    private var lastProcessStillAdmission: Boolean? = null
+    private val stillAdmissionPublication = StillAdmissionPublication(
+        snapshot = { stillOutputAdmissionAvailable() },
+        deliver = { onStillCaptureAdmissionChanged?.invoke(it) },
+    )
 
     private fun publishProcessStillAdmission() {
-        val available = stillOutputAdmissionAvailable()
-        val changed = synchronized(processStillAdmissionSubscriptionLock) {
-            if (lastProcessStillAdmission == available) false else {
-                lastProcessStillAdmission = available
-                true
-            }
-        }
-        if (changed) onStillCaptureAdmissionChanged?.invoke(available)
+        stillAdmissionPublication.publish()
     }
 
     private fun ensureProcessStillAdmissionSubscriptions() {
@@ -239,10 +235,10 @@ class CameraEngine internal constructor(
             val current = listOfNotNull(dngAdmissionSubscription, storageAdmissionSubscription)
             dngAdmissionSubscription = null
             storageAdmissionSubscription = null
-            lastProcessStillAdmission = null
             current
         }
         subscriptions.forEach(ProcessAdmissionSubscription::close)
+        stillAdmissionPublication.reset()
     }
 
     private val manager = context.getSystemService(CameraManager::class.java)
@@ -301,7 +297,7 @@ class CameraEngine internal constructor(
     // unresolved rows/tombstones and republishes this Engine's admission truth.
     private val retainedStillRetirementListener = RetainedStillRetirementListener { family ->
         retainedStillDeletionOwner.retireDeletedFamily(family)
-        onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+        publishProcessStillAdmission()
     }
     // Deleted-still provider work is process-finite across Engine replacement. A rejected task stays
     // owned by the durable capture-family tombstone for launch recovery; it never runs inline on a
@@ -4608,18 +4604,18 @@ class CameraEngine internal constructor(
 
         val dngAdmission = ProcessDngPreCaptureAdmission.owner.tryAcquire() ?: run {
             snapshotLease?.release()
-            onStillCaptureAdmissionChanged?.invoke(false)
+            publishProcessStillAdmission()
             onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
             return false
         }
         fun releaseDngAdmission() {
             if (dngAdmission.release()) {
-                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                publishProcessStillAdmission()
             }
         }
         // This process owner serializes every still route while provider allocation/Camera2/DNG
         // bytes are in flight. Publish the edge immediately; the exact release helper restores it.
-        onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+        publishProcessStillAdmission()
         val rejectedCleanup = MediaStoreWriter.reserveRejectedOutputCleanup() ?: run {
             releaseDngAdmission()
             snapshotLease?.release()
@@ -4653,19 +4649,19 @@ class CameraEngine internal constructor(
                 traceSettlement = traceAdmission.settlement,
                 onDone = onDone,
             )
-            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            publishProcessStillAdmission()
         }
         fun cleanLateAllocation(allocation: PendingOutputAllocation) {
             val dispatch = MediaStoreWriter.dispatchRejectedOutput(
                 context,
                 allocation,
             ) { _ ->
-                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                publishProcessStillAdmission()
             }
             if (dispatch != me.hletrd.telecampro.storage.RejectedOutputCleanupDispatch.ACCEPTED) {
                 // REGISTERED is already durable. Launch recovery owns this exact incomplete row;
                 // provider work never falls back inline on the allocator/cancellation caller.
-                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                publishProcessStillAdmission()
             }
         }
 
@@ -4749,7 +4745,7 @@ class CameraEngine internal constructor(
     /** Returns true only when this press was admitted to a real still target. */
     fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
         stillCaptureAdmissionFailureStatus(stillOutputAdmissionAvailable())?.let { status ->
-            onStillCaptureAdmissionChanged?.invoke(false)
+            publishProcessStillAdmission()
             onStatus?.invoke(status.status())
             return false
         }
@@ -5099,7 +5095,7 @@ class CameraEngine internal constructor(
                 Log.e("CameraEngine", "Family deletion durability failed", failure)
             } finally {
                 runCatching {
-                    onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                    publishProcessStillAdmission()
                 }
                 complete(terminal)
             }
@@ -5110,7 +5106,7 @@ class CameraEngine internal constructor(
             // historical fail-closed admission behavior rather than pretending rollback is safe
             // against a late sibling that may already have observed it.
             if (liveStillId != null) retainedStillDeletionOwner.completeDeletionDurability(liveStillId, false)
-            onStillCaptureAdmissionChanged?.invoke(false)
+            publishProcessStillAdmission()
             complete(CaptureFamilyDeleteDurability.FAILED)
         }
     }
@@ -5150,7 +5146,7 @@ class CameraEngine internal constructor(
             if (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETRYABLE) {
                 ProcessRetainedStillDiscardOwner.requestRetirementRetry(context)
             }
-            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            publishProcessStillAdmission()
         }
         // This process-owned closure retains application context only. It can outlive this Engine
         // after overflow or a retryable provider result without keeping the old callback graph alive.
@@ -5204,7 +5200,7 @@ class CameraEngine internal constructor(
             retainedStillDeletionOwner.handleRetained(allocation, id)
         },
         onRejectedOutputDisposition = {
-            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            publishProcessStillAdmission()
         },
     )
     // Process-wide: Engine recreation must not multiply full-resolution save work that was already
@@ -5443,7 +5439,7 @@ class CameraEngine internal constructor(
         }
         fun releaseDngAdmission() {
             if (dngPreCaptureLease?.release() == true) {
-                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                publishProcessStillAdmission()
             }
         }
         fun submitIncompleteDngCleanup(): Boolean {
@@ -5456,7 +5452,7 @@ class CameraEngine internal constructor(
                 MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
             ) { _ ->
                 runCatching {
-                    onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+                    publishProcessStillAdmission()
                 }
                 finishDng()
             }
@@ -5731,7 +5727,7 @@ class CameraEngine internal constructor(
         // active sequence; the selected TIMELAPSE drive mode remains available on return to Photo.
         stopTimelapse()
         if (!MediaStoreWriter.rejectedOutputAdmissionAvailable()) {
-            onStillCaptureAdmissionChanged?.invoke(false)
+            publishProcessStillAdmission()
             onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
             onResult(false)
             return
@@ -7076,7 +7072,7 @@ class CameraEngine internal constructor(
                 ),
                 error = result.error,
             )
-            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            publishProcessStillAdmission()
             presentRecordingStorageResult(terminal)
             if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                 android.util.Log.i(
