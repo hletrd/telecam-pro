@@ -1067,7 +1067,11 @@ class CameraViewModel private constructor(
             // recomposition. Per CHANNEL, and before the list compare: N channels are N chances
             // for a jittering low bit to defeat the dedup.
             val display = me.hletrd.telecampro.video.audioDisplayFrame(frame)
-            if (me.hletrd.telecampro.BuildConfig.DEBUG && display.rms.size != lastLoggedLevelChannels) {
+            if (display.rms.size != lastLoggedLevelChannels &&
+                me.hletrd.telecampro.camera.recurringDiagnosticAllowed(
+                    me.hletrd.telecampro.BuildConfig.DEBUG,
+                )
+            ) {
                 lastLoggedLevelChannels = display.rms.size
                 // Change-gated on the CHANNEL COUNT only — a per-emission line at ~10 Hz would
                 // spend the ColorOS 300-row process quota in half a minute.

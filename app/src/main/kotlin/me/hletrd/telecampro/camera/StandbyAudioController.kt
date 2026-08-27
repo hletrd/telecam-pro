@@ -453,7 +453,7 @@ private fun createAndroidStandbyAudioInput(
     // device), and the Route row already tells the operator which input actually resolved. Failing
     // the meter outright would be a worse answer than a working meter on a different mic.
     if (device != null) runCatching { recorder.setPreferredDevice(device) }
-    if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+    if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
         // ONE line per AudioRecord generation, not per read: ColorOS drops everything past a
         // 300-row per-process quota, so a per-buffer line would eat the traces that matter.
         Log.i(

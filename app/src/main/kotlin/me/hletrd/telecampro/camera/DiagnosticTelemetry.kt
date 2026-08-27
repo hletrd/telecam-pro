@@ -32,6 +32,12 @@ internal const val RECURRING_DIAGNOSTIC_ROW_BUDGET = 180
 internal const val COLOR_OS_PROCESS_LOG_ROW_LIMIT = 300
 internal val processDiagnosticLogBudget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
 
+/** The only admission door for repeatable DEBUG information rows. Fault/error logs stay reserved. */
+internal fun recurringDiagnosticAllowed(
+    debugEnabled: Boolean,
+    budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
+): Boolean = debugEnabled && budget.tryAcquire()
+
 /** Change-gated diagnostic with a slow heartbeat and a floor for flapping state. */
 internal class DiagnosticChangeLogGate<T>(
     private val minimumChangeIntervalMs: Long = DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS,

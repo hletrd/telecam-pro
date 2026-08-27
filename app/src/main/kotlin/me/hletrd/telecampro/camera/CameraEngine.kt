@@ -4451,7 +4451,9 @@ class CameraEngine internal constructor(
             return false
         }
         val traceText = captureFamilyTraceText(formats, registered.spec, traceAdmission)
-        traceText?.takeIf { traceAdmission.registration }?.let { (stem, outputs) ->
+        traceText?.takeIf {
+            traceAdmission.registration && recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        }?.let { (stem, outputs) ->
             android.util.Log.i(
                 "CameraEngine",
                 "CaptureFamily: registered stem=$stem outputs=$outputs",
@@ -5082,7 +5084,9 @@ class CameraEngine internal constructor(
         onDone: (() -> Unit)?,
     ) {
         if (!registered.settled.compareAndSet(false, true)) return
-        traceText?.takeIf { traceSettlement }?.let { (stem, outputs) ->
+        traceText?.takeIf {
+            traceSettlement && recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        }?.let { (stem, outputs) ->
             android.util.Log.i(
                 "CameraEngine",
                 "CaptureFamily: settled stem=$stem outputs=$outputs",
@@ -5219,7 +5223,10 @@ class CameraEngine internal constructor(
         val registeredShot = registeredShotOverride ?: shotSpec(shotControls, hiRes, optics)
         val requestSpec = registeredShot.spec
         val traceText = captureFamilyTraceText(formats, requestSpec, traceAdmission)
-        traceText?.takeIf { traceAdmission.registration && !registrationAlreadyTraced }
+        traceText?.takeIf {
+            traceAdmission.registration && !registrationAlreadyTraced &&
+                recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        }
             ?.let { (stem, outputs) ->
             android.util.Log.i(
                 "CameraEngine",

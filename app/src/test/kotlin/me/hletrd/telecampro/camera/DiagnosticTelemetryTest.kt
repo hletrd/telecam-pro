@@ -108,6 +108,30 @@ class DiagnosticTelemetryTest {
     }
 
     @Test
+    fun `repeatable capture rows stop at the shared budget and preserve fault reserve`() {
+        val budget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        var emitted = 0
+        // One ordinary Single can request registration, started, completed, images, settlement.
+        repeat(60) {
+            repeat(5) {
+                if (recurringDiagnosticAllowed(debugEnabled = true, budget = budget)) emitted++
+            }
+        }
+
+        assertEquals(RECURRING_DIAGNOSTIC_ROW_BUDGET, emitted)
+        assertEquals(120, COLOR_OS_PROCESS_LOG_ROW_LIMIT - budget.usedRows())
+        assertTrue(!recurringDiagnosticAllowed(debugEnabled = true, budget = budget))
+    }
+
+    @Test
+    fun `release diagnostics never consume the debug process owner`() {
+        val budget = ProcessDiagnosticLogBudget(1)
+
+        assertTrue(!recurringDiagnosticAllowed(debugEnabled = false, budget = budget))
+        assertEquals(0, budget.usedRows())
+    }
+
+    @Test
     fun harmlessSensorJitterStaysInsideOneSixthStopBucket() {
         assertEquals(diagnosticStopBucket(800L), diagnosticStopBucket(820L))
         assertEquals(diagnosticStopBucket(33_000_000L), diagnosticStopBucket(34_000_000L))

@@ -1560,7 +1560,7 @@ class CameraController(context: Context) {
         // refusal itself is often the design (dark divergence, RAW wanted) — this exists so a
         // refusal in a case where wire==intent is diagnosable instead of read as "the freeze".
         if (!zslStreamingActive() || zslRing.isEmpty()) {
-            if (BuildConfig.DEBUG) {
+            if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                 Log.i(TAG, "ZslRefuse: streaming=${zslStreamingActive()} ring=${zslRing.size}")
             }
             return false
@@ -1581,7 +1581,7 @@ class CameraController(context: Context) {
             gestureActive = smoothPreviewBoost,
         )
         if (!zslIntentEligible(intent)) {
-            if (BuildConfig.DEBUG) {
+            if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                 Log.i(
                     TAG,
                     "ZslRefuse: intent manualAe=${intent.manualAe} raw=${intent.wantRaw} " +
@@ -1601,7 +1601,7 @@ class CameraController(context: Context) {
                 zoomRatio = r.get(CaptureResult.CONTROL_ZOOM_RATIO),
             )
             if (!zslFrameAdmissible(facts, intent, nowNs)) {
-                if (BuildConfig.DEBUG && i == zslRing.indices.last) {
+                if (i == zslRing.indices.last && recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                     Log.i(
                         TAG,
                         "ZslRefuse: newest frame age=${(nowNs - facts.timestampNs) / 1_000_000}ms " +
@@ -1620,7 +1620,9 @@ class CameraController(context: Context) {
             p.result = r
             p.jpeg = entry.image
             pending = p
-            if (BuildConfig.DEBUG) Log.i(TAG, "ShutterLag: ZSL served buffered frame, age $ageMs ms")
+            if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                Log.i(TAG, "ShutterLag: ZSL served buffered frame, age $ageMs ms")
+            }
             tryComplete(p)
             return true
         }
@@ -2105,7 +2107,7 @@ class CameraController(context: Context) {
                         maybeAdoptZslFrame()
                         // TRUE shutter moment (sensor exposure start): queue→started is the user-felt
                         // shutter lag; started→completed→image is HAL processing + readout.
-                        if (BuildConfig.DEBUG) {
+                        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                             Log.i(TAG, "ShutterLag: started +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
                         }
                     }
@@ -2122,7 +2124,7 @@ class CameraController(context: Context) {
                             if (expected == null) newPending.sensorTimestampNs = resultTimestamp
                             newPending.result = result
                         }
-                        if (BuildConfig.DEBUG) {
+                        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                             Log.i(TAG, "ShutterLag: completed +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
                         }
                         tryComplete(newPending)
@@ -2227,7 +2229,7 @@ class CameraController(context: Context) {
             }
             p.done = true
         }
-        if (BuildConfig.DEBUG) {
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
             Log.i(TAG, "ShutterLag: images+result +${(System.nanoTime() - p.queuedAtNs) / 1_000_000} ms")
         }
         val chars = rawChars
