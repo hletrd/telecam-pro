@@ -1,3 +1,166 @@
+# Aggregated deep review — cycle 57
+
+Date: 2026-08-27
+Reviewed revision: `b44d5fce43b9a4910143133b6e6e280559704763` (`origin/main`)
+Workspace: isolated clean clone
+`/var/folders/kz/t1c9x6qj5zgb2sg_4lv0nh900000gn/T/find-x9-ultra-cycle57.XXXXXX.yRT92pSLwp/repo`
+
+## Coverage and aggregation
+
+Five provenance reports cover every required perspective: code-reviewer, performance-reviewer,
+security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. Four parallel child lanes used every available
+review slot; the cycle owner completed the document-specialist and Compose designer perspectives
+locally with separate provenance rather than dropping them. Every lane read the committed
+authorities, inventoried the complete specialist surface, challenged current code and tests rather
+than recycling earlier findings, and performed a final missed-file sweep. Browser automation was
+not applicable to this native Jetpack Compose application. Every reviewer returned; there were no
+agent failures.
+
+The reports produced eight raw findings. Architect and critic/verifier independently found the same
+combined still-admission publication defect. Performance and critic/verifier independently found
+different instances of the same unenforced process-log reserve: `FrameGap` is the most aggressive
+single producer, while repeatable session/recording/warning rows prove the classifier's broader
+category error. Those overlaps are merged at their highest signal. The deduplicated result is six
+findings: five Medium and one Low, all High confidence in the source/test mechanism. Device/provider
+occurrence conditions remain explicit fault-injection or field-validation limits rather than
+invented evidence.
+
+## Deduplicated findings
+
+### AGG57-01 — replacement-password validation still accepts trivial offline guesses
+
+- **Severity / confidence:** Medium / High; source-confirmed without reading a live credential.
+- **Source:** code-reviewer.
+- **Evidence:** `tools/run_scoped_signed_release.py:49-72` rejects only values shorter than 16 and
+  the exact six-digit shape, so `0000000000000000` and one repeated character sixteen times pass
+  the helper's stated strong-key policy. `tools/tests/test_scoped_signed_release.py:24-45` covers
+  the historical weak shape but no accepted-length low-entropy examples.
+- **Failure:** an operator can replace the blocked upload key with another cheaply guessable
+  password, have the release helper approve it, and recreate the same offline-guessing exposure if
+  the JKS is stolen.
+- **Fix direction:** enforce a concrete generated-secret shape/entropy floor (including rejection
+  of numeric-only, repeated, sequential, whitespace-altered, and other one-class values), or stop
+  making a machine-verifiable strength claim. Add positive and mutation/negative parser tests. Do
+  not rotate/reset a credential or upload anything; those external destructive actions remain
+  owner-confirmed operations.
+
+### AGG57-02 — combined still-admission publication is bypassable and not globally ordered
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** architect, critic, and verifier.
+- **Evidence:** `CameraEngine.kt:205-245` caches the conjunction after unsynchronized pull reads and
+  invokes the UI callback after releasing its cache lock. The DNG and storage signals serialize
+  only their own listeners (`ProcessAdmissionSignal.kt:16-71`), while `EngineCallbackSink` permits
+  concurrent shared leases. Engine-local retained-family edges at `CameraEngine.kt:302-305,
+  4609-4622,5100-5103,5138-5153,5444-5460` also invoke
+  `onStillCaptureAdmissionChanged` directly without updating the cache.
+- **Failure:** an older process callback can record one value, pause, then publish after a newer
+  cross-signal value; the later signal edge is suppressed against the cache even though UI received
+  the older Boolean last. A local false/true transition can likewise leave the cache stale, causing
+  a later real false edge to be suppressed. The shutter then remains falsely disabled or visibly
+  enabled only to be refused by the Engine.
+- **Fix direction:** route every local and process edge through one sequenced Engine projection
+  owner that serializes compute, change-gate, and callback delivery. Remove direct bypasses and add
+  deterministic barriers for cross-signal older-last delivery, local close/reopen around a foreign
+  process edge, callback replacement, detach, and final UI truth.
+
+### AGG57-03 — failed REGISTERED commit plus failed delete escapes finite row ownership
+
+- **Severity / confidence:** Medium / High; the ownership escape is confirmed, while the dual
+  storage/provider fault is a fault-injection/device precondition.
+- **Source:** security-reviewer and debugger.
+- **Evidence:** `MediaStoreWriter.kt:430-458,491-510,1471-1479` inserts `IS_PENDING=1`, returns null
+  when the synchronous REGISTERED preference commit fails, attempts one resolver delete while
+  ignoring false/throwing outcomes, then cancels the pre-insert identity reservation. The cycle-56
+  finite identity owner begins only after REGISTERED succeeds and identity capture runs.
+- **Failure:** repeated allocation retries during simultaneous preference and provider failure can
+  strand unbounded private rows without a journal or live owner while the visible admission gate
+  keeps reopening. Launch recovery does not bound the active process.
+- **Fix direction:** make post-insert registration a typed terminal. Release the reservation only
+  after provider deletion/absence is authoritative; otherwise transfer the URI/family into the
+  existing finite identity-recovery owner until exact identity or stable absence is available. Test
+  Images and Video across false/throwing commit/delete, saturation, recovery, Engine replacement,
+  and admission close/reopen.
+
+### AGG57-04 — repeatable diagnostics can exhaust the nominal 120-row fault reserve
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** performance-reviewer, critic, and verifier.
+- **Evidence:** `GlPipeline.kt:919-936` emits a bare row for every interval over 200 ms. Repeated
+  session and recording information at `CameraEngine.kt:834-850,6428-6440,7081-7087` and
+  `CameraController.kt:762-769` is also unbounded. `tools/check_docs.py:75-143` blesses `FrameGap`
+  by anchor and every warning/error by log level without requiring runtime admission, while
+  `DiagnosticTelemetryTest.kt:68-123` proves only `300 - 180 == 120`, not that the remaining
+  producers share a finite owner.
+- **Failure:** a four-fps front route can emit roughly 2,400 `FrameGap` rows during the required
+  ten-minute A5 soak; ordinary reconfiguration/record loops can independently consume the reserve.
+  ColorOS then drops the later camera error, recovery, cadence-summary, StartupTrace, and capture
+  evidence that the reserve exists to protect.
+- **Fix direction:** runtime-bound every repeatable information/warning producer, including a
+  constant-memory count/max/bucket summary for frame gaps, while preserving a separately finite
+  allowance for terminal faults. Make the executable inventory require a real guard rather than an
+  anchor or level classification; composition- and mutation-test long A5/session/record/fault loops,
+  and update field-check copy to consume the bounded summary.
+
+### AGG57-05 — cached preview redraws corrupt the camera-frame gap clock
+
+- **Severity / confidence:** Medium / High.
+- **Source:** tracer, independently confirmed by the cycle owner.
+- **Evidence:** `GlPipeline.kt:879-900` uses `lastDrawMs` to schedule cached zoom redraws, then
+  `GlPipeline.kt:919-941` computes producer gaps from and unconditionally updates that same field
+  before considering `updateTex`. `drawFrame(updateTex=false)` therefore looks identical to a real
+  SurfaceTexture frame to the diagnostic clock. The pinch probe at
+  `PinchGestureProbeTest.kt:25-32,66-79` relies on exactly this evidence but no host test distinguishes
+  the clocks.
+- **Failure:** cached redraws at roughly 60 Hz hide a real 400 ms Camera2 stall; a sparse cached
+  redraw can conversely emit a false camera gap. Encoder/analysis correctly receive only real frames,
+  making the preview diagnostic disagree with downstream delivery.
+- **Fix direction:** split render-idle and producer-frame timestamps. Only `updateTex=true` may
+  measure/update camera health; cached redraws may update only render cadence. Reset both with the
+  GL generation and unit-test first frame, cached-only intervals, late producer frames, and reset.
+
+### AGG57-06 — DNG-tail tests bypass the production CameraEngine transfer wiring
+
+- **Severity / confidence:** Low / High; confirmed false-assurance gap, not an asserted runtime bug.
+- **Source:** test-engineer.
+- **Evidence:** `CameraEngine.kt:5551-5584` owns the real processed-queue result, transfer selection,
+  sibling ordering, and `dispatchCompletedDng` call. `StillPublicationDispatcherTest.kt:15-73,
+  267-333` tests each pure helper/capacity owner separately with arbitrary labels but never executes
+  that production composition. `CameraEngine` is wholly Partition B, so the mandatory Partition-A
+  threshold cannot detect a bypass at this call site.
+- **Failure:** removing the production dispatcher call, flipping `processedQueued`, dispatching
+  mixed DNG inline, or limiting process ownership to SINGLE leaves the current green tests intact
+  while restoring the cycle-56 ordering/unbounded-tail defect.
+- **Fix direction:** extract the exact complete-DNG transfer composition into a production owner
+  seam and drive RAW-only, mixed SINGLE, BURST, AEB, timelapse, rejection, shutdown, and old-Engine
+  replacement through it. Add a source mutation that removes/bypasses the CameraEngine call.
+
+## Verified non-findings and limits
+
+- Focused process-signal, Engine admission, DNG allocation/publication, StartupTrace, storage,
+  release-helper, and documentation suites passed. The documentation contract reported 158 passed
+  checks with 24 declared optional-private skips. Those green results are consistent with the
+  coverage/classification holes above.
+- No tracked private key/token was found and no credential value was read, printed, copied, rotated,
+  revoked, or used. No device, deployment, upload, MediaProvider mutation, native fault injection,
+  or destructive action ran.
+- Open field checks A3/A4/A5/D1/E1/E2/E3 remain evidence obligations, not deferred code findings.
+
+## AGENT FAILURES
+
+None.
+
+## Provenance
+
+- `.context/reviews/cycle57-code-reviewer-architect.md`
+- `.context/reviews/cycle57-perf-reviewer-tracer.md`
+- `.context/reviews/cycle57-security-reviewer-debugger.md`
+- `.context/reviews/cycle57-critic-verifier-test-engineer.md`
+- `.context/reviews/cycle57-document-specialist-designer.md`
+
+---
+
 # Aggregated deep review — cycle 56
 
 Date: 2026-08-27
