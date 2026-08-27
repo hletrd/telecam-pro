@@ -42,6 +42,7 @@ Two critical consequences of the afocal converter drive the entire design:
 
 | Package / File | Single Responsibility |
 |---|---|
+| `ProcessAdmissionSignal.kt` | Process-lifetime, change-gated availability signal with exact closeable subscriptions. DNG and MediaStore capacity owners publish every acquire/release/reserve/retry terminal through it; Engine replacement subscribes to current combined still-admission truth, while close drains an in-flight old-Engine callback before its UI graph detaches. |
 | **camera/** | |
 | `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Attempts BACK/FRONT/EXTERNAL route inventory before first open, independently retries incomplete classification to bounded eventual convergence, serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
 | `EngineCallbackSink.kt` | Atomic Engine→ViewModel callback lease. Every callback publication acquires the current sink identity; teardown closes admission and drains in-flight leases before clearing captured UI owners, so a late camera/save callback cannot escape through an individually stored lambda. |
