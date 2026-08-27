@@ -1,3 +1,157 @@
+# Aggregated deep review — cycle 56
+
+Date: 2026-08-27
+Reviewed revision: `401f2840279c8417dd35303f2799a7414768bf38` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle56.Re05OY`
+
+## Coverage and aggregation
+
+Eleven separate provenance files cover every required perspective: code-reviewer,
+performance-reviewer, security-reviewer, critic, verifier, test-engineer, tracer, architect,
+debugger, document-specialist, and native Android designer. The global thread ceiling admitted four
+parallel review lanes; the cycle owner completed the remaining test, documentation, and designer
+perspectives locally in separate provenance files rather than dropping them. Every lane read the
+committed authorities, inventoried the repository, examined its full specialist surface and
+cross-file interactions, and performed a final missed-file sweep. Browser automation was not
+applicable to this native Jetpack Compose application. Every reviewer returned; there were no agent
+failures.
+
+The reports produced 20 raw findings. Six reports independently found the missing live pending-
+identity retry; code/architecture/critic/verifier agreed on cross-Engine DNG admission publication;
+architecture/tracer/critic/verifier agreed on StartupTrace ownership; debugger/critic/verifier found
+the same tap-focus quota bypass. Those duplicates are merged below at their highest signal. The
+deduplicated result is six findings: one High, four Medium, and one Low, all High confidence in the
+documented or defective mechanisms. Provider/native/lifecycle occurrence boundaries and current
+live credential state remain explicitly manual/fault-injection limits rather than invented evidence.
+
+## Deduplicated findings
+
+### AGG56-01 — active upload-key procedure preserves weak plaintext-exposed credential practice
+
+- **Severity / confidence:** High / High in the documented procedure; current live key state is
+  manual-validation because no credential material was read.
+- **Source:** security-reviewer.
+- **Evidence:** `docs/play-console-submit.md:781-821` records a six-digit upload-key password that
+  was transmitted in plaintext, then decrypts release values into persistent exported
+  `TELECAMPRO_*` shell variables without a scoped terminal cleanup.
+- **Failure:** theft of the JKS plus offline brute force can permit attacker-signed Play uploads
+  until upload-key reset; persistent decrypted variables expand exposure to later child processes
+  and shell diagnostics.
+- **Fix direction:** make the repository procedure require a strong replacement upload key before
+  the next upload and use the supported Play upload-key reset path when applicable; scope decrypt,
+  verification, build, and cleanup to a short-lived shell/trap without printing values. Do not
+  rotate/revoke credentials or perform an upload in this cycle because those destructive/external
+  actions require explicit owner confirmation.
+
+### AGG56-02 — post-launch pending-allocation identity failures have no live retry edge
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** code-reviewer, critic, verifier, debugger, test-engineer,
+  document-specialist, and designer.
+- **Evidence:** `MediaStoreWriter.kt:432-515` submits one recovery closure after REGISTERED identity
+  freeze fails; unresolved work is retained at `:1831-1862`. The only production call to
+  `retryPendingAllocationIdentities()` is launch preflight at `:1137-1148`, before ordinary
+  post-launch allocations exist. Nullable identity collapse also leaves stable absence
+  indistinguishable from temporary unavailability.
+- **Failure:** transient provider failures accumulate inert claims until the 32-entry owner closes
+  still/video admission for the process even after the provider recovers; the UI then shows generic
+  unavailable copy with no progress/recovery guidance.
+- **Fix direction:** preserve typed exact/absent/uncertain resolution, add a process-owned bounded
+  backed-off retry with one in-flight attempt per claim, retire stable absence safely, publish
+  capacity transitions across Engines, and test post-launch failure/recovery/absence/capacity reuse.
+
+### AGG56-03 — process-wide still admission changes are lost across Engine replacement
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** code-reviewer, architect, critic, and verifier.
+- **Evidence:** process-global DNG/storage owners expose only pull state
+  (`DngPreCaptureAllocation.kt:6-37`, `MediaStoreWriter.kt:907-913`), while each ViewModel polls once
+  at `CameraViewModel.kt:1180-1186` and release publishes only through the originating Engine at
+  `CameraEngine.kt:4425-4438,5266-5269`. Teardown detaches that callback before old asynchronous
+  ownership can finish.
+- **Failure:** a replacement UI seeded while old DNG admission is occupied stays disabled after the
+  old Engine frees global capacity, because the available edge is delivered only to its detached
+  callback graph.
+- **Fix direction:** introduce an exact-subscription process admission coordinator (or equivalent
+  observable monotonic state) covering DNG and storage capacity; publish after every owner edge and
+  test old-Engine ownership, replacement subscription, detach, and terminal release.
+
+### AGG56-04 — mixed-output and sequence DNG publication bypass process-finite tail ownership
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance-reviewer.
+- **Evidence:** `StillPublicationDispatcher.kt:17-29` gives process-finite publication only to
+  RAW-only SINGLE. Mixed HEIF/JPEG+DNG and BURST/AEB/timelapse publication remains on each Engine's
+  single-thread `ioExecutor` (`CameraEngine.kt:5312-5420`), after processed and DNG admission leases
+  are released; `release()` only shuts down without interrupting a running provider Binder call.
+- **Failure:** a blocked DNG publish survives old-Engine release, while each replacement Engine can
+  admit another tail and blocked worker, growing threads/callback graphs/private rows without the
+  existing process ceiling.
+- **Fix direction:** route every completed DNG publication through the process finite owner,
+  preserving mixed/sequence ordering by dispatching after processed completion. On overflow, settle
+  exactly once and leave complete bytes private for launch recovery. Test blocked old Engine plus
+  repeated replacements.
+
+### AGG56-05 — tap-focus diagnostics bypass the process log budget
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** debugger, critic, and verifier.
+- **Evidence:** repeatable `Touch AF: scanning` and `TapFocus: cleared` logs at
+  `CameraController.kt:1185-1196` and `CameraEngine.kt:3099-3111` use only `BuildConfig.DEBUG`,
+  bypassing `recurringDiagnosticAllowed`; `DiagnosticTelemetryTest.kt:68-123` and the current
+  count-based docs contract omit them.
+- **Failure:** roughly 150 scan/reset pairs can spend ColorOS's measured 300-row quota outside the
+  180-row owner, silently dropping later frame-gap/recovery/fault evidence despite a green reserve
+  test.
+- **Fix direction:** budget/change-gate both rows and replace occurrence counting with an executable
+  inventory that classifies every non-fault DEBUG log site. Mutation-test the tap/reset bypass.
+
+### AGG56-06 — StartupTrace ownership is not scoped to the exact Engine/controller attempt
+
+- **Severity / confidence:** Low / High.
+- **Sources / agreement:** architect, tracer, critic, and verifier.
+- **Evidence:** `StartupTrace.begin()` reuses a process-global owner while armed
+  (`StartupTrace.kt:43-49`); pause/release do not reliably disarm it, and every
+  `CameraEngine.wireController` samples mutable global `currentOwner()` at `CameraEngine.kt:2169-2177`.
+  Controller finish checks only request generations local to that controller.
+- **Failure:** pause/resume or a cold-start controller replacement can give old and new controllers
+  the same token; a late old result can emit a mixed/old-origin cold-start line and suppress the real
+  replacement measurement.
+- **Fix direction:** retain the exact trace owner on the Engine resume/open transaction, pass it
+  explicitly into the controller, disarm/revoke on pause/release/replacement, and test two
+  controllers plus resume-pause-resume interleavings.
+
+## Verified non-findings and limits
+
+- Focused cycle-55 ownership/telemetry suites and the complete unit suite passed in review lanes;
+  documentation contracts passed 155 checks with 24 optional-private skips, and the device harness
+  passed its 195 host self-tests. These green tests are consistent with the uncovered composition
+  gaps above.
+- No tracked private key/token was found. No credential value was read, printed, copied, rotated,
+  revoked, or used. No device, deployment, upload, MediaProvider mutation, native fault injection,
+  or destructive action ran.
+- Open field checks A3/A4/A5/D1/E1/E2/E3 remain evidence obligations, not deferred code findings.
+
+## AGENT FAILURES
+
+None.
+
+## Provenance
+
+- `.context/reviews/cycle56-code-reviewer.md`
+- `.context/reviews/cycle56-architect.md`
+- `.context/reviews/cycle56-perf-reviewer.md`
+- `.context/reviews/cycle56-tracer.md`
+- `.context/reviews/cycle56-security-reviewer.md`
+- `.context/reviews/cycle56-debugger.md`
+- `.context/reviews/cycle56-critic.md`
+- `.context/reviews/cycle56-verifier.md`
+- `.context/reviews/cycle56-test-engineer.md`
+- `.context/reviews/cycle56-document-specialist.md`
+- `.context/reviews/cycle56-designer.md`
+
+---
+
 # Aggregated deep review — cycle 55
 
 Date: 2026-08-27
