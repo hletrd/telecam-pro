@@ -1183,7 +1183,6 @@ class CameraViewModel private constructor(
                 else it.copy(stillCaptureAdmissionAvailable = available)
             }
         }
-        engine.onStillCaptureAdmissionChanged?.invoke(engine.stillOutputAdmissionAvailable())
         seedPhoneModel()
         restoreSettingsIfEnabled()
         loadEncoderInventoryAsync()

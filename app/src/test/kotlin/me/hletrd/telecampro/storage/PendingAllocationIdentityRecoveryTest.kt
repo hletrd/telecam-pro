@@ -3,6 +3,7 @@ package me.hletrd.telecampro.storage
 import android.net.Uri
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicInteger
+import me.hletrd.telecampro.ProcessAdmissionSignal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -109,6 +110,9 @@ class PendingAllocationIdentityRecoveryTest {
     fun `post launch failures retry with bounded backoff then release capacity`() {
         val scheduler = ManualRetryScheduler()
         val attempts = AtomicInteger()
+        val admission = ProcessAdmissionSignal(initial = true)
+        val admissionEvents = mutableListOf<Boolean>()
+        val subscription = admission.subscribe(admissionEvents::add)
         val owner = RejectedOutputCleanupCapacityOwner<String>(
             workerCount = 1,
             backlogCapacity = 1,
@@ -120,6 +124,7 @@ class PendingAllocationIdentityRecoveryTest {
             retryScheduler = scheduler,
             retryInitialDelayMs = 5L,
             retryMaxDelayMs = 20L,
+            onAvailabilityChanged = admission::publish,
         )
         try {
             assertEquals(RejectedOutputCleanupDispatch.ACCEPTED, owner.dispatch("post-launch-row"))
@@ -134,8 +139,10 @@ class PendingAllocationIdentityRecoveryTest {
             awaitCondition { attempts.get() == 4 && owner.unresolvedCount() == 0 }
             assertEquals(listOf(5L, 10L, 20L), scheduler.delays())
             assertTrue(owner.canAdmit())
+            assertEquals(listOf(true, false, true), admissionEvents)
             assertEquals(RejectedOutputCleanupDispatch.ACCEPTED, owner.dispatch("reused-capacity"))
         } finally {
+            subscription.close()
             owner.shutdownNowForTest()
         }
     }
@@ -209,6 +216,34 @@ class PendingAllocationIdentityRecoveryTest {
             assertTrue(owner.canAdmit())
         } finally {
             owner.shutdownNowForTest()
+        }
+    }
+
+    @Test
+    fun `production storage subscription publishes close and reopen capacity edges`() {
+        assertTrue(MediaStoreWriter.rejectedOutputAdmissionAvailable())
+        val events = mutableListOf<Boolean>()
+        val subscription = MediaStoreWriter.subscribeStillStorageAdmission(events::add)
+        val reservations = mutableListOf<RejectedOutputCleanupReservation<MediaStoreWriter.RejectedOutput>>()
+        try {
+            repeat(REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY) {
+                reservations += requireNotNull(MediaStoreWriter.reserveRejectedOutputCleanup())
+            }
+            assertFalse(MediaStoreWriter.rejectedOutputAdmissionAvailable())
+            assertEquals(listOf(true, false), events)
+
+            assertTrue(reservations.removeAt(0).cancel())
+            assertTrue(MediaStoreWriter.rejectedOutputAdmissionAvailable())
+            assertEquals(listOf(true, false, true), events)
+
+            subscription.close()
+            val detachedEvents = events.toList()
+            val extra = requireNotNull(MediaStoreWriter.reserveRejectedOutputCleanup())
+            extra.cancel()
+            assertEquals(detachedEvents, events)
+        } finally {
+            reservations.forEach { it.cancel() }
+            subscription.close()
         }
     }
 

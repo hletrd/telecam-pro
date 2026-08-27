@@ -29,6 +29,71 @@ class DngPreCaptureAllocationTest {
     }
 
     @Test
+    fun `replacement subscriber observes every old terminal release and detached listener is inert`() {
+        listOf("success", "error", "timeout", "cancel").forEach { terminal ->
+            val admission = DngPreCaptureAdmission()
+            val oldEvents = CopyOnWriteArrayList<Boolean>()
+            val replacementEvents = CopyOnWriteArrayList<Boolean>()
+            val oldSubscription = admission.subscribe(oldEvents::add)
+            val lease = requireNotNull(admission.tryAcquire())
+            val replacementSubscription = admission.subscribe(replacementEvents::add)
+
+            assertEquals("$terminal replacement initial truth", listOf(false), replacementEvents)
+            oldSubscription.close()
+            val oldAfterDetach = oldEvents.toList()
+            assertTrue("$terminal must release exactly", lease.release())
+
+            assertEquals("$terminal replacement terminal truth", listOf(false, true), replacementEvents)
+            assertEquals("$terminal detached owner must remain inert", oldAfterDetach, oldEvents.toList())
+            replacementSubscription.close()
+        }
+    }
+
+    @Test
+    fun `success error timeout and cancel allocation terminals reopen replacement subscription`() {
+        listOf("success", "error", "timeout", "cancel").forEach { terminal ->
+            val admission = DngPreCaptureAdmission()
+            val lease = requireNotNull(admission.tryAcquire())
+            val replacementEvents = CopyOnWriteArrayList<Boolean>()
+            val replacement = admission.subscribe(replacementEvents::add)
+            var timeout: (() -> Unit)? = null
+            var queued: (() -> Unit)? = null
+            val owner = DngPreCaptureAllocation<String>(
+                dispatch = { task ->
+                    if (terminal == "success" || terminal == "error") task() else queued = task
+                    RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+                },
+                allocate = { if (terminal == "error") null else "row" },
+                isCurrent = { true },
+                onReady = { lease.release() },
+                onLateValue = {},
+                onFailure = {},
+                onRetired = { lease.release() },
+                deadlineScheduler = if (terminal == "timeout") {
+                    RecordingTeardownScheduler { _, action ->
+                        timeout = action
+                        RecordingTeardownCancellation {}
+                    }
+                } else {
+                    null
+                },
+            )
+
+            assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+            when (terminal) {
+                "timeout" -> checkNotNull(timeout).invoke()
+                "cancel" -> assertTrue(owner.cancel())
+            }
+
+            assertEquals("$terminal terminal", listOf(false, true), replacementEvents.toList())
+            replacement.close()
+            // Queued provider work is deliberately not run: timeout/cancel caller ownership has
+            // already retired, and the existing late-value tests cover its eventual cleanup path.
+            assertTrue(terminal !in setOf("timeout", "cancel") || queued != null)
+        }
+    }
+
+    @Test
     fun `blocked identity acquisition is cancelled before Camera2 ownership and late row is cleaned`() {
         val dispatcher = RecordingPreNativeAllocationDispatcher(workerCount = 1, backlogCapacity = 1)
         val identityEntered = CountDownLatch(1)

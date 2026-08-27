@@ -2,6 +2,8 @@ package me.hletrd.telecampro.camera
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import me.hletrd.telecampro.ProcessAdmissionSignal
+import me.hletrd.telecampro.ProcessAdmissionSubscription
 
 /** One process-wide DNG shutter admission so provider preallocation cannot reorder RAW requests. */
 internal object ProcessDngPreCaptureAdmission {
@@ -17,13 +19,23 @@ internal fun allStillOutputOwnersAvailable(
 /** Android-free exactly-once lease for one DNG allocation + Camera2/save lifetime. */
 internal class DngPreCaptureAdmission {
     private val occupied = AtomicBoolean(false)
+    private val admissionSignal = ProcessAdmissionSignal(initial = true)
 
-    fun tryAcquire(): Lease? = if (occupied.compareAndSet(false, true)) Lease(this) else null
+    fun tryAcquire(): Lease? = if (occupied.compareAndSet(false, true)) {
+        admissionSignal.publish(false)
+        Lease(this)
+    } else {
+        null
+    }
 
     fun canAdmit(): Boolean = !occupied.get()
 
+    fun subscribe(listener: (Boolean) -> Unit): ProcessAdmissionSubscription =
+        admissionSignal.subscribe(listener)
+
     private fun release() {
         check(occupied.compareAndSet(true, false)) { "DNG pre-capture admission underflow" }
+        admissionSignal.publish(true)
     }
 
     internal class Lease internal constructor(private val owner: DngPreCaptureAdmission) {

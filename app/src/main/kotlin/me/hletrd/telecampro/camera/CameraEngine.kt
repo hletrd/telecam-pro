@@ -13,6 +13,7 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import me.hletrd.telecampro.BuildConfig
+import me.hletrd.telecampro.ProcessAdmissionSubscription
 import me.hletrd.telecampro.capture.DngCapture
 import me.hletrd.telecampro.capture.DngWriteResult
 import me.hletrd.telecampro.capture.ExifShot
@@ -202,6 +203,47 @@ class CameraEngine internal constructor(
     )
 
     private val callbackSink = EngineCallbackSink()
+    private val processStillAdmissionSubscriptionLock = Any()
+    private var dngAdmissionSubscription: ProcessAdmissionSubscription? = null
+    private var storageAdmissionSubscription: ProcessAdmissionSubscription? = null
+    private var lastProcessStillAdmission: Boolean? = null
+
+    private fun publishProcessStillAdmission() {
+        val available = stillOutputAdmissionAvailable()
+        val changed = synchronized(processStillAdmissionSubscriptionLock) {
+            if (lastProcessStillAdmission == available) false else {
+                lastProcessStillAdmission = available
+                true
+            }
+        }
+        if (changed) onStillCaptureAdmissionChanged?.invoke(available)
+    }
+
+    private fun ensureProcessStillAdmissionSubscriptions() {
+        synchronized(processStillAdmissionSubscriptionLock) {
+            if (dngAdmissionSubscription == null) {
+                dngAdmissionSubscription = ProcessDngPreCaptureAdmission.owner.subscribe {
+                    publishProcessStillAdmission()
+                }
+            }
+            if (storageAdmissionSubscription == null) {
+                storageAdmissionSubscription = MediaStoreWriter.subscribeStillStorageAdmission {
+                    publishProcessStillAdmission()
+                }
+            }
+        }
+    }
+
+    private fun closeProcessStillAdmissionSubscriptions() {
+        val subscriptions = synchronized(processStillAdmissionSubscriptionLock) {
+            val current = listOfNotNull(dngAdmissionSubscription, storageAdmissionSubscription)
+            dngAdmissionSubscription = null
+            storageAdmissionSubscription = null
+            lastProcessStillAdmission = null
+            current
+        }
+        subscriptions.forEach(ProcessAdmissionSubscription::close)
+    }
 
     private val manager = context.getSystemService(CameraManager::class.java)
     private val processNativeOwner = Any()
@@ -1669,7 +1711,11 @@ class CameraEngine internal constructor(
     /** Projects the retained/rejected-output fail-closed gate into the visible shutter state. */
     internal var onStillCaptureAdmissionChanged: ((Boolean) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.STILL_ADMISSION)
-        set(value) = callbackSink.install(EngineCallbackKey.STILL_ADMISSION, value)
+        set(value) {
+            callbackSink.install(EngineCallbackKey.STILL_ADMISSION, value)
+            if (value == null) closeProcessStillAdmissionSubscriptions()
+            else ensureProcessStillAdmissionSubscriptions()
+        }
 
     // ---- Preview surface lifecycle ----
 
@@ -7311,6 +7357,7 @@ class CameraEngine internal constructor(
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
     fun detachCallbacks() {
+        closeProcessStillAdmissionSubscriptions()
         familyDeletionCompletions.closeAndDrain()
         callbackSink.closeAndDrain()
         launchRecoverySubscription?.cancel()
@@ -7320,6 +7367,7 @@ class CameraEngine internal constructor(
     internal fun attachedCallbackCount(): Int = callbackSink.callbackCount()
 
     fun release() {
+        closeProcessStillAdmissionSubscriptions()
         // Terminal before state/executor teardown: either an in-flight acquisition completes before
         // this close (and the stop below owns it), or close wins and no later task can call gl.start.
         familyDeletionCompletions.closeAndDrain()

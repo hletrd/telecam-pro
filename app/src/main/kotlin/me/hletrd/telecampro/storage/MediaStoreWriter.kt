@@ -20,6 +20,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import me.hletrd.telecampro.ProcessAdmissionSignal
+import me.hletrd.telecampro.ProcessAdmissionSubscription
 import me.hletrd.telecampro.camera.MAX_RETAINED_PROCESSED_SNAPSHOTS
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_BACKLOG_CAPACITY
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_WORKER_COUNT
@@ -206,6 +208,12 @@ object MediaStoreWriter {
         fun recover(): PendingOutputDiscardResult
     }
 
+    private val stillStorageAdmissionSignal = ProcessAdmissionSignal(initial = true)
+
+    private fun publishStillStorageAdmission() {
+        stillStorageAdmissionSignal.publish(rejectedOutputAdmissionAvailable())
+    }
+
     private val rejectedOutputOwner = RejectedOutputCleanupCapacityOwner<RejectedOutput>(
         workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
         backlogCapacity = REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
@@ -215,6 +223,7 @@ object MediaStoreWriter {
         ownershipLimit = MAX_REJECTED_OUTPUTS + MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS +
             REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
         discardEffect = { discardPendingOutput(it.context, it.allocation) },
+        onAvailabilityChanged = { publishStillStorageAdmission() },
     )
 
     /**
@@ -233,6 +242,7 @@ object MediaStoreWriter {
             retryScheduler = processPendingIdentityRetryScheduler,
             retryInitialDelayMs = PENDING_IDENTITY_RETRY_INITIAL_MS,
             retryMaxDelayMs = PENDING_IDENTITY_RETRY_MAX_MS,
+            onAvailabilityChanged = { publishStillStorageAdmission() },
         )
 
     /**
@@ -943,6 +953,10 @@ object MediaStoreWriter {
 
     internal fun rejectedOutputAdmissionAvailable(): Boolean =
         rejectedOutputOwner.canAdmit() && pendingIdentityRecoveryOwner.canAdmit()
+
+    internal fun subscribeStillStorageAdmission(
+        listener: (Boolean) -> Unit,
+    ): ProcessAdmissionSubscription = stillStorageAdmissionSignal.subscribe(listener)
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
@@ -1861,6 +1875,7 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
     private val retryScheduler: RejectedOutputRetryScheduler? = null,
     private val retryInitialDelayMs: Long = 250L,
     private val retryMaxDelayMs: Long = 30_000L,
+    private val onAvailabilityChanged: ((Boolean) -> Unit)? = null,
 ) {
     private val lock = Any()
     private val unresolved = LinkedHashSet<T>()
@@ -1887,9 +1902,13 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
         require(retryMaxDelayMs >= retryInitialDelayMs)
     }
 
-    fun reserve(): RejectedOutputCleanupReservation<T>? = synchronized(lock) {
-        if (unresolved.size >= admissionLimit || !admission.tryAcquire()) null
-        else RejectedOutputCleanupReservation(this)
+    fun reserve(): RejectedOutputCleanupReservation<T>? {
+        val reservation = synchronized(lock) {
+            if (unresolved.size >= admissionLimit || !admission.tryAcquire()) null
+            else RejectedOutputCleanupReservation(this)
+        }
+        if (reservation != null) notifyAvailability()
+        return reservation
     }
 
     fun dispatch(
@@ -1986,6 +2005,7 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
             rescheduleUndispatchedRetry(output)
             return
         }
+        notifyAvailability()
         try {
             executor.execute { runAttempt(output, {}, retry = true) }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -2010,6 +2030,7 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
                 val reservation = synchronized(lock) {
                     if (admission.tryAcquire()) RejectedOutputCleanupReservation(this) else null
                 }
+                if (reservation != null) notifyAvailability()
                 reservation?.submit(output)
             }
         } else {
@@ -2032,6 +2053,11 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
 
     internal fun releaseReservation() {
         admission.release()
+        notifyAvailability()
+    }
+
+    private fun notifyAvailability() {
+        onAvailabilityChanged?.invoke(canAdmit())
     }
 
     internal fun admittedCount(): Int =
