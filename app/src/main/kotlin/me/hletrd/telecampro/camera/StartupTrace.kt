@@ -23,6 +23,8 @@ import me.hletrd.telecampro.BuildConfig
 object StartupTrace {
     private const val TAG = "StartupTrace"
 
+    internal class Owner internal constructor(internal val generation: Long)
+
     // Guarded by the object monitor: marks arrive from main (resume), setupExecutor (open/configure)
     // and the camera thread (first result), so the buffer needs real mutual exclusion.
     // Injected clock: android.os.SystemClock is NOT mocked on the host JVM, so the arming state
@@ -35,31 +37,35 @@ object StartupTrace {
     internal var emit: (String) -> Unit = { Log.i(TAG, it) }
 
     private var originMs = 0L
-    private var running = false
+    private var nextGeneration = 0L
+    private var owner: Owner? = null
     private val marks = mutableListOf<Pair<String, Long>>()
 
-    /** Marks t=0 for a cold start. No-op if a measurement is already running. */
+    /** Marks t=0 for a cold start and returns its exact owner. Re-entrant begin keeps that owner. */
     @Synchronized
-    fun begin() {
-        if (!BuildConfig.DEBUG || running) return
-        running = true
+    internal fun begin(): Owner? {
+        if (!BuildConfig.DEBUG) return null
+        owner?.let { return it }
+        val started = Owner(++nextGeneration)
+        owner = started
         originMs = elapsedMs()
         marks.clear()
+        return started
     }
 
     /** Records `label` with milliseconds since [begin]. Silent when no measurement is armed. */
     @Synchronized
-    fun mark(label: String) {
-        if (!BuildConfig.DEBUG || !running) return
+    internal fun mark(expected: Owner?, label: String) {
+        if (!BuildConfig.DEBUG || expected == null || owner != expected) return
         marks += label to (elapsedMs() - originMs)
     }
 
     /** Emits the whole cold start as one line and disarms, so only the first frame is measured. */
     @Synchronized
-    fun finish(label: String) {
-        if (!BuildConfig.DEBUG || !running) return
-        mark(label)
-        running = false
+    internal fun finish(expected: Owner?, label: String) {
+        if (!BuildConfig.DEBUG || expected == null || owner != expected) return
+        mark(expected, label)
+        owner = null
         emit("cold start (ms since resume): " + marks.joinToString(" → ") { "${it.first} ${it.second}" })
     }
 
@@ -71,13 +77,28 @@ object StartupTrace {
      * so a zero-mark trace can never be finished by an unrelated later preview rebuild.
      */
     @Synchronized
-    fun disarm() {
-        if (!BuildConfig.DEBUG) return
-        running = false
+    internal fun disarm(expected: Owner?) {
+        if (!BuildConfig.DEBUG || expected == null || owner != expected) return
+        owner = null
         marks.clear()
     }
+
+    /** Test/reset seam. Production teardown must use the exact owner overload above. */
+    @Synchronized
+    internal fun disarm() {
+        owner = null
+        marks.clear()
+    }
+
+    @Synchronized
+    internal fun currentOwner(): Owner? = owner
 
     /** Host-test view of the buffered marks (label to elapsed-ms), in order. */
     @Synchronized
     internal fun marksForTest(): List<Pair<String, Long>> = marks.toList()
 }
+
+internal fun startupTraceRequestMayFinish(
+    requestGeneration: Long,
+    latestRequestGeneration: Long,
+): Boolean = requestGeneration == latestRequestGeneration

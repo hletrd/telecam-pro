@@ -40,32 +40,32 @@ class StartupTraceTest {
     @Test
     fun `begin is idempotent so a re-entrant start cannot restart the clock`() {
         StartupTrace.disarm()
-        StartupTrace.begin()
-        StartupTrace.mark("first")
+        val owner = checkNotNull(StartupTrace.begin())
+        StartupTrace.mark(owner, "first")
         // A second begin() during a live measurement must NOT clear the buffer: the cold start it
         // would "restart" is the same one already being measured (engine restart / double resume).
-        StartupTrace.begin()
-        StartupTrace.mark("second")
+        assertEquals(owner, StartupTrace.begin())
+        StartupTrace.mark(owner, "second")
         assertEquals(listOf("first", "second"), StartupTrace.marksForTest().map { it.first })
     }
 
     @Test
     fun `marks are ignored while unarmed and resume after a new begin`() {
         StartupTrace.disarm()
-        StartupTrace.mark("stray")
+        StartupTrace.mark(null, "stray")
         assertTrue(StartupTrace.marksForTest().isEmpty())
 
-        StartupTrace.begin()
-        StartupTrace.mark("armed")
+        val owner = checkNotNull(StartupTrace.begin())
+        StartupTrace.mark(owner, "armed")
         assertEquals(listOf("armed"), StartupTrace.marksForTest().map { it.first })
     }
 
     @Test
     fun `finish records its own label then disarms`() {
         StartupTrace.disarm()
-        StartupTrace.begin()
-        StartupTrace.mark("openCamera")
-        StartupTrace.finish("firstCameraResult")
+        val owner = checkNotNull(StartupTrace.begin())
+        StartupTrace.mark(owner, "openCamera")
+        StartupTrace.finish(owner, "firstCameraResult")
         assertEquals(
             listOf("openCamera", "firstCameraResult"),
             StartupTrace.marksForTest().map { it.first },
@@ -73,7 +73,7 @@ class StartupTraceTest {
 
         // Disarmed: a late mark (a second capture result, a fast-path resubmit) must not extend a
         // completed measurement — the next cold start owns the next line.
-        StartupTrace.mark("late")
+        StartupTrace.mark(owner, "late")
         assertEquals(2, StartupTrace.marksForTest().size)
 
         // Exactly ONE cold-start line per measurement, and it carries every mark in order.
@@ -82,7 +82,7 @@ class StartupTraceTest {
         assertTrue(emitted.single().contains("firstCameraResult "))
 
         // ...and a second finish is inert rather than emitting a duplicate cold-start line.
-        StartupTrace.finish("firstCameraResult")
+        StartupTrace.finish(owner, "firstCameraResult")
         assertEquals(2, StartupTrace.marksForTest().size)
         assertEquals(1, emitted.size)
     }
@@ -90,9 +90,9 @@ class StartupTraceTest {
     @Test
     fun `elapsed values are monotonic and start at or after zero`() {
         StartupTrace.disarm()
-        StartupTrace.begin()
-        StartupTrace.mark("a")
-        StartupTrace.mark("b")
+        val owner = checkNotNull(StartupTrace.begin())
+        StartupTrace.mark(owner, "a")
+        StartupTrace.mark(owner, "b")
         val elapsed = StartupTrace.marksForTest().map { it.second }
         assertTrue(elapsed.first() >= 0L)
         assertTrue(elapsed[1] >= elapsed[0])
@@ -101,12 +101,12 @@ class StartupTraceTest {
     @Test
     fun `disarm clears a partial measurement`() {
         StartupTrace.disarm()
-        StartupTrace.begin()
-        StartupTrace.mark("partial")
-        StartupTrace.disarm()
+        val owner = checkNotNull(StartupTrace.begin())
+        StartupTrace.mark(owner, "partial")
+        StartupTrace.disarm(owner)
         assertTrue(StartupTrace.marksForTest().isEmpty())
         // disarm() also stops the clock, so marks after it are dropped until the next begin().
-        StartupTrace.mark("after-disarm")
+        StartupTrace.mark(owner, "after-disarm")
         assertTrue(StartupTrace.marksForTest().isEmpty())
     }
 
@@ -115,11 +115,38 @@ class StartupTraceTest {
         // The resume-arms-then-early-returns shape: begin() with no open behind it, disarmed, then
         // an ordinary preview rebuild calls finish(). It must emit nothing at all.
         StartupTrace.disarm()
-        StartupTrace.begin()
-        StartupTrace.disarm()
+        val owner = checkNotNull(StartupTrace.begin())
+        StartupTrace.disarm(owner)
         val before = emitted.size
-        StartupTrace.finish("firstCameraResult")
+        StartupTrace.finish(owner, "firstCameraResult")
         assertEquals(before, emitted.size)
         assertTrue(StartupTrace.marksForTest().isEmpty())
+    }
+
+    @Test
+    fun `stale controller owner cannot mark finish or disarm a replacement trace`() {
+        StartupTrace.disarm()
+        val old = checkNotNull(StartupTrace.begin())
+        StartupTrace.mark(old, "old-open")
+        StartupTrace.disarm(old)
+        val replacement = checkNotNull(StartupTrace.begin())
+
+        StartupTrace.mark(old, "stale-result")
+        StartupTrace.finish(old, "stale-finish")
+        StartupTrace.disarm(old)
+        StartupTrace.mark(replacement, "replacement-open")
+        StartupTrace.finish(replacement, "firstCameraResult")
+
+        assertEquals(
+            listOf("replacement-open", "firstCameraResult"),
+            StartupTrace.marksForTest().map { it.first },
+        )
+        assertEquals(1, emitted.size)
+    }
+
+    @Test
+    fun `only latest preview request may finish the controller trace`() {
+        assertTrue(startupTraceRequestMayFinish(requestGeneration = 8L, latestRequestGeneration = 8L))
+        assertTrue(!startupTraceRequestMayFinish(requestGeneration = 7L, latestRequestGeneration = 8L))
     }
 }

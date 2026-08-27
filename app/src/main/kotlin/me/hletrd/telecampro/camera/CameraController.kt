@@ -37,7 +37,12 @@ import java.util.concurrent.Executor
  * I/O executor after it closes. RAW is the deliberate exception: DNG writing consumes the live RAW
  * Image synchronously inside the callback.
  */
-class CameraController(context: Context) {
+class CameraController internal constructor(
+    context: Context,
+    private val startupTraceOwner: StartupTrace.Owner? = null,
+) {
+
+    constructor(context: Context) : this(context, null)
 
     internal val diagnosticId: Long = controllerSequence.incrementAndGet()
 
@@ -313,7 +318,7 @@ class CameraController(context: Context) {
         // opening from a background proc state (e.g. relaunched behind the keyguard / while the screen
         // just woke), or SecurityException. Guard it so that lifecycle race surfaces as an onError
         // status instead of crashing the app; the next foreground resume() reopens cleanly.
-        StartupTrace.mark("openCamera")
+        StartupTrace.mark(startupTraceOwner, "openCamera")
         openAttempted = true
         val openAdmitted = runNativeAcquisition {
             runCatching {
@@ -327,7 +332,7 @@ class CameraController(context: Context) {
                         return
                     }
                     if (closed) return
-                    StartupTrace.mark("onOpened")
+                    StartupTrace.mark(startupTraceOwner, "onOpened")
                     device = camera
                     configAttempt = 0
                     if (deferSession) {
@@ -745,7 +750,7 @@ class CameraController(context: Context) {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
-                    StartupTrace.mark("onConfigured")
+                    StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = useHlg
                     if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
@@ -818,7 +823,7 @@ class CameraController(context: Context) {
         // Uncaught, that surfaces as terminal onError WITHOUT advancing the ladder — the exact
         // degradation path built to absorb vendor-mode rejection never runs. Advance it like
         // onConfigureFailed does (the high-speed path already guards this same call).
-        StartupTrace.mark("createCaptureSession")
+        StartupTrace.mark(startupTraceOwner, "createCaptureSession")
         val sessionAdmitted = runNativeAcquisition {
             runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
                 configAttempt = attempt + 1
@@ -1026,7 +1031,7 @@ class CameraController(context: Context) {
             // otherwise a final ramp value equal to the pre-rebuild steady value would be suppressed
             // and the GL compensation would hold a stale mid-ramp halZoom.
             lastForwardedResultZoom = Float.NaN
-            StartupTrace.mark("previewRequestBuilt")
+            StartupTrace.mark(startupTraceOwner, "previewRequestBuilt")
             val callback = object : CameraCaptureSession.CaptureCallback() {
                 private var firstDiagnosticResultPending = true
                 private var firstAfResultPending = true
@@ -1115,7 +1120,13 @@ class CameraController(context: Context) {
                     // the committed ten-minute A5 soak, including the faults it existed to capture.
                     if (BuildConfig.DEBUG && (firstDiagnosticResultPending || threeAFrame % 30 == 0)) {
                         val firstDiagnosticResult = firstDiagnosticResultPending
-                        if (firstDiagnosticResult) StartupTrace.finish("firstCameraResult")
+                        if (firstDiagnosticResult && startupTraceRequestMayFinish(
+                                requestGeneration,
+                                latestPreviewRequestGeneration,
+                            )
+                        ) {
+                            StartupTrace.finish(startupTraceOwner, "firstCameraResult")
+                        }
                         firstDiagnosticResultPending = false
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)

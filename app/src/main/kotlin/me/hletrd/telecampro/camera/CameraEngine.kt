@@ -2173,7 +2173,7 @@ class CameraEngine internal constructor(
         // (AGG4-2 — the flag used to survive every mode/lens/TC remap and defeat the leading-edge
         // exact submit for one gesture).
         zoomInteractionState = ZoomInteractionState()
-        val ctrl = CameraController(context)
+        val ctrl = CameraController(context, StartupTrace.currentOwner())
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
         }
@@ -7114,7 +7114,7 @@ class CameraEngine internal constructor(
         // change builds a fresh callback with firstDiagnosticResultPending), which printed a
         // one-mark `cold start … firstCameraResult <arbitrary>` line into the exact log the startup
         // budget is read from. A fabricated number there is worse than no line at all.
-        StartupTrace.begin()
+        val startupTraceOwner = StartupTrace.begin()
         paused = false
         // Retract the policy-block gate on every foreground, BEFORE anything else. The gate replaces
         // the viewfinder, so while it is up there is no preview Surface — and with no Surface the
@@ -7134,7 +7134,7 @@ class CameraEngine internal constructor(
         }
         policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
         if (!nativeAcquisitionMayProceed()) {
-            StartupTrace.disarm()
+            StartupTrace.disarm(startupTraceOwner)
             if (UnsafeRecorderQuarantine.isActive()) {
                 onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             } else {
@@ -7164,13 +7164,13 @@ class CameraEngine internal constructor(
         // for the HAL device) and paid the open's Binder IPCs on the UI thread.
         setupExecutor.execute {
             if (!nativeAcquisitionMayProceed() || paused) {
-                StartupTrace.disarm()
+                StartupTrace.disarm(startupTraceOwner)
                 return@execute
             }
             // Camera already live (an ordinary foreground return, not a cold start): nothing will
             // mark, so disarm rather than leave a zero-mark trace for a later rebuild to finish.
             if (controller != null) {
-                StartupTrace.disarm()
+                StartupTrace.disarm(startupTraceOwner)
                 return@execute
             }
             // Re-resolve selection/caps/stream geometry from CURRENT desired fields. openCamera(input)
