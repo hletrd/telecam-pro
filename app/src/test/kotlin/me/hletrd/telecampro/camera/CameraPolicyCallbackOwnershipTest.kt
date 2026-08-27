@@ -5,9 +5,11 @@ import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -15,6 +17,11 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 class CameraPolicyCallbackOwnershipTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
+
+    @Before
+    fun installEglSentinels() {
+        RobolectricEglSentinels.ensure()
+    }
 
     @Test
     fun `ready publishes policy unblock only after the optics monitor releases`() {
