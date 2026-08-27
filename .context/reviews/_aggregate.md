@@ -1,3 +1,125 @@
+# Aggregated deep review — cycle 54
+
+Date: 2026-08-27
+Reviewed revision: `bf40ae2c56c154072691815f83b7090a31f0c424` (`origin/main`)
+Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle54.7ZqPtj/repo`
+
+## Coverage and aggregation
+
+Five provenance files cover every required perspective: code-reviewer, performance-reviewer,
+security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger,
+document-specialist, and native Android designer. The environment's thread ceiling admitted two
+parallel full-repository agents; the cycle owner completed the three remaining specialist groups
+locally rather than dropping them. Every lane read the committed authorities, inventoried the full
+repository, reviewed cross-file behavior from its specialist angle, and performed a final missed-file
+sweep. Browser automation was not applicable to this native Jetpack Compose application. Every
+started reviewer returned, and there were no agent failures.
+
+The reports produced seven raw findings. Security/debugger, verifier/test-engineer, and
+document/designer independently found the same mutable review-metadata path, merged below at the
+highest signal. The deduplicated result is five findings: one High and four Medium, all High
+confidence in the defective mechanisms. Filesystem/native/provider occurrence boundaries remain
+explicit device or fault-injection limits rather than inferred facts.
+
+## Deduplicated findings
+
+### AGG54-01 — standby AudioRecord cleanup failures escape native ownership
+
+- **Severity / confidence:** High / High.
+- **Source:** code-reviewer/architect/critic.
+- **Evidence:** `app/src/main/kotlin/me/hletrd/telecampro/camera/StandbyAudioController.kt:411-422`
+  constructs an `AudioRecord`, swallows an uninitialized-recorder `release()` failure, then returns
+  a resource-free `Failure`; `:618-637` therefore registers no publication owner. The ordinary
+  terminal at `:264-277` likewise wraps `release(value)` in `runCatching`, after which the process
+  gate publishes success and clears the exact input even if release threw.
+- **Failure:** an uncertain native microphone is forgotten while process/standby ownership reopens,
+  permitting the next standby or REC input to coexist with a leaked native owner and violating the
+  exactly-one-mic contract.
+- **Fix direction:** publish every constructed input before validation cleanup, propagate typed
+  stop/release failure through the native gate, quarantine and strongly retain the exact input before
+  waking waiters, and fault-test both uninitialized and ordinary terminal release exceptions.
+
+### AGG54-02 — DNG allocation identity still blocks the Camera2 callback
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance/concurrency/tracer.
+- **Evidence:** `CameraEngine.kt:5113-5118` calls `StillCapturePipeline.saveDng` while the RAW Image
+  is live. `StillCapturePipeline.kt:361-384` calls `createPendingImageAllocation`, whose
+  `MediaStoreWriter.kt:390-421` path performs provider insert, synchronous REGISTERED persistence,
+  and `PendingDiscardJournal.captureAllocation`. `PendingDiscardJournal.kt:32-42,541-584` performs
+  volume/version reads and an exact provider query without a deadline. `CameraController.kt:2176-2220`
+  cannot close the Image or advance its handler until the callback returns.
+- **Failure:** a slow or wedged MediaProvider holds the full-resolution RAW Image and Camera2 handler
+  before the cycle-53 rejected-output dispatcher can help, stalling later results/watchdogs/captures.
+- **Fix direction:** preallocate/freeze the DNG row on a finite pre-capture provider lane, submit
+  Camera2 only after exact allocation is claimed, carry it into the live-Image write, and route
+  cancellation/late allocation to bounded cleanup/recovery. Block allocation identity in a test and
+  prove no live Image waits on it.
+
+### AGG54-03 — the log-quota test omits recurring producers that exhaust ColorOS's cap
+
+- **Severity / confidence:** Medium / High.
+- **Source:** performance/concurrency/tracer.
+- **Evidence:** `CameraViewModel.kt:547-590` emits an unchanged FocusConfidence heartbeat every two
+  seconds, driven by recurring analysis at `:1026-1039`; that is about 300 rows over the ten-minute
+  A5 soak by itself. `MainActivity.kt:743-750,869-872` also logs standard zoom-key repeat edges at
+  the measured roughly 20 Hz. `DiagnosticTelemetry.kt:26-51` and its test bound only 3A/ZSL and call
+  `rows + 2 <= 210` a process reserve without these producers. `CLAUDE.md:1054-1072` records a
+  300-row per-process ceiling.
+- **Failure:** ordinary debug photo analysis loses late soak faults/gaps before ten minutes, while a
+  held hardware zoom slide can spend the full quota in about 15 seconds and hide its own ZoomTrace
+  and frame-gap evidence.
+- **Fix direction:** put recurring diagnostics behind a shared quota owner or at minimum use a slow
+  stable focus heartbeat and start/terminal/change-gated hardware-key summaries. Extend the budget
+  test across 3A, focus, motion, hardware input, ZSL, startup, gaps, recovery, and faults.
+
+### AGG54-04 — review metadata bypasses the immutable source and unverified byte bound
+
+- **Severity / confidence:** Medium / High.
+- **Sources / agreement:** security/debugger, verifier/test-engineer, document-specialist/designer.
+- **Evidence:** `MediaReview.kt:469-505` freezes bounded still bytes for bitmap bounds/pixels/
+  orientation, but `MediaReview.kt:609-631` separately opens the provider and constructs
+  `ExifInterface` for the displayed ISO/shutter/focal plate before the later decode at `:699-748`.
+  `ReviewDecodeSourceTest.kt:70-118` tests only the latter frozen decoder; no test binds
+  `loadMetadata` to that identity or ceiling.
+- **Failure:** provider mutation can display one file's pixels beside another's capture metadata;
+  owner-unverified input can also reach EXIF parsing without the intended 64 MiB compressed-input
+  ceiling, consuming finite descriptor workers on pathological data.
+- **Fix direction:** acquire one frozen compressed still source per review request and derive all
+  byte-based metadata/orientation/pixels from it, retaining separate identity-checked MediaStore
+  columns. Test alternating provider identities, over-ceiling unverified EXIF, one content open, and
+  timeout/replacement disposal.
+
+### AGG54-05 — failed review-spool deletion releases accounting while bytes remain
+
+- **Severity / confidence:** Medium / High.
+- **Source:** code-reviewer/architect/critic.
+- **Evidence:** `LatestHeavyWorkLane.kt:92-116` ignores a false/throwing spool-file delete and always
+  releases its `ReviewSourceByteBudget` lease; partial-spool cleanup at `:269-275` has the same
+  pattern. Directory cleanup at `:159-200` runs once per process and is bounded. Current tests cover
+  successful deletion only.
+- **Failure:** repeated filesystem deletion failures leave 64–512 MiB files in cache while the
+  advertised 1 GiB process budget sees zero ownership, allowing unbounded same-process cache growth
+  until review or capture storage fails.
+- **Fix direction:** make file absence a typed terminal, retain byte accounting and exact orphan
+  ownership until bounded cleanup proves absence, and fail closed on new spool admission if that
+  finite owner is full. Inject false/throwing delete, retry success, partial-file failure, and a
+  repeated-close capacity sequence.
+
+## Verified non-findings and limits
+
+- Cycle-53 standby publication, immediate DISCARD identity, rejected-output cleanup dispatcher,
+  immutable bitmap decode, and bounded 3A/ZSL changes are present; the findings above are distinct
+  cleanup/allocation/process-composition/metadata/delete terminals not covered by those fixes.
+- `python3 tools/verify_host.py` passed completely in the code/architecture lane. Focused ownership,
+  storage, telemetry, and recording tests passed in the performance lane. The documentation contract
+  passed 155 checks with 24 expected optional-private skips.
+- No device, deployment, browser, MediaProvider mutation/reset, native fault injection, destructive
+  filesystem operation, or physical evidence action ran. Open checks A3/A4/A5/D1/E1/E2/E3 remain
+  evidence obligations, not deferred code findings.
+
+---
+
 # Aggregated deep review — cycle 53
 
 Date: 2026-08-25
