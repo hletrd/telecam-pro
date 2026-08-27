@@ -14,14 +14,50 @@ internal enum class StillPublicationDispatch {
     SHUTDOWN,
 }
 
-/** Sequence drives already self-bound by waiting for the preceding save-completion callback. */
-internal fun usesProcessStillPublicationTail(
-    driveMode: DriveMode,
-    formats: PhotoFormats,
-): Boolean = driveMode == DriveMode.SINGLE && formats.dngRaw && !formats.wantsProcessedStill
+/** Where a completed DNG enters the process-finite publication owner. */
+internal enum class DngPublicationTransfer {
+    NONE,
+    DIRECT,
+    AFTER_PROCESSED,
+}
 
 /**
- * Per-Engine admission facade over the process-lifetime RAW-only SINGLE publication capacity.
+ * Every completed DNG is process-owned. Mixed output waits behind its processed sibling on the
+ * Engine's ordered save lane; RAW-only output has no sibling and transfers immediately.
+ */
+internal fun dngPublicationTransfer(formats: PhotoFormats): DngPublicationTransfer = when {
+    !formats.dngRaw -> DngPublicationTransfer.NONE
+    formats.wantsProcessedStill -> DngPublicationTransfer.AFTER_PROCESSED
+    else -> DngPublicationTransfer.DIRECT
+}
+
+/**
+ * Transfers one completed DNG either now or through the processed sibling's ordered executor.
+ *
+ * [enqueueAfterProcessed] must enqueue behind that sibling's already-submitted save. A rejected
+ * transfer never runs [publication] inline: [onTransferRejected] leaves the complete private row
+ * to launch recovery and the caller settles its family continuation.
+ */
+internal fun transferCompletedDngPublication(
+    order: DngPublicationTransfer,
+    enqueueAfterProcessed: (Runnable) -> Boolean,
+    publication: () -> Unit,
+    onTransferRejected: () -> Unit,
+): Boolean = when (order) {
+    DngPublicationTransfer.NONE -> false
+    DngPublicationTransfer.DIRECT -> {
+        publication()
+        true
+    }
+    DngPublicationTransfer.AFTER_PROCESSED -> {
+        val accepted = enqueueAfterProcessed(Runnable(publication))
+        if (!accepted) onTransferRejected()
+        accepted
+    }
+}
+
+/**
+ * Per-Engine admission facade over the process-lifetime completed-DNG publication capacity.
  *
  * DNG bytes and their bounded COMPLETE-marker result already exist before work reaches this seam.
  * Rejection therefore never runs publication inline and never deletes the private row: launch
@@ -93,7 +129,7 @@ internal class StillPublicationDispatcher internal constructor(
     internal fun queuedTaskCount(): Int = capacityOwner.queuedTaskCount()
 }
 
-/** The only active+queued RAW-only SINGLE publication capacity across all Engine generations. */
+/** The only active+queued completed-DNG publication capacity across all Engine generations. */
 internal class StillPublicationCapacityOwner(
     workerCount: Int,
     backlogCapacity: Int,

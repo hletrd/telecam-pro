@@ -14,16 +14,57 @@ import org.junit.Test
 
 class StillPublicationDispatcherTest {
     @Test
-    fun `only RAW-only SINGLE uses the process publication tail`() {
+    fun `every DNG uses the process tail and mixed output waits for its processed sibling`() {
         val rawOnly = PhotoFormats(heif = false, jpeg = false, dngRaw = true)
         val paired = PhotoFormats(heif = true, jpeg = false, dngRaw = true)
 
-        assertTrue(usesProcessStillPublicationTail(DriveMode.SINGLE, rawOnly))
-        assertFalse(usesProcessStillPublicationTail(DriveMode.SINGLE, paired))
-        assertFalse(usesProcessStillPublicationTail(DriveMode.SINGLE, PhotoFormats()))
-        listOf(DriveMode.BURST, DriveMode.AEB, DriveMode.TIMELAPSE).forEach { drive ->
-            assertFalse("$drive keeps save-completion chaining", usesProcessStillPublicationTail(drive, rawOnly))
-        }
+        assertEquals(DngPublicationTransfer.DIRECT, dngPublicationTransfer(rawOnly))
+        assertEquals(DngPublicationTransfer.AFTER_PROCESSED, dngPublicationTransfer(paired))
+        assertEquals(DngPublicationTransfer.NONE, dngPublicationTransfer(PhotoFormats()))
+    }
+
+    @Test
+    fun `mixed transfer cannot publish until ordered processed work reaches terminal`() {
+        val events = mutableListOf<String>()
+        var queuedTransfer: Runnable? = null
+
+        assertTrue(
+            transferCompletedDngPublication(
+                order = DngPublicationTransfer.AFTER_PROCESSED,
+                enqueueAfterProcessed = { task -> queuedTransfer = task; true },
+                publication = { events += "dng" },
+                onTransferRejected = { error("accepted transfer cannot fall back") },
+            ),
+        )
+        assertTrue(events.isEmpty())
+
+        events += "processed"
+        checkNotNull(queuedTransfer).run()
+        assertEquals(listOf("processed", "dng"), events)
+    }
+
+    @Test
+    fun `raw-only transfer is direct and rejected mixed transfer stays recovery-only`() {
+        val events = mutableListOf<String>()
+        assertTrue(
+            transferCompletedDngPublication(
+                order = DngPublicationTransfer.DIRECT,
+                enqueueAfterProcessed = { error("RAW-only has no processed predecessor") },
+                publication = { events += "direct" },
+                onTransferRejected = { error("direct transfer cannot reject before dispatch") },
+            ),
+        )
+        assertEquals(listOf("direct"), events)
+
+        assertFalse(
+            transferCompletedDngPublication(
+                order = DngPublicationTransfer.AFTER_PROCESSED,
+                enqueueAfterProcessed = { false },
+                publication = { events += "must-not-publish" },
+                onTransferRejected = { events += "recover" },
+            ),
+        )
+        assertEquals(listOf("direct", "recover"), events)
     }
 
     @Test
@@ -215,6 +256,70 @@ class StillPublicationDispatcherTest {
             releaseWorkers.countDown()
             oldEngine.shutdown()
             replacementEngine.shutdown()
+        }
+    }
+
+    @Test
+    fun `mixed and sequence tails share one ceiling across repeated Engine facades`() {
+        val releaseWorkers = CountDownLatch(1)
+        val workersEntered = CountDownLatch(2)
+        val terminals = Collections.synchronizedList(mutableListOf<String>())
+        val owner = StillPublicationCapacityOwner(
+            workerCount = 2,
+            backlogCapacity = 2,
+            threadFactory = ThreadFactory { task ->
+                Thread(task, "isolated-all-dng-tail").apply { isDaemon = true }
+            },
+        )
+        val oldEngine = StillPublicationDispatcher(owner)
+        val replacementEngine = StillPublicationDispatcher(owner)
+        val secondReplacement = StillPublicationDispatcher(owner)
+
+        fun submit(
+            dispatcher: StillPublicationDispatcher,
+            label: String,
+            block: Boolean,
+        ): StillPublicationDispatch = dispatcher.dispatchRecoverable(
+            publication = {
+                if (block) {
+                    workersEntered.countDown()
+                    releaseWorkers.await()
+                }
+            },
+            onRejected = {},
+            onTerminal = { terminals += label },
+        )
+
+        try {
+            assertEquals(StillPublicationDispatch.ACCEPTED, submit(oldEngine, "mixed-single", true))
+            assertEquals(StillPublicationDispatch.ACCEPTED, submit(oldEngine, "burst", true))
+            assertTrue(workersEntered.await(5, TimeUnit.SECONDS))
+            assertEquals(StillPublicationDispatch.ACCEPTED, submit(replacementEngine, "aeb", false))
+            assertEquals(StillPublicationDispatch.ACCEPTED, submit(replacementEngine, "timelapse", false))
+
+            oldEngine.shutdown()
+            replacementEngine.shutdown()
+            assertEquals(
+                StillPublicationDispatch.OVERFLOW,
+                submit(secondReplacement, "replacement-overflow", false),
+            )
+            assertEquals(2, secondReplacement.activeTaskCount())
+            assertEquals(2, secondReplacement.queuedTaskCount())
+            assertEquals(listOf("replacement-overflow"), terminals.toList())
+
+            releaseWorkers.countDown()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (terminals.size < 5 && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(
+                setOf("mixed-single", "burst", "aeb", "timelapse", "replacement-overflow"),
+                terminals.toSet(),
+            )
+            assertEquals(5, terminals.size)
+        } finally {
+            releaseWorkers.countDown()
+            oldEngine.shutdown()
+            replacementEngine.shutdown()
+            secondReplacement.shutdown()
         }
     }
 

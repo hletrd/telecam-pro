@@ -19,6 +19,7 @@ import me.hletrd.telecampro.capture.ExifShot
 import me.hletrd.telecampro.capture.ShotSpec
 import me.hletrd.telecampro.capture.StillCapturePipeline
 import me.hletrd.telecampro.capture.HeifCapture
+import me.hletrd.telecampro.capture.PendingDngPublication
 import me.hletrd.telecampro.capture.StillSnapshot
 import me.hletrd.telecampro.gl.AtomicOwnerSlot
 import me.hletrd.telecampro.gl.EncoderOutputAdmission
@@ -227,10 +228,9 @@ class CameraEngine internal constructor(
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-    // RAW-only SINGLE shots own no processed-snapshot lease, so their completed DNG publication
-    // tails use finite process-wide capacity instead of entering this Engine's unbounded io queue.
-    // Every processed shot is bounded by [processedSnapshotBudget]; BURST/AEB/timelapse additionally
-    // retain their save-completion chaining on [ioExecutor] for exact sequence order.
+    // Every completed DNG publication tail uses finite process-wide capacity. Mixed-output shots
+    // enqueue only the cheap transfer behind their processed sibling on [ioExecutor], while RAW-only
+    // SINGLE/BURST/AEB/timelapse transfer directly; sequence completion still preserves exact order.
     private val stillPublicationDispatcher = StillPublicationDispatcher(
         workerCount = STILL_PUBLICATION_WORKER_COUNT,
         backlogCapacity = STILL_PUBLICATION_BACKLOG_CAPACITY,
@@ -4382,7 +4382,6 @@ class CameraEngine internal constructor(
         hiRes: Boolean,
         optics: ShotOptics,
         retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
-        processOwnedDngTail: Boolean = false,
         traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
         allowZsl: Boolean = false,
         onDone: (() -> Unit)? = null,
@@ -4405,7 +4404,6 @@ class CameraEngine internal constructor(
                 hiRes = hiRes,
                 optics = optics,
                 retainedSnapshotLease = snapshotLease,
-                processOwnedDngTail = false,
                 traceAdmission = traceAdmission,
                 onDone = onDone,
             ) ?: run {
@@ -4504,7 +4502,6 @@ class CameraEngine internal constructor(
                         hiRes = hiRes,
                         optics = optics,
                         retainedSnapshotLease = snapshotLease,
-                        processOwnedDngTail = processOwnedDngTail,
                         traceAdmission = traceAdmission,
                         onDone = onDone,
                         registeredShotOverride = registered,
@@ -4610,7 +4607,6 @@ class CameraEngine internal constructor(
                         hiRes = accepted.outputs.hiRes,
                         optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
-                        processOwnedDngTail = usesProcessStillPublicationTail(effectiveDrive, effFormats),
                         traceAdmission = captureFamilyTraceAdmission(
                             driveMode,
                             singleShot,
@@ -5194,9 +5190,6 @@ class CameraEngine internal constructor(
         // dispatch-time snapshot, never re-read the live volatiles.
         optics: ShotOptics,
         retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
-        // Only RAW-only SINGLE bypasses both the processed budget and sequence-drive chaining.
-        // Its publication tail therefore needs the process-wide finite owner.
-        processOwnedDngTail: Boolean = false,
         // Bounded harness evidence. Sequence drives never spend ColorOS's finite process log quota;
         // the one in-REC snapshot keeps its terminal edge without the pre-kill registration line.
         traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
@@ -5210,7 +5203,6 @@ class CameraEngine internal constructor(
         registrationAlreadyTraced: Boolean = false,
     ): CameraController.PhotoCallback? {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
-        require(!processOwnedDngTail || formats.dngRaw && !formats.wantsProcessedStill)
         require(!formats.dngRaw || dngAllocation != null || registeredShotOverride == null)
         // Reserve process-finite cleanup before Camera2 can create a RAW output. The reservation is
         // released on every success/no-image/error edge, or transferred exactly once to failed-row
@@ -5288,6 +5280,31 @@ class CameraEngine internal constructor(
         val reportStatus: (CameraStatus) -> Unit = { status ->
             runCatching { onStatus?.invoke(status) }
         }
+        fun retainCompletedDngForRecovery(pending: PendingDngPublication) {
+            // The row is structurally complete and remains private. A tombstoned family transfers
+            // to durable discard; otherwise launch recovery publishes it later. This callback never
+            // performs provider publication/deletion inline on the camera or ordered-save lane.
+            dispatchDeletedStillDiscard(
+                pending.allocation,
+                pending.captureId,
+            )
+            reportStatus(
+                if (pending.completionMarkerDurable) {
+                    CameraStatusMessage.DNG_SAVE_DELAYED.status()
+                } else {
+                    CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(
+                        CameraStatusArgument.Text("DNG"),
+                    )
+                },
+            )
+        }
+        fun dispatchCompletedDng(pending: PendingDngPublication) {
+            stillPublicationDispatcher.dispatchRecoverable(
+                publication = { stillPipeline.publishDng(pending) },
+                onRejected = { retainCompletedDngForRecovery(pending) },
+                onTerminal = finishDng,
+            )
+        }
         return object : CameraController.PhotoCallback {
             override fun onPhoto(
                 jpeg: Image?,
@@ -5348,8 +5365,9 @@ class CameraEngine internal constructor(
                     if (formats.dngRaw) {
                         if (raw != null) {
                             // DngCreator needs the live Image, so write + the bounded COMPLETE
-                            // marker attempt remain on this camera callback. Only the durability-
-                            // gated publication crosses to ioExecutor.
+                            // marker attempt remain on this camera callback. Publication transfers
+                            // to the process owner directly for RAW-only or, for mixed output, via a
+                            // lightweight ioExecutor task queued after the processed sibling.
                             when (val write = stillPipeline.saveDng(
                                 raw,
                                 rawChars,
@@ -5362,62 +5380,22 @@ class CameraEngine internal constructor(
                                 is DngWriteResult.Complete -> {
                                     rejectedDngCleanup?.cancel()
                                     val pending = write.publication
-                                if (processOwnedDngTail) {
-                                    val disposition = stillPublicationDispatcher.dispatchRecoverable(
-                                        publication = { stillPipeline.publishDng(pending) },
-                                        onRejected = {
-                                            // The row is structurally complete and remains private.
-                                            // A tombstoned family transfers to durable discard;
-                                            // otherwise launch recovery publishes it later.
-                                            dispatchDeletedStillDiscard(
-                                                pending.allocation,
-                                                pending.captureId,
-                                            )
-                                            reportStatus(
-                                                if (pending.completionMarkerDurable) {
-                                                    CameraStatusMessage.DNG_SAVE_DELAYED.status()
-                                                } else {
-                                                    CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(
-                                                        CameraStatusArgument.Text("DNG"),
-                                                    )
-                                                },
-                                            )
-                                        },
-                                        onTerminal = finishDng,
-                                    )
-                                    dngPublishQueued = disposition == StillPublicationDispatch.ACCEPTED
-                                } else {
-                                    val queued = runCatching {
-                                        ioExecutor.execute {
-                                            try {
-                                                stillPipeline.publishDng(pending)
-                                            } finally {
-                                                finishDng()
-                                            }
-                                        }
-                                    }
-                                    dngPublishQueued = queued.isSuccess
-                                    queued.onFailure {
-                                        // The bytes are structurally complete and remain pending for
-                                        // launch recovery (the marker result is frozen in [pending]). A
-                                        // deleted family still belongs to the Engine tombstone: route it
-                                        // through the recovery lane even though the ordinary DNG publish
-                                        // continuation could not enter the shutting-down still executor.
-                                        dispatchDeletedStillDiscard(
-                                            pending.allocation,
-                                            pending.captureId,
-                                        )
-                                        reportStatus(
-                                            if (pending.completionMarkerDurable) {
-                                                CameraStatusMessage.DNG_SAVE_DELAYED.status()
+                                    val transfer = dngPublicationTransfer(formats)
+                                    dngPublishQueued = transferCompletedDngPublication(
+                                        order = transfer,
+                                        // The processed save was enqueued first on this single-thread
+                                        // lane. A mixed DNG therefore reaches the process owner only
+                                        // after its sibling's finally block releases/settles that lane.
+                                        enqueueAfterProcessed = { task ->
+                                            if (!processedQueued) {
+                                                false
                                             } else {
-                                                CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(
-                                                    CameraStatusArgument.Text("DNG"),
-                                                )
-                                            },
-                                        )
-                                    }
-                                }
+                                                runCatching { ioExecutor.execute(task) }.isSuccess
+                                            }
+                                        },
+                                        publication = { dispatchCompletedDng(pending) },
+                                        onTransferRejected = { retainCompletedDngForRecovery(pending) },
+                                    )
                                 }
                                 is DngWriteResult.Rejected -> {
                                     android.util.Log.e("CameraEngine", "DNG write failed", write.failure)
