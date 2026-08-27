@@ -19,6 +19,10 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > only after the final source commit is built, verified without inventing device evidence, copied to
 > a commit-and-digest-qualified path, and accepted by `tools/check_release_artifact.py` against a
 > SHA-256-protected attestation. Until then this sheet is preparation material, not upload approval.
+> Independently, the documented upload key is **SECURITY-BLOCKED**: its six-digit password was
+> transmitted in plaintext. No signed candidate may be cut or uploaded until the owner explicitly
+> approves a strong-key rotation or completes Google's upload-key reset and records the new public
+> certificate fingerprint in the local fail-closed prerequisite described below.
 > `versionCode 1` (v1.0, from `ca3d33c`) and `versionCode 3` (v1.0.1) are BOTH spent — Play
 > rejects a re-used versionCode outright (see the note in `app/build.gradle.kts`). Release notes live in
 > `docs/play-store-listing.md`.
@@ -783,42 +787,43 @@ These files are intentionally gitignored and stay only on the local machine:
 >    recovery — the RETIRED key's password — showed up as an untracked, committable file. The rules
 >    now match by extension AND by name shape (`*password*`, `*secret*`, `telecampro-upload-*`,
 >    `.bak`, `.orig`). Fixed in `fc43953`.
-> 2. **The password is weak (six digits) and has been transmitted in plaintext.** Nothing is on Play
->    yet, so rotating the upload key today costs one `keytool -genkeypair` and one line in this
->    file. After the first upload it stops being a local decision and becomes a Play support
->    request. Rotating now is the cheap moment; this is an owner call, recorded here so it is not
->    silently forgotten.
+> 2. **Historical incident, now an active security block:** the July-25 upload-key password is weak
+>    (six digits) and was transmitted in plaintext. The original note said nothing was on Play yet;
+>    that is historical truth, not current truth — v1.0.1 is now published. The credential is
+>    therefore unusable for the next upload. Do not rotate or reset it from this checklist: the
+>    owner must explicitly approve either a strong-key rotation (only if Play has not registered the
+>    certificate) or Google's upload-key reset workflow. Until that external action is confirmed,
+>    `uploadKeyRotationApproved` must remain absent/false and the scoped helper refuses to build.
 >
 > Whenever the keystore is rotated, verify with
 > `keytool -list -keystore telecampro-upload.jks -alias telecampro` — the certificate SHA-256 must
 > match whatever this sheet records as the upload certificate, or the wrong keystore is in place.
 
-To rebuild the signed AAB locally:
+After the separately approved rotation/reset is complete, add these **non-secret** fields to the
+gitignored `keystore.properties`: `uploadKeyRotationApproved=true` and
+`uploadKeyCertificateSha256=<the new 64-hex public certificate SHA-256>`. The helper verifies that
+the configured keystore actually exports that certificate before it runs Gradle. Merely setting the
+Boolean cannot bless the old key.
+
+To rebuild the signed AAB locally after that prerequisite:
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$PATH"
 
-# The backup stores the passwords as storePassword= / keyPassword= lines — map them onto the
-# TELECAMPRO_* variables the build reads (the old snippet grepped for TELECAMPRO_* keys that do
-# not exist in the file, silently exporting nothing).
-while IFS='=' read -r key value; do
-  case "$key" in
-    storePassword) export TELECAMPRO_STORE_PASSWORD="$value" ;;
-    keyPassword) export TELECAMPRO_KEY_PASSWORD="$value" ;;
-  esac
-done < <(gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg)
-
-# Fail loudly instead of building an artifact nobody can verify: prove the password opens the
-# keystore BEFORE spending a release build on it. (Skipping this is how the stale-backup breakage
-# above stayed invisible — the build's own error surfaces only at the packaging step.)
-keytool -list -keystore telecampro-upload.jks -alias telecampro \
-  -storepass "$TELECAMPRO_STORE_PASSWORD" >/dev/null || {
-    echo "keystore password rejected — see the stale-backup note above"; return 1 2>/dev/null || exit 1; }
+# Non-secret preflight. This fails before a release attempt unless owner approval and the exact
+# replacement certificate fingerprint are present.
+python3 tools/run_scoped_signed_release.py --check-prerequisites
 
 release_root="app/build/immutable-release/$(git rev-parse --short=12 HEAD)-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
-python3 tools/build_immutable_release.py --output "$release_root" \
-  :app:lintRelease :app:assembleRelease :app:bundleRelease
+# The decrypted payload travels only through this pipe. The short-lived helper validates the exact
+# storePassword/keyPassword field set and strong-password floor, verifies the certificate with
+# keytool's -storepass:env form (the VALUE never enters argv), runs the immutable wrapper, and clears
+# its child environment on every success/failure terminal. It writes no transient secret file and
+# cannot export anything into this caller shell.
+gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg | \
+  python3 tools/run_scoped_signed_release.py --output "$release_root" \
+    :app:lintRelease :app:assembleRelease :app:bundleRelease
 ```
 
 The command refuses to overwrite `release_root`, making output discovery unambiguous: release lint

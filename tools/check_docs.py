@@ -1385,6 +1385,7 @@ check(
 # the wrapper's descriptor owner. Bind build logic, wrapper, example, and public/as-built
 # documentation so that neither resolver can return under a renamed key or stale instruction.
 release_wrapper = read("tools/build_immutable_release.py")
+scoped_release_helper = read("tools/run_scoped_signed_release.py")
 keystore_example = read("keystore.properties.example")
 signing_environment_values = set(re.findall(r'"(TELECAMPRO_[A-Z_]+)"', gradle))
 check(
@@ -1413,6 +1414,31 @@ check(
     and "`TELECAMPRO_STORE_FILE` is cleared" in architecture,
     "release signing distinguishes the one frozen file path from secret environment values",
     f"Gradle signing environment values={sorted(signing_environment_values)}",
+)
+play_console_submit = read("docs/play-console-submit.md")
+check(
+    "SECURITY-BLOCKED" in play_console_submit
+    and "six-digit password was\n> transmitted in plaintext" in play_console_submit
+    and "owner explicitly\n> approves a strong-key rotation or completes Google's upload-key reset" in play_console_submit
+    and "uploadKeyRotationApproved` must remain absent/false" in play_console_submit
+    and "python3 tools/run_scoped_signed_release.py --check-prerequisites" in play_console_submit
+    and "gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg |" in play_console_submit
+    and "python3 tools/run_scoped_signed_release.py --output" in play_console_submit
+    and "export TELECAMPRO_STORE_PASSWORD" not in play_console_submit
+    and "export TELECAMPRO_KEY_PASSWORD" not in play_console_submit
+    and '-storepass "$TELECAMPRO_STORE_PASSWORD"' not in play_console_submit
+    and '"-storepass:env"' in scoped_release_helper
+    and '"-storepass",' not in scoped_release_helper
+    and "credentials.clear()" in scoped_release_helper
+    and "child_environment.pop(name, None)" in scoped_release_helper
+    and scoped_release_helper.index("load_upload_key_prerequisite(args.root, os.environ)") <
+        scoped_release_helper.index("sys.stdin.buffer.read")
+    and "MIN_STRONG_PASSWORD_LENGTH = 16" in scoped_release_helper
+    and "uploadKeyRotationApproved=false" in keystore_example
+    and "uploadKeyCertificateSha256=<64 lowercase hex characters>" in keystore_example
+    and "export TELECAMPRO_STORE_PASSWORD" not in keystore_example
+    and "export TELECAMPRO_KEY_PASSWORD" not in keystore_example,
+    "signed release procedure scopes secrets and requires owner-approved key replacement",
 )
 
 

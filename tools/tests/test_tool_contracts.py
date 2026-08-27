@@ -63,6 +63,8 @@ def run_documentation_gate_from_committed_export(
             "tools/verify_host.py",
             "tools/build_immutable_debug.py",
             "tools/build_immutable_release.py",
+            "tools/run_scoped_signed_release.py",
+            "keystore.properties.example",
             "README.md",
             "CLAUDE.md",
             "PRIVACY.md",
@@ -1545,6 +1547,39 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(
                     "FAIL  release capture tracing is build-gated and nullable-safe at the production callback",
+                    result.stdout,
+                )
+
+    def test_committed_export_rejects_unscoped_or_unapproved_signing_procedures(self) -> None:
+        fixtures = (
+            (
+                "docs/play-console-submit.md",
+                "gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg |",
+                "export TELECAMPRO_STORE_PASSWORD=plaintext",
+            ),
+            (
+                "tools/run_scoped_signed_release.py",
+                '"-storepass:env",',
+                '"-storepass",',
+            ),
+            (
+                "docs/play-console-submit.md",
+                "upload key is **SECURITY-BLOCKED**",
+                "upload key is ready",
+            ),
+        )
+        for relative, current, stale in fixtures:
+            with self.subTest(relative=relative, stale=stale):
+                def regress(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(regress)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  signed release procedure scopes secrets and requires owner-approved key replacement",
                     result.stdout,
                 )
 
