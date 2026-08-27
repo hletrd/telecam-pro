@@ -112,8 +112,11 @@ S4a result to a different camera/session.
 - Record the immutable debug APK path, source commit/tree, device model, Android build, and the
   front camera's advertised largest-YUV minimum frame duration.
 - Select front PHOTO, SINGLE drive, processed still output, and leave the viewfinder running for
-  10 minutes in an ordinary lit scene. Capture delivered frame cadence, every `FrameGap` ≥200 ms,
-  camera errors, `dumpsys meminfo`/gralloc observations, and battery temperature before/after.
+  10 minutes in an ordinary lit scene. Capture delivered frame cadence and every bounded `FrameGap`
+  summary (`count`, `maxMs`, and the 200–399/400–999/≥1000 ms buckets), plus camera errors,
+  `dumpsys meminfo`/gralloc observations, and battery temperature before/after. The first summary is
+  immediate; continuing gaps summarize at most every 15 s and the GL generation emits any terminal
+  remainder, so absence of per-frame rows is the quota-safe evidence format rather than missing data.
 - During a second bounded run, create ordinary memory pressure by switching among other apps and
   returning to TeleCam Pro; do not kill the camera process or infer success from session configure.
 - Take a front photo after each soak and verify capture completion plus a valid published file.

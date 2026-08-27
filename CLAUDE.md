@@ -1033,6 +1033,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   owner closes new image/video admission at capacity rather than forgetting rows until restart, and
   every reserve/retry/terminal edge publishes through the process admission signal so a replacement
   Engine cannot miss capacity reopening.
+  The earlier edge is finite too: if the REGISTERED commit itself fails after insert, one immediate
+  delete does not license forgetting the URI. Only authoritative provider absence plus successful
+  preference cleanup releases the pre-insert reservation; a present/unavailable row, failed delete,
+  or failed cleanup transfers the URI/family to that same typed retry owner.
 - **DNG publication does not hold the camera callback.** `DngCreator.writeImage` and the durable
   `COMPLETE` marker attempt remain synchronous while the RAW `Image` is valid; `saveDng` returns a
   frozen `PendingDngPublication` carrying whether that commit succeeded. Only `publishDng`
@@ -1089,11 +1093,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   accumulates cadence in constant memory and emits only enable + terminal summary rows. **Any new
   per-frame or per-tick log must be change-gated or thresholded.** (This quota is also what made the removed OPPO CameraUnit SDK's
   200+ startup rows decisive — see that bullet.)
-  Capture-family edges, ShutterLag/ZSL decisions, standby/audio shape, hardware, zoom, motion,
-  focus-confidence, Touch-AF scan/reset, and 3A additionally cross one 180-row process admission
-  door, preserving 120 rows for startup, frame gaps, recovery, and faults even after repeated
-  shutter/focus actions. An executable source inventory classifies every production DEBUG log as
-  budgeted recurring, one-shot startup/session, or reserved fault evidence.
+  `FrameGap` measures only REAL SurfaceTexture frames: cached zoom redraws own a separate render
+  timestamp and can neither hide nor invent a producer stall. Qualifying gaps accumulate in constant
+  memory and emit one first/15-second/terminal summary with count, maximum, and 200–399/400–999/
+  ≥1000 ms buckets, rather than one row per broken frame. Capture-family edges, ShutterLag/ZSL
+  decisions, standby/audio shape, hardware, zoom, motion, focus-confidence, Touch-AF scan/reset, 3A,
+  session/recording information, and those summaries share one 180-row process admission door.
+  Every warning/error crosses a separate 120-row process owner, making the complete runtime maximum
+  exactly 300. The executable source inventory accepts only a real bounded facade/guard; severity or
+  an anchor string no longer pretends an unbounded producer is reserved.
 - **Cold start is instrumented, and the measured budget is `resume → first camera frame ≈ 544 ms`
   (debug, 2026-07-25).** `camera/StartupTrace.kt` marks `openCamera → onOpened →
   createCaptureSession → onConfigured → previewRequestBuilt → firstCameraResult` against a
