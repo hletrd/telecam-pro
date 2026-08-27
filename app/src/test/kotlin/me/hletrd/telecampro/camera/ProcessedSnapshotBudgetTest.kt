@@ -14,12 +14,12 @@ import org.junit.Test
 class ProcessedSnapshotBudgetTest {
 
     @Test
-    fun `production budget retains one active and one queued single snapshot`() {
+    fun `production budget retains one active and one queued processed snapshot`() {
         val budget = ProcessedSnapshotBudget()
         val active = budget.tryAcquire()
         val queued = budget.tryAcquire()
 
-        assertEquals(2, MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS)
+        assertEquals(2, MAX_RETAINED_PROCESSED_SNAPSHOTS)
         assertNotNull(active)
         assertNotNull(queued)
         assertNull(budget.tryAcquire())

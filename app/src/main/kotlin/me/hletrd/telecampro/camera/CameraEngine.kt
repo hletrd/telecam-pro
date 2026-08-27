@@ -229,8 +229,8 @@ class CameraEngine internal constructor(
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     // RAW-only SINGLE shots own no processed-snapshot lease, so their completed DNG publication
     // tails use finite process-wide capacity instead of entering this Engine's unbounded io queue.
-    // Mixed-output shots remain bounded by [singleProcessedSnapshotBudget], while BURST/AEB/
-    // timelapse retain their existing save-completion chaining on [ioExecutor].
+    // Every processed shot is bounded by [processedSnapshotBudget]; BURST/AEB/timelapse additionally
+    // retain their save-completion chaining on [ioExecutor] for exact sequence order.
     private val stillPublicationDispatcher = StillPublicationDispatcher(
         workerCount = STILL_PUBLICATION_WORKER_COUNT,
         backlogCapacity = STILL_PUBLICATION_BACKLOG_CAPACITY,
@@ -4387,17 +4387,31 @@ class CameraEngine internal constructor(
         allowZsl: Boolean = false,
         onDone: (() -> Unit)? = null,
     ): Boolean {
+        // Sequence chaining bounds snapshots only inside one Engine. The process lease also covers
+        // BURST/AEB/timelapse so a blocked old Engine cannot multiply full-resolution heap owners
+        // when an Activity replacement admits another sequence.
+        val snapshotLease = retainedSnapshotLease ?: if (formats.wantsProcessedStill) {
+            processedSnapshotBudget.tryAcquire() ?: run {
+                onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+                return false
+            }
+        } else {
+            null
+        }
         if (!formats.dngRaw) {
             val callback = photoCallback(
                 formats = formats,
                 shotControls = shotControls,
                 hiRes = hiRes,
                 optics = optics,
-                retainedSnapshotLease = retainedSnapshotLease,
+                retainedSnapshotLease = snapshotLease,
                 processOwnedDngTail = false,
                 traceAdmission = traceAdmission,
                 onDone = onDone,
-            ) ?: return false
+            ) ?: run {
+                snapshotLease?.release()
+                return false
+            }
             accepted.controller.capturePhoto(
                 wantJpeg = formats.wantsProcessedStill,
                 wantRaw = false,
@@ -4409,14 +4423,14 @@ class CameraEngine internal constructor(
         }
 
         val dngAdmission = ProcessDngPreCaptureAdmission.owner.tryAcquire() ?: run {
-            retainedSnapshotLease?.release()
+            snapshotLease?.release()
             onStillCaptureAdmissionChanged?.invoke(false)
             onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
             return false
         }
         val rejectedCleanup = MediaStoreWriter.reserveRejectedOutputCleanup() ?: run {
             dngAdmission.release()
-            retainedSnapshotLease?.release()
+            snapshotLease?.release()
             onStillCaptureAdmissionChanged?.invoke(false)
             onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
             return false
@@ -4424,7 +4438,7 @@ class CameraEngine internal constructor(
         val registered = runCatching { shotSpec(shotControls, hiRes, optics) }.getOrElse { failure ->
             rejectedCleanup.cancel()
             dngAdmission.release()
-            retainedSnapshotLease?.release()
+            snapshotLease?.release()
             android.util.Log.e("CameraEngine", "DNG capture registration failed", failure)
             onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
             return false
@@ -4438,7 +4452,7 @@ class CameraEngine internal constructor(
         }
         fun settleBeforeCamera() {
             rejectedCleanup.cancel()
-            retainedSnapshotLease?.release()
+            snapshotLease?.release()
             dngAdmission.release()
             settleRegisteredStillShot(
                 registered = registered,
@@ -4480,7 +4494,7 @@ class CameraEngine internal constructor(
                         shotControls = shotControls,
                         hiRes = hiRes,
                         optics = optics,
-                        retainedSnapshotLease = retainedSnapshotLease,
+                        retainedSnapshotLease = snapshotLease,
                         processOwnedDngTail = processOwnedDngTail,
                         traceAdmission = traceAdmission,
                         onDone = onDone,
@@ -4560,7 +4574,7 @@ class CameraEngine internal constructor(
         when (effectiveDrive) {
             DriveMode.SINGLE -> {
                 val snapshotLease = if (effFormats.wantsProcessedStill) {
-                    singleProcessedSnapshotBudget.tryAcquire()
+                    processedSnapshotBudget.tryAcquire()
                 } else {
                     null
                 }
@@ -4990,7 +5004,7 @@ class CameraEngine internal constructor(
     // Process-wide: Engine recreation must not multiply full-resolution save work that was already
     // admitted before rejected-output capacity closed. Accepted old-Engine tasks retain/release the
     // same leases while the replacement Engine observes the remaining budget.
-    private val singleProcessedSnapshotBudget = ProcessProcessedSnapshotBudget.owner
+    private val processedSnapshotBudget = ProcessProcessedSnapshotBudget.owner
 
     /**
      * Optics identity for one still CHAIN (single shot, all BURST/AEB frames, one timelapse tick),

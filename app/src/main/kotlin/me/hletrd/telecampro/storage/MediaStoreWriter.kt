@@ -20,7 +20,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
-import me.hletrd.telecampro.camera.MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS
+import me.hletrd.telecampro.camera.MAX_RETAINED_PROCESSED_SNAPSHOTS
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_BACKLOG_CAPACITY
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_WORKER_COUNT
 
@@ -65,7 +65,7 @@ object MediaStoreWriter {
      * yet handed to that dispatcher. These upstream owners are all hard-bounded.
      */
     internal const val MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS =
-        MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS * 3 +
+        MAX_RETAINED_PROCESSED_SNAPSHOTS * 3 +
             1 +
             RECORDING_STORAGE_WORKER_COUNT + RECORDING_STORAGE_BACKLOG_CAPACITY +
             1

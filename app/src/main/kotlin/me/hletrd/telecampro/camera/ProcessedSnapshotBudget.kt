@@ -3,10 +3,10 @@ package me.hletrd.telecampro.camera
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * At most one processed SINGLE save may run while one more full-resolution snapshot waits behind
- * it. Sequence drive modes already chain on save completion and therefore do not use this budget.
+ * At most one processed save may run while one more full-resolution snapshot waits behind it.
+ * Every drive mode uses this process owner; per-sequence chaining additionally preserves order.
  */
-internal const val MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS = 2
+internal const val MAX_RETAINED_PROCESSED_SNAPSHOTS = 2
 
 /** One process owner so Engine recreation cannot multiply already-admitted full-resolution saves. */
 internal object ProcessProcessedSnapshotBudget {
@@ -15,7 +15,7 @@ internal object ProcessProcessedSnapshotBudget {
 
 /** Android-free, thread-safe admission budget for retained processed still snapshots. */
 internal class ProcessedSnapshotBudget(
-    private val capacity: Int = MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS,
+    private val capacity: Int = MAX_RETAINED_PROCESSED_SNAPSHOTS,
 ) {
     init {
         require(capacity > 0) { "capacity must be positive" }
