@@ -942,6 +942,136 @@ class StandbyAudioControllerTest {
     }
 
     @Test
+    fun `uninitialized input release throw quarantines exact construction before any retry`() {
+        val processGate = RecorderQuarantineAdmissionGate()
+        var setupCalls = 0
+        val input = object : StandbyAudioInput {
+            var starts = 0
+            var stops = 0
+            var releases = 0
+            override fun start() { starts++ }
+            override fun read(samples: ShortArray): Int = error("uninitialized input cannot read")
+            override fun stop() { stops++ }
+            override fun release() {
+                releases++
+                error("injected uninitialized release failure")
+            }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Failure(
+                    StandbyAudioFailureReason.UNINITIALIZED,
+                    input,
+                )
+            },
+            canStart = { !processGate.isQuarantined() },
+            nativeProcessGate = RecorderStandbyNativeProcessGate(processGate),
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(1, setupCalls)
+        assertEquals(0, input.starts)
+        assertEquals("an input rejected before start needs release only", 0, input.stops)
+        assertEquals(1, input.releases)
+        assertTrue(processGate.isQuarantined())
+        assertEquals(1, fixture.retained.size)
+        assertTrue(fixture.retained.single().input === input)
+        assertTrue(fixture.retained.single().terminationOwner.isAbandoned())
+        assertEquals(1, fixture.unsafeNative.size)
+        assertEquals(null, processGate.reserveStandby(Any()))
+        assertEquals(null, processGate.snapshot(Any()))
+
+        // The audio-failure retry was queued before completion observed quarantine. Neither that
+        // stale retry nor explicit re-enable may enter a second native construction.
+        fixture.scheduled.removeFirst().invoke()
+        fixture.controller.setEnabled(true)
+        assertEquals(1, setupCalls)
+        assertEquals(1, fixture.retained.size)
+    }
+
+    @Test
+    fun `ordinary terminal release throw quarantines exact input before admission reopens`() {
+        val processGate = RecorderQuarantineAdmissionGate()
+        var setupCalls = 0
+        val input = object : StandbyAudioInput {
+            var starts = 0
+            var stops = 0
+            var releases = 0
+            override fun start() { starts++ }
+            override fun read(samples: ShortArray): Int = error("fixture exits before read")
+            override fun stop() { stops++ }
+            override fun release() {
+                releases++
+                error("injected terminal release failure")
+            }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(input)
+            },
+            canStart = { !processGate.isQuarantined() },
+            nativeProcessGate = RecorderStandbyNativeProcessGate(processGate),
+        )
+
+        fixture.controller.setEnabled(true)
+        fixture.controller.setEnabled(true)
+
+        assertEquals(1, setupCalls)
+        assertEquals(1, input.starts)
+        assertEquals(1, input.stops)
+        assertEquals(1, input.releases)
+        assertTrue(processGate.isQuarantined())
+        assertEquals(1, fixture.retained.size)
+        assertTrue(fixture.retained.single().input === input)
+        assertTrue(fixture.retained.single().terminationOwner.isAbandoned())
+        assertEquals(1, fixture.unsafeNative.size)
+        assertEquals(null, processGate.reserveStandby(Any()))
+        assertEquals(null, processGate.snapshot(Any()))
+    }
+
+    @Test
+    fun `ordinary terminal stop throw quarantines without attempting release`() {
+        val processGate = RecorderQuarantineAdmissionGate()
+        var setupCalls = 0
+        val input = object : StandbyAudioInput {
+            var starts = 0
+            var stops = 0
+            var releases = 0
+            override fun start() { starts++ }
+            override fun read(samples: ShortArray): Int = error("fixture exits before read")
+            override fun stop() {
+                stops++
+                error("injected terminal stop failure")
+            }
+            override fun release() { releases++ }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(input)
+            },
+            canStart = { !processGate.isQuarantined() },
+            nativeProcessGate = RecorderStandbyNativeProcessGate(processGate),
+        )
+
+        fixture.controller.setEnabled(true)
+        fixture.controller.setEnabled(true)
+
+        assertEquals(1, setupCalls)
+        assertEquals(1, input.starts)
+        assertEquals(1, input.stops)
+        assertEquals(0, input.releases)
+        assertTrue(processGate.isQuarantined())
+        assertEquals(1, fixture.retained.size)
+        assertTrue(fixture.retained.single().input === input)
+        assertTrue(fixture.retained.single().terminationOwner.isAbandoned())
+        assertEquals(1, fixture.unsafeNative.size)
+    }
+
+    @Test
     fun `hung standby stop deadline quarantines once and makes late return inert`() {
         val processGate = me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate()
         val processOwner = Any()

@@ -60,8 +60,14 @@ internal interface StandbyAudioInput {
 }
 
 internal sealed interface StandbyAudioSetupResult {
-    data class Ready(val input: StandbyAudioInput) : StandbyAudioSetupResult
-    data class Failure(val reason: StandbyAudioFailureReason) : StandbyAudioSetupResult
+    /** Every successfully constructed input crosses the process publication boundary, even on failure. */
+    val input: StandbyAudioInput?
+
+    data class Ready(override val input: StandbyAudioInput) : StandbyAudioSetupResult
+    data class Failure(
+        val reason: StandbyAudioFailureReason,
+        override val input: StandbyAudioInput? = null,
+    ) : StandbyAudioSetupResult
 }
 
 internal fun interface StandbyAudioSetup {
@@ -167,12 +173,16 @@ internal class StandbyInputTerminationOwner<T : Any>(
     private val onStopTimeout: (T, StandbyInputTerminationOwner<T>) -> Unit = { value, owner ->
         owner.abandon(value)
     },
+    private val onNativeFailure: (T, StandbyInputTerminationOwner<T>) -> Unit = onStopTimeout,
 ) {
     private val lock = Any()
     private val stopCompleted = CountDownLatch(1)
     private var input: T? = null
     private var starting = false
     private var started = false
+    // A start call that throws may still have entered native audio. Stop it conservatively; an input
+    // that failed validation before beginStart skips stop and goes straight to checked release.
+    private var startAttempted = false
     private var stopRequested = false
     private var stopClaimed = false
     private var finished = false
@@ -188,6 +198,7 @@ internal class StandbyInputTerminationOwner<T : Any>(
     fun beginStart(value: T): Boolean = synchronized(lock) {
         if (finished || input !== value || stopRequested) return false
         starting = true
+        startAttempted = true
         true
     }
 
@@ -220,7 +231,7 @@ internal class StandbyInputTerminationOwner<T : Any>(
             if (finished || abandoned || input !== value) return
             if (!stopClaimed) {
                 stopClaimed = true
-                true
+                startAttempted
             } else {
                 false
             }
@@ -228,6 +239,10 @@ internal class StandbyInputTerminationOwner<T : Any>(
         var interrupted = false
         if (stopHere) {
             stopAndSignal(value)
+        } else if (synchronized(lock) { stopClaimed && !startAttempted }) {
+            // Validation/intent can terminate after construction but before start. There is no
+            // native stop to await, yet release must still run through the exact publication token.
+            stopCompleted.countDown()
         } else {
             while (stopCompleted.count > 0L) {
                 val completed = try {
@@ -262,19 +277,26 @@ internal class StandbyInputTerminationOwner<T : Any>(
             }
         }
         if (releaseNow) {
-            finishNativeRelease(
-                { runCatching { release(value) } },
-                {
-                    synchronized(lock) {
-                        if (!abandoned && input === value) {
-                            input = null
-                            finished = true
-                            started = false
-                            starting = false
+            val releaseResult = runCatching {
+                finishNativeRelease(
+                    { release(value) },
+                    {
+                        synchronized(lock) {
+                            if (!abandoned && input === value) {
+                                input = null
+                                finished = true
+                                started = false
+                                starting = false
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
+            if (releaseResult.getOrNull() != NativeAcquisitionResult.RETURNED_CURRENT) {
+                // A throw or revoked/rejected return is not release proof. The caller's process
+                // transaction retains this exact input before abandonment wakes any waiter.
+                onNativeFailure(value, this)
+            }
         }
         if (interrupted) Thread.currentThread().interrupt()
     }
@@ -323,7 +345,11 @@ internal class StandbyInputTerminationOwner<T : Any>(
             },
         )
         if (!deadline.arm()) return
-        runNativeOperation { runCatching { stop(value) } }
+        val stopResult = runCatching { runNativeOperation { stop(value) } }
+        if (stopResult.getOrNull() != NativeAcquisitionResult.RETURNED_CURRENT) {
+            if (deadline.complete()) onNativeFailure(value, this)
+            return
+        }
         // A timeout owns abandonment and already released logical stop waiters. A late return must
         // not overwrite that terminal or authorize release of the retained native input.
         if (deadline.complete()) stopCompleted.countDown()
@@ -417,9 +443,11 @@ private fun createAndroidStandbyAudioInput(
             minBuffer * 2,
         )
     }.getOrNull() ?: return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
-    if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-        runCatching { recorder.release() }
-        return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.UNINITIALIZED)
+    val input = AndroidStandbyAudioInput(recorder, channelCount)
+    if (runCatching { recorder.state }.getOrNull() != AudioRecord.STATE_INITIALIZED) {
+        // Do not clean up here: the process gate has not yet published the concrete recorder. Carry
+        // it out as failure-owned input so checked release or quarantine keeps exact native truth.
+        return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.UNINITIALIZED, input)
     }
     // Advisory, exactly as VideoRecorder treats it: a refused route still meters (on the default
     // device), and the Route row already tells the operator which input actually resolved. Failing
@@ -434,7 +462,7 @@ private fun createAndroidStandbyAudioInput(
                 "channels=$channelCount routed=${runCatching { recorder.routedDevice?.type }.getOrNull()}",
         )
     }
-    return StandbyAudioSetupResult.Ready(AndroidStandbyAudioInput(recorder, channelCount))
+    return StandbyAudioSetupResult.Ready(input)
 }
 
 /**
@@ -596,6 +624,11 @@ internal class StandbyAudioController(
                 // the owner and releases this generation's logical waiter.
                 nativeProcessGate.quarantine(checkNotNull(nativePublication.get()))
             },
+            onNativeFailure = { _, _ ->
+                // Stop/release exceptions and non-current returns are unproven cleanup, exactly like
+                // a timeout: quarantine atomically retains the registered owner before waiters open.
+                nativeProcessGate.quarantine(checkNotNull(nativePublication.get()))
+            },
         )
         check(liveInputTermination.compareAndSet(null, terminationOwner)) {
             "standby input generation overlap"
@@ -622,8 +655,7 @@ internal class StandbyAudioController(
                         }
                     },
                     publicationOwner = { setup ->
-                        val input = (setup as? StandbyAudioSetupResult.Ready)?.input
-                            ?: return@create null
+                        val input = setup.input ?: return@create null
                         check(terminationOwner.bind(input)) {
                             "standby input owner rejected its generation"
                         }
@@ -641,14 +673,16 @@ internal class StandbyAudioController(
                     NativeAcquisitionResult.RETURNED_REVOKED -> return@meterTask
                     NativeAcquisitionResult.RETURNED_CURRENT -> Unit
                 }
+                setupPublication.token?.let(nativePublication::set)
                 when (val result = checkNotNull(setupPublication.value)) {
                     is StandbyAudioSetupResult.Failure -> {
+                        audioInput = result.input
                         generationFailure = result.reason
                         return@meterTask
                     }
                     is StandbyAudioSetupResult.Ready -> {
                         audioInput = result.input
-                        nativePublication.set(checkNotNull(setupPublication.token))
+                        checkNotNull(nativePublication.get())
                     }
                 }
                 if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
