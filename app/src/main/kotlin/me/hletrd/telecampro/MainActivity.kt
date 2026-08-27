@@ -59,6 +59,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.HardwareKeyDiagnosticLogGate
+import me.hletrd.telecampro.camera.processDiagnosticLogBudget
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraInputBlockOwner
 import me.hletrd.telecampro.ui.CameraScreen
@@ -229,6 +231,7 @@ class MainActivity : ComponentActivity() {
     private val ownedShutterKeys = mutableSetOf<Int>()
     private val ownedHalfPressKeys = mutableSetOf<Int>()
     private val ownedQuickKeys = mutableSetOf<Int>()
+    private val hardwareKeyDiagnosticGate = HardwareKeyDiagnosticLogGate()
     // An obscuration edge after a clean DOWN must terminate the already-delivered child stream.
     // The tainted remainder stays rejected until a fresh clean DOWN establishes a new stream.
     private var unobscuredTouchStreamActive = false
@@ -742,10 +745,20 @@ class MainActivity : ComponentActivity() {
     // there is no public alternative hook for pre-IME key interception here).
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // DEBUG: trace every non-standard key so the camera-button gestures can be re-mapped from a
-        // live session — the codes seen once (767/769/782) may not be the full story (user reports
-        // slide/half-press dead while full press works).
-        if (BuildConfig.DEBUG && !isShutterKey(event.keyCode) && event.keyCode != KeyEvent.KEYCODE_BACK) {
+        // DEBUG: retain start/end plus a slow held-key heartbeat. Standard zoom keys repeat around
+        // 20 Hz; logging every edge spent ColorOS's complete process quota in seconds and hid the
+        // ZoomTrace/FrameGap evidence this line exists to contextualize.
+        if (BuildConfig.DEBUG &&
+            !isShutterKey(event.keyCode) &&
+            event.keyCode != KeyEvent.KEYCODE_BACK &&
+            hardwareKeyDiagnosticGate.shouldEmit(
+                keyCode = event.keyCode,
+                actionDown = event.action == KeyEvent.ACTION_DOWN,
+                repeatCount = event.repeatCount,
+                nowMs = android.os.SystemClock.uptimeMillis(),
+            ) &&
+            processDiagnosticLogBudget.tryAcquire()
+        ) {
             android.util.Log.i("BtnDbg", "key code=${event.keyCode} action=${event.action} perm=$hasCameraPermission")
         }
         when (event.keyCode) {

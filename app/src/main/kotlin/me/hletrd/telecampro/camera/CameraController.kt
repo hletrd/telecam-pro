@@ -213,6 +213,14 @@ class CameraController(context: Context) {
     // Throttle counter for the 3A-state diagnostic log (AE/AF convergence on the standalone tele).
     private var threeAFrame = 0
     private val threeADiagnosticLogGate = ThreeADiagnosticLogGate()
+    private val zoomSubmitDiagnosticGate = DiagnosticChangeLogGate<Float>(
+        minimumChangeIntervalMs = DIAGNOSTIC_HEARTBEAT_MS,
+        heartbeatMs = DIAGNOSTIC_HEARTBEAT_MS,
+    )
+    private val zoomResultDiagnosticGate = DiagnosticChangeLogGate<Float>(
+        minimumChangeIntervalMs = DIAGNOSTIC_HEARTBEAT_MS,
+        heartbeatMs = DIAGNOSTIC_HEARTBEAT_MS,
+    )
     // Live AE-resolved (ISO, exposureNs) surfaced to the UI so the Shutter/ISO chips can show what AE
     // chose in auto mode. Reported only on change (see startPreview's repeating callback) so a steady
     // scene doesn't spam recomposition.
@@ -545,7 +553,13 @@ class CameraController(context: Context) {
         val b = previewBuilder
         val cb = previewCallback
         if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return }
-        if (BuildConfig.DEBUG) Log.i(TAG, "ZoomTrace: submit=$ratio t=${android.os.SystemClock.uptimeMillis()}")
+        val zoomSubmitNowMs = android.os.SystemClock.uptimeMillis()
+        if (BuildConfig.DEBUG &&
+            zoomSubmitDiagnosticGate.shouldEmit(zoomSubmitNowMs, ratio) &&
+            processDiagnosticLogBudget.tryAcquire()
+        ) {
+            Log.i(TAG, "ZoomTrace: submit=$ratio t=$zoomSubmitNowMs")
+        }
         runCatching {
             caps.zoomRatioRange?.let {
                 b.set(CaptureRequest.CONTROL_ZOOM_RATIO, clampToOrderedBounds(ratio, it.lower, it.upper))
@@ -1032,9 +1046,14 @@ class CameraController(context: Context) {
                             lastForwardedResultZoom = rz
                             onZoomResult?.invoke(rz)
                         }
-                        if (BuildConfig.DEBUG && rz != lastTracedResultZoom) {
+                        val zoomResultNowMs = android.os.SystemClock.uptimeMillis()
+                        if (BuildConfig.DEBUG &&
+                            rz != lastTracedResultZoom &&
+                            zoomResultDiagnosticGate.shouldEmit(zoomResultNowMs, rz) &&
+                            processDiagnosticLogBudget.tryAcquire()
+                        ) {
                             lastTracedResultZoom = rz
-                            Log.i(TAG, "ZoomTrace: result=$rz t=${android.os.SystemClock.uptimeMillis()}")
+                            Log.i(TAG, "ZoomTrace: result=$rz t=$zoomResultNowMs")
                         }
                     }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
@@ -1145,7 +1164,7 @@ class CameraController(context: Context) {
                                 nowMs = android.os.SystemClock.uptimeMillis(),
                                 key = key,
                                 force = firstDiagnosticResult,
-                            )
+                            ) && processDiagnosticLogBudget.tryAcquire()
                         ) {
                             Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=$iso expNs=$exposureNs lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                         }
@@ -1621,15 +1640,19 @@ class CameraController(context: Context) {
             zslSpikeEnabled = enabled
             if (enabled) {
                 zslSpikeAccumulator = ZslSpikeAccumulator()
-                Log.i(TAG, "ZslSpike: cadence accumulation ENABLED")
+                if (processDiagnosticLogBudget.tryAcquire()) {
+                    Log.i(TAG, "ZslSpike: cadence accumulation ENABLED")
+                }
             } else {
                 val summary = zslSpikeAccumulator.finish(android.os.SystemClock.uptimeMillis())
-                Log.i(
-                    TAG,
-                    "ZslSpike: disabled frames=${summary.frames} durationMs=${summary.durationMs} " +
-                        "avgFps=${summary.averageFps} windows=${summary.windows} " +
-                        "minFps=${summary.minimumWindowFps} maxFps=${summary.maximumWindowFps}",
-                )
+                if (processDiagnosticLogBudget.tryAcquire()) {
+                    Log.i(
+                        TAG,
+                        "ZslSpike: disabled frames=${summary.frames} durationMs=${summary.durationMs} " +
+                            "avgFps=${summary.averageFps} windows=${summary.windows} " +
+                            "minFps=${summary.minimumWindowFps} maxFps=${summary.maximumWindowFps}",
+                    )
+                }
             }
         }
     }

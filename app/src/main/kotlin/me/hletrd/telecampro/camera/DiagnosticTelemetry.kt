@@ -2,6 +2,86 @@ package me.hletrd.telecampro.camera
 
 import kotlin.math.ln
 import kotlin.math.roundToInt
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Process-lifetime allowance for recurring DEBUG diagnostics.
+ *
+ * ColorOS caps the complete process at 300 rows. Recurring evidence producers share this smaller
+ * allowance so startup, frame-gap, recovery, and fault rows always retain an explicit reserve.
+ */
+internal class ProcessDiagnosticLogBudget(private val maxRows: Int) {
+    private val used = AtomicInteger(0)
+
+    init {
+        require(maxRows > 0)
+    }
+
+    fun tryAcquire(): Boolean {
+        while (true) {
+            val current = used.get()
+            if (current >= maxRows) return false
+            if (used.compareAndSet(current, current + 1)) return true
+        }
+    }
+
+    internal fun usedRows(): Int = used.get()
+}
+
+internal const val RECURRING_DIAGNOSTIC_ROW_BUDGET = 180
+internal const val COLOR_OS_PROCESS_LOG_ROW_LIMIT = 300
+internal val processDiagnosticLogBudget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+
+/** Change-gated diagnostic with a slow heartbeat and a floor for flapping state. */
+internal class DiagnosticChangeLogGate<T>(
+    private val minimumChangeIntervalMs: Long = DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS,
+    private val heartbeatMs: Long = DIAGNOSTIC_HEARTBEAT_MS,
+) {
+    private var lastEmitted: T? = null
+    private var initialized = false
+    private var lastEmitMs = Long.MIN_VALUE
+
+    init {
+        require(minimumChangeIntervalMs > 0L)
+        require(heartbeatMs >= minimumChangeIntervalMs)
+    }
+
+    fun shouldEmit(nowMs: Long, value: T): Boolean {
+        val elapsed = if (lastEmitMs == Long.MIN_VALUE) Long.MAX_VALUE else nowMs - lastEmitMs
+        val changedAndDue = initialized && lastEmitted != value && elapsed >= minimumChangeIntervalMs
+        val heartbeatDue = initialized && elapsed >= heartbeatMs
+        if (initialized && !changedAndDue && !heartbeatDue) return false
+        initialized = true
+        lastEmitted = value
+        lastEmitMs = nowMs
+        return true
+    }
+}
+
+/** Start/end plus a slow liveness heartbeat for a held hardware-key stream. */
+internal class HardwareKeyDiagnosticLogGate(
+    private val repeatHeartbeatMs: Long = DIAGNOSTIC_HEARTBEAT_MS,
+) {
+    private val lastEmitByKey = mutableMapOf<Int, Long>()
+
+    init {
+        require(repeatHeartbeatMs > 0L)
+    }
+
+    @Synchronized
+    fun shouldEmit(keyCode: Int, actionDown: Boolean, repeatCount: Int, nowMs: Long): Boolean {
+        if (!actionDown) {
+            val owned = lastEmitByKey.remove(keyCode) != null
+            return owned
+        }
+        val previous = lastEmitByKey[keyCode]
+        if (repeatCount <= 0 || previous == null || nowMs - previous >= repeatHeartbeatMs) {
+            lastEmitByKey[keyCode] = nowMs
+            return true
+        }
+        return false
+    }
+}
 
 /** Change key for bounded debug 3A telemetry; noisy scalars arrive pre-bucketed. */
 internal data class ThreeADiagnosticKey(
@@ -117,5 +197,6 @@ internal class ZslSpikeAccumulator {
 
 internal const val THREE_A_CHANGE_MIN_INTERVAL_MS = 3_000L
 internal const val THREE_A_HEARTBEAT_MS = 15_000L
+internal const val DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS = 3_000L
+internal const val DIAGNOSTIC_HEARTBEAT_MS = 15_000L
 internal const val ZSL_SPIKE_WINDOW_MS = 1_000L
-

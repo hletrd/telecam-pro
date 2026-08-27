@@ -43,6 +43,7 @@ import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorEffect
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.DiagnosticChangeLogGate
 import me.hletrd.telecampro.camera.AfSpotSize
 import me.hletrd.telecampro.camera.AutoExposure
 import me.hletrd.telecampro.camera.ExposureMode
@@ -110,6 +111,7 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
+import me.hletrd.telecampro.camera.processDiagnosticLogBudget
 import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.focus.FocusMapping
 import me.hletrd.telecampro.focus.MACRO_HOLD_MS
@@ -526,15 +528,10 @@ class CameraViewModel private constructor(
     // Newest frame-detail verdict and when it landed. Main-thread confined (written in the
     // onAnalysis main post, read only here), so plain fields are correct and cheap.
     private var lastFocusDetail: FocusDetailData? = null
-    // Last traced focus-confidence candidate, so the DEBUG trace only fires on a change. Seeded
-    // with a sentinel rather than null: the steady state IS "no candidate", so a null seed made the
-    // very first evaluation compare equal and the trace never emitted at all (self-inflicted, found
-    // on device 2026-07-25) — the first evaluation is exactly the one worth seeing.
-    private val focusTraceUnset = Any()
-    private var lastFocusConfidenceTrace: Any? = focusTraceUnset
-    // ...plus a 2 s heartbeat: a change-gated trace shows the VERDICT but not the INPUTS moving,
-    // and the inputs are what a refusal has to be diagnosed from.
-    private var lastFocusTraceAtMs = 0L
+    // Verdict changes are paced and stable input truth gets a slow heartbeat. Every recurring DEBUG
+    // producer additionally shares the process budget so this trace cannot consume the ColorOS log
+    // quota independently of 3A, motion, ZSL, or hardware-input evidence.
+    private val focusConfidenceDiagnosticGate = DiagnosticChangeLogGate<Any?>()
     private var lastFocusDetailAtMs: Long = 0L
 
     // Bumped at every optics door. The GL generation OUTLIVES a route change, so an analysis frame
@@ -573,10 +570,9 @@ class CameraViewModel private constructor(
         // need to SEE to trust. Change-gated: this runs on every AF event and every ~6 Hz analysis
         // tick, and an unconditional line would burn ColorOS's 300-row process quota outright.
         if (BuildConfig.DEBUG &&
-            (candidate != lastFocusConfidenceTrace || now - lastFocusTraceAtMs > 2_000L)
+            focusConfidenceDiagnosticGate.shouldEmit(now, candidate) &&
+            processDiagnosticLogBudget.tryAcquire()
         ) {
-            lastFocusConfidenceTrace = candidate
-            lastFocusTraceAtMs = now
             Log.i(
                 "FocusConfidence",
                 "candidate=$candidate afLimit=$afLimit frameDetail=$frameDetail " +
@@ -677,7 +673,9 @@ class CameraViewModel private constructor(
         // it ended. At rest the 15 s floor still applies, so an idle phone cannot drain the quota.
         val moving = data.predictedMrad >= 1f
         val floorMs = if (moving) 500L else 15_000L
-        if (shape != lastMotionShape || now - lastMotionHeartbeatMs >= floorMs) {
+        if ((shape != lastMotionShape || now - lastMotionHeartbeatMs >= floorMs) &&
+            processDiagnosticLogBudget.tryAcquire()
+        ) {
             lastMotionShape = shape
             lastMotionHeartbeatMs = now
             Log.i(
@@ -702,7 +700,9 @@ class CameraViewModel private constructor(
         // almost nothing (a deliberate pan changes it once or twice) and is what makes a
         // non-settling result diagnosable: without it, "the detector said nothing" cannot be told
         // apart from "the detector never ran". This is the readout the device sign bisection reads.
-        if (settled != beforeSettled || pending != beforePending) {
+        if ((settled != beforeSettled || pending != beforePending) &&
+            processDiagnosticLogBudget.tryAcquire()
+        ) {
             Log.i(
                 "MotionInversion",
                 "settled=$settled pending=$pending streak=${motionConfidence.streak} " +

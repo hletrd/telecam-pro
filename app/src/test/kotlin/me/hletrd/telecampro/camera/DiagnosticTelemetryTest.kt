@@ -35,7 +35,7 @@ class DiagnosticTelemetryTest {
     }
 
     @Test
-    fun continuouslyChangingTupleStillLeavesQuotaForFaultEvidence() {
+    fun continuouslyChangingTupleIsPacedBeforeTheProcessBudget() {
         val gate = ThreeADiagnosticLogGate()
         var rows = 0
         for (second in 0..600) {
@@ -43,8 +43,68 @@ class DiagnosticTelemetryTest {
             if (gate.shouldEmit(second * 1_000L, changing, force = second == 0)) rows++
         }
         assertEquals(201, rows)
-        // Two ZSL probe rows plus continuous 3A retain almost one third of ColorOS's 300-row budget.
-        assertTrue(rows + 2 <= 210)
+    }
+
+    @Test
+    fun stableFocusAndHeldHardwareKeyUseSlowBoundedHeartbeats() {
+        val focus = DiagnosticChangeLogGate<String?>()
+        var focusRows = 0
+        for (second in 0..600) {
+            if (focus.shouldEmit(second * 1_000L, null)) focusRows++
+        }
+        assertEquals(41, focusRows)
+
+        val key = HardwareKeyDiagnosticLogGate()
+        var keyRows = 0
+        for (tick in 0..12_000) {
+            if (key.shouldEmit(168, actionDown = true, repeatCount = tick, nowMs = tick * 50L)) {
+                keyRows++
+            }
+        }
+        if (key.shouldEmit(168, actionDown = false, repeatCount = 0, nowMs = 600_001L)) keyRows++
+        assertEquals(42, keyRows)
+    }
+
+    @Test
+    fun everyRecurringProducerSharesOneProcessReserve() {
+        val budget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        val threeA = ThreeADiagnosticLogGate()
+        val focus = DiagnosticChangeLogGate<String?>()
+        val motion = DiagnosticChangeLogGate<Int>()
+        val hardware = HardwareKeyDiagnosticLogGate()
+        var emitted = 0
+
+        fun emit(wanted: Boolean) {
+            if (wanted && budget.tryAcquire()) emitted++
+        }
+
+        for (second in 0..600) {
+            val nowMs = second * 1_000L
+            emit(threeA.shouldEmit(nowMs, baseKey.copy(aeState = second and 1), force = second == 0))
+            emit(focus.shouldEmit(nowMs, null))
+            emit(motion.shouldEmit(nowMs, 1))
+            emit(
+                hardware.shouldEmit(
+                    keyCode = 168,
+                    actionDown = true,
+                    repeatCount = second,
+                    nowMs = nowMs,
+                ),
+            )
+            if (second == 0 || second == 600) {
+                // ZSL enable and terminal summary.
+                emit(true)
+            }
+        }
+        emit(hardware.shouldEmit(168, actionDown = false, repeatCount = 0, nowMs = 600_001L))
+
+        assertEquals(RECURRING_DIAGNOSTIC_ROW_BUDGET, emitted)
+        assertEquals(RECURRING_DIAGNOSTIC_ROW_BUDGET, budget.usedRows())
+        assertEquals(
+            120,
+            COLOR_OS_PROCESS_LOG_ROW_LIMIT - budget.usedRows(),
+        )
+        assertTrue(!budget.tryAcquire())
     }
 
     @Test
