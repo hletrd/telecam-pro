@@ -363,15 +363,11 @@ internal class StillCapturePipeline(
         chars: CameraCharacteristics,
         result: TotalCaptureResult,
         spec: ShotSpec,
+        allocation: PendingOutputAllocation,
     ): DngWriteResult {
-        val allocation = MediaStoreWriter.createPendingImageAllocation(
-            context,
-            spec.familyKey.displayName("dng"),
-            "image/x-adobe-dng",
-        )
-            ?: return DngWriteResult.Failed(
-                IllegalStateException("Failed to create or identify MediaStore entry"),
-            )
+        require(allocation.familyKey == spec.familyKey) {
+            "DNG allocation family does not match the captured shot"
+        }
         val uri = allocation.uri
         var outputComplete = false
         try {

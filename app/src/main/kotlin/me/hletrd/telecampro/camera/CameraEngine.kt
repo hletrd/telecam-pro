@@ -279,6 +279,13 @@ class CameraEngine internal constructor(
     private val recordingPreNativeAttempt = java.util.concurrent.atomic.AtomicReference<
         RecordingPreNativeAllocationAttempt<RecordingPendingOutput>?
     >(null)
+    // DNG allocation precedes Camera2 dispatch. Binder work is uncancellable, so lifecycle/optics
+    // retirement drops these compact owners immediately while the finite process lane routes any
+    // later exact allocation to bounded cleanup/recovery.
+    private val dngPreCaptureAllocationLock = Any()
+    private val dngPreCaptureAllocations = java.util.Collections.newSetFromMap(
+        java.util.IdentityHashMap<DngPreCaptureAllocation<PendingOutputAllocation>, Boolean>(),
+    )
     @Volatile
     private var recorderSetupFinalizationOwner: RecorderSetupOwner? = null
     private val recorderSetupReplayGeneration = java.util.concurrent.atomic.AtomicLong(0L)
@@ -491,6 +498,7 @@ class CameraEngine internal constructor(
     }
 
     private fun invalidateCameraReady() {
+        cancelDngPreCaptureAllocations()
         val (publication, tapPublication) = synchronized(this) {
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
             val retiredTap = retireTapFocusLocked(rebuildPreview = false)
@@ -4362,6 +4370,164 @@ class CameraEngine internal constructor(
     private fun acceptedSessionIsCurrent(accepted: AcceptedCameraSession): Boolean =
         acceptedCameraSession === accepted && currentAcceptedCameraSession() === accepted
 
+    /**
+     * Dispatches one still only after any RAW output has a creation-time exact provider identity.
+     * Processed-only captures keep the immediate path byte-for-byte. DNG provider work runs on the
+     * process-finite pre-native lane and is cancellable at every Ready/lifecycle invalidation.
+     */
+    private fun dispatchStillCapture(
+        accepted: AcceptedCameraSession,
+        formats: PhotoFormats,
+        shotControls: ManualControls,
+        hiRes: Boolean,
+        optics: ShotOptics,
+        retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
+        processOwnedDngTail: Boolean = false,
+        traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
+        allowZsl: Boolean = false,
+        onDone: (() -> Unit)? = null,
+    ): Boolean {
+        if (!formats.dngRaw) {
+            val callback = photoCallback(
+                formats = formats,
+                shotControls = shotControls,
+                hiRes = hiRes,
+                optics = optics,
+                retainedSnapshotLease = retainedSnapshotLease,
+                processOwnedDngTail = false,
+                traceAdmission = traceAdmission,
+                onDone = onDone,
+            ) ?: return false
+            accepted.controller.capturePhoto(
+                wantJpeg = formats.wantsProcessedStill,
+                wantRaw = false,
+                cb = callback,
+                allowZsl = allowZsl,
+                frozenControls = shotControls,
+            )
+            return true
+        }
+
+        val dngAdmission = ProcessDngPreCaptureAdmission.owner.tryAcquire() ?: run {
+            retainedSnapshotLease?.release()
+            onStillCaptureAdmissionChanged?.invoke(false)
+            onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+            return false
+        }
+        val rejectedCleanup = MediaStoreWriter.reserveRejectedOutputCleanup() ?: run {
+            dngAdmission.release()
+            retainedSnapshotLease?.release()
+            onStillCaptureAdmissionChanged?.invoke(false)
+            onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+            return false
+        }
+        val registered = runCatching { shotSpec(shotControls, hiRes, optics) }.getOrElse { failure ->
+            rejectedCleanup.cancel()
+            dngAdmission.release()
+            retainedSnapshotLease?.release()
+            android.util.Log.e("CameraEngine", "DNG capture registration failed", failure)
+            onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+            return false
+        }
+        val traceText = captureFamilyTraceText(formats, registered.spec, traceAdmission)
+        traceText?.takeIf { traceAdmission.registration }?.let { (stem, outputs) ->
+            android.util.Log.i(
+                "CameraEngine",
+                "CaptureFamily: registered stem=$stem outputs=$outputs",
+            )
+        }
+        fun settleBeforeCamera() {
+            rejectedCleanup.cancel()
+            retainedSnapshotLease?.release()
+            dngAdmission.release()
+            settleRegisteredStillShot(
+                registered = registered,
+                traceText = traceText,
+                traceSettlement = traceAdmission.settlement,
+                onDone = onDone,
+            )
+            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+        }
+        fun cleanLateAllocation(allocation: PendingOutputAllocation) {
+            val dispatch = MediaStoreWriter.dispatchRejectedOutput(
+                context,
+                allocation,
+            ) { _ ->
+                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            }
+            if (dispatch != me.hletrd.telecampro.storage.RejectedOutputCleanupDispatch.ACCEPTED) {
+                // REGISTERED is already durable. Launch recovery owns this exact incomplete row;
+                // provider work never falls back inline on the allocator/cancellation caller.
+                onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+            }
+        }
+
+        lateinit var owner: DngPreCaptureAllocation<PendingOutputAllocation>
+        owner = DngPreCaptureAllocation(
+            allocate = {
+                MediaStoreWriter.createPendingImageAllocation(
+                    context,
+                    registered.spec.familyKey.displayName("dng"),
+                    "image/x-adobe-dng",
+                )
+            },
+            isCurrent = { acceptedSessionIsCurrent(accepted) },
+            onReady = { allocation ->
+                val callback = checkNotNull(
+                    photoCallback(
+                        formats = formats,
+                        shotControls = shotControls,
+                        hiRes = hiRes,
+                        optics = optics,
+                        retainedSnapshotLease = retainedSnapshotLease,
+                        processOwnedDngTail = processOwnedDngTail,
+                        traceAdmission = traceAdmission,
+                        onDone = onDone,
+                        registeredShotOverride = registered,
+                        dngAllocation = allocation,
+                        rejectedDngCleanupOverride = rejectedCleanup,
+                        dngPreCaptureLease = dngAdmission,
+                        registrationAlreadyTraced = true,
+                    ),
+                )
+                accepted.controller.capturePhoto(
+                    wantJpeg = formats.wantsProcessedStill,
+                    wantRaw = true,
+                    cb = callback,
+                    allowZsl = allowZsl,
+                    frozenControls = shotControls,
+                )
+            },
+            onLateValue = ::cleanLateAllocation,
+            onFailure = { failure ->
+                failure?.let {
+                    android.util.Log.e("CameraEngine", "DNG preallocation failed", it)
+                }
+                onStatus?.invoke(CameraStatusMessage.DNG_SAVE_FAILED.status())
+            },
+            onRetired = {
+                synchronized(dngPreCaptureAllocationLock) {
+                    dngPreCaptureAllocations.remove(owner)
+                }
+                settleBeforeCamera()
+            },
+            onClaimed = {
+                synchronized(dngPreCaptureAllocationLock) {
+                    dngPreCaptureAllocations.remove(owner)
+                }
+            },
+        )
+        synchronized(dngPreCaptureAllocationLock) { dngPreCaptureAllocations.add(owner) }
+        return owner.start() == RecordingPreNativeDispatch.ACCEPTED
+    }
+
+    private fun cancelDngPreCaptureAllocations() {
+        val pending = synchronized(dngPreCaptureAllocationLock) {
+            dngPreCaptureAllocations.toList()
+        }
+        pending.forEach(DngPreCaptureAllocation<PendingOutputAllocation>::cancel)
+    }
+
     /** Returns true only when this press was admitted to a real still target. */
     fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
         stillCaptureAdmissionFailureStatus(stillOutputAdmissionAvailable())?.let { status ->
@@ -4389,7 +4555,6 @@ class CameraEngine internal constructor(
             formats.dngRaw && !effFormats.dngRaw ->
                 onStatus?.invoke(CameraStatusMessage.RAW_UNAVAILABLE.status())
         }
-        val ctrl = accepted.controller
         val effectiveDrive = captureDriveMode(driveMode, singleShot)
         when (effectiveDrive) {
             DriveMode.SINGLE -> {
@@ -4402,10 +4567,11 @@ class CameraEngine internal constructor(
                     onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
                     return false
                 }
-                val callback = runCatching {
-                    photoCallback(
-                        effFormats,
-                        controls,
+                val dispatched = runCatching {
+                    dispatchStillCapture(
+                        accepted = accepted,
+                        formats = effFormats,
+                        shotControls = controls,
                         hiRes = accepted.outputs.hiRes,
                         optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
@@ -4415,23 +4581,6 @@ class CameraEngine internal constructor(
                             singleShot,
                             me.hletrd.telecampro.BuildConfig.DEBUG,
                         ),
-                    )
-                }.getOrElse { failure ->
-                    snapshotLease?.release()
-                    android.util.Log.e("CameraEngine", "Photo callback creation failed", failure)
-                    onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
-                    return false
-                } ?: run {
-                    snapshotLease?.release()
-                    onStillCaptureAdmissionChanged?.invoke(false)
-                    onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
-                    return false
-                }
-                val dispatched = runCatching {
-                    ctrl.capturePhoto(
-                        effFormats.wantsProcessedStill,
-                        effFormats.dngRaw,
-                        callback,
                         // Only the SINGLE drive may serve a buffered pseudo-ZSL frame: chains
                         // (burst/AEB/timelapse) need per-shot wire captures, and the admission
                         // itself re-gates route/format/values (ZslAdmission.kt). The in-REC
@@ -4444,9 +4593,16 @@ class CameraEngine internal constructor(
                     )
                 }
                 if (dispatched.isFailure) {
-                    callback.onError(dispatched.exceptionOrNull()!!)
+                    snapshotLease?.release()
+                    android.util.Log.e(
+                        "CameraEngine",
+                        "Photo dispatch failed",
+                        dispatched.exceptionOrNull(),
+                    )
+                    onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                     return false
                 }
+                if (!dispatched.getOrDefault(false)) return false
             }
             DriveMode.BURST -> captureBurst(accepted, effFormats)
             DriveMode.AEB -> captureAeb(accepted, effFormats)
@@ -4470,16 +4626,13 @@ class CameraEngine internal constructor(
         val chainOptics = snapshotShotOptics()
         fun fire(shot: Int) {
             if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return
-            val callback = photoCallback(
-                formats,
-                controls,
+            dispatchStillCapture(
+                accepted = accepted,
+                formats = formats,
+                shotControls = controls,
                 hiRes = accepted.outputs.hiRes,
                 optics = chainOptics,
-            ) { fire(shot + 1) } ?: return
-            accepted.controller.capturePhoto(
-                formats.wantsProcessedStill,
-                formats.dngRaw,
-                callback,
+                onDone = { fire(shot + 1) },
             )
         }
         fire(0)
@@ -4511,14 +4664,15 @@ class CameraEngine internal constructor(
                 // SPEED override so the bracketed time applies even when the user dials ANGLE.
                 val stepControls = manualAebStepControls(controls, steps[i])
                 ctrl.updateControls(stepControls)
-                val callback = photoCallback(
-                    formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
-                ) { fire(i + 1) } ?: run { ctrl.updateControls(controls); return }
-                ctrl.capturePhoto(
-                    formats.wantsProcessedStill,
-                    formats.dngRaw,
-                    callback,
+                val dispatched = dispatchStillCapture(
+                    accepted = accepted,
+                    formats = formats,
+                    shotControls = stepControls,
+                    hiRes = accepted.outputs.hiRes,
+                    optics = chainOptics,
+                    onDone = { fire(i + 1) },
                 )
+                if (!dispatched) ctrl.updateControls(controls)
             }
             fire(0)
             return
@@ -4539,14 +4693,15 @@ class CameraEngine internal constructor(
             if (i >= steps.size) { ctrl.updateControls(controls); return }
             val stepControls = autoAebStepControls(controls, steps[i])
             ctrl.updateControls(stepControls)
-            val callback = photoCallback(
-                formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
-            ) { fire(i + 1) } ?: run { ctrl.updateControls(controls); return }
-            ctrl.capturePhoto(
-                formats.wantsProcessedStill,
-                formats.dngRaw,
-                callback,
+            val dispatched = dispatchStillCapture(
+                accepted = accepted,
+                formats = formats,
+                shotControls = stepControls,
+                hiRes = accepted.outputs.hiRes,
+                optics = chainOptics,
+                onDone = { fire(i + 1) },
             )
+            if (!dispatched) ctrl.updateControls(controls)
         }
         fire(0)
     }
@@ -4587,28 +4742,22 @@ class CameraEngine internal constructor(
                             stopTimelapseIfOwns(generation)
                             return@action
                         }
-                        val callback = photoCallback(
-                            formats,
-                            controls,
+                        val dispatched = dispatchStillCapture(
+                            accepted = accepted,
+                            formats = formats,
+                            shotControls = controls,
                             hiRes = accepted.outputs.hiRes,
                             optics = snapshotShotOptics(),
-                        ) {
+                            onDone = {
                             if (timelapseRun.owns(generation)) {
                                 schedule(currentTimelapseIntervalSeconds())
                             }
-                        }
-                        if (callback == null) {
+                            },
+                        )
+                        if (!dispatched) {
                             schedule(currentTimelapseIntervalSeconds())
                             return@action
                         }
-                        accepted.controller.capturePhoto(
-                            formats.wantsProcessedStill,
-                            formats.dngRaw,
-                            // Each tick is its own chain: this lambda runs on the timelapse
-                            // scheduler thread, so the tick snapshots its optics under the
-                            // monitor like every other dispatch (T1).
-                            callback,
-                        )
                     }
                     timelapseOverrides?.schedule?.invoke(delaySeconds, action)
                         ?: timelapseScheduler.schedule(
@@ -4885,7 +5034,32 @@ class CameraEngine internal constructor(
     private data class RegisteredStillShot(
         val spec: ShotSpec,
         val producerLease: CaptureFamilyProducerLease,
+        val settled: java.util.concurrent.atomic.AtomicBoolean =
+            java.util.concurrent.atomic.AtomicBoolean(false),
     )
+
+    private fun settleRegisteredStillShot(
+        registered: RegisteredStillShot,
+        traceText: Pair<String, String>?,
+        traceSettlement: Boolean,
+        onDone: (() -> Unit)?,
+    ) {
+        if (!registered.settled.compareAndSet(false, true)) return
+        traceText?.takeIf { traceSettlement }?.let { (stem, outputs) ->
+            android.util.Log.i(
+                "CameraEngine",
+                "CaptureFamily: settled stem=$stem outputs=$outputs",
+            )
+        }
+        retainedStillDeletionOwner.markCaptureProducersTerminal(registered.spec.captureId)
+        registered.producerLease.close()
+        scheduleDeletedFamilyRetirement(
+            registered.spec.familyKey,
+            registered.spec.captureId,
+            exactProducerTerminal = true,
+        )
+        onDone?.invoke()
+    }
 
     private fun shotSpec(
         shotControls: ManualControls,
@@ -4952,6 +5126,22 @@ class CameraEngine internal constructor(
      * runs on [ioExecutor]. A BURST/AEB continuation is admitted only after that save job finishes,
      * keeping at most one full processed snapshot queued behind the active shot.
      */
+    private fun captureFamilyTraceText(
+        formats: PhotoFormats,
+        spec: ShotSpec,
+        traceAdmission: CaptureFamilyTraceAdmission,
+    ): Pair<String, String>? = if (traceAdmission.registration || traceAdmission.settlement) {
+        val expectedOutputExtensions = buildList {
+            if (formats.heif) add("heic")
+            if (formats.jpeg) add("jpg")
+            if (formats.dngRaw) add("dng")
+        }
+        spec.familyKey.displayName("complete").substringBeforeLast('.') to
+            expectedOutputExtensions.joinToString(",")
+    } else {
+        null
+    }
+
     private fun photoCallback(
         formats: PhotoFormats,
         shotControls: ManualControls,
@@ -4970,32 +5160,30 @@ class CameraEngine internal constructor(
         // the one in-REC snapshot keeps its terminal edge without the pre-kill registration line.
         traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
         onDone: (() -> Unit)? = null,
+        registeredShotOverride: RegisteredStillShot? = null,
+        dngAllocation: PendingOutputAllocation? = null,
+        rejectedDngCleanupOverride: me.hletrd.telecampro.storage.RejectedOutputCleanupReservation<
+            MediaStoreWriter.RejectedOutput
+        >? = null,
+        dngPreCaptureLease: DngPreCaptureAdmission.Lease? = null,
+        registrationAlreadyTraced: Boolean = false,
     ): CameraController.PhotoCallback? {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
         require(!processOwnedDngTail || formats.dngRaw && !formats.wantsProcessedStill)
+        require(!formats.dngRaw || dngAllocation != null || registeredShotOverride == null)
         // Reserve process-finite cleanup before Camera2 can create a RAW output. The reservation is
         // released on every success/no-image/error edge, or transferred exactly once to failed-row
         // cleanup after DNG byte writing returns.
-        val rejectedDngCleanup = if (formats.dngRaw) {
+        val rejectedDngCleanup = rejectedDngCleanupOverride ?: if (formats.dngRaw) {
             MediaStoreWriter.reserveRejectedOutputCleanup() ?: return null
         } else {
             null
         }
-        val registeredShot = shotSpec(shotControls, hiRes, optics)
+        val registeredShot = registeredShotOverride ?: shotSpec(shotControls, hiRes, optics)
         val requestSpec = registeredShot.spec
-        val familyProducerLease = registeredShot.producerLease
-        val traceText = if (traceAdmission.registration || traceAdmission.settlement) {
-            val expectedOutputExtensions = buildList {
-                if (formats.heif) add("heic")
-                if (formats.jpeg) add("jpg")
-                if (formats.dngRaw) add("dng")
-            }
-            requestSpec.familyKey.displayName("complete").substringBeforeLast('.') to
-                expectedOutputExtensions.joinToString(",")
-        } else {
-            null
-        }
-        traceText?.takeIf { traceAdmission.registration }?.let { (stem, outputs) ->
+        val traceText = captureFamilyTraceText(formats, requestSpec, traceAdmission)
+        traceText?.takeIf { traceAdmission.registration && !registrationAlreadyTraced }
+            ?.let { (stem, outputs) ->
             android.util.Log.i(
                 "CameraEngine",
                 "CaptureFamily: registered stem=$stem outputs=$outputs",
@@ -5007,29 +5195,12 @@ class CameraEngine internal constructor(
         val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
         val finishSequence = {
             if (remainingSaveLanes.get() == 0 && completionDelivered.compareAndSet(false, true)) {
-                traceText?.takeIf { traceAdmission.settlement }?.let { (stem, outputs) ->
-                    android.util.Log.i(
-                        "CameraEngine",
-                        "CaptureFamily: settled stem=$stem outputs=$outputs",
-                    )
-                }
-                retainedStillDeletionOwner.markCaptureProducersTerminal(
-                    requestSpec.captureId,
+                settleRegisteredStillShot(
+                    registered = registeredShot,
+                    traceText = traceText,
+                    traceSettlement = traceAdmission.settlement,
+                    onDone = onDone,
                 )
-                // This is the last producer edge: processed and DNG lanes have both reached their
-                // exactly-once terminal callbacks, including executor/dispatcher rejection and
-                // exceptions. Release process authority before retirement rechecks the marker.
-                familyProducerLease.close()
-                // Always recheck: a replacement Engine may have durably deleted this exact family
-                // without installing its tombstone into this old Engine's local owner. The cheap
-                // marker read is normally absent; when Delete did race, this edge is the missing
-                // retry after every earlier replacement-Engine retirement observed our lease.
-                scheduleDeletedFamilyRetirement(
-                    requestSpec.familyKey,
-                    requestSpec.captureId,
-                    exactProducerTerminal = true,
-                )
-                onDone?.invoke()
             }
             Unit
         }
@@ -5115,7 +5286,15 @@ class CameraEngine internal constructor(
                             // DngCreator needs the live Image, so write + the bounded COMPLETE
                             // marker attempt remain on this camera callback. Only the durability-
                             // gated publication crosses to ioExecutor.
-                            when (val write = stillPipeline.saveDng(raw, rawChars, result, spec)) {
+                            when (val write = stillPipeline.saveDng(
+                                raw,
+                                rawChars,
+                                result,
+                                spec,
+                                checkNotNull(dngAllocation) {
+                                    "DNG Camera2 dispatch has no preallocated output"
+                                },
+                            )) {
                                 is DngWriteResult.Complete -> {
                                     rejectedDngCleanup?.cancel()
                                     val pending = write.publication
@@ -5209,6 +5388,9 @@ class CameraEngine internal constructor(
                         reportStatus(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
                     }
                 } finally {
+                    // Pre-capture serialization ends with the live Camera2 callback, not with slow
+                    // publication/cleanup tails; those have their own finite process owners.
+                    dngPreCaptureLease?.release()
                     if (!processedQueued) finishProcessed()
                     if (!dngPublishQueued) finishDng()
                     finishSequence()
@@ -5221,6 +5403,7 @@ class CameraEngine internal constructor(
                     android.util.Log.e("CameraEngine", "Photo capture failed", t)
                     reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
+                    dngPreCaptureLease?.release()
                     finishProcessed()
                     finishDng()
                     finishSequence()

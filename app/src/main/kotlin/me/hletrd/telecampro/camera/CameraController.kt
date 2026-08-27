@@ -1952,7 +1952,13 @@ class CameraController(context: Context) {
         }
     }
 
-    fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback, allowZsl: Boolean = false) {
+    fun capturePhoto(
+        wantJpeg: Boolean,
+        wantRaw: Boolean,
+        cb: PhotoCallback,
+        allowZsl: Boolean = false,
+        frozenControls: ManualControls? = null,
+    ) {
         val posted = postToCamera {
             // Always surface a result through the callback (even on the no-target/not-ready paths) so a
             // BURST/AEB chain's onDone still fires and the user gets feedback instead of a silent no-op.
@@ -1971,7 +1977,10 @@ class CameraController(context: Context) {
 
             // Snapshot once: the timeout and the request must describe the same AEB/manual step even
             // if the UI publishes the next immutable control set while this capture is in flight.
-            val requestControls = controls
+            // Provider-preallocated DNG dispatch can arrive after the UI publishes a newer control
+            // packet. The shot still belongs to the shutter-time packet that named its family/EXIF;
+            // ordinary immediate captures keep reading the current controller value.
+            val requestControls = frozenControls ?: controls
 
             // Pseudo-ZSL: a single processed shot may serve the newest buffered frame instantly
             // when it truthfully IS the requested still (ZslAdmission.kt). Refusal falls through

@@ -273,12 +273,22 @@ internal class RecordingPreNativeAllocationAttempt<T : Any>(
 internal const val RECORDING_PRE_NATIVE_WORKER_COUNT = 2
 internal const val RECORDING_PRE_NATIVE_BACKLOG_CAPACITY = 4
 
-/** Process-lifetime capacity owner so repeated Engine recreation cannot multiply blocked workers. */
-internal object ProcessRecordingPreNativeAllocator {
+/**
+ * Process-lifetime capacity owner for MediaProvider allocation that must precede native/camera work.
+ * Recording and DNG share this one worker/queue ceiling, so Engine replacement or simultaneous
+ * capture types cannot multiply blocked Binder calls.
+ */
+internal object ProcessPreNativeMediaAllocator {
     private val dispatcher = RecordingPreNativeAllocationDispatcher(
         workerCount = RECORDING_PRE_NATIVE_WORKER_COUNT,
         backlogCapacity = RECORDING_PRE_NATIVE_BACKLOG_CAPACITY,
     )
 
     fun dispatch(task: () -> Unit): RecordingPreNativeSubmission = dispatcher.dispatch(task)
+}
+
+/** Existing recording-facing name retained as a narrow facade over the shared process owner. */
+internal object ProcessRecordingPreNativeAllocator {
+    fun dispatch(task: () -> Unit): RecordingPreNativeSubmission =
+        ProcessPreNativeMediaAllocator.dispatch(task)
 }
