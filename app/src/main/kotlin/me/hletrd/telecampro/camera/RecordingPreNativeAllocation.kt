@@ -253,8 +253,13 @@ internal class RecordingPreNativeAllocationAttempt<T : Any>(
         }
         if (!retired) return false
         cancel?.cancel()
-        late?.let(onLateValue)
-        completeRetirement(onRetirementClaimed)
+        try {
+            late?.let(onLateValue)
+        } finally {
+            // Storage cleanup is best-effort work over already-durable recovery truth. It must
+            // never suppress the terminal that releases DNG/REC admission and higher-level owners.
+            completeRetirement(onRetirementClaimed)
+        }
         return true
     }
 

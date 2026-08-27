@@ -30,7 +30,7 @@ class RecordingPreNativeAllocationTest {
         val retiredCount = AtomicInteger()
         val lateRows = CopyOnWriteArrayList<String>()
         val delivery = CopyOnWriteArrayList<RecordingPreNativeDelivery>()
-        val attempt = RecordingPreNativeAllocationAttempt(
+        val attempt = RecordingPreNativeAllocationAttempt<String>(
             onRetired = {
                 processGate.abandonPending(oldToken)
                 latch.completeAdmission(succeeded = false)
@@ -95,6 +95,27 @@ class RecordingPreNativeAllocationTest {
         val lateCancellation = AtomicInteger()
         attempt.attachCancellation(RecordingPreNativeCancellation { lateCancellation.incrementAndGet() })
         assertEquals(1, lateCancellation.get())
+    }
+
+    @Test
+    fun `throwing allocated cleanup cannot suppress retirement owners`() {
+        val claimed = AtomicInteger()
+        val retired = AtomicInteger()
+        val attempt = RecordingPreNativeAllocationAttempt<String>(
+            onRetired = { retired.incrementAndGet() },
+            onLateValue = { error("injected cleanup failure") },
+        )
+        assertEquals(RecordingPreNativeDelivery.READY, attempt.deliver(Result.success("row")))
+
+        val failure = runCatching {
+            attempt.retire { claimed.incrementAndGet() }
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(1, claimed.get())
+        assertEquals(1, retired.get())
+        assertTrue(attempt.isRetired())
+        assertFalse(attempt.retire())
     }
 
     @Test
