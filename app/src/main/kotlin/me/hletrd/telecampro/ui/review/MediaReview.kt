@@ -338,15 +338,6 @@ internal class ReviewBitmap(private val source: Bitmap) {
     }
 }
 
-private class ReviewBitmapRequest(
-    context: Context,
-    val uri: Uri,
-    val maxDim: Int,
-    val provenance: MediaProvenance,
-) {
-    val context: Context = processReviewContext(context)
-}
-
 internal sealed interface ReviewBitmapLoad {
     data class Ready(val bitmap: ReviewBitmap) : ReviewBitmapLoad
     data object Failed : ReviewBitmapLoad
@@ -354,21 +345,6 @@ internal sealed interface ReviewBitmapLoad {
 
 internal fun reviewBitmapLoad(decoded: Bitmap?): ReviewBitmapLoad =
     decoded?.let { ReviewBitmapLoad.Ready(ReviewBitmap(it)) } ?: ReviewBitmapLoad.Failed
-
-/** Two finite workers bound unpublished 3000px ARGB results while one poisoned decoder is retired. */
-private val reviewBitmapDecodeLane = LatestReviewSetupLane<ReviewBitmapRequest, ReviewBitmapLoad>(
-    work = { request ->
-        reviewBitmapLoad(
-            decodeReviewBitmap(
-                request.context,
-                request.uri,
-                request.maxDim,
-                request.provenance,
-            ),
-        )
-    },
-    release = { result -> if (result is ReviewBitmapLoad.Ready) result.bitmap.dispose() },
-)
 
 private fun ReviewMediaState.dispose() {
     (this as? ReviewMediaState.Ready.Still)?.bitmap?.dispose()
@@ -473,6 +449,7 @@ internal fun openReviewDecodeSource(
     unverifiedMaxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
     budget: ReviewSourceByteBudget = processReviewSourceBudget,
     spoolDirectoryOwner: ReviewSpoolDirectoryOwner = processReviewSpoolDirectoryOwner,
+    cleanupOwner: ReviewSpoolCleanupOwner = processReviewSpoolCleanupOwner,
 ): ReviewDecodeSource? {
     val location = spoolDirectoryOwner.prepare(cacheDirectory) ?: return null
     val maxBytes = when (provenance) {
@@ -487,6 +464,7 @@ internal fun openReviewDecodeSource(
             maxBytes = maxBytes,
             budget = budget,
             filePrefix = location.filePrefix,
+            cleanupOwner = cleanupOwner,
         )
     }
 }
@@ -587,84 +565,185 @@ internal fun applyReviewExifTransform(decoded: Bitmap, transform: ReviewExifTran
     return output
 }
 
-private data class ReviewMetadata(
-    val name: String,
-    val sizeBytes: Long,
-    val width: Int,
-    val height: Int,
+internal data class ReviewMetadata(
+    val name: String?,
+    val sizeBytes: Long?,
+    val width: Int?,
+    val height: Int?,
     /** "ISO 1250 · 1/300s · 300 mm" when the file carries exposure EXIF (JPEG/DNG); null otherwise. */
     val exifLine: String?,
 )
 
-private class ReviewDescriptorRequest(context: Context, val uri: Uri) {
+internal data class ReviewMediaColumns(
+    val name: String? = null,
+    val sizeBytes: Long? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+)
+
+private class ReviewDescriptorRequest(
+    context: Context,
+    val uri: Uri,
+    val provenance: MediaProvenance,
+) {
     val context: Context = processReviewContext(context)
 }
 
 private data class ReviewDescriptor(
-    val kind: ReviewMediaKind,
-    val videoInfo: VideoInfo?,
+    val state: ReviewMediaState,
     val metadata: ReviewMetadata?,
-)
+) {
+    fun dispose() = state.dispose()
+}
 
-private fun loadMetadata(context: Context, uri: Uri, kind: ReviewMediaKind): ReviewMetadata? =
-    runCatching {
-        // Video dimensions/rotation already come from MediaMetadataRetriever above. Do not open the
-        // MP4 through ExifInterface a second time for still-only exposure fields.
-        val exifLine = if (kind == ReviewMediaKind.VIDEO) null else runCatching {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                val exif = androidx.exifinterface.media.ExifInterface(input)
-                val iso = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
-                val expS = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME)?.toDoubleOrNull()
-                val focal35 = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM)
-                val parts = buildList {
-                    iso?.let { add("ISO $it") }
-                    // Through the canonical formatter, not a local 1/x snap: that snap emitted
-                    // the nonsensical "1/1s" in [0.667 s, 1 s) — reachable, stills clamp at 4 s
-                    // — and skipped NICE_SHUTTER_DENOM, so a shot the OSD showed as 1/125s read
-                    // 1/128s here.
-                    expS?.let { add(formatShutterSpeed((it * 1_000_000_000.0).toLong())) }
-                    focal35?.takeIf { f -> f.toIntOrNull()?.let { it > 0 } == true }?.let { add("$it mm") }
-                }
-                parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
-            }
-        }.getOrNull()
-        val columns = arrayOf(
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.SIZE,
-            MediaStore.MediaColumns.WIDTH,
-            MediaStore.MediaColumns.HEIGHT,
+private fun loadReviewMediaColumns(context: Context, uri: Uri): ReviewMediaColumns? = runCatching {
+    val projection = arrayOf(
+        MediaStore.MediaColumns.DISPLAY_NAME,
+        MediaStore.MediaColumns.SIZE,
+        MediaStore.MediaColumns.WIDTH,
+        MediaStore.MediaColumns.HEIGHT,
+    )
+    context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        fun string(column: String): String? = cursor.getColumnIndex(column)
+            .takeIf { it >= 0 && !cursor.isNull(it) }
+            ?.let(cursor::getString)
+        fun long(column: String): Long? = cursor.getColumnIndex(column)
+            .takeIf { it >= 0 && !cursor.isNull(it) }
+            ?.let(cursor::getLong)
+        fun int(column: String): Int? = cursor.getColumnIndex(column)
+            .takeIf { it >= 0 && !cursor.isNull(it) }
+            ?.let(cursor::getInt)
+        ReviewMediaColumns(
+            name = string(MediaStore.MediaColumns.DISPLAY_NAME)?.takeIf(String::isNotBlank),
+            sizeBytes = long(MediaStore.MediaColumns.SIZE)?.takeIf { it >= 0L },
+            width = int(MediaStore.MediaColumns.WIDTH)?.takeIf { it > 0 },
+            height = int(MediaStore.MediaColumns.HEIGHT)?.takeIf { it > 0 },
         )
-        context.contentResolver.query(uri, columns, null, null, null)?.use { c ->
-            if (!c.moveToFirst()) return@use null
-            ReviewMetadata(
-                name = c.getString(c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)),
-                sizeBytes = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)),
-                width = c.getInt(c.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)),
-                height = c.getInt(c.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT)),
-                exifLine = exifLine,
-            )
-        }
-    }.getOrNull()
+    }
+}.getOrNull()
 
-/** One finite URI acquisition owns MIME, video geometry, and the metadata plate together. */
+/** Byte-derived exposure facts; every stream comes from the already-frozen private spool. */
+internal fun reviewExifLine(source: ReviewDecodeSource): String? = runCatching {
+    source.openInputStream().use { input ->
+        val exif = androidx.exifinterface.media.ExifInterface(input)
+        val iso = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
+        val expS = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME)
+            ?.toDoubleOrNull()
+        val focal35 = exif.getAttribute(
+            androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+        )
+        buildList {
+            iso?.let { add("ISO $it") }
+            // Through the canonical formatter, not a local 1/x snap: that snap emitted the
+            // nonsensical "1/1s" in [0.667 s, 1 s) and skipped NICE_SHUTTER_DENOM.
+            expS?.let { add(formatShutterSpeed((it * 1_000_000_000.0).toLong())) }
+            focal35?.takeIf { value -> value.toIntOrNull()?.let { it > 0 } == true }
+                ?.let { add("$it mm") }
+        }.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+    }
+}.getOrNull()
+
+internal fun reviewMetadataOf(
+    columns: ReviewMediaColumns?,
+    exifLine: String?,
+): ReviewMetadata? {
+    val dimensions = columns?.let { current ->
+        if (current.width != null && current.height != null) current.width to current.height else null
+    }
+    return ReviewMetadata(
+        name = columns?.name?.takeIf(String::isNotBlank),
+        sizeBytes = columns?.sizeBytes,
+        width = dimensions?.first,
+        height = dimensions?.second,
+        exifLine = exifLine,
+    ).takeIf { metadata ->
+        metadata.name != null || metadata.sizeBytes != null || metadata.width != null ||
+            metadata.exifLine != null
+    }
+}
+
+internal data class FrozenStillReview(
+    val bitmap: ReviewBitmapLoad?,
+    val metadata: ReviewMetadata?,
+) {
+    fun dispose() {
+        (bitmap as? ReviewBitmapLoad.Ready)?.bitmap?.dispose()
+    }
+}
+
+/**
+ * One provenance-bounded provider open supplies displayed EXIF, orientation, bounds, and pixels.
+ * MediaStore columns remain request-owned facts and degrade independently from byte-derived facts.
+ */
+internal fun loadFrozenStillReview(
+    cacheDirectory: File,
+    provenance: MediaProvenance,
+    columns: ReviewMediaColumns?,
+    openProviderInput: () -> InputStream?,
+    decodePixels: Boolean,
+    maxDim: Int = REVIEW_PREVIEW_MAX_DIM,
+    unverifiedMaxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
+    budget: ReviewSourceByteBudget = processReviewSourceBudget,
+    spoolDirectoryOwner: ReviewSpoolDirectoryOwner = processReviewSpoolDirectoryOwner,
+    cleanupOwner: ReviewSpoolCleanupOwner = processReviewSpoolCleanupOwner,
+): FrozenStillReview {
+    val source = openReviewDecodeSource(
+        cacheDirectory = cacheDirectory,
+        provenance = provenance,
+        openProviderInput = openProviderInput,
+        unverifiedMaxBytes = unverifiedMaxBytes,
+        budget = budget,
+        spoolDirectoryOwner = spoolDirectoryOwner,
+        cleanupOwner = cleanupOwner,
+    ) ?: return FrozenStillReview(
+        bitmap = ReviewBitmapLoad.Failed.takeIf { decodePixels },
+        metadata = reviewMetadataOf(columns, null),
+    )
+    return source.use {
+        val exifLine = reviewExifLine(source)
+        FrozenStillReview(
+            bitmap = if (decodePixels) reviewBitmapLoad(decodeReviewBitmap(source, maxDim)) else null,
+            metadata = reviewMetadataOf(columns, exifLine),
+        )
+    }
+}
+
+/** One finite request owns MIME, request-bound columns, and any bounded still source together. */
 private fun loadReviewDescriptor(request: ReviewDescriptorRequest): ReviewDescriptor {
     val kind = reviewMediaKind(
         runCatching { request.context.contentResolver.getType(request.uri) }.getOrNull(),
     )
-    return ReviewDescriptor(
-        kind = kind,
-        videoInfo = if (kind == ReviewMediaKind.VIDEO) {
-            loadVideoInfo(request.context, request.uri)
-        } else {
-            null
-        },
-        metadata = loadMetadata(request.context, request.uri, kind),
+    val columns = loadReviewMediaColumns(request.context, request.uri)
+    if (kind == ReviewMediaKind.VIDEO) {
+        val info = loadVideoInfo(request.context, request.uri)
+        return ReviewDescriptor(
+            state = info?.let { ReviewMediaState.Ready.Video(it) }
+                ?: ReviewMediaState.Error(R.string.review_error_open_video),
+            metadata = reviewMetadataOf(columns, null),
+        )
+    }
+    val still = loadFrozenStillReview(
+        cacheDirectory = request.context.cacheDir,
+        provenance = request.provenance,
+        columns = columns,
+        openProviderInput = { request.context.contentResolver.openInputStream(request.uri) },
+        decodePixels = kind == ReviewMediaKind.STILL,
     )
+    val state = when (kind) {
+        ReviewMediaKind.RAW -> ReviewMediaState.Ready.Raw
+        ReviewMediaKind.STILL -> when (val bitmap = still.bitmap) {
+            is ReviewBitmapLoad.Ready -> ReviewMediaState.Ready.Still(bitmap.bitmap)
+            ReviewBitmapLoad.Failed, null -> ReviewMediaState.Error(R.string.review_error_open_image)
+        }
+        ReviewMediaKind.VIDEO -> error("video returned after its descriptor branch")
+    }
+    return ReviewDescriptor(state, still.metadata)
 }
 
 private val reviewDescriptorLane = LatestReviewSetupLane<ReviewDescriptorRequest, ReviewDescriptor>(
     work = ::loadReviewDescriptor,
-    release = {},
+    release = ReviewDescriptor::dispose,
 )
 
 private data class LoadedReview(val state: ReviewMediaState, val metadata: ReviewMetadata?)
@@ -673,13 +752,12 @@ private suspend fun loadReviewMedia(
     context: Context,
     uri: Uri,
     provenance: MediaProvenance,
-    descriptorOwner: Any,
-    decodeOwner: Any,
+    owner: Any,
 ): LoadedReview? {
     var descriptor: ReviewDescriptor? = null
     val descriptorOutcome = reviewDescriptorLane.run(
-        descriptorOwner,
-        ReviewDescriptorRequest(context, uri),
+        owner,
+        ReviewDescriptorRequest(context, uri, provenance),
     ) { descriptor = it }
     when (descriptorOutcome) {
         LatestReviewSetupLane.Outcome.RETIRED -> return null
@@ -692,36 +770,7 @@ private suspend fun loadReviewMedia(
         LatestReviewSetupLane.Outcome.PUBLISHED -> Unit
     }
     val loaded = checkNotNull(descriptor)
-    val state = when (loaded.kind) {
-        ReviewMediaKind.RAW -> ReviewMediaState.Ready.Raw
-        ReviewMediaKind.VIDEO -> loaded.videoInfo
-            ?.let { ReviewMediaState.Ready.Video(it) }
-            ?: ReviewMediaState.Error(R.string.review_error_open_video)
-        ReviewMediaKind.STILL -> {
-            // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
-            var decoded: ReviewMediaState? = null
-            val bitmapOutcome = reviewBitmapDecodeLane.run(
-                decodeOwner,
-                ReviewBitmapRequest(context, uri, REVIEW_PREVIEW_MAX_DIM, provenance),
-            ) { result ->
-                decoded = when (result) {
-                    is ReviewBitmapLoad.Ready -> ReviewMediaState.Ready.Still(result.bitmap)
-                    ReviewBitmapLoad.Failed -> ReviewMediaState.Error(R.string.review_error_open_image)
-                }
-            }
-            when (bitmapOutcome) {
-                LatestReviewSetupLane.Outcome.RETIRED -> return null
-                LatestReviewSetupLane.Outcome.TIMED_OUT -> {
-                    ReviewMediaState.Error(R.string.review_error_timed_out)
-                }
-                LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED -> {
-                    ReviewMediaState.RestartRequired
-                }
-                LatestReviewSetupLane.Outcome.PUBLISHED -> decoded ?: return null
-            }
-        }
-    }
-    return LoadedReview(state, loaded.metadata)
+    return LoadedReview(loaded.state, loaded.metadata)
 }
 
 /**
@@ -831,7 +880,7 @@ fun GalleryThumb(
             var kind: ReviewMediaKind? = null
             when (galleryThumbKindLane.run(
                 thumbOwner,
-                ReviewDescriptorRequest(context, uri),
+                ReviewDescriptorRequest(context, uri, provenance),
             ) { kind = it }) {
                 LatestReviewSetupLane.Outcome.RETIRED -> return@LaunchedEffect
                 LatestReviewSetupLane.Outcome.TIMED_OUT,
@@ -1075,8 +1124,7 @@ fun MediaReviewOverlay(
     val a11yCloseReview = stringResource(R.string.a11y_close_review)
     val context = LocalContext.current
     var loadAttempt by remember(uri) { mutableIntStateOf(0) }
-    val descriptorOwner = remember(uri, provenance) { Any() }
-    val decodeOwner = remember(uri, provenance) { Any() }
+    val reviewOwner = remember(uri, provenance) { Any() }
     val mediaStateHolder = remember(uri, provenance) {
         mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading)
     }
@@ -1092,7 +1140,7 @@ fun MediaReviewOverlay(
         metadata = null
         var loaded: LoadedReview? = null
         try {
-            loaded = loadReviewMedia(context, uri, provenance, descriptorOwner, decodeOwner)
+            loaded = loadReviewMedia(context, uri, provenance, reviewOwner)
             loaded?.let { result ->
                 metadata = result.metadata
                 replaceMediaState(result.state)
@@ -1104,10 +1152,9 @@ fun MediaReviewOverlay(
             loaded?.state?.dispose()
         }
     }
-    DisposableEffect(descriptorOwner, decodeOwner) {
+    DisposableEffect(reviewOwner) {
         onDispose {
-            reviewDescriptorLane.invalidate(descriptorOwner)
-            reviewBitmapDecodeLane.invalidate(decodeOwner)
+            reviewDescriptorLane.invalidate(reviewOwner)
             mediaStateHolder.value.dispose()
         }
     }
@@ -1701,12 +1748,21 @@ fun MediaReviewOverlay(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 metadata?.let { meta ->
-                    Text(meta.name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        reviewMetadataLine(rawReady, meta.width, meta.height, meta.sizeBytes),
-                        color = CameraColors.TextSecondary,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+                    meta.name?.let { name ->
+                        Text(
+                            name,
+                            color = CameraColors.TextPrimary,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    reviewMetadataFactsLine(rawReady, meta.width, meta.height, meta.sizeBytes)?.let { facts ->
+                        Text(
+                            facts,
+                            color = CameraColors.TextSecondary,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     meta.exifLine?.let {
                         Text(it, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
                     }
@@ -2378,12 +2434,19 @@ internal fun videoPlaybackStateResource(state: VideoPlaybackUiState): Int = when
     VideoPlaybackUiState.PAUSED -> R.string.a11y_paused
 }
 
-internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes: Long): String =
-    buildList {
+internal fun reviewMetadataFactsLine(
+    raw: Boolean,
+    width: Int?,
+    height: Int?,
+    sizeBytes: Long?,
+): String? = buildList {
         if (raw) add("RAW")
-        if (width > 0 && height > 0) add("${width}×${height}")
-        add(formatBytes(sizeBytes))
-    }.joinToString(" · ")
+        if (width != null && height != null && width > 0 && height > 0) add("${width}×${height}")
+        sizeBytes?.let { add(formatBytes(it)) }
+    }.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+
+internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes: Long): String =
+    checkNotNull(reviewMetadataFactsLine(raw, width, height, sizeBytes))
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"

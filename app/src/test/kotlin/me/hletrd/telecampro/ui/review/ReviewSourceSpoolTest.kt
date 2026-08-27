@@ -164,6 +164,147 @@ class ReviewSourceSpoolTest {
     }
 
     @Test
+    fun `false full deletion retains exact bytes until retry proves absence`() {
+        val directory = temporaryFolder.newFolder("false-delete")
+        val budget = ReviewSourceByteBudget(8L)
+        var deletionsSucceed = false
+        val cleanup = ReviewSpoolCleanupOwner(capacity = 1) { file ->
+            if (deletionsSucceed) file.delete() else false
+        }
+        val source = requireNotNull(
+            spoolReviewSource(
+                directory,
+                ByteArrayInputStream(ByteArray(6)),
+                maxBytes = 8L,
+                budget = budget,
+                cleanupOwner = cleanup,
+            ),
+        )
+
+        assertEquals(ReviewSpoolDeleteDisposition.RETAINED, source.closeWithResult())
+        assertTrue(source.exists())
+        assertEquals(6L, budget.usedBytes())
+        assertEquals(1, cleanup.admittedCount())
+        assertEquals(1, cleanup.unresolvedCount())
+
+        deletionsSucceed = true
+        assertEquals(ReviewSpoolRetryReport(1, 1, 0), cleanup.retryUnresolved())
+        assertFalse(source.exists())
+        assertEquals(0L, budget.usedBytes())
+        assertEquals(0, cleanup.admittedCount())
+    }
+
+    @Test
+    fun `throwing full deletion has the same retained typed truth`() {
+        val directory = temporaryFolder.newFolder("throw-delete")
+        val budget = ReviewSourceByteBudget(8L)
+        var throwDelete = true
+        val cleanup = ReviewSpoolCleanupOwner(capacity = 1) { file ->
+            if (throwDelete) error("injected delete failure") else file.delete()
+        }
+        val source = requireNotNull(
+            spoolReviewSource(
+                directory,
+                ByteArrayInputStream(ByteArray(5)),
+                maxBytes = 8L,
+                budget = budget,
+                cleanupOwner = cleanup,
+            ),
+        )
+
+        assertEquals(ReviewSpoolDeleteDisposition.RETAINED, source.closeWithResult())
+        assertEquals(ReviewSpoolDeleteDisposition.RETAINED, source.closeWithResult())
+        assertEquals(5L, budget.usedBytes())
+        assertEquals(1, cleanup.unresolvedCount())
+
+        throwDelete = false
+        assertEquals(ReviewSpoolRetryReport(1, 1, 0), cleanup.retryUnresolved())
+        assertEquals(ReviewSpoolDeleteDisposition.ABSENT, source.closeWithResult())
+        assertEquals(0L, budget.usedBytes())
+    }
+
+    @Test
+    fun `partial spool delete failure retains written bytes and reports retry truth`() {
+        val directory = temporaryFolder.newFolder("partial-delete")
+        val budget = ReviewSourceByteBudget(16L)
+        var deletionsSucceed = false
+        val cleanup = ReviewSpoolCleanupOwner(capacity = 1) { file ->
+            if (deletionsSucceed) file.delete() else false
+        }
+        val input = ChunkedInputStream(listOf(ByteArray(6), ByteArray(3)))
+
+        val result = spoolReviewSourceResult(
+            directory,
+            input,
+            maxBytes = 8L,
+            budget = budget,
+            cleanupOwner = cleanup,
+        )
+
+        assertEquals(
+            ReviewSpoolBuildResult.Failed(ReviewSpoolDeleteDisposition.RETAINED),
+            result,
+        )
+        assertEquals("only bytes written before overflow stay accounted", 6L, budget.usedBytes())
+        assertEquals(1, cleanup.unresolvedCount())
+        assertEquals(1, directory.listFiles().orEmpty().size)
+
+        deletionsSucceed = true
+        assertEquals(ReviewSpoolRetryReport(1, 1, 0), cleanup.retryUnresolved())
+        assertEquals(0L, budget.usedBytes())
+        assertTrue(directory.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `repeated deletion failures close new admission at finite cleanup capacity`() {
+        val directory = temporaryFolder.newFolder("cleanup-capacity")
+        val budget = ReviewSourceByteBudget(16L)
+        var deletionsSucceed = false
+        val cleanup = ReviewSpoolCleanupOwner(capacity = 2) { file ->
+            if (deletionsSucceed) file.delete() else false
+        }
+        repeat(2) {
+            val source = requireNotNull(
+                spoolReviewSource(
+                    directory,
+                    ByteArrayInputStream(ByteArray(4)),
+                    maxBytes = 8L,
+                    budget = budget,
+                    cleanupOwner = cleanup,
+                ),
+            )
+            assertEquals(ReviewSpoolDeleteDisposition.RETAINED, source.closeWithResult())
+        }
+        var reads = 0
+        val refusedInput = object : InputStream() {
+            override fun read(): Int = (-1).also { reads++ }
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                (-1).also { reads++ }
+        }
+
+        assertEquals(
+            ReviewSpoolBuildResult.Failed(ReviewSpoolDeleteDisposition.CAPACITY_EXHAUSTED),
+            spoolReviewSourceResult(
+                directory,
+                refusedInput,
+                maxBytes = 8L,
+                budget = budget,
+                cleanupOwner = cleanup,
+            ),
+        )
+        assertEquals("capacity refusal must precede provider consumption", 0, reads)
+        assertEquals(8L, budget.usedBytes())
+        assertEquals(2, cleanup.admittedCount())
+        assertEquals(2, cleanup.unresolvedCount())
+
+        deletionsSucceed = true
+        assertEquals(ReviewSpoolRetryReport(2, 2, 0), cleanup.retryUnresolved())
+        assertEquals(0L, budget.usedBytes())
+        assertEquals(0, cleanup.admittedCount())
+        assertTrue(directory.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
     fun `retired request keeps exact admission until its blocked worker cleans up`() = runBlocking {
         val directory = temporaryFolder.newFolder("retired")
         val budget = ReviewSourceByteBudget(12L)
@@ -379,6 +520,29 @@ class ReviewSourceSpoolTest {
             val count = min(length, totalBytes - position)
             for (index in 0 until count) buffer[offset + index] = ((position + index) and 0xff).toByte()
             position += count
+            return count
+        }
+    }
+
+    private class ChunkedInputStream(chunks: List<ByteArray>) : InputStream() {
+        private val chunks = ArrayDeque(chunks)
+        private var current: ByteArray? = null
+        private var offset = 0
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            return if (read(one, 0, 1) < 0) -1 else one[0].toInt() and 0xff
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (current == null || this.offset >= checkNotNull(current).size) {
+                current = chunks.removeFirstOrNull() ?: return -1
+                this.offset = 0
+            }
+            val source = checkNotNull(current)
+            val count = min(length, source.size - this.offset)
+            source.copyInto(buffer, offset, this.offset, this.offset + count)
+            this.offset += count
             return count
         }
     }

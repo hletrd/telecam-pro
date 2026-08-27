@@ -210,6 +210,109 @@ class MediaReviewOwnershipTest {
     }
 
     @Test
+    fun `timed out frozen still result is disposed when its worker returns`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val created = CountDownLatch(1)
+        val releaseWork = CountDownLatch(1)
+        val disposed = CountDownLatch(1)
+        val bitmapRef = AtomicReference<Bitmap>()
+        try {
+            val lane = LatestReviewSetupLane<String, FrozenStillReview>(
+                dispatcher = dispatcher,
+                terminalTimeoutMs = 100L,
+                work = {
+                    val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+                    bitmapRef.set(bitmap)
+                    created.countDown()
+                    releaseWork.await(2, TimeUnit.SECONDS)
+                    FrozenStillReview(ReviewBitmapLoad.Ready(ReviewBitmap(bitmap)), null)
+                },
+                release = { result ->
+                    result.dispose()
+                    disposed.countDown()
+                },
+            )
+
+            runBlocking {
+                val request = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.run(Any(), "still") {}
+                }
+                assertTrue(created.await(2, TimeUnit.SECONDS))
+                assertSame(LatestReviewSetupLane.Outcome.TIMED_OUT, request.await())
+                releaseWork.countDown()
+            }
+
+            assertTrue(disposed.await(2, TimeUnit.SECONDS))
+            assertTrue(checkNotNull(bitmapRef.get()).isRecycled)
+        } finally {
+            releaseWork.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `replacement and owner disposal retire only unpublished frozen still pixels`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val oldStarted = CountDownLatch(1)
+        val releaseOld = CountDownLatch(1)
+        val oldDisposed = CountDownLatch(1)
+        val oldBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        val newBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        val oldReview = ReviewBitmap(oldBitmap)
+        val newReview = ReviewBitmap(newBitmap)
+        val published = AtomicReference<FrozenStillReview>()
+        try {
+            val lane = LatestReviewSetupLane<String, FrozenStillReview>(
+                dispatcher = dispatcher,
+                work = { input ->
+                    if (input == "old") {
+                        oldStarted.countDown()
+                        releaseOld.await(2, TimeUnit.SECONDS)
+                        FrozenStillReview(ReviewBitmapLoad.Ready(oldReview), null)
+                    } else {
+                        FrozenStillReview(ReviewBitmapLoad.Ready(newReview), null)
+                    }
+                },
+                release = { result ->
+                    val retiredOld = (result.bitmap as? ReviewBitmapLoad.Ready)?.bitmap === oldReview
+                    result.dispose()
+                    if (retiredOld) oldDisposed.countDown()
+                },
+            )
+            val oldOwner = Any()
+            val replacementOwner = Any()
+
+            runBlocking {
+                val old = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.run(oldOwner, "old") {}
+                }
+                assertTrue(oldStarted.await(2, TimeUnit.SECONDS))
+                val replacement = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.run(replacementOwner, "new", published::set)
+                }
+                assertSame(LatestReviewSetupLane.Outcome.PUBLISHED, replacement.await())
+                assertSame(LatestReviewSetupLane.Outcome.RETIRED, old.await())
+                lane.invalidate(replacementOwner) // a published result is caller-owned and remains live
+                assertFalse(newBitmap.isRecycled)
+                releaseOld.countDown()
+            }
+
+            assertTrue(oldDisposed.await(2, TimeUnit.SECONDS))
+            assertTrue(oldBitmap.isRecycled)
+            assertFalse(newBitmap.isRecycled)
+            checkNotNull(published.get()).dispose()
+            assertTrue(newBitmap.isRecycled)
+        } finally {
+            releaseOld.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `never-published review bitmap is recycled promptly`() {
         val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
         val owned = ReviewBitmap(bitmap)

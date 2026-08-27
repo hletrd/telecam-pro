@@ -93,6 +93,7 @@ internal class ReviewSourceSpool(
     private val file: File,
     val sizeBytes: Long,
     private val lease: ReviewSourceByteBudget.Lease,
+    private val cleanup: ReviewSpoolCleanupReservation,
 ) : ReviewDecodeSource {
     private val closed = AtomicBoolean(false)
 
@@ -107,12 +108,16 @@ internal class ReviewSourceSpool(
         )
     }
 
-    internal fun exists(): Boolean = file.exists()
+    internal fun exists(): Boolean = Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+
+    /** Typed absence truth for callers/tests that must distinguish deletion from retained cleanup. */
+    internal fun closeWithResult(): ReviewSpoolDeleteDisposition {
+        if (!closed.compareAndSet(false, true)) return cleanup.disposition()
+        return cleanup.retire(file, lease)
+    }
 
     override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        runCatching { file.delete() }
-        lease.close()
+        closeWithResult()
     }
 }
 
@@ -121,6 +126,7 @@ internal const val REVIEW_TRUSTED_SOURCE_MAX_BYTES = 512L * 1024L * 1024L
 internal const val REVIEW_SOURCE_PROCESS_MAX_BYTES = 2L * REVIEW_TRUSTED_SOURCE_MAX_BYTES
 internal const val REVIEW_SPOOL_DIRECTORY_NAME = "review-sources-v1"
 internal const val REVIEW_STALE_SPOOL_SCAN_LIMIT = 64
+internal const val REVIEW_SPOOL_CLEANUP_CAPACITY = 16
 private const val REVIEW_TRUSTED_DISK_SHARE = 4L
 private const val REVIEW_SPOOL_PREFIX = "review-source-"
 private val REVIEW_SPOOL_FILE = Regex("^review-source-[0-9a-f]{16}-[0-9]+\\.bin$")
@@ -134,6 +140,156 @@ internal data class ReviewSpoolCleanupReport(
     val examined: Int,
     val deleted: Int,
 )
+
+internal enum class ReviewSpoolDeleteDisposition {
+    /** The exact no-follow path is authoritatively absent and byte accounting was released. */
+    ABSENT,
+
+    /** Deletion failed; the finite process owner retains the exact path and byte lease for retry. */
+    RETAINED,
+
+    /** No finite cleanup slot was available, so creation was refused before a file existed. */
+    CAPACITY_EXHAUSTED,
+}
+
+internal data class ReviewSpoolRetryReport(val attempted: Int, val deleted: Int, val retained: Int)
+
+/**
+ * Finite same-process owner for live spools and exact deletion failures.
+ *
+ * Capacity is reserved before file creation. A false/throwing delete therefore cannot make the
+ * source disappear from accounting: its reservation and byte lease stay strongly owned until a
+ * bounded retry proves the no-follow path absent. Once every slot is live/retained, new spools fail
+ * closed before consuming provider bytes or creating another cache file.
+ */
+internal class ReviewSpoolCleanupOwner(
+    private val capacity: Int = REVIEW_SPOOL_CLEANUP_CAPACITY,
+    private val deleteFile: (File) -> Boolean = File::delete,
+) {
+    private val lock = Any()
+    private val unresolved = LinkedHashSet<ReviewSpoolCleanupReservation>()
+    private var admitted = 0
+
+    init {
+        require(capacity > 0) { "review spool cleanup capacity must be positive" }
+    }
+
+    fun reserve(): ReviewSpoolCleanupReservation? {
+        // Every new review request is a bounded retry edge for prior local deletion failures. This
+        // runs on the finite review worker before provider consumption; at most [capacity] exact
+        // paths are touched, and a still-live orphan keeps its slot/accounting fail-closed.
+        retryUnresolved()
+        return synchronized(lock) {
+            if (admitted >= capacity) null
+            else ReviewSpoolCleanupReservation(this, deleteFile).also { admitted++ }
+        }
+    }
+
+    internal fun retain(reservation: ReviewSpoolCleanupReservation) = synchronized(lock) {
+        unresolved.add(reservation)
+    }
+
+    internal fun release(reservation: ReviewSpoolCleanupReservation) = synchronized(lock) {
+        unresolved.remove(reservation)
+        check(admitted > 0) { "review spool cleanup admission underflow" }
+        admitted--
+    }
+
+    fun retryUnresolved(): ReviewSpoolRetryReport {
+        val snapshot = synchronized(lock) { unresolved.toList() }
+        var deleted = 0
+        snapshot.forEach { if (it.retry() == ReviewSpoolDeleteDisposition.ABSENT) deleted++ }
+        return ReviewSpoolRetryReport(
+            attempted = snapshot.size,
+            deleted = deleted,
+            retained = synchronized(lock) { unresolved.size },
+        )
+    }
+
+    internal fun admittedCount(): Int = synchronized(lock) { admitted }
+    internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
+}
+
+internal class ReviewSpoolCleanupReservation internal constructor(
+    private val owner: ReviewSpoolCleanupOwner,
+    private val deleteFile: (File) -> Boolean,
+) {
+    private enum class State { LIVE, RETIRING, RETAINED, ABSENT }
+
+    private var state = State.LIVE
+    private var retainedFile: File? = null
+    private var retainedLease: ReviewSourceByteBudget.Lease? = null
+
+    fun disposition(): ReviewSpoolDeleteDisposition = synchronized(this) {
+        if (state == State.ABSENT) ReviewSpoolDeleteDisposition.ABSENT
+        else ReviewSpoolDeleteDisposition.RETAINED
+    }
+
+    /** Releases a reservation that never created a file or admitted any bytes. */
+    fun cancel(lease: ReviewSourceByteBudget.Lease): ReviewSpoolDeleteDisposition {
+        val release = synchronized(this) {
+            if (state != State.LIVE) false else {
+                state = State.ABSENT
+                true
+            }
+        }
+        if (release) {
+            lease.close()
+            owner.release(this)
+        }
+        return disposition()
+    }
+
+    fun retire(
+        file: File,
+        lease: ReviewSourceByteBudget.Lease,
+    ): ReviewSpoolDeleteDisposition {
+        val ownsAttempt = synchronized(this) {
+            if (state != State.LIVE) false else {
+                state = State.RETIRING
+                true
+            }
+        }
+        if (!ownsAttempt) return disposition()
+        return completeDeleteAttempt(file, lease)
+    }
+
+    internal fun retry(): ReviewSpoolDeleteDisposition {
+        val retry = synchronized(this) {
+            if (state != State.RETAINED) null else {
+                state = State.RETIRING
+                checkNotNull(retainedFile) to checkNotNull(retainedLease)
+            }
+        } ?: return disposition()
+        return completeDeleteAttempt(retry.first, retry.second)
+    }
+
+    private fun completeDeleteAttempt(
+        file: File,
+        lease: ReviewSourceByteBudget.Lease,
+    ): ReviewSpoolDeleteDisposition {
+        runCatching { deleteFile(file) }
+        val absent = !Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+        synchronized(this) {
+            if (absent) {
+                retainedFile = null
+                retainedLease = null
+                state = State.ABSENT
+            } else {
+                retainedFile = file
+                retainedLease = lease
+                state = State.RETAINED
+            }
+        }
+        if (absent) {
+            lease.close()
+            owner.release(this)
+            return ReviewSpoolDeleteDisposition.ABSENT
+        }
+        owner.retain(this)
+        return ReviewSpoolDeleteDisposition.RETAINED
+    }
+}
 
 /**
  * Process-generation owner for the one private spool directory.
@@ -208,6 +364,7 @@ internal class ReviewSpoolDirectoryOwner(
 /** Two maximum-size sources may coexist; smaller thumbnail/full requests share the residual bytes. */
 internal val processReviewSourceBudget = ReviewSourceByteBudget(REVIEW_SOURCE_PROCESS_MAX_BYTES)
 internal val processReviewSpoolDirectoryOwner = ReviewSpoolDirectoryOwner()
+internal val processReviewSpoolCleanupOwner = ReviewSpoolCleanupOwner()
 
 /**
  * A trusted app-owned still may be a full-sensor JPEG larger than the strict unverified ceiling.
@@ -224,19 +381,32 @@ internal fun trustedReviewSourceMaxBytes(usableBytes: Long): Long {
  * Copies one provider source into an immutable private spool with per-source and process bounds.
  * Every failure path deletes the partial file and releases the exact bytes already admitted.
  */
-internal fun spoolReviewSource(
+internal sealed interface ReviewSpoolBuildResult {
+    data class Ready(val source: ReviewSourceSpool) : ReviewSpoolBuildResult
+    data class Failed(val cleanup: ReviewSpoolDeleteDisposition) : ReviewSpoolBuildResult
+}
+
+private object ReviewSpoolWriteRefused : RuntimeException(null, null, false, false)
+
+internal fun spoolReviewSourceResult(
     cacheDirectory: File,
     input: InputStream,
     maxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
     budget: ReviewSourceByteBudget = processReviewSourceBudget,
     filePrefix: String = REVIEW_SPOOL_PREFIX,
-): ReviewSourceSpool? {
-    if (maxBytes <= 0L) return null
+    cleanupOwner: ReviewSpoolCleanupOwner = processReviewSpoolCleanupOwner,
+): ReviewSpoolBuildResult {
+    if (maxBytes <= 0L) return ReviewSpoolBuildResult.Failed(ReviewSpoolDeleteDisposition.ABSENT)
+    val cleanup = cleanupOwner.reserve()
+        ?: return ReviewSpoolBuildResult.Failed(ReviewSpoolDeleteDisposition.CAPACITY_EXHAUSTED)
     val lease = budget.openLease()
     var spoolFile: File? = null
-    var transferred = false
+    fun failed(): ReviewSpoolBuildResult.Failed {
+        val disposition = spoolFile?.let { cleanup.retire(it, lease) } ?: cleanup.cancel(lease)
+        return ReviewSpoolBuildResult.Failed(disposition)
+    }
     try {
-        if (!cacheDirectory.isDirectory && !cacheDirectory.mkdirs()) return null
+        if (!cacheDirectory.isDirectory && !cacheDirectory.mkdirs()) return failed()
         val file = File.createTempFile(filePrefix, ".bin", cacheDirectory)
         spoolFile = file
         var total = 0L
@@ -253,27 +423,40 @@ internal fun spoolReviewSource(
                 if (read == 0) {
                     val single = input.read()
                     if (single < 0) break
-                    if (total >= maxBytes || !lease.tryGrow(1)) return null
+                    if (total >= maxBytes || !lease.tryGrow(1)) throw ReviewSpoolWriteRefused
                     output.write(single)
                     total++
                     continue
                 }
-                if (total > maxBytes - read || !lease.tryGrow(read)) return null
+                if (total > maxBytes - read || !lease.tryGrow(read)) throw ReviewSpoolWriteRefused
                 output.write(buffer, 0, read)
                 total += read
             }
         }
-        if (!file.setReadOnly()) return null
-        transferred = true
-        return ReviewSourceSpool(file, total, lease)
+        if (!file.setReadOnly()) return failed()
+        return ReviewSpoolBuildResult.Ready(ReviewSourceSpool(file, total, lease, cleanup))
     } catch (_: Throwable) {
-        return null
-    } finally {
-        if (!transferred) {
-            spoolFile?.let { file -> runCatching { file.delete() } }
-            lease.close()
-        }
+        return failed()
     }
+}
+
+internal fun spoolReviewSource(
+    cacheDirectory: File,
+    input: InputStream,
+    maxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
+    budget: ReviewSourceByteBudget = processReviewSourceBudget,
+    filePrefix: String = REVIEW_SPOOL_PREFIX,
+    cleanupOwner: ReviewSpoolCleanupOwner = processReviewSpoolCleanupOwner,
+): ReviewSourceSpool? = when (val result = spoolReviewSourceResult(
+    cacheDirectory,
+    input,
+    maxBytes,
+    budget,
+    filePrefix,
+    cleanupOwner,
+)) {
+    is ReviewSpoolBuildResult.Ready -> result.source
+    is ReviewSpoolBuildResult.Failed -> null
 }
 
 /**

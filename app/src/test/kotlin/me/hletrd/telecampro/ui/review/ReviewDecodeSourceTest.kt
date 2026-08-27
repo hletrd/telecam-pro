@@ -118,6 +118,100 @@ class ReviewDecodeSourceTest {
     }
 
     @Test
+    fun `fullscreen still uses one provider identity for metadata orientation bounds and pixels`() {
+        val cache = temporaryFolder.newFolder("full-review-identity")
+        val first = jpegFixture(
+            name = "review-first.jpg",
+            width = 16,
+            height = 24,
+            color = Color.BLUE,
+            orientation = ExifInterface.ORIENTATION_ROTATE_90,
+            iso = "125",
+            exposureSeconds = "0.008",
+            focal35 = "300",
+        )
+        val replacement = jpegFixture(
+            name = "review-replacement.jpg",
+            width = 80,
+            height = 40,
+            color = Color.RED,
+            orientation = ExifInterface.ORIENTATION_NORMAL,
+            iso = "6400",
+            exposureSeconds = "1",
+            focal35 = "23",
+        )
+        val identities = listOf(first, replacement)
+        var opens = 0
+
+        val loaded = loadFrozenStillReview(
+            cacheDirectory = cache,
+            provenance = MediaProvenance.APP_OWNED,
+            columns = ReviewMediaColumns("request-bound.jpg", 123L, 16, 24),
+            openProviderInput = {
+                FileInputStream(identities[opens.coerceAtMost(identities.lastIndex)]).also { opens++ }
+            },
+            decodePixels = true,
+            maxDim = 128,
+            budget = ReviewSourceByteBudget(2L * 1024L * 1024L),
+            spoolDirectoryOwner = ReviewSpoolDirectoryOwner("5555555555555555"),
+            cleanupOwner = ReviewSpoolCleanupOwner(),
+        )
+
+        assertEquals("fullscreen review must open MediaProvider once", 1, opens)
+        val ready = loaded.bitmap as ReviewBitmapLoad.Ready
+        assertEquals(24, ready.bitmap.image.width)
+        assertEquals(16, ready.bitmap.image.height)
+        assertEquals("request-bound.jpg", loaded.metadata?.name)
+        assertEquals(123L, loaded.metadata?.sizeBytes)
+        assertEquals("ISO 125 · 1/125s · 300 mm", loaded.metadata?.exifLine)
+        loaded.dispose()
+        assertTrue(File(cache, REVIEW_SPOOL_DIRECTORY_NAME).listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `over ceiling unverified source omits EXIF only and never reopens provider`() {
+        val cache = temporaryFolder.newFolder("unverified-exif-ceiling")
+        val budget = ReviewSourceByteBudget(32L)
+        var opens = 0
+
+        val loaded = loadFrozenStillReview(
+            cacheDirectory = cache,
+            provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            columns = ReviewMediaColumns("legacy.jpg", 9L, 2, 2),
+            openProviderInput = {
+                opens++
+                ByteArrayInputStream(ByteArray(9))
+            },
+            decodePixels = true,
+            unverifiedMaxBytes = 8L,
+            budget = budget,
+            spoolDirectoryOwner = ReviewSpoolDirectoryOwner("6666666666666666"),
+            cleanupOwner = ReviewSpoolCleanupOwner(),
+        )
+
+        assertEquals(1, opens)
+        assertEquals(ReviewBitmapLoad.Failed, loaded.bitmap)
+        assertEquals("legacy.jpg", loaded.metadata?.name)
+        assertEquals(9L, loaded.metadata?.sizeBytes)
+        assertNull(loaded.metadata?.exifLine)
+        assertEquals(0L, budget.usedBytes())
+        assertTrue(File(cache, REVIEW_SPOOL_DIRECTORY_NAME).listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `metadata keeps whichever independent facts are available`() {
+        assertEquals(
+            ReviewMetadata(null, null, null, null, "ISO 200"),
+            reviewMetadataOf(columns = null, exifLine = "ISO 200"),
+        )
+        assertEquals(
+            ReviewMetadata("capture.jpg", 42L, null, null, null),
+            reviewMetadataOf(ReviewMediaColumns("capture.jpg", 42L), exifLine = null),
+        )
+        assertNull(reviewMetadataOf(columns = null, exifLine = null))
+    }
+
+    @Test
     fun `trusted disk policy admits hi res while retaining a bounded free space share`() {
         val justAboveUnverified = REVIEW_SOURCE_MAX_BYTES + 1L
 
@@ -195,6 +289,9 @@ class ReviewDecodeSourceTest {
         height: Int,
         color: Int,
         orientation: Int,
+        iso: String? = null,
+        exposureSeconds: String? = null,
+        focal35: String? = null,
     ): File {
         val file = temporaryFolder.newFile(name)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
@@ -206,6 +303,9 @@ class ReviewDecodeSourceTest {
         bitmap.recycle()
         ExifInterface(file).apply {
             setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            setAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, iso)
+            setAttribute(ExifInterface.TAG_EXPOSURE_TIME, exposureSeconds)
+            setAttribute(ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM, focal35)
             saveAttributes()
         }
         return file
