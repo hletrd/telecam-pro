@@ -171,7 +171,7 @@ internal fun reviewProvenanceLabel(provenance: MediaProvenance): Int? = when (pr
 }
 
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
-private data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
+internal data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
 
 /** Exact provider thumbnail request; it never depends on untrusted video metadata. */
 internal data class ProviderThumbnailRequest(val width: Int, val height: Int)
@@ -305,7 +305,7 @@ private val videoPlaybackSetupLane =
         },
     )
 
-private sealed interface ReviewMediaState {
+internal sealed interface ReviewMediaState {
     data object Loading : ReviewMediaState
     data object RestartRequired : ReviewMediaState
     sealed interface Ready : ReviewMediaState {
@@ -589,7 +589,7 @@ private class ReviewDescriptorRequest(
     val context: Context = processReviewContext(context)
 }
 
-private data class ReviewDescriptor(
+internal class ReviewDescriptor(
     val state: ReviewMediaState,
     val metadata: ReviewMetadata?,
 ) {

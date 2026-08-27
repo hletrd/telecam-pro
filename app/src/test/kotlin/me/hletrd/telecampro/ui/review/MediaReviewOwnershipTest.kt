@@ -34,6 +34,19 @@ import org.robolectric.RobolectricTestRunner
 class MediaReviewOwnershipTest {
 
     @Test
+    fun `unpublished descriptor disposes its exact still bitmap`() {
+        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val descriptor = ReviewDescriptor(
+            state = ReviewMediaState.Ready.Still(ReviewBitmap(bitmap)),
+            metadata = null,
+        )
+
+        descriptor.dispose()
+
+        assertTrue(bitmap.isRecycled)
+    }
+
+    @Test
     fun `decoded still load owns ready pixels and null fails closed`() {
         val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         val ready = reviewBitmapLoad(bitmap)

@@ -38,8 +38,7 @@ internal class DngPreCaptureAdmission {
  * is handed to [onReady] exactly once. The process dispatcher is finite and shared with recording.
  */
 internal class DngPreCaptureAllocation<T : Any>(
-    private val dispatch: ((() -> Unit) -> RecordingPreNativeSubmission) =
-        ProcessPreNativeMediaAllocator::dispatch,
+    private val dispatch: ((() -> Unit) -> RecordingPreNativeSubmission),
     private val allocate: () -> T?,
     private val isCurrent: () -> Boolean,
     private val onReady: (T) -> Unit,

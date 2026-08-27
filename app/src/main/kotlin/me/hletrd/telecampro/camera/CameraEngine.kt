@@ -4464,6 +4464,7 @@ class CameraEngine internal constructor(
 
         lateinit var owner: DngPreCaptureAllocation<PendingOutputAllocation>
         owner = DngPreCaptureAllocation(
+            dispatch = ProcessPreNativeMediaAllocator::dispatch,
             allocate = {
                 MediaStoreWriter.createPendingImageAllocation(
                     context,

@@ -13,6 +13,14 @@ import org.junit.Test
 
 class DngPreCaptureAllocationTest {
     @Test
+    fun `process admission singleton is executable and releases exactly`() {
+        val lease = requireNotNull(ProcessDngPreCaptureAdmission.owner.tryAcquire())
+        assertFalse(ProcessDngPreCaptureAdmission.owner.canAdmit())
+        assertTrue(lease.release())
+        assertTrue(ProcessDngPreCaptureAdmission.owner.canAdmit())
+    }
+
+    @Test
     fun `blocked identity acquisition is cancelled before Camera2 ownership and late row is cleaned`() {
         val dispatcher = RecordingPreNativeAllocationDispatcher(workerCount = 1, backlogCapacity = 1)
         val identityEntered = CountDownLatch(1)
@@ -165,6 +173,34 @@ class DngPreCaptureAllocationTest {
         try {
             assertEquals(RecordingPreNativeDispatch.ACCEPTED, nullOwner.start())
             assertTrue(failedTerminal.await(5, TimeUnit.SECONDS))
+        } finally {
+            dispatcher.shutdown()
+        }
+    }
+
+    @Test
+    fun `claimed onReady failure routes exact row to late cleanup and retires ownership`() {
+        val dispatcher = RecordingPreNativeAllocationDispatcher(workerCount = 1, backlogCapacity = 1)
+        val terminal = CountDownLatch(1)
+        val late = CopyOnWriteArrayList<String>()
+        val failures = CopyOnWriteArrayList<Throwable?>()
+        val owner = DngPreCaptureAllocation(
+            dispatch = dispatcher::dispatch,
+            allocate = { "content://media/dng/ready-failure" },
+            isCurrent = { true },
+            onReady = { error("injected Camera2 dispatch failure") },
+            onLateValue = late::add,
+            onFailure = failures::add,
+            onRetired = { terminal.countDown() },
+        )
+
+        try {
+            assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+            assertTrue(terminal.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf("content://media/dng/ready-failure"), late.toList())
+            assertEquals(1, failures.size)
+            assertTrue(failures.single() is IllegalStateException)
+            assertFalse(owner.cancel())
         } finally {
             dispatcher.shutdown()
         }

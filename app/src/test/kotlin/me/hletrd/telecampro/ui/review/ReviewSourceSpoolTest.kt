@@ -23,6 +23,22 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 class ReviewSourceSpoolTest {
+    @Test
+    fun `unused cleanup reservation cancels lease exactly and retry stays absent`() {
+        val budget = ReviewSourceByteBudget(8L)
+        val cleanup = ReviewSpoolCleanupOwner(capacity = 1)
+        val reservation = requireNotNull(cleanup.reserve())
+        val lease = budget.openLease()
+        assertTrue(lease.tryGrow(4))
+
+        assertEquals(ReviewSpoolDeleteDisposition.ABSENT, reservation.cancel(lease))
+        assertEquals(ReviewSpoolDeleteDisposition.ABSENT, reservation.cancel(lease))
+        assertEquals(ReviewSpoolDeleteDisposition.ABSENT, reservation.retry())
+        assertEquals(0L, budget.usedBytes())
+        assertEquals(0, cleanup.admittedCount())
+        assertEquals(0, cleanup.unresolvedCount())
+    }
+
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
@@ -238,6 +254,7 @@ class ReviewSourceSpoolTest {
             input,
             maxBytes = 8L,
             budget = budget,
+            filePrefix = "review-source-",
             cleanupOwner = cleanup,
         )
 
@@ -289,6 +306,7 @@ class ReviewSourceSpoolTest {
                 refusedInput,
                 maxBytes = 8L,
                 budget = budget,
+                filePrefix = "review-source-",
                 cleanupOwner = cleanup,
             ),
         )

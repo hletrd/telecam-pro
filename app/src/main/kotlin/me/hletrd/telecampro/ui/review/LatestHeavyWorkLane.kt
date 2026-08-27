@@ -391,10 +391,10 @@ private object ReviewSpoolWriteRefused : RuntimeException(null, null, false, fal
 internal fun spoolReviewSourceResult(
     cacheDirectory: File,
     input: InputStream,
-    maxBytes: Long = REVIEW_SOURCE_MAX_BYTES,
-    budget: ReviewSourceByteBudget = processReviewSourceBudget,
-    filePrefix: String = REVIEW_SPOOL_PREFIX,
-    cleanupOwner: ReviewSpoolCleanupOwner = processReviewSpoolCleanupOwner,
+    maxBytes: Long,
+    budget: ReviewSourceByteBudget,
+    filePrefix: String,
+    cleanupOwner: ReviewSpoolCleanupOwner,
 ): ReviewSpoolBuildResult {
     if (maxBytes <= 0L) return ReviewSpoolBuildResult.Failed(ReviewSpoolDeleteDisposition.ABSENT)
     val cleanup = cleanupOwner.reserve()
