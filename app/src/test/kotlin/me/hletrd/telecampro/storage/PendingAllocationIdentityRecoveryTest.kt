@@ -2,6 +2,8 @@ package me.hletrd.telecampro.storage
 
 import android.net.Uri
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import me.hletrd.telecampro.ProcessAdmissionSignal
 import org.junit.Assert.assertEquals
@@ -275,6 +277,167 @@ class PendingAllocationIdentityRecoveryTest {
         assertEquals(PendingOutputDiscardResult.RECOVERY_MARKED, claim.recover())
     }
 
+    @Test
+    fun `process retry scheduler runs and cancels its default future wrapper`() {
+        val field = Class.forName("me.hletrd.telecampro.storage.MediaStoreWriterKt")
+            .getDeclaredField("processPendingIdentityRetryScheduler")
+            .apply { isAccessible = true }
+        val scheduler = field.get(null) as RejectedOutputRetryScheduler
+        val ran = CountDownLatch(1)
+
+        requireNotNull(scheduler.schedule(1L) { ran.countDown() })
+        assertTrue(ran.await(2, TimeUnit.SECONDS))
+        val cancelled = requireNotNull(scheduler.schedule(60_000L) { error("cancelled retry ran") })
+        cancelled.cancel()
+    }
+
+    @Test
+    fun `dispatch rejection and throwing callbacks retain truth while releasing reservation`() {
+        val owner = RejectedOutputCleanupCapacityOwner<String>(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 2,
+            discardEffect = { PendingOutputDiscardResult.DELETED },
+        )
+        val reservation = requireNotNull(owner.reserve())
+        owner.shutdownNowForTest()
+
+        assertFalse(reservation.submit("rejected") { error("observer failure") })
+        assertEquals(1, owner.unresolvedCount())
+        assertEquals(0, owner.admittedCount())
+    }
+
+    @Test
+    fun `discard and completion exceptions become retained unresolved truth`() {
+        val completed = CountDownLatch(1)
+        val owner = RejectedOutputCleanupCapacityOwner<String>(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 2,
+            discardEffect = { error("discard failure") },
+        )
+        try {
+            assertEquals(
+                RejectedOutputCleanupDispatch.ACCEPTED,
+                owner.dispatch("row") {
+                    completed.countDown()
+                    error("completion failure")
+                },
+            )
+            assertTrue(completed.await(2, TimeUnit.SECONDS))
+            awaitCondition { owner.unresolvedCount() == 1 && owner.admittedCount() == 0 }
+        } finally {
+            owner.shutdownNowForTest()
+        }
+    }
+
+    @Test
+    fun `retry without a permit reschedules one claim until capacity returns`() {
+        val scheduler = ManualRetryScheduler()
+        val attempts = AtomicInteger()
+        val owner = RejectedOutputCleanupCapacityOwner<String>(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 3,
+            discardEffect = {
+                attempts.incrementAndGet()
+                PendingOutputDiscardResult.UNRESOLVED
+            },
+            retryScheduler = scheduler,
+            retryInitialDelayMs = 1L,
+            retryMaxDelayMs = 2L,
+        )
+        try {
+            assertEquals(RejectedOutputCleanupDispatch.ACCEPTED, owner.dispatch("retry"))
+            awaitCondition { attempts.get() == 1 && scheduler.pendingCount() == 1 }
+            val firstBlocker = requireNotNull(owner.reserve())
+            val secondBlocker = requireNotNull(owner.reserve())
+            scheduler.runNext()
+            assertEquals(1, scheduler.pendingCount())
+            assertEquals(1, attempts.get())
+            firstBlocker.cancel()
+            secondBlocker.cancel()
+            scheduler.runNext()
+            awaitCondition { attempts.get() == 2 && scheduler.pendingCount() == 1 }
+        } finally {
+            owner.shutdownNowForTest()
+        }
+    }
+
+    @Test
+    fun `retry executor rejection releases permit and reschedules retained claim`() {
+        val scheduler = ManualRetryScheduler()
+        val owner = RejectedOutputCleanupCapacityOwner<String>(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 2,
+            discardEffect = { PendingOutputDiscardResult.UNRESOLVED },
+            retryScheduler = scheduler,
+            retryInitialDelayMs = 1L,
+            retryMaxDelayMs = 2L,
+        )
+        assertEquals(RejectedOutputCleanupDispatch.ACCEPTED, owner.dispatch("row"))
+        awaitCondition { owner.unresolvedCount() == 1 && scheduler.pendingCount() == 1 }
+        owner.shutdownNowForTest()
+
+        scheduler.runNext()
+        assertEquals(1, scheduler.pendingCount())
+        assertEquals(0, owner.admittedCount())
+        assertEquals(1, owner.unresolvedCount())
+    }
+
+    @Test
+    fun `manual retry trigger rearms after scheduler rejection without duplication`() {
+        val scheduler = RejectOnceRetryScheduler()
+        val owner = RejectedOutputCleanupCapacityOwner<String>(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 2,
+            discardEffect = { PendingOutputDiscardResult.UNRESOLVED },
+            retryScheduler = scheduler,
+            retryInitialDelayMs = 1L,
+            retryMaxDelayMs = 2L,
+        )
+        try {
+            assertEquals(RejectedOutputCleanupDispatch.ACCEPTED, owner.dispatch("row"))
+            awaitCondition { owner.unresolvedCount() == 1 && scheduler.rejections.get() == 1 }
+            repeat(5) { owner.retryUnresolved() }
+            assertEquals(1, scheduler.pendingCount())
+        } finally {
+            owner.shutdownNowForTest()
+        }
+    }
+
+    @Test
+    fun `ownership invariant reports an already admitted overflow`() {
+        val uncaught = CountDownLatch(1)
+        val owner = RejectedOutputCleanupCapacityOwner<String>(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 1,
+            ownershipLimit = 1,
+            threadFactory = java.util.concurrent.ThreadFactory { task ->
+                Thread(task, "identity-overflow-test").apply {
+                    isDaemon = true
+                    uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, failure ->
+                        if (failure is IllegalStateException) uncaught.countDown()
+                    }
+                }
+            },
+            discardEffect = { PendingOutputDiscardResult.UNRESOLVED },
+        )
+        val first = requireNotNull(owner.reserve())
+        val second = requireNotNull(owner.reserve())
+        try {
+            assertTrue(first.submit("first"))
+            assertTrue(second.submit("second"))
+            assertTrue(uncaught.await(2, TimeUnit.SECONDS))
+            assertEquals(1, owner.unresolvedCount())
+        } finally {
+            owner.shutdownNowForTest()
+        }
+    }
+
     private fun awaitCondition(condition: () -> Boolean) {
         val deadline = System.nanoTime() + 2_000_000_000L
         while (!condition() && System.nanoTime() < deadline) Thread.yield()
@@ -304,5 +467,21 @@ class PendingAllocationIdentityRecoveryTest {
 
         @Synchronized fun pendingCount(): Int = tasks.count { !it.cancelled }
         @Synchronized fun delays(): List<Long> = observedDelays.toList()
+    }
+
+    private class RejectOnceRetryScheduler : RejectedOutputRetryScheduler {
+        private val delegate = ManualRetryScheduler()
+        val rejections = AtomicInteger()
+
+        override fun schedule(
+            delayMs: Long,
+            action: () -> Unit,
+        ): RejectedOutputRetryCancellation? = if (rejections.getAndIncrement() == 0) {
+            null
+        } else {
+            delegate.schedule(delayMs, action)
+        }
+
+        fun pendingCount(): Int = delegate.pendingCount()
     }
 }
