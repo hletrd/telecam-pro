@@ -428,6 +428,9 @@ class CameraEngine internal constructor(
     // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
     // launched behind the keyguard, where onStop lands right as the session would configure.
     @Volatile private var paused = false
+    // One exact Engine/resume attempt, explicitly carried into at most one installed controller.
+    // Never sample StartupTrace's mutable process-global owner while wiring a Camera2 generation.
+    private val startupTraceOwnership = EngineStartupTraceOwnership()
     // True only after the CURRENT controller has configured a working session. Session-key and lens
     // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
     @Volatile private var cameraReady = false
@@ -1511,10 +1514,12 @@ class CameraEngine internal constructor(
         manager.registerAvailabilityCallback(context.mainExecutor, routeAvailabilityCallback)
     }
 
-    private fun runDeferredRouteTopologyConvergence(): Boolean {
+    private fun runDeferredRouteTopologyConvergence(
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ): Boolean {
         if (routeAvailabilityReleased.get() || paused || !started || !nativeAcquisitionMayProceed()) return false
         routeTopologyConvergence.claim() ?: return false
-        convergeAfterRouteTopologyChange()
+        convergeAfterRouteTopologyChange(startupTraceOwner)
         return true
     }
 
@@ -1530,7 +1535,9 @@ class CameraEngine internal constructor(
         }.onFailure { deferredRouteTopologyScheduled.set(false) }
     }
 
-    private fun convergeAfterRouteTopologyChange() {
+    private fun convergeAfterRouteTopologyChange(
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ) {
         val targetRoute = cameraRouteTopologyDecision(
             previousIds = knownCameraIds,
             currentIds = knownCameraIds,
@@ -1544,7 +1551,12 @@ class CameraEngine internal constructor(
             overrideId = null
             userCameraPin = null
         }.first
-        reconfigureCamera(null, transaction, startup = controller == null)
+        reconfigureCamera(
+            null,
+            transaction,
+            startup = controller == null,
+            startupTraceOwner = startupTraceOwner,
+        )
         runCatching { publishLensInventoryOnce() }
     }
 
@@ -1751,6 +1763,9 @@ class CameraEngine internal constructor(
             }
         }
         if (!dispatchStart) return
+        // Exact Engine-local owner captured by the resume that authorized this GL/open attempt.
+        // A pause/new resume revokes it; this callback never samples process-global trace state.
+        val startupTraceOwner = startupTraceOwnership.current()
         // Cold-start feedback: GL creation + Camera2 preflight/open happen before the first frame.
         onStatus?.invoke(CameraStatusMessage.STARTING_CAMERA.status())
 
@@ -1758,9 +1773,10 @@ class CameraEngine internal constructor(
         // input Surface exists is retained, and the input callback snapshots that latest complete
         // desired transaction. This removes the old preflight route that could be opened under a
         // newer generation.
-        setupExecutor.execute {
+        runCatching { setupExecutor.execute {
             val acquired = runCatching { terminalAcquisitionGate.runIfOpen {
                 if (paused || UnsafeRecorderQuarantine.isActive()) {
+                    startupTraceOwnership.revoke(startupTraceOwner)
                     synchronized(this) { starting = false }
                     return@runIfOpen
                 }
@@ -1774,11 +1790,20 @@ class CameraEngine internal constructor(
                     // A bounded native wedge can retire this whole GlPipeline object and install a
                     // replacement. Its late input callback must not open a camera onto the new
                     // generation's Engine state.
-                    if (!glOwners.owns(ownedGl)) return@start
+                    if (!glOwners.owns(ownedGl)) {
+                        startupTraceOwnership.revoke(startupTraceOwner)
+                        return@start
+                    }
                     terminalAcquisitionGate.runIfOpen inputReady@{
-                        if (!glOwners.owns(ownedGl)) return@inputReady
+                        if (!glOwners.owns(ownedGl)) {
+                            startupTraceOwnership.revoke(startupTraceOwner)
+                            return@inputReady
+                        }
                         glInputPending = false
-                        if (paused || UnsafeRecorderQuarantine.isActive()) return@inputReady
+                        if (paused || UnsafeRecorderQuarantine.isActive()) {
+                            startupTraceOwnership.revoke(startupTraceOwner)
+                            return@inputReady
+                        }
                         ownedGl.setEisProvider { gyro.currentCorrection() }
                         ownedGl.setAnalysisCallback { h, w, f, m ->
                             if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f, m)
@@ -1795,7 +1820,12 @@ class CameraEngine internal constructor(
                         resolveInitialCameraRouteAvailability()
                         // Capture route + token after GL input exists. A newer intent invalidates it.
                         val desired = currentOpticsReconfiguration()
-                        reconfigureCamera(desired.overrideId, desired.transaction, startup = true)
+                        reconfigureCamera(
+                            desired.overrideId,
+                            desired.transaction,
+                            startup = true,
+                            startupTraceOwner = startupTraceOwner,
+                        )
                         // Enumerated AFTER the route/open task is queued, like the debug capability
                         // scan below it: the rail can render its pre-enumeration default for the
                         // few hundred ms this costs, but the first camera open must not wait on it.
@@ -1803,7 +1833,10 @@ class CameraEngine internal constructor(
                         maybeLogCameraCapabilities()
                     }
                 }
-                if (!glOwners.owns(ownedGl)) return@runIfOpen
+                if (!glOwners.owns(ownedGl)) {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    return@runIfOpen
+                }
                 synchronized(this) {
                     // Publish start state BEFORE binding: a TextureView surface destroyed+recreated
                     // during GL startup then takes the started fast path and binds the fresh surface.
@@ -1822,7 +1855,13 @@ class CameraEngine internal constructor(
                     )
                 }
             } }.getOrDefault(false)
-            if (!acquired) synchronized(this) { starting = false }
+            if (!acquired) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                synchronized(this) { starting = false }
+            }
+        } }.onFailure {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            synchronized(this) { starting = false }
         }
     }
 
@@ -2219,7 +2258,7 @@ class CameraEngine internal constructor(
         // (AGG4-2 — the flag used to survive every mode/lens/TC remap and defeat the leading-edge
         // exact submit for one gesture).
         zoomInteractionState = ZoomInteractionState()
-        val ctrl = CameraController(context, StartupTrace.currentOwner())
+        val ctrl = CameraController(context)
         if (activeCameraRoute == CameraRoute.EXTERNAL) {
             ctrl.useGenericDeviceProfile()
         }
@@ -2255,8 +2294,12 @@ class CameraEngine internal constructor(
         ownedGl: GlPipeline,
         input: Surface,
         transaction: OpticsTransaction? = null,
+        startupTraceOwner: StartupTrace.Owner? = null,
     ) {
-        if (!nativeAcquisitionMayProceed()) return
+        if (!nativeAcquisitionMayProceed()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
         // The SurfaceTexture belongs to exactly one GL object. A queued open from a retired object
         // must never configure Camera2 against that old native window.
         if (paused || !glInputTransactionMayProceed(
@@ -2264,11 +2307,23 @@ class CameraEngine internal constructor(
                 engineStarted = started,
                 inputCurrent = ownedGl.inputSurface === input,
             )
-        ) return
+        ) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
         val expectedOpticsGeneration = transaction?.generation ?: opticsIntentGeneration.get()
-        if (!reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)) return
-        val sel = selection ?: return
-        val c = caps ?: return
+        if (!reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val sel = selection ?: run {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val c = caps ?: run {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
         seedGlZoom(ownedGl)
         invalidateCameraReady()
         val outgoing = controller
@@ -2278,6 +2333,7 @@ class CameraEngine internal constructor(
                 if (controller === outgoing) controller = null
             }
             onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+            startupTraceOwnership.revoke(startupTraceOwner)
             return
         }
         val ctrl = wireController(ownedGl)
@@ -2309,8 +2365,11 @@ class CameraEngine internal constructor(
         }
         if (installedPublication == null) {
             ctrl.close()
+            startupTraceOwnership.revoke(startupTraceOwner)
             return
         }
+        val controllerTraceOwner = startupTraceOwnership.claimController(startupTraceOwner)
+        ctrl.bindStartupTrace(controllerTraceOwner)
         // Post-swap replay of the drive-side ZSL gate (review 2026-08-01): the construction-site
         // replay reads driveMode BEFORE the swap, so a main-thread setDriveMode landing in that
         // window pushed the outgoing controller (dropped/closing) and left the new one wired with
@@ -2354,6 +2413,7 @@ class CameraEngine internal constructor(
                             inputCurrent = ownedGl.inputSurface === input,
                         )
                     ) {
+                        startupTraceOwnership.revoke(controllerTraceOwner)
                         ctrl.close()
                         return@open
                     }
@@ -2369,6 +2429,7 @@ class CameraEngine internal constructor(
                     )
                 },
                 onError = { failure ->
+                    startupTraceOwnership.revoke(controllerTraceOwner)
                     if (convergeRetainedSurfaceAfterNativeRefusal(failure)) {
                         synchronized(this) { if (controller === ctrl) controller = null }
                         ctrl.close()
@@ -2386,6 +2447,7 @@ class CameraEngine internal constructor(
             )
         }
         if (!openStarted) {
+            startupTraceOwnership.revoke(controllerTraceOwner)
             synchronized(this) {
                 if (controller === ctrl) controller = null
             }
@@ -3424,17 +3486,28 @@ class CameraEngine internal constructor(
     }
 
     /** Bounded retry for transient selection/capability failures before the first Ready session. */
-    private fun scheduleColdStartRetry(transaction: OpticsTransaction, reason: CameraStatusMessage) {
+    private fun scheduleColdStartRetry(
+        transaction: OpticsTransaction,
+        reason: CameraStatusMessage,
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ) {
         val canRun = nativeAcquisitionMayProceed() && started && !paused &&
             recorder == null && gl.inputSurface != null
+        if (!canRun || transaction.generation != opticsIntentGeneration.get()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
         when (val failure = coldStartRetryGate.failed(
             expectedGeneration = transaction.generation,
             currentGeneration = opticsIntentGeneration.get(),
             canRun = canRun,
         )) {
+            // Another failure already owns the one scheduled retry for this exact attempt.
             ColdStartRetryGate.Failure.Ignore -> Unit
-            ColdStartRetryGate.Failure.Exhausted ->
+            ColdStartRetryGate.Failure.Exhausted -> {
+                startupTraceOwnership.revoke(startupTraceOwner)
                 onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+            }
             is ColdStartRetryGate.Failure.Retry -> {
                 onStatus?.invoke(reason.status())
                 runCatching {
@@ -3447,13 +3520,17 @@ class CameraEngine internal constructor(
                                     opticsIntentGeneration.get(),
                                     retryable,
                                 )
-                            ) return@schedule
+                            ) {
+                                startupTraceOwnership.revoke(startupTraceOwner)
+                                return@schedule
+                            }
                             resolveInitialCameraRouteAvailability()
                             val desired = currentOpticsReconfiguration()
                             reconfigureCamera(
                                 desired.overrideId,
                                 desired.transaction,
                                 startup = true,
+                                startupTraceOwner = startupTraceOwner,
                             )
                         },
                         CAMERA_RECOVERY_DELAY_MS,
@@ -3461,6 +3538,7 @@ class CameraEngine internal constructor(
                     )
                 }.onFailure {
                     coldStartRetryGate.abandon(failure.token)
+                    startupTraceOwnership.revoke(startupTraceOwner)
                     onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
                 }
             }
@@ -3911,21 +3989,36 @@ class CameraEngine internal constructor(
         id: String?,
         transaction: OpticsTransaction,
         startup: Boolean = false,
+        startupTraceOwner: StartupTrace.Owner? = null,
     ) {
-        if (!nativeAcquisitionMayProceed()) return
+        if (!nativeAcquisitionMayProceed()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
         synchronized(this) {
-            if (!ownsOpticsTransaction(transaction)) return
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return
+            }
             overrideId = id
         }
-        if (!started) return
+        if (!started) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
         val ownedGl = glOwners.current()
         val input = ownedGl.inputSurface ?: run {
             // An optics intent that lands between GL start and input-Surface creation is valid and
             // remains Not-Ready. The input callback snapshots the latest generation and converges it.
             if (glInputPending) return
             if (startup || controller == null) {
-                scheduleColdStartRetry(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING)
+                scheduleColdStartRetry(
+                    transaction,
+                    CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+                    startupTraceOwner,
+                )
             } else {
+                startupTraceOwnership.revoke(startupTraceOwner)
                 rollbackOptics(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED.status())
             }
             return
@@ -3941,17 +4034,31 @@ class CameraEngine internal constructor(
                     engineStarted = started,
                     inputCurrent = ownedGl.inputSurface === input,
                 )
-            ) return@execute
-            if (!ownsOpticsTransaction(transaction)) return@execute
-            if (paused || recorder != null) return@execute
+            ) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (paused || recorder != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
             val recoverColdPreflight = startup || controller == null
             // Resolve the id and read the characteristics BEFORE closing: these are dozens of
             // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
             // the old camera keeps streaming while they run, shrinking the visible freeze.
             val sel = selectCurrentLens() ?: run {
                 if (recoverColdPreflight) {
-                    scheduleColdStartRetry(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING)
+                    scheduleColdStartRetry(
+                        transaction,
+                        CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+                        startupTraceOwner,
+                    )
                 } else {
+                    startupTraceOwnership.revoke(startupTraceOwner)
                     rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status())
                 }
                 return@execute
@@ -3959,19 +4066,36 @@ class CameraEngine internal constructor(
             val c = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run {
                     if (recoverColdPreflight) {
-                        scheduleColdStartRetry(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING)
+                        scheduleColdStartRetry(
+                            transaction,
+                            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+                            startupTraceOwner,
+                        )
                     } else {
+                        startupTraceOwnership.revoke(startupTraceOwner)
                         rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status())
                     }
                     return@execute
                 }
-            if (!ownsOpticsTransaction(transaction)) return@execute
-            if (!nativeAcquisitionMayProceed() || paused || recorder != null) return@execute
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (!nativeAcquisitionMayProceed() || paused || recorder != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
             // This lightweight physical-member walk happens on setupExecutor while the old camera
             // is still streaming. The still callback remains cache-only even on the first lens hit.
             prefetchLensExifMetadata(sel, c)
-            if (!ownsOpticsTransaction(transaction)) return@execute
-            if (!nativeAcquisitionMayProceed() || paused || recorder != null) return@execute
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (!nativeAcquisitionMayProceed() || paused || recorder != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
 
             // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
             // blackout overlapped away). The preview surface still belongs to the old session, so
@@ -4012,8 +4136,11 @@ class CameraEngine internal constructor(
             }
             if (candidatePublication == null) {
                 next.close()
+                startupTraceOwnership.revoke(startupTraceOwner)
                 return@execute
             }
+            val controllerTraceOwner = startupTraceOwnership.claimController(startupTraceOwner)
+            next.bindStartupTrace(controllerTraceOwner)
             // Post-swap replay of the drive-side ZSL gate — same window as the sequential path's
             // replay above: wireController read driveMode before this synchronized swap, and an MR
             // recall's own applyLoaded orders the reopen BEFORE setDriveMode, making the race real.
@@ -4063,10 +4190,12 @@ class CameraEngine internal constructor(
                                 expectedSessionGeneration = candidatePublication.sessionGeneration,
                             )
                         } else {
+                            startupTraceOwnership.revoke(controllerTraceOwner)
                             next.close()
                         }
                     },
                     onError = { failure ->
+                        startupTraceOwnership.revoke(controllerTraceOwner)
                         deviceUp.countDown() // an open-phase failure also releases the latch (fallback)
                         // A concurrent-open refusal is expected on devices that cannot dual-open a
                         // shared sensor; the setup task below owns that local sequential fallback.
@@ -4088,6 +4217,7 @@ class CameraEngine internal constructor(
                 )
             }
             if (!openStarted) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 next.close()
                 // Close the OUTGOING device too. Every other abort branch here either closes `old`
                 // or deliberately RESTORES it as the controller (the superseded-transaction branch);
@@ -4122,6 +4252,7 @@ class CameraEngine internal constructor(
             // superseded this attempt while the setup thread was parked. Do not publish sizes or
             // start a deferred session from an obsolete device; release every local handle.
             if (!nativeAcquisitionMayProceed()) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 next.close()
                 // Same leak as the !openStarted branch (review L1): terminal teardown superseded the
                 // dual-open while the setup thread was parked on the latch — release the outgoing
@@ -4138,6 +4269,7 @@ class CameraEngine internal constructor(
                     inputCurrent = ownedGl.inputSurface === input,
                 )
             ) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 next.close()
                 old?.close()
                 synchronized(this) {
@@ -4146,6 +4278,7 @@ class CameraEngine internal constructor(
                 return@execute
             }
             if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 next.close()
                 val cleanup = synchronized(this) {
                     dualOpenSupersessionCleanup(
@@ -4174,6 +4307,7 @@ class CameraEngine internal constructor(
                 return@execute
             }
             if (!nativeAcquisitionMayProceed() || paused || recorder != null || controller !== next) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 next.close()
                 old?.close()
                 synchronized(this) {
@@ -4193,6 +4327,7 @@ class CameraEngine internal constructor(
             ownedGl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
             val outgoingRelease = old?.close()
             if (!cameraReplacementMayAcquire(outgoingRelease)) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 // The next CameraDevice may have been admitted by the deliberate dual-open path,
                 // but its deferred session has not started. Retire it and refuse every sequential
                 // or session-start acquisition: timeout is retained ownership, never release proof.
@@ -4211,6 +4346,7 @@ class CameraEngine internal constructor(
                     next.startDeferredSession()
                 }
                 if (!sessionStarted) {
+                    startupTraceOwnership.revoke(controllerTraceOwner)
                     next.close()
                     synchronized(this) {
                         if (controller === next) controller = null
@@ -4218,6 +4354,7 @@ class CameraEngine internal constructor(
                 }
             } else {
                 // Sequential fallback: the HAL refused the concurrent open.
+                startupTraceOwnership.revoke(controllerTraceOwner)
                 val refusedCandidateRelease = next.close()
                 synchronized(this) {
                     if (controller === next) controller = null
@@ -4227,7 +4364,8 @@ class CameraEngine internal constructor(
                     return@execute
                 }
                 if (!nativeAcquisitionMayProceed() || paused || recorder != null) return@execute
-                openCamera(ownedGl, input, transaction)
+                // A second controller must never inherit the first candidate's trace owner.
+                openCamera(ownedGl, input, transaction, startupTraceOwner = null)
             }
         }
     }
@@ -6741,6 +6879,7 @@ class CameraEngine internal constructor(
             starting = false
             glInputPending = false
         }
+        startupTraceOwnership.revoke()
         onReleased()
     }
 
@@ -7050,6 +7189,7 @@ class CameraEngine internal constructor(
         // work. A fresh Engine observes the same irreversible gate.
         if (!UnsafeRecorderQuarantine.retain(rec)) return
         terminalAcquisitionGate.close()
+        startupTraceOwnership.revoke()
         synchronized(this) {
             started = false
             starting = false
@@ -7075,6 +7215,7 @@ class CameraEngine internal constructor(
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
+        startupTraceOwnership.revoke()
         cancelRecorderSetupReplay()
         retirePreNativeRecordingAllocation()
         coldStartRetryGate.cancel()
@@ -7140,7 +7281,7 @@ class CameraEngine internal constructor(
         // change builds a fresh callback with firstDiagnosticResultPending), which printed a
         // one-mark `cold start … firstCameraResult <arbitrary>` line into the exact log the startup
         // budget is read from. A fabricated number there is worse than no line at all.
-        val startupTraceOwner = StartupTrace.begin()
+        val startupTraceOwner = startupTraceOwnership.begin()
         paused = false
         // Retract the policy-block gate on every foreground, BEFORE anything else. The gate replaces
         // the viewfinder, so while it is up there is no preview Surface — and with no Surface the
@@ -7160,7 +7301,7 @@ class CameraEngine internal constructor(
         }
         policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
         if (!nativeAcquisitionMayProceed()) {
-            StartupTrace.disarm(startupTraceOwner)
+            startupTraceOwnership.revoke(startupTraceOwner)
             if (UnsafeRecorderQuarantine.isActive()) {
                 onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             } else {
@@ -7188,15 +7329,15 @@ class CameraEngine internal constructor(
         // main thread — the one remaining unserialized open: it raced a queued reopen's
         // `controller = null` + open (both threads could observe null and double-open, contending
         // for the HAL device) and paid the open's Binder IPCs on the UI thread.
-        setupExecutor.execute {
+        runCatching { setupExecutor.execute {
             if (!nativeAcquisitionMayProceed() || paused) {
-                StartupTrace.disarm(startupTraceOwner)
+                startupTraceOwnership.revoke(startupTraceOwner)
                 return@execute
             }
             // Camera already live (an ordinary foreground return, not a cold start): nothing will
             // mark, so disarm rather than leave a zero-mark trace for a later rebuild to finish.
             if (controller != null) {
-                StartupTrace.disarm(startupTraceOwner)
+                startupTraceOwnership.revoke(startupTraceOwner)
                 return@execute
             }
             // Re-resolve selection/caps/stream geometry from CURRENT desired fields. openCamera(input)
@@ -7206,10 +7347,14 @@ class CameraEngine internal constructor(
             // dual-open wait could let this older attempt publish outgoing caps/Ready under the
             // newer generation even when there was no pre-pause rollback baseline.
             resolveInitialCameraRouteAvailability()
-            if (runDeferredRouteTopologyConvergence()) return@execute
+            if (runDeferredRouteTopologyConvergence(startupTraceOwner)) return@execute
             val desired = currentOpticsReconfiguration()
-            reconfigureCamera(desired.overrideId, desired.transaction)
-        }
+            reconfigureCamera(
+                desired.overrideId,
+                desired.transaction,
+                startupTraceOwner = startupTraceOwner,
+            )
+        } }.onFailure { startupTraceOwnership.revoke(startupTraceOwner) }
     }
 
     /**
@@ -7377,6 +7522,7 @@ class CameraEngine internal constructor(
         cancelRecorderSetupReplay()
         routeAvailabilityReleased.set(true)
         paused = true
+        startupTraceOwnership.revoke()
         retirePreNativeRecordingAllocation()
         started = false
         glInputPending = false

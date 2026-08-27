@@ -1,6 +1,9 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Before
@@ -150,5 +153,50 @@ class StartupTraceTest {
     fun `only latest preview request may finish the controller trace`() {
         assertTrue(startupTraceRequestMayFinish(requestGeneration = 8L, latestRequestGeneration = 8L))
         assertTrue(!startupTraceRequestMayFinish(requestGeneration = 7L, latestRequestGeneration = 8L))
+    }
+
+    @Test
+    fun `resume A pause then resume B owns a fresh origin and rejects A result`() {
+        val engine = EngineStartupTraceOwnership()
+        val resumeA = checkNotNull(engine.begin())
+        assertSame(resumeA, engine.begin())
+        assertSame(resumeA, engine.claimController(resumeA))
+        StartupTrace.mark(resumeA, "A-open")
+
+        // CameraEngine.pause is the lifecycle terminal for the exact A attempt.
+        assertTrue(engine.revoke())
+        val resumeB = checkNotNull(engine.begin())
+        assertNotSame(resumeA, resumeB)
+        assertSame(resumeB, engine.claimController(resumeB))
+
+        StartupTrace.finish(resumeA, "A-late-result")
+        StartupTrace.mark(resumeB, "B-open")
+        StartupTrace.finish(resumeB, "B-first-result")
+
+        assertEquals(listOf("B-open", "B-first-result"), StartupTrace.marksForTest().map { it.first })
+        assertEquals(1, emitted.size)
+    }
+
+    @Test
+    fun `second controller revokes first owner so both stale result orders are inert`() {
+        val engine = EngineStartupTraceOwnership()
+        val attempt = checkNotNull(engine.begin())
+        val firstController = engine.claimController(attempt)
+        assertSame(attempt, firstController)
+
+        // Installing a replacement controller is a terminal for the first controller's trace. The
+        // replacement receives no inherited owner, so callbacks from either side cannot mix marks.
+        assertNull(engine.claimController(attempt))
+        assertTrue(!StartupTrace.owns(attempt))
+        StartupTrace.finish(firstController, "old-result-after-replacement")
+        StartupTrace.finish(attempt, "replacement-result-with-old-owner")
+        assertTrue(emitted.isEmpty())
+
+        val freshAttempt = checkNotNull(engine.begin())
+        val freshController = engine.claimController(freshAttempt)
+        StartupTrace.mark(freshController, "fresh-open")
+        StartupTrace.finish(freshController, "fresh-result")
+        assertEquals(listOf("fresh-open", "fresh-result"), StartupTrace.marksForTest().map { it.first })
+        assertEquals(1, emitted.size)
     }
 }

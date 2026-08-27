@@ -53,6 +53,23 @@ object StartupTrace {
         return started
     }
 
+    /**
+     * Starts a new Engine-owned attempt, revoking any older process owner.
+     *
+     * Production re-entrancy is decided by [EngineStartupTraceOwnership] before this call. Keeping
+     * replacement here explicit prevents a newly created Engine from inheriting an older Engine's
+     * still-armed resume origin merely because both live briefly in the same process.
+     */
+    @Synchronized
+    internal fun beginNew(): Owner? {
+        if (!BuildConfig.DEBUG) return null
+        val started = Owner(++nextGeneration)
+        owner = started
+        originMs = elapsedMs()
+        marks.clear()
+        return started
+    }
+
     /** Records `label` with milliseconds since [begin]. Silent when no measurement is armed. */
     @Synchronized
     internal fun mark(expected: Owner?, label: String) {
@@ -93,9 +110,101 @@ object StartupTrace {
     @Synchronized
     internal fun currentOwner(): Owner? = owner
 
+    @Synchronized
+    internal fun owns(expected: Owner?): Boolean = expected != null && owner === expected
+
     /** Host-test view of the buffered marks (label to elapsed-ms), in order. */
     @Synchronized
     internal fun marksForTest(): List<Pair<String, Long>> = marks.toList()
+}
+
+/**
+ * Exact Engine/resume/controller owner for [StartupTrace].
+ *
+ * One Engine may re-enter the same live resume attempt without resetting its origin. Pause,
+ * release, or an exact early terminal revokes that attempt. At most one CameraController may claim
+ * it: constructing a replacement controller revokes the trace before either controller can report
+ * a mixed milestone sequence.
+ */
+internal class EngineStartupTraceOwnership(
+    private val beginNew: () -> StartupTrace.Owner? = StartupTrace::beginNew,
+    private val isCurrent: (StartupTrace.Owner?) -> Boolean = StartupTrace::owns,
+    private val disarm: (StartupTrace.Owner?) -> Unit = StartupTrace::disarm,
+) {
+    private var owner: StartupTrace.Owner? = null
+    private var controllerClaimed = false
+
+    @Synchronized
+    fun begin(): StartupTrace.Owner? {
+        owner?.takeIf(isCurrent)?.let { return it }
+        owner = null
+        controllerClaimed = false
+        return beginNew().also { owner = it }
+    }
+
+    @Synchronized
+    fun current(): StartupTrace.Owner? {
+        val active = owner ?: return null
+        if (isCurrent(active)) return active
+        owner = null
+        controllerClaimed = false
+        return null
+    }
+
+    /** Returns the owner only to its first installed controller. A replacement revokes it. */
+    fun claimController(expected: StartupTrace.Owner?): StartupTrace.Owner? {
+        var revoked: StartupTrace.Owner? = null
+        val claimed = synchronized(this) {
+            if (expected == null) {
+                revoked = owner
+                owner = null
+                controllerClaimed = false
+                null
+            } else if (owner !== expected || !isCurrent(expected)) {
+                if (owner != null && !isCurrent(owner)) {
+                    owner = null
+                    controllerClaimed = false
+                }
+                null
+            } else if (controllerClaimed) {
+                revoked = expected
+                owner = null
+                controllerClaimed = false
+                null
+            } else {
+                controllerClaimed = true
+                expected
+            }
+        }
+        revoked?.let(disarm)
+        return claimed
+    }
+
+    /** Revokes only [expected], so a stale setup task cannot disarm a newer resume. */
+    fun revoke(expected: StartupTrace.Owner?): Boolean {
+        if (expected == null) return false
+        val revoked = synchronized(this) {
+            if (owner !== expected) false else {
+                owner = null
+                controllerClaimed = false
+                true
+            }
+        }
+        if (revoked) disarm(expected)
+        return revoked
+    }
+
+    /** Lifecycle terminal for whichever exact attempt this Engine currently owns. */
+    fun revoke(): Boolean {
+        val revoked = synchronized(this) {
+            owner.also {
+                owner = null
+                controllerClaimed = false
+            }
+        } ?: return false
+        disarm(revoked)
+        return true
+    }
 }
 
 internal fun startupTraceRequestMayFinish(
