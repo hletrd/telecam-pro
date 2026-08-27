@@ -95,7 +95,9 @@ DEBUG_ONE_SHOT_INFO_ANCHORS: dict[str, tuple[str, ...]] = {
         "High-speed session configured",
         "SENSOR_TIMESTAMP source=",
     ),
-    "app/src/main/kotlin/me/hletrd/telecampro/camera/StartupTrace.kt": ("cold start (ms since resume)",),
+    "app/src/main/kotlin/me/hletrd/telecampro/camera/StartupTrace.kt": (
+        "internal var emit: (String) -> Unit",
+    ),
     "app/src/main/kotlin/me/hletrd/telecampro/camera/VendorTagInspector.kt": ("Log.",),
     "app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt": ("audioScene=",),
 }
