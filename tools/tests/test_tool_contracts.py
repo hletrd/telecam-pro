@@ -1592,6 +1592,25 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_rejects_bypassed_completed_dng_transfer_composition(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
+            text = path.read_text(encoding="utf-8")
+            current = "dngPublishQueued = transferCompletedDngFromCameraCallback("
+            self.assertIn(current, text)
+            path.write_text(
+                text.replace(current, "dngPublishQueued = transferCompletedDngPublication(", 1),
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(mutate)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  CameraEngine retains the tested completed-DNG transfer composition",
+            result.stdout,
+        )
+
     def test_committed_export_rejects_unscoped_or_unapproved_signing_procedures(self) -> None:
         fixtures = (
             (

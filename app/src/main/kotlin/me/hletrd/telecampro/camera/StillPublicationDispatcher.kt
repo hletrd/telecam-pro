@@ -57,6 +57,26 @@ internal fun transferCompletedDngPublication(
 }
 
 /**
+ * Exact CameraEngine composition for a completed DNG callback.
+ *
+ * This seam owns the real format decision and the actual processed-queue result. Keeping those two
+ * facts together lets host tests execute the production ordering boundary instead of proving the
+ * policy helper and process dispatcher only in isolation.
+ */
+internal fun transferCompletedDngFromCameraCallback(
+    formats: PhotoFormats,
+    processedQueued: Boolean,
+    enqueueOrdered: (Runnable) -> Boolean,
+    dispatchToProcessOwner: () -> Unit,
+    retainForRecovery: () -> Unit,
+): Boolean = transferCompletedDngPublication(
+    order = dngPublicationTransfer(formats),
+    enqueueAfterProcessed = { task -> processedQueued && enqueueOrdered(task) },
+    publication = dispatchToProcessOwner,
+    onTransferRejected = retainForRecovery,
+)
+
+/**
  * Per-Engine admission facade over the process-lifetime completed-DNG publication capacity.
  *
  * DNG bytes and their bounded COMPLETE-marker result already exist before work reaches this seam.

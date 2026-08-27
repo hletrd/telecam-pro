@@ -76,6 +76,68 @@ class StillPublicationDispatcherTest {
     }
 
     @Test
+    fun `camera callback seam owns raw mixed and every sequence transfer`() {
+        val rawOnly = PhotoFormats(heif = false, jpeg = false, dngRaw = true)
+        val paired = PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+        val events = mutableListOf<String>()
+
+        assertTrue(
+            transferCompletedDngFromCameraCallback(
+                formats = rawOnly,
+                processedQueued = false,
+                enqueueOrdered = { error("RAW-only must not enter processed ordering") },
+                dispatchToProcessOwner = { events += "raw" },
+                retainForRecovery = { error("direct RAW transfer cannot reject") },
+            ),
+        )
+        listOf("mixed-single", "burst", "aeb", "timelapse").forEach { kind ->
+            var queued: Runnable? = null
+            assertTrue(
+                transferCompletedDngFromCameraCallback(
+                    formats = paired,
+                    processedQueued = true,
+                    enqueueOrdered = { task -> queued = task; true },
+                    dispatchToProcessOwner = { events += kind },
+                    retainForRecovery = { error("$kind accepted ordering cannot recover") },
+                ),
+            )
+            assertTrue(kind !in events)
+            checkNotNull(queued).run()
+        }
+
+        assertEquals(listOf("raw", "mixed-single", "burst", "aeb", "timelapse"), events)
+    }
+
+    @Test
+    fun `camera callback seam retains mixed DNG when processed or ordered queue rejects`() {
+        val paired = PhotoFormats(heif = true, jpeg = true, dngRaw = true)
+        val retained = mutableListOf<String>()
+        var enqueueCalls = 0
+
+        assertFalse(
+            transferCompletedDngFromCameraCallback(
+                formats = paired,
+                processedQueued = false,
+                enqueueOrdered = { enqueueCalls++; true },
+                dispatchToProcessOwner = { error("missing processed sibling cannot dispatch") },
+                retainForRecovery = { retained += "processed-rejected" },
+            ),
+        )
+        assertFalse(
+            transferCompletedDngFromCameraCallback(
+                formats = paired,
+                processedQueued = true,
+                enqueueOrdered = { enqueueCalls++; false },
+                dispatchToProcessOwner = { error("rejected ordered queue cannot dispatch") },
+                retainForRecovery = { retained += "queue-rejected" },
+            ),
+        )
+
+        assertEquals(1, enqueueCalls)
+        assertEquals(listOf("processed-rejected", "queue-rejected"), retained)
+    }
+
+    @Test
     fun `saturation bounds active and queued DNG tails and never runs overflow inline`() {
         val releaseWorkers = CountDownLatch(1)
         val workersEntered = CountDownLatch(2)

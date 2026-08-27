@@ -1702,6 +1702,14 @@ check(
     "tap-focus scan and owned reset retain budgeted calibration evidence",
 )
 check(
+    "transferCompletedDngFromCameraCallback(" in camera_engine
+    and "formats = formats" in camera_engine
+    and "processedQueued = processedQueued" in camera_engine
+    and "dispatchToProcessOwner = { dispatchCompletedDng(pending) }" in camera_engine
+    and "retainForRecovery = { retainCompletedDngForRecovery(pending) }" in camera_engine,
+    "CameraEngine retains the tested completed-DNG transfer composition",
+)
+check(
     bool(
         trace_admission_call
         and "BuildConfig.DEBUG" in trace_admission_call.group(1)

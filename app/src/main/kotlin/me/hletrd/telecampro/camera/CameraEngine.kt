@@ -5570,21 +5570,17 @@ class CameraEngine internal constructor(
                                 is DngWriteResult.Complete -> {
                                     rejectedDngCleanup?.cancel()
                                     val pending = write.publication
-                                    val transfer = dngPublicationTransfer(formats)
-                                    dngPublishQueued = transferCompletedDngPublication(
-                                        order = transfer,
+                                    dngPublishQueued = transferCompletedDngFromCameraCallback(
+                                        formats = formats,
+                                        processedQueued = processedQueued,
                                         // The processed save was enqueued first on this single-thread
                                         // lane. A mixed DNG therefore reaches the process owner only
                                         // after its sibling's finally block releases/settles that lane.
-                                        enqueueAfterProcessed = { task ->
-                                            if (!processedQueued) {
-                                                false
-                                            } else {
-                                                runCatching { ioExecutor.execute(task) }.isSuccess
-                                            }
+                                        enqueueOrdered = { task ->
+                                            runCatching { ioExecutor.execute(task) }.isSuccess
                                         },
-                                        publication = { dispatchCompletedDng(pending) },
-                                        onTransferRejected = { retainCompletedDngForRecovery(pending) },
+                                        dispatchToProcessOwner = { dispatchCompletedDng(pending) },
+                                        retainForRecovery = { retainCompletedDngForRecovery(pending) },
                                     )
                                 }
                                 is DngWriteResult.Rejected -> {
