@@ -422,7 +422,7 @@ object MediaStoreWriter {
         }.orEmpty()
     }
 
-    fun createPendingImage(
+    private fun insertPendingImage(
         context: Context,
         displayName: String,
         mimeType: String,
@@ -440,8 +440,15 @@ object MediaStoreWriter {
         val uri = runCatching {
             context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
         }.getOrNull() ?: return null
-        return registerPending(context, uri)
+        return uri
     }
+
+    fun createPendingImage(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+    ): Uri? = createPendingImageAllocation(context, displayName, mimeType, subDir)?.uri
 
     /** Creates and freezes the exact provider identity used by every later destructive decision. */
     internal fun createPendingImageAllocation(
@@ -453,9 +460,36 @@ object MediaStoreWriter {
     ): PendingOutputAllocation? {
         val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
         val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: return null
-        val uri = createPendingImage(context, displayName, mimeType, subDir) ?: run {
+        val uri = insertPendingImage(context, displayName, mimeType, subDir) ?: run {
             identityReservation.cancel()
             return null
+        }
+        return finishPendingInsert(
+            context = context,
+            uri = uri,
+            family = family,
+            identityReservation = identityReservation,
+            discardJournal = discardJournal,
+        )
+    }
+
+    private fun finishPendingInsert(
+        context: Context,
+        uri: Uri,
+        family: CaptureFamilyKey,
+        identityReservation: RejectedOutputCleanupReservation<PendingIdentityRecovery>,
+        discardJournal: PendingDiscardJournal,
+    ): PendingOutputAllocation? {
+        when (registerPending(context, uri)) {
+            PendingRegistrationDisposition.ABSENT -> {
+                identityReservation.cancel()
+                return null
+            }
+            PendingRegistrationDisposition.RETAINED -> {
+                submitPendingIdentityRecovery(identityReservation, context, uri, family)
+                return null
+            }
+            PendingRegistrationDisposition.REGISTERED -> Unit
         }
         when (val capture = discardJournal.captureAllocationResult(uri, family)) {
             is PendingAllocationCaptureResult.Exact -> {
@@ -505,25 +539,13 @@ object MediaStoreWriter {
             identityReservation.cancel()
             return null
         }
-        val registered = registerPending(context, uri) ?: run {
-            identityReservation.cancel()
-            return null
-        }
-        when (val capture = discardJournal.captureAllocationResult(registered, family)) {
-            is PendingAllocationCaptureResult.Exact -> {
-                identityReservation.cancel()
-                rememberPendingAllocation(capture.allocation)
-                return capture.allocation
-            }
-            PendingAllocationCaptureResult.Absent -> {
-                if (clearRegisteredPendingOnly(context, registered)) identityReservation.cancel()
-                else submitPendingIdentityRecovery(identityReservation, context, registered, family)
-                return null
-            }
-            PendingAllocationCaptureResult.Uncertain -> Unit
-        }
-        submitPendingIdentityRecovery(identityReservation, context, registered, family)
-        return null
+        return finishPendingInsert(
+            context = context,
+            uri = uri,
+            family = family,
+            identityReservation = identityReservation,
+            discardJournal = discardJournal,
+        )
     }
 
     private fun submitPendingIdentityRecovery(
@@ -1468,16 +1490,19 @@ object MediaStoreWriter {
         return DiscardJournalRecoveryBatch(report, page.nextAfterKey, page.hasMore)
     }
 
-    private fun registerPending(context: Context, uri: Uri): Uri? {
-        val registered = SharedPreferencesDurableEdit.putString(
-            context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
-            uri.toString(),
-            PENDING_REGISTERED,
+    private fun registerPending(context: Context, uri: Uri): PendingRegistrationDisposition =
+        pendingRegistrationDisposition(
+            register = {
+                SharedPreferencesDurableEdit.putString(
+                    context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+                    uri.toString(),
+                    PENDING_REGISTERED,
+                )
+            },
+            delete = { context.contentResolver.delete(uri, null, null) },
+            rowExists = { mediaRowExists(context, uri) },
+            clearRegistered = { clearRegisteredPendingOnly(context, uri) },
         )
-        if (registered) return uri
-        runCatching { context.contentResolver.delete(uri, null, null) }
-        return null
-    }
 
     private fun pendingJournalState(
         context: Context,
@@ -1801,6 +1826,35 @@ internal fun deletedFamilyQuery(
 
 internal const val REJECTED_OUTPUT_CLEANUP_WORKER_COUNT = 2
 internal const val REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY = 8
+
+/** Post-insert authority when the preference-backed REGISTERED write itself is uncertain. */
+internal enum class PendingRegistrationDisposition {
+    REGISTERED,
+    ABSENT,
+    RETAINED,
+}
+
+/**
+ * A failed REGISTERED commit is not a failed insert. The URI may already name a private provider
+ * row, so release finite ownership only after delete/absence and metadata cleanup are authoritative.
+ */
+internal fun pendingRegistrationDisposition(
+    register: () -> Boolean,
+    delete: () -> Int,
+    rowExists: () -> Boolean?,
+    clearRegistered: () -> Boolean,
+): PendingRegistrationDisposition {
+    if (runCatching(register).getOrDefault(false)) {
+        return PendingRegistrationDisposition.REGISTERED
+    }
+    val deleted = runCatching(delete).getOrNull()?.let { it > 0 } == true
+    val absent = deleted || runCatching(rowExists).getOrNull() == false
+    return if (absent && runCatching(clearRegistered).getOrDefault(false)) {
+        PendingRegistrationDisposition.ABSENT
+    } else {
+        PendingRegistrationDisposition.RETAINED
+    }
+}
 
 /** Identity uncertainty is never destructive; stable absence clears only REGISTERED metadata. */
 internal fun recoverPendingAllocationIdentity(

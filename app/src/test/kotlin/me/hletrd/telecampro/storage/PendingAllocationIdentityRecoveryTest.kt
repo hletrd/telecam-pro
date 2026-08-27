@@ -35,6 +35,71 @@ class PendingAllocationIdentityRecoveryTest {
     )
 
     @Test
+    fun `registered commit owns the row without probing or deleting`() {
+        var providerCalls = 0
+        assertEquals(
+            PendingRegistrationDisposition.REGISTERED,
+            pendingRegistrationDisposition(
+                register = { true },
+                delete = { providerCalls++; 1 },
+                rowExists = { providerCalls++; false },
+                clearRegistered = { providerCalls++; true },
+            ),
+        )
+        assertEquals(0, providerCalls)
+    }
+
+    @Test
+    fun `failed registration releases only authoritative absence with cleared metadata`() {
+        listOf(
+            "deleted" to Triple({ 1 }, { true as Boolean? }, { true }),
+            "already absent" to Triple({ 0 }, { false as Boolean? }, { true }),
+        ).forEach { (name, effects) ->
+            assertEquals(
+                name,
+                PendingRegistrationDisposition.ABSENT,
+                pendingRegistrationDisposition(
+                    register = { false },
+                    delete = effects.first,
+                    rowExists = effects.second,
+                    clearRegistered = effects.third,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `failed registration retains present unavailable and uncleared rows`() {
+        val cases = listOf<Pair<String, () -> PendingRegistrationDisposition>>(
+            "delete false and row present" to {
+                pendingRegistrationDisposition({ false }, { 0 }, { true }, { true })
+            },
+            "delete throws and row unavailable" to {
+                pendingRegistrationDisposition(
+                    register = { false },
+                    delete = { error("provider delete unavailable") },
+                    rowExists = { null },
+                    clearRegistered = { true },
+                )
+            },
+            "absence metadata cleanup fails" to {
+                pendingRegistrationDisposition({ false }, { 0 }, { false }, { false })
+            },
+            "registration throws" to {
+                pendingRegistrationDisposition(
+                    register = { error("preference unavailable") },
+                    delete = { 0 },
+                    rowExists = { true },
+                    clearRegistered = { true },
+                )
+            },
+        )
+        cases.forEach { (name, classify) ->
+            assertEquals(name, PendingRegistrationDisposition.RETAINED, classify())
+        }
+    }
+
+    @Test
     fun `uncertain identity never clears metadata or reaches destructive discard`() {
         var discards = 0
         var clears = 0
