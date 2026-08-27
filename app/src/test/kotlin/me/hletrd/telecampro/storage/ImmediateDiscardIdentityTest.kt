@@ -99,12 +99,35 @@ class ImmediateDiscardIdentityTest {
         val reader = MutableReader(PendingDiscardIdentityRead.Absent("external_primary", "v1"))
         val journal = journal(reader)
         assertNull(journal.captureAllocation(uri, family))
+        assertEquals(
+            PendingAllocationCaptureResult.Absent,
+            journal.captureAllocationResult(uri, family),
+        )
 
         reader.current = PendingDiscardIdentityRead.Present(identity().copy(familyIdentity = "STILL|2|2"))
         assertNull(journal.captureAllocation(uri, family))
+        assertEquals(
+            PendingAllocationCaptureResult.Uncertain,
+            journal.captureAllocationResult(uri, family),
+        )
+
+        reader.current = PendingDiscardIdentityRead.Ambiguous
+        assertEquals(
+            PendingAllocationCaptureResult.Uncertain,
+            journal.captureAllocationResult(uri, family),
+        )
+        reader.current = PendingDiscardIdentityRead.Unavailable
+        assertEquals(
+            PendingAllocationCaptureResult.Uncertain,
+            journal.captureAllocationResult(uri, family),
+        )
 
         reader.current = PendingDiscardIdentityRead.Present(identity())
         val allocation = requireNotNull(journal.captureAllocation(uri, family))
+        assertEquals(
+            PendingAllocationCaptureResult.Exact(allocation),
+            journal.captureAllocationResult(uri, family),
+        )
         reader.current = PendingDiscardIdentityRead.Unavailable
         assertNull(journal.mark(allocation))
         assertFalse(journal.mark(uri.toString()))

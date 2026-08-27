@@ -59,6 +59,8 @@ object MediaStoreWriter {
     internal const val MAX_DELETED_FAMILY_MARKERS = 64
     internal const val MAX_REJECTED_OUTPUTS = 32
     internal const val MAX_PENDING_IDENTITY_RECOVERIES = 32
+    internal const val PENDING_IDENTITY_RETRY_INITIAL_MS = 250L
+    internal const val PENDING_IDENTITY_RETRY_MAX_MS = 30_000L
     /**
      * Exact headroom for every output that can still reach rejection after the soft admission edge:
      * two process-wide retained processed snapshots at three siblings each; one Camera2 RAW-only
@@ -228,6 +230,9 @@ object MediaStoreWriter {
             ownershipLimit = MAX_PENDING_IDENTITY_RECOVERIES +
                 REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
             discardEffect = PendingIdentityRecovery::recover,
+            retryScheduler = processPendingIdentityRetryScheduler,
+            retryInitialDelayMs = PENDING_IDENTITY_RETRY_INITIAL_MS,
+            retryMaxDelayMs = PENDING_IDENTITY_RETRY_MAX_MS,
         )
 
     /**
@@ -442,22 +447,20 @@ object MediaStoreWriter {
             identityReservation.cancel()
             return null
         }
-        val allocation = discardJournal.captureAllocation(uri, family)
-        if (allocation != null) {
-            identityReservation.cancel()
-            rememberPendingAllocation(allocation)
-            return allocation
+        when (val capture = discardJournal.captureAllocationResult(uri, family)) {
+            is PendingAllocationCaptureResult.Exact -> {
+                identityReservation.cancel()
+                rememberPendingAllocation(capture.allocation)
+                return capture.allocation
+            }
+            PendingAllocationCaptureResult.Absent -> {
+                if (clearRegisteredPendingOnly(context, uri)) identityReservation.cancel()
+                else submitPendingIdentityRecovery(identityReservation, context, uri, family)
+                return null
+            }
+            PendingAllocationCaptureResult.Uncertain -> Unit
         }
-        val application = context.applicationContext
-        identityReservation.submit(PendingIdentityRecovery {
-            recoverPendingAllocationIdentity(
-                resolve = {
-                    PendingDiscardJournal(application).captureAllocation(uri, family)
-                        ?.also(::rememberPendingAllocation)
-                },
-                discard = { discardPendingOutput(application, it) },
-            )
-        })
+        submitPendingIdentityRecovery(identityReservation, context, uri, family)
         return null
     }
 
@@ -496,23 +499,52 @@ object MediaStoreWriter {
             identityReservation.cancel()
             return null
         }
-        val allocation = discardJournal.captureAllocation(registered, family)
-        if (allocation != null) {
-            identityReservation.cancel()
-            rememberPendingAllocation(allocation)
-            return allocation
+        when (val capture = discardJournal.captureAllocationResult(registered, family)) {
+            is PendingAllocationCaptureResult.Exact -> {
+                identityReservation.cancel()
+                rememberPendingAllocation(capture.allocation)
+                return capture.allocation
+            }
+            PendingAllocationCaptureResult.Absent -> {
+                if (clearRegisteredPendingOnly(context, registered)) identityReservation.cancel()
+                else submitPendingIdentityRecovery(identityReservation, context, registered, family)
+                return null
+            }
+            PendingAllocationCaptureResult.Uncertain -> Unit
         }
+        submitPendingIdentityRecovery(identityReservation, context, registered, family)
+        return null
+    }
+
+    private fun submitPendingIdentityRecovery(
+        reservation: RejectedOutputCleanupReservation<PendingIdentityRecovery>,
+        context: Context,
+        uri: Uri,
+        family: CaptureFamilyKey,
+    ) {
         val application = context.applicationContext
-        identityReservation.submit(PendingIdentityRecovery {
+        reservation.submit(PendingIdentityRecovery {
             recoverPendingAllocationIdentity(
-                resolve = {
-                    PendingDiscardJournal(application).captureAllocation(registered, family)
-                        ?.also(::rememberPendingAllocation)
+                capture = {
+                    PendingDiscardJournal(application).captureAllocationResult(uri, family)
                 },
-                discard = { discardPendingOutput(application, it) },
+                discardExact = { allocation ->
+                    rememberPendingAllocation(allocation)
+                    discardPendingOutput(application, allocation)
+                },
+                clearAbsent = { clearRegisteredPendingOnly(application, uri) },
             )
         })
-        return null
+    }
+
+    /** Stable provider absence retires REGISTERED metadata only; it never issues a provider delete. */
+    private fun clearRegisteredPendingOnly(context: Context, uri: Uri): Boolean {
+        val removed = SharedPreferencesDurableEdit.remove(
+            context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+            uri.toString(),
+        )
+        if (removed) synchronized(pendingAllocationLock) { pendingAllocations.remove(uri) }
+        return removed
     }
 
     internal fun pendingOutputAllocation(uri: Uri): PendingOutputAllocation? =
@@ -1756,11 +1788,47 @@ internal fun deletedFamilyQuery(
 internal const val REJECTED_OUTPUT_CLEANUP_WORKER_COUNT = 2
 internal const val REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY = 8
 
-/** Identity uncertainty is never destructive; only an exact later allocation may reach discard. */
-internal fun <T> recoverPendingAllocationIdentity(
-    resolve: () -> T?,
-    discard: (T) -> PendingOutputDiscardResult,
-): PendingOutputDiscardResult = resolve()?.let(discard) ?: PendingOutputDiscardResult.UNRESOLVED
+/** Identity uncertainty is never destructive; stable absence clears only REGISTERED metadata. */
+internal fun recoverPendingAllocationIdentity(
+    capture: () -> PendingAllocationCaptureResult,
+    discardExact: (PendingOutputAllocation) -> PendingOutputDiscardResult,
+    clearAbsent: () -> Boolean,
+): PendingOutputDiscardResult = when (val result = capture()) {
+    is PendingAllocationCaptureResult.Exact -> discardExact(result.allocation)
+    PendingAllocationCaptureResult.Absent -> if (clearAbsent()) {
+        // Existing finite owners use DELETED as their generic terminal-success classification. No
+        // provider delete happened here: the provider proved absence and only REGISTERED was cleared.
+        PendingOutputDiscardResult.DELETED
+    } else {
+        PendingOutputDiscardResult.UNRESOLVED
+    }
+    PendingAllocationCaptureResult.Uncertain -> PendingOutputDiscardResult.UNRESOLVED
+}
+
+internal fun interface RejectedOutputRetryCancellation {
+    fun cancel()
+}
+
+internal fun interface RejectedOutputRetryScheduler {
+    fun schedule(delayMs: Long, action: () -> Unit): RejectedOutputRetryCancellation?
+}
+
+private val processPendingIdentityRetryExecutor =
+    java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "pending-identity-retry").apply { isDaemon = true }
+    }
+
+private val processPendingIdentityRetryScheduler = RejectedOutputRetryScheduler { delayMs, action ->
+    runCatching {
+        processPendingIdentityRetryExecutor.schedule(
+            action,
+            delayMs,
+            java.util.concurrent.TimeUnit.MILLISECONDS,
+        )
+    }.getOrNull()?.let { future ->
+        RejectedOutputRetryCancellation { future.cancel(false) }
+    }
+}
 
 internal enum class RejectedOutputCleanupDispatch { ACCEPTED, OVERFLOW, SHUTDOWN }
 
@@ -1790,9 +1858,15 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
     private val ownershipLimit: Int = admissionLimit * 2,
     threadFactory: java.util.concurrent.ThreadFactory = rejectedOutputCleanupThreadFactory(),
     private val discardEffect: (T) -> PendingOutputDiscardResult,
+    private val retryScheduler: RejectedOutputRetryScheduler? = null,
+    private val retryInitialDelayMs: Long = 250L,
+    private val retryMaxDelayMs: Long = 30_000L,
 ) {
     private val lock = Any()
     private val unresolved = LinkedHashSet<T>()
+    private val scheduledRetries = HashSet<T>()
+    private val inFlightRetries = HashSet<T>()
+    private val retryAttempts = HashMap<T, Int>()
     private val executor = java.util.concurrent.ThreadPoolExecutor(
         workerCount,
         workerCount,
@@ -1809,6 +1883,8 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
         require(backlogCapacity > 0)
         require(admissionLimit > 0)
         require(ownershipLimit >= admissionLimit)
+        require(retryInitialDelayMs > 0L)
+        require(retryMaxDelayMs >= retryInitialDelayMs)
     }
 
     fun reserve(): RejectedOutputCleanupReservation<T>? = synchronized(lock) {
@@ -1832,42 +1908,118 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
         output: T,
         onComplete: (PendingOutputDiscardResult) -> Unit,
     ): Boolean = try {
-        executor.execute {
-            val result = runCatching { discardEffect(output) }
-                .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
-            rememberResult(output, result)
-            try {
-                runCatching { onComplete(result) }
-            } finally {
-                releaseReservation()
-            }
-        }
+        executor.execute { runAttempt(output, onComplete, retry = false) }
         true
     } catch (_: java.util.concurrent.RejectedExecutionException) {
-        rememberResult(output, PendingOutputDiscardResult.UNRESOLVED)
+        val retryDelay = rememberResult(output, PendingOutputDiscardResult.UNRESOLVED, retry = false)
         runCatching { onComplete(PendingOutputDiscardResult.UNRESOLVED) }
         releaseReservation()
+        retryDelay?.let { scheduleRetry(output, it) }
         false
     }
 
-    private fun rememberResult(output: T, result: PendingOutputDiscardResult) = synchronized(lock) {
+    private fun runAttempt(
+        output: T,
+        onComplete: (PendingOutputDiscardResult) -> Unit,
+        retry: Boolean,
+    ) {
+        val result = runCatching { discardEffect(output) }
+            .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
+        val retryDelay = rememberResult(output, result, retry)
+        try {
+            runCatching { onComplete(result) }
+        } finally {
+            releaseReservation()
+            retryDelay?.let { scheduleRetry(output, it) }
+        }
+    }
+
+    /** Returns a delay only for the one unresolved claim that owns the next retry. */
+    private fun rememberResult(
+        output: T,
+        result: PendingOutputDiscardResult,
+        retry: Boolean,
+    ): Long? = synchronized(lock) {
+        if (retry) inFlightRetries.remove(output)
         if (result == PendingOutputDiscardResult.UNRESOLVED) {
             check(output in unresolved || unresolved.size < ownershipLimit) {
                 "already-admitted rejected-output ownership exhausted"
             }
             unresolved.add(output)
+            if (retryScheduler == null || output in scheduledRetries || output in inFlightRetries) {
+                null
+            } else {
+                val attempt = (retryAttempts[output] ?: 0) + 1
+                retryAttempts[output] = attempt
+                scheduledRetries.add(output)
+                retryDelayMs(attempt)
+            }
         } else {
             unresolved.remove(output)
+            scheduledRetries.remove(output)
+            inFlightRetries.remove(output)
+            retryAttempts.remove(output)
+            null
         }
+    }
+
+    private fun retryDelayMs(attempt: Int): Long {
+        var delay = retryInitialDelayMs
+        repeat((attempt - 1).coerceAtLeast(0).coerceAtMost(30)) {
+            delay = (delay * 2L).coerceAtMost(retryMaxDelayMs)
+        }
+        return delay
+    }
+
+    private fun scheduleRetry(output: T, delayMs: Long) {
+        val scheduler = retryScheduler ?: return
+        val scheduled = scheduler.schedule(delayMs) { dispatchScheduledRetry(output) }
+        if (scheduled == null) synchronized(lock) { scheduledRetries.remove(output) }
+    }
+
+    private fun dispatchScheduledRetry(output: T) {
+        val mayDispatch = synchronized(lock) {
+            output in unresolved && scheduledRetries.remove(output) && inFlightRetries.add(output)
+        }
+        if (!mayDispatch) return
+        if (!admission.tryAcquire()) {
+            rescheduleUndispatchedRetry(output)
+            return
+        }
+        try {
+            executor.execute { runAttempt(output, {}, retry = true) }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            releaseReservation()
+            rescheduleUndispatchedRetry(output)
+        }
+    }
+
+    private fun rescheduleUndispatchedRetry(output: T) {
+        val delay = synchronized(lock) {
+            inFlightRetries.remove(output)
+            if (output !in unresolved || !scheduledRetries.add(output)) null
+            else retryDelayMs(retryAttempts[output] ?: 1)
+        }
+        delay?.let { scheduleRetry(output, it) }
     }
 
     fun retryUnresolved(): Int {
         val pending = synchronized(lock) { unresolved.toList() }
-        pending.forEach { output ->
-            val reservation = synchronized(lock) {
-                if (admission.tryAcquire()) RejectedOutputCleanupReservation(this) else null
+        if (retryScheduler == null) {
+            pending.forEach { output ->
+                val reservation = synchronized(lock) {
+                    if (admission.tryAcquire()) RejectedOutputCleanupReservation(this) else null
+                }
+                reservation?.submit(output)
             }
-            reservation?.submit(output)
+        } else {
+            pending.forEach { output ->
+                val shouldSchedule = synchronized(lock) {
+                    if (output in scheduledRetries || output in inFlightRetries) false
+                    else scheduledRetries.add(output)
+                }
+                if (shouldSchedule) scheduleRetry(output, retryInitialDelayMs)
+            }
         }
         return unresolvedCount()
     }

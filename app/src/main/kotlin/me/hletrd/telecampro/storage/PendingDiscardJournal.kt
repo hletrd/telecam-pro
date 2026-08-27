@@ -29,17 +29,36 @@ internal class PendingDiscardJournal(
 ) {
     private val applicationContext = context.applicationContext
 
-    /** Captures the exact row allocated for one versioned capture-family output. */
-    fun captureAllocation(uri: Uri, expectedFamily: CaptureFamilyKey): PendingOutputAllocation? =
-        withUriAuthority(uri.toString()) {
-            val identity = (identityReader.read(uri.toString()) as? PendingDiscardIdentityRead.Present)
-                ?.identity
-                ?: return@withUriAuthority null
-            if (identity.familyIdentity != expectedFamily.discardIdentity()) {
-                return@withUriAuthority null
+    /**
+     * Captures creation-time provider truth without collapsing stable absence into uncertainty.
+     * A present row whose family does not match is uncertain, never absence: the URI may already
+     * have been reassigned and no destructive caller may bless that replacement.
+     */
+    fun captureAllocationResult(
+        uri: Uri,
+        expectedFamily: CaptureFamilyKey,
+    ): PendingAllocationCaptureResult = withUriAuthority(uri.toString()) {
+        when (val read = identityReader.read(uri.toString())) {
+            is PendingDiscardIdentityRead.Present -> {
+                if (read.identity.familyIdentity == expectedFamily.discardIdentity()) {
+                    PendingAllocationCaptureResult.Exact(
+                        PendingOutputAllocation(uri, expectedFamily, read.identity),
+                    )
+                } else {
+                    PendingAllocationCaptureResult.Uncertain
+                }
             }
-            PendingOutputAllocation(uri, expectedFamily, identity)
+            is PendingDiscardIdentityRead.Absent -> PendingAllocationCaptureResult.Absent
+            PendingDiscardIdentityRead.Ambiguous,
+            PendingDiscardIdentityRead.Unavailable,
+            -> PendingAllocationCaptureResult.Uncertain
         }
+    }
+
+    /** Legacy nullable facade retained for exact-allocation callers outside recovery. */
+    fun captureAllocation(uri: Uri, expectedFamily: CaptureFamilyKey): PendingOutputAllocation? =
+        (captureAllocationResult(uri, expectedFamily) as? PendingAllocationCaptureResult.Exact)
+            ?.allocation
 
     /**
      * Commits DISCARD only for the immutable allocation owned by the caller and returns the exact
@@ -511,6 +530,13 @@ internal data class PendingOutputAllocation(
     val familyKey: CaptureFamilyKey,
     val identity: PendingDiscardIdentity,
 )
+
+/** Typed creation-time read: only [Exact] may authorize discard; [Absent] is metadata-only. */
+internal sealed interface PendingAllocationCaptureResult {
+    data class Exact(val allocation: PendingOutputAllocation) : PendingAllocationCaptureResult
+    data object Absent : PendingAllocationCaptureResult
+    data object Uncertain : PendingAllocationCaptureResult
+}
 
 internal fun CaptureFamilyKey.discardIdentity(): String =
     "${media.name}|$capturedAtEpochMillis|$sequence"
