@@ -876,7 +876,7 @@ class GlPipeline(
         }
     }
 
-    private var lastDrawMs = 0L
+    private val previewFrameTiming = me.hletrd.telecampro.camera.PreviewFrameTiming()
 
     // Live-zoom compensation (see FlipRenderer.draw zoomComp): the UI's requested zoom vs the zoom
     // the HAL last REPORTED applying. The preview crops the difference immediately; camera frames
@@ -893,7 +893,7 @@ class GlPipeline(
         val now = android.os.SystemClock.uptimeMillis()
         // Self-redraw throttle: frame-available draws already repaint at camera rate; only inject
         // extra draws when the camera is quiet, at most ~60 Hz.
-        if (now - lastDrawMs > 16 && now - lastSelfRedrawMs > 16) {
+        if (previewFrameTiming.renderIdleMs(now) > 16 && now - lastSelfRedrawMs > 16) {
             lastSelfRedrawMs = now
             drawFrame(updateTex = false)
         }
@@ -918,6 +918,7 @@ class GlPipeline(
 
     private fun drawFrame(updateTex: Boolean = true) {
         val now = android.os.SystemClock.uptimeMillis()
+        val producerGapMs = previewFrameTiming.recordDraw(now, realCameraFrame = updateTex)
         if (me.hletrd.telecampro.BuildConfig.DEBUG) {
             // Threshold is 200 ms, not 50: since the cycle-8 fluidity cap a dark preview runs at a
             // DESIGNED 66.7 ms cadence, so a >50 ms rule logged EVERY frame (~15 rows/s) and spent
@@ -926,14 +927,13 @@ class GlPipeline(
             // it ate the startup trace and the focus-verdict trace outright). 200 ms still catches
             // what this line exists for: the ~180 ms setRepeatingRequest stalls and real stream
             // wedges. Normal cadence is NOT news.
-            if (lastDrawMs != 0L && now - lastDrawMs > 200) {
-                android.util.Log.i("GlPipeline", "FrameGap: ${now - lastDrawMs} ms")
+            if (producerGapMs != null) {
+                android.util.Log.i("GlPipeline", "FrameGap: $producerGapMs ms")
             }
         }
-        // Release builds use this timestamp too: setZoomTarget() consults it to decide whether the
-        // camera is quiet enough for a self-redraw. Keeping the write inside DEBUG made every zoom
-        // update look idle in production and injected redundant preview draws between real frames.
-        lastDrawMs = now
+        // Release builds use render timing too: setZoomTarget() consults it to decide whether the
+        // preview is quiet enough for a cached redraw. Producer timing remains a separate DEBUG
+        // evidence axis so a cached repaint cannot hide a real Camera2 stall.
         val core = egl ?: return
         val st = surfaceTexture ?: return
         // A real camera frame feeds two sibling outputs. Preview loss must not prevent texture
@@ -1750,7 +1750,7 @@ class GlPipeline(
         }
         if (analysisGeneration === ownedAnalysis) analysisGeneration = null
         resetEncoderTimestampBase()
-        lastDrawMs = 0L
+        previewFrameTiming.reset()
         egl = null
         inited = false
         if (!outputsReleased) unsafeOutputAbandoned = true

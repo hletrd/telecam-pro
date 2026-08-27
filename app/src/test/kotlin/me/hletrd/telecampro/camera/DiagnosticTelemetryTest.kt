@@ -25,6 +25,30 @@ class DiagnosticTelemetryTest {
     )
 
     @Test
+    fun `cached redraws neither hide nor invent producer gaps`() {
+        val timing = PreviewFrameTiming(frameGapThresholdMs = 200L)
+
+        assertEquals(null, timing.recordDraw(1_000L, realCameraFrame = true))
+        assertEquals(null, timing.recordDraw(1_050L, realCameraFrame = false))
+        assertEquals(null, timing.recordDraw(1_100L, realCameraFrame = false))
+        assertEquals(null, timing.recordDraw(1_150L, realCameraFrame = false))
+        assertEquals(400L, timing.recordDraw(1_400L, realCameraFrame = true))
+        assertEquals(null, timing.recordDraw(1_800L, realCameraFrame = false))
+    }
+
+    @Test
+    fun `render idle and producer clocks reset together`() {
+        val timing = PreviewFrameTiming(frameGapThresholdMs = 200L)
+
+        assertEquals(Long.MAX_VALUE, timing.renderIdleMs(1_000L))
+        timing.recordDraw(1_000L, realCameraFrame = true)
+        assertEquals(16L, timing.renderIdleMs(1_016L))
+        timing.reset()
+        assertEquals(Long.MAX_VALUE, timing.renderIdleMs(2_000L))
+        assertEquals(null, timing.recordDraw(2_000L, realCameraFrame = true))
+    }
+
+    @Test
     fun stableTenMinuteSoakUsesOnlyFifteenSecondHeartbeats() {
         val gate = ThreeADiagnosticLogGate()
         var rows = 0

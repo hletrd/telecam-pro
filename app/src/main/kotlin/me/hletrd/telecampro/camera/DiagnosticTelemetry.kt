@@ -48,6 +48,38 @@ internal fun tapFocusDiagnosticAllowed(
     budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
 ): Boolean = edgeOwned && recurringDiagnosticAllowed(debugEnabled, budget)
 
+/**
+ * Separates preview render cadence from real SurfaceTexture producer cadence.
+ *
+ * Cached zoom redraws update [lastRenderMs] only. They may decide that another cached repaint is
+ * unnecessary, but they can neither satisfy nor emit Camera2 frame-health evidence.
+ */
+internal class PreviewFrameTiming(
+    private val frameGapThresholdMs: Long = PREVIEW_FRAME_GAP_THRESHOLD_MS,
+) {
+    private var lastRenderMs = 0L
+    private var lastCameraFrameMs = 0L
+
+    init {
+        require(frameGapThresholdMs > 0L)
+    }
+
+    fun renderIdleMs(nowMs: Long): Long = if (lastRenderMs == 0L) Long.MAX_VALUE else nowMs - lastRenderMs
+
+    fun recordDraw(nowMs: Long, realCameraFrame: Boolean): Long? {
+        lastRenderMs = nowMs
+        if (!realCameraFrame) return null
+        val gap = if (lastCameraFrameMs != 0L) nowMs - lastCameraFrameMs else 0L
+        lastCameraFrameMs = nowMs
+        return gap.takeIf { it > frameGapThresholdMs }
+    }
+
+    fun reset() {
+        lastRenderMs = 0L
+        lastCameraFrameMs = 0L
+    }
+}
+
 /** Change-gated diagnostic with a slow heartbeat and a floor for flapping state. */
 internal class DiagnosticChangeLogGate<T>(
     private val minimumChangeIntervalMs: Long = DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS,
@@ -216,3 +248,4 @@ internal const val THREE_A_HEARTBEAT_MS = 15_000L
 internal const val DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS = 3_000L
 internal const val DIAGNOSTIC_HEARTBEAT_MS = 15_000L
 internal const val ZSL_SPIKE_WINDOW_MS = 1_000L
+internal const val PREVIEW_FRAME_GAP_THRESHOLD_MS = 200L
