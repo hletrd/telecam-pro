@@ -1724,7 +1724,13 @@ class CameraEngine internal constructor(
         set(value) {
             callbackSink.install(EngineCallbackKey.STILL_ADMISSION, value)
             if (value == null) closeProcessStillAdmissionSubscriptions()
-            else ensureProcessStillAdmissionSubscriptions()
+            else {
+                // Delivered-state belongs to the callback identity. A replacement observer needs
+                // one current snapshot even when no constituent owner changed during replacement.
+                stillAdmissionPublication.reset()
+                ensureProcessStillAdmissionSubscriptions()
+                publishProcessStillAdmission()
+            }
         }
 
     // ---- Preview surface lifecycle ----

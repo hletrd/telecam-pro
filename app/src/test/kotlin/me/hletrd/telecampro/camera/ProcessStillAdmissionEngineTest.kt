@@ -50,4 +50,22 @@ class ProcessStillAdmissionEngineTest {
             replacement.release()
         }
     }
+
+    @Test
+    fun `same Engine callback replacement receives current truth exactly once`() {
+        RobolectricEglSentinels.ensure()
+        val engine = CameraEngine(app)
+        val first = CopyOnWriteArrayList<Boolean>()
+        val replacement = CopyOnWriteArrayList<Boolean>()
+        try {
+            engine.onStillCaptureAdmissionChanged = first::add
+            assertEquals(listOf(true), first.toList())
+
+            engine.onStillCaptureAdmissionChanged = replacement::add
+            assertEquals(listOf(true), first.toList())
+            assertEquals(listOf(true), replacement.toList())
+        } finally {
+            engine.release()
+        }
+    }
 }
