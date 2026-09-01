@@ -396,4 +396,64 @@ class MotionInversionTest {
             computeMotionInversion(previous, current, w, h, rotated[0], rotated[1]).verdict,
         )
     }
+
+    // --- the alignment defect, end to end (device-diagnosed 2026-08-11, fixed 2026-08-12) --------
+
+    /**
+     * Scene displacement for one interval's rotation, under a model that assumes NOTHING about the
+     * sign being measured: a camera rotation moves the scene the other way, `shift = -c * rotation`
+     * with c > 0, and the prediction is `MOTION_YAW_SIGN * rotation`. Both sides flip together when
+     * the pan reverses, which is exactly why the verdict must not.
+     */
+    private fun verdictFor(rotation: Double, predictedFrom: Double): MotionAgreement =
+        computeMotionInversion(
+            scene(0, 0),
+            scene((-6 * rotation).toInt(), 0),
+            w,
+            h,
+            MOTION_YAW_SIGN * predictedFrom * 50.0,
+            0.0,
+        ).verdict
+
+    /** Out and back. Judged against its OWN interval, the answer must not move. */
+    @Test
+    fun alignedPairingHoldsOneVerdictAcrossAReversal() {
+        val rot = listOf(1.0, 1.0, 1.0, -1.0, -1.0, -1.0)
+        val verdicts = rot.map { verdictFor(it, it) }
+        assertTrue("every frame must be judgeable", verdicts.none { it == MotionAgreement.UNJUDGEABLE })
+        assertEquals("a reversal must not change the answer", 1, verdicts.toSet().size)
+    }
+
+    /**
+     * THE DEFECT, reproduced. Judging each pair against the PREVIOUS interval's rotation is what
+     * draining the gyro at readback time did — the frames had already left the sensor. At the
+     * reversal the stale rotation points the wrong way and the verdict flips.
+     */
+    @Test
+    fun laggedPairingFlipsTheVerdictAtTheReversal() {
+        val rot = listOf(1.0, 1.0, 1.0, -1.0, -1.0, -1.0)
+        val verdicts = rot.indices.map { i -> verdictFor(rot[i], rot[if (i == 0) 0 else i - 1]) }
+        assertTrue("every frame must be judgeable", verdicts.none { it == MotionAgreement.UNJUDGEABLE })
+        assertEquals(
+            "misaligned pairing must contradict itself across a reversal — that contradiction IS " +
+                "the bug the timestamp alignment removes, so losing it here means this test has " +
+                "stopped proving anything",
+            2,
+            verdicts.toSet().size,
+        )
+        assertNotEquals(verdicts[2], verdicts[3])
+    }
+
+    /**
+     * And the reason it went unnoticed through three device sessions: a steady one-direction sweep
+     * cannot tell aligned from lagged, because consecutive intervals share a sign. Every request for
+     * a smoother pan was a request to hide the bug.
+     */
+    @Test
+    fun aSteadySweepLooksIdenticalAlignedOrLagged() {
+        val rot = listOf(1.0, 1.0, 1.0, 1.0)
+        val aligned = rot.map { verdictFor(it, it) }
+        val lagged = rot.indices.map { i -> verdictFor(rot[i], rot[if (i == 0) 0 else i - 1]) }
+        assertEquals(aligned, lagged)
+    }
 }
