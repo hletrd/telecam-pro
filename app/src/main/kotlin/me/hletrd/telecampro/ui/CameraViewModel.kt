@@ -54,6 +54,7 @@ import me.hletrd.telecampro.camera.MotionAgreement
 import me.hletrd.telecampro.camera.ExposureStep
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.effectiveExposureNs
+import me.hletrd.telecampro.camera.withShutterMode
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.BuildConfig
@@ -1992,7 +1993,8 @@ class CameraViewModel private constructor(
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls(persist = true) { it.copy(antibanding = mode) }
     // (onFps was removed: dead API surface — controls.fps is always driven by onVideoFrameRate.)
-    override fun onShutterMode(mode: ShutterMode) = updateControls(FnSlot.SHUTTER) { it.copy(shutterMode = mode) }
+    // Unit switch only: the carried value is the exposure the old unit was applying (pure, tested).
+    override fun onShutterMode(mode: ShutterMode) = updateControls(FnSlot.SHUTTER) { it.withShutterMode(mode) }
     override fun onShutterAngle(angle: Float) {
         updateControls(FnSlot.SHUTTER) {
             val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode

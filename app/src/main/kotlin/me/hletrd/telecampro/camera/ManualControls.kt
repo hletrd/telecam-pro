@@ -445,6 +445,30 @@ fun ManualControls.effectiveExposureNs(): Long =
         exposureTimeNs
     }
 
+/**
+ * Switches the shutter UNIT without moving the shutter: the value carried into the new unit is the
+ * exposure the old unit was applying. Entering ANGLE from a speed shorter than the frame period's
+ * 1° or longer than a full 360° clamps to the angle range, which is the closest exposure the cine
+ * convention can express. Before this the toggle copied only the mode flag, so entering ANGLE
+ * revived whatever angle had been set minutes earlier and silently applied THAT exposure
+ * (device-found on TB331FC 2026-09-09: 1/16000 s became 209° = 1/50 s on the toggle).
+ */
+fun ManualControls.withShutterMode(mode: ShutterMode): ManualControls {
+    if (mode == shutterMode) return this
+    val carried = effectiveExposureNs()
+    return when (mode) {
+        ShutterMode.ANGLE -> {
+            val angle = if (fps > 0 && carried > 0L) {
+                (carried / 1_000_000_000.0 * fps * 360.0).toFloat().coerceIn(1f, 360f)
+            } else {
+                shutterAngle
+            }
+            copy(shutterMode = mode, shutterAngle = angle)
+        }
+        ShutterMode.SPEED -> copy(shutterMode = mode, exposureTimeNs = carried)
+    }
+}
+
 /** The exact app-owned exposure placed on a request after applying the advertised sensor range. */
 internal fun ManualControls.clampedEffectiveExposureNs(minNs: Long?, maxNs: Long?): Long {
     return clampExposureNs(effectiveExposureNs(), minNs, maxNs)
