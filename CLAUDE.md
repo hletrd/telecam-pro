@@ -1037,6 +1037,23 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   delete does not license forgetting the URI. Only authoritative provider absence plus successful
   preference cleanup releases the pre-insert reservation; a present/unavailable row, failed delete,
   or failed cleanup transfers the URI/family to that same typed retry owner.
+- **MediaProvider answers an `EXTERNAL_CONTENT_URI` insert with a URI on the `external` UNION
+  pseudo-volume, and that name is NEVER a mounted volume (device-found 2026-09-09 on BOTH Lenovo
+  tablets, TB331FC/Android 15 and TB336ZU/Android 16; the maintainer's PMA110 runs never showed
+  it).** `MediaStore.getVolumeName(insertedUri)` returns `"external"` on mainline MediaProvider,
+  while `getExternalVolumeNames()` lists `external_primary` and card UUIDs only. The creation-time
+  identity reader treated that as an unmounted volume, so EVERY capture was refused as "identity
+  uncertain": `HEIF save failed` / `DNG save failed` / `Recording failed` toasts, the row deleted,
+  no file, and NO log line, because the insert and the read both sat under
+  `runCatching { }.getOrNull()`. Each refused row then parked in the finite identity-recovery
+  owner, which retried the same failing read on backoff (the `V MediaStore: Examining volume` rows
+  every 0.5/1/2/4 s ARE that loop) until capacity closed all photo AND video admission for the
+  process, and launch recovery re-filled it after a relaunch, which read as "capture broke after a
+  mode switch and never recovers" and was first filed against the camera. The reader now mirrors
+  the provider's own `resolveVolumeName` (union → primary), confirms it against the row's
+  `VOLUME_NAME`, and every silent exit on the insert / registration / identity path logs a
+  reserved diagnostic row. A save that fails with no app log line is the signature of THIS class
+  of defect: find the swallowed exception before touching the camera.
 - **DNG publication does not hold the camera callback.** `DngCreator.writeImage` and the durable
   `COMPLETE` marker attempt remain synchronous while the RAW `Image` is valid; `saveDng` returns a
   frozen `PendingDngPublication` carrying whether that commit succeeded. Only `publishDng`

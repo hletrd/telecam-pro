@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.core.content.edit
+import me.hletrd.telecampro.camera.DiagnosticLog
 
 /** Ordered, cursorable ownership journal for exact MediaStore URIs that must be deleted. */
 internal class PendingDiscardJournal(
@@ -565,21 +566,31 @@ internal enum class DiscardReplayIdentity {
 }
 
 /** Reads one exact MediaStore row only after establishing mounted-volume/provider-version truth. */
-private class MediaStorePendingDiscardIdentityReader(
+internal class MediaStorePendingDiscardIdentityReader(
     private val context: Context,
+    private val mountedVolumes: () -> Set<String> = { MediaStore.getExternalVolumeNames(context) },
+    private val providerVersion: (String) -> String = { volume -> MediaStore.getVersion(context, volume) },
 ) : PendingDiscardIdentityReader {
     override fun read(uri: String): PendingDiscardIdentityRead = runCatching {
         val parsed = Uri.parse(uri)
         if (parsed.scheme != ContentResolver.SCHEME_CONTENT || parsed.authority != MediaStore.AUTHORITY) {
-            return@runCatching PendingDiscardIdentityRead.Unavailable
+            return@runCatching unavailable("foreign authority $uri")
         }
-        val volumeName = MediaStore.getVolumeName(parsed)
-        if (volumeName !in MediaStore.getExternalVolumeNames(context)) {
-            return@runCatching PendingDiscardIdentityRead.Unavailable
+        // MediaProvider answers an EXTERNAL_CONTENT_URI insert with the URI it was handed, i.e. on
+        // the VOLUME_EXTERNAL union pseudo-volume, which is never a mounted volume name; for every
+        // write and version lookup it resolves that name to the primary volume itself
+        // (MediaProvider.resolveVolumeName). Device-found 2026-09-09 on TB331FC and TB336ZU:
+        // treating the union name as unmounted made every creation-time read "unavailable", so
+        // every capture was refused as uncertain and the identity-recovery owner filled to
+        // capacity. Mirror the provider's resolution here and let the row's VOLUME_NAME confirm it.
+        val volumeName = resolveVolumeName(MediaStore.getVolumeName(parsed))
+        val mounted = mountedVolumes()
+        if (volumeName !in mounted) {
+            return@runCatching unavailable("volume $volumeName not in $mounted for $uri")
         }
         // The platform docs permit null for an unmounted volume even though the SDK annotation is
         // non-null. Kotlin's generated null check is contained by this fail-closed runCatching.
-        val providerVersion = MediaStore.getVersion(context, volumeName)
+        val providerVersion = providerVersion(volumeName)
         val queryArgs = Bundle().apply {
             putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
         }
@@ -588,36 +599,60 @@ private class MediaStorePendingDiscardIdentityReader(
             IDENTITY_PROJECTION,
             queryArgs,
             null,
-        ) ?: return@runCatching PendingDiscardIdentityRead.Unavailable
+        ) ?: return@runCatching unavailable("null cursor for $uri")
         cursor.use {
             if (!cursor.moveToFirst()) {
-                if (MediaStore.getVersion(context, volumeName) != providerVersion) {
-                    return@runCatching PendingDiscardIdentityRead.Unavailable
+                if (providerVersion(volumeName) != providerVersion) {
+                    return@runCatching unavailable("provider version moved during empty read of $uri")
                 }
                 return@runCatching PendingDiscardIdentityRead.Absent(volumeName, providerVersion)
             }
+            val rowVolume = cursor.rowVolumeName()
+            if (rowVolume != null && rowVolume != volumeName) {
+                return@runCatching ambiguous("row volume $rowVolume differs from $volumeName for $uri")
+            }
             val identity = cursor.readIdentity(volumeName, providerVersion)
-                ?: return@runCatching PendingDiscardIdentityRead.Unavailable
-            if (cursor.moveToNext()) return@runCatching PendingDiscardIdentityRead.Ambiguous
+                ?: return@runCatching unavailable("required identity column missing for $uri")
+            if (cursor.moveToNext()) return@runCatching ambiguous("multiple rows for $uri")
             val uriRowId = runCatching { android.content.ContentUris.parseId(parsed) }.getOrNull()
-                ?: return@runCatching PendingDiscardIdentityRead.Unavailable
-            if (identity.rowId != uriRowId) return@runCatching PendingDiscardIdentityRead.Ambiguous
-            if (MediaStore.getVersion(context, volumeName) != providerVersion) {
-                return@runCatching PendingDiscardIdentityRead.Unavailable
+                ?: return@runCatching unavailable("unparseable row id in $uri")
+            if (identity.rowId != uriRowId) {
+                return@runCatching ambiguous("row id ${identity.rowId} differs from $uri")
+            }
+            if (providerVersion(volumeName) != providerVersion) {
+                return@runCatching unavailable("provider version moved during read of $uri")
             }
             PendingDiscardIdentityRead.Present(identity)
         }
-    }.getOrDefault(PendingDiscardIdentityRead.Unavailable)
+    }.getOrElse { failure ->
+        DiagnosticLog.w(TAG, "identity read threw for $uri", failure)
+        PendingDiscardIdentityRead.Unavailable
+    }
+
+    private fun unavailable(reason: String): PendingDiscardIdentityRead {
+        DiagnosticLog.w(TAG, "identity read unavailable: $reason")
+        return PendingDiscardIdentityRead.Unavailable
+    }
+
+    private fun ambiguous(reason: String): PendingDiscardIdentityRead {
+        DiagnosticLog.w(TAG, "identity read ambiguous: $reason")
+        return PendingDiscardIdentityRead.Ambiguous
+    }
 
     private fun Cursor.readIdentity(
         volumeName: String,
         providerVersion: String,
     ): PendingDiscardIdentity? {
-        val rowId = requiredLong(MediaStore.MediaColumns._ID) ?: return null
-        val generationAdded = requiredLong(MediaStore.MediaColumns.GENERATION_ADDED) ?: return null
-        val displayName = requiredString(MediaStore.MediaColumns.DISPLAY_NAME) ?: return null
-        val relativePath = requiredString(MediaStore.MediaColumns.RELATIVE_PATH) ?: return null
-        val mimeType = requiredString(MediaStore.MediaColumns.MIME_TYPE) ?: return null
+        val rowId = requiredLong(MediaStore.MediaColumns._ID)
+            ?: return missing(MediaStore.MediaColumns._ID)
+        val generationAdded = requiredLong(MediaStore.MediaColumns.GENERATION_ADDED)
+            ?: return missing(MediaStore.MediaColumns.GENERATION_ADDED)
+        val displayName = requiredString(MediaStore.MediaColumns.DISPLAY_NAME)
+            ?: return missing(MediaStore.MediaColumns.DISPLAY_NAME)
+        val relativePath = requiredString(MediaStore.MediaColumns.RELATIVE_PATH)
+            ?: return missing(MediaStore.MediaColumns.RELATIVE_PATH)
+        val mimeType = requiredString(MediaStore.MediaColumns.MIME_TYPE)
+            ?: return missing(MediaStore.MediaColumns.MIME_TYPE)
         val ownerPackageName = optionalString(MediaStore.MediaColumns.OWNER_PACKAGE_NAME)
         val dateTaken = optionalLong(MediaStore.MediaColumns.DATE_TAKEN)
         val familyIdentity = CaptureFamilyKey.parse(displayName)?.familyKey?.discardIdentity()
@@ -647,7 +682,23 @@ private class MediaStorePendingDiscardIdentityReader(
     private fun Cursor.optionalLong(column: String): Long? =
         getColumnIndexOrThrow(column).let { index -> if (isNull(index)) null else getLong(index) }
 
+    private fun missing(column: String): PendingDiscardIdentity? {
+        DiagnosticLog.w(TAG, "identity column $column missing or invalid")
+        return null
+    }
+
+    /** The provider's own reading of the union pseudo-volume; any concrete name passes through. */
+    private fun resolveVolumeName(uriVolume: String): String =
+        if (uriVolume == MediaStore.VOLUME_EXTERNAL) MediaStore.VOLUME_EXTERNAL_PRIMARY else uriVolume
+
+    /** Tolerates a provider that omits the column; a present value must agree with the URI. */
+    private fun Cursor.rowVolumeName(): String? =
+        getColumnIndex(MediaStore.MediaColumns.VOLUME_NAME).let { index ->
+            if (index < 0 || isNull(index)) null else getString(index)
+        }
+
     companion object {
+        private const val TAG = "PendingIdentityReader"
         private val IDENTITY_PROJECTION = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.GENERATION_ADDED,
@@ -656,6 +707,7 @@ private class MediaStorePendingDiscardIdentityReader(
             MediaStore.MediaColumns.MIME_TYPE,
             MediaStore.MediaColumns.OWNER_PACKAGE_NAME,
             MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.VOLUME_NAME,
         )
     }
 }
