@@ -1243,9 +1243,13 @@ internal class RecorderQuarantineAdmissionGate {
         val admitted = lock.withLock {
             // A pending REC token can already be inside MediaCodec setup while its recorder has not
             // yet reached the published Engine slot. General GL/Camera2 acquisition must wait for
-            // that setup to publish or retire; token-specific [runPendingNative] is its sole entry.
-            val foreignActiveRecorder = activeToken?.owner?.let { it !== owner } == true
-            if (quarantined.get() || pendingToken != null || foreignActiveRecorder) {
+            // that setup to publish or retire; the token's OWN workers are admitted by owner, exactly
+            // as they are once the token is active. The audio-encode worker is spawned by that
+            // setup and reaches AudioRecord.startRecording before the Engine publishes the token
+            // whenever the encoder's first swap is slow (TB336ZU, device-measured 2026-09-09: two of
+            // three takes); refusing it there exited the worker silently with two tracks still
+            // expected, and the muxer rendezvous degraded every such take to a silent clip.
+            if (quarantined.get() || foreignRecorderHoldsAdmissionLocked(owner)) {
                 false
             } else {
                 nativeAcquisitions++
@@ -1271,6 +1275,11 @@ internal class RecorderQuarantineAdmissionGate {
         }
     }
 
+    /** True while a pending or active REC token belongs to someone other than [owner]. */
+    private fun foreignRecorderHoldsAdmissionLocked(owner: Any?): Boolean =
+        pendingToken?.let { it.owner !== owner } == true ||
+            activeToken?.let { it.owner !== owner } == true
+
     /**
      * Runs one native creator and publishes its concrete termination owner under the process lock.
      * A close competing after the native return therefore sees either no object yet, or the exact
@@ -1282,8 +1291,7 @@ internal class RecorderQuarantineAdmissionGate {
         publicationOwner: (T) -> NativeAcquisitionPublicationOwner?,
     ): NativeAcquisitionPublicationResult<T> {
         val admitted = lock.withLock {
-            val foreignActiveRecorder = activeToken?.owner?.let { it !== owner } == true
-            if (quarantined.get() || pendingToken != null || foreignActiveRecorder) {
+            if (quarantined.get() || foreignRecorderHoldsAdmissionLocked(owner)) {
                 false
             } else {
                 nativeAcquisitions++

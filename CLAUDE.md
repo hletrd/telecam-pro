@@ -921,7 +921,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   handoff and codec/muxer construction. A stop arriving anywhere mid-admission is LATCHED by
   `RecordingAdmissionLatch.requestStop()` and consumed exactly once by
   `RecordingAdmissionLatch.completeAdmission()` when admission publishes or refuses — never raced
-  against an unpublished owner.
+  against an unpublished owner. **The PENDING token's own workers are admitted through the
+  general native gate by OWNER, exactly as an active token's are (device-found on TB336ZU
+  2026-09-09).** Recorder setup runs under the pending token and spawns the audio-encode worker,
+  which reaches `AudioRecord.startRecording` before the Engine publishes the token whenever the
+  encoder's first swap is slow (two of three takes on that MediaTek tablet); the gate used to
+  reject ANY caller while a token was pending, so the worker exited silently with two tracks still
+  expected and the 1 s muxer rendezvous degraded the take to a SILENT clip. Five of five takes
+  carry AAC after the fix; a silent clip with `AudioRecord: set/openRecord` but no `start` in
+  logcat is this race, not a mic fault.
 - **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
   partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;
   Surface release precedes codec release and ownership clearing, and repeated cleanup is a no-op. If a
