@@ -178,7 +178,10 @@ class PendingAllocationIdentityRecoveryTest {
         val scheduler = ManualRetryScheduler()
         val attempts = AtomicInteger()
         val admission = ProcessAdmissionSignal(initial = true)
-        val admissionEvents = mutableListOf<Boolean>()
+        // Appended from the owner's worker thread; the reopening event lands a moment AFTER
+        // unresolvedCount() reaches zero, so the assertion below awaits it explicitly (it raced
+        // once under host load and compared a two-element list).
+        val admissionEvents = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
         val subscription = admission.subscribe(admissionEvents::add)
         val owner = RejectedOutputCleanupCapacityOwner<String>(
             workerCount = 1,
@@ -206,7 +209,8 @@ class PendingAllocationIdentityRecoveryTest {
             awaitCondition { attempts.get() == 4 && owner.unresolvedCount() == 0 }
             assertEquals(listOf(5L, 10L, 20L), scheduler.delays())
             assertTrue(owner.canAdmit())
-            assertEquals(listOf(true, false, true), admissionEvents)
+            awaitCondition { admissionEvents.size == 3 }
+            assertEquals(listOf(true, false, true), admissionEvents.toList())
             assertEquals(RejectedOutputCleanupDispatch.ACCEPTED, owner.dispatch("reused-capacity"))
         } finally {
             subscription.close()
