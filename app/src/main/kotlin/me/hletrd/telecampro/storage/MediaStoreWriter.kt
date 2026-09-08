@@ -22,6 +22,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import me.hletrd.telecampro.ProcessAdmissionSignal
 import me.hletrd.telecampro.ProcessAdmissionSubscription
+import me.hletrd.telecampro.camera.DiagnosticLog
 import me.hletrd.telecampro.camera.MAX_RETAINED_PROCESSED_SNAPSHOTS
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_BACKLOG_CAPACITY
 import me.hletrd.telecampro.camera.RECORDING_STORAGE_WORKER_COUNT
@@ -52,6 +53,7 @@ object MediaStoreWriter {
     internal const val MAX_DISCARD_RECOVERY_ROWS = 64
     private const val MAX_FAMILY_ROWS = 8
     private const val PENDING_JOURNAL = "pending_media_journal"
+    private const val TAG = "MediaStoreWriter"
     private const val PENDING_REGISTERED = "registered"
     private const val PENDING_COMPLETE = "complete"
     private const val DELETED_FAMILY_JOURNAL = "deleted_capture_family_journal"
@@ -437,9 +439,18 @@ object MediaStoreWriter {
                 put(MediaStore.Images.Media.DATE_TAKEN, it)
             }
         }
-        val uri = runCatching {
+        val insert = runCatching {
             context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-        }.getOrNull() ?: return null
+        }
+        insert.exceptionOrNull()?.let { failure ->
+            DiagnosticLog.w(TAG, "pending image insert threw for $displayName", failure)
+        }
+        val uri = insert.getOrNull() ?: run {
+            if (insert.isSuccess) {
+                DiagnosticLog.w(TAG, "pending image insert returned no row for $displayName")
+            }
+            return null
+        }
         return uri
     }
 
@@ -458,8 +469,14 @@ object MediaStoreWriter {
         subDir: String = CAPTURE_SUBDIR,
         discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
     ): PendingOutputAllocation? {
-        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
-        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: return null
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: run {
+            DiagnosticLog.w(TAG, "pending image allocation refused: unparseable family $displayName")
+            return null
+        }
+        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: run {
+            DiagnosticLog.w(TAG, "pending image allocation refused: identity recovery owner at capacity")
+            return null
+        }
         val uri = insertPendingImage(context, displayName, mimeType, subDir) ?: run {
             identityReservation.cancel()
             return null
@@ -480,12 +497,14 @@ object MediaStoreWriter {
         identityReservation: RejectedOutputCleanupReservation<PendingIdentityRecovery>,
         discardJournal: PendingDiscardJournal,
     ): PendingOutputAllocation? {
-        when (registerPending(context, uri)) {
+        when (val disposition = registerPending(context, uri)) {
             PendingRegistrationDisposition.ABSENT -> {
+                DiagnosticLog.w(TAG, "pending registration $disposition for $uri")
                 identityReservation.cancel()
                 return null
             }
             PendingRegistrationDisposition.RETAINED -> {
+                DiagnosticLog.w(TAG, "pending registration $disposition for $uri")
                 submitPendingIdentityRecovery(identityReservation, context, uri, family)
                 return null
             }
@@ -498,11 +517,14 @@ object MediaStoreWriter {
                 return capture.allocation
             }
             PendingAllocationCaptureResult.Absent -> {
+                DiagnosticLog.w(TAG, "creation-time identity absent for $uri")
                 if (clearRegisteredPendingOnly(context, uri)) identityReservation.cancel()
                 else submitPendingIdentityRecovery(identityReservation, context, uri, family)
                 return null
             }
-            PendingAllocationCaptureResult.Uncertain -> Unit
+            PendingAllocationCaptureResult.Uncertain -> {
+                DiagnosticLog.w(TAG, "creation-time identity uncertain for $uri")
+            }
         }
         submitPendingIdentityRecovery(identityReservation, context, uri, family)
         return null
@@ -522,8 +544,14 @@ object MediaStoreWriter {
         subDir: String = CAPTURE_SUBDIR,
         discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
     ): PendingOutputAllocation? {
-        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return null
-        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: return null
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: run {
+            DiagnosticLog.w(TAG, "pending video allocation refused: unparseable family $displayName")
+            return null
+        }
+        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: run {
+            DiagnosticLog.w(TAG, "pending video allocation refused: identity recovery owner at capacity")
+            return null
+        }
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
             put(MediaStore.Video.Media.MIME_TYPE, mimeType)
@@ -533,9 +561,16 @@ object MediaStoreWriter {
                 put(MediaStore.Video.Media.DATE_TAKEN, it)
             }
         }
-        val uri = runCatching {
+        val insert = runCatching {
             context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        }.getOrNull() ?: run {
+        }
+        insert.exceptionOrNull()?.let { failure ->
+            DiagnosticLog.w(TAG, "pending video insert threw for $displayName", failure)
+        }
+        val uri = insert.getOrNull() ?: run {
+            if (insert.isSuccess) {
+                DiagnosticLog.w(TAG, "pending video insert returned no row for $displayName")
+            }
             identityReservation.cancel()
             return null
         }
