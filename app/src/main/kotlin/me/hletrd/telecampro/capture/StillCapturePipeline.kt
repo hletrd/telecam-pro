@@ -702,7 +702,7 @@ internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = bui
  * hiccup in the 1×1 seed or ExifInterface save) reports once and yields null so the HEIF is still
  * written — the JPEG and passthrough lanes already treat EXIF this way.
  */
-internal inline fun bestEffortHeifExif(
+internal fun bestEffortHeifExif(
     build: () -> ByteArray,
     onFailure: (Exception) -> Unit,
 ): ByteArray? = try {

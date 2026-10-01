@@ -299,6 +299,30 @@ class CaptureOutputTrackerTest {
     }
 
     @Test
+    fun deletedPriorOutputs_forgetOnlyTheOldestBeyondTheBound() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        val bound = 64 // CaptureOutputTracker.MAX_DELETED_PRIOR_OUTPUTS (private)
+        // One deleted family larger than the bound: the oldest remembered output ages out first.
+        val family = (0..bound).map { PriorCaptureOutput("p$it.dng", CaptureOutputKind.RAW) } +
+            PriorCaptureOutput("p.heic", CaptureOutputKind.DISPLAYABLE)
+        assertTrue(tracker.seedPriorCapture(family, preferredOutput = "p.heic"))
+        tracker.takeForDelete("p.heic")
+
+        assertTrue(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("p0.dng", CaptureOutputKind.RAW)),
+                preferredOutput = "p0.dng",
+            ),
+        )
+        assertFalse(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("p.heic", CaptureOutputKind.DISPLAYABLE)),
+                preferredOutput = "p.heic",
+            ),
+        )
+    }
+
+    @Test
     fun deletedPriorFamily_refusesReseedingItsJustDeletedOutputs() {
         val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
         tracker.seedPriorCapture(
