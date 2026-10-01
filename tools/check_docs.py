@@ -1541,6 +1541,8 @@ check(
 )
 
 
+# password-property-rule:begin — the rule's own definition names the properties it hunts, so this
+# region (and only this region, only in this file) is excluded from its own scan; see RULE_SOURCE.
 # A credential's PROPERTIES are secret too (SEC2-1): stating a password's length, character class,
 # or how it was delivered turns an offline brute force over a stolen keystore into a trivial search.
 # Tracked prose may say only that the upload key is security-blocked pending owner rotation/reset.
@@ -1571,59 +1573,121 @@ PASSWORD_PROPERTY_PATTERNS = (
 )
 
 
-def password_property_findings(text: str) -> list[str]:
-    """Return each sentence pairing a credential subject with a length/class/delivery property."""
+# SEC4-3 / AGG4-40: a tracked TEST FIXTURE once restated the blocked key's real password property,
+# in a file type this rule never read. Text sources outside markdown are scanned too now; a fixture
+# that must spell out a property to prove the rule fires may do so only in an allowlisted test file,
+# only with synthetic values, and only in a sentence that carries the marker below.
+SCANNED_TEXT_SUFFIXES = (".md", ".py", ".kts", ".txt", ".toml", ".properties.example")
+SYNTHETIC_FIXTURE_MARKER = "SYNTHETIC-FIXTURE"
+SYNTHETIC_FIXTURE_FILES = frozenset({"tools/tests/test_tool_contracts.py"})
+RULE_SOURCE = "tools/check_docs.py"
+RULE_REGION = re.compile(
+    r"(?ms)^# password-property-rule:begin\b.*?^# password-property-rule:end$"
+)
+# Never part of a published tree; the glob fallback skips them (a committed export has none).
+UNPUBLISHED_DIRECTORIES = frozenset({
+    ".git", ".gradle", ".kotlin", "build", ".idea", "__pycache__", ".omc", ".claude", ".tool-state",
+})
+
+
+def password_property_findings(text: str, *, synthetic_fixture_file: bool = False) -> list[str]:
+    """Return each sentence pairing a credential subject with a length/class/delivery property.
+
+    In a [synthetic_fixture_file], a sentence carrying SYNTHETIC_FIXTURE_MARKER is exempt; nowhere
+    else is any sentence exempt.
+    """
     prose = re.sub(r"(?ms)^\s*(?:>\s?)*```.*?^\s*(?:>\s?)*```[^\n]*$", " ", text)
     prose = re.sub(r"(?m)^\s*(?:>\s?)+", "", prose)
+    # Comment leaders in code (`#`, `//`, KDoc `*`) would otherwise sit inside a wrapped sentence and
+    # defeat the patterns' own word-boundary/lookahead logic ("three character # classes").
+    prose = re.sub(r"(?m)^\s*(?:#+|//+|/?\*+/?)[ \t]?", "", prose)
     prose = re.sub(r"\s+", " ", prose)
     findings = []
     for sentence in re.split(r"(?<=[.!?])\s+|\s+[—–]\s+", prose):
         if not PASSWORD_SUBJECT.search(sentence):
+            continue
+        if synthetic_fixture_file and SYNTHETIC_FIXTURE_MARKER in sentence:
             continue
         if any(pattern.search(sentence) for pattern in PASSWORD_PROPERTY_PATTERNS):
             findings.append(sentence.strip()[:120])
     return findings
 
 
-def tracked_markdown(prefixes: tuple[str, ...]) -> list[str] | None:
-    """Tracked `*.md` under [prefixes], or None outside a git work tree (a committed export)."""
+def published_files(prefixes: tuple[str, ...]) -> list[str] | None:
+    """Files under [prefixes] the repository would publish, or None when git cannot say.
+
+    DOC3-1 kept gitignored reviewer notes out (index only). REG4-3 / DBG4-4: the index alone also
+    hid a NEW doc the author had not `git add`ed yet, which is exactly the state the pre-commit gate
+    runs in, so untracked files that are NOT ignored are listed too. A listing is authoritative only
+    when ROOT is the work tree's own top level: an export unpacked inside some other checkout used to
+    get an empty listing back and pass vacuously, so that case falls back to the glob instead.
+    """
     try:
+        toplevel = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8").strip()
+        if not toplevel or pathlib.Path(toplevel).resolve() != ROOT.resolve():
+            return None
         listed = subprocess.run(
-            ["git", "ls-files", "-z", "--", *prefixes],
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *prefixes],
             cwd=ROOT,
             capture_output=True,
             check=True,
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError, UnicodeError):
         return None
-    return [rel for rel in listed.decode("utf-8").split("\0") if rel.endswith(".md")]
+    return [rel for rel in listed.decode("utf-8").split("\0") if rel]
+
+
+def globbed_files(prefixes: tuple[str, ...]) -> list[str]:
+    """Disk fallback: every regular file under [prefixes], minus never-published directories."""
+    found = []
+    for prefix in prefixes:
+        base = ROOT / prefix
+        candidates = [base] if base.is_file() else sorted(base.rglob("*")) if base.is_dir() else []
+        for path in candidates:
+            relative = path.relative_to(ROOT)
+            if path.is_file() and not UNPUBLISHED_DIRECTORIES.intersection(relative.parts[:-1]):
+                found.append(relative.as_posix())
+    return found
 
 
 def password_property_scan_paths() -> list[str]:
     paths = [*COMMITTED_AUTHORITY_DOCS, "PRIVACY.md", "keystore.properties.example"]
-    # The rule polices what the repository PUBLISHES. In a work tree that is exactly the tracked set:
-    # globbing the disk also read gitignored, untracked reviewer notes under .context/, so a
-    # security review describing a password policy turned the host gate red (RPL cycle 3, DOC3-1).
-    # A committed export has no .git; everything in it was tracked, so the glob is exact there.
-    tracked = tracked_markdown(("docs", ".context"))
-    if tracked is None:
-        for pattern in ("docs/**/*.md", ".context/**/*.md"):
-            paths.extend(str(path.relative_to(ROOT)) for path in sorted(ROOT.glob(pattern)))
-    else:
-        paths.extend(tracked)
+    # The rule polices what the repository PUBLISHES: tracked plus not-yet-added, non-ignored files
+    # (see published_files). A committed export has no .git; everything in it was tracked, so the
+    # glob is exact there.
+    markdown_prefixes = ("docs", ".context")
+    listed = published_files(markdown_prefixes)
+    candidates = globbed_files(markdown_prefixes) if listed is None else listed
+    paths.extend(rel for rel in candidates if rel.endswith(".md"))
+    # SEC4-3: tracked text sources anywhere in the tree, not only markdown under docs/.
+    listed_text = published_files((".",))
+    text_candidates = globbed_files((".",)) if listed_text is None else listed_text
+    paths.extend(
+        rel for rel in text_candidates
+        if rel.endswith(SCANNED_TEXT_SUFFIXES) and not rel.endswith(".md")
+    )
     return sorted({rel for rel in paths if rel not in PRIVATE_DOCS and (ROOT / rel).is_file()})
 
 
 password_property_hits = [
     f"{rel}: {finding}"
     for rel in password_property_scan_paths()
-    for finding in password_property_findings(read(rel))
+    for finding in password_property_findings(
+        RULE_REGION.sub(" ", read(rel)) if rel == RULE_SOURCE else read(rel),
+        synthetic_fixture_file=rel in SYNTHETIC_FIXTURE_FILES,
+    )
 ]
 check(
     not password_property_hits,
     "tracked docs state no password length, character class, or delivery channel",
     "; ".join(password_property_hits[:5]),
 )
+# password-property-rule:end
 
 def markdown_heading_anchor(heading: str) -> str:
     """Match the repository's GitHub-style anchors for its current ASCII-heavy H2 headings."""

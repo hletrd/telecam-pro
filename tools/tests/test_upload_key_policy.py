@@ -69,7 +69,7 @@ class GeneratedSecretFloorTest(unittest.TestCase):
                 self.assertTrue(policy.meets_generated_secret_floor(strong))
 
     def test_low_entropy_shapes_fail(self) -> None:
-        # SEC4-5 / AGG4-42: each of these passed the length + class + "not one character" floor.
+        # SEC4-5 / AGG4-42: each of these passed the old length + class + no-single-symbol floor.
         for weak in (
             "a" * 18 + "A1",  # long repeat run, 3 distinct characters
             "Aa1" * 7,  # whole-value period 3

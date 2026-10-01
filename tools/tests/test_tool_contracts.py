@@ -40,11 +40,14 @@ def run_documentation_gate_from_committed_export(
     interpreter_args: tuple[str, ...] = (),
     environment: dict[str, str] | None = None,
     untracked: dict[str, str] | None = None,
+    foreign_repository: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], tuple[str, ...]]:
     """Runs check_docs on a committed export of HEAD plus the overlays below.
 
     With [untracked], the files are written into the committed STAGING work tree after the commit
     and the gate runs there (a real git work tree), proving untracked notes cannot change it.
+    With [foreign_repository], the export is unpacked inside an unrelated git work tree that tracks
+    none of its files (DBG4-4: an empty listing from the wrong repository must not pass vacuously).
     """
     def extract(payload: bytes, destination: Path) -> None:
         destination.mkdir()
@@ -133,6 +136,11 @@ def run_documentation_gate_from_committed_export(
             check=True,
             capture_output=True,
         ).stdout
+        if foreign_repository:
+            outer = root / "outer"
+            outer.mkdir()
+            init_fixture_repo(outer)
+            exported = outer / "exported"
         extract(committed, exported)
         private_docs_present = tuple(
             relative for relative in PRIVATE_EXPORT_DOCS if (exported / relative).exists()
@@ -1714,43 +1722,98 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    # SEC4-3 / AGG4-40: every value below is SYNTHETIC and deliberately implausible (a length in the
+    # hundreds, a letters-only class, a generic channel). None restates a real credential's property,
+    # and none is spliced onto the production anchor sentence; each is appended as its own paragraph.
+    SYNTHETIC_PASSWORD_LEAKS = (
+        "SYNTHETIC-FIXTURE: the example passphrase is 300 characters long.",
+        "SYNTHETIC-FIXTURE: the example passphrase (letters only) is fictional.",
+        "SYNTHETIC-FIXTURE: the example passphrase was transmitted in the clear.",
+    )
+    PASSWORD_RULE = "tracked docs state no password length, character class, or delivery channel"
+
     def test_committed_export_rejects_password_property_phrasing(self) -> None:
-        # SEC2-1: a password's length, character class, or delivery channel is itself secret.
-        anchor = "upload key is **SECURITY-BLOCKED** pending owner rotation/reset."
-        for leak in (
-            "upload key is **SECURITY-BLOCKED**: its password is 6 digits long.",
-            "upload key is **SECURITY-BLOCKED**: the password (numeric only) leaked.",
-            "upload key is **SECURITY-BLOCKED**: its password was sent over chat.",
-        ):
+        # SEC2-1: a password's length, character class, or delivery channel is itself secret. The
+        # synthetic marker exempts a sentence ONLY inside the allowlisted test source, never in a doc.
+        for leak in self.SYNTHETIC_PASSWORD_LEAKS:
             with self.subTest(leak=leak):
                 def regress(root: Path) -> None:
                     path = root / "docs/play-console-submit.md"
-                    text = path.read_text(encoding="utf-8")
-                    self.assertIn(anchor, text)
-                    path.write_text(text.replace(anchor, leak, 1), encoding="utf-8")
+                    path.write_text(path.read_text(encoding="utf-8") + f"\n{leak}\n", encoding="utf-8")
 
                 result, _ = run_documentation_gate_from_committed_export(regress)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(
-                    "FAIL  tracked docs state no password length, character class, or delivery channel",
-                    result.stdout,
-                )
+                self.assertIn(f"FAIL  {self.PASSWORD_RULE}", result.stdout)
+                self.assertIn("docs/play-console-submit.md", result.stdout)
+
+    def test_committed_export_scans_tracked_text_sources_outside_markdown(self) -> None:
+        # SEC4-3: the rule used to read `.md` only, so a test fixture restated a property unseen.
+        leak = self.SYNTHETIC_PASSWORD_LEAKS[0]
+        unmarked = leak.replace("SYNTHETIC-FIXTURE: ", "")
+        for relative, text in (
+            ("tools/release_notes.txt", f"{unmarked}\n"),
+            ("tools/extra_release_helper.py", f"# {unmarked}\n"),
+            ("gradle/extra.toml", f"# {unmarked}\n"),
+            ("app/extra.gradle.kts", f"// {unmarked}\n"),
+            # The marker exempts nothing outside the allowlisted fixture file.
+            ("tools/tests/test_other_fixture.py", f'LEAK = "{leak}"\n'),
+        ):
+            with self.subTest(relative=relative):
+                def add(root: Path) -> None:
+                    (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                    (root / relative).write_text(text, encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(add)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"FAIL  {self.PASSWORD_RULE}", result.stdout)
+                self.assertIn(relative, result.stdout)
+
+    def test_new_unstaged_files_are_scanned_but_ignored_ones_are_not(self) -> None:
+        # REG4-3 / DBG4-4: the pre-commit gate must see a published file the author has not added
+        # yet. `/docs/*.md` and `.context/` are ignored (private by default; a public doc there is
+        # force-added, which stages it), so those stay out exactly as DOC3-1 wants.
+        note = "SYNTHETIC-FIXTURE note: the example passphrase is 300 characters long.\n"
+        unmarked = note.replace("SYNTHETIC-FIXTURE note: ", "")
+        result, _ = run_documentation_gate_from_committed_export(
+            untracked={
+                "docs/licenses/new-runbook.md": unmarked,
+                "tools/new_release_note.txt": unmarked,
+                "docs/private-draft.md": unmarked,
+                ".context/reviews/untracked-note.md": unmarked,
+            },
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"FAIL  {self.PASSWORD_RULE}", result.stdout)
+        self.assertIn("docs/licenses/new-runbook.md", result.stdout)
+        self.assertIn("tools/new_release_note.txt", result.stdout)
+        self.assertNotIn("docs/private-draft.md", result.stdout)
+        self.assertNotIn("untracked-note.md", result.stdout)
+
+    def test_export_inside_a_foreign_repository_falls_back_to_the_glob(self) -> None:
+        # DBG4-4: `git ls-files` in another work tree lists nothing and used to pass vacuously.
+        leak = self.SYNTHETIC_PASSWORD_LEAKS[2]
+
+        def regress(root: Path) -> None:
+            path = root / "docs/play-console-submit.md"
+            path.write_text(path.read_text(encoding="utf-8") + f"\n{leak}\n", encoding="utf-8")
+
+        result, _ = run_documentation_gate_from_committed_export(regress, foreign_repository=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"FAIL  {self.PASSWORD_RULE}", result.stdout)
+        self.assertIn("docs/play-console-submit.md", result.stdout)
 
     def test_untracked_review_notes_cannot_change_the_password_property_verdict(self) -> None:
-        # DOC3-1: reviewer notes under .context/ are gitignored scratch; only tracked docs publish.
-        note = "Apply the rule: its password is 6 digits long and was sent over chat.\n"
+        # DOC3-1: reviewer notes under .context/ are gitignored scratch; only published files count.
+        note = "SYNTHETIC-FIXTURE note: the example passphrase was transmitted in the clear.\n"
+        unmarked = note.replace("SYNTHETIC-FIXTURE note: ", "")
         result, _ = run_documentation_gate_from_committed_export(
-            untracked={".context/reviews/untracked-note.md": note},
+            untracked={".context/reviews/untracked-note.md": unmarked},
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(
-            "ok    tracked docs state no password length, character class, or delivery channel",
-            result.stdout,
-        )
+        self.assertNotIn("untracked-note.md", result.stdout)
 
         def track(root: Path) -> None:
             (root / ".context/reviews").mkdir(parents=True, exist_ok=True)
-            (root / ".context/reviews/tracked-note.md").write_text(note, encoding="utf-8")
+            (root / ".context/reviews/tracked-note.md").write_text(unmarked, encoding="utf-8")
 
         tracked, _ = run_documentation_gate_from_committed_export(track)
         self.assertNotEqual(tracked.returncode, 0, tracked.stdout + tracked.stderr)
