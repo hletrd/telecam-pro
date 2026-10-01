@@ -107,6 +107,12 @@ private fun recordingStorageThreadFactory(): ThreadFactory {
 internal enum class RecordingStorageTerminalDisposition {
     SAVED,
     RETAINED_PENDING,
+    /**
+     * Kept private because the live structural check could not reach a verdict (REG3-1 / DES3-4).
+     * Launch recovery re-probes it and adopts only a structurally complete file, so the operator is
+     * told it will be CHECKED, never that it will be saved.
+     */
+    RETAINED_UNVALIDATED,
     FAILED,
 }
 
@@ -121,10 +127,21 @@ internal fun recordingStorageTerminalDisposition(
     }
     me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_MARKER_UNAVAILABLE,
     me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_PUBLICATION_UNAVAILABLE,
-    me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_VALIDATION_UNAVAILABLE,
     -> RecordingStorageTerminalDisposition.RETAINED_PENDING
+    me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_VALIDATION_UNAVAILABLE ->
+        RecordingStorageTerminalDisposition.RETAINED_UNVALIDATED
     me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.NOT_APPLICABLE ->
         RecordingStorageTerminalDisposition.FAILED
+}
+
+/** The one status a non-SAVED terminal presents; SAVED also publishes the URI, so it is handled apart. */
+internal fun recordingStorageTerminalStatus(
+    disposition: RecordingStorageTerminalDisposition,
+): CameraStatusMessage = when (disposition) {
+    RecordingStorageTerminalDisposition.SAVED -> CameraStatusMessage.VIDEO_SAVED
+    RecordingStorageTerminalDisposition.RETAINED_PENDING -> CameraStatusMessage.VIDEO_SAVE_DELAYED
+    RecordingStorageTerminalDisposition.RETAINED_UNVALIDATED -> CameraStatusMessage.VIDEO_KEPT_UNVERIFIED
+    RecordingStorageTerminalDisposition.FAILED -> CameraStatusMessage.VIDEO_SAVE_FAILED
 }
 
 /** Capture identity stays attached through provider completion and presentation. */

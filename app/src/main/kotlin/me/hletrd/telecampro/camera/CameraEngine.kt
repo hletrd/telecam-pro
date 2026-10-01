@@ -7393,18 +7393,10 @@ class CameraEngine internal constructor(
         terminal: RecordingStorageTerminalResult<android.net.Uri>,
     ) {
         recordingStoragePresentation.publish(terminal, present = { current ->
-            when (current.disposition) {
-                RecordingStorageTerminalDisposition.SAVED -> {
-                    current.outputUri?.let { onMediaSaved?.invoke(it, current.captureId) }
-                    onStatus?.invoke(CameraStatusMessage.VIDEO_SAVED.status())
-                }
-                RecordingStorageTerminalDisposition.RETAINED_PENDING -> {
-                    onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_DELAYED.status())
-                }
-                RecordingStorageTerminalDisposition.FAILED -> {
-                    onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
-                }
+            if (current.disposition == RecordingStorageTerminalDisposition.SAVED) {
+                current.outputUri?.let { onMediaSaved?.invoke(it, current.captureId) }
             }
+            onStatus?.invoke(recordingStorageTerminalStatus(current.disposition).status())
         })
     }
 

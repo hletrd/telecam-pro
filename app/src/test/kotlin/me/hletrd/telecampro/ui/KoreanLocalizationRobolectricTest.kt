@@ -124,9 +124,11 @@ class KoreanLocalizationRobolectricTest {
     }
 
     @Test
-    fun `retained saves say they publish at the next app start, not an in-session retry`() {
-        // DES2-2: nothing in the running process retries a retained row; only launch recovery
-        // (CameraViewModel construction -> engine.cleanupOrphans) publishes it.
+    fun `retained saves name the real trigger, a full close and reopen, not an in-session retry`() {
+        // DES2-2 / DES3-1: nothing in the running process retries a retained row, and the orphan
+        // sweep adopts only rows from BEFORE the process started. Reopening from the launcher or
+        // Recents usually reuses the cached process, so "the next time the app starts" was falsified
+        // by the very action it invited; only a new process (the app fully closed) publishes it.
         val en = context("en")
         val ko = context("ko")
         listOf(
@@ -136,11 +138,36 @@ class KoreanLocalizationRobolectricTest {
         ).forEach { status ->
             val english = status.resolve(en)
             val korean = status.resolve(ko)
-            assertTrue(english, english.endsWith("It will be saved the next time the app starts."))
+            assertTrue(english, english.endsWith("It is saved after the app is fully closed and opened again."))
+            assertFalse(english, english.contains("next time the app starts"))
             assertFalse(english, english.contains("retry", ignoreCase = true))
-            assertTrue(korean, korean.endsWith("앱을 다음에 시작할 때 저장됩니다."))
+            assertTrue(korean, korean.endsWith("앱을 완전히 종료한 뒤 다시 열면 저장됩니다."))
+            assertFalse(korean, korean.contains("다음에 시작할 때"))
             assertFalse(korean, korean.contains("다시 시도"))
         }
+    }
+
+    @Test
+    fun `an unvalidated clip is promised a check, never a save`() {
+        // REG3-1 / DES3-4: recovery adopts it only if its structural probe passes.
+        val english = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("en"))
+        val korean = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("ko"))
+        assertTrue(english, english.endsWith("It is checked after the app is fully closed and opened again."))
+        assertFalse(english, english.contains("saved"))
+        assertTrue(korean, korean.endsWith("앱을 완전히 종료한 뒤 다시 열면 확인합니다."))
+        assertFalse(korean, korean.contains("저장"))
+    }
+
+    @Test
+    fun `a still whose recovery marker failed speaks outcome, not mechanism`() {
+        // DES3-4: "Recovery marker" is an implementation term the operator cannot act on.
+        val status = CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(CameraStatusArgument.Text("DNG"))
+        val english = status.resolve(context("en"))
+        val korean = status.resolve(context("ko"))
+        assertEquals("DNG kept privately. It may not be recoverable.", english)
+        assertFalse(english, english.contains("marker", ignoreCase = true))
+        assertEquals("DNG 파일을 임시 보관했지만 복구되지 않을 수 있습니다.", korean)
+        assertFalse(korean, korean.contains("표식"))
     }
 
     @Test

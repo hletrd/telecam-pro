@@ -58,12 +58,14 @@ class StatusUrgencyTest {
             CameraStatusMessage.DNG_SAVE_DELAYED,
             CameraStatusMessage.OUTPUT_SAVED_PENDING,
             CameraStatusMessage.VIDEO_SAVE_DELAYED,
+            CameraStatusMessage.VIDEO_KEPT_UNVERIFIED,
         ).forEach {
             val status = it.status()
             assertEquals(CameraStatusSeverity.WARNING, status.severity)
             assertEquals(CameraStatusLivePriority.POLITE, status.livePriority)
             assertEquals(CameraStatusLifecycle.EVENT, status.lifecycle)
-            assertEquals(2_500L, status.durationMs)
+            // DES2-5 / AGG3-5: two sentences with an instruction; 2.5 s was too short to read.
+            assertEquals(6_000L, status.durationMs)
         }
         assertEquals(
             CameraStatusSeverity.ERROR,

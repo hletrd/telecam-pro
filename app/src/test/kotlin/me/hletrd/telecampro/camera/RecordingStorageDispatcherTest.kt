@@ -412,6 +412,27 @@ class RecordingStorageDispatcherTest {
         )
     }
 
+    @Test
+    fun `an unvalidated clip is kept for a check, never promised as saved`() {
+        // REG3-1 / DES3-4: launch recovery adopts this row only if its structural probe passes, so
+        // folding it into RETAINED_PENDING told the operator a possibly broken clip "is saved".
+        val disposition = recordingStorageTerminalDisposition(
+            VideoRecorder.StorageDisposition.RETAINED_VALIDATION_UNAVAILABLE,
+            hasUri = true,
+        )
+        assertEquals(RecordingStorageTerminalDisposition.RETAINED_UNVALIDATED, disposition)
+        assertEquals(CameraStatusMessage.VIDEO_KEPT_UNVERIFIED, recordingStorageTerminalStatus(disposition))
+        assertEquals(
+            mapOf(
+                RecordingStorageTerminalDisposition.SAVED to CameraStatusMessage.VIDEO_SAVED,
+                RecordingStorageTerminalDisposition.RETAINED_PENDING to CameraStatusMessage.VIDEO_SAVE_DELAYED,
+                RecordingStorageTerminalDisposition.RETAINED_UNVALIDATED to CameraStatusMessage.VIDEO_KEPT_UNVERIFIED,
+                RecordingStorageTerminalDisposition.FAILED to CameraStatusMessage.VIDEO_SAVE_FAILED,
+            ),
+            RecordingStorageTerminalDisposition.entries.associateWith(::recordingStorageTerminalStatus),
+        )
+    }
+
     private fun terminal(
         captureId: Int,
         disposition: RecordingStorageTerminalDisposition,

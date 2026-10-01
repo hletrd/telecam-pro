@@ -49,6 +49,7 @@ enum class CameraStatusMessage {
     UNSAFE_RECORDER_RESTART,
     VIDEO_SAVED,
     VIDEO_SAVE_DELAYED,
+    VIDEO_KEPT_UNVERIFIED,
     VIDEO_SAVE_FAILED,
     RECORDING_WITHOUT_AUDIO,
     MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO,
@@ -96,6 +97,14 @@ data class CameraStatus(
     val durationMs: Long?,
 )
 
+/** Complete outputs kept private for the next process's recovery sweep (warning, not failure). */
+internal val RETAINED_TAKE_MESSAGES: Set<CameraStatusMessage> = setOf(
+    CameraStatusMessage.DNG_SAVE_DELAYED,
+    CameraStatusMessage.OUTPUT_SAVED_PENDING,
+    CameraStatusMessage.VIDEO_SAVE_DELAYED,
+    CameraStatusMessage.VIDEO_KEPT_UNVERIFIED,
+)
+
 fun CameraStatusMessage.status(
     vararg arguments: CameraStatusArgument,
 ): CameraStatus {
@@ -128,6 +137,7 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.OUTPUT_SAVED_PENDING,
         CameraStatusMessage.DNG_SAVE_DELAYED,
         CameraStatusMessage.VIDEO_SAVE_DELAYED,
+        CameraStatusMessage.VIDEO_KEPT_UNVERIFIED,
         CameraStatusMessage.RECORDING_ALREADY_ACTIVE,
         CameraStatusMessage.MICROPHONE_BUSY,
         CameraStatusMessage.MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO,
@@ -186,6 +196,10 @@ fun CameraStatusMessage.status(
     val duration = when {
         lifecycle == CameraStatusLifecycle.PROGRESS -> null
         severity == CameraStatusSeverity.ERROR -> 6_000L
+        // A retained take's copy is two sentences that tell the operator what to DO to get the file
+        // (fully close and reopen the app). 2.5 s was too short to read it (DES2-5 / AGG3-5), and
+        // missing it reads as a lost take — so it stays up as long as an error does.
+        this in RETAINED_TAKE_MESSAGES -> 6_000L
         severity == CameraStatusSeverity.SUCCESS -> 1_500L
         else -> 2_500L
     }
