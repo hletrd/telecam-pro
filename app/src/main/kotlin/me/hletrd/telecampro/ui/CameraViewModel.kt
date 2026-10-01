@@ -1296,15 +1296,18 @@ class CameraViewModel private constructor(
             (!e.preserveTeleconverter && e.teleconverter) ||
                 (!e.preserveLensSelection && !requestedTeleconverter)
             )
+        // The restored route's zoom SCALE: lens-local on any standalone route (VIDEO, or PHOTO with
+        // DNG on PMA110), unified only on the logical seamless camera. One answer feeds both the
+        // preserve branch and restoredOptics so they can never disagree about what the ratio means.
+        val restoredRouteStandalone = standaloneRouteWanted(
+            e.mode == CaptureMode.VIDEO,
+            requestedFormats.dngRaw,
+            engine.rawForcesStandalone,
+        )
         val requestedZoom = if (preserveChangedOptics) {
             if (requestedTeleconverter) {
                 1f
-            } else if (standaloneRouteWanted(
-                    e.mode == CaptureMode.VIDEO,
-                    PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty().dngRaw,
-                    engine.rawForcesStandalone,
-                )
-            ) {
+            } else if (restoredRouteStandalone) {
                 (requestedLens.zoomPreset / opticalBaseFor(requestedLens.zoomPreset, _state.value.lensInventory.optical).zoomPreset)
                     .coerceAtLeast(1f)
             } else {
@@ -1331,6 +1334,7 @@ class CameraViewModel private constructor(
             teleconverter = requestedTeleconverter,
             teleconverterMagnification = restoredMagnification,
             savedZoomRatio = requestedZoom,
+            photoStandalone = e.mode == CaptureMode.PHOTO && restoredRouteStandalone,
         )
         val currentState = _state.value
         val restoredRoute = recalledCameraRoute(currentState.cameraRoutes, currentState.activeCameraRoute)

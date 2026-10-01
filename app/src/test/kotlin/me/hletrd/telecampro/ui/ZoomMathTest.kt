@@ -127,6 +127,69 @@ class ZoomMathTest {
         assertEquals(10.5f, restored.zoomRatio, 0f)
     }
 
+    @Test fun `photo restore on a DNG standalone route keeps lens band and local zoom`() {
+        // PMA110 Photo+DNG lives on a standalone lens, so the saved 1.0 is LOCAL to the 3× lens. Read
+        // as unified it re-banded to the 1× main lens on every launch and MR recall (AGG-2).
+        val restored = restoredOptics(
+            CaptureMode.PHOTO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 1f,
+            photoStandalone = true,
+        )
+        assertEquals(LensChoice.TELE3X, restored.lens)
+        assertEquals(1f, restored.zoomRatio, 0f)
+        val sixX = restoredOptics(
+            CaptureMode.PHOTO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 2f,
+            photoStandalone = true,
+        )
+        assertEquals(LensChoice.TELE3X, sixX.lens)
+        assertEquals(2f, sixX.zoomRatio, 0f)
+        assertEquals(
+            1f,
+            restoredOptics(
+                CaptureMode.PHOTO, LensChoice.TELE10X, false, TELECONVERTER_MAGNIFICATION, Float.NaN,
+                photoStandalone = true,
+            ).zoomRatio,
+            0f,
+        )
+    }
+
+    @Test fun `DNG on converts unified framing onto the standalone lens`() {
+        val optics = remapRouteScaleOptics(
+            lens = LensChoice.TELE3X,
+            controls = ManualControls(zoomRatio = 3f),
+            fromStandalone = false,
+            toStandalone = true,
+            teleconverter = false,
+            lensLocalRoute = false,
+        )
+        assertEquals(LensChoice.TELE3X, optics.lens)
+        assertEquals(1f, optics.controls.zoomRatio, 0.001f)
+        val sixX = remapRouteScaleOptics(
+            LensChoice.TELE3X, ManualControls(zoomRatio = 6f), false, true, false, false,
+        )
+        assertEquals(LensChoice.TELE3X, sixX.lens)
+        assertEquals(2f, sixX.controls.zoomRatio, 0.001f)
+    }
+
+    @Test fun `DNG off returns the standalone framing to unified zoom`() {
+        val optics = remapRouteScaleOptics(
+            lens = LensChoice.TELE3X,
+            controls = ManualControls(zoomRatio = 1f),
+            fromStandalone = true,
+            toStandalone = false,
+            teleconverter = false,
+            lensLocalRoute = false,
+        )
+        assertEquals(LensChoice.TELE3X, optics.lens)
+        assertEquals(LensChoice.TELE3X.zoomPreset, optics.controls.zoomRatio, 0.001f)
+    }
+
+    @Test fun `route scale remap is inert when the route answer or a local route does not change`() {
+        val controls = ManualControls(zoomRatio = 3f)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, true, true, false, false).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, true, false).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, false, true).controls)
+    }
+
     @Test fun `video restore keeps selected lens and local zoom`() {
         val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 2.25f)
         assertEquals(LensChoice.TELE3X, restored.lens)

@@ -368,6 +368,46 @@ internal fun remapModeOptics(
     }
 }
 
+/**
+ * The DNG door: wanting RAW moves PHOTO between the logical seamless camera (unified zoom) and a
+ * standalone lens (lens-local zoom) WITHOUT a mode change, so it needs the same scale conversion a
+ * mode flip gets. Before this the toggle carried the number across untouched: unified 3.0 became
+ * a 3× digital crop on the 70 mm lens (OSD ~208 mm, readout 9×), and turning DNG off at the 3× lens
+ * (local 1.0) landed the logical camera at 1× (RPL cycle 1, AGG-1).
+ *
+ * TELE, FRONT and any other lens-local route are local on both sides and stay unchanged, as does a
+ * toggle whose standalone answer did not flip (HEIF/JPEG edits, or a device without the RAW law).
+ */
+internal fun remapRouteScaleOptics(
+    lens: LensChoice,
+    controls: ManualControls,
+    fromStandalone: Boolean,
+    toStandalone: Boolean,
+    teleconverter: Boolean,
+    lensLocalRoute: Boolean,
+    optical: Set<LensChoice> = LensChoice.entries.toSet(),
+): ModeOptics {
+    if (fromStandalone == toStandalone || teleconverter || lensLocalRoute) return ModeOptics(lens, controls)
+    return if (toStandalone) {
+        val unified = controls.zoomRatio.takeIf { it.isFinite() } ?: lens.zoomPreset
+        ModeOptics(
+            lens = LensChoice.forZoom(unified),
+            controls = controls.copy(
+                zoomRatio = localZoomOf(unified, optical).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
+            ),
+        )
+    } else {
+        val local = controls.zoomRatio.takeIf { it.isFinite() } ?: 1f
+        ModeOptics(
+            lens = lens,
+            controls = controls.copy(
+                zoomRatio = unifiedZoomOf(lens, local, standaloneRoute = true, optical = optical)
+                    .coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM),
+            ),
+        )
+    }
+}
+
 /** Resolves the exact lens-local/unified zoom representation used by both engine and UI restore. */
 internal fun restoredOptics(
     mode: CaptureMode,
@@ -375,9 +415,18 @@ internal fun restoredOptics(
     teleconverter: Boolean,
     teleconverterMagnification: Float,
     savedZoomRatio: Float,
+    /**
+     * Whether the restored PHOTO route is a standalone lens (wanting DNG moves photo off the logical
+     * seamless camera on PMA110, see [me.hletrd.telecampro.camera.standaloneRouteWanted]). There the
+     * persisted ratio is LENS-LOCAL, exactly like VIDEO, so it must neither be read as unified nor
+     * re-banded through `forZoom`: a 3× lens at local 1.0 came back as the 1× main lens on every
+     * launch and every MR recall while DNG was on (RPL cycle 1, AGG-2).
+     */
+    photoStandalone: Boolean = false,
 ): RestoredOptics {
+    val lensLocal = mode == CaptureMode.VIDEO || photoStandalone
     val safeZoom = savedZoomRatio.takeIf { it.isFinite() } ?: when {
-        teleconverter || mode == CaptureMode.VIDEO -> 1f
+        teleconverter || lensLocal -> 1f
         else -> requestedLens.zoomPreset
     }
     if (teleconverter) {
@@ -393,7 +442,7 @@ internal fun restoredOptics(
             ),
         )
     }
-    return if (mode == CaptureMode.VIDEO) {
+    return if (lensLocal) {
         RestoredOptics(requestedLens, false, safeZoom.coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM))
     } else {
         val unified = safeZoom.coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM)
