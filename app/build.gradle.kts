@@ -3,6 +3,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
+import java.time.Duration
 import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
@@ -668,6 +669,15 @@ val verifyPartitionACoverage = tasks.register<Exec>("verifyPartitionACoverage") 
     )
 }
 tasks.named("check").configure { dependsOn(verifyPartitionACoverage) }
+
+// Suite-level hang backstop. This codebase's central risk is ownership/lock ordering, and many
+// concurrency tests park on untimed join()/await(); a deadlock regression would otherwise turn
+// `tools/verify_host.py` into an indefinite hang with no failing test name. Gradle fails the Test
+// task (and names it) once this wall-clock budget is spent. 30 min is several times the full
+// instrumented-coverage run on the maintainer host, so it only ever fires on a genuine wedge.
+tasks.withType<Test>().configureEach {
+    timeout.set(Duration.ofMinutes(30))
+}
 
 // --- Robolectric android-all under dependency verification -------------------------------------
 // At first test run Robolectric's own MavenArtifactFetcher (NOT Gradle: it ignores Gradle repos,
