@@ -1,277 +1,236 @@
-# Perf-reviewer — RPL cycle 2 (2026-10-02, HEAD e5729ffd)
+# Perf-reviewer — RPL cycle 3 (2026-10-02, HEAD e3a2bdd4)
 
-Lane: performance, concurrency, thread-safety, CPU/memory/allocation, UI responsiveness, Compose
-recomposition, GL-thread stalls, main-thread blocking. READ-ONLY review; nothing edited.
+Angle: performance, concurrency, CPU/memory, UI-thread responsiveness, GL thread, executors,
+hot-path allocation, lock contention, blocking calls on main/camera threads, Compose recomposition.
+READ-ONLY review; no source, test, doc or plan edited; Gradle not run.
 
-## Method
-
-- Read CLAUDE.md, the cycle-1 aggregate (`.context/reviews/archive-rpl-cycle1-2026-10-02/_aggregate.md`)
-  and plan (`docs/plans/2026-10-02-rpl-cycle1.md`).
-- Inventory: `app/src/main/kotlin/**` (105 files, ~60k lines). Reviewed in four parallel slices:
-  (1) ViewModel/UI (`CameraViewModel`, `CameraScreen`, `ZoomMath`, `controls/*`, `overlays/*`,
-  `MainActivity`); (2) `CameraEngine` + `CameraController` + their helpers; (3) `gl/*`, `GyroEis`,
-  `StandbyAudioController`, `RendererAssists`, `video/*`; (4) `storage/*`, `capture/*`,
-  `CaptureOutputTracker`, `ui/review/*`, `camera/Retained*`, `LaunchMediaRecoveryCoordinator`,
-  `RecordingStorageDispatcher`, `DiagnosticTelemetry`.
-- Re-verified every cycle-1 change in `git diff ba5b16e7..HEAD -- app/src/main` for new races.
-- Findings marked "verified" were re-read against the code at the cited lines by the lane lead.
-- Owner decisions (ZSL dark refusal, FocusDetail threshold, CameraUnit SDK, proprietary HDR,
-  orientation-moves-no-control, synchronous SettingsStore commit) are not re-raised. Cycle-1 items
-  already scheduled (AGG-27, AGG-42, AGG-50..53, AGG-56..61) are referenced, not re-reported.
-
-## Cycle-1 fixes checked and found sound
-
-- **4e57fff2 token-scoped recorder workers**: `runRecorderWorkerNative` admits the exact token both
-  while pending and after `publish` moves it to active (`video/VideoRecorder.kt:1347-1367`,
-  `:1511-1525`). The owner door now refuses the same Engine while any token is pending
-  (`:1335-1336`); that is consistent with the Engine's replay design
-  (`CameraEngine.kt:7076-7100` → `awaitRecorderSetupReplay`), and the encoder EGL attach
-  (`gl/GlPipeline.kt:747`) runs only after `publishAdmission` (`CameraEngine.kt:6379` precedes
-  `setEncoderOutput` at `:6470`), so REC cannot refuse itself. Lock order muxerLock → gate lock has
-  no reverse acquirer.
-- **38d99950 `checkNotNull(muxer)` in drain loops**: `muxer` is nulled only before drain threads
-  exist (`VideoRecorder.kt:352`) or after both joins proved the threads dead (`:501`, after
-  `:418-419`); a live thread routes `stopNative` to QUARANTINE without touching `muxer`. No benign
-  race became a failure; the audio-side throw still degrades to video-only (`:735-739`).
-- **`audioDegradeLogged`**: CAS gives one reserved row per take.
-- **`IdentityReadWarningGate`** (`storage/PendingDiscardJournal.kt:578-600`): `@Synchronized`,
-  access-order LRU capped at 64, cleared on Present/Absent — bounded and thread-safe.
-- **`onSetPhotoFormats` route remap** (`ui/CameraViewModel.kt:2433-2475`): main-thread only;
-  `cancelPendingControls()` precedes the remap and `invalidateOpticsDerivedState()` resets
-  `ZoomGlideState.pendingRatio`/`easeTarget` and removes trailing flush/quiet-landing/ease runnables
-  before anything else can run on main.
-- **`setRawWanted` unsynchronized early-return / `routeFlips`** (`CameraEngine.kt:3996-4000`): both
-  callers are main-thread; a concurrent rollback only causes a redundant reopen. Not a finding.
-- **`CaptureOutputTracker.deletedPriorOutputs`**: guarded by the class monitor, bounded at 64.
-- `_state` writes from non-main threads all use `_state.update {}` (no raw `.value =` RMW remains).
+Not re-reported (settled owner decisions or accepted design): ZSL dark refusal, FocusDetail
+threshold, CameraUnit SDK, proprietary HDR, 16 ms zoom coalescer / no-submit gesture design,
+synchronous `SettingsStore` commit on main, `DngCreator.writeImage` itself running on the camera
+callback (the Image must be live), 300-row log budget. Cycle-1/2 perf items already fixed or
+deferred (AGG-42, AGG-51, AGG-53, AGG2-32, AGG2-33) are not repeated unless new evidence is given.
 
 ## Findings
 
-### PERF2-1 — Live finalized-video check DELETES a take on an extractor throw that launch recovery would KEEP
-- **Where:** `storage/MediaStoreWriter.kt:2589-2595` (`classifyFinalizedVideoTrack`: parse
-  exception → `PendingProbe.INVALID`), used by the live stop tail via `finalizedVideoTrackProbe`
-  (`:1685-1706`) and `video/VideoRecorder.kt:1971-1981`. Recovery: `probeFinalizedVideo`
-  (`MediaStoreWriter.kt:1657-1675`) wrapped by `pendingProbeOutcome` (`:2255-2260`), which maps
-  ANY throw to INDETERMINATE (retain).
-- **Why:** P3.1/AGG-16's stated rule is that the live path must never be stricter than recovery in
-  the destructive direction. That now holds for a provider-open failure but not for a throw AFTER
-  the open (`MediaExtractor.setDataSource`/`getTrackFormat` IOException).
-- **Failure scenario:** mic drops mid-REC → audio degrades → `muxer.stop()` throws over the
-  sample-less audio track (the tolerated stop) → validation SKIPPED → this probe. A transient FUSE
-  read error in `setDataSource` returns INVALID → `failure` set → `shouldPublishRecording` false →
-  the row is discarded. The same file left by a crash at that instant would have been adopted by
-  recovery.
-- **Fix:** map parse exceptions to INDETERMINATE on the live path too (retain REGISTERED for
-  recovery's structural probe), and pin live/recovery parity with a test whose `hasVideoTrack`
-  throws. Only a clean "no video track" answer should be INVALID.
-- **Severity / confidence:** Medium / Medium. **Label:** confirmed (code divergence verified);
-  real-device frequency of extractor throws on a valid file needs manual validation.
+### PERF3-1 — While recording, every encoder frame waits behind a blocking preview `eglSwapBuffers`; UI jank turns into dropped frames in the FILE
+- **Severity / Confidence / Status:** Medium / Medium / Needs-device
+- **Where:** `gl/GlPipeline.kt:1044-1200` (preview `makeCurrent` → `renderer.draw` → finder →
+  `core.swapBuffers(ownedPreview)`), then `:1242-1259` (encoder draw/swap). `gl/EglCore.kt:92-94`
+  (`eglSwapBuffers`); no `eglSwapInterval` anywhere in `gl/` (grep), so the TextureView window keeps
+  the default interval 1 (synchronous BufferQueue).
+- **Why:** the preview surface is a TextureView. Its consumer only latches when the UI thread
+  produces a frame and RenderThread syncs it. With swap interval 1 the producer's dequeue blocks once
+  the non-acquired buffers are all queued. `drawFrame` always swaps the preview first, so a main-thread
+  stall longer than about two camera frames (a heavy recomposition such as opening ProSheet or review
+  during REC, or a GC pause) parks the GL thread inside the preview swap. The encoder draw for that
+  frame waits too. Meanwhile `FrameNotificationCoalescer` (`gl/FrameNotificationCoalescer.kt:21-40`)
+  collapses the pending SurfaceTexture notifications into one "latest frame" draw. The frames that
+  arrived during the stall are therefore never drawn into the encoder. PTS comes from
+  `st.timestamp`, so the clip keeps correct timing but has holes, which plays back as stutter.
+- **Failure scenario:** 4K30 REC, the operator opens the Fn overlay or ProSheet mid-take, and the
+  first composition of that sheet costs about 80–120 ms on main. Roughly three camera frames are
+  coalesced away. The recorded MP4 shows a visible hitch even though the camera and encoder were
+  healthy.
+- **Fix:** with an active encoder owner, draw and swap the ENCODER first, then the preview. The
+  encoder is the output that must not drop. The analysis readback is already ordered after the
+  encoder for this reason. Alternatively call `EGL14.eglSwapInterval(display, 0)` once after the
+  preview surface first becomes current in `applyPreviewOutput`. That puts the TextureView queue in
+  async mode, so the preview drops a frame instead of blocking. A host-testable seam is a pure
+  `frameOutputOrder(encoderActive: Boolean)` that the draw follows, with a unit test.
+- **Device check:** during REC, inject a 150 ms main-thread stall (debug) or open ProSheet. Then
+  compare `ffprobe -count_frames` against duration × fps, before and after the fix.
 
-### PERF2-2 — Rollback keeps a newer `rawWanted` even when it changes the RESTORED route's answer (AGG-4 divergence returns)
-- **Where:** `camera/CameraEngine.kt:1011`
-  (`if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted`), the
-  direct-write branch `:4006-4016`, the change gate `:3996`, and the VM mirror
-  `ui/CameraViewModel.kt:925-927`, `:970-977`.
-- **Why:** the 3ec126e1 rule keeps any later direct (transaction-less) DNG write. Direct writes
-  happen in VIDEO, on FRONT/EXTERNAL, before start, and on devices without the RAW law — all places
-  where the write did not move the route THEN. But the rollback can restore a different mode/route
-  (e.g. PHOTO on the logical camera), where the kept value DOES change the route answer, and the
-  rollback restores `overrideId`/selection without re-resolving.
-- **Failure scenario:** PHOTO, DNG on → T1 pending. Switch to VIDEO → T2 (baseline B0: PHOTO,
-  logical, raw=false). In VIDEO toggle DNG off→on (two direct writes; raw=true). T2 fails → rollback
-  restores PHOTO + logical route but keeps raw=true; `OpticsRollbackPublication.rawWanted=true` keeps
-  the chip on; the next `setRawWanted(true)` returns at `:3996`. DNG is silently dropped by output
-  normalization until the operator toggles DNG off and on — the exact permanent-divergence shape
-  CLAUDE.md "DNG bug #2" describes.
-- **Fix:** in the rollback commit keep the newer `rawWanted` only if
-  `standaloneRouteWanted(restored.mode == VIDEO, rawWanted, law) ==
-  standaloneRouteWanted(restored.mode == VIDEO, before.rawWanted, law)`; otherwise restore
-  `before.rawWanted` (or keep it, clear `overrideId` to the user pin, and queue a re-resolving
-  reopen).
-- **Related VM half:** the VM applies `rollback.rawWanted` after only an optics-generation check.
-  A direct DNG write (no generation bump) made between the engine posting the rollback and the
-  main-thread apply is overwritten in `photoFormats.dngRaw` and persisted, while the engine keeps
-  the newer value → chip/settings/engine disagree and the change gate freezes it. Fix: carry
-  `rawWantedDirectWrites` in the publication and skip the `dngRaw` mirror when stale (or read the
-  engine's current value on main).
-- **Severity / confidence:** Medium / Medium. **Label:** likely (narrow timing: toggles during a
-  pending reconfigure plus a failure).
+### PERF3-2 — The processed and hi-res JPEG lanes rewrite every saved JPEG twice through a full temp-file copy to re-stamp EXIF
+- **Severity / Confidence / Status:** Medium / High / Confirmed (from code and library bytecode)
+- **Where:** `capture/StillCapturePipeline.kt:322-334` (`rotated.compress` straight to the provider
+  stream, then `writeJpegExif`), `:470-486` (`ExifInterface(pfd.fileDescriptor)` + `saveAttributes()`),
+  `:355-368` (hi-res passthrough, same pattern). Library check: androidx.exifinterface 1.4.2
+  `saveAttributes()` (javap of the cached AAR) does `File.createTempFile("temp","tmp")` and copies
+  the WHOLE fd into it (`ExifInterfaceUtils.copy`). It then `lseek`s the fd to 0 and streams the
+  whole image back through `saveJpegAttributes`. The constructor has already parsed the fd once.
+- **Why:** each processed JPEG (about 6–12 MB at 12.5 MP q95+) crosses the MediaProvider FUSE path
+  about three times: compress-write, full read into the cache copy, full rewrite from the copy. It
+  also writes the same number of bytes again to app cache. All of this runs on the single-thread
+  `ioExecutor` that serializes every processed still and DNG transfer. In BURST with HEIF+JPEG, the
+  JPEG I/O roughly triples and backs up the queue that `ProcessedSnapshotBudget` bounds, so the
+  shutter refuses sooner. The hi-res passthrough lane (dormant on PMA110) would copy about 40 MB per
+  shot the same way. Secondary: `writeJpegExif` sits in `runCatching`. If `saveAttributes` fails
+  after it began rewriting the fd and its own restore copy also fails ("Failed to save new file.
+  Original file is stored in …"), the lane still marks COMPLETE and publishes whatever bytes are
+  left. A low-space cache also silently drops all EXIF, because the temp copy is what fails first.
+- **Fix:** the HEIF lane already builds an APP1 payload without touching the output
+  (`buildHeifExifData` + `extractExifApp1`, `:488-515`). Reuse it for JPEG. Compress into memory (the
+  rotated bitmap is already resident), then write `FFD8` + APP1 segment + compressed[2..] to the
+  provider stream in one pass. The passthrough lane can splice the same way. This removes the temp
+  file, the extra FUSE round trips and the partial-rewrite failure mode. Host test: the spliced
+  output parses with `ExifInterface(ByteArrayInputStream)` and carries ISO, exposure, make/model and
+  orientation, and its decoded pixels equal the un-spliced encode.
 
-### PERF2-3 — Dual-open candidate install does not recheck `paused` inside the monitor; a camera can be opened after `onStop`
-- **Where:** `camera/CameraEngine.kt:4191-4198` (install predicate in `reconfigureCamera`'s
-  dual-open path). `paused` is checked only outside the monitor at `:4177`. The sequential path
-  checks `paused` inside the same monitor (`:2368`).
-- **Why:** `pause()` (`:7299`) sets `paused`, then nulls `controller` under the monitor and queues
-  `close()`. A pause that lands between `:4177` and `:4191` lets this task install `controller = next`
-  and call `next.open(...)` (`:4237`) while backgrounded; it is closed only after
-  `waitForDualOpenBoundary` later observes `paused`. Worse, if pause's `controller = null` ran
-  before the install, pause queued no close for `next` at all.
-- **Failure scenario:** lens/mode switch immediately followed by Home/lock opens a CameraDevice
-  behind the keyguard — privacy indicator, CAMERA_DISABLED, or evicting another app's camera.
-  CLAUDE.md: "never open the camera while backgrounded".
-- **Fix:** add `|| paused || recorder != null` to the in-monitor predicate at `:4192`, matching the
-  sequential path.
-- **Severity / confidence:** Low-Medium / Medium. **Label:** confirmed in code (verified); device
-  effect needs manual validation.
+### PERF3-3 — The DNG camera callback also does Binder `openOutputStream` and the fsync'd COMPLETE marker with sleep backoff, and neither needs the live Image
+- **Severity / Confidence / Status:** Low-Medium / High / Confirmed (thread placement); latency Needs-device
+- **Where:** `capture/StillCapturePipeline.kt:388-407` (`saveDng`: `MediaStoreWriter.openOutputStream`
+  → `DngCapture.writeDng` → `MediaStoreWriter.markWriteComplete`), called from
+  `camera/CameraEngine.kt:5752` inside the photo callback on the controller's single `"camera"`
+  HandlerThread (`camera/CameraController.kt:80-81`, `:730`, `:745`).
+  `storage/MediaStoreWriter.kt:636-647` (marker: `SharedPreferencesDurableEdit.putString` with
+  `commit`, up to `COMPLETION_MARK_ATTEMPTS = 3` with `sleepPreservingInterrupt(25 ms × attempt)`,
+  so at most 75 ms of sleep), and `:1056-1064` (`contentResolver.openOutputStream`, no deadline).
+- **Why:** only `DngCreator.writeImage` needs the RAW `Image` alive; that part is the accepted design.
+  The provider `openOutputStream` Binder call (MediaProvider/FUSE open, unbounded under provider
+  contention, e.g. during launch recovery or another app's scan) and the durable marker do not need
+  it. That HandlerThread is the only thread for capture results (`onCaptureCompleted` → zoom-result
+  GL compensation, AF/AE publication, ZSL ring pairing) and every ImageReader listener. Each
+  millisecond spent here delays those callbacks and holds the RAW buffer, and with it the
+  `ProcessedSnapshotBudget`/DNG admission, for longer. In AEB/BURST with DNG this repeats per frame.
+- **Failure scenario:** a DNG BURST while MediaProvider is busy. Each callback waits on the open,
+  then up to three commits plus 75 ms of sleep when the journal write hiccups. Zoom-result
+  forwarding and AF indication lag visibly, and the next RAW image waits in the reader.
+- **Fix:** open the `ParcelFileDescriptor` during the pre-capture DNG allocation. That allocation
+  already runs off-thread under its 8 s first-wins deadline, so carry the fd in
+  `PendingOutputAllocation` and keep the camera callback down to `writeImage` + close. Move
+  `markWriteComplete` into `publishDng`, which already runs on the process owner. Launch recovery
+  still adopts a REGISTERED DNG only after the structural probe, so a crash between the write and
+  the marker keeps today's outcome. The CLAUDE.md/ARCHITECTURE sentence "durable COMPLETE marker
+  attempt remain synchronous while the RAW Image is valid" then needs the matching edit. Host test:
+  with a blocking fake writer and a blocking marker, the callback returns as soon as the fake
+  `writeImage` returns.
 
-### PERF2-4 — `onCleared` purges main-thread callbacks before detaching engine callbacks; a late post can restart the self-reposting `recordTicker` forever
-- **Where:** `ui/CameraViewModel.kt:4155` (`mainHandler.removeCallbacksAndMessages(null)`) runs
-  before `:4160` (`engine.detachCallbacks()`); `recordTicker` (`:232-243`) reposts every 200 ms with
-  no `cleared` guard.
-- **Why:** engine callbacks post to `mainHandler` from camera/setup/recorder threads. Anything
-  posted between the purge and the detach (or by a callback lambda already read before the detach)
-  survives.
-- **Failure scenario:** activity finishes while REC start is in flight; the `onRecordingStarted`
-  post (`:1142-1150`) lands after the purge and posts `recordTicker`, which then runs whole-state
-  updates at 5 Hz for the rest of the process and pins the cleared ViewModel (and the engine graph
-  it references). Other late posts (`onCapsReady`, `onOpticsRollback`) call engine setters on an
-  engine being released.
-- **Fix:** `engine.detachCallbacks()` before the purge, purge again after it, and guard
-  self-reposting runnables with `if (cleared) return`.
-- **Severity / confidence:** Low / Medium. **Label:** confirmed ordering (verified);
-  reachability needs manual validation.
+### PERF3-4 — Every capture's gallery thumbnail copies the whole still file into cache and decodes it three times for a 240 px image
+- **Severity / Confidence / Status:** Low-Medium / High / Confirmed
+- **Where:** `ui/review/MediaReview.kt:830-841` (`loadGalleryThumb` STILL → `decodeReviewBitmap(...,
+  GALLERY_THUMB_MAX_DIM = 240, ...)`), `:472-500` (`openReviewDecodeSource` spools the provider
+  stream; APP_OWNED max is `trustedReviewSourceMaxBytes`, up to 512 MiB), then three
+  `source.openInputStream()` passes (bounds, sampled decode, EXIF orientation).
+  `ui/review/LatestHeavyWorkLane.kt:391-440` (64 KiB copy loop into `review-sources-v1`).
+  Keyed by `LaunchedEffect(uri, provenance)` at `:878`, so it runs for every new capture.
+- **Why:** each shot pays an extra full read from FUSE, a full write to app cache (about 6–12 MB of
+  extra flash writes per JPEG/HEIF) and a sampled decode. For HEIF a sampled `BitmapFactory` decode
+  still decodes the full HEVC image before it subsamples (Medium confidence on that platform detail).
+  This runs on the shared review dispatcher, but it competes for storage bandwidth and big-core CPU
+  with the `ioExecutor` saves of the next burst frames. The video path already uses the bounded
+  provider thumbnail (`loadVideoThumbnail`, `:408-423`) and needs none of this.
+- **Fix:** for APP_OWNED stills, request `contentResolver.loadThumbnail(uri, Size(240,240), null)`
+  (MediaProvider's cached thumbnail honors EXIF orientation), with the same
+  `providerThumbnailFitsRequest` bound check. Keep the frozen spool for the full review open, where
+  identity freezing matters. If the spool must stay, at least skip the third pass for processed
+  lanes, which stamp `ORIENTATION_NORMAL`. Host test: the STILL thumbnail lane never calls the spool
+  for APP_OWNED rows.
 
-### PERF2-5 — Lazy `rawChars` retry (cycle-1 1c5a0060) makes a Binder call on the camera thread for every shot while the read keeps failing
-- **Where:** `camera/CameraController.kt:2266` (`rawChars ?: readRawCharacteristics()`), `:2412-2421`.
-- **Why:** `getCameraCharacteristics` runs inside `tryComplete` on the camera handler — the thread
-  that delivers images/results — while the live Images are held, before `onPhoto`. With a
-  persistent failure (policy-disabled camera, provider churn) every still, including each frame of
-  a BURST/AEB chain, pays one IPC there. Only the first failure is logged.
-- **Fix:** do the retry on `setupExecutor` before each still dispatch (or rate-limit it, e.g. one
-  attempt per second), keeping the camera-thread path cache-only like the Engine's EXIF metadata
-  prefetch.
-- **Severity / confidence:** Low / High. **Label:** confirmed.
+### PERF3-5 — `PendingDiscardJournal` opens and closes a fresh SQLite connection for every operation while holding a process-wide monitor
+- **Severity / Confidence / Status:** Low / High / Confirmed
+- **Where:** `storage/PendingDiscardJournal.kt:380-389` (`withReadableDatabase`/`withWritableDatabase`
+  construct a new `Helper` (SQLiteOpenHelper) and `.use{}` it, so every call opens and closes the
+  database file), wrapped by `synchronized(databaseLock)` (static, `:481`) at `:97`, `:138`, `:148`,
+  `:220`, `:256`, `:339-340`. Callers: `MediaStoreWriter.publish` (every HEIF/JPEG/DNG/video,
+  `storage/MediaStoreWriter.kt:1076-1084` → `withLookupAuthority` → `lookupLocked`), `clearPending`,
+  `discardPendingOutput`, and launch-recovery paging (one lookup per row).
+- **Why:** each open repeats file open, header and `user_version` validation, connection setup and
+  close. That is a few ms of file I/O done while holding the one process-wide `databaseLock`, so the
+  ioExecutor publish, the DNG process owner, the rejected-output workers, recording storage and
+  launch recovery all serialize on connection churn. The cost is not large per op, but it lands on
+  every saved output and grows linearly with recovery size.
+- **Fix:** keep one process-lifetime `Helper` (lazy, per name and version) and reuse its
+  `SQLiteDatabase`, which is thread-safe with its own connection pool. Keep `databaseLock` only where
+  a multi-statement sequence needs it. Make the helper factory injectable so a host test can assert
+  one construction across N lookups.
 
-### PERF2-6 — Launch recovery now walks every page after an exhausted failure, 3 retries each, under a process-terminal 120 s deadline
-- **Where:** `storage/MediaStoreWriter.kt:1414` (`continueAfterFailureExhaustion = nextCursor != cursor`),
-  `camera/LaunchMediaRecoveryCoordinator.kt:259-285`, deadline `:236-245`
-  (`PROCESS_LAUNCH_MEDIA_RECOVERY_DEADLINE_MS = 120_000`).
-- **Why:** one batch covers both Images and Video. If one collection's query fails persistently
-  (cursor not advanced) while the other advances, `nextCursor != cursor` stays true and every
-  following page re-runs the failing query, each page retried `MAX_MEDIA_RECOVERY_ATTEMPTS` = 3
-  times with backoff and full structural re-probes of every pending row on the page. Before cycle
-  1 (a1fee383) recovery stopped at the first exhausted page; now its cost is
-  O(pages × 3 × probe cost).
-- **Failure scenario:** many legacy indeterminate rows, or an unqueryable Images collection with
-  several 64-row Video pages → the 2-minute watchdog fires `exhaust()`, and launch recovery is
-  unavailable for that process (every later subscriber gets
-  `LaunchMediaRecoveryCapacityExhaustedException`). No data loss (rows stay pending), but a liveness
-  regression introduced by the fix.
-- **Fix:** track progress per collection; once a collection's query is exhausted, skip it for the
-  rest of the run and advance without further retries; retry only the failed rows, not the whole
-  page.
-- **Severity / confidence:** Low-Medium / Medium. **Label:** needs-manual-validation.
+### PERF3-6 — Logical-route (default 1×) stills pay an intermediate full-resolution JPEG encode and decode before the real encode
+- **Severity / Confidence / Status:** Low / Medium / Confirmed (cost magnitude Needs-device)
+- **Where:** `capture/StillSnapshot.kt:44-55` (`YuvImage.compressToJpeg` at q97 into a
+  `width*height` buffer), then `capture/StillCapturePipeline.kt:200` (`BitmapFactory.decodeByteArray`
+  of those bytes), then crop/rotate and the HEIF/JPEG encode.
+- **Why:** on the LOGICAL route (the default photo route, plus FRONT's YUV rungs) every still
+  round-trips through a 12.5 MP q97 JPEG encode (about 12 MB) and a full decode on `ioExecutor`
+  before the real encoder runs. That is roughly double the CPU and transient memory of the pixel
+  pipeline per shot, plus one more lossy generation. In BURST on the logical route it is the main
+  throughput limiter behind `ProcessedSnapshotBudget`. The comment "changes nothing structurally"
+  is true for correctness but not for cost.
+- **Fix:** convert NV21 to an ARGB `Bitmap` directly. That is a bounded per-row Kotlin loop
+  (host-testable against `YuvImage`'s colour math at a tolerance), or a GL/HardwareBuffer path,
+  feeding the existing crop/rotate. Alternatively feed HEIF through `HeifWriter.INPUT_MODE_BUFFER`
+  with YUV after a plane rotate. Either removes one encode and one decode per logical-route shot.
+  Measure first with a debug `ShutterLag`-style timing row (bounded per the log-budget rules).
 
-### PERF2-7 — Focus-evidence epoch sampled when the analysis callback runs, not when the readback was taken
-- **Where:** `ui/CameraViewModel.kt:1051-1070` (`val epoch = focusEvidenceEpoch` inside
-  `engine.onAnalysis`, GL/analysis thread); the field (`:548`) is a plain `Long`, not `@Volatile`.
-- **Why:** the guard protects only the post→main gap. A readback taken before an optics door, whose
-  callback fires after the door bumped the epoch on main, samples the NEW epoch and its old-route
-  FocusDetail/motion verdict is folded into the new route. The non-volatile cross-thread read can
-  also be stale (false drops only).
-- **Failure scenario:** lens tap while the scopes/AE readback is in flight → the old lens's SOFT
-  evidence feeds the new route's 700 ms hold or the motion accumulator for one tick.
-- **Fix:** stamp the epoch where GL captures the readback (GL already carries
-  `motionEvidenceEpoch`) and pass it through the callback; at minimum mark the field `@Volatile`.
-- **Severity / confidence:** Low / Medium. **Label:** likely.
+### PERF3-7 — (carried AGG-50, new evidence) The GL-thread input-ready continuation holds `TerminalAcquisitionGate` across Binder route enumeration
+- **Severity / Confidence / Status:** Low-Medium / Medium / Confirmed (placement); impact Needs-device
+- **Where:** `camera/CameraEngine.kt:1880-1914`: `terminalAcquisitionGate.runIfOpen inputReady@{ ...
+  resolveInitialCameraRouteAvailability() ... }` runs on the `gl-pipeline` HandlerThread, invoked
+  from `GlPipeline.applyPreviewOutput` (`gl/GlPipeline.kt:462`). `resolveInitialCameraRouteAvailability`
+  calls `CameraSelector2.routeInventory(manager)` (`camera/CameraSelector2.kt:268-290`:
+  `cameraIdList` + one `getCameraCharacteristics` per id) and `manager.cameraIdList` again
+  (`CameraEngine.kt:1457-1458`). `TerminalAcquisitionGate.runIfOpen`/`close` are `@Synchronized`
+  (`:8657-8671`). Every other Camera2 acquisition on `setupExecutor` also enters that monitor
+  (`:2472`, `:4349`, `:4538`, `:6558`), and so does `enterUnsafeRecorderQuarantine` → `close()`
+  (`:7386`).
+- **New evidence beyond AGG-50:** the same `registerAvailabilityCallback` that
+  `onPreviewSurfaceAvailable` performs first (`:1835`, `:1578-1582`) delivers an initial
+  `onCameraAvailable` per id. That queues a forced resolve on `setupExecutor`
+  (`:1556-1571`; `routeAvailabilityRefreshRequired` is true while `cameraRouteInventoryResolved` is
+  false). On cold start there are therefore two concurrent full Binder enumerations: one on the GL
+  thread holding the gate monitor, one on setupExecutor. setupExecutor's `openCamera` /
+  session-start `runIfOpen` then waits for the GL thread's enumeration. The resolve itself is still
+  unsynchronized across the two threads (`pendingRouteTopologyRevision` RMW, `knownCameraIds`,
+  `routeInventoryRetryAttempts`).
+- **Fix (host-testable):** make the input-ready callback only post to `setupExecutor`, so the
+  resolve + snapshot + reconfigure run there serially with the availability refresh. Gate the
+  refresh with `cameraRouteInventoryResolved` so the second enumeration becomes a no-op. A unit test
+  can assert the continuation runs on the setup executor. A device cold-start trace should then show
+  one `Session configured` per resume, the AGG-50 exit criterion.
 
-### PERF2-8 — Frame-notification coalescing may leave a standing SurfaceTexture backlog (latency, not cadence)
-- **Where:** `gl/FrameNotificationCoalescer.kt:21-40`, `gl/GlPipeline.kt:447-455`, the single
-  `st.updateTexImage()` per drain at `:984`.
-- **Why:** N `onFrameAvailable` notifications collapse into one drain, and each drain latches once.
-  The comments assume `updateTexImage` "latches the newest frame". In GLConsumer, `updateTexImage`
-  acquires with `expectedPresent = 0`, which takes the oldest queued buffer without dropping, unless
-  the producer queues in droppable/async mode. Whether the Camera3 stream into this SurfaceTexture is
-  droppable is not established here.
-- **Failure scenario:** if not droppable, two frames arriving during one busy GL interval (the
-  analysis `glReadPixels`, a zoom self-redraw, a slow encoder swap) leave one buffer queued
-  permanently. Each later burst can add another, until the queue is full. The finder and encoder
-  then run k frames late (3–5 frames ≈ 100–170 ms at 30 fps) at an unchanged ~30 fps cadence, so
-  FrameGap never fires.
-- **Fix:** count notifications (`pending.getAndSet(0)`), call `updateTexImage()` that many times,
-  and draw once; keep one encoder frame per drain so PTS stays monotonic. Do not loop on "timestamp
-  changed".
-- **Severity / confidence:** Medium / Low. **Label:** needs-manual-validation (on device, log
-  `elapsedRealtimeNanos() - st.timestamp` at draw time under scopes-on + pinch load).
+## Requested inventory — remaining `Thread.sleep` and blocking waits (thread placement)
 
-### PERF2-9 — Video-startup deadline task interrupts its own thread before invoking `onFailure`
-- **Where:** `video/VideoRecorder.kt:1022-1045`, `recordFailure` `:1047-1055`.
-- **Why:** the expiry runs on the `video-start-proof` executor thread and calls `recordFailure` →
-  `cancelVideoStartupDeadline()` → `videoStartupDeadlineExecutor.shutdownNow()`, which interrupts
-  the current thread. `firstFailure.record { onFailure }` then runs
-  `CameraEngine.handleUnexpectedRecorderFailure` with the interrupt flag set. That path also takes
-  `muxerLock` unbounded; a drain thread wedged in native code under `muxerLock` blocks this daemon
-  forever (thread leak).
-- **Failure scenario:** benign today (the failure path only posts/dispatches). Any interruptible
-  wait/IO added later to the failure path fails immediately on this thread.
-- **Fix:** use `shutdown()` (not `shutdownNow()`) when called from the deadline task, or clear the
-  interrupt flag before `onFailure`; take `muxerLock` with `tryLock(timeout)` as
-  `quarantineUnsafeNativeGraph` already does.
-- **Severity / confidence:** Low / High (mechanism). **Label:** likely latent.
-
-### PERF2-10 — Standby meter-thread invariant failures crash the process instead of degrading
-- **Where:** `camera/StandbyAudioController.kt:631-633` (`check(terminationOwner.bind(input))`),
-  `:648`, `:655` (`checkNotNull`), `:543` (`check(liveInputTermination.compareAndSet(...))`).
-- **Why:** these throw inside the plain `Thread` started by `StandbyThreadLauncher` (`:578-580`);
-  `finally` releases state, but the exception is uncaught on a non-daemon thread → process crash.
-  `:543` throws on main, on the meter thread's retry, or on the retry-fallback thread.
-- **Failure scenario:** an ownership regression or unexpected publication ordering kills the app
-  while it is merely armed in VIDEO (standby meter), not even recording.
-- **Fix:** wrap the meter task body in `catch (t: Throwable)` → mark the generation failed, log
-  once; make `start()` refuse with a log rather than `check`.
-- **Severity / confidence:** Low / Medium. **Label:** needs-manual-validation.
-
-### PERF2-11 — Recording-storage presentation reducer invokes UI listeners while holding its lock
-- **Where:** `camera/RecordingStorageDispatcher.kt:171-177`, called from
-  `CameraEngine.presentRecordingStorageResult` (`CameraEngine.kt:7243-7259`).
-- **Why:** `present` runs `onMediaSaved`/`onStatus` on a storage worker under `lock`;
-  `observeCapture` takes the same lock on the REC start path (`CameraEngine.kt` after publication).
-  A slow listener stalls the next recording's admission. The current VM listeners only post, so no
-  deadlock today; the ordering is deliberate.
-- **Fix:** document the "listeners must not block" contract at the seam, or publish outside the
-  lock with a sequence recheck.
-- **Severity / confidence:** Low / Low. **Label:** needs-manual-validation.
-
-## Known items re-observed (not re-reported)
-
-- AGG-42 audio EOS wait spins in Java and is classified as a native wedge on join timeout
-  (`VideoRecorder.kt:886-925`, `:418-435`) — unchanged by cycle-1 drain edits.
-- AGG-51 `GyroEis.start()` → `reset()` on the GL thread vs main-thread sensor callbacks on plain
-  integrator fields.
-- AGG-53 `GlPipeline.thread/handler` plain fields written by the cleanup Runnable on the GL thread
-  and by `stop()` on the caller (`gl/GlPipeline.kt:1620-1690`).
-- AGG-27 lifetime diagnostic budget.
-
-## Final sweep (commonly missed) — clean
-
-- No `runBlocking`; `Thread.sleep` only on worker retry loops (AGG-30 interrupt-flag note stands).
-- Bounded waits on main: `GlPipeline.stop` (1.5 s) runs from release on the dedicated
-  `camera-engine-release` thread; `pause()` moves controller close to `setupExecutor`.
-- Lock order process admission lock → Engine monitor → `recorderOwnershipLock` is consistent;
-  `isActive()`/`TerminalAcquisitionGate.isOpen()` are lock-free; no `synchronized(this)` takes the
-  process lock.
-- Analysis single-flight (`AnalysisGenerationOwner` CAS + retire), `FocusDetail` scratch in a
-  `ThreadLocal`, per-frame draw allocations removed (`coverScaleInto`).
-- Still path memory bounded (`ProcessedSnapshotBudget`; NV21 snapshot dropped after encode; Images
-  closed in `tryComplete`'s `finally`); finite worker owners release permits exactly once
-  (`RejectedOutputCleanupCapacityOwner` worst case 41 < ownership limit).
-- Review decode is off main on the shared review dispatcher; superseded results are disposed.
-
-## Summary
-
-| ID | Sev / Conf | One line | Where |
+| Site | Call | Thread | Main/camera? |
 |---|---|---|---|
-| PERF2-1 | Medium / Medium | Live video validation deletes on extractor throw; recovery would retain | `storage/MediaStoreWriter.kt:2594` |
-| PERF2-2 | Medium / Medium | Rollback keeps a newer DNG intent that changes the restored route; VM mirror can clobber a newer direct write | `camera/CameraEngine.kt:1011`, `ui/CameraViewModel.kt:925` |
-| PERF2-3 | Low-Med / Medium | Dual-open install lacks in-monitor `paused` recheck → open while backgrounded | `camera/CameraEngine.kt:4191` |
-| PERF2-4 | Low / Medium | `onCleared` purges before detaching callbacks; `recordTicker` can repost forever | `ui/CameraViewModel.kt:4155` |
-| PERF2-5 | Low / High | Lazy characteristics retry does a Binder call on the camera thread per shot | `camera/CameraController.kt:2266` |
-| PERF2-6 | Low-Med / Medium | Recovery retries every page 3× after exhaustion; can trip the process-terminal 120 s deadline | `storage/MediaStoreWriter.kt:1414` |
-| PERF2-7 | Low / Medium | Focus-evidence epoch sampled at callback time, not readback time | `ui/CameraViewModel.kt:1051` |
-| PERF2-8 | Medium / Low | One `updateTexImage` per coalesced drain may build a standing frame backlog | `gl/FrameNotificationCoalescer.kt:21` |
-| PERF2-9 | Low / High | Startup-deadline task self-interrupts before `onFailure`; unbounded muxerLock | `video/VideoRecorder.kt:1022` |
-| PERF2-10 | Low / Medium | Standby meter `check`/`checkNotNull` crash the process | `camera/StandbyAudioController.kt:631` |
-| PERF2-11 | Low / Low | Presentation reducer runs UI listeners under its lock | `camera/RecordingStorageDispatcher.kt:171` |
+| `camera/CameraEngine.kt:7573` | `runCatching { Thread.sleep(MEDIA_RECOVERY_RETRY_BACKOFF_MS * attempt) }` (launch-recovery backoff) | `media-recovery` daemon (`LaunchMediaRecoveryCoordinator.kt:216-217`) | No. The interrupt flag is swallowed (AGG-30 tail), but nothing in the recovery coordinator ever interrupts (no `cancel(true)`/`shutdownNow`), so this is harmless today. Use `sleepPreservingInterrupt` for consistency. |
+| `camera/StandbyAudioController.kt:399` | `Thread.sleep(delayMs)` in `threadBackedStandbyRetryScheduler` | its own `StandbyAudioRetryFallback` thread, used only when a main-loop post was rejected | No; restores the interrupt flag correctly. |
+| `storage/MediaStoreWriter.kt:2399` `sleepPreservingInterrupt` | via `markWriteComplete` (`:646`, 25/50 ms), `discardPendingOutput` (`:669`), `:754`, `publish` (`:1112`, 50/100 ms) | `ioExecutor` (processed stills), DNG process owner (`publishDng`), recorder finalization (`VideoRecorder.kt:2049`), rejected-output workers | **One camera-thread caller:** `StillCapturePipeline.saveDng` → `markWriteComplete` (`:407`) on the controller `"camera"` HandlerThread, worst case 75 ms sleep plus 3 fsync commits (PERF3-3). No main-thread caller. |
+| `camera/CameraEngine.kt:4435` | `deviceUp.await` slices (2 s absolute) | `setupExecutor` | No |
+| `camera/CameraEngine.kt:6288` | mic release `await(400 ms)` | serial recorder executor | No |
+| `camera/CameraEngine.kt:7751`, `:7759` | recorder setup / finalization classification (≤14 s each) | `camera-engine-release` thread (`CameraViewModel.kt:4255`) | No |
+| `camera/CameraController.kt:2393` | `close()` → `terminal.await(1.5 s)`; returns immediately when called on its own camera thread (`:2387`) | setupExecutor, release thread, `egl-reset-fallback`; **main only** in `restartGlAfterPreviewSurfaceLoss`'s fallback when `setupExecutor.execute` is rejected (`CameraEngine.kt:2155`, after shutdown) | Main only in the post-shutdown fallback (≤1.5 s); acceptable but notable. |
+| `gl/GlPipeline.kt:1671-1676` | `stop()` await + join (1.5 s total) | setupExecutor (surface-loss/reset) and release thread | No |
+| `video/VideoRecorder.kt:418-419` | `join(3000)` ×2 | recorder executor (`stopNative`) | No |
+| `camera/StandbyAudioController.kt:257` | `stopCompleted.await` slices | standby worker | No |
+| `camera/RecordingPreNativeAllocation.kt:145`, `CameraTeardownTerminal.kt:44`, `RecordingTeardownCoordinator.kt:60/90` | bounded latch awaits | release/recorder/setup lanes | No |
+| `ui/review/LatestHeavyWorkLane.kt:655/688` | coroutine `await()` | review dispatcher coroutines | No (suspending) |
 
-Total: 11 findings (0 High, 3 Medium, 8 Low/Low-Medium). Nothing device-verified; every
-camera/GL/audio item stays PENDING DEVICE.
+No `runBlocking`, `SystemClock.sleep`, or `LockSupport.park` in `app/src/main/kotlin`.
+`CameraEngine.pause()` (main) does no blocking wait: controller close moves to setupExecutor and
+recorder finalization to the recorder executor.
+
+## Final sweep (commonly missed) — clean or already tracked
+
+- Per-frame GL path: `coverScaleInto` scratch, static VBO texcoord offsets, finder hint without
+  arrays. The EIS provider allocation is inert because GL EIS is disabled. The analysis readback is
+  single-flight and capped at a 256 px long edge, with buffers reused per generation.
+- Capture-result callback: zoom forwarding change-gated, 3A publication every 10th frame and only
+  on change, custom-WB gains fetched only while sampling, debug 3A trace bounded.
+- ViewModel tickers: level/orientation/record/info all change-gated and `cleared`-guarded. Analysis
+  publication is gated by `scopesVisible`/`exposureMeterVisible`. AE feeds main only in driving
+  modes. Audio levels quantized before the compare.
+- Encoder inventory loads once, off main (`EncoderCaps.load` on the VM `ioExecutor`). Release runs
+  on a dedicated thread. Launch recovery runs on its own daemon lane.
+- Still path memory: decode is recycled once rotated, one combined crop+rotate allocation, NV21
+  pixels dropped after the intermediate encode, `ProcessedSnapshotBudget` bounds in-flight shots.
+- Scopes Canvas: waveform uses primitive `FloatArray` points. Histogram `Path` allocations per redraw
+  were already reported (cycle-1 P10).
+
+## Files examined (grouped)
+
+- camera: `CameraEngine.kt` (threading, lifecycle, route resolution, open/dual-open, DNG callback,
+  release/pause, recovery), `CameraController.kt` (HandlerThread, capture callback, close),
+  `CameraSelector2.kt`, `StandbyAudioController.kt`, `LaunchMediaRecoveryCoordinator.kt`,
+  `RecordingTeardownCoordinator.kt`, `RecordingPreNativeAllocation.kt`, `CameraTeardownTerminal.kt`,
+  `CameraState.kt` (`VideoFrameRate.availableFor`)
+- gl: `GlPipeline.kt` (start, preview output, drawFrame, analysis readback, stop, histogram/waveform),
+  `FlipRenderer.kt`, `FrameNotificationCoalescer.kt`, `EglCore.kt`
+- capture: `StillSnapshot.kt`, `StillCapturePipeline.kt`, `HeifCapture.kt`
+- storage: `MediaStoreWriter.kt` (marker, publish, open, sleeps), `PendingDiscardJournal.kt`
+- video: `VideoRecorder.kt` (drain loops, stopNative), `EncoderCaps.kt`
+- stab: `GyroEis.kt`
+- ui: `CameraViewModel.kt` (engine callbacks, tickers, AE, settings save, encoder inventory, delete
+  dispatch), `CameraScreen.kt` (gesture loops, overview), `MainActivity.kt` (state collection),
+  `overlays/Overlays.kt` (scopes), `review/MediaReview.kt`, `review/LatestHeavyWorkLane.kt`
+- Library check: androidx.exifinterface 1.4.2 `saveAttributes()` bytecode (cached AAR, javap)
+- Prior context: `.context/reviews/archive-rpl-cycle1-2026-10-02/perf-reviewer.md`,
+  `archive-rpl-cycle2-2026-10-02/{_aggregate,perf-reviewer}.md`, `docs/plans/2026-10-02-rpl-cycle{1,2}.md`

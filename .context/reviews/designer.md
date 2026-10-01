@@ -1,216 +1,194 @@
-# Native Android designer review (RPL cycle 2)
+# Native Android designer review (RPL cycle 3)
 
 Date: 2026-10-02
-Reviewed revision: `e5729ffd` (`main`; working tree holds only the cycle-1 review-archive renames)
-Method: static only. No device, emulator or TalkBack run. The UI is Jetpack Compose, so browser
-tooling does not apply.
+Reviewed revision: `e3a2bdd4` (`main`)
+Method: static only. No device, emulator or TalkBack run. Compose UI, so browser tooling does not apply.
+Finding prefix: DES3-.
 
 ## Scope and method
 
-- Delta since the cycle-1 designer pass (`ba5b16e7`): 51 commits. Only four touch `ui/` layout code,
-  and all four are parameter reorders (`settingsModifier`, `galleryModifier`, `fnButtonModifier`,
-  `timelapseRunning`) or a comment edit. The one behavioural UI change is the tap-focus bottom
-  clearance (`CameraScreen.kt:893`). `MainActivity.onRecallMemorySlot` is new, but it handles the
-  permission preference and draws nothing. So this pass re-validated cycle 1, then swept surfaces
-  that earlier passes covered less: review, status copy truth, and KO wording.
-- Mechanical checks (re-run on this revision):
-  - **EN/KO parity.** 496 EN and 478 KO resources. Every translatable key has a KO entry, KO has no
-    extra or duplicated `translatable="false"` keys, and positional placeholders match on every
-    shared key. Twelve KO values are byte-identical to EN, and each is a unit, an abbreviation or a
-    pure format string (`USB`, `50 Hz`, `A%1$s`, `%1$s, %2$s`, ...). That is correct.
-  - **Glyph coverage.** fontTools over every non-ASCII, non-Hangul character in UI Kotlin literals
-    (comments stripped) and both `strings.xml` files found `© ° ± · × — ’ … ↑ → ↓ ∞`. All are present
-    in all three bundled Inter faces.
-  - **Hardcoded prose.** The English-only helpers in `ControlLabels.kt` (`wbModeLabel`,
-    `flashModeLabel`, ...) are reached only as `context == null` fallbacks in `fnSlotValue`. Both
-    production call sites pass a Context (`CameraScreen.kt:2562`, `ProSheet.kt:682`). No English prose
-    reaches Compose.
-  - **Touch targets.** Every `clickable`/`selectable`/`toggleable` has a 48 dp floor (`size(48.dp)`,
-    `sizeIn(min…)`, or a 56 dp or weighted tile), except three sites. Those three are the 76 dp
-    shutter, the 52 dp gallery thumb, and the full-width MR row. All are compliant.
-  - **Font-scale overrides.** The only dp-pinned text is the 8 dp chrome badge
-    (`CameraScreen.kt:1929`). It is deliberate, and its state is exposed through the button's
-    accessibility value.
+- Delta since the cycle-2 designer pass (`e5729ffd`): 42 commits. UI/res surface touched:
+  `MediaReview.kt` (DES2-1 fix: dedicated `a11y_delete_*` resources), `ProControls.kt`/`ProSheet.kt`
+  (AGG2-35: `noStillOutputCaption(tenBitVideoWanted)`), `MainActivity.onRecallMemorySlot`
+  (AGG2-26), the three retained-take status strings (DES2-2 fix), and `CameraViewModel.kt`
+  (exposure ownership helpers, `rejectIfRecording` on aspect, `recallMemorySlot`).
+- DES2-1 fix verified: `MediaReview.kt:1166-1169,1885` now uses `deleteCopy.action`; all four new
+  keys exist in EN and KO as imperative noun phrases ("촬영 결과 삭제", "RAW 파일 삭제", ...). No
+  `removeSuffix` left in `ui/`.
+- Mechanical checks re-run on this revision:
+  - **EN/KO parity.** 500 EN / 482 KO resources. Every translatable key has a KO entry, KO carries no
+    `translatable="false"` duplicates, no extra KO keys, positional placeholders match on every
+    `<string>` (the script's "mismatches" are only the KO single-`other` plurals, which is correct for
+    Korean).
+  - **Glyph coverage.** fontTools over every non-ASCII, non-Hangul character in UI/engine Kotlin
+    literals (comments stripped) and both `strings.xml`: `© ° ± · × — ’ … ↑ → ↓ ∞`. All present in
+    `inter_regular`, `inter_medium`, `inter_semibold`. No new glyphs since cycle 2.
+  - **Hardcoded prose.** No English prose literal reaches Compose in `ui/` (only a KDoc and a
+    `checkNotNull` message matched). Literal OSD tags (`T3s`, `TL5s`, `AEB±2`, `4:3`) remain
+    camera-standard abbreviations visually; see DES3-3 for their spoken form.
+  - **Touch targets.** All new/changed interactive nodes keep the 48 dp floor; dialogs use
+    `MinTouchTarget48` or `heightIn(min = 48.dp)`.
 
 ## Findings
 
-### DES2-1: The review Delete button's TalkBack name is a question in Korean
+### DES3-1: The new retained-take copy still over-promises: "the next time the app starts" means a new PROCESS, not the next time the user opens the app
 
-- **Region:** `ui/review/MediaReview.kt:1882`
-  (`contentDescription = deleteTitle.removeSuffix("?")`). `deleteTitle` is the dialog title from
-  `mediaDeleteConfirmationCopy` (`MediaReview.kt:1165-1166`).
-- **Why:** the code builds the accessible name by cutting the question mark off a localized
-  question. That works for English ("Delete capture?" becomes "Delete capture"). The Korean titles
-  are interrogative verb endings, not noun phrases plus a mark:
-  `review_delete_capture_title` = "촬영 결과를 삭제할까요?" (`values-ko/strings.xml:420`). Stripping
-  the mark leaves "촬영 결과를 삭제할까요", which still asks "shall I delete the capture?". The same
-  happens with all four variants: RAW capture, file, RAW file, and capture. This is the most
-  dangerous control on the review screen, and it is the only accessible name in the app built from
-  string surgery (`grep removeSuffix` over `ui/` finds only this site). The EN-only test
-  `ModalFocusComposeTest.kt:408` copies the same `removeSuffix`, so it cannot catch the KO wording.
-- **Scenario:** a Korean TalkBack user swipes to the top-end review control. They hear a question,
-  "촬영 결과를 삭제할까요, 버튼", instead of an action name, before any confirmation dialog exists.
-  The confirmation dialog then opens and asks the same question again.
-- **Fix:** add a `@StringRes action` field to `MediaDeleteConfirmationCopy`. Back it with four new
-  resources, for example `a11y_delete_capture` "Delete capture" / "촬영 결과 삭제",
-  `a11y_delete_raw_capture` "Delete RAW capture" / "RAW 촬영 결과 삭제", `a11y_delete_file`
-  "Delete file" / "파일 삭제" and `a11y_delete_raw_file` "Delete RAW file" / "RAW 파일 삭제". Use
-  that field at `:1882`. Update `ModalFocusComposeTest` to resolve the new key, and add a KO
-  Robolectric assertion that the label does not end in "까요".
-- **Confidence:** High. Source-confirmed and deterministic. Severity is Medium: it is an
-  accessibility-copy defect on a destructive control.
+- **Severity:** Medium. **Confidence:** High. **Status:** Confirmed (source-traced).
+- **Region:** `res/values/strings.xml:223,225,233` and `res/values-ko/strings.xml:214,216,224`
+  (`status_dng_save_delayed`, `status_output_saved_pending`, `status_video_save_delayed`, changed in
+  the DES2-2 fix to "… It will be saved the next time the app starts." / "앱을 다음에 시작할 때
+  저장됩니다."). Emitted at `camera/CameraEngine.kt:7365` (video), `:8564` (DNG),
+  `capture/StillCapturePipeline.kt:634`.
+- **Why:** the only publisher of a retained row is `engine.cleanupOrphans`, called once from the
+  `CameraViewModel` init (`ui/CameraViewModel.kt:1236`). Its sweep selects only rows with
+  `DATE_ADDED < processStartSecs` (`storage/MediaStoreWriter.kt:1291-1302`,
+  `orphanSweepSelection` at `:3126-3140`), deliberately, so it cannot race the current process's own
+  in-flight writes. Consequently a row retained in THIS process is never adopted by ANY sweep in this
+  process, including a sweep from a freshly constructed ViewModel. What users call "starting the
+  app" (tap the launcher icon, return from Recents, back out and reopen) almost always reuses the
+  cached process on Android, so none of those publish the take. Only a cold process start (kill,
+  reboot, LMK eviction) does.
+- **Failure scenario:** a provider hiccup at the end of a 4K take shows "Video retained. It will be
+  saved the next time the app starts." The operator presses Home, re-opens the app from the launcher
+  a minute later, and checks Gallery: no clip. They reopen again: still no clip. The copy has now
+  been "falsified" twice, so they conclude the take is lost, exactly the outcome DES2-2 was filed to
+  prevent.
+- **Fix (pick one, both host-testable):**
+  1. Copy that names the real trigger, e.g. EN "Video kept privately. It is saved after the app is
+     fully closed and reopened." / KO "동영상을 임시 보관했습니다. 앱을 완전히 종료한 뒤 다시 열면
+     저장됩니다." Pin with `KoreanLocalizationRobolectricTest` plus an EN resource assertion.
+  2. Make the existing copy true: on `onStart` (or `MainActivity.onStart`), run one bounded
+     same-process adoption pass for rows this process itself retained (exact URIs are already known
+     to the process: the retained dispositions carry them), separate from the prior-process sweep so
+     the race guard stays intact. That is an engine/storage decision; route through architect.
+- Relates to DES3-2 (expiry) and DES3-4 (marker-unavailable variants).
 
-### DES2-2: "Save delayed. Will retry." promises a retry that happens only on the next app launch
+### DES3-2: A retained (IS_PENDING) take silently expires after ~7 days; nothing in the copy or code accounts for it
 
-- **Region:** the copy is `values/strings.xml:223,225,233` and `values-ko/strings.xml:214,216,224`
-  (`status_dng_save_delayed`, `status_output_saved_pending`, `status_video_save_delayed`, KO "다시
-  시도합니다"). It is emitted at `camera/CameraEngine.kt:5561-5562` (DNG retained), at
-  `capture/StillCapturePipeline.kt:606-609` (`retainedSaveStatus`, marker-durable branch) and at
-  `CameraEngine.kt:7252-7253` (video `RETAINED_PENDING`).
-- **Why:** nothing in the running process retries these takes. The retained row stays private
-  (`IS_PENDING=1`). The only thing that publishes it is launch recovery: `cleanupOrphans` is called
-  exactly once, from `CameraViewModel.kt:1214` during ViewModel construction, and
-  `ProcessLaunchMediaRecovery` is a single-flight owner for "prior-process pending media"
-  (`CameraEngine.kt:7443-7455`). The code says so itself: "launch recovery publishes it later"
-  (`CameraEngine.kt:5553-5555`). The copy says "Will retry", which reads as an automatic, imminent
-  retry. On a phone where the camera process survives in the background for hours, that retry never
-  arrives in-session.
-  - A second, related inconsistency: stills distinguish "save retained. Recovery marker failed."
-    (`OUTPUT_SAVED_PENDING_RECOVERY`). Video does not. `RecordingStorageDispatcher.kt:121-125` folds
-    `RETAINED_MARKER_UNAVAILABLE`, `RETAINED_PUBLICATION_UNAVAILABLE` and
-    `RETAINED_VALIDATION_UNAVAILABLE` into the same "Video save delayed. Will retry." That is the
-    exact fail-closed REGISTERED case where adoption depends on a structural probe. For stills, the
-    app treats that difference as worth saying.
-- **Scenario:** a provider hiccup at the end of a 10-minute 4K take shows "Video save delayed. Will
-  retry." for 2.5 s. The operator opens Google Photos and finds no clip, waits, checks again, and
-  still finds no clip. The clip appears only after the app process is killed and relaunched. In the
-  meantime the operator may conclude it was lost and re-shoot, or clear app data, which is worse.
-- **Fix:** say when the retry happens, not just that one exists. For example EN "Video kept. It will
-  be saved when the app reopens." / KO "동영상을 보존했습니다. 앱을 다시 열면 저장됩니다.", and the
-  same pattern for `%1$s` and DNG. Then either add a video marker-failed variant to match
-  `OUTPUT_SAVED_PENDING_RECOVERY`, or state in the dispatcher why video does not need one. A
-  stronger alternative, if the engine owners agree: run one bounded in-process retry of
-  `ProcessLaunchMediaRecovery`, for example on the next `onStart`, so the existing copy becomes true.
-  That is an engine decision, not a copy fix, so route it through architect.
-- **Confidence:** Medium-High on the mismatch, which is source-traced end to end. Severity is
-  Medium: it is a state-truthfulness issue on the app's data-safety channel.
+- **Severity:** Medium. **Confidence:** Medium. **Status:** Needs-device (platform behaviour
+  documented; app-side absence confirmed).
+- **Region:** retained-row paths behind the statuses in DES3-1; `grep -rn DATE_EXPIRES
+  app/src/main/kotlin` returns nothing.
+- **Why:** MediaProvider stamps `DATE_EXPIRES` automatically when `IS_PENDING` is set, with a default
+  pending lifetime of 7 days, and deletes expired items during device idle maintenance
+  (`MediaStore.MediaColumns.DATE_EXPIRES` / `IS_PENDING` docs). The app neither extends the expiry on
+  retained rows nor mentions a deadline. Combined with DES3-1 (adoption needs a new process), a phone
+  that keeps the camera process cached, or an operator who simply does not reopen the app for a week
+  (a travel shoot, then editing on a computer), loses the take to the platform with no error at all.
+  The status copy promises "will be saved" unconditionally.
+- **Failure scenario:** a RAW+HEIF shoot on day 1 retains two DNGs after a provider failure. The
+  user does not open TeleCam again until day 9. Idle maintenance has already deleted both rows;
+  launch recovery finds nothing; no status is ever shown.
+- **Fix:** storage owners decide; the copy depends on it. Options: (a) on retention, update the row
+  with a long `DATE_EXPIRES` (or re-touch it on each launch's recovery pass) so the promise holds;
+  (b) bound the copy ("…within 7 days"); (c) DES3-1 option 2 (same-process adoption) shrinks the
+  window to minutes. Host test: a pure helper that computes the expiry written on retention.
 
-### DES2-3: Statuses published while review is open are drawn underneath it
+### DES3-3: The OSD status row has no spoken form; TalkBack reads raw finder codes that the sibling pill's own comment calls a defect
 
-- **Region:** the status plate is composed at `ui/CameraScreen.kt:1307-1316`, then the opaque review
-  is composed later at `:1567-1583` (`MediaReviewOverlay` paints `CameraColors.Background` full
-  screen, `MediaReview.kt:1239-1243`).
-- **Why:** composition order is z-order. Any status that lands while review is open renders under a
-  black full-screen layer and auto-clears on its timer (6 s error, 2.5 s warning) before the
-  operator closes review. The live region may still speak to TalkBack users, but sighted users
-  never see it. Reachable producers include:
-  - the asynchronous DNG tail of a shot taken just before tapping the gallery (`DNG save
-    failed/delayed` reaches the camera status path through `CameraEngine.kt:5561`),
-  - a late `COULD_NOT_DELETE_FILE` from `deleteLateCaptureOutput` (`CameraViewModel.kt:3962-3985`),
-  - `MICROPHONE_ALLOWED_AUDIO_ON` from `refreshPermissionState` when the operator returns from
-    Android Settings with review open (`MainActivity.kt:976-985`).
-- **Scenario:** the operator shoots RAW+HEIF and immediately taps the thumbnail to check focus. The
-  DNG publish fails. "DNG save failed" shows for 6 s behind the review, and the operator leaves
-  review believing the RAW exists.
-- **Fix:** hoist `CriticalCameraStatusPlate` below the `MediaReviewOverlay` block (keep it last in
-  the root Box), or pass `state.status` into `MediaReviewOverlay` and render the same plate there.
-  Either way, keep the plate non-focusable so it does not break the review modal focus boundary.
-  An alternative is to pause the auto-clear timer while `openReview != null`, so the message is
-  still on screen when review closes.
-- **Confidence:** Medium. Layering is source-certain. How often a status arrives during review is
-  timing-dependent.
+- **Severity:** Low-Medium. **Confidence:** High (source); Medium (exact TalkBack verbalisation).
+  **Status:** Confirmed.
+- **Region:** `ui/overlays/Overlays.kt:882-1095` (`StatusBar`): a scrolling `Row` of bare `Text`
+  leaves with no `semantics`, e.g. the video spec `"$res ${fps}p $codec ${mbps}M"` (`:931-944`),
+  `"4:3"` (`:961`), `"AEB±2"`, `"TL${n}s"` (`:1006-1009`), `"T${n}s"` (`:1036`). Call site
+  `ui/CameraScreen.kt:1149`.
+- **Why:** the neighbouring `StatusInfoPill` (`CameraScreen.kt:2313-2326`) clears its leaves and
+  speaks one localized description precisely because, in its own words, "unmerged, TalkBack read the
+  raw glyphs — '45m' (which is a distance aloud) and a bare '1234' that names nothing". The status row
+  has the same defect at larger scale: `"100M"` is read as a quantity or metres, `T3s`/`TL5s` as
+  letter-digit-letter strings, and each tag is a separate swipe stop inside a horizontal scroller, so
+  a TalkBack user cannot get the shooting state (FRONT, MUTE, HR, OIS OFF, metering, locks) as one
+  readout. Visual tags can stay terse (abbreviation policy is fine); only the accessibility tree is
+  wrong.
+- **Failure scenario:** KO TalkBack user in video, timelapse armed: swipes through "4K 29.97p HEVC
+  100M", "S-Log3", "MUTE", "TL5s" — no Korean, no units, and no indication which are warnings.
+- **Fix:** mirror the pill: build a `localizedStatusBarDescription(state)` (pure, host-testable,
+  EN+KO resources such as "Self-timer 3 seconds", "Interval 5 seconds", "100 megabits per second",
+  "Audio muted") and apply `clearAndSetSemantics { contentDescription = … }` on the Row. Keep the
+  scroll behaviour for sighted users. Add a Robolectric test that the row exposes one node.
 
-### DES2-4 (re-validates AGG-62 / DSN-R1-01): The tab rail still breaks words at large font scale
+### DES3-4: Video and still "marker unavailable" retentions still diverge, and the still variant speaks internal jargon
 
-- **Region:** `ui/controls/ProSheet.kt:452` (`width(76.dp)`) and `:511-522` (label
-  `Modifier.width(68.dp)`, no `maxLines` or `fontScale` fallback, and the comment still says
-  "nothing wraps" at 1.0x).
-- **Status:** unchanged since cycle 1. The scenario and fix in the archived `DSN-R1-01` still apply.
-  Note for the fix: "Setup" in KO is "설정", which already fits. The tight KO case is "보조 기능",
-  which wraps at the space and is fine. "Exposure" in EN is the label that breaks mid-word.
-- **Confidence:** Medium. Not rendered.
+- **Severity:** Low. **Confidence:** High. **Status:** Confirmed. (Second half of DES2-2, not
+  addressed by the cycle-2 fix; re-reported with the current state.)
+- **Region:** `video/RecordingStorageDispatcher.kt:122-125` folds `RETAINED_MARKER_UNAVAILABLE`,
+  `RETAINED_PUBLICATION_UNAVAILABLE`, `RETAINED_VALIDATION_UNAVAILABLE` into one `RETAINED_PENDING`
+  → `VIDEO_SAVE_DELAYED` (WARNING, 2.5 s, now the "will be saved" promise). Stills split the same fact
+  into `OUTPUT_SAVED_PENDING_RECOVERY` (ERROR, 6 s; `StillCapturePipeline.kt:634-635`,
+  `CameraEngine.kt:8566`) with EN copy "%1$s save retained. Recovery marker failed."
+  (`values/strings.xml:226`).
+- **Why:** (1) for video the fail-closed REGISTERED case (adoption only if the structural probe
+  passes) now gets the strongest promise in the app, while the equivalent still case is an error.
+  (2) "Recovery marker" is an implementation term; users cannot act on it. KO already says it more
+  plainly ("복구 표식 저장에 실패했습니다"), but still names the mechanism.
+- **Fix:** add `VIDEO_SAVE_PENDING_RECOVERY` mapped from `RETAINED_MARKER_UNAVAILABLE` (keep the
+  other two on the delayed copy), and reword the shared marker-failed string around the outcome, e.g.
+  EN "%1$s kept privately. It may not be recoverable." / KO "%1$s 파일을 임시 보관했지만 복구되지 않을
+  수 있습니다." Pin the dispatcher mapping with the existing dispatcher unit test.
 
-### DES2-5 (re-validates AGG-63 / DSN-R1-02): Status auto-dismiss still ignores the accessibility timeout
+### DES3-5: Dropdown menus mark the selected option by colour alone
 
-- **Region:** `camera/CameraStatus.kt` duration table (`6_000L / 1_500L / 2_500L`, shown in the
-  `duration` block around `:186-191`) and `ui/CameraViewModel.kt:1734-1744` (`postDelayed(runnable,
-  durationMs)`). No caller of `getRecommendedTimeoutMillis` or `calculateRecommendedTimeoutMillis`
-  exists anywhere in the source tree.
-- **Status:** unchanged. DES2-2 raises the stakes, because the corrected retained-take copy is
-  longer and is exactly the message a slower reader needs to finish.
-- **Confidence:** Medium.
+- **Severity:** Low. **Confidence:** High. **Status:** Confirmed.
+- **Region:** `ui/controls/ProControls.kt:870-880` (`DropdownRow` item text:
+  `color = if (isSelected) CameraColors.Accent else CameraColors.TextPrimary`).
+- **Why:** semantics are correct (RadioButton role, `selected`, stateDescription), but visually the
+  only cue is #8AB4F8 vs white text in a 320 dp-high scrolling list. For colour-vision-deficient users,
+  and in bright outdoor light (the app's main use: a 300 mm telephoto outside), light-blue vs white is a
+  weak distinction (WCAG 1.4.1 Use of Color). Segmented chips elsewhere add a fill; the menu does not.
+- **Fix:** pass `leadingIcon`/`trailingIcon` with a check glyph (Canvas-drawn like the other HUD
+  glyphs, so no font dependency) for the selected item, or a 2 dp accent bar. Compose UI test: the
+  selected item has an extra child node.
 
-### DES2-6 (re-validates AGG-64 / DSN-R1-03): The critical status plate still has no horizontal margin
+### Carried items re-validated (still open, unchanged code)
 
-- **Region:** `ui/CameraScreen.kt:1587-1609`. The plate draws `rotateLayout → background → padding`
-  with no outer inset or `widthIn`. The call site is `:1310-1315`.
-- **Status:** unchanged. If DES2-3 is fixed by moving the plate, apply the inset in the same edit.
-- **Confidence:** Medium on geometry, Low on severity.
-
-### DES2-7: Korean picker values mix parts of speech inside one control
-
-- **Region:** `values-ko/strings.xml:346` (`value_fast` "빠르게", an adverb) shown beside
-  `value_high_quality` "고화질" and `value_off` "꺼짐" (nouns) in the Sharpness/NR picker.
-  `values-ko/strings.xml:389-390` (`value_small` "작게", `value_large` "크게", adverbs) are shown
-  beside `value_medium` "중간" (noun) in the AF Spot Size picker (`ProSheet.kt:1166`).
-- **Why:** each segmented control reads as one set. "작게 / 중간 / 크게" and "꺼짐 / 빠르게 / 고화질"
-  each mix two grammatical forms. Korean camera menus use noun forms: 소 / 중 / 대 or 작음 / 중간 /
-  큼, and 꺼짐 / 고속 / 고화질. `value_medium` is shared with Bitrate and Peaking Level
-  ("낮음 / 중간 / 높음"), which are already all nouns, so only the outliers need to move.
-- **Scenario:** KO operator, Focus tab, AF Spot Size: the chips read "작게 · 중간 · 크게".
-- **Fix:** `value_small` "작음", `value_large` "큼" (or "소/중/대" if width demands it, which would
-  also mean changing `value_medium` and its other users), and `value_fast` "고속". Pin the change
-  with `KoreanLocalizationRobolectricTest`.
-- **Confidence:** High that the forms are mixed. Low severity (polish).
-
-### DES2-8: Read-only settings rows give TalkBack two separate stops
-
-- **Region:** `ui/controls/ProControls.kt:677-747` (`LabelValueRow`). When `onClick == null`, the
-  root gets only `.semantics { if (!enabled) disabled() }`, with no `mergeDescendants`. The clickable
-  branch merges implicitly through `clickable`.
-- **Why:** pure readout rows ("Recording / Settings locked", "Route / …", "Encoder / …", the
-  comment's own list at `:731-733`) expose the label and the value as two unrelated nodes. A TalkBack
-  user hears "Recording", swipes, then hears "Settings locked", and the value is separated from what
-  it describes. Every interactive sibling (ToggleRow, DropdownRow) merges into one node with a
-  `stateDescription`.
-- **Fix:** in the `onClick == null` branch, use `semantics(mergeDescendants = true) {}` or reuse
-  `sliderSettingSemantics(label, value)` with `clearAndSetSemantics`, so the row reads "Recording,
-  Settings locked".
-- **Confidence:** Medium. Compose merge behaviour is well defined, but this was not run under
-  TalkBack.
-
-### DES2-9: The DISP button renames its TalkBack node on every toggle
-
-- **Region:** `ui/CameraScreen.kt:2252-2258` (`contentDescription` switches between
-  `a11y_show_shooting_info` and `a11y_hide_shooting_info`).
-- **Why:** the Flash button's comment (`CameraScreen.kt:1942-1944`) states the app rule: "Name
-  constant, value in the state", because renaming the node is what TalkBack tracks focus by.
-  GridButton and FlipCameraButton follow it. DISP does not. After a double-tap, TalkBack re-announces
-  a node with a different name, and some TalkBack versions drop or move accessibility focus.
-- **Fix:** use a constant name (for example "Shooting info", which would need a new string key in EN
-  and KO) plus `stateDescription` = On/Off, matching the sibling chrome buttons.
-- **Confidence:** Medium on inconsistency, Low on severity. Show/Hide action naming is also a
-  recognised Android pattern, so this is a consistency fix, not a WCAG failure.
+- **DES2-3 (statuses drawn under open review):** plate still composed at `CameraScreen.kt:1307-1316`,
+  before the opaque review overlay. DES3-1/2 raise the stakes: the retained-take message, the one with
+  instructions in it, is exactly the asynchronous DNG tail most likely to land while the operator is
+  reviewing the shot.
+- **DES2-5 / AGG-63 (auto-dismiss ignores the accessibility timeout):** still no
+  `getRecommendedTimeoutMillis` caller. New evidence: the DES2-2 fix roughly doubled the retained
+  copy (EN 61 chars / 11 words: "DNG retained. It will be saved the next time the app starts.") while
+  it stays WARNING → 2_500 ms (`camera/CameraStatus.kt:186-191`). That is under typical reading time
+  for 11 words before accounting for the glance-up delay of a shooter looking through the finder.
+  Minimum fix even without the a11y API: give the retained trio the 6 s duration, or classify by
+  copy length.
+- **DES2-4 / AGG-62** (tab rail word breaks at large font scale), **DES2-6 / AGG-64** (plate has no
+  horizontal margin, `CameraScreen.kt:1587-1609`), **DES2-7** (KO `value_fast` 빠르게,
+  `value_small` 작게, `value_large` 크게 at `values-ko/strings.xml:346,389,390`), **DES2-8**
+  (read-only `LabelValueRow` two TalkBack stops), **DES2-9** (DISP renames its node,
+  `CameraScreen.kt:2256`): all unchanged.
 
 ## Checked with no finding
 
-- **Status copy argument grammar (KO).** Every `%1$s` followed by a particle resolves to an argument
-  whose spoken form ends in a way that the particle matches: lens labels "N×" read as "…배" plus 를,
-  MR1-3 plus 에, and the `HEIF`/`JPEG`/`DNG` kinds with no particle. The trademark lines ("S-Log은",
-  "Hasselblad은", "LogC는") also use the correct particles.
-- **Fn overlay.** Localized labels, compact aliases resolved from typed state (not English
-  matching), disabled tiles expose `disabled()` and refuse `onClick`, and the icon is decorative.
-- **Microphone revocation truth.** A permission revoked in Settings while `recordAudio = true` still
-  re-prompts at REC (`microphonePermissionRequired`), so MUTE absence does not lie about a silent
-  take.
-- **Review gestures and alternatives.** Zoom 4x/8x/reset and directional pan are exposed as custom
-  actions. Video playback has a labelled button and live state. Close receives initial focus, and
-  Delete gets focus back after the dialog is dismissed.
-- **Dialogs.** All dialogs have 48 dp buttons. Delete uses `Alert` red on solid `Pill`.
+- AGG2-35 caption: `noStillOutputCaption` keys on `tenBitSessionWanted`, so SDR video on the
+  preview-only rung now shows "Still capture unavailable" rather than the 10-bit trade copy; residual
+  documented in KDoc. EN/KO both present.
+- KO particles on the new strings: `%1$s 파일을 보존했습니다` with `%1$s` ∈ {HEIF, JPEG, DNG}; no
+  particle attaches to the argument directly, so no 을/를 mismatch.
+- `CriticalCameraStatusPlate` has no `maxLines`, so the longer retained copy wraps rather than
+  truncating the actionable second sentence (rotated: measured on the swapped axis via
+  `rotateLayout`).
+- Dialogs (`MicrophonePermissionRationale`, `ReviewDeleteConfirmationDialog`,
+  `PrivacyPolicyFallbackDialog`): resource-backed copy, 48 dp buttons, destructive action in
+  `CameraColors.Alert`.
+- `PermissionGate`: compact/large-font branch scrolls (`fontScale >= 1.5f`), no clipped CTA.
+- Quiet-viewfinder policy: no tutorial banners, coach marks or marketing copy added in the delta.
 
-## Evidence boundary
+## Files examined
 
-Static source review only. I made no claims about rendered pixels, TalkBack speech order or timing.
-DES2-1 and DES2-7 are deterministic from resources. DES2-2 is traced from emit site to the single
-recovery entry point. DES2-3 depends on a status arriving during an open review. DES2-4 and DES2-6
-geometry is estimated from type metrics, as in cycle 1.
+- UI: `ui/CameraScreen.kt` (StatusBar call site, status plate, StatusInfoPill, DISP),
+  `ui/overlays/Overlays.kt` (StatusBar), `ui/controls/ProControls.kt` (DropdownRow, LabelValueRow,
+  PhotoFormatToggles, noStillOutputCaption), `ui/controls/ProSheet.kt` (ShootingTab delta),
+  `ui/controls/ManualDials.kt` (Fn/close targets), `ui/review/MediaReview.kt` (delete copy, dialog,
+  RAW placeholder), `ui/ExternalNavigationUi.kt`, `ui/LocalizedStatus.kt`, `ui/CameraViewModel.kt`
+  (delta, `cleanupOrphans` call), `MainActivity.kt` (delta, rationale dialog, PermissionGate).
+- Engine/storage (for copy truth): `camera/CameraStatus.kt`, `camera/CameraEngine.kt:7365,7555-7600,
+  8560-8570`, `camera/LaunchMediaRecoveryCoordinator.kt`, `storage/MediaStoreWriter.kt:1285-1302,
+  3126-3141`, `capture/StillCapturePipeline.kt:630-636`, `video/RecordingStorageDispatcher.kt`.
+- Resources: `res/values/strings.xml`, `res/values-ko/strings.xml`, `res/font/*.ttf`.
+- Prior context: `.context/reviews/archive-rpl-cycle1-2026-10-02/designer.md`,
+  `archive-rpl-cycle2-2026-10-02/{designer,_aggregate}.md`, `docs/plans/2026-10-02-rpl-cycle2.md`.
+
+Source for DES3-2 platform behaviour:
+[MediaStore.MediaColumns](https://developer.android.com/reference/android/provider/MediaStore.MediaColumns)
+(`DATE_EXPIRES`, `IS_PENDING`).

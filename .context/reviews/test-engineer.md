@@ -1,284 +1,320 @@
-# Test-engineer review — RPL cycle 2 (HEAD e5729ffd, 2026-10-02)
+# Test-engineer review — RPL cycle 3 (HEAD e3a2bdd4, 2026-10-02)
 
-Scope: `app/src/test/**` (257 files, 2,313 `@Test`), `app/src/androidTest/**` (4 files, compiled
-only), `tools/tests/**` (10 suites), `tools/coverage/tests/**`, `device-tests/tests/**` (5 suites),
-and every commit in `ba5b16e7..HEAD`. Read-only. One targeted Gradle run
-(`ExposureModeHandoffTest`, `ZoomMathTest`, `StorageFailureDiagnosticsTest`, `SettingsStoreTest`,
-`PendingTokenNativeStartTest`, `FacingRollbackPunchInRobolectricTest`) exited 0. Its result XMLs were
-overwritten by other lanes running in the shared `app/build`, so the exit code is the only evidence
-from that run. Every other finding comes from reading the code.
+Scope: every cycle-2 fix commit `c2892dda..e3a2bdd4` (39 commits), each commit's test diff, the
+Partition-A residual manifest against the current JaCoCo report
+(`app/build/reports/coverage/test/debug/report.xml`, written 05:08, after HEAD at 04:57, no source
+changes since), and a flakiness sweep of `app/src/test/**`. Read-only; no Gradle run. For each fix
+the question was: does some test fail if the production change is reverted?
 
-## Cycle-1 fix → regression-test audit
+## Cycle-2 fix → regression-test audit
 
-The question for each commit: is there a test that would fail if the fix were reverted?
-
-| Commit | Fix | Fails without fix? |
+| Commit | Fix | Fails if reverted? |
 |---|---|---|
-| 89bb7aab | DNG restore on lens-local scale (`restoredOptics`, `remapRouteScaleOptics`) | Yes for the pure helpers (`ZoomMathTest`). The VM `applyLoaded` wiring is not tested. |
-| 99e7af87 | DNG toggle as an optics door (engine + VM) | **No.** See TE2-1. |
-| 3ec126e1 | Rollback keeps a later route-neutral DNG choice | **No.** See TE2-1. |
-| 40145fbf | Single `setRawWanted` call (refactor) | n/a, but the call is untested (TE2-1). |
-| 1e79810e | Exposure handoffs | Yes for the pure helpers. VM wiring and the `applyLoaded` ISO→SPEED force: **no** (TE2-4). |
-| 7c76e7bc | Phone seed fallback / pending-inventory extras | Store half yes. VM `currentExtras` half **no** (TE2-6). |
-| 81a0b55a | Aspect refused while recording | **No** (TE2-5). |
-| 87932ced | Loupe hit-test clearance | Yes (`FinderGeometryTest`). Without the parameter, the call with `bottomClearance` would not compile, and the old rect contains `drawnBottom + 2`. |
-| d255afbc | nativelog kept out of the Camera2 session | **No** (TE2-11). Debug-only. |
-| 079b665e | Ladder pinned after the 10-bit rung | Yes (`SessionFallbackLadderTest`). |
-| 8780b494 | Persisted exposure/fps/Kelvin bounds | Partly: only the lower bounds of exposure and fps and the upper bound of Kelvin are tested. The sibling `photoExposureTimeNs` key is still unbounded (TE2-7). |
-| b476d1dd | Persist the requested video size | `onVideoResolution` path yes. Recall and rollback mirrors **no** (TE2-6). |
-| fe7d0578 | Recall clears the audio-denial reason | **No** (TE2-8). |
-| e72fcf8c / de3ff566 | Required owner/param | Compile-time enforced; no test needed. |
-| 4e57fff2 | Recorder workers admitted by token | The gate is tested. The production wiring that makes workers use the token is not (TE2-10). |
-| 38d99950 | Drain idiom / `wroteAudioSample` | No host test (plan admits it: MediaCodec-bound). |
-| 1edb68c6 | Tri-state finalized-video probe | Yes (`FinalizedVideoTrackProbeTest`, RecorderQuarantine disposition). One pinned verdict is questionable (TE2-12). |
-| a1fee383 | Recovery advances past an exhausted row | Yes (`LaunchRecoveryProgressTest`). |
-| fc8a458c | Deleted prior family no longer blocks restores | Yes (`CaptureOutputTrackerTest`). |
-| 1c5a0060 | Lazy characteristics retry | **No** (TE2-9; the plan admits it). |
-| d062927a | HEIF saves without EXIF on payload failure | Only the 10-line wrapper is tested, not the call site (TE2-11). |
-| 98164b9e | Change-gated identity warnings | Yes, with an injected gate and an injected sink. |
-| f41b1ae3 | One reserved row per failure edge | Storage half only, and conditionally vacuous (TE2-2). The VideoRecorder/CameraEngine rows are untested. |
-| 7dd6a6b2 / 8c3b09bd / af74382c | Tooling | Yes (`test_host_preflight`, `test_upload_key_gate`, `test_tool_contracts` via cd4f24b9). |
+| 4edd2a14 | Recall carries DNG in its own transaction | Engine: yes (compile + `OpticsRouteInputTransactionRobolectricTest`). Re-adding the VM trailing `setRawWanted`: no. |
+| b565abae | Route-aware rollback keep rule | Yes (engine Robolectric + pure). |
+| 3ef6e845 | One continuation per rejected DNG shot | **No.** The test rebuilds the wiring itself (TE3-2). |
+| b5c57e8a | Ready restored after preflight failure | Helper yes; the two `reconfigureCamera` call sites **no** (TE3-3). |
+| 5e4cc454 | No same-camera reopen for DNG on TELE | Yes. |
+| 4d0c5e3c | Size picked mid-door survives rollback | Yes (engine + VM). |
+| 8f84b0bc | Dual-open pause recheck | Predicate yes; call site **no** (TE3-3). |
+| 17c162d4 | Marker-failed DNG reported retained | Status helper yes; the engine `is DngWriteResult.Failed` branch **no** (TE3-3). |
+| ae359201 | FRONT-retained TELE zoom round trip | Pure yes; VM `rearReturnZoom` call **no** (TE3-3). |
+| d1341513 | Persist auto video size | Yes. |
+| 475dcf1f | Pre-inventory format edits merge | Pure `withEdit` yes; VM wiring **no** (TE3-5). The pure merge also has a gap (TE3-7). |
+| e5f1fc7a | Rollback DNG in pending formats | Yes. |
+| c6caab59 | DNG door follows engine RAW law | The generic-law negative path: yes. The PMA110 positive path has no VM test (TE3-5). |
+| f6f25a5b | Camera override refused mid-REC | Yes. |
+| d9ed066d | DNG answer in the recall caps gate | Pure yes; VM arguments **no**, and they are silent because the new params default to `false` (TE3-4). |
+| b5e8d622 | Detach before purge, `cleared` guards | 3 of 6 guards yes; the detach order **no** (TE3-9). |
+| 15e5f3cb | Dial doors seed from live | Pure yes; VM arguments **no**, and silent because of `= null` defaults (TE3-4). |
+| f64417fa | Denial reason only on applied audio-on recall | Pure + `recallMemorySlot` yes; the MainActivity condition is untested (Activity-bound, acceptable). |
+| 2d391a7d | P seed clamp carried into ISO | Yes (`AutoExposureTest`, product within 0.05 stop). |
+| c4cc92e7 | Extractor throw → INDETERMINATE | Yes. |
+| 03203d17 | Shared rate-limited `chars()` | Gate yes; wiring **no**. The shared gate also introduces a regression (TE3-6). |
+| c91d741f | ZSL ring flush on streaming stop | Edge predicate yes; the `zslRingFlush()` call **no** (TE3-3). |
+| f4ecda3d | Exhausted recovery query skipped | Yes (coordinator). The same edit to the dead `cleanupOrphanedPending` loop: n/a (TE3-8). |
+| a0a12b7d | Null decode logs once | No test (one log row; acceptable). |
+| 531060e6 | Analysis failures logged once per class | Gate yes; GlPipeline call site no (GL-bound; acceptable). |
+| 56803b42 | Startup deadline retired without self-interrupt | Helper yes; `cancelVideoStartupDeadline` reverting to `shutdownNow()` **no** (TE3-3). |
+| 5a49bbfd | Standby meter invariants degrade | Yes (escape-catching fake launcher). |
+| b1447900 | Bounded Photo shutter / WB tint | Yes, both ends. |
+| 25631385 / 4a1c6507 | Change-gated storage warnings, fresh budgets | Yes, exact counts. TE2-2 is closed. |
+| ab862007 | Interrupt kept across retry backoff | `markCompletionWithRetry` yes; the other three loops (`markWithRetry` journal loop, family deletion mark, `publish`) **no** (TE3-3). |
+| 1f7e14b3 | Failed settings commit reported once | Yes. |
+| ba3ee153 | 10-bit caption keyed on request | Helper yes; ProSheet argument **no** (low risk). |
+| b953b741 | "Correct" stale residual regions | **Introduced two new wrong regions** (TE3-1). |
 
 ## Findings
 
-### TE2-1 — The DNG optics door (99e7af87, 3ec126e1, 40145fbf) has no engine or ViewModel test (High-Medium, gap) — confirmed
-- `camera/CameraEngine.kt` `setRawWanted(enabled, resolvedLens, resolvedControls)` (~:3990-4045) has
-  three branches:
-  - direct write, with the `rawWantedDirectWrites++` counter;
-  - paused: drop `overrideId` to `userCameraPin`;
-  - transaction: publish inside `beginOpticsTransaction`, then `pushTeleFinder`.
-- `rollbackOptics` (~:1011) has `if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted` and publishes `rawWanted`.
-- `lensBandFollowsZoom` replaced `!video` / `!enabled` at two fast-path commit sites (~:2679, ~:2834).
-- `ui/CameraViewModel.kt` has the rollback mirror `photoFormats = … dngRaw = rollback.rawWanted`
-  (~:962) and `onSetPhotoFormats` (~:2389-2440). The latter does the remap, `cancelPendingControls`,
-  `invalidateOptics…`, `clearTapFocusUi`, and stops a running timelapse.
-- `grep -rln "setRawWanted\|onSetPhotoFormats\|OpticsRollbackPublication(" app/src/test` finds only
-  the pure `standaloneRouteWanted` tests and a no-op `PerformQuickFn` stub. No test builds an
-  `OpticsRollbackPublication` or calls the DNG door. Reverting **any** line of 3ec126e1 keeps the
-  suite green. The same holds for the paused `overrideId` drop (CLAUDE.md DNG bug #2, "the divergence
-  was PERMANENT") and for the rollback restore of `rawWanted` (AGG-4).
-- **Failure scenario (3ec126e1).** A FRONT entry transaction is in flight. The operator turns DNG on,
-  which is a direct write because the route is not BACK. The FRONT open fails and rolls back. Without
-  the counter, the rollback writes `rawWanted = false` and publishes it. The VM mirror turns the
-  chip off and persists it. Nothing fails.
-- **Proposed tests.** The harnesses already exist:
-  1. `FacingRollbackPunchInRobolectricTest` style: `acceptedRoute(BACK)`, `setFrontCamera(true)`
-     (baseline captured), `setRawWanted(true)` (direct write), `forceOwnedRollback`, then assert the
-     `rawWanted` field is still `true`. Repeat without the intervening write and assert that rollback
-     restores `false`.
-  2. Same engine with `started=true, paused=true, overrideId="0"`, `userCameraPin=null`, then
-     `setRawWanted(true)`. Assert `overrideId == null` and `lensChoice`/`controls` equal the resolved
-     packet.
-  3. `ModeRollbackOwnershipRobolectricTest.createAccepted(PHOTO)`: `vm.onSetPhotoFormats(dngRaw=true)`
-     at unified 3×. Assert the VM and the engine both hold `TELE3X` with lens-local `1.0`, and that
-     the pending-controls throttle was cancelled. Then force an owned rollback and assert the VM's
-     `photoFormats.dngRaw == false` and that the lens/zoom are restored.
-  4. A VM test with `timelapseRunning=true` and a format change that asserts `engine.stopTimelapse`
-     ran (state `timelapseRunning` false after the callback).
+### TE3-1 — The Partition-A residual manifest cites the wrong lines for 6 of its 9 entries, and the "fix" commit added two of them (Medium, High) — Confirmed
+- Files: `tools/coverage/partition-a-residuals.txt:4-12`, `tools/coverage/partition_report.py:131-149`
+  (`Residuals.drift` compares class, missed **count**, and file **name** only).
+- Evidence. I resolved each class's missed lines from the JaCoCo report generated at HEAD:
 
-### TE2-2 — `StorageFailureDiagnosticsTest` re-creates the vacuous/racy pattern that TE-3 just removed (Medium, weak and flaky) — confirmed
-- `app/src/test/kotlin/me/hletrd/telecampro/storage/StorageFailureDiagnosticsTest.kt:36-47,49-68,72-73`.
-- **Problem.** The assertions are `assertTrue(rows.size <= 2)` plus `if (budgetOpen) { assertEquals(2, …) }`,
-  where `budgetOpen` is read once, before the calls, from the process-global
-  `processReservedDiagnosticLogBudget`. If the shared Robolectric sandbox has already spent the
-  reserved 120 rows, both tests pass with zero rows. They would then pass even if
-  `openParcelFd`/`publish` never logged. This is the exact vacuity that 822f5a33 fixed in
-  `DiagnosticLogTest`.
-- **Race.** If the budget has 2 or 3 rows left at the check, a daemon retry thread from an earlier
-  class (identity-recovery backoff, the rejected-output owner) can spend one between the check and
-  the calls. `assertEquals(2, rows.size)` then fails spuriously.
-- **Fix.** Give `MediaStoreWriter` an internal `DiagnosticLogDoors` seam (default `DiagnosticLog`'s
-  process doors), the way `MediaStorePendingDiscardIdentityReader` takes `warn`. Bind fresh budgets
-  in the test, assert exact counts unconditionally, and delete `reservedBudgetOpen()`.
+| Class | Manifest region | Actual missed line(s) at HEAD | What the cited lines contain |
+|---|---|---|---|
+| CameraControllerKt | CameraController.kt:2607-2610 | ~2665-2671 (`cameraFailureIsEviction`) | KDoc of a `SessionAttemptPlan` field. **Written by b953b741.** |
+| CameraStateKt | CameraState.kt:904-906 | 906 | correct |
+| CaptureFamilyKey$Companion | CaptureFamily.kt:61,65-66 | 61, 66 | correct |
+| HeifBoundedReader | MediaStoreWriter.kt:2968-2970 | ~3048-3050 (`readUnsigned` width guard; class starts at :3036) | a different parser function outside the class. **Written by b953b741.** |
+| LatestCaptureReducerKt | LatestCaptureReducer.kt:205,295-297,354-363 | 218, 310, 381 | unrelated lines; all three are stale |
+| CaptureOutputTracker | CaptureOutputTracker.kt:259-260 | 260 | correct |
+| OwnerlessMediaDeleteOverrides | CameraViewModel.kt:133-137 | 151, 154 (the two default lambdas) | `import` lines |
+| ZoomMathKt | ZoomMath.kt:112-115 | 121 (`?: return emptyList()`) | the KDoc/signature of `teleZoomMarks` |
+| FnQuickActionsKt | FnQuickActions.kt:93-94 | 113 (`FnSlot.SHUTTER` dial branch) | label rows of a different `when` |
 
-### TE2-3 — The Partition-A residual manifest cites stale line ranges, and the gate never checks them (Medium, gate weakness) — confirmed
-- `tools/coverage/partition-a-residuals.txt:4-5` and `tools/coverage/partition_report.py:131-149`.
-- **Drift.**
-  - `CameraStateKt … CameraState.kt:804 "minByOrNull … continue fallback"`. Line 804 is now a
-    parameter line of `finderContainsTopLeftPoint`, after 87932ced. The real fallback is
-    `CameraState.kt:904-906`.
-  - `CameraControllerKt … CameraController.kt:2354-2360 "CameraAccessException construction"`.
-    Those lines are now the `dispatchCameraTeardown` closures, after 1c5a0060 added lines. The
-    classifier sits around `:2600-2656`.
-- **Gate weakness.** `Residuals.drift` compares class name, missed **count**, and source **file
-  name** only. Suppose a reviewed residual becomes covered while a new, unreviewed line in the same
-  class goes uncovered. The count is unchanged and the gate passes. The new miss is then silently
-  "accepted" under a rationale written for different code. The closed-rationale design ("every
-  current … required exact review manifest") assumes line identity it never verifies.
-- **Fix.** JaCoCo XML carries `<sourcefile><line nr mi ci>`. Have `partition_report.py` resolve each
-  residual's missed line numbers and require them to fall inside the cited region. Add a
-  `tools/coverage/tests/test_partition_report.py` case with a fixture whose miss moves outside the
-  cited range, and assert drift is reported. Then correct the two stale regions.
+- Why it matters. The manifest's header says it is "Enforced exactly". It is enforced for counts
+  only. The plan marks C.8 (TE2-3) `[x]`, yet the regions are wrong. A reviewer who opens a cited
+  region to check a "proven-unreachable" rationale sees unrelated code. A new, unreviewed miss in
+  one of these classes would be accepted under an old rationale whenever a reviewed miss became
+  covered in the same edit.
+- Failure scenario. Suppose someone deletes the `?: return emptyList()` guard in
+  `teleZoomMarks` and adds a different defensive `?:` elsewhere in ZoomMathKt. Coverage still has
+  1 miss in ZoomMathKt.kt, so the gate passes, and the manifest "explains" a line that no longer
+  exists.
+- Fix (host-testable).
+  1. In `partition_report.py`, collect `<sourcefile><line nr mi ci>` and the per-class method
+     line spans, then require every missed line of a residual class to lie inside its cited
+     region. Report `residual line drift` otherwise.
+  2. Add a `tools/coverage/tests` fixture whose miss sits outside the cited range, and assert that
+     the gate fails.
+  3. Regenerate the six regions from the report. Do not hand-edit them.
 
-### TE2-4 — Exposure-handoff ViewModel wiring is untested; only the pure helpers are (Medium, gap) — confirmed
-- `ui/CameraViewModel.kt:2023-2033` (`onExposureMode`, which captures `outgoingHalAe` before the
-  update), `:2043-2049` (`onShutterMode` → `withShutterModeTakingOwnership`), `:1806-1828`
-  (`refreshProgramAppSide`, which is the **only** place PROGRAM entry converts ANGLE→SPEED, despite
-  the plan's P2.2 text "(ISO, PROGRAM)"), and the `applyLoaded` ISO-priority SPEED force from P2.1.
-- **Problem.** `ExposureModeHandoffTest` covers `exposureModeHandoff` and
-  `withShutterModeTakingOwnership`. No test calls `vm.onShutterMode` / `vm.onExposureMode` (grep).
-- **Regression shapes the suite would miss.**
-  - Reading `live.controls.autoExposure` *after* `updateControls` makes the seed always
-    app-side, which is AGG-10 again.
-  - `onShutterMode` reverting to bare `withShutterMode`, which is AGG-8 again.
-  - A future change making `refreshProgramAppSide` early-return when `programAppSide` is already
-    true. A P entry from M+ANGLE would then keep ANGLE under the app-side loop, so AE freezes.
-- **Proposed test.** A Robolectric VM test in Photo:
-  - M + ANGLE → `onExposureMode(PROGRAM)`: assert SPEED and `programAppSide`.
-  - ISO priority → `onShutterMode(ANGLE)`: assert MANUAL + ANGLE.
-  - HAL-P with `liveIso`/`liveExposureNs` set → `onExposureMode(MANUAL)`: assert it is seeded from
-    live.
-  - App-side P → MANUAL: assert it keeps its own values.
-  - `applyLoaded` of an ISO+ANGLE packet: assert SPEED.
+### TE3-2 — The AGG2-3 regression test replicates the engine wiring, so reverting the fix keeps the suite green (Medium, High) — Confirmed
+- Production: `camera/CameraEngine.kt:4844` (`val continuation = StillContinuationHandoff(onDone)`),
+  `:4853` (`onDone = continuation::settle`), `:4938` (`return continuation.dispatchResult(owner.start())`).
+- Test: `DngPreCaptureAllocationTest.kt` `rejectedChainStep(...)` builds its own
+  `StillContinuationHandoff`, sets `onRetired = continuation::settle` itself, and calls
+  `dispatchResult` itself. It tests the class, not the engine's use of it.
+- Revert check. Restore `onDone = onDone` at :4853, or `return owner.start() == ACCEPTED` at :4938.
+  Every test still passes. The original bug was High: timelapse ticks doubled every interval
+  (2^n), and AEB reset controls mid-bracket.
+- Fix. Either (a) move the whole "settle wiring + dispatch result" into one internal function that
+  takes `start: () -> RecordingPreNativeDispatch` and `settle: (onDone) -> Unit`, have both the
+  engine and the test call it, and keep the engine a one-line delegation; or (b) add a Robolectric
+  engine test that saturates `ProcessPreNativeMediaAllocator` (or shuts it down) and drives a
+  timelapse/AEB chain with `dngRaw = true`. Then assert exactly one continuation per tick: count
+  `onDone` runs plus `false` returns.
 
-### TE2-5 — The aspect mid-REC refusal (81a0b55a) has no test, and nothing enumerates the session-reconfiguring doors (Low-Medium, gap) — confirmed
-- `ui/CameraViewModel.kt:2486-2490`. `setRecordingPresentation(v, recording = true, …)` already
-  exists in `CameraViewModelRobolectricTest.kt:128`, so the test is about five lines: assert
-  `aspectRatio` unchanged and `status == STOP_RECORDING_FIRST`.
-- **Broader gap.** Each door's refusal is hand-written. A table-driven test over every
-  session-reconfiguring action would catch the next door added without `rejectIfRecording()`. The
-  list is: transfer, hi-res, aspect, codec, bitrate, resolution, frame rate, open gate, stab, front,
-  and recall. That is the exact defect class AGG-66 was.
+### TE3-3 — About ten cycle-2 fixes are guarded only by an extracted pure helper; the call site can be reverted silently (Medium, High) — Confirmed
+The cycle-2 pattern was: extract a pure predicate, unit-test it, and call it from the hot path.
+Only the predicate is tested. Each of these call sites can be reverted with no test failing:
+- `CameraEngine.kt` `reconfigureCamera`, the two `rollbackOpticsAfterPreflight(...)` calls (b5c57e8a).
+  The Robolectric test invokes `invalidateCameraReady` and `rollbackOpticsAfterPreflight` directly
+  by reflection. Reverting either call to `rollbackOptics(...)` brings AGG2-4 back (shutter/REC
+  dead until another door).
+- `CameraEngine.kt` ~:4291 dual-open install (8f84b0bc). Passing `paused = false` (or the old
+  condition) is not caught: the test is `RouteInputRollbackTest.dualOpenCandidateInstallAdmitted` only.
+- `CameraEngine.kt` `is DngWriteResult.Failed ->` branch (17c162d4). Reverting to
+  `reportStatus(DNG_SAVE_FAILED)` compiles (`write.failure` still exists) and passes.
+- `CameraController.kt` `setPinAutoFps` `zslRingFlush()` (c91d741f), and the
+  `applyMetering`/`tryComplete` → `chars()` wiring (03203d17).
+- `VideoRecorder.kt` `cancelVideoStartupDeadline` (56803b42). Adding `shutdownNow()` back passes.
+- `MediaStoreWriter.kt` journal `mark` loop (~:665), family-deletion mark (~:749), and the
+  `publish` retry loop (~:1110) (ab862007). Only `markCompletionWithRetry` is tested. Reverting
+  any of the three to `runCatching { Thread.sleep }` passes.
+- `CameraViewModel.kt` `rearReturnZoom` → `retainedRearWireZoom` (ae359201). Reverting to
+  `localZoomOf` passes.
+- `ProSheet.kt:898` `tenBitVideoWanted = tenBitSessionWanted(...)` (ba3ee153).
+- Suggested fix, cheapest first:
+  - (1) For engine/VM wiring, reuse the existing Robolectric harnesses
+    (`OpticsRouteInputTransactionRobolectricTest`, `FacingRollbackPunchInRobolectricTest`,
+    `ModeRollbackOwnershipRobolectricTest`) and drive the real entry point. For example, start the
+    engine with a null selection so `reconfigureCamera`'s preflight fails, then assert
+    `cameraReady`.
+  - (2) For framework-bound sites (GL, MediaCodec, Camera2 handler), add a source-contract test in
+    the style of the existing executable source inventory. It asserts the exact call appears
+    inside the named function. This is weak but catches a revert.
+  - (3) For the MediaStoreWriter loops, inject `backoff` like `markCompletionWithRetry` already
+    does, and test each loop with an interrupted thread.
 
-### TE2-6 — Requested-video-size and pending-inventory persistence: only one of three paths is tested (Low-Medium, gap) — confirmed
-- **b476d1dd.** `requestedVideoResolution` is written by:
-  - `onVideoResolution` (tested, `CameraViewModelRobolectricTest.kt:1050`);
-  - recall `restoredVideoSize?.let { … }` (~:1444), untested;
-  - optics rollback `requestedVideoResolution = rollback.requestedVideoSize` (~:949), untested;
-    no test constructs an `OpticsRollbackPublication`.
-- **Scenario.** Dropping the rollback assignment makes a failed Open Gate reopen persist the
-  pre-rollback request, which is the AGG-36 symptom on the rollback path.
-- **7c76e7bc.** The VM half has no test:
-  - `currentExtras()` (~:1574-1611) saves `pending*UntilInventory` while
-    `!encoderInventoryLoaded`;
-  - the `SettingsStore(app) { detectedPhone ?: PhoneModel.OTHER }` wiring.
-- **Proposed tests.**
-  1. VM before inventory: restored HEIF+HLG+HEVC, trigger a save (`onGridType`), and assert the
-     saved extras keep HEIF/HLG/HEVC rather than the JPEG/SDR placeholders.
-  2. Rollback with a `requestedVideoSize` differing from state, then save, and assert the persisted
-     size.
+### TE3-4 — New owner parameters default to the "fix off" value, so dropping an argument is silent (Low-Medium, High) — Confirmed
+- `ui/ZoomMath.kt:252-253` `currentStandalone: Boolean = false, targetStandalone: Boolean = false`
+  (d9ed066d). The single production caller (`CameraViewModel.kt:1389-1407`) must pass both.
+  Omitting them restores AGG2-13 exactly: a Photo/DNG recall clamps the exposure against the
+  outgoing logical caps. `ZoomMathTest` passes either way.
+- `camera/ManualControls.kt` `withIsoTakingOwnership / withShutterNsTakingOwnership /
+  withShutterAngleTakingOwnership(…, liveIso: Int? = null, liveExposureNs: Long? = null)`
+  (15e5f3cb). `CameraViewModel.onIso/onShutterNs/onShutterAngle` (~:2041-2090) must pass
+  `live.liveIso/liveExposureNs`. Calling `it.withIsoTakingOwnership(iso)` restores AGG2-17 (MANUAL
+  shoots at a stale 1/125 s, ~2 stops dark), and no test notices. This also extends carried TE2-4:
+  no test calls `vm.onIso`, `vm.onShutterNs`, `vm.onShutterAngle`, `vm.onExposureMode` or
+  `vm.onShutterMode`. The only hits are the `PerformQuickFnTest` stub.
+- Fix. Remove the defaults so the compiler enforces the wiring. That costs ~6 test call-site edits.
+  Add one Robolectric VM test: in HAL-AE video P with `liveIso = 1600, liveExposureNs = 1/30 s`,
+  call `onIso(1600)` and assert `exposureTimeNs == 1/30 s`.
 
-### TE2-7 — 8780b494's load-time bound skips the sibling `photoExposureTimeNs` key and `wbTint` (Low-Medium, incomplete fix plus missing test) — likely
-- `storage/SettingsStore.kt:303-304`: `photoExposureTimeNs = safeLong(…).coerceAtLeast(1L)` has no
-  upper bound. `:261`: `wbTint` is restored raw.
-- `ui/ZoomMath.kt:285`: `restoredExposureState` passes the stored Photo exposure through with
-  `coerceAtLeast(1L)` only, whenever the target mode is VIDEO.
-- **Scenario.** A corrupt blob is saved in VIDEO with `photoExposureTimeNs = Long.MAX_VALUE`. Photo
-  exposure is retained untouched until a Video→Photo flip makes it the active exposure. That value
-  then reaches `withShutterMode` / `previewExposureTrade` / watchdog arithmetic, which is the same
-  path AGG-33 bounded for `exposureTimeNs`. A caps clamp lands later, and on a route without
-  manual sensor it never lands (the commit message's own argument).
-- **Test gap.** `corruptExposureFpsAndKelvinAreBoundedAtLoad` covers exposure-low, fps-low and
-  Kelvin-high only. Extend it to both ends of each bound, plus `photoExposureTimeNs` and `wbTint`
-  with `MIN/MAX_PERSISTED_*`.
+### TE3-5 — The ViewModel DNG door's PMA110 path is never executed by any test (Medium, High) — Confirmed
+- Robolectric constructs `CameraEngine` with the GENERIC `DeviceProfile` (the c6caab59 test relies
+  on this: `assertFalse(e.rawForcesStandalone)`). `engine.rawForcesStandalone` is therefore false
+  in every VM test. `onSetPhotoFormats`'s remap branch (`CameraViewModel.kt` ~:2463-2500) is never
+  taken, and the only VM DNG test is the negative one. That branch does the remap to TELE3X
+  lens-local 1.0, `cancelPendingControls`, the tap-focus clear, and the timelapse stop.
+- Also unexecuted: the AGG2-8 pre-inventory merge in the VM (`request = (pending ?: s.photoFormats).withEdit(...)`, `pendingPhotoFormatsUntilInventory = request`).
+  Only `withEdit` itself is tested. Reverting the VM to store the normalized `formats` passes.
+- TE2-1 item 3 is therefore still open for the device the app ships on.
+- Fix. `ShadowBuild.setModel("PMA110")` before `createViewModel()`, which is how
+  `OpticsRouteInputTransactionRobolectricTest.acceptedPma110Engine` already does it. Then:
+  - (a) Photo at unified 3×, `onSetPhotoFormats(dngRaw = true)` → VM and engine both on TELE3X
+    local 1.0, and the pending-controls throttle is cancelled.
+  - (b) `encoderInventoryLoaded = false`, saved request HEIF+DNG, a DNG-off tap →
+    `pendingPhotoFormatsUntilInventory == HEIF`, not JPEG.
+  - (c) `timelapseRunning = true` plus a format change → timelapse stopped.
 
-### TE2-8 — Recall clearing `AUDIO_OFF_BY_DENIAL_KEY` (fe7d0578) lives in the Activity with no test (Low-Medium, gap) — confirmed
-- `MainActivity.kt:517-529`. The decision is "applied recall ⇔ `activeMemorySlot == slot` after
-  `vm.onRecallMemorySlot`". It sits in Partition-B Activity code. Nothing pins two things:
-  - a refused recall (REC active, empty slot) leaves the denial flag set;
-  - an applied one clears it.
-- **Fix.** Move the decision into `CameraPermissionPolicy.kt` beside
-  `audioRestoredByMicrophoneGrant`, as a pure `denialReasonAfterRecall(applied: Boolean, current: Boolean)`,
-  and table-test it. Alternatively, add an `ActivityScenario` Robolectric test that asserts the
-  preference after recall into an empty slot, while recording, and into a saved slot.
+### TE3-6 — The shared `rawChars` retry gate lets a metering rebuild consume the shot's retry; a shot that would have recovered now fails (Low-Medium, Medium) — Likely
+- `camera/CameraController.kt` `chars()` (~:2420), `applyMetering` (~:1312), `tryComplete` (~:2269),
+  `LazyReadRetryGate(RAW_CHARS_RETRY_INTERVAL_NS = 1 s)`.
+- Before 03203d17, `tryComplete` retried `readRawCharacteristics()` on every shot. Now both callers
+  share one gate. Any full request rebuild with AE/AF regions (a tap-AF, a control change, a
+  rebuild after a reopen) spends the single admission. A still completing within the next second
+  then gets `null` and fails with `onError("Missing camera characteristics")`, even if the
+  provider read would now succeed. The plan's intent was to rate-limit a *persistently* failing
+  read. A *transient* failure (the resume race the original comment describes) now costs a shot
+  that the old code saved.
+- Failure scenario. The open-time read fails (keyguard resume race). The preview build at t = 0
+  retries and fails. The race clears at t = 0.3 s. The user taps the shutter at t = 0.5 s, and
+  `tryComplete` is refused by the gate, so the HAL image is discarded and the toast says "Photo
+  save failed". Before the fix, this shot would have saved.
+- Fix. Give `tryComplete` its own admission: always allow one retry per pending shot, or use a
+  separate gate. Keep the metering path rate-limited. Host test: a fake `nowNs` and a counting
+  reader; metering at t = 0 fails, a shot at t = 0.5 s must still attempt a read. (`LazyReadRetryGateTest`
+  only covers the gate in isolation.) Needs-device only for the transient-race frequency.
 
-### TE2-9 — Lazy characteristics retry (1c5a0060) is untested (Low, gap) — confirmed (acknowledged in the plan)
-- `camera/CameraController.kt` `readRawCharacteristics()` and
-  `rawChars ?: readRawCharacteristics()?.also { rawChars = it }` in `tryComplete`.
-- **Fix.** Extract a tiny pure `RetryingValue<T>(read, onFirstFailure)`, which returns the cached
-  value, retries on null, and logs once. Test four cases: first-read failure, recovery on the second
-  read, a cached value never re-read, and the failure logged exactly once across N failures. This
-  takes the "every still fails 'Missing camera characteristics'" class out of device-only territory.
+### TE3-7 — `PhotoFormats.withEdit` makes a pre-inventory "JPEG off" tap a silent no-op when the request is HEIF (Low, High) — Confirmed (logic)
+- `camera/CameraState.kt` `withEdit` (~:1256); `ProControls.kt` `jpegEnabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected)`.
+- Trace:
+  - Request `{heif, dng}`. Before the inventory, the display shows the degraded `{jpeg, dng}`.
+    JPEG is enabled because DNG is selected.
+  - The user turns JPEG off, so `edited = {dng}`.
+  - `withEdit` sees only the jpeg axis change. heif keeps the request value (true), so the result
+    is `{heif, dng}`, which is the unchanged request.
+  - Normalization re-displays `{jpeg, dng}`. The tap did nothing, the persisted request still
+    writes a processed still, and the user wanted DNG only.
+- The AGG2-8 test covers DNG toggles and processed-axis additions, but not removal of the
+  displayed substitute.
+- Fix. Treat the displayed JPEG as standing in for the requested HEIF while HEIF is unknown. When
+  `edited` clears the processed axis that `displayed` showed, clear the request's processed axes
+  too. Add the case to `TransferEncoderHonestyTest.format edit merges only the changed axis`.
 
-### TE2-10 — The TB336ZU silent-clip guard now depends on untested wiring (Low-Medium, gap) — confirmed
-- `video/VideoRecorder.kt:90` (`processAdmissionToken: …? = null`), `:787` and `:959` (worker doors),
-  `:1711-1715` (a token-less fallback to the **anonymous** owner gate), and `camera/CameraEngine.kt:6235`
-  (the only assignment).
-- **Problem.** `PendingTokenNativeStartTest` proves the gate admits a token-holder. If the Engine
-  assignment were dropped, or a new recorder construction site omitted it, the audio worker would
-  silently take the anonymous door. That door is refused while the token is pending, which is
-  exactly the 2026-09-09 silent-clip defect, and every host test would stay green.
-- **Fix.** Either make the token a required constructor parameter (`VideoRecorder(context, token)`),
-  so the compiler enforces it, or assert in `CameraEngineRecordingPreNativeTest` that the
-  recorder the Engine builds carries the admission token it snapshotted.
+### TE3-8 — `MediaStoreWriter.cleanupOrphanedPending` has no caller, yet f4ecda3d edited its loop (Low, High) — Confirmed
+- `storage/MediaStoreWriter.kt:1246-1280`. `grep -rn "cleanupOrphanedPending(" app/src` finds only
+  the definition. Production uses `executeLaunchMediaRecovery` (the coordinator).
+- The dead loop has different semantics: "no retry budget, exhausted at once". f4ecda3d changed it
+  anyway, so two loops encode the AGG2-21 rule and only one is tested and used. It also inflates
+  MediaStoreWriter's uncovered-line count.
+- Fix. Delete it, or route one test through it if it is meant as a public fallback.
 
-### TE2-11 — Wrapper-only and absent tests for two small fixes (Low, gap) — confirmed
-- **d062927a.** `HeifExifTest` tests `bestEffortHeifExif` in isolation. Nothing proves
-  `writeProcessedHeif` (`capture/StillCapturePipeline.kt:250-260`) calls it, so an inlined revert to
-  a bare `buildHeifExifData(...)` passes. Suggest a `StillCapturePipeline` seam for the EXIF builder,
-  plus one test where it throws and the HEIF is still allocated, written and published with
-  `exifData == null`.
-- **d255afbc.** `tenBitHlg = tenBitSessionWanted(videoMode, transfer)` at `CameraEngine.kt:2421,4238`
-  has no test. It is debug-only, so this is low priority. A pure `sessionTenBitHlg(video, transfer, experiment)`
-  returning false for PHOTO+experiment would pin it.
+### TE3-9 — The AGG2-15 test covers half the guards and not the detach-before-purge order (Low, High) — Confirmed
+- `CameraViewModelTickersRobolectricTest` `self-reposting tickers stop once the ViewModel is cleared`
+  runs `recordTicker`, `orientationTicker`, and `infoTicker` only. Removing the new `cleared` guard
+  from `zoomEaseTicker`, `levelTicker`, or the countdown `tick` passes.
+- The root-cause change was moving `engine.detachCallbacks()` before
+  `mainHandler.removeCallbacksAndMessages(null)` (`CameraViewModel.kt` ~:4217). No test checks it.
+  Moving it back passes.
+- The class's `tearDown` calls `onCleared` again by reflection inside `runCatching`, so this test
+  double-clears the VM. The second clear hands the engine to another release thread, and the
+  `runCatching` hides any failure.
+- Fix. Add the three remaining tickers (for `levelTicker`, set `state.level = true`). For order,
+  install a fake engine callback that posts to main from inside `detachCallbacks`'s predecessor
+  window, or assert via a recording `Engine` seam that `detachCallbacks` is invoked before the
+  handler is empty. In `tearDown`, skip `onCleared` when `cleared` is already true.
 
-### TE2-12 — The tri-state probe test pins the destructive verdict for a post-open I/O exception (Low-Medium, test pins questionable behavior) — likely
-- `storage/MediaStoreWriter.kt` `classifyFinalizedVideoTrack` returns INVALID for **any** exception
-  thrown by `hasVideoTrack`. `FinalizedVideoTrackProbeTest` ("an unparseable container after a
-  successful open is invalid") pins `IOException("setDataSource failed")` → INVALID.
-- **Why it matters.** An I/O error raised while reading through a just-opened provider fd is the same
-  transient-provider class that 1edb68c6 made INDETERMINATE for open failures. Examples are a
-  revoked fd during a media scan or a Binder hiccup. Launch recovery does not delete on an
-  indeterminate read. Here an INVALID verdict deletes a good take on the live stop tail.
-- **Fix.** Separate "the extractor parsed and found no video track" (INVALID) from "an I/O-class
-  exception escaped" (INDETERMINATE). Change the pinning test accordingly. Owner/code-reviewer
-  call; flagged here because the test currently locks the destructive branch in.
+### TE3-10 — Carried, with new evidence: refusal doors are still hand-written per door, and the aspect refusal is still untested (Low-Medium, High) — Confirmed
+- f6f25a5b added `rejectIfRecording()` to `onCameraOverride` with a test, after AGG2-12 found that
+  door missing. That is the same defect class TE2-5 predicted.
+- There are 17 `rejectIfRecording` sites in `CameraViewModel.kt`, and `onAspect…` (81a0b55a) still
+  has no test.
+- A table-driven Robolectric test over every session-reconfiguring `CameraActions` member would
+  catch the next missing door. Those members are: transfer, hi-res, aspect, codec, bitrate,
+  resolution, frame rate, open gate, stab, front, recall, and camera override. With
+  `setRecordingPresentation(recording = true)`, assert that state is unchanged and
+  `status == STOP_RECORDING_FIRST`.
 
-### TE2-13 — The suite-level backstop does not name the wedged test; untimed waits remain (Low, residual of TE-5) — confirmed
-- `app/build.gradle.kts` (019ca41c) sets a 30-minute task timeout, which fails the **task** without
-  naming a test.
-- `grep` finds 22 bare `.join()` and 73 bare `.await()` in `app/src/test`. Examples:
-  - `gl/CompletionDispatchTest.kt:687` still `second.join()`s before `finish.countDown()`, the
-    exact deadlock that test exists to catch;
-  - the same file at `:506-507` and `:651-653`.
-- **Fix.** Add `@get:Rule val timeout: Timeout = Timeout.seconds(30)` to the ownership/concurrency
-  classes (CompletionDispatch, LatestHeavyWorkLane, CameraEngineRecordingPreNative,
-  RecordingTeardownTerminalGate, RecorderQuarantineAdmissionGate, MediaReviewOwnership). Also
-  replace `join()` with `join(5_000); assertFalse(t.isAlive)`.
+### TE3-11 — The remaining vacuous relational check in `DiagnosticLogTest` (Low, Medium) — Confirmed
+- `camera/DiagnosticLogTest.kt:79-96` `production binding never exceeds the process ceilings` asserts
+  `usedRows() <= BUDGET` and `getLogsForTag(tag).size <= 2`. Both pass with zero rows, so the
+  production facade could stop logging entirely. TE2-2 fixed the same pattern in
+  `StorageFailureDiagnosticsTest` (4a1c6507).
+- The test labels itself "secondary", and the injected-door tests above it are exact. Keep it, but
+  add one exact production-binding assertion that is budget-independent. For example, assert that
+  `DiagnosticLog`'s doors are the process owners (identity), which pins the binding without
+  depending on remaining budget.
 
-### TE2-14 — Remaining short positive wall-clock waits (Low, flaky under load) — likely
-- `storage/RejectedOutputCleanupDispatcherTest.kt:30`: `assertTrue(returned.get(250, MILLISECONDS))`.
-  It proves "submit does not block" with a 250 ms wall-clock budget on a freshly created executor
-  thread, which is the TE-2 pattern that e1a45dfa removed elsewhere.
-- `:73` `assertTrue(completed.await(100, ms))` and `camera/DngPreCaptureAllocationTest.kt:180`
-  (`retired.await(250, ms)`) are fine only if completion is synchronous on that path.
-- **Fix.** Where completion is synchronous, assert `latch.count == 0` immediately. Where it is not,
-  use a ≥5 s positive bound plus a structural "provider still parked" witness, as e1a45dfa did.
+## Flakiness sweep (no new defects)
+- `Thread.sleep` appears in tests only inside deadline-bounded polling loops
+  (`StandbyAudioControllerTest.kt:1575`, 2 s; `FamilyDeletionMarkerIntegrationRobolectricTest.kt:181`, 5 s).
+- `findFallbackThread()` matches any live thread by name process-wide. A thread leaked by an earlier
+  test with the same name would satisfy it. This is not observed and is noted only.
+- New real-executor tests (`StartupDeadlineRetireTest`) use latches with 5 s waits and
+  `@Test(timeout)`, which is fine.
+- `LaunchRecoveryProgressTest` counts are deterministic (`imageQueries == 2` with
+  `maxFailureAttempts = 2`).
+- `MediaDurabilityPolicyTest` interrupt test clears the flag in `finally`, which is fine.
+- `StorageFailureDiagnosticsTest` uses fresh budgets plus UUID URIs against the process-global
+  `storageWarningGate`, so it is order-independent.
 
-## Re-validation of AGG-85..AGG-92 (scheduled "later cycle")
-
-| ID | Orig | Current state at e5729ffd |
-|---|---|---|
-| AGG-85 | TE-7 | **Partially addressed.** f41b1ae3 added open/publish rows, tested only conditionally (TE2-2). Still untested: pending image/video insert throws or returns null (`MediaStoreWriter.kt:446-450,568-572`), identity-owner-at-capacity refusals (`:477,:552`), and registration-disposition rows (`:502-507`). Open. |
-| AGG-86 | TE-8 | **Open.** `tools/coverage/partition-b.txt:33-34` still surrenders `ManualControlsKt` and `CaptureCapabilitiesKt`. 1e79810e added two more pure functions (`exposureModeHandoff`, `withShutterModeTakingOwnership`) to `ManualControlsKt`, so new pure branches land outside the 99.5% gate. The surface grew. |
-| AGG-87 | TE-9 | **Open.** `gl/DigitalGainTest.kt:61-77` still recomputes the production formula with the same constant. No literal golden anchors. |
-| AGG-88 | TE-10 | **Open.** `camera/StartupTraceTest.kt:39-43` still restores `android.util.Log.i` rather than the captured production seam. `:96-104` is still tautological under a +5 clock. |
-| AGG-89 | TE-11 | **Open.** No `@After` idle assertion for `UnsafeRecorderQuarantine` / `ProcessDngPreCaptureAdmission` in `CameraEngineRecordingPreNativeTest.kt:39-44`, `DngPreCaptureAllocationTest`, or `ProcessStillAdmissionEngineTest`. |
-| AGG-90 | TE-12 | **Open.** Negative waits unchanged: `CameraEngineRecordingPreNativeTest.kt:636,678,707,746,789,875`, `ProcessAdmissionSignalTest.kt:51`, `TerminalAcquisitionGateTest.kt:70`, `ReconfigurationGenerationTest.kt:839`, `FamilyDeletionMarkerDispatcherTest.kt:221`, `StatusPublicationOwnershipTest.kt:45`, `RejectedOutputCleanupDispatcherTest.kt:33`. |
-| AGG-91 | TE-13 | **Open.** `tools/field/tap_af_aim.py:130` still takes `before = latest_3a(...)` with no `logcat -c` before it (the clear is only at `:170`). There is still no `tools/tests/test_field_tap_af_aim.py`. |
-| AGG-92 | TE-14 | **Open.** `tools/tests/test_release_artifact.py` still has no `<uses-permission-sdk-23>` case and no `<permission>` without `protectionLevel` for `tools/release_permissions.py:27-44`. |
-
-Cycle-1 items TE-1..TE-6 (AGG-79..84) are verified closed:
-- a887b294 gives the retry its own lane at the production timeout.
-- e1a45dfa makes the non-blocking proof structural.
-- 822f5a33 runs `DiagnosticLogTest` against fresh budgets.
-- 8f77f219 adds snapshot-relative edges.
-- 019ca41c adds the suite timeout; the TE2-13 residual remains.
-- 5076aedf adds `ColorProfilesFormatTest`, and `ColorProfiles` moved to Partition A.
-
-## Final sweep notes (no finding)
-- No `@Ignore` or `Assume` anywhere in `app/src/test`.
-- Polling loops all have explicit 1-5 s deadlines followed by an assertion.
-- `androidTest` (4 probes) is still compile-only in the gate, as documented.
-
-## Count
-14 findings:
-
-| Severity | Findings |
-|---|---|
-| High-Medium | TE2-1 |
-| Medium | TE2-2, TE2-3, TE2-4 |
-| Low-Medium | TE2-5, TE2-6, TE2-7, TE2-8, TE2-10, TE2-12 |
-| Low | TE2-9, TE2-11, TE2-13, TE2-14 |
-
-Of the 8 re-validated scheduled items, AGG-85 is partially addressed and the other 7 are still open.
+## Files examined
+- Production (cycle-2 diffs and their surroundings):
+  - `camera/CameraEngine.kt` (DNG dispatch :4760-4945, rollback :1000-1110, reconfigure :4160-4230, dual-open :4290)
+  - `camera/DngPreCaptureAllocation.kt`
+  - `camera/CameraController.kt` (applyMetering, tryComplete, chars, setPinAutoFps, LazyReadRetryGate, classifier :2640-2720)
+  - `camera/ManualControls.kt`
+  - `camera/AutoExposure.kt`
+  - `camera/StandbyAudioController.kt`
+  - `camera/DiagnosticTelemetry.kt`
+  - `camera/LaunchMediaRecoveryCoordinator.kt`
+  - `camera/CameraState.kt` (withEdit, lensInventoryOf)
+  - `capture/StillCapturePipeline.kt`
+  - `storage/MediaStoreWriter.kt` (open/publish/retry loops, recovery batch, HeifBoundedReader)
+  - `storage/PendingDiscardJournal.kt` (IdentityReadWarningGate)
+  - `storage/SettingsStore.kt`
+  - `video/VideoRecorder.kt` (startup deadline, storage tail)
+  - `gl/GlPipeline.kt` (analysis catch)
+  - `ui/CameraViewModel.kt` (tickers, onCleared, recall, DNG door, dial doors, rollback mirror, currentExtras)
+  - `ui/ZoomMath.kt`
+  - `ui/controls/ProControls.kt`
+  - `ui/controls/ProSheet.kt`
+  - `ui/controls/FnQuickActions.kt`
+  - `ui/CaptureOutputTracker.kt`
+  - `storage/LatestCaptureReducer.kt`
+  - `storage/CaptureFamily.kt`
+  - `CameraPermissionPolicy.kt`
+  - `MainActivity.kt` (recall)
+- Tests:
+  - `OpticsRouteInputTransactionRobolectricTest`
+  - `RouteInputRollbackTest`
+  - `DngPreCaptureAllocationTest`
+  - `RetainedDngStatusTest`
+  - `ImmediateDiscardIdentityTest`
+  - `ZoomMathTest`
+  - `CameraViewModelRobolectricTest`
+  - `ModeRollbackOwnershipRobolectricTest`
+  - `OpticsRecallTransactionRobolectricTest`
+  - `CameraViewModelTickersRobolectricTest`
+  - `ExposureModeHandoffTest`
+  - `MicrophoneGrantRestoreTest`
+  - `AutoExposureTest`
+  - `FinalizedVideoTrackProbeTest`
+  - `LaunchRecoveryProgressTest`
+  - `ZslStreamingEdgeTest`
+  - `LazyReadRetryGateTest`
+  - `AnalysisFailureLogGateTest`
+  - `StandbyAudioControllerTest`
+  - `StartupDeadlineRetireTest`
+  - `SettingsStoreTest`
+  - `StorageFailureDiagnosticsTest`
+  - `MediaDurabilityPolicyTest`
+  - `DiagnosticLogTest`
+  - `NoStillOutputCaptionTest`
+  - `DeviceRouteLawsTest` (`TransferEncoderHonestyTest`)
+  - `PerformQuickFnTest`
+  - `FamilyDeletionMarkerIntegrationRobolectricTest` (sleep loop)
+  - repo-wide greps for `Thread.sleep`, `ShadowLog`, `onSetPhotoFormats`, `onIso` / `onExposureMode`, and `cleanupOrphanedPending(`
+- Gate:
+  - `tools/coverage/partition-a-residuals.txt`
+  - `tools/coverage/partition_report.py`
+  - `app/build/reports/coverage/test/debug/report.xml` (HEAD-era)
+- Context:
+  - `.context/reviews/archive-rpl-cycle2-2026-10-02/_aggregate.md`
+  - `.context/reviews/archive-rpl-cycle2-2026-10-02/test-engineer.md`
+  - `docs/plans/2026-10-02-rpl-cycle2.md`

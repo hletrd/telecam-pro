@@ -1,256 +1,166 @@
-# Architect review — 2026-10-02 (RPL cycle 2)
+# Architect review — RPL cycle 3 (HEAD e3a2bdd4)
 
-Lane: architecture and design risk (coupling, layering, ownership/generation models, invariants
-spread across sites, module boundaries). Read-only pass over `app/src/main/kotlin/me/hletrd/telecampro/**`
-at HEAD `e5729ffd`, with `CLAUDE.md`, `docs/ARCHITECTURE.md`, the cycle-1 archive
-(`.context/reviews/archive-rpl-cycle1-2026-10-02/`) and `docs/plans/2026-10-02-rpl-cycle1.md`.
-Nothing here was device-verified. Owner decisions (ZSL dark refusal, FocusDetail threshold,
-CameraUnit SDK, proprietary HDR, orientation-moves-no-control, CPH2841 pending) are not relitigated.
-
-## Inventory
-
-| Package | Main owners (lines) | Cycle-1 delta |
-|---|---|---|
-| `camera/` | `CameraEngine` (8,690; 7 `beginOpticsTransaction` doors, 6 bare `reopenForSession()` doors), `CameraController` (2,878), `CameraState` (1,899), `ManualControls` (1,208), 11 `Process*` owners | DNG door now owns a transaction; `rawWanted` joined `OpticsSnapshot`; `lensBandFollowsZoom`; lazy characteristics retry |
-| `ui/` | `CameraViewModel` (4,629), `CameraScreen` (3,404), `ZoomMath` (461), `CaptureOutputTracker`, `controls/*`, `review/*` | `remapRouteScaleOptics`, `restoredOptics(photoStandalone)`, rollback mirror of `dngRaw` |
-| `video/` | `VideoRecorder` (2,496) + `UnsafeRecorderQuarantine` admission gate | token-scoped worker door; pending token now excludes every owner-keyed caller |
-| `storage/` | `MediaStoreWriter` (3,068, `object`), `PendingDiscardJournal`, `SettingsStore` | tri-state video probe, identity-warning gate, persisted bounds, `missingPhoneModel` seed |
-| `gl/`, `capture/`, `stab/`, `focus/` | `GlPipeline` (2,239), `FlipRenderer`, `StillCapturePipeline` (713), `GyroEis`, `MacroProximity` | diagnostics only |
-| top level | `MainActivity` (1,172), `CameraPermissionPolicy` | MR recall now clears `AUDIO_OFF_BY_DENIAL_KEY` |
-
-Checked with no new finding: layering is unchanged (`camera/ gl/ video/ capture/ storage/` import no
-`ui/`; `ui/` imports no `camera2`); every raw `android.util.Log` call sits behind
-`recurringDiagnosticAllowed` or `processDiagnosticLogBudget.tryAcquire()`; the new admission gate
-(pending token excludes all owner-keyed callers, workers enter by token) is consistent with the
-replay observer, which parks same-owner callers on `pendingToken` and releases them in `publish`
-(`VideoRecorder.kt:1514-1527, 1559-1570`), and the encoder EGL attach runs only after
-`publishAdmission` (`CameraEngine.kt:6383-6420`); `acceptedOpticsAuxState` keeps the RAW axis
-(`OpticsConstraints.kt:73-77`); process singletons are unchanged since cycle 1.
-
-The cycle-1 theme still holds. Most defects come from **one fact owned in two places**: the
-Engine's field versus the ViewModel's mirror, or one transaction versus a trailing setter. ARCH2-1
-through ARCH2-4 are four concrete ways that split still shows.
-
----
+Angle: ownership of state across Engine / ViewModel / GL / Controller, duplicated sources of truth,
+transaction and rollback design. Prior cycles' ARCH2-1..7 / AGG2-39/40 were read first. ARCH2-1,
+ARCH2-3 (recall split) and AGG2-7 are fixed at HEAD (4edd2a14, b565abae, 4d0c5e3c). The findings below
+are new, or are carried items with new evidence. Most of them come from the cycle-2 fixes. Those
+fixes added per-field "keep newer direct write" rules and a restorable-preflight rollback. The rules
+are right one field at a time, but they leave new ways for the Engine packet and the ViewModel packet
+to drift apart.
 
 ## Findings
 
-### ARCH2-1: A DNG write that did not change the route at the time survives a rollback that makes it change the route. The engine then wants RAW over a restored logical session (the AGG-4 divergence again)
-- **Where:** `camera/CameraEngine.kt:3225-3230` (`rawWantedDirectWrites`), `:4005-4015` (the
-  direct-write branch, used whenever `!routeFlips || !started || activeCameraRoute != BACK`),
-  `:1011` (`if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted`),
-  `:1032` (publication carries the surviving value), and the VM mirror at `ui/CameraViewModel.kt:971-975`.
-- **Why:** Commit 3ec126e1 classifies a DNG write by whether the route answer flipped *when the write
-  happened*: in VIDEO (always standalone) or on FRONT/EXTERNAL it did not. A rollback, however,
-  restores the baseline's mode and route. Under that restored packet the same `rawWanted` value
-  does choose the route (PHOTO on BACK with `rawRequiresStandalone`). The guard keeps the later value
-  and also restores the route that value contradicts. `rawWanted` is meant to be a route input
-  that rolls back with its route (`CameraEngine.kt:663`), and this breaks that.
-- **Failure scenario (PMA110):** (a) Photo, logical camera 0, DNG off, Ready, unified 3.0 on the
-  TELE3X band. The user taps Video (T1: `setVideoMode`; the baseline is Photo/logical with
-  `rawWanted=false`). While T1 is still queued, they turn DNG on in the sheet. Video is standalone
-  either way, so this takes the direct-write branch and sets `rawWanted=true`, `writes+1`. T1 then
-  fails (for example `resolveNonTeleId` returns null or the camera is busy, giving
-  `CAMERA_UNAVAILABLE_MODE_UNCHANGED`). `rollbackOptics` restores Photo, BACK, and the logical
-  controller (`restoreSession`) but keeps `rawWanted=true`, and the VM chip stays on. (b) The same
-  happens with a FRONT trip whose front open fails after DNG was toggled while FRONT was pending.
-  Result: `standaloneRouteWanted(PHOTO, true, true) == true` over a logical session.
-  `lensBandFollowsZoom`, `pushTeleFinder`, OSD focal, and the VM's `unifiedZoomOf(...,
-  standaloneRoute=true)` read the logical camera's unified 3.0 as lens-local on the 3× band, so the
-  OSD shows about 9× / 208 mm, which is the AGG-1 symptom. Shots drop DNG at capture time. The
-  obvious repair makes it worse: turning DNG off makes `onSetPhotoFormats` remap
-  local→unified (`remapRouteScaleOptics`, `fromStandalone=true`). That turns the real unified 3.0
-  into 9.0, and the engine publishes it inside the DNG transaction, so the logical camera lands at
-  9×.
-- **Fix:** In `commitOpticsRollbackLocked`, decide restoration by route consequence, not by write
-  count. If `standaloneRouteWanted(restored.mode == VIDEO, rawWanted, law)` on the restored route
-  differs from the same predicate with `before.rawWanted`, restore `before.rawWanted`. The
-  publication already carries the field, so the chip follows. Keep the later value only when it is
-  route-neutral under the RESTORED packet. Alternatively, keep it and immediately open a follow-up
-  DNG door (`setRawWanted` semantics with `remapRouteScaleOptics`) after the rollback effects run.
-  Add a host test: Photo/logical Ready, then a Video door, then a DNG write while pending, then a
-  failed rollback. Assert that `rawWanted` matches the restored route answer.
-- **Confidence:** Medium-High for the code path. The trigger needs an async door failure plus a
-  sheet toggle in the pending window. **Status:** confirmed by code reading; device trigger
-  needs-manual-validation.
+### ARCH3-1: A rollback publication is dropped whole when any newer door begins between the setup-thread commit and the main-thread post. The ViewModel then keeps the failed door's optimistic packet for every field the newer door does not republish
 
-### ARCH2-2: An MR recall or settings restore is one optics transaction plus about 25 trailing setters. An async rollback restores only the optics part, so a "recall unchanged" leaves a half-applied, persisted hybrid that is marked as the active bank
-- **Where:** `ui/CameraViewModel.kt:1429-1492` (`setResolvedOptics`, then `setAeMetering`,
-  `setGammaAssist`, `setVideoStabMode`, `setAspectRatio`, `setDriveMode`, …, `setHiResStill`,
-  `setOpenGate`, `setVideoFrameRate`, `setRawWanted`), `:1497-1560` (state write including
-  `photoFormats`, `aspectRatio`, `videoStabMode`, `openGate`, `hiResStill`, `recordAudio`,
-  `activeMemorySlot = activeSlot`), the rollback mirror at `:925-982` (restores only optics, the
-  declaration, and `dngRaw`; it never clears `activeMemorySlot`; it calls `scheduleSettingsSave()`), and
-  `MainActivity.kt:517-529` (clears `AUDIO_OFF_BY_DENIAL_KEY` when `activeMemorySlot == slot`).
-  Bare reopens under the recall's generation are at `CameraEngine.kt:1968-1983, 3299-3306,
-  3608-3619, 3675-3680`, all through `reopenForSession()`, which captures the *current* generation
-  (`:3320-3322`).
-- **Why:** CLAUDE.md requires a recall to be "one complete packet", and a rejected recall to restore
-  the accepted state. Only the fields inside `setResolvedOptics` meet that rule. Several trailing
-  setters change the session (stabilization class is a session key, open gate changes
-  `videoSize`/stream, aspect changes hi-res admission, hi-res, RAW). Every other setter changes
-  persisted operator state. None of them is in `OpticsSnapshot` or `OpticsRollbackPublication`.
-- **Failure scenario:** The user recalls MR2 (a Video bank with Active stabilization, Open Gate, 16:9,
-  BURST, audio on). `setResolvedOptics` returns `true` (it accepts synchronously). Then the async
-  task fails, for example the target lens is held by another app, `cachedCaps` returns null, or
-  `selectCurrentLens()` returns null, and `rollbackOptics(..., CAMERA_UNAVAILABLE_RECALL_UNCHANGED)`
-  runs. The UI shows "camera unavailable, recall unchanged" and restores the old mode, lens, zoom,
-  and route. But stab mode, open gate (and the `videoSize` chosen from the *outgoing* selection by
-  `applyVideoSize(chooseVideoSize(sel))` at `:3305`), aspect, hi-res, drive mode, HEIF/JPEG choice,
-  peaking, Fn layout, and audio all stay at MR2's values. The MR2 badge stays lit, the
-  denial-reason key has already been cleared, and the rollback handler persists the hybrid with
-  `scheduleSettingsSave()`, so it survives relaunch. Secondary, needs device: on a successful recall
-  that changes the stabilization class, `setVideoStabMode → reopenForSession()` enqueues a second
-  `reconfigureCamera` under the same T1 generation behind T1's own reconfigure, so the recall pays
-  two close/open blackouts.
-- **Fix:** Fold every session-shaping recall input (stab mode, aspect, hi-res intent, open gate,
-  frame rate, RAW) into the `setResolvedOptics` packet and `OpticsSnapshot`, as `requestedVideoSize`
-  and the declaration already are, so one transaction both decides and rolls back the session. For
-  the non-session fields, have the VM hold the pre-recall `CameraUiState` slice and restore it, and
-  clear `activeMemorySlot`, when `onOpticsRollback` arrives for the recall's generation. Make the
-  denial-key clear a VM-owned edge emitted only from the Ready commit of that recall, not a peek
-  at `activeMemorySlot` right after a call that is still async.
-- **Confidence:** High for the hybrid, which is deterministic once the async rollback fires. Medium
-  for the double reopen. **Status:** confirmed by code reading (hybrid); needs-manual-validation
-  (double blackout).
+- Severity: Medium. Confidence: Medium. Status: Likely (code-confirmed; the timing window needs a device repro).
+- Where: `ui/CameraViewModel.kt:933-1011` (`onOpticsRollback`: `if (!engine.isOpticsGenerationCurrent(rollback.generation)) return@post`); `camera/CameraEngine.kt:1009-1086` (the Engine restores its fields under the monitor and only then posts the packet); `camera/CameraEngine.kt:778` (the next door snapshots the Engine's RESTORED fields as its baseline).
+- Why: the Engine commits its rollback on `setupExecutor` and the UI mirror is applied later, from a
+  `mainHandler.post`. A door that starts on main inside that window (lens tap, TC, mode, DNG, recall)
+  bumps `opticsIntentGeneration`. The posted mirror then drops all of its fields:
+  `photoFormats.dngRaw`, `pendingPhotoFormatsUntilInventory`, `photoExposureTimeNs`,
+  `preTeleUnifiedZoom`, `requestedVideoResolution`, the converter declaration, mode, lens and
+  controls. The newer door built its target from the ViewModel's `_state`, which still holds the
+  FAILED packet. The Engine's baseline for that door is the restored packet. The two sides now
+  disagree, and nothing republishes the fields the newer door did not touch.
+- Failure scenario: Photo, DNG off, logical camera. The operator turns DNG on (route-flip door A: the
+  ViewModel publishes `dngRaw=true` and lens-local zoom). A's preflight fails, and the Engine
+  restores `rawWanted=false` and unified zoom. Before the post runs, the operator taps 3× (door B).
+  The ViewModel computes B from `dngRaw=true` (standalone, lens-local `3/opticalBase`). The Engine
+  computes from `rawWanted=false` (logical, unified). The posted rollback is discarded. The UI now
+  shows DNG on while the Engine wants a logical session, which is the AGG-4 shape again.
+  `setRawWanted`'s change gate (`rawWanted == enabled → return`, `CameraEngine.kt:4080`) does not
+  repair this: the next DNG-off tap remaps the ViewModel's zoom scale while the Engine ignores the
+  packet. Settings persist the hybrid on the next `scheduleSettingsSave`.
+- Fix: when a rollback post is stale, do not drop it whole. Split the publication into (a)
+  generation-owned visible optics, which a newer door legitimately replaces, and (b) Engine-truth
+  mirrors, which must always converge. For (b), read the live Engine values on main, as
+  `requestedVideoResolution = engine.currentRequestedVideoSize()` already does: `rawWanted`,
+  `photoExposureTimeNs`, `preTeleUnifiedZoom`, and the declaration. Alternatively, have every door's
+  VM-side target computation read those route inputs from the Engine and not from `_state`.
+  Host-testable: a Robolectric test that commits a rollback, queues a second door before draining
+  main, and asserts `state.photoFormats.dngRaw == engine.rawWanted` afterwards.
 
-### ARCH2-3: The split recall (T1 `setResolvedOptics`, then T2 `setRawWanted`) can open the wrong route. `reconfigureCamera` resolves the camera from live fields when the task runs, not from T1's packet
-- **Where:** `ui/CameraViewModel.kt:1429` and `:1492`. `camera/CameraEngine.kt:2780-2790`
-  (`resolveNonTeleId(resolvedLens)` evaluated on `setupExecutor` with the *live* `rawWanted`),
-  `:4123-4205` (`selectCurrentLens()` and `reconcileControlsWithCaps` under T1 ownership), and
-  `:565-593` (`lensChoice = LensChoice.forZoom(controls.zoomRatio)` when `lensBandFollowsZoom`).
-- **Why:** Cycle 1 tracked the two-transaction recall as a structural residual under AGG-49 and
-  judged rollback safe. That judgment holds: `selectRollbackBaseline` keeps the last Ready
-  baseline. But nothing orders T1's setup task after T2's `beginOpticsTransaction`. T1's packet
-  carries the lens and the lens-local zoom of a DNG bank, yet the route is resolved later from
-  `rawWanted`, which T2 has not published yet.
-- **Failure scenario (PMA110):** Current state is DNG off on logical camera 0. The user recalls a
-  bank with Photo, DNG on, the TELE3X band, and local 1.0 (the standalone 70 mm lens at 1×). T1
-  publishes lens=TELE3X, zoom=1.0. If `setupExecutor` runs T1 before the main thread reaches line
-  1492 (it is idle, ids and caps are cached, and the main thread still has about 17 setters to run),
-  T1 resolves the logical id because `rawWanted` is still false. Its owned candidate swap then runs
-  `reconcileControlsWithCaps`, and `lensBandFollowsZoom` is true, so `lensChoice = forZoom(1.0) =
-  MAIN`. T2 then publishes `rawWanted=true` with `resolvedLens = null`, keeps `MAIN`, and reopens
-  the standalone 23 mm main lens at 1.0. The VM still shows TELE3X, so the OSD focal reads about
-  69 mm while the wire is 23 mm. The recalled 3× bank lands at 1×, and nothing re-converges until
-  the next lens tap.
-- **Fix:** Close the AGG-49 residual now. Add `resolvedRawWanted` to `setResolvedOptics`, write it
-  inside its `beginOpticsTransaction`, and delete the trailing `engine.setRawWanted(...)` from
-  `applyLoaded` (keep it for `applyEncoderInventory`). More generally, have `reconfigureCamera`
-  resolve from the transaction's snapshot packet, not from live fields that later direct writers
-  can change.
-- **Confidence:** Medium. The ordering race is real. Its hit rate depends on how fast the
-  executor runs versus the main thread. **Status:** likely; needs-manual-validation (instrumented
-  recall on device, or a host test with a synchronous executor that runs T1 inline).
+### ARCH3-2: The rollback mirror reads `requestedVideoSize` live but `rawWanted` from the frozen packet. A direct DNG write in the post window is reverted in the ViewModel only
 
-### ARCH2-4: ViewModel mirrors of Engine route facts start from different defaults than the Engine, and the TELE/FRONT doors compute the target zoom twice from those two copies
-- **Where:** `camera/CameraState.kt:1644` (`lensInventory = LensInventory.ALL`) versus
-  `camera/CameraEngine.kt:1262` (`acceptedOpticalPresets = emptySet()`, so `opticalBaseFor` answers
-  MAIN). `CameraState.kt:1658` (`rawForcesStandalone = true`) versus `DeviceProfile.GENERIC.rawRequiresStandalone
-  = false`. Independent computations: TELE at `ui/CameraViewModel.kt:2540-2556` versus
-  `CameraEngine.kt:3760-3770`; FRONT at `ui/CameraViewModel.kt:2900-2945` versus
-  `CameraEngine.kt:3886-3916`; the restore preserve branch at `ui/CameraViewModel.kt:1326-1328`.
-  Mixed sources inside `applyLoaded` itself: `engine.rawForcesStandalone` at `:1324`, but
-  `s.rawForcesStandalone` everywhere else.
-- **Why:** "Mirrors the engine transaction exactly" (`:2876`) assumes the same function gets the
-  same inputs. Before lens enumeration, which is deliberately queued after the first open, the two
-  optical sets disagree on every device. `reconcileZoomToCaps` (`:3037-3040`) states the
-  assumption outright ("the engine's controls and this state are the same packet"). The engine's
-  result is never published back, so a divergence lasts until the next full controls push.
-- **Failure scenario (one-camera tablet, TB336ZU class):** Video bank, TELE on last session, Setup
-  "keep teleconverter" off. At launch `applyLoaded` runs in VM `init`, before enumeration. The
-  preserve branch computes `3 / opticalBaseFor(3, ALL).zoomPreset = 3/3 = 1.0`, but the tablet's
-  "3×" is a crop of its only lens, so the true lens-local value is 3.0. The session opens at 1×
-  while the rail highlights the 3× band, which is the "first fix broke the tablets" shape from the
-  2026-08-04 zoom-scale entry. On PMA110 the window is narrower: a TELE or FRONT toggle before
-  enumeration gives the engine `optical = ∅` (divisor 1) and the VM `ALL` (divisor 3). The wire and
-  the OSD then disagree until the next control change.
-- **Fix:** Use one representation for "unknown". Either seed the VM mirrors from the Engine at
-  construction (`engine.rawForcesStandalone` for BACK, and an `engine.opticalPresetsOrNull()`), or
-  make both sides treat an unknown inventory identically (`null`, then leave the ratio alone).
-  Better still, have the TELE and FRONT doors return the Engine's computed packet, as the DNG door
-  now accepts one, so there is one reducer and the VM mirrors its output.
-- **Confidence:** Medium. The divergent defaults are certain; the tablet scenario needs a
-  non-default preserve toggle. **Status:** confirmed by code reading; device check pending.
+- Severity: Low. Confidence: Medium. Status: Confirmed (code).
+- Where: `ui/CameraViewModel.kt:960` (live `engine.currentRequestedVideoSize()`) vs `:985-990` (`rollback.rawWanted` from the packet); `camera/CameraEngine.kt:4099-4108` (direct, uncounted-generation DNG write on TELE, FRONT, or before start).
+- Why: AGG2-7 fixed this exact race for the video size: "a pick made on this main queue after the
+  rollback committed is a newer direct write the engine kept, and the packet would revert only the
+  mirror". DNG has the same kind of direct write: since 5e4cc454, any DNG toggle with TELE on is a
+  direct write that does not bump the generation. The rollback post is still current, so it
+  overwrites the ViewModel's `dngRaw` with the packet's older value.
+- Failure scenario: TELE on, door A (for example, a mode flip) fails. While the post is queued, the
+  operator taps DNG on, and the Engine keeps `rawWanted=true`. The post then sets the UI to DNG off
+  and persists it. Captures follow the UI's formats (no DNG). Later the operator turns TC off. The
+  Engine resolves `resolveNonTeleId` with `rawWanted=true` (standalone main, lens-local). The
+  ViewModel's TC-off zoom target uses `dngRaw=false` (unified), so the operator sees a wrong scale
+  and has lost seamless zoom for a DNG they do not appear to have selected.
+- Fix: mirror `rawWanted` the same way as the video size. Add an
+  `engine.currentRawWanted()` accessor and read it on main. Test: commit a rollback, perform a TELE
+  DNG toggle before draining main, and assert that the UI equals the Engine.
 
-### ARCH2-5: The lens-band predicate was centralized only on the Engine side. Four ViewModel sites still inline it
-- **Where:** `camera/CameraEngine.kt:602-604` (private `lensBandFollowsZoom`, uses Engine
-  `rawWanted`) versus inline copies at `ui/CameraViewModel.kt:2233-2236` (`applyZoomRatio`),
-  `:3059-3063` (`reconcileZoomToCaps`), and the related route-scale branches at `:2825` (`onLens`)
-  and `:1321` (`applyLoaded`).
-- **Why:** AGG-3 was the same predicate drifting (`!video` versus `standaloneRouteWanted`). The fix
-  made one helper, but kept it private to the Engine with Engine inputs. The VM copies use different
-  sources (`s.photoFormats.dngRaw`, `s.rawForcesStandalone`), so ARCH2-1 and ARCH2-4 divergences
-  produce different band answers on the two sides.
-- **Failure scenario:** After the ARCH2-1 divergence, a pinch on the restored logical camera runs
-  `applyZoomRatio`. The VM keeps `s.lens` (it thinks standalone) while the Engine's reconcile also
-  holds the band. The rail freezes on the pre-failure band during a unified zoom from 1× to 10×.
-- **Fix:** Move a pure `lensBandFollowsZoom(video, rawWanted, rawLaw, teleconverter, route)` into
-  `CameraState.kt` beside `standaloneRouteWanted`, and call it from both layers. Pin it with a test
-  that enumerates all 2^5 inputs.
-- **Confidence:** Medium (design). **Status:** confirmed duplication; the visible effect depends on
-  ARCH2-1/ARCH2-4.
+### ARCH3-3: The "direct write since baseline" counters cannot tell who wrote last. With a stacked baseline, a FAILED transaction's own write survives rollback as if it were the operator's direct write
 
-### ARCH2-6: Persisted zoom has no scale tag. Its meaning depends on the device-profile law at load time, so the pending AGG-47 decision silently reinterprets saved banks
-- **Where:** `storage/SettingsStore.kt` (persists `controls.zoomRatio` raw), interpreted by
-  `ui/ZoomMath.kt:411-450` (`restoredOptics(photoStandalone)`) through `ui/CameraViewModel.kt:1321-1324`
-  (`engine.rawForcesStandalone`, read from the *current* route's profile).
-- **Why:** Whether a stored 3.0 is unified or lens-local is derived at load time from `(mode, dngRaw,
-  rawRequiresStandalone)`. The third input is not persisted. It comes from `DeviceProfile.resolve`
-  and `deviceProfileForRoute`. Any change to that mapping flips the reading of every existing DNG
-  Photo bank.
-- **Failure scenario:** AGG-47's preferred outcome ("map CPH2841 to the PMA110 profile after a device
-  check") ships. A CPH2841 owner's saved Photo+DNG bank stored unified 3.0, because GENERIC kept DNG
-  on the logical camera. After the update it loads as lens-local 3.0 on the 70 mm lens, which is
-  9× and about 208 mm. The same applies to any future profile flag that changes route.
-- **Fix:** Persist zoom in the canonical unified scale (convert with `unifiedZoomOf` at save time and
-  `localZoomOf` at load time), or persist the scale explicitly with a schema version, before
-  AGG-47 lands. Add a migration test that saves under GENERIC and loads under PMA110.
-- **Confidence:** Medium (latent). **Status:** likely; becomes live with the AGG-47 change.
+- Severity: Low-Medium. Confidence: High (code). Status: Confirmed (code).
+- Where: `camera/CameraEngine.kt:778` (`selectRollbackBaseline` reuses `opticsRollbackBaseline` while Not-Ready); `:1043-1047` (`keepNewerDirectWrite` for `requestedVideoSize`); `:1055-1063` and `:8504-8525` (`rollbackRawWanted`); `:2834-2836` (`setResolvedOptics` writes `rawWanted` and `requestedVideoSize` inside its transaction, uncounted).
+- Why: the rule compares the CURRENT counter with the BASELINE's counter. When door B begins while
+  door A is still Not-Ready, B inherits A's baseline. A direct write between A and B moves the
+  counter. B then overwrites the same field transactionally without counting. On B's rollback,
+  `directWriteSinceBaseline` is true, so `current` is kept, but `current` is B's write, not the
+  operator's. The comment at `:1040-1042` ("only the transaction's own write (a recall's
+  recalledVideoSize) rolls back with it") does not hold in this case.
+- Failure scenario: a mode-flip door A is in flight. The operator picks 1080p in the picker
+  (counted). The operator then recalls an MR bank with 4K and DNG on (door B). B fails with
+  `CAMERA_UNAVAILABLE_RECALL_UNCHANGED`. The Engine keeps `requestedVideoSize = 4K`. The ViewModel
+  mirrors and persists it. The status says the recall was unchanged, but the bank's size (and, when
+  the restored route is TELE/FRONT so the keep rule allows it, its DNG intent) leaked into the live
+  and persisted request. The 1080p pick is lost. A secondary issue: `applyVideoSize`
+  (`:3793-3805`) writes `videoSize`/`previewStreamSize` outside the transaction, and rollback restores
+  them unconditionally (`:1038-1039`, `:1048`). After a failed door, the kept request and the
+  delivered stream size therefore differ, and nothing triggers convergence until the next reopen.
+- Fix: replace the counters with a last-writer stamp per field: `DIRECT` or the transaction
+  generation that wrote it. Stamp it in every direct setter and in each `beginOpticsTransaction`
+  publish lambda that assigns the field. Rollback keeps `current` only when the stamp is `DIRECT`
+  and was written after the baseline. A pure helper can be host-tested: (A begin, direct write,
+  B transactional write, B rollback) restores the direct value.
 
-### ARCH2-7: Cycle 1 added about 10 new reserved-row producers to a deferred lifetime cap of 120. Per-shot storage-open failures can now drain it in one burst
-- **Where:** `storage/MediaStoreWriter.kt:1021-1029` (`openParcelFd`/`openOutputStream` log every
-  failed open, with no gate), `:1080` (publish exhaustion), `video/VideoRecorder.kt:257-262, 333-340`,
-  `camera/CameraEngine.kt:5592-5608`, `camera/CameraController.kt:2407-2421`.
-  `DiagnosticTelemetry.kt` is unchanged (lifetime counter, AGG-27 deferred).
-- **Why:** Cycle 1 fixed silent failures by logging one row per event. That was the right fix
-  locally, but AGG-27 kept the 120-row process-lifetime cap. Only the identity reader and the
-  audio-degrade path are change-gated, and the per-output open helpers are not. Each failed still in
-  a BURST or timelapse spends at least one row, two for HEIF plus DNG.
-- **Failure scenario:** The user removes an SD-card volume or revokes storage mid-session, then
-  holds the shutter in BURST, or runs a timelapse. Each frame fails `openOutputStream` or
-  `openParcelFd` and logs. After about 120 frames every later camera fault, REC setup failure, and
-  recovery warning in the process is dropped. That brings back the "failure with no app log line"
-  signature CLAUDE.md uses for triage, now as a false positive.
-- **Fix:** Pending the AGG-27 measurement, gate the per-URI open and publish helpers per failure
-  episode, keyed by volume and exception class (reuse `IdentityReadWarningGate`), so a burst spends
-  one row. Treat this as a precondition before adding any further per-event reserved producers.
-- **Confidence:** Medium. **Status:** confirmed by code reading; needs-manual-validation for the
-  ColorOS window (same exit criterion as AGG-27).
+### ARCH3-4: The restorable-preflight rollback (b5c57e8a) restores Ready but not the side effects of `invalidateCameraReady()`. The tap-AF hold is released in Engine/UI while the wire keeps it, and a pending DNG shot is cancelled for a camera that never changed
 
----
+- Severity: Low. Confidence: Medium. Status: Likely (code). The wire state needs a device check.
+- Where: `camera/CameraEngine.kt:548-565` (`invalidateCameraReady`: `cancelDngPreCaptureAllocations()`, then `retireTapFocusLocked(rebuildPreview = false)`); `:973-984` / `:8531-8549` (the rollback re-accepts the same controller); `camera/CameraController.kt:1986-1995` (`clearMeteringPoint(false)` sets `tapResetPending` and leaves the cached repeating builder with `AF_MODE_AUTO` + regions); `:566`, `:1725` (the reset is applied only at the next fast-path or full rebuild).
+- Why: AGG2-4's fix treats the door's own invalidation as "retired no camera" and re-accepts the
+  outgoing controller. The invalidation did more than bump the generation, though. It retired the
+  tap owner without rebuilding the preview and cancelled every DNG pre-capture allocation. Neither
+  is undone. The new rule's premise that "nothing touched the session" is only half true.
+- Failure scenario: the operator taps to focus (AF_MODE_AUTO hold), then taps a lens whose
+  characteristics read fails (`CAMERA_UNAVAILABLE_CAMERA_UNCHANGED`). Ready comes back. The UI
+  reticle and the Engine say AF-C. The HAL request still holds AF_MODE_AUTO at the tapped distance
+  until some control or zoom write runs the deferred reset, so focus does not follow the subject. A
+  DNG shot whose pre-allocation was in flight is also refused, even though the camera "remained
+  unchanged".
+- Fix: in `rollbackOpticsAfterPreflight`'s restore branch, call `clearMeteringPoint(rebuildPreview =
+  true)` on the restored controller (or rebuild once from the effects packet) so the wire matches
+  the retired tap. Alternatively, delay tap retirement and DNG cancellation until after preflight
+  succeeds, just before the outgoing controller is closed. The second option is cleaner: the
+  invalidation would then really "retire no camera".
+
+### ARCH3-5: (carried AGG2-40 / ARCH2-5, new evidence) The cycle-2 fix moved one ViewModel site to the Engine's RAW law, and eight sites still read the `CameraUiState` copy that the same fix documents as wrong. Two ViewModel doors can now answer the route question differently
+
+- Severity: Low-Medium. Confidence: Medium. Status: Confirmed (code).
+- Where: `ui/CameraViewModel.kt:2490` (DNG door: `engine.rawForcesStandalone`) and `:1346`, `:1404`, `:2785` (Engine) vs `:2273`, `:2402`, `:2604`, `:2854`, `:2890`, `:2972`, `:3001`, `:3126` (state copy); `ui/ZoomMath.kt:448-469` (KDoc: the state copy "defaults to the PMA110 answer until the first route inventory"); `camera/CameraState.kt:1677` (default `true`); `ui/CameraViewModel.kt:776-784` (the copy refreshes only on route-inventory publication).
+- Why: the ViewModel now has two answers to "is PHOTO on a standalone route?" inside one class. On a
+  GENERIC device before the first inventory, and on every EXTERNAL↔BACK transition where
+  `activeDeviceProfile()` changes without an inventory publication, the DNG door (Engine law, no
+  flip) and the lens, TC, front-return, zoom-band, and caps-reconcile sites (copy, flip) compute
+  opposite zoom scales for the same state. The Engine has a single helper (`lensBandFollowsZoom`);
+  the ViewModel still inlines `standaloneRouteWanted(... s.rawForcesStandalone)` in eight places.
+- Failure scenario (generic device, DNG on, before the inventory lands): the DNG door correctly sees
+  no route flip and keeps unified zoom. A following `applyZoomRatio` (`:2273`) asks the copy, reads
+  "standalone", and stops updating the lens band, so the rail stays on the old band while the
+  logical camera zooms across lenses.
+- Fix: delete `CameraUiState.rawForcesStandalone`. Add one ViewModel helper,
+  `photoStandaloneRoute(state) = standaloneRouteWanted(state.mode == VIDEO, state.photoFormats.dngRaw,
+  engine.rawForcesStandalone)`, and use it at all nine sites. Pin the helper with a test that has the
+  law false and DNG on.
 
 ## Final sweep
 
-- **Engine/VM duplicate reducers** (ARCH2-1, 2-3, 2-4, 2-5) are now the main structural risk. The
-  cycle-1 AGG-48 recommendation (one pure `RouteInputs` and `resolveOpticsTransition`, with
-  `OpticsSnapshot` embedding `RouteInputs` whole) would have prevented ARCH2-1 and ARCH2-3 by
-  construction. Two new data points support scheduling it.
-- **Recall packet completeness** (ARCH2-2) is a separate axis from route inputs. The rule "every
-  route input must reach the engine from restore" was met by adding trailing setters. That met
-  the letter of the rule but broke its rollback half.
-- **Admission gate and quarantine:** the cycle-1 change is coherent end to end, with no finding.
-- **Process singletons, layering, model-string seams:** no change since cycle 1. A3/AGG-47
-  (CPH2841) stays an owner decision, but see ARCH2-6 for what it will break when decided.
+- **Root pattern:** each fix this cycle added a field-specific reconciliation rule (keep-newer
+  counter, route-aware keep rule, live-read mirror, preflight-restorable generation). The rules are
+  correct one at a time, but they disagree with each other: video size is mirrored live and DNG from
+  the packet; DNG has a route-aware keep rule and video size a plain one; rollback publication is
+  generation-gated while direct writes are not. ARCH3-1 through ARCH3-3 come from that mismatch. A
+  single `RouteInputs` value (DNG, requested size, pre-TELE zoom, hidden Photo exposure,
+  declaration) would remove the class. It would be owned by the Engine, carry a per-field writer
+  stamp, and be mirrored to the ViewModel by live read on every publication.
+- GL re-seed: `RendererAssists.replayAll` plus the `transfer`/`previewDigitalGain` re-seed in the
+  `gl.start` callback (`CameraEngine.kt:1893-1897`) cover every non-route GL setter. Route GL state
+  (rotation, sensor orientation, mirror, preview size, zoom target) is re-pushed by the reopen that
+  follows GL input. No gap found.
+- Lock design: `OpticsCommitGate` uses the Engine monitor (`CameraEngine.kt:464`), so begin/commit
+  and `@Synchronized` setters share one lock and there is no lock-order inversion.
+  `retireTapFocusLocked` calls the controller under the monitor, but only through non-blocking
+  `postToCamera`.
+- RAW reader planning is capability-driven (`sessionAttemptPlan(supportsRaw, ...)`), not
+  `rawWanted`-driven, so the recall fast path (`resolvedOpticsRequiresReconfigure` without a DNG
+  term) cannot leave a session that lacks a reader `rawWanted` needs. Checked; not a finding.
+- AGG2-39 (recall = one transaction plus ~25 trailing setters, partial rollback) is still open at
+  `ui/CameraViewModel.kt:1497-1520` (aspect, hi-res, open gate, and fps trailing setters). There is no
+  new evidence beyond ARCH2-2, so it is not re-reported.
 
-## Summary
+## Files examined
 
-| ID | Severity | Confidence | Status |
-|---|---|---|---|
-| ARCH2-1 | Medium | Medium-High | confirmed (code); trigger needs device |
-| ARCH2-2 | Medium | High (hybrid) / Medium (double reopen) | confirmed / needs-manual-validation |
-| ARCH2-3 | Medium | Medium | likely; needs-manual-validation |
-| ARCH2-4 | Low-Medium | Medium | confirmed (code) |
-| ARCH2-5 | Low | Medium | confirmed (design) |
-| ARCH2-6 | Low-Medium (latent) | Medium | likely; live once AGG-47 lands |
-| ARCH2-7 | Low-Medium | Medium | confirmed (code); ColorOS window unmeasured |
+- Engine/transactions: `camera/CameraEngine.kt` (optics snapshot/transaction/rollback 600-1200,
+  GL start 1855-1910, setVideoMode/setResolvedOptics 2660-2960, setVideoResolution/applyVideoSize
+  3755-3810, reopenForSession 3395-3437, setRawWanted/reconfigureCamera 4068-4260, DNG pre-capture
+  4941, pure helpers 8244-8550), `camera/OpticsConstraints.kt`, `camera/CameraState.kt`
+  (`standaloneRouteWanted`, UI state defaults), `camera/DeviceProfile.kt` (`deviceProfileForRoute`).
+- Controller: `camera/CameraController.kt` (metering/tap reset 1986-1995, fast paths 566/1725,
+  `applyAfOverrides` 1764, `sessionAttemptPlan` 2725).
+- GL ownership: `camera/RendererConfig.kt`, `camera/RendererAssists.kt`, `gl/GlPipeline.kt` setter
+  surface.
+- ViewModel: `ui/CameraViewModel.kt` (route inventory 770-800, rollback mirror 925-1011,
+  applyLoaded 1340-1560, zoom/mode/DNG/TC/front/caps doors 2260-3130), `ui/ZoomMath.kt`.
+- History: commits c2892dda..e3a2bdd4 (4edd2a14, b565abae, b5c57e8a, 5e4cc454, 4d0c5e3c, c6caab59,
+  ae359201), `.context/reviews/archive-rpl-cycle2-2026-10-02/{_aggregate,architect}.md`,
+  `docs/plans/2026-10-02-rpl-cycle2.md`.

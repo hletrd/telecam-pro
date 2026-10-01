@@ -1,237 +1,215 @@
-# Critic review — RPL cycle 2 (2026-10-02)
+# Critic review: RPL cycle 3 (2026-10-02, HEAD e3a2bdd4)
 
-Scope: the 51 commits `ba5b16e7..HEAD` (RPL cycle 1), checked against `CLAUDE.md`,
-`docs/ARCHITECTURE.md`, `docs/plans/2026-10-02-rpl-cycle1.md` and the archived cycle-1 aggregate,
-plus the code those commits touch (`CameraEngine` optics doors and rollback, `CameraViewModel` DNG,
-exposure and restore paths, `VideoRecorder` storage tail and admission gate, `MediaStoreWriter`
-probes, `CaptureOutputTracker`, `CameraController`, `SettingsStore`, release tooling).
+Scope: the cycle-1 and cycle-2 change surface (`git log c2892dda~40..HEAD`). I checked each one
+against what its commit message and the cycle-2 plan claim, and judged it from five viewpoints:
+operator UX, maintainer, Play reviewer, a multi-device user on a non-PMA110 handset, and QA.
 
-This was a read-only review. I did not build anything or touch a device. Owner decisions were
-treated as settled and are not reopened here: ZSL dark refusal, the FocusDetail threshold, the
-declined CameraUnit SDK, proprietary HDR formats, and "orientation moves no control".
+This was a read-only review. I did not run Gradle and did not touch a device. Owner decisions
+(ZSL dark refusal, FocusDetail threshold, CameraUnit/OCS, proprietary HDR, orientation-keyed
+layouts, shader code numbering, history rewrite) are treated as settled.
 
-Verdict on cycle 1: most fixes are correct and narrowly scoped. Phase-1 PMA110 behavior is
-unchanged except at the intended DNG-door seams. Two fixes are incomplete in the destructive or
-divergent direction (CRIT2-1, CRIT2-2). One fix carries an older bug class into persistence
-(CRIT2-3). Several "device-verified" claims now rest on code that changed after the verification
-(CRIT2-9).
+I read the cycle-2 aggregate (`archive-rpl-cycle2-2026-10-02/_aggregate.md`) and
+`docs/plans/2026-10-02-rpl-cycle2.md` first. Items that were already fixed are not repeated. Two
+items are carried because I have new evidence for them (CRIT3-1, CRIT3-3).
 
----
+## Verdict on cycle 2
 
-## CRIT2-1 — Optics rollback keeps a newer DNG direct write even when it changes the RESTORED route's answer
+Most cycle-2 fixes do what they claim. I verified each of the following from code:
 
-- **Where:** `camera/CameraEngine.kt:1011`
-  (`if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted`).
-  Direct-write branch: `camera/CameraEngine.kt:4005-4013`. Introduced by 3ec126e1.
-- **Why:** the counter answers only one question: did a direct write happen? It does not check
-  whether that write is route-neutral under the packet being restored. A direct write is
-  route-neutral under the *desired* packet, for example a Video, EXTERNAL or not-started desired
-  state. Rollback then restores a *different* packet (BACK Photo), and in that packet
-  `standaloneRouteWanted(false, rawWanted, law)` does depend on DNG.
-- **Failure scenario:** baseline is BACK Photo, DNG off, logical camera. The operator starts a door
-  to the EXTERNAL route. The chip stays selectable there because `rawSelectable` only excludes FRONT
-  and video/hi-res. The operator toggles DNG on, which is a direct write (route != BACK), so the
-  counter becomes 1. The external open fails, and rollback restores BACK Photo on the logical
-  session (`restoreSession == true`) while keeping `rawWanted = true`. This is the exact AGG-4
-  state cycle 1 set out to remove:
-  - The engine wants RAW over a logical session that has no RAW reader.
-  - `lensBandFollowsZoom` and `standaloneRouteWanted` now read the restored unified ratio as
-    lens-local.
-  - The VM mirrors `dngRaw = true` (`ui/CameraViewModel.kt:973-977`).
-  - `setRawWanted`'s change gate (`if (rawWanted == enabled) return`) refuses to repair it. The
-    shutter writes no DNG, and the zoom band and readout misread the scale until the operator
-    toggles DNG off and on again.
-  - If `restoreSession` is false, the recovery reopen resolves a standalone lens but carries the
-    restored *unified* zoom: the original AGG-1 "3× becomes a 9× crop" bug.
-- **Reachability (honest):** the chip disables itself on FRONT and in non-Ready Video. That makes
-  the scenario 3ec126e1 was written for (Video/FRONT toggles during an in-flight door) mostly
-  UI-unreachable. The EXTERNAL door path is reachable, and so is any future non-UI caller. 3ec126e1
-  therefore traded a mostly-unreachable revert for a reachable route divergence in the same space.
-- **Fix:** in `commitOpticsRollbackLocked`, keep the newer value only when it is route-neutral for
-  the restored packet. Restore `before.rawWanted` (and publish it) whenever
-  `restored.route == BACK && standaloneRouteWanted(restored.mode == VIDEO, rawWanted, law) !=
-  standaloneRouteWanted(restored.mode == VIDEO, before.rawWanted, law)`. Add a unit test: baseline
-  Photo/BACK/DNG off, direct write DNG on under an EXTERNAL or Video desired packet, rollback. The
-  test should assert `rawWanted == false` and that the publication carries false.
-- **Confidence:** Medium (logic confirmed by reading; reachability is narrow). **Status:** likely.
+| Commit | AGG2 item | What I verified |
+|---|---|---|
+| `4edd2a14` | AGG2-2 | Recall DNG now rides one transaction. |
+| `b565abae` | AGG2-1 | Route-aware rollback keep rule. |
+| `3ef6e845` | AGG2-3 | `StillContinuationHandoff` is exactly-once in both orders. |
+| `b5c57e8a` | AGG2-4 | Preflight Ready restore. Only the door's own invalidation generation is restorable. |
+| `5e4cc454` | AGG2-10 | The TELE reader plan really never reads `rawWanted`. `sessionAttemptPlan` has no such input (`CameraController.kt:2725-2738`). |
+| `4d0c5e3c` | AGG2-7 | Size direct-write counter. |
+| `c4cc92e7` | AGG2-18 | Extractor throw maps to INDETERMINATE. |
+| `c6caab59` | AGG2-11 | The DNG door now reads the engine's RAW law. |
+| `2d391a7d` | AGG2-16 | The P seed clamp residual is carried into ISO. |
+| `15e5f3cb` | AGG2-17 | Dial doors use `exposureModeHandoff`. |
+| `8f84b0bc` | AGG2-14 | Dual-open pause recheck. The refused candidate is closed. |
+| `b5e8d622` | AGG2-15 | Detach-then-purge plus `cleared` guards. |
 
-## CRIT2-2 — The live finalized-video probe is still stricter than launch recovery in the destructive direction
+EN/KO string parity also holds: no translatable EN key is missing from `values-ko`.
 
-- **Where:** `storage/MediaStoreWriter.kt:2579-2601` (`classifyFinalizedVideoTrack`: an extractor
-  exception means `INVALID`) compared with `storage/MediaStoreWriter.kt:1657-1675` plus `:2255-2261`
-  (recovery: `probeFinalizedVideo` throws, and `pendingProbeOutcome` maps the throw to
-  `INDETERMINATE`, which keeps the row). Consumer: `video/VideoRecorder.kt:1966-1993`.
-- **Why:** 1edb68c6 states that the live path "must not be the stricter one in the DESTRUCTIVE
-  direction". It aligned only the *open* failure. A `MediaExtractor.setDataSource` or
-  `getTrackFormat` exception after a successful open is still `INVALID` on the live path, and the
-  stop tail then deletes the take. Launch recovery classifies the identical exception as
-  `INDETERMINATE` and keeps the row.
-- **Failure scenario:** the tolerated empty-audio stop (`muxer.stop()` throws over a sample-less AAC
-  track) reaches the live reopen. The extractor throws an `IOException`, either transiently (fd/IO
-  hiccup) or because of a container quirk that recovery would also refuse to judge. The live tail
-  deletes a take that a relaunch would have kept pending. The opposite drift also exists: a
-  genuinely unparseable container is deleted live but sits `REGISTERED` forever in recovery,
-  occupying the finite recovery capacity.
-- **Fix:** use one classifier for both paths. Either route recovery's VIDEO probe through
-  `classifyFinalizedVideoTrack`, or make the live parse failure `INDETERMINATE`, which matches the
-  documented rule that "an unknown answer never destroys user media". Pin the parse-failure case in
-  the storage-tail test. The current test only distinguishes open from no-track.
-- **Confidence:** High (code). **Status:** confirmed (by reading).
+Three fixes are incomplete or move the bug somewhere else:
 
-## CRIT2-3 — The rollback restores the requested video size over a later operator pick, and cycle 1 now persists the revert
-
-- **Where:** `camera/CameraEngine.kt:974,1008` (the rollback restores `before.requestedVideoSize`),
-  `camera/CameraEngine.kt:3692-3706` (`setVideoResolution` writes `requestedVideoSize` with no
-  transaction and no write counter, and in Photo mode it does not reopen),
-  `ui/CameraViewModel.kt:951` (b476d1dd mirrors the rollback into `requestedVideoResolution`), and
-  `:1623` (that value is what gets saved).
-- **Why:** this is the bug class 3ec126e1 fixed for DNG. A non-transactional operator write that
-  lands while an older optics transaction is in flight is reverted when that transaction rolls back.
-  Before b476d1dd the revert was engine-internal. It is now mirrored and persisted, so the picked
-  size is lost across relaunch.
-- **Failure scenario:** in Photo, a lens or TC door is in flight. The operator opens the video size
-  picker and picks 1080p. The engine sets `requestedVideoSize`, applies the size without a reopen,
-  and the VM stores `requestedVideoResolution = 1080p`. The door fails, rollback restores 4K, the VM
-  mirror overwrites it, and the debounced save persists 4K.
-- **Fix:** apply the same "newer write survives" rule as DNG, using a write counter captured in the
-  snapshot. Size is not a route input, so it can be kept unconditionally once a newer write exists.
-- **Confidence:** Medium. **Status:** likely. Needs a host test of the rollback ordering.
-
-## CRIT2-4 — The VM DNG door does remap side effects even when the engine does not reopen
-
-- **Where:** `ui/CameraViewModel.kt:2436-2475`.
-- **Why:** `routeOptics` is non-null whenever the VM's standalone answer flips. That includes
-  EXTERNAL (`lensLocalRoute` is true, so the remap is a no-op) and TC. Either way, the VM runs
-  `cancelPendingControls()`, `invalidateOpticsDerivedState()` and `clearTapFocusUi()`.
-  - **EXTERNAL:** `setRawWanted` only records the field (`route != BACK`) and nothing reopens. The
-    engine's tap-focus owner (`tapFocusOwner`, bound to the accepted session) therefore keeps the
-    `AF_MODE_AUTO` hold on the wire, while the UI drops `tapPoint`/`tapFocusHeld`. The OSD says
-    nothing is held while the lens is locked.
-  - **TC (BACK):** the route answer "flips" even though `cachedIdForFocal(TELE3X)` returns the
-    same camera. The engine performs a full same-id reopen, which costs a black dip and drops tap
-    focus, purely because of the DNG chip. This reopen predates cycle 1, but cycle 1 is where the
-    door was formalized.
-- **Fix:** gate the VM side effects on the same condition the engine uses to reopen:
-  `route == BACK && started && flips`. In the engine, skip the reconfigure when the resolved camera
-  id is unchanged (TC or a user pin) and only publish `rawWanted`.
-- **Confidence:** Medium. **Status:** likely (EXTERNAL needs a manual check; TC reopen confirmed by
-  reading).
-
-## CRIT2-5 — The VM decides the DNG zoom remap with a state copy of the RAW law that defaults to PMA110's answer
-
-- **Where:** `ui/CameraViewModel.kt:2436-2446` uses `s.rawForcesStandalone`. The default is `true`
-  (`camera/CameraState.kt:1658`), and it is published only by `onCameraRouteInventory` (`:774`) and
-  `applyEncoderInventory` (`:2725`). The engine uses `activeDeviceProfile().rawRequiresStandalone`,
-  which is `false` on GENERIC (`camera/DeviceProfile.kt:79`).
-- **Failure scenario:** on a GENERIC device, a DNG toggle before route inventory publishes makes the
-  VM remap lens and zoom (unified 3.0 becomes `TELE3X` at local 1.0). The engine sees
-  `routeFlips == false`, so it records only the field and ignores the resolved packet. The VM now
-  shows a lens-local packet over the logical session, and the next throttled control apply pushes
-  zoom 1.0 to the logical camera, snapping it to 1×. `applyLoaded` already avoids this by reading
-  `engine.rawForcesStandalone` directly (`:1324`).
-- **Fix:** use `engine.rawForcesStandalone` here, or better, have `setRawWanted` compute the remap
-  itself from the engine's own `rawWanted` and law. Then the VM and engine cannot disagree about
-  whether the door moved.
-- **Confidence:** Medium (narrow window, non-PMA110 only). **Status:** likely.
-
-## CRIT2-6 — The rollback DNG mirror misses the pre-inventory pending formats
-
-- **Where:** `ui/CameraViewModel.kt:973-977` (rollback updates `photoFormats` only), `:1582-1584`
-  (`currentExtras` persists `pendingPhotoFormatsUntilInventory` while inventory is pending), and
-  `:2695,2715` (`applyEncoderInventory` replays the pending formats into `setRawWanted`).
-- **Failure scenario:** a DNG door rolls back during the cold-start window before the encoder
-  inventory lands. The UI chip reverts, but the pending copy still says DNG on. Any save persists
-  DNG on (this is the AGG-34 path), and when the inventory lands, `setRawWanted(true)` re-flips the
-  route that rollback just restored.
-- **Fix:** when inventory is pending, also set `pendingPhotoFormatsUntilInventory =
-  pending.copy(dngRaw = rollback.rawWanted)` in the rollback handler.
-- **Confidence:** Medium. **Status:** likely (needs a VM test).
-
-## CRIT2-7 — The characteristics retry (AGG-19) covers stills but not metering regions
-
-- **Where:** `camera/CameraController.kt:1308`. `applyMetering` still reads
-  `rawChars?.get(SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return`. The lazy retry exists only in
-  `tryComplete` (`:2266`).
-- **Failure scenario:** the transient open-time read failure that 1c5a0060 targets also makes every
-  tap-AF, AE region and spot/center metering request silently omit its regions. The tap reticle
-  appears, but the HAL never receives a region. This lasts until the first still re-reads the
-  characteristics.
-- **Fix:** route `applyMetering` through the same `rawChars ?: readRawCharacteristics()` helper,
-  ideally a single `chars()` accessor.
-- **Confidence:** High (code). **Status:** confirmed (by reading). Low severity.
-
-## CRIT2-8 — The recall exposure clamp ignores DNG as a route input
-
-- **Where:** `ui/CameraViewModel.kt:1367-1382`. `restoredRouteUsesCurrentCaps` compares mode, lens,
-  TC, override and facing, but not the DNG route answer.
-- **Failure scenario:** recalling a Photo/DNG-on bank on the same lens band from a Photo/DNG-off
-  (logical) state treats the outgoing logical camera's caps as authoritative. The saved photo
-  exposure is then clamped against camera 0's range before the standalone route's caps exist. The
-  code comment itself forbids this ("Outgoing caps are not authoritative across mode/lens
-  recalls"). The real impact depends on how far the two ranges differ on PMA110 (both share the
-  4 s ceiling), so this may be invisible there and wider on GENERIC devices.
-- **Fix:** add `currentStandalone` and `targetStandalone` to `restoredRouteUsesCurrentCaps`, and
-  return false when they differ.
-- **Confidence:** Medium. **Status:** needs-manual-validation (range delta on device).
-
-## CRIT2-9 — Device evidence now predates the code it vouches for, and the progress log does not flag it
-
-- **Where:** `video/VideoRecorder.kt:1242-1314` (4e57fff2) and `CLAUDE.md` "five of five takes carry
-  AAC". The plan log lines 167-176 do not mark lane B items PENDING DEVICE.
-- **Why:** the TB336ZU 5/5 AAC result was measured with 0ab5c1ba's semantics, in which the pending
-  token's *owner* was admitted. Under that rule, the same Engine's GL/EGL and Camera2 acquisitions
-  were also admitted during pending setup. 4e57fff2 restores the pre-0ab5c1ba refusal for those
-  and admits only the token's workers. The design reasoning is sound, but two things are
-  unverified:
-  - Whether anything on the MediaTek path relied on Engine-owned acquisitions during pending setup,
-    such as a preview rebind or an encoder-candidate bind outside `runPendingNative`.
-  - Whether the audio worker still always reaches `startRecording` through the token door.
-  
-  The progress log marks only Phase 1 and 2 camera/GL items PENDING DEVICE. Lane B items, including
-  the token door (P3.5) and the characteristics retry (P3.4), are recorded as done with no device
-  caveat. That breaks the plan's own rule ("every such item stays PENDING DEVICE").
-- **Fix:** mark P3.5 PENDING DEVICE (TB336ZU: 5 takes with a slow first swap, checking AAC presence
-  and `AudioRecord start` in logcat) and P3.4 PENDING DEVICE. Until then, re-qualify the CLAUDE.md
-  sentence as evidence for 0ab5c1ba, not for the current door.
-- **Confidence:** High (process). **Status:** confirmed.
-
-## CRIT2-10 — The upload-key gate is self-attested and does not refuse the known blocked certificate
-
-- **Where:** `tools/build_immutable_release.py:524-660`. Approval and fingerprint are both read from
-  the same `keystore.properties`. `tools/check_release_artifact.py:45-47` still pins the blocked
-  key's certificate as the EXPECTED signer.
-- **Why:** writing `uploadKeyRotationApproved=true` plus the current (blocked) key's SHA-256 into the
-  local properties passes the gate, and the artifact checker then *requires* the blocked
-  certificate. After a real rotation, the checker fails every correctly signed bundle. The plan
-  already lists the checker pin as a "SEC-02 tail"; the gate half is new.
-- **Fix:** add an explicit denylist entry for the blocked fingerprint in the gate. Make the checker
-  read the approved fingerprint from the same source the gate verified.
-- **Confidence:** High (code). **Status:** confirmed. Low severity (owner-controlled tooling).
+- **CRIT3-1:** the AGG2-5 zoom fix covered only the persistence twin. The live FRONT→rear return
+  still misframes, and over a wider range than the plan note says.
+- **CRIT3-3:** the AGG2-26 audio fix re-opens AGG-37.
+- **CRIT3-2:** the new DES2-2 copy, and the AGG2-18 "retain, never delete" choice, make a promise
+  that a platform rule breaks. MediaProvider deletes pending rows on its own after about 7 days.
 
 ---
 
-## Claims in the cycle-1 log that I checked and accept
+## CRIT3-1: Leaving FRONT still divides by a ratio-picked lens base. The AGG2-5 fix made persisted and live framing disagree.
 
-- **AGG-1/2/3 (89bb7aab, 99e7af87):** scale conversion in both directions, the restore lens-local
-  branch, and the single `lensBandFollowsZoom` predicate are correct. The recall split (setResolvedOptics
-  then setRawWanted) is safe because the second transaction supersedes the first before its
-  `setupExecutor` task runs, and the recalled controls are already in the target scale.
-- **AGG-8/9/10 (1e79810e):** handoff seeding is correct. The ISO+ANGLE restore carries the applied
-  exposure. App-side P hands over its own still exposure.
-- **AGG-16/17/18 (1edb68c6, a1fee383, fc8a458c):** open-failure retention (see CRIT2-2 for the
-  parse gap). The cursor-advance condition cannot loop. The prior-family output denylist is bounded
-  and cleared for survivors.
-- **AGG-26 (98164b9e):** the LRU-bounded gate is correct. A reason that flaps between two values
-  still spends one row per flip, which is acceptable.
-- **AGG-45 (d255afbc), AGG-55 (87932ced), AGG-66 (81a0b55a), AGG-33 (8780b494), AGG-34/35
-  (7c76e7bc):** correct as written.
+- **Severity:** Medium. **Confidence:** High. **Status:** Confirmed by reading (pure arithmetic).
+  The visible framing needs a device check.
+- **Where:**
+  - `camera/CameraState.kt:606-614` (`rearReturnZoom` → `localZoomOf(unified)`).
+  - Engine call site `camera/CameraEngine.kt:3991-3998`.
+  - VM mirror `ui/CameraViewModel.kt:2997-3006`.
+  - Compare with the cycle-2 fix `ui/ZoomMath.kt` `retainedRearWireZoom`, which is lens-based and
+    used only for save/MR store.
+- **Why:** the FRONT-entry snapshot (`CameraEngine.kt:3976-3981`, VM `:2969-2978`) converts
+  lens-local to unified using the lens's own optical base: `opticalBaseFor(lens.zoomPreset)`.
+  Leaving FRONT converts back with `localZoomOf(unified)`, whose base is picked from the ratio. The
+  lens is not changed on return (`lensChoice` and `it.lens` are kept), so the wire ratio is
+  interpreted on the old lens with the wrong divisor.
+- **Scope is wider than the plan's lane note.** The note says "past 3.33". In fact it fails
+  whenever the unified value crosses the next optical preset:
+  - **Video, WIDE lens at local 2.0** (unified 1.2): `localZoomOf(1.2)` divides by 1×, giving 1.2
+    on the 0.6× lens. Framing goes from 1.2× to 0.72×.
+  - **Video or Photo+DNG, MAIN lens at local 4.0** (unified 4): the divisor is 3×, giving 1.33 on
+    the 23 mm lens. Framing goes from 4× to 1.33×.
+  - **TELE (TC on) at local 4.0** (unified 12). TC does not survive the trip. In Video the lens
+    stays `TELE3X` and `localZoomOf(12)` divides by 10, giving 1.2 on the 3× lens. Framing goes
+    from 12× to 3.6×.
+- **Why cycle 2 made it worse in one respect:** a save made WHILE in FRONT now persists the correct
+  lens-local value via `retainedRearWireZoom`. If the operator instead flips back and then
+  backgrounds, the wrong live value is what gets persisted. The two paths that are supposed to be
+  "the same rear setup" now restore different framings.
+- **Failure scenario:** in Video on the 1× lens, pinch to 4×, tap selfie, tap back. The finder
+  lands at about 1.33×, and the next background save persists 1.33.
+- **Fix:** replace `rearReturnZoom`'s `localZoomOf(unified)` with the lens-based inverse, i.e.
+  `retainedRearWireZoom(unified, lens = lensChoice, teleconverter = false, targetStandalone, optical)`.
+  Use it at both the engine and the VM call site so they share one pure function.
+- **Host test:** for each optical lens L and local z ∈ {1.0, 2.0, 4.0}, check
+  enter(FRONT) → leave(FRONT) returns z on Video and on Photo+DNG.
 
-## Final sweep notes (no separate finding)
+## CRIT3-2: "Retained" pending rows are deleted by MediaProvider after about 7 days. The new copy promises a save the app cannot guarantee.
 
-- fe7d0578 clears the audio-denial flag when `activeMemorySlot == slot` after the call. A refused
-  re-recall of an already-active slot would also pass this check. It is harmless unless a denial can
-  occur without clearing `activeMemorySlot`. Not verified, so not filed.
-- PMA110 byte-identity: the only intentional PMA110 behavior changes are the DNG door (remap plus
-  transaction), exposure handoffs, aspect refusal mid-REC, and the debug-only nativelog session
-  change. I found no unintended PMA110 path change, apart from CRIT2-4's TC reopen, which predates
-  cycle 1.
+- **Severity:** Medium. **Confidence:** High for the platform fact, Medium for the impact.
+  **Status:** Likely. Needs a device check of `date_expires` on a retained row.
+- **Where:**
+  - `res/values*/strings.xml` `status_dng_save_delayed`, `status_output_saved_pending`,
+    `status_video_save_delayed` (49f435e1).
+  - The whole retained-row design in `storage/MediaStoreWriter.kt`.
+  - `c4cc92e7`, which now retains every extractor-throw take.
+  - `grep -rn DATE_EXPIRES app/src/main` finds no match, and neither ARCHITECTURE.md nor
+    FIELD_CHECKS.md mentions expiry.
+- **Platform fact:** `MediaStore.MediaColumns.DATE_EXPIRES` is computed automatically when
+  `IS_PENDING` is set. The pending default is 7 days. Pending items are kept only until they are
+  published or until they expire. MediaProvider deletes expired items during the next device-idle
+  maintenance. Sources:
+  [MediaColumns](https://developer.android.com/reference/android/provider/MediaStore.MediaColumns),
+  [MediaProvider MediaStore.java](https://android.googlesource.com/platform/packages/providers/MediaProvider/+/84583bc1a0936aeb3e348fd9d2f2ab63d5657066/apex/framework/java/android/provider/MediaStore.java).
+- **Why it matters:** every "fail closed, keep it private for launch recovery" branch assumes
+  pending rows are durable until the app comes back. That covers: COMPLETE-marker exhaustion,
+  transient publish failure, INDETERMINATE video probe, identity-uncertain rows, and DNG
+  marker-failed rows. The platform does not keep them that long.
+  - The copy now says "It will be saved the next time the app starts". A user who does not reopen
+    the app within the expiry window (the device just has to idle and charge once) loses the take.
+    Nothing is logged by the app, and the gallery never showed it.
+  - Recovery that keeps a row INDETERMINATE or REGISTERED on every launch also lets its expiry run
+    out, because nothing re-arms it.
+- **Fix:**
+  1. When launch recovery leaves a row pending (INDETERMINATE or REGISTERED retained), re-arm its
+     expiry, either by writing `DATE_EXPIRES` explicitly or by re-asserting `IS_PENDING=1` (device
+     check which one MediaProvider honors for the owner).
+  2. Add an in-session publish retry for rows that are complete but unpublished, so the common
+     transient case does not depend on a relaunch.
+  3. Soften the copy to the truth ("…will be saved when the app next opens") only once (1) is in
+     place.
+  4. Document the expiry rule in ARCHITECTURE.md beside the durable-states bullet.
+- **Host test:** recovery that retains a row issues the re-arm update (fake resolver).
+
+## CRIT3-3: f64417fa fixes AGG2-26 by re-opening AGG-37, because a bank's audio-off has no provenance
+
+- **Severity:** Medium. **Confidence:** Medium. **Status:** Confirmed by reading.
+- **Where:**
+  - `MainActivity.kt:517-530`.
+  - `CameraPermissionPolicy.kt` `audioDenialReasonClearedByRecall`.
+  - `MicrophoneGrantRestoreTest.kt:88-93`, which pins `recallApplied=true, recordAudio=false → keep`.
+- **Why:** the old rule (clear on every applied recall) protected a deliberately silent bank from a
+  later grant forcing audio back on (AGG-37 / tracer T9). The new rule (clear only when the bank
+  wants audio) protects a denial-snapshot bank. Neither rule can tell the two apart, because
+  `ExtraSettings.recordAudio` is a bare Boolean.
+- **Failure scenario:** the mic is denied, so `AUDIO_OFF_BY_DENIAL_KEY = true`. The operator
+  recalls bank B, which they saved silent on purpose for a wind-noise setup. The key stays true.
+  They later grant the mic in Settings. `audioRestoredByMicrophoneGrant` turns audio ON over the
+  silent bank, which is exactly the AGG-37 report.
+- **Fix:** persist provenance per bank. Either add `recordAudioOffByDenial` to the bank, or save
+  `recordAudio = true` plus a denial flag when the off state came from denial. Recall then sets the
+  key from the bank's own provenance. Replace the 4-row truth-table test with a round-trip test:
+  save while denied, recall, grant → audio on; save silent deliberately, recall while denied,
+  grant → audio stays off.
+
+## CRIT3-4: Recall resolves the restored zoom scale with the CURRENT route's RAW law, but recall can change the route
+
+- **Severity:** Low. **Confidence:** Medium. **Status:** Likely. It is reachable only where an
+  external camera route exists on a device whose base profile has `rawRequiresStandalone`, which
+  today is PMA110 only.
+- **Where:**
+  - `ui/CameraViewModel.kt:1341-1345` (`restoredRouteStandalone` uses `engine.rawForcesStandalone`).
+  - `camera/CameraEngine.kt:1740` (`rawForcesStandalone` → `activeDeviceProfile()`).
+  - `camera/CameraEngine.kt:1250-1251` (EXTERNAL route → `DeviceProfile.GENERIC`).
+  - `camera/CameraSelector2.kt:79-89` (`recalledCameraRoute` returns BACK whenever a back camera
+    exists, even from EXTERNAL).
+  - Engine side: `setResolvedOptics` sets `activeCameraRoute = BACK` first, so its band predicate
+    uses the BACK law (`CameraEngine.kt:2830, 2912`).
+- **Failure scenario:** the operator is on the EXTERNAL route and recalls a PMA110 bank saved as
+  Photo + DNG, lens 3×, lens-local 1.0.
+  - The VM computes `standaloneRouteWanted(false, true, GENERIC=false) = false` and builds a
+    unified packet, so lens and zoom are derived as a logical 1.0.
+  - The engine resolves BACK with the PMA110 law (`true`) to a standalone lens, so the recalled 3×
+    bank lands at 1×.
+  - `restoredRouteUsesCurrentCaps` has the same split.
+- **Fix:** expose `engine.rawForcesStandaloneFor(route)` (or a pure
+  `deviceProfileForRoute(base, route == EXTERNAL)` in the VM). Evaluate it for the restored route,
+  not the active one. AGG2-11 fixed the analogous default-copy split for the DNG door. This is the
+  route-change variant of the same split.
+
+## CRIT3-5: Route-aware rollback silently discards the operator's DNG pick
+
+- **Severity:** Low. **Confidence:** High. **Status:** Confirmed by reading. This is UX, not
+  corruption.
+- **Where:** `camera/CameraEngine.kt` `rollbackRawWanted` (b565abae) together with the VM mirror at
+  `ui/CameraViewModel.kt:984-1000`.
+- **Why:** the rule correctly refuses to pair the restored session with a route-moving intent.
+  However, the operator's explicit choice is dropped with only the generic
+  "camera unchanged" status.
+- **Example:** Photo, DNG off, on the logical camera. The operator taps TELE. While that door is
+  in flight they turn DNG on, which counts as a direct write because TC is the desired state. The
+  TC open fails. Rollback restores logical Photo and drops DNG. The chip turns itself off, and the
+  next shots have no DNG.
+- **Fix (cheap):** when `rollbackRawWanted` returns the baseline while a newer direct write
+  existed, publish a DNG-specific status, EN and KO. Example: "DNG turned off; camera unchanged". An
+  alternative is to re-issue `setRawWanted(true)` after the rollback commits, so the intent is
+  applied as its own transaction on the restored route.
+
+## Notes, not new findings
+
+- The AGG-30 tail is still open at `camera/CameraEngine.kt:7573`. The launch-recovery backoff is
+  still `runCatching { Thread.sleep(...) }`, so it clears the interrupt flag. Plan item B.11 says
+  "retry sleeps preserve the interrupt flag". That is true for `MediaStoreWriter` only. Use
+  `sleepPreservingInterrupt` here too.
+- `15e5f3cb` dial handoff in Video P with `ShutterMode.ANGLE`: `exposureModeHandoff` seeds
+  `exposureTimeNs`, which ANGLE ignores, so an ISO-dial takeover keeps the stored angle. This is
+  the same pre-existing behavior as `onExposureMode`, not a regression.
+- `5e4cc454`: a TELE session that came up on a degraded no-RAW rung is no longer re-laddered by a
+  DNG toggle. Before this commit, the reopen was a second chance. This is acceptable, but the chip
+  should stay gated by accepted outputs on TELE.
+- The SettingsStore `save()`/`savePreset()` durability results are still ignored by callers (lane
+  note). The MR "saved" UI shows success on a non-durable commit.
+
+## Files examined
+
+- **Engine/camera:** `camera/CameraEngine.kt` (optics transactions, rollback, setResolvedOptics,
+  setRawWanted, setFrontCamera, reconfigureCamera, dual-open, cleanupOrphans),
+  `camera/CameraState.kt`, `camera/CameraSelector2.kt`, `camera/DeviceProfile.kt`,
+  `camera/CameraController.kt` (sessionAttemptPlan, capture readers),
+  `camera/DngPreCaptureAllocation.kt`, `camera/AutoExposure.kt`, `camera/ManualControls.kt`,
+  `camera/LaunchMediaRecoveryCoordinator.kt`.
+- **UI/VM:** `ui/CameraViewModel.kt` (rollback handler, applyLoaded, onSetPhotoFormats,
+  applyEncoderInventory, front flip, dial doors, onCleared, recallMemorySlot), `ui/ZoomMath.kt`,
+  `ui/review/MediaReview.kt`, `MainActivity.kt`, `CameraPermissionPolicy.kt`.
+- **Storage/video:** `storage/MediaStoreWriter.kt` (retry backoff, finalized-video probe),
+  `storage/SettingsStore.kt`, `video/VideoRecorder.kt` (startup deadline, storage tail).
+- **Resources/build/tests:** `res/values/strings.xml`, `res/values-ko/strings.xml` (parity check),
+  `app/build.gradle.kts` (release signing gate), `MicrophoneGrantRestoreTest.kt`,
+  `KoreanLocalizationRobolectricTest.kt`.
+- **Docs:** `CLAUDE.md`, `docs/plans/2026-10-02-rpl-cycle2.md`, the cycle-2 aggregate and critic
+  reviews.
