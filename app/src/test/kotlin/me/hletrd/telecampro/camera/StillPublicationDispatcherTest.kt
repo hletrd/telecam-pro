@@ -109,20 +109,34 @@ class StillPublicationDispatcherTest {
     }
 
     @Test
-    fun `camera callback seam retains mixed DNG when processed or ordered queue rejects`() {
+    fun `a mixed DNG whose processed sibling never queued transfers direct`() {
+        // AGG4-7 / VER4-1: there is no sibling to wait behind, so the complete DNG must not take the
+        // retained-for-recovery path that withheld it from the gallery until a process restart.
+        listOf(
+            PhotoFormats(heif = true, jpeg = false, dngRaw = true),
+            PhotoFormats(heif = false, jpeg = true, dngRaw = true),
+            PhotoFormats(heif = true, jpeg = true, dngRaw = true),
+        ).forEach { mixed ->
+            val events = mutableListOf<String>()
+            assertTrue(
+                transferCompletedDngFromCameraCallback(
+                    formats = mixed,
+                    processedQueued = false,
+                    enqueueOrdered = { error("no queued sibling: ordered lane must not be used") },
+                    dispatchToProcessOwner = { events += "direct" },
+                    retainForRecovery = { error("an unqueued sibling is not a transfer rejection") },
+                ),
+            )
+            assertEquals("$mixed", listOf("direct"), events)
+        }
+    }
+
+    @Test
+    fun `camera callback seam retains mixed DNG only when the ordered queue rejects`() {
         val paired = PhotoFormats(heif = true, jpeg = true, dngRaw = true)
         val retained = mutableListOf<String>()
         var enqueueCalls = 0
 
-        assertFalse(
-            transferCompletedDngFromCameraCallback(
-                formats = paired,
-                processedQueued = false,
-                enqueueOrdered = { enqueueCalls++; true },
-                dispatchToProcessOwner = { error("missing processed sibling cannot dispatch") },
-                retainForRecovery = { retained += "processed-rejected" },
-            ),
-        )
         assertFalse(
             transferCompletedDngFromCameraCallback(
                 formats = paired,
@@ -134,7 +148,17 @@ class StillPublicationDispatcherTest {
         )
 
         assertEquals(1, enqueueCalls)
-        assertEquals(listOf("processed-rejected", "queue-rejected"), retained)
+        assertEquals(listOf("queue-rejected"), retained)
+        // No DNG requested: nothing transfers either way.
+        assertFalse(
+            transferCompletedDngFromCameraCallback(
+                formats = PhotoFormats(heif = true, jpeg = false, dngRaw = false),
+                processedQueued = false,
+                enqueueOrdered = { error("unused") },
+                dispatchToProcessOwner = { error("unused") },
+                retainForRecovery = { error("unused") },
+            ),
+        )
     }
 
     @Test

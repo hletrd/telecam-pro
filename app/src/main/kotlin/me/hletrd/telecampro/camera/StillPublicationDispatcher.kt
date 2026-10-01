@@ -62,6 +62,13 @@ internal fun transferCompletedDngPublication(
  * This seam owns the real format decision and the actual processed-queue result. Keeping those two
  * facts together lets host tests execute the production ordering boundary instead of proving the
  * policy helper and process dispatcher only in isolation.
+ *
+ * AGG4-7 (VER4-1): the ordered lane exists only to put a mixed DNG BEHIND its processed sibling. When
+ * that sibling was never queued (no processed Image, a snapshot-copy failure, a dispatch rejection)
+ * there is nothing to wait behind, so the complete DNG transfers DIRECT to the process owner exactly
+ * like RAW-only output. It used to be routed into the "transfer rejected" branch, which withheld a
+ * valid DNG from the gallery until a later process restart. Only a REAL ordered-lane rejection of
+ * an otherwise queued mixed tail still retains the private row for launch recovery.
  */
 internal fun transferCompletedDngFromCameraCallback(
     formats: PhotoFormats,
@@ -69,12 +76,19 @@ internal fun transferCompletedDngFromCameraCallback(
     enqueueOrdered: (Runnable) -> Boolean,
     dispatchToProcessOwner: () -> Unit,
     retainForRecovery: () -> Unit,
-): Boolean = transferCompletedDngPublication(
-    order = dngPublicationTransfer(formats),
-    enqueueAfterProcessed = { task -> processedQueued && enqueueOrdered(task) },
-    publication = dispatchToProcessOwner,
-    onTransferRejected = retainForRecovery,
-)
+): Boolean {
+    val order = dngPublicationTransfer(formats)
+    return transferCompletedDngPublication(
+        order = if (order == DngPublicationTransfer.AFTER_PROCESSED && !processedQueued) {
+            DngPublicationTransfer.DIRECT
+        } else {
+            order
+        },
+        enqueueAfterProcessed = enqueueOrdered,
+        publication = dispatchToProcessOwner,
+        onTransferRejected = retainForRecovery,
+    )
+}
 
 /**
  * Per-Engine admission facade over the process-lifetime completed-DNG publication capacity.
