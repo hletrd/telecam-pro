@@ -93,6 +93,40 @@ def run(command: list[str], env: dict[str, str]) -> None:
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
 
+DEFAULT_GRADLE_TASKS = (
+    ":app:assembleDebug",
+    ":app:assembleDebugAndroidTest",
+    ":app:testDebugUnitTest",
+    ":app:lintDebug",
+    ":app:verifyPartitionACoverage",
+)
+# QA4-3 / AGG4-78: release-variant lint (R8/resource-shrink configuration, the release manifest, the
+# keep rules) used to run only behind --release, so its last report went five weeks stale. It needs
+# NO signing material — lint is outside every signing gate — but AGP routes every release entry
+# point through preReleaseBuild, which depends on `verifyCleanReleaseGit` and refuses a dirty tree
+# by design (release source identity). The default gate therefore adds it whenever the tree is
+# clean, which is the state every commit-ready run is in, and says plainly when it could not.
+RELEASE_LINT_TASK = ":app:lintRelease"
+
+
+def worktree_is_clean(root: Path = ROOT) -> bool:
+    """The same notion verifyCleanReleaseGit enforces: no tracked change and no untracked file."""
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
+            cwd=root,
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return not status
+
+
+def default_gradle_tasks(clean: bool) -> list[str]:
+    return [*DEFAULT_GRADLE_TASKS, *((RELEASE_LINT_TASK,) if clean else ())]
+
+
 def repository_diff_check_command() -> list[str]:
     """Check the complete HEAD patch, including index and unstaged worktree changes."""
     return ["git", "diff", "--check", "HEAD", "--"]
@@ -122,17 +156,15 @@ def main() -> int:
         "JAVA_HOME": str(home),
         "PATH": str(home / "bin") + os.pathsep + os.environ.get("PATH", ""),
     }
-    run(
-        [
-            "./gradlew",
-            ":app:assembleDebug",
-            ":app:assembleDebugAndroidTest",
-            ":app:testDebugUnitTest",
-            ":app:lintDebug",
-            ":app:verifyPartitionACoverage",
-        ],
-        env,
-    )
+    clean = worktree_is_clean()
+    if not clean:
+        print(
+            f"NOTE: {RELEASE_LINT_TASK} not run: the work tree is not clean, and every release "
+            "entry point requires a clean committed tree (verifyCleanReleaseGit). Commit, then "
+            "rerun this gate to cover release lint.",
+            flush=True,
+        )
+    run(["./gradlew", *default_gradle_tasks(clean)], env)
     for suite in ("tools/tests", "tools/coverage/tests", "device-tests/tests"):
         run([sys.executable, "-m", "unittest", "discover", "-s", suite, "-v"], env)
     run([sys.executable, "tools/check_docs.py"], env)

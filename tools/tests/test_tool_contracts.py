@@ -402,6 +402,36 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             self.assertIn("does not run", authority)
             self.assertIn("prove device behavior", authority)
 
+    def test_default_gate_adds_release_lint_on_a_clean_tree(self) -> None:
+        # QA4-3 / AGG4-78: release lint needs no signing material, only a clean committed tree.
+        verify_host = load_verify_host()
+        self.assertEqual(":app:lintRelease", verify_host.RELEASE_LINT_TASK)
+        self.assertIn(":app:lintRelease", verify_host.default_gradle_tasks(True))
+        self.assertNotIn(":app:lintRelease", verify_host.default_gradle_tasks(False))
+        self.assertEqual(
+            verify_host.default_gradle_tasks(False),
+            verify_host.default_gradle_tasks(True)[:-1],
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            init_fixture_repo(root)
+            (root / "tracked.txt").write_text("a\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-qm", "x"],
+                cwd=root,
+                check=True,
+            )
+            self.assertTrue(verify_host.worktree_is_clean(root))
+            (root / "untracked.txt").write_text("b\n", encoding="utf-8")
+            self.assertFalse(verify_host.worktree_is_clean(root))
+            (root / "untracked.txt").unlink()
+            (root / "tracked.txt").write_text("changed\n", encoding="utf-8")
+            self.assertFalse(verify_host.worktree_is_clean(root))
+        self.assertFalse(verify_host.worktree_is_clean(Path(tempfile.gettempdir()) / "no-such-repo-x"))
+        source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
+        self.assertIn('run(["./gradlew", *default_gradle_tasks(clean)], env)', source)
+
     def test_diff_gate_rejects_staged_and_unstaged_whitespace_errors(self) -> None:
         command = load_verify_host().repository_diff_check_command()
         self.assertEqual(command, ["git", "diff", "--check", "HEAD", "--"])
