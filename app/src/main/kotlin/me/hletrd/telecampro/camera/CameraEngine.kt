@@ -4855,6 +4855,8 @@ class CameraEngine internal constructor(
         optics: ShotOptics,
         retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
         traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
+        /** First still of its capture chain; see [CameraController.capturePhoto]. No default. */
+        chainHead: Boolean,
         allowZsl: Boolean = false,
         onDone: (() -> Unit)? = null,
     ): Boolean {
@@ -4886,6 +4888,7 @@ class CameraEngine internal constructor(
                 wantJpeg = formats.wantsProcessedStill,
                 wantRaw = false,
                 cb = callback,
+                chainHead = chainHead,
                 allowZsl = allowZsl,
                 frozenControls = shotControls,
             )
@@ -4998,6 +5001,7 @@ class CameraEngine internal constructor(
                         wantJpeg = formats.wantsProcessedStill,
                         wantRaw = true,
                         cb = callback,
+                        chainHead = chainHead,
                         allowZsl = allowZsl,
                         frozenControls = shotControls,
                     )
@@ -5110,6 +5114,7 @@ class CameraEngine internal constructor(
                         // today — a debug camera override (or the backlogged logical-video move)
                         // would otherwise let a mid-clip snapshot serve a frame up to 400 ms old.
                         allowZsl = !singleShot,
+                        chainHead = true,
                     )
                 }
                 if (dispatched.isFailure) {
@@ -5152,6 +5157,7 @@ class CameraEngine internal constructor(
                 shotControls = controls,
                 hiRes = accepted.outputs.hiRes,
                 optics = chainOptics,
+                chainHead = shot == 0,
                 onDone = { fire(shot + 1) },
             )
         }
@@ -5190,6 +5196,7 @@ class CameraEngine internal constructor(
                     shotControls = stepControls,
                     hiRes = accepted.outputs.hiRes,
                     optics = chainOptics,
+                    chainHead = i == 0,
                     onDone = { fire(i + 1) },
                 )
                 if (!dispatched) ctrl.updateControls(controls)
@@ -5219,6 +5226,7 @@ class CameraEngine internal constructor(
                 shotControls = stepControls,
                 hiRes = accepted.outputs.hiRes,
                 optics = chainOptics,
+                chainHead = i == 0,
                 onDone = { fire(i + 1) },
             )
             if (!dispatched) ctrl.updateControls(controls)
@@ -5268,6 +5276,9 @@ class CameraEngine internal constructor(
                             shotControls = controls,
                             hiRes = accepted.outputs.hiRes,
                             optics = snapshotShotOptics(),
+                            // Each tick is its own one-frame chain: ticks are >= 1 s apart, the
+                            // same bound the shared gate would impose anyway.
+                            chainHead = true,
                             onDone = {
                             if (timelapseRun.owns(generation)) {
                                 schedule(currentTimelapseIntervalSeconds())

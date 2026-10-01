@@ -159,6 +159,8 @@ class CameraController internal constructor(
     @Volatile private var rawCharsCameraId: String? = null
     private val rawCharsFailureLogged = java.util.concurrent.atomic.AtomicBoolean(false)
     private val rawCharsRetryGate = LazyReadRetryGate(RAW_CHARS_RETRY_INTERVAL_NS)
+    // One gate-bypassing completion re-read per capture CHAIN (AGG4-37); armed by a chain head.
+    private val chainCharsReread = ChainCharacteristicsReread()
     private var configAttempt = 0
     // HAL video stabilization mode for the repeating preview/video request (CONTROL_VIDEO_
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
@@ -1310,7 +1312,7 @@ class CameraController internal constructor(
         // chars(), not the bare field (AGG2-19): after a failed open-time read every tap-AF/AE
         // request used to ship WITHOUT regions while setMeteringPoint still reported ACCEPTED,
         // because only tryComplete retried the read.
-        val active = chars()?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        val active = chars(shot = false)?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
 
         val point = meteringPoint
         val (cx, cy, fraction) = if (point != null) {
@@ -2000,6 +2002,13 @@ class CameraController internal constructor(
         wantJpeg: Boolean,
         wantRaw: Boolean,
         cb: PhotoCallback,
+        /**
+         * True for the first still of a capture chain (a SINGLE press, a BURST/AEB's first frame,
+         * each timelapse tick), false for a chain continuation. Only a head re-arms the one
+         * gate-bypassing characteristics re-read its chain may spend (AGG4-37). No default: an
+         * omitted value would silently pick one of the two costs.
+         */
+        chainHead: Boolean,
         allowZsl: Boolean = false,
         frozenControls: ManualControls? = null,
     ) {
@@ -2018,6 +2027,7 @@ class CameraController internal constructor(
             if (pending != null) {
                 return@postToCamera cb.onError(IllegalStateException("Capture already in progress"))
             }
+            if (chainHead) chainCharsReread.arm()
 
             // Snapshot once: the timeout and the request must describe the same AEB/manual step even
             // if the UI publishes the next immutable control set while this capture is in flight.
@@ -2276,11 +2286,14 @@ class CameraController internal constructor(
         }
         // A transient open-time read failure (the same resume race as openCamera's synchronous
         // CAMERA_DISABLED) used to leave rawChars null for the controller's whole life, failing
-        // EVERY still after the HAL had already delivered its image. Retry the read lazily here —
-        // ONCE per shot, never behind the metering rate limit: a metering build that consumed the
-        // gate a moment earlier used to fail this shot even though a fresh read would succeed,
-        // discarding Images the HAL had already delivered (AGG3-9).
-        val chars = chars(shot = true)
+        // EVERY still after the HAL had already delivered its image. Retry the read lazily here.
+        // The first completion of each capture CHAIN re-reads outside the metering rate limit: a
+        // metering build that consumed the gate a moment earlier used to fail that shot even though
+        // a fresh read would succeed, discarding Images the HAL had already delivered (AGG3-9).
+        // Later frames of the same BURST/AEB chain share the metering gate, so a persistently
+        // failing read costs one Binder call per chain plus the gate's 1/s, not one per frame with
+        // live Images held (AGG4-37, the PERF2-5 cost f32a5bbd brought back).
+        val chars = chars(shot = chainCharsReread.consume())
         try {
             if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
             else p.cb.onError(IllegalStateException("Missing camera characteristics"))
@@ -2425,10 +2438,12 @@ class CameraController internal constructor(
      * The ONE accessor for the producer's characteristics outside open() (AGG2-19): the cached
      * value, else a lazy re-read. Metering and tryComplete both go through here so neither silently
      * degrades while the other recovers. See [lazyCharacteristicsRead] for which caller is
-     * rate-limited: metering builds take [rawCharsRetryGate], while a [shot] — Images already
-     * delivered and held — always gets its one re-read (AGG3-9).
+     * rate-limited: metering builds and chain continuations take [rawCharsRetryGate], while a
+     * [shot] bypass — the first completion of a capture chain, Images already delivered and held —
+     * gets its one re-read (AGG3-9, AGG4-37). No default: dropping the argument at a call site
+     * must fail to compile rather than silently take the metering gate (AGG4-47).
      */
-    private fun chars(shot: Boolean = false): CameraCharacteristics? =
+    private fun chars(shot: Boolean): CameraCharacteristics? =
         lazyCharacteristicsRead(rawChars, shot, rawCharsRetryGate, ::readRawCharacteristics)
             ?.also { rawChars = it }
 
@@ -2493,6 +2508,8 @@ internal class PreviewModeIntentGate(initial: PreviewModeIntent) {
  * Rate limit for a lazy provider re-read that runs on the camera handler (AGG2-19 / PERF2-5). The
  * `rawChars` retry used to be a `getCameraCharacteristics` Binder call inside `tryComplete` on EVERY
  * still while the read kept failing — each frame of a BURST/AEB chain, with the live Images held.
+ * It now governs every metering request build and every capture-chain CONTINUATION; only the first
+ * completion of each chain bypasses it ([ChainCharacteristicsReread], AGG3-9 / AGG4-37).
  * The first retry is admitted at once (the open-time read already failed; the next caller deserves a
  * fresh answer), later ones at most once per [minIntervalNs]. "Never attempted" is a separate flag,
  * not a sentinel time, because `System.nanoTime()` may legally be any value including negative.
@@ -2517,9 +2534,10 @@ internal class LazyReadRetryGate(
 /**
  * Which lazy characteristics re-read may run (AGG3-9). A [cached] value always wins. A metering
  * request build is recurring camera-handler work, so it is rate-limited by [gate]; a completing
- * [shot] holds HAL-delivered Images that are discarded if the read is skipped, so it always gets its
- * one re-read and neither consumes nor waits on the metering gate. A persistently failing read
- * therefore costs one Binder call per completed shot — bounded by the shutter, not the frame rate.
+ * [shot] bypass holds HAL-delivered Images that are discarded if the read is skipped, so it gets its
+ * re-read and neither consumes nor waits on the metering gate. The caller grants that bypass once
+ * per capture chain ([ChainCharacteristicsReread]), so a persistently failing read costs one Binder
+ * call per chain plus the gate's rate — not one per BURST/AEB frame (AGG4-37).
  */
 internal fun <T : Any> lazyCharacteristicsRead(
     cached: T?,
@@ -2527,6 +2545,20 @@ internal fun <T : Any> lazyCharacteristicsRead(
     gate: LazyReadRetryGate,
     read: () -> T?,
 ): T? = cached ?: if (shot || gate.tryAcquire()) read() else null
+
+/**
+ * The one gate-bypassing characteristics re-read a capture chain may spend (AGG4-37). [arm] runs
+ * when a chain head is queued; [consume] answers true for exactly the first completion after it.
+ * AGG3-9 still holds — the first held shot of every chain gets a fresh read even if metering just
+ * consumed the gate — while a 20-frame BURST no longer pays 20 Binder calls with Images held.
+ */
+internal class ChainCharacteristicsReread {
+    private val available = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun arm() = available.set(true)
+
+    fun consume(): Boolean = available.getAndSet(false)
+}
 
 /**
  * True only on the streaming true→false edge: the ring's held Images must be released then, since

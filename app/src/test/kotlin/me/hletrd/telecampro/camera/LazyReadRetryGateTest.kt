@@ -59,4 +59,35 @@ class LazyReadRetryGateTest {
         assertEquals("cached", lazyCharacteristicsRead("cached", true, gate) { error("must not read") })
         assertTrue("the gate stays unconsumed", gate.tryAcquire())
     }
+
+    // AGG4-37: one gate-bypassing re-read per capture CHAIN, not per completion.
+    @Test
+    fun `a failing read costs one bypass per chain, then the shared gate`() {
+        val now = 0L
+        val gate = LazyReadRetryGate(minIntervalNs = 1_000L, nowNs = { now })
+        val chain = ChainCharacteristicsReread()
+        var calls = 0
+        val failing: () -> String? = { calls++; null }
+
+        // Metering consumed the gate a moment before the shutter (the AGG3-9 case).
+        assertNull(lazyCharacteristicsRead(null, false, gate, failing))
+        assertEquals(1, calls)
+        chain.arm()
+        repeat(20) { assertNull(lazyCharacteristicsRead(null, chain.consume(), gate, failing)) }
+        assertEquals("the chain head re-read once; its 19 continuations hit the spent gate", 2, calls)
+
+        // The next chain head gets its own bypass again.
+        chain.arm()
+        assertNull(lazyCharacteristicsRead(null, chain.consume(), gate, failing))
+        assertEquals(3, calls)
+    }
+
+    @Test
+    fun `an unarmed completion never bypasses the gate`() {
+        val chain = ChainCharacteristicsReread()
+        assertFalse(chain.consume())
+        chain.arm()
+        assertTrue(chain.consume())
+        assertFalse(chain.consume())
+    }
 }
