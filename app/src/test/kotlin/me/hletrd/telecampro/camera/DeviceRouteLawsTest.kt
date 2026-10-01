@@ -317,6 +317,36 @@ class TransferEncoderHonestyTest {
             assertEquals(it, it.normalizedForEncoder(VideoCodec.HEVC, true))
         }
     }
+
+    // AGG2-8: a pre-inventory DNG toggle on the degraded placeholder must not turn the saved HEIF
+    // request into JPEG.
+    @Test
+    fun `format edit merges only the changed axis into the pending request`() {
+        val request = PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+        val displayed = request.normalizedForEncoder(heifEncodeAvailable = false)
+        assertEquals(PhotoFormats(heif = false, jpeg = true, dngRaw = true), displayed)
+        assertEquals(
+            PhotoFormats(heif = true, jpeg = false, dngRaw = false),
+            request.withEdit(displayed, displayed.copy(dngRaw = false)),
+        )
+        // Processed-axis edits still land, each on its own axis.
+        assertEquals(
+            PhotoFormats(heif = true, jpeg = false, dngRaw = true),
+            request.copy(heif = false).withEdit(displayed, displayed.copy(heif = true)),
+        )
+        assertEquals(
+            PhotoFormats(heif = true, jpeg = true, dngRaw = true),
+            PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+                .withEdit(PhotoFormats(heif = true, jpeg = false, dngRaw = true), PhotoFormats(heif = true, jpeg = true, dngRaw = true)),
+        )
+        assertEquals(
+            PhotoFormats(heif = false, jpeg = false, dngRaw = true),
+            PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+                .withEdit(PhotoFormats(heif = true, jpeg = true, dngRaw = true), PhotoFormats(heif = false, jpeg = true, dngRaw = true)),
+        )
+        // An unchanged edit is the request itself.
+        assertEquals(request, request.withEdit(displayed, displayed))
+    }
 }
 
 /**

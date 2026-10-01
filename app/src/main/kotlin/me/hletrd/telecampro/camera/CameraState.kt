@@ -1243,6 +1243,22 @@ fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormat
     else -> copy(heif = false, jpeg = true)
 }
 
+/**
+ * Folds one format-chip edit into the operator's un-normalized REQUEST (AGG2-8).
+ *
+ * Before the encoder inventory lands, state shows the DEGRADED placeholder ([normalizedForEncoder]
+ * with HEIF unknown, i.e. HEIF→JPEG), and the chip builds its new set from that placeholder. Storing
+ * that set as the pending request persisted HEIF→JPEG for good on any tap in the window — even a DNG
+ * toggle that never touched the processed axis. Only the axes the edit actually CHANGED against
+ * [displayed] are taken from [edited]; every other axis keeps the [request] value, exactly as
+ * `onTransfer` stores the raw transfer rather than its normalized placeholder.
+ */
+fun PhotoFormats.withEdit(displayed: PhotoFormats, edited: PhotoFormats): PhotoFormats = PhotoFormats(
+    heif = if (edited.heif != displayed.heif) edited.heif else heif,
+    jpeg = if (edited.jpeg != displayed.jpeg) edited.jpeg else jpeg,
+    dngRaw = if (edited.dngRaw != displayed.dngRaw) edited.dngRaw else dngRaw,
+)
+
 
 /** Actual still readers present in one accepted Camera2 session. */
 data class PhotoSessionOutputs(

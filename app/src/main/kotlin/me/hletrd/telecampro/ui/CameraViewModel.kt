@@ -79,6 +79,7 @@ import me.hletrd.telecampro.camera.resolveTeleZoomTransition
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
+import me.hletrd.telecampro.camera.withEdit
 import me.hletrd.telecampro.camera.normalizedForAvailableModes
 import me.hletrd.telecampro.camera.availableVideoStabModes
 import me.hletrd.telecampro.camera.PendingControlsDisposition
@@ -2428,10 +2429,19 @@ class CameraViewModel private constructor(
     override fun onSetPhotoFormats(formats: PhotoFormats) {
         cancelCountdown()
         val s = _state.value
+        // Before the encoder inventory lands, state (and so the chip's new set) is the DEGRADED
+        // placeholder. Fold the edited axis into the operator's un-normalized request and store
+        // THAT as pending, mirroring onTransfer; storing the normalized set persisted HEIF→JPEG for
+        // good on any tap in the window, even a DNG toggle (AGG2-8).
+        val request = if (s.encoderInventoryLoaded) {
+            formats
+        } else {
+            (pendingPhotoFormatsUntilInventory ?: s.photoFormats).withEdit(s.photoFormats, formats)
+        }
+        if (!s.encoderInventoryLoaded) pendingPhotoFormatsUntilInventory = request
         // A device with no HEVC encoder cannot write HEIF at all — promote JPEG instead of letting
-        // the shutter produce nothing (2026-08-02 review).
-        val formats = formats.normalizedForEncoder(s.heifAvailable)
-        if (!s.encoderInventoryLoaded) pendingPhotoFormatsUntilInventory = formats
+        // the shutter produce nothing (2026-08-02 review). Only the published value is normalized.
+        val formats = request.normalizedForEncoder(s.heifAvailable)
         // A running timelapse froze its formats at start, while a DNG flip moves the route under
         // it: the run kept writing the old set on the new route with no status either way
         // (tracer T8). Same idiom as a mode flip — a format change ends the run.
