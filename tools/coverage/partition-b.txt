@@ -89,7 +89,6 @@ me/hletrd/telecampro/video/RecordingStorageTail
 # state machine remains separately host-tested in VideoRecorderKt.
 me/hletrd/telecampro/video/MediaCodecAttemptOwner
 me/hletrd/telecampro/video/UnsafeRecorderQuarantine
-me/hletrd/telecampro/video/ColorProfiles
 me/hletrd/telecampro/video/EncoderCaps
 me/hletrd/telecampro/video/AudioInputInspector
 
