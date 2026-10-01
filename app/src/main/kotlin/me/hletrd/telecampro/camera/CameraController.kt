@@ -1882,7 +1882,15 @@ class CameraController internal constructor(
             // `caps` because the engine installs the controller before opening it. open() applies
             // the engine's latest mode/controls itself, so the dropped toggle is not lost.
             if (!this::caps.isInitialized) return@postToCamera
+            // pinAutoFps is a term of zslStreamingActive, so a Photo→Video flip on a controller that
+            // survives it (FRONT keeps its controller) stops the streaming ring exactly like
+            // setZslServePossible(false) does — but nothing flushed it here (AGG2-20): up to
+            // ZSL_RING_DEPTH full-res YUV Images (~3×19 MB) stayed acquired for the whole video
+            // session, starving the in-REC snapshot reader of free buffers. Camera-thread state on
+            // both sides, so the before/after edge is race-free.
+            val streamedBefore = zslStreamingActive()
             pinAutoFps = enabled
+            if (zslStreamingStopped(streamedBefore, zslStreamingActive())) zslRingFlush()
             diagnosticRequestMode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO
             diagnosticOpticsGeneration = opticsGeneration
             val modeIntent = if (enabled && controls.exposureMode == ExposureMode.PROGRAM) {
@@ -2503,6 +2511,13 @@ internal class LazyReadRetryGate(
         return true
     }
 }
+
+/**
+ * True only on the streaming true→false edge: the ring's held Images must be released then, since
+ * the repeating request no longer refills (or drains) it. A false→true or unchanged edge keeps it.
+ */
+internal fun zslStreamingStopped(streamedBefore: Boolean, streamedAfter: Boolean): Boolean =
+    streamedBefore && !streamedAfter
 
 /** Identity guard for callbacks that can outlive and race reuse of the single pending-shot slot. */
 internal fun captureTokenIsCurrent(current: Any?, expected: Any): Boolean = current === expected
