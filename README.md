@@ -9,7 +9,7 @@
 <p>
 <a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro"><img src="https://img.shields.io/badge/Google%20Play-Download-414141?logo=googleplay&logoColor=white" alt="Get TeleCam Pro on Google Play" /></a>
 <img src="https://img.shields.io/badge/Android-13%2B%20(API%2033)-3DDC84?logo=android&logoColor=white" alt="Android 13 and newer" />
-<img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
+<img src="https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.08-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
 <img src="https://img.shields.io/badge/License-Apache%202.0-000000" alt="Apache License 2.0" />
@@ -147,7 +147,7 @@ requirement only; the runtime target stays API 36 and the install floor is API 3
 |---|---|
 | AGP | 9.4.1 |
 | Gradle | 9.8.0 |
-| Kotlin / Compose compiler | 2.4.10 |
+| Kotlin / Compose compiler | 2.4.20 |
 | Compose BOM | 2026.08.00 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 33 |
 | JDK | 21 |

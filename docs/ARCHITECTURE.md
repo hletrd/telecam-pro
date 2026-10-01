@@ -1276,7 +1276,7 @@ All values clamped to hardware ranges (CameraCaps gates what's supported).
 See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup details.
 
 **Quick reference:**
-- Kotlin / Compose compiler 2.4.10, AGP 9.4.1, Gradle 9.8.0
+- Kotlin / Compose compiler 2.4.20, AGP 9.4.1, Gradle 9.8.0
 - Android SDK Platform / compileSdk 37; targetSdk 36 / minSdk 33 (API 36 is Android 16; API 33 is Android 13, the floor since the 2026-08-01 multi-device decision)
 - SDK Build Tools 36.0.0 (the AGP 9.4 default); compile and runtime API levels are intentionally decoupled
 - JDK 21 required; set JAVA_HOME for CLI builds
