@@ -28,16 +28,16 @@ areas requiring current-HEAD verification; its findings were not recycled.
   live credential.
 - **Region:** `tools/run_scoped_signed_release.py:49-72`, especially the predicate at `:66-67`;
   `tools/tests/test_scoped_signed_release.py:24-45`.
-- **Evidence:** the policy rejects values shorter than 16 characters and the one exact shape
-  `\d{6}`. It accepts both `0000000000000000` and `aaaaaaaaaaaaaaaa` as satisfying the
+- **Evidence:** the policy rejects values shorter than 16 characters and one exact
+  historical shape. It accepts both `0000000000000000` and `aaaaaaaaaaaaaaaa` as satisfying the
   “strong-key policy”; a direct invocation of `parse_scoped_credentials` confirmed both return
-  successfully. The test matrix rejects only the historical six-digit form and does not exercise
+  successfully. The test matrix rejects only the historical form and does not exercise
   low-entropy values at the accepted length.
 - **Concrete failure:** after the explicitly required upload-key rotation/reset, an operator can
-  choose a repeated-character or all-numeric 16-character password, see the helper accept it as
+  choose a low-entropy password of the accepted length, see the helper accept it as
   strong, and produce a release. Theft of the JKS then again permits cheap offline guessing, so the
   new fail-closed workflow does not actually enforce the security property introduced to replace
-  the exposed six-digit password.
+  the exposed password.
 - **Suggested fix:** define an enforceable generated-secret contract rather than special-casing one
   known password shape—for example require a sufficiently long randomly generated value from an
   approved generator and reject all-one-class/repeated/common-pattern values—or stop claiming that

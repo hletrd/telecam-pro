@@ -33,7 +33,7 @@ invented evidence.
 - **Severity / confidence:** Medium / High; source-confirmed without reading a live credential.
 - **Source:** code-reviewer.
 - **Evidence:** `tools/run_scoped_signed_release.py:49-72` rejects only values shorter than 16 and
-  the exact six-digit shape, so `0000000000000000` and one repeated character sixteen times pass
+  one exact historical shape, so `0000000000000000` and one repeated character sixteen times pass
   the helper's stated strong-key policy. `tools/tests/test_scoped_signed_release.py:24-45` covers
   the historical weak shape but no accepted-length low-entropy examples.
 - **Failure:** an operator can replace the blocked upload key with another cheaply guessable
@@ -189,13 +189,13 @@ live credential state remain explicitly manual/fault-injection limits rather tha
 
 ## Deduplicated findings
 
-### AGG56-01 — active upload-key procedure preserves weak plaintext-exposed credential practice
+### AGG56-01 — active upload-key procedure preserves security-blocked credential practice
 
 - **Severity / confidence:** High / High in the documented procedure; current live key state is
   manual-validation because no credential material was read.
 - **Source:** security-reviewer.
-- **Evidence:** `docs/play-console-submit.md:781-821` records a six-digit upload-key password that
-  was transmitted in plaintext, then decrypts release values into persistent exported
+- **Evidence:** `docs/play-console-submit.md:781-821` records security-blocked upload-key details
+  (redacted 2026-10-02, SEC2-1), then decrypts release values into persistent exported
   `TELECAMPRO_*` shell variables without a scoped terminal cleanup.
 - **Failure:** theft of the JKS plus offline brute force can permit attacker-signed Play uploads
   until upload-key reset; persistent decrypted variables expand exposure to later child processes

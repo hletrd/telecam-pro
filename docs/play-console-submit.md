@@ -19,8 +19,8 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > only after the final source commit is built, verified without inventing device evidence, copied to
 > a commit-and-digest-qualified path, and accepted by `tools/check_release_artifact.py` against a
 > SHA-256-protected attestation. Until then this sheet is preparation material, not upload approval.
-> Independently, the documented upload key is **SECURITY-BLOCKED**: its six-digit password was
-> transmitted in plaintext. No signed candidate may be cut or uploaded until the owner explicitly
+> Independently, the documented upload key is **SECURITY-BLOCKED** pending owner rotation/reset.
+> No signed candidate may be cut or uploaded until the owner explicitly
 > approves a strong-key rotation or completes Google's upload-key reset and records the new public
 > certificate fingerprint in the local fail-closed prerequisite described below.
 > `versionCode 1` (v1.0, from `ca3d33c`) and `versionCode 3` (v1.0.1) are BOTH spent — Play
@@ -787,8 +787,8 @@ These files are intentionally gitignored and stay only on the local machine:
 >    recovery — the RETIRED key's password — showed up as an untracked, committable file. The rules
 >    now match by extension AND by name shape (`*password*`, `*secret*`, `telecampro-upload-*`,
 >    `.bak`, `.orig`). Fixed in `fc43953`.
-> 2. **Historical incident, now an active security block:** the July-25 upload-key password is weak
->    (six digits) and was transmitted in plaintext. The original note said nothing was on Play yet;
+> 2. **Historical incident, now an active security block:** the July-25 upload key is
+>    security-blocked pending owner rotation/reset. The original note said nothing was on Play yet;
 >    that is historical truth, not current truth — v1.0.1 is now published. The credential is
 >    therefore unusable for the next upload. Do not rotate or reset it from this checklist: the
 >    owner must explicitly approve either a strong-key rotation (only if Play has not registered the

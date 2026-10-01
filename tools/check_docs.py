@@ -1464,8 +1464,7 @@ check(
 )
 play_console_submit = read("docs/play-console-submit.md")
 check(
-    "SECURITY-BLOCKED" in play_console_submit
-    and "six-digit password was\n> transmitted in plaintext" in play_console_submit
+    "SECURITY-BLOCKED** pending owner rotation/reset" in play_console_submit
     and "owner explicitly\n> approves a strong-key rotation or completes Google's upload-key reset" in play_console_submit
     and "uploadKeyRotationApproved` must remain absent/false" in play_console_submit
     and "python3 tools/run_scoped_signed_release.py --check-prerequisites" in play_console_submit
@@ -1495,6 +1494,68 @@ check(
     "signed release procedure scopes secrets and requires owner-approved key replacement",
 )
 
+
+# A credential's PROPERTIES are secret too (SEC2-1): stating a password's length, character class,
+# or how it was delivered turns an offline brute force over a stolen keystore into a trivial search.
+# Tracked prose may say only that the upload key is security-blocked pending owner rotation/reset.
+# The generated-secret FLOOR the helper enforces ("20+ characters, at least three character
+# classes") is policy, not a property of any live credential, and is deliberately not matched.
+PASSWORD_SUBJECT = re.compile(
+    r"\b(?:password|passphrase|passcode|credential|upload[- ]key)s?\b", re.I
+)
+PASSWORD_PROPERTY_PATTERNS = (
+    re.compile(
+        r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)[- ]"
+        r"(?:digit|character|char|letter|number)s?\b(?!\s+class)",
+        re.I,
+    ),
+    re.compile(r"\(\s*(?:\w+[- ])?(?:digits?|numeric|numbers?|letters?)(?:[- ]only)?\s*\)", re.I),
+    re.compile(
+        r"\b(?:all[- ](?:digits?|numeric|numbers?)|digits?[- ]only|numeric[- ]only|purely numeric)\b",
+        re.I,
+    ),
+    re.compile(r"\\d\{\d+(?:,\d*)?\}"),
+    re.compile(r"\bplain[- ]?text[- ]exposed\b", re.I),
+    re.compile(
+        r"\b(?:transmitted|sent|shared|delivered|pasted|posted|emailed|messaged)\b[^.;]{0,40}"
+        r"(?:\bin (?:plain[- ]?text|the clear|clear[- ]?text)\b|\bby (?:e-?mail|chat|sms|message)\b|"
+        r"\bover (?:e-?mail|chat|slack|sms)\b)",
+        re.I,
+    ),
+)
+
+
+def password_property_findings(text: str) -> list[str]:
+    """Return each sentence pairing a credential subject with a length/class/delivery property."""
+    prose = re.sub(r"(?ms)^\s*(?:>\s?)*```.*?^\s*(?:>\s?)*```[^\n]*$", " ", text)
+    prose = re.sub(r"(?m)^\s*(?:>\s?)+", "", prose)
+    prose = re.sub(r"\s+", " ", prose)
+    findings = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\s+[—–]\s+", prose):
+        if not PASSWORD_SUBJECT.search(sentence):
+            continue
+        if any(pattern.search(sentence) for pattern in PASSWORD_PROPERTY_PATTERNS):
+            findings.append(sentence.strip()[:120])
+    return findings
+
+
+def password_property_scan_paths() -> list[str]:
+    paths = [*COMMITTED_AUTHORITY_DOCS, "PRIVACY.md", "keystore.properties.example"]
+    for pattern in ("docs/**/*.md", ".context/**/*.md"):
+        paths.extend(str(path.relative_to(ROOT)) for path in sorted(ROOT.glob(pattern)))
+    return sorted({rel for rel in paths if rel not in PRIVATE_DOCS and (ROOT / rel).is_file()})
+
+
+password_property_hits = [
+    f"{rel}: {finding}"
+    for rel in password_property_scan_paths()
+    for finding in password_property_findings(read(rel))
+]
+check(
+    not password_property_hits,
+    "tracked docs state no password length, character class, or delivery channel",
+    "; ".join(password_property_hits[:5]),
+)
 
 def markdown_heading_anchor(heading: str) -> str:
     """Match the repository's GitHub-style anchors for its current ASCII-heavy H2 headings."""

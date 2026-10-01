@@ -1673,6 +1673,28 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_rejects_password_property_phrasing(self) -> None:
+        # SEC2-1: a password's length, character class, or delivery channel is itself secret.
+        anchor = "upload key is **SECURITY-BLOCKED** pending owner rotation/reset."
+        for leak in (
+            "upload key is **SECURITY-BLOCKED**: its password is 6 digits long.",
+            "upload key is **SECURITY-BLOCKED**: the password (numeric only) leaked.",
+            "upload key is **SECURITY-BLOCKED**: its password was sent over chat.",
+        ):
+            with self.subTest(leak=leak):
+                def regress(root: Path) -> None:
+                    path = root / "docs/play-console-submit.md"
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(anchor, text)
+                    path.write_text(text.replace(anchor, leak, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(regress)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  tracked docs state no password length, character class, or delivery channel",
+                    result.stdout,
+                )
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"
