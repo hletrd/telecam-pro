@@ -65,6 +65,18 @@ class ExifAttributeListTest {
     }
 
     @Test
+    fun `a UTC shot writes an explicit +00 00 offset, never Z`() {
+        // AGG4-22: the ISO `XXX` pattern printed "Z" in UTC+0; EXIF OffsetTime is always ±HH:MM.
+        for (zone in listOf("UTC", "Africa/Abidjan")) {
+            val attributes = withTimeZone(zone) { exifAttributeList(fullShot()) }.toMap()
+            assertEquals(zone, "+00:00", attributes[ExifInterface.TAG_OFFSET_TIME])
+            assertEquals(zone, "+00:00", attributes[ExifInterface.TAG_OFFSET_TIME_ORIGINAL])
+        }
+        val west = withTimeZone("America/Los_Angeles") { exifAttributeList(fullShot()) }.toMap()
+        assertEquals("-08:00", west[ExifInterface.TAG_OFFSET_TIME])
+    }
+
+    @Test
     fun `unknown sensor and lens values omit their optional tags entirely`() {
         val attributes = exifAttributeList(
             fullShot().copy(

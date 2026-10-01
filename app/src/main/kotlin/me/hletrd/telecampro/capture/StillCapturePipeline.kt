@@ -701,8 +701,12 @@ internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = bui
 
     val dt = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
         .format(java.util.Date(shot.takenAtMs))
-    val offset = java.text.SimpleDateFormat("XXX", java.util.Locale.US)
-        .format(java.util.Date(shot.takenAtMs))
+    // EXIF 2.31 OffsetTime is always "±HH:MM". ISO pattern `XXX` prints "Z" for UTC+0 (AGG4-22),
+    // which strict readers reject; java.time's `xxx` is the same field without the Z special case
+    // (java.text.SimpleDateFormat has no `x` letter). The zone is the same default zone [dt] uses,
+    // resolved at the same instant, so the pair can never disagree.
+    val offset = java.time.format.DateTimeFormatter.ofPattern("xxx", java.util.Locale.US)
+        .format(java.time.Instant.ofEpochMilli(shot.takenAtMs).atZone(java.time.ZoneId.systemDefault()))
     add(androidx.exifinterface.media.ExifInterface.TAG_DATETIME to dt)
     add(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL to dt)
     add(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED to dt)
