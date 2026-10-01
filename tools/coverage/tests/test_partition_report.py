@@ -35,6 +35,16 @@ def class_xml(
     )
 
 
+def source_xml(name: str, missed_lines: set[int], last_line: int) -> str:
+    rows = "".join(
+        f'<line nr="{line}" mi="2" ci="0" mb="0" cb="0"/>'
+        if line in missed_lines
+        else f'<line nr="{line}" mi="0" ci="2" mb="0" cb="0"/>'
+        for line in range(1, last_line + 1)
+    )
+    return f'<sourcefile name="{name}">{rows}</sourcefile>'
+
+
 def method_xml(name: str, descriptor: str, missed: int, covered: int) -> str:
     return (
         f'<method name="{name}" desc="{descriptor}">'
@@ -188,11 +198,21 @@ class PartitionReportTest(unittest.TestCase):
             "\tproven-unreachable: fixture branch is structurally unreachable\n"
         )
 
-    def residual_report(self, missed: int = 2) -> str:
+    def residual_report(self, missed: int = 2, missed_lines: tuple[int, ...] | None = None) -> str:
+        # pkg/Pure's one method starts at line 1, so it owns every Pure.kt line; by default the
+        # missed lines are 1..missed and lines up to 10 are covered (JaCoCo `<line nr mi ci>`).
+        lines = set(range(1, missed + 1)) if missed_lines is None else set(missed_lines)
         return report_xml(
             class_xml("pkg/Device", 1, 0),
             class_xml("pkg/Excluded", 0, 1),
-            class_xml("pkg/Pure", missed, 8),
+            class_xml(
+                "pkg/Pure",
+                missed,
+                8,
+                '<method name="pure" desc="()V" line="1">'
+                f"{counter(missed, 8)}</method>",
+            ),
+            source_xml("Pure.kt", lines, 10),
         )
 
     def test_exact_reviewed_residual_manifest_passes(self) -> None:
@@ -232,6 +252,131 @@ class PartitionReportTest(unittest.TestCase):
                 )
                 self.assertEqual(1, code)
                 self.assertIn(message, stderr)
+
+    def test_a_miss_outside_its_cited_region_is_residual_line_drift(self) -> None:
+        # TE3-1: the reviewed miss at line 2 became covered and an unreviewed one appeared at line 7
+        # in the SAME class. The count still matches; only line identity catches it.
+        code, _, stderr = self.run_report(
+            self.residual_report(missed=2, missed_lines=(1, 7)),
+            "pkg/Device\n",
+            "pkg/Excluded\n",
+            self.residual("pkg/Pure"),
+        )
+
+        self.assertEqual(1, code)
+        self.assertIn("residual line drift pkg/Pure: missed line(s) 7 outside cited region", stderr)
+        self.assertNotIn("residual count drift", stderr)
+
+    def test_a_region_citing_covered_code_is_residual_line_drift(self) -> None:
+        # The stale-region shape REG3-2 found: the region points at lines that are not missed at all.
+        code, _, stderr = self.run_report(
+            report_xml(
+                class_xml("pkg/Device", 1, 0),
+                class_xml("pkg/Excluded", 0, 1),
+                class_xml("pkg/Pure", 2, 8),
+                source_xml("Pure.kt", {1, 2}, 10),
+            ),
+            "pkg/Device\n",
+            "pkg/Excluded\n",
+            self.residual("pkg/Pure").replace("Pure.kt:1-2", "Pure.kt:9-10"),
+        )
+
+        self.assertEqual(1, code)
+        self.assertIn("cited region app/src/main/kotlin/Pure.kt:9-10 holds 0 missed line(s)", stderr)
+
+    def test_lines_are_attributed_to_the_class_whose_method_starts_nearest_above(self) -> None:
+        # Two classes share Pure.kt: pkg/Pure's method starts at 1, a B-partition lambda class at 5.
+        # Line 6 belongs to the lambda, so pkg/Pure's single residual at line 2 stays inside 1-2.
+        report = report_xml(
+            class_xml("pkg/Excluded", 0, 1),
+            class_xml(
+                "pkg/Pure",
+                1,
+                3,
+                f'<method name="pure" desc="()V" line="1">{counter(1, 3)}</method>',
+            ),
+            class_xml(
+                "pkg/Device",
+                1,
+                0,
+                f'<method name="invoke" desc="()V" line="5">{counter(1, 0)}</method>',
+            ),
+            source_xml("Pure.kt", {2, 6}, 6),
+        )
+        code, stdout, stderr = self.run_report(
+            report,
+            "pkg/Device\n",
+            "pkg/Excluded\n",
+            self.residual("pkg/Pure", missed=1).replace("Pure.kt:1-1", "Pure.kt:2"),
+        )
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("lines inside cited regions", stdout)
+
+    def test_write_regions_recomputes_regions_and_keeps_rationales(self) -> None:
+        stale = self.residual("pkg/Pure")
+        report = report_xml(
+            class_xml("pkg/Device", 1, 0),
+            class_xml("pkg/Excluded", 0, 1),
+            class_xml(
+                "pkg/Pure",
+                2,
+                8,
+                f'<method name="pure" desc="()V" line="1">{counter(2, 8)}</method>',
+            ),
+            class_xml(
+                "pkg/Fresh",
+                1,
+                1,
+                f'<method name="fresh" desc="()V" line="1">{counter(1, 1)}</method>',
+                source_filename="Fresh.kt",
+            ),
+            source_xml("Pure.kt", {4, 8}, 10),
+            source_xml("Fresh.kt", {2}, 2),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "app/src/main/kotlin/pkg").mkdir(parents=True)
+            (root / "app/src/main/kotlin/pkg/Pure.kt").write_text("line\n" * 10, encoding="utf-8")
+            (root / "app/src/main/kotlin/pkg/Fresh.kt").write_text("line\n" * 2, encoding="utf-8")
+            paths = {}
+            for name, text in (
+                ("report.xml", report),
+                ("partition-b.txt", "pkg/Device\n"),
+                ("partition-excluded.txt", "pkg/Excluded\n"),
+                ("partition-a-residuals.txt", stale),
+            ):
+                paths[name] = root / name
+                paths[name].write_text(text, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                partition_report.main([
+                    str(paths["report.xml"]),
+                    "--partition", str(paths["partition-b.txt"]),
+                    "--excluded", str(paths["partition-excluded.txt"]),
+                    "--residuals", str(paths["partition-a-residuals.txt"]),
+                    "--source-root", str(root),
+                    "--write-regions",
+                ])
+            written = paths["partition-a-residuals.txt"].read_text(encoding="utf-8")
+
+        self.assertTrue(written.startswith(partition_report.MANIFEST_HEADER))
+        self.assertIn(
+            "pkg/Pure\t2\tapp/src/main/kotlin/pkg/Pure.kt:4,8"
+            "\tproven-unreachable: fixture branch is structurally unreachable\n",
+            written,
+        )
+        # A new residual is never silently "reviewed": its placeholder fails the manifest loader.
+        self.assertIn(f"pkg/Fresh\t1\tapp/src/main/kotlin/pkg/Fresh.kt:2\t{partition_report.UNREVIEWED_REASON}", written)
+        self.assertFalse(partition_report.UNREVIEWED_REASON.startswith(partition_report.Residuals.REASON_PREFIXES))
+
+    def test_committed_manifest_documents_the_regeneration_command(self) -> None:
+        text = (TOOLS_DIR / "partition-a-residuals.txt").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith(partition_report.MANIFEST_HEADER))
+        self.assertIn("--write-regions", text)
+
+    def test_compress_lines(self) -> None:
+        self.assertEqual("1,3-5,9", partition_report.compress_lines({9, 4, 1, 3, 5}))
+        self.assertEqual("", partition_report.compress_lines(set()))
 
     def test_malformed_duplicate_unsorted_and_unjustified_residuals_are_fatal(self) -> None:
         valid = self.residual("pkg/Pure")
