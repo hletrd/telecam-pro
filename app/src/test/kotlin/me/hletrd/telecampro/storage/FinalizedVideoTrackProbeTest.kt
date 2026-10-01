@@ -81,14 +81,17 @@ class FinalizedVideoTrackProbeTest {
         val descriptor = Descriptor()
         val parsed = mutableListOf<Throwable>()
         val cause = IOException("Failed to instantiate extractor")
+        var retries = 0
         val probe = classifyFinalizedVideoTrack(
             open = { descriptor },
             hasVideoTrack = { throw cause },
             muxerStopThrew = true,
             onParseFailure = { parsed += it },
+            beforeParseRetry = { retries++ },
         )
         assertEquals(PendingProbe.INVALID, probe)
         assertSame(cause, parsed.single())
+        assertEquals(1, retries)
         assertEquals(1, descriptor.closed)
 
         assertEquals(
@@ -103,6 +106,33 @@ class FinalizedVideoTrackProbeTest {
             PendingProbe.VALID,
             classifyFinalizedVideoTrack(open = { Descriptor() }, hasVideoTrack = { true }, muxerStopThrew = true),
         )
+    }
+
+    @Test
+    fun `a transient parse throw after a muxer stop throw is retried once before deleting`() {
+        // MRG3-2: the INVALID branch deletes, so a single FUSE hiccup must not decide it.
+        var attempts = 0
+        val recovered = classifyFinalizedVideoTrack(
+            open = { Descriptor() },
+            hasVideoTrack = { if (++attempts == 1) throw IOException("transient") else true },
+            muxerStopThrew = true,
+        )
+        assertEquals(PendingProbe.VALID, recovered)
+        assertEquals(2, attempts)
+
+        // Without the stop throw nothing is destructive, so there is no retry to spend.
+        var plainAttempts = 0
+        var plainRetries = 0
+        assertEquals(
+            PendingProbe.INDETERMINATE,
+            classifyFinalizedVideoTrack(
+                open = { Descriptor() },
+                hasVideoTrack = { plainAttempts++; throw IOException("transient") },
+                beforeParseRetry = { plainRetries++ },
+            ),
+        )
+        assertEquals(1, plainAttempts)
+        assertEquals(0, plainRetries)
     }
 
     @Test

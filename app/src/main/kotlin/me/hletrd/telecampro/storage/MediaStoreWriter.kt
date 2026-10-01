@@ -1767,6 +1767,8 @@ object MediaStoreWriter {
                 val verdict = if (muxerStopThrew) "muxer stop threw; deleting" else "retained for recovery"
                 DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; $verdict", failure)
             },
+            // Recorder finalization thread, never main or camera; an interrupt simply skips the pause.
+            beforeParseRetry = { sleepPreservingInterrupt(FINALIZED_VIDEO_PARSE_RETRY_MS) },
         )
 
     private fun probeCompleteHeif(context: Context, uri: Uri): PendingProbe {
@@ -2402,6 +2404,9 @@ internal fun markCompletionWithRetry(
  * provider/SQLite work after its owner was retired. This restores the flag and returns false so the
  * caller can stop retrying, matching `CameraTeardownTerminal` / `RecordingTeardownCoordinator`.
  */
+/** Pause before the single confirming re-parse of a muxer-stop-threw take ([classifyFinalizedVideoTrack]). */
+private const val FINALIZED_VIDEO_PARSE_RETRY_MS = 250L
+
 internal fun sleepPreservingInterrupt(ms: Long): Boolean = try {
     Thread.sleep(ms)
     true
@@ -2683,6 +2688,11 @@ internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
  * throw to INDETERMINATE on every launch — so retaining it only kept a corrupt take private until
  * MediaProvider expired it, under copy promising it would be saved. An open failure stays
  * INDETERMINATE either way: an unopened provider still says nothing about the bytes.
+ *
+ * Because that INVALID deletes, one parse throw is not enough even then: the transient FUSE failure
+ * AGG2-18 protects against can coincide with the stop throw. The parse is retried ONCE after
+ * [beforeParseRetry] (a short pause in production), and only a SECOND throw is INVALID; a retry that
+ * parses decides on the bytes as usual (RPL cycle 3, MRG3-2). Only the final cause is reported.
  */
 internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
     open: () -> D,
@@ -2690,6 +2700,7 @@ internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
     muxerStopThrew: Boolean = false,
     onOpenFailure: (Throwable) -> Unit = {},
     onParseFailure: (Throwable) -> Unit = {},
+    beforeParseRetry: () -> Unit = {},
 ): PendingProbe {
     val descriptor = try {
         open()
@@ -2698,7 +2709,14 @@ internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
         return PendingProbe.INDETERMINATE
     }
     return try {
-        if (hasVideoTrack(descriptor)) PendingProbe.VALID else PendingProbe.INVALID
+        val parsed = try {
+            hasVideoTrack(descriptor)
+        } catch (first: Exception) {
+            if (!muxerStopThrew) throw first
+            beforeParseRetry()
+            hasVideoTrack(descriptor)
+        }
+        if (parsed) PendingProbe.VALID else PendingProbe.INVALID
     } catch (failure: Exception) {
         onParseFailure(failure)
         if (muxerStopThrew) PendingProbe.INVALID else PendingProbe.INDETERMINATE
