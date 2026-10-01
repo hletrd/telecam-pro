@@ -14,6 +14,8 @@ TOOLS = REPO_ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 from android_sdk import android_sdk_environment  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_git import init_fixture_repo  # noqa: E402
 
 
 def load_builder():
@@ -48,7 +50,7 @@ def initialize_fixture(root: Path) -> Path:
     gradlew = root / "gradlew"
     gradlew.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     gradlew.chmod(0o755)
-    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+    init_fixture_repo(root)
     subprocess.run(["git", "config", "user.name", "Debug Builder Test"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "debug@example.invalid"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)

@@ -17,6 +17,8 @@ import xml.etree.ElementTree as ET
 import zlib
 from collections.abc import Callable
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_git import init_fixture_repo  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -102,7 +104,7 @@ def run_documentation_gate_from_committed_export(
         if mutate is not None:
             mutate(staging)
 
-        subprocess.run(["git", "init", "-b", "main"], cwd=staging, check=True, capture_output=True)
+        init_fixture_repo(staging)
         subprocess.run(["git", "config", "user.name", "Docs Export Test"], cwd=staging, check=True)
         subprocess.run(
             ["git", "config", "user.email", "docs@example.invalid"],
@@ -386,7 +388,7 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             root = Path(temp_dir)
             tracked = root / "tracked.txt"
             tracked.write_text("clean\n", encoding="utf-8")
-            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            init_fixture_repo(root)
             subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)

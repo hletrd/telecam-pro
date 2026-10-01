@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_git import init_fixture_repo  # noqa: E402
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "build_immutable_release.py"
@@ -31,7 +33,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
         )
         (root / "gradlew").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         (root / "gradlew").chmod(0o755)
-        subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+        init_fixture_repo(root)
         subprocess.run(["git", "config", "user.name", "Snapshot Test"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.email", "snapshot@example.invalid"], cwd=root, check=True)
         subprocess.run(["git", "add", "."], cwd=root, check=True)
@@ -589,7 +591,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 (root / ".gitignore").write_text("app/build/\n", encoding="utf-8")
                 (root / "gradlew").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 (root / "gradlew").chmod(0o755)
-                subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+                init_fixture_repo(root)
                 subprocess.run(["git", "config", "user.name", "Snapshot Test"], cwd=root, check=True)
                 subprocess.run(["git", "config", "user.email", "snapshot@example.invalid"], cwd=root, check=True)
                 subprocess.run(["git", "add", "."], cwd=root, check=True)

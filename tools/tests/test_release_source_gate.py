@@ -14,6 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS = REPO_ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 from android_sdk import android_sdk_environment  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_git import init_fixture_repo  # noqa: E402
 
 PROJECT_JAVA_HOME = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")
 
@@ -66,7 +68,7 @@ class ReleaseSourceGateTest(unittest.TestCase):
             "app/build/\nreleases/\n",
             encoding="utf-8",
         )
-        subprocess.run(["git", "init", "-b", "main"], cwd=cls.root, check=True, capture_output=True)
+        init_fixture_repo(cls.root)
         subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=cls.root, check=True)
         subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=cls.root, check=True)
         subprocess.run(["git", "add", "."], cwd=cls.root, check=True)
@@ -274,7 +276,7 @@ class ReleaseSourceGateTest(unittest.TestCase):
                 target.write_text("external bytes\n", encoding="utf-8")
                 link = root / "app/src/main/packageable.txt"
                 link.symlink_to(target if absolute else Path("../../../outside.txt"))
-                subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+                init_fixture_repo(root)
                 subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=root, check=True)
                 subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=root, check=True)
                 subprocess.run(["git", "add", "."], cwd=root, check=True)
@@ -295,7 +297,7 @@ class ReleaseSourceGateTest(unittest.TestCase):
             tracked.parent.mkdir(parents=True)
             (root / "app/src/release").mkdir(parents=True)
             tracked.write_text("indexed bytes\n", encoding="utf-8")
-            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            init_fixture_repo(root)
             subprocess.run(["git", "config", "user.name", "Gate Test"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "gate@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "add", "."], cwd=root, check=True)

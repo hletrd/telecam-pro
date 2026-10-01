@@ -14,6 +14,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.upload_key_policy import BLOCKED_UPLOAD_CERT_SHA256
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_git import init_fixture_repo  # noqa: E402
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check_release_artifact.py"
@@ -1041,7 +1043,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
     def test_ignored_source_query_is_nul_safe_and_scoped_to_package_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            init_fixture_repo(root, branch=None)
             (root / ".gitignore").write_text("*.secret\n", encoding="utf-8")
             subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True)
             subprocess.run(
