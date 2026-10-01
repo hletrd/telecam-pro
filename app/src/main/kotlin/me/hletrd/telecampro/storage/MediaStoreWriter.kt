@@ -1679,8 +1679,8 @@ object MediaStoreWriter {
      * to collapse every exception to "no track", so a provider that was merely busy at the moment
      * of reopen (media scan, transient Binder failure) made the live path DELETE a good take that
      * launch recovery — which classifies the same exception as INDETERMINATE — would have kept.
-     * Now only a successful open followed by an extractor verdict is authoritative; an open that
-     * fails is INDETERMINATE and the caller retains the private row for launch recovery.
+     * Now only a successful open followed by a PARSED "no video track" verdict is authoritative; an
+     * open or extractor throw is INDETERMINATE and the caller retains the private row for recovery.
      */
     internal fun finalizedVideoTrackProbe(context: Context, uri: Uri): PendingProbe =
         classifyFinalizedVideoTrack(
@@ -1701,7 +1701,7 @@ object MediaStoreWriter {
                 DiagnosticLog.w(TAG, "finalized video reopen failed for $uri; retained for recovery", failure)
             },
             onParseFailure = { failure ->
-                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri", failure)
+                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; retained for recovery", failure)
             },
         )
 
@@ -2572,9 +2572,15 @@ internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
 
 /**
  * Pure tri-state for the live finalized-video check. Provider OPEN failure proves nothing about the
- * bytes and is INDETERMINATE (retain, never delete). After a successful open, the extractor is the
- * authority: no video track, or a container it cannot parse, is INVALID. Open failure and parse
- * failure each report their cause exactly once through the supplied observer.
+ * bytes and is INDETERMINATE (retain, never delete). After a successful open, only an extractor that
+ * PARSED the container and found no `video/` track is INVALID. A THROW from the extractor is
+ * INDETERMINATE too (AGG2-18): `MediaExtractor.setDataSource` on a MediaProvider FUSE fd raises the
+ * same `IOException("Failed to instantiate extractor")` for a transient provider/FUSE read failure
+ * (media scan, MediaProvider restart mid-read, revoked fd) as for a corrupt container, and launch
+ * recovery's `pendingProbeOutcome` already maps any probe throw to INDETERMINATE — the live tail
+ * must not be the stricter path in the destructive direction. A genuinely corrupt take is then
+ * retained private and re-judged by recovery, which costs a pending row, never a good clip. Open
+ * failure and parse failure each report their cause exactly once through the supplied observer.
  */
 internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
     open: () -> D,
@@ -2592,7 +2598,7 @@ internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
         if (hasVideoTrack(descriptor)) PendingProbe.VALID else PendingProbe.INVALID
     } catch (failure: Exception) {
         onParseFailure(failure)
-        PendingProbe.INVALID
+        PendingProbe.INDETERMINATE
     } finally {
         // A read-only descriptor's close cannot change the verdict already reached on its bytes.
         runCatching { descriptor.close() }

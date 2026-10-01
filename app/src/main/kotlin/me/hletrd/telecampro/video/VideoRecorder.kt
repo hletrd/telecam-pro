@@ -1950,7 +1950,7 @@ internal data class FrozenRecordingStorage<T>(
 
 /** Provider effects kept injectable so the real frozen tail can be integration-tested on host. */
 internal data class RecordingStorageEffects<T>(
-    /** Tri-state: INDETERMINATE (provider unopenable) retains; only INVALID licenses deletion. */
+    /** Tri-state: INDETERMINATE (open or extractor throw) retains; only INVALID deletes. */
     val validateVideoTrack: (T) -> PendingProbe,
     val markComplete: (T) -> Boolean,
     val publish: (T) -> Boolean,
@@ -1970,9 +1970,10 @@ internal fun <T> completeFrozenRecordingStorage(
     if (validation == FinalizedRecordingValidation.SKIPPED) {
         validation = when (outputUri?.let(effects.validateVideoTrack)) {
             PendingProbe.VALID -> FinalizedRecordingValidation.PASSED
-            // An unopenable provider says nothing about the bytes. Launch recovery already treats
-            // the same answer as INDETERMINATE and keeps the row; the live path must not be the
-            // stricter one in the DESTRUCTIVE direction (a busy provider deleted good takes).
+            // An unopenable provider, or an extractor throw on a FUSE fd (AGG2-18), says nothing
+            // about the bytes. Launch recovery already treats the same answer as INDETERMINATE and
+            // keeps the row; the live path must not be the stricter one in the DESTRUCTIVE
+            // direction (a busy provider deleted good takes).
             PendingProbe.INDETERMINATE -> FinalizedRecordingValidation.INDETERMINATE
             PendingProbe.INVALID, null -> FinalizedRecordingValidation.FAILED
         }
@@ -2359,7 +2360,7 @@ internal fun shouldPublishRecording(
         finalizedValidation == FinalizedRecordingValidation.PASSED)
 
 /**
- * [INDETERMINATE] is the reopen that could not be attempted (provider open failed): neither
+ * [INDETERMINATE] is the reopen that proved nothing (provider open or extractor threw): neither
  * publishable nor deletable, so the stop tail retains the private row for launch recovery.
  */
 internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED, INDETERMINATE }
