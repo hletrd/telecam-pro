@@ -11,7 +11,8 @@ import org.junit.Test
  * The live stop tail's finalized-video check used to collapse EVERY exception to "no video track",
  * so a provider that could not be opened for a moment deleted a good take that launch recovery
  * would have kept. Only an extractor that PARSED the container and found no video track is
- * authoritative for deletion; any throw (open or parse) retains the take for launch recovery.
+ * authoritative for deletion; any throw (open or parse) retains the take for launch recovery —
+ * except a parse throw after the muxer.stop() throw, which is INVALID (AGG3-6).
  */
 class FinalizedVideoTrackProbeTest {
     private class Descriptor : AutoCloseable {
@@ -71,6 +72,37 @@ class FinalizedVideoTrackProbeTest {
             assertSame(cause, parsed.single())
             assertEquals(1, descriptor.closed)
         }
+    }
+
+    @Test
+    fun `an extractor throw after a muxer stop throw is invalid, an open failure still is not`() {
+        // AGG3-6 / REG3-1: the stop throw is independent evidence the moov was never written, and
+        // launch recovery would only re-throw on the same bytes forever.
+        val descriptor = Descriptor()
+        val parsed = mutableListOf<Throwable>()
+        val cause = IOException("Failed to instantiate extractor")
+        val probe = classifyFinalizedVideoTrack(
+            open = { descriptor },
+            hasVideoTrack = { throw cause },
+            muxerStopThrew = true,
+            onParseFailure = { parsed += it },
+        )
+        assertEquals(PendingProbe.INVALID, probe)
+        assertSame(cause, parsed.single())
+        assertEquals(1, descriptor.closed)
+
+        assertEquals(
+            PendingProbe.INDETERMINATE,
+            classifyFinalizedVideoTrack<Descriptor>(
+                open = { throw FileNotFoundException("provider busy") },
+                hasVideoTrack = { error("must not inspect without a descriptor") },
+                muxerStopThrew = true,
+            ),
+        )
+        assertEquals(
+            PendingProbe.VALID,
+            classifyFinalizedVideoTrack(open = { Descriptor() }, hasVideoTrack = { true }, muxerStopThrew = true),
+        )
     }
 
     @Test

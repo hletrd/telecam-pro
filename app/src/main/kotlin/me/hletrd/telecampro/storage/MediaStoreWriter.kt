@@ -1737,11 +1737,14 @@ object MediaStoreWriter {
      * of reopen (media scan, transient Binder failure) made the live path DELETE a good take that
      * launch recovery — which classifies the same exception as INDETERMINATE — would have kept.
      * Now only a successful open followed by a PARSED "no video track" verdict is authoritative; an
-     * open or extractor throw is INDETERMINATE and the caller retains the private row for recovery.
+     * open or extractor throw is INDETERMINATE and the caller retains the private row for recovery
+     * — unless [muxerStopThrew], where an extractor throw on an opened file is INVALID (see
+     * [classifyFinalizedVideoTrack]).
      */
-    internal fun finalizedVideoTrackProbe(context: Context, uri: Uri): PendingProbe =
+    internal fun finalizedVideoTrackProbe(context: Context, uri: Uri, muxerStopThrew: Boolean): PendingProbe =
         classifyFinalizedVideoTrack(
             open = { openReadableParcelFd(context, uri) },
+            muxerStopThrew = muxerStopThrew,
             hasVideoTrack = { descriptor ->
                 val extractor = MediaExtractor()
                 try {
@@ -1758,7 +1761,8 @@ object MediaStoreWriter {
                 DiagnosticLog.w(TAG, "finalized video reopen failed for $uri; retained for recovery", failure)
             },
             onParseFailure = { failure ->
-                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; retained for recovery", failure)
+                val verdict = if (muxerStopThrew) "muxer stop threw; deleting" else "retained for recovery"
+                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; $verdict", failure)
             },
         )
 
@@ -2669,10 +2673,18 @@ internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
  * must not be the stricter path in the destructive direction. A genuinely corrupt take is then
  * retained private and re-judged by recovery, which costs a pending row, never a good clip. Open
  * failure and parse failure each report their cause exactly once through the supplied observer.
+ *
+ * EXCEPT when [muxerStopThrew] (AGG3-6 / REG3-1): a `muxer.stop()` throw is independent evidence
+ * that the moov was never written, and an opened-then-unparseable file is then a broken container,
+ * not a transient read. Recovery cannot do better — it runs the same extractor and maps the same
+ * throw to INDETERMINATE on every launch — so retaining it only kept a corrupt take private until
+ * MediaProvider expired it, under copy promising it would be saved. An open failure stays
+ * INDETERMINATE either way: an unopened provider still says nothing about the bytes.
  */
 internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
     open: () -> D,
     hasVideoTrack: (D) -> Boolean,
+    muxerStopThrew: Boolean = false,
     onOpenFailure: (Throwable) -> Unit = {},
     onParseFailure: (Throwable) -> Unit = {},
 ): PendingProbe {
@@ -2686,7 +2698,7 @@ internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
         if (hasVideoTrack(descriptor)) PendingProbe.VALID else PendingProbe.INVALID
     } catch (failure: Exception) {
         onParseFailure(failure)
-        PendingProbe.INDETERMINATE
+        if (muxerStopThrew) PendingProbe.INVALID else PendingProbe.INDETERMINATE
     } finally {
         // A read-only descriptor's close cannot change the verdict already reached on its bytes.
         runCatching { descriptor.close() }

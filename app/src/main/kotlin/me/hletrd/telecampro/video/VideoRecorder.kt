@@ -1949,7 +1949,10 @@ internal data class FrozenRecordingStorage<T>(
 
 /** Provider effects kept injectable so the real frozen tail can be integration-tested on host. */
 internal data class RecordingStorageEffects<T>(
-    /** Tri-state: INDETERMINATE (open or extractor throw) retains; only INVALID deletes. */
+    /**
+     * Tri-state: INDETERMINATE (open failure) retains; only INVALID deletes. Called only after the
+     * tolerated muxer.stop() throw, so an extractor throw on an opened file is INVALID (AGG3-6).
+     */
     val validateVideoTrack: (T) -> PendingProbe,
     val markComplete: (T) -> Boolean,
     val publish: (T) -> Boolean,
@@ -1969,10 +1972,10 @@ internal fun <T> completeFrozenRecordingStorage(
     if (validation == FinalizedRecordingValidation.SKIPPED) {
         validation = when (outputUri?.let(effects.validateVideoTrack)) {
             PendingProbe.VALID -> FinalizedRecordingValidation.PASSED
-            // An unopenable provider, or an extractor throw on a FUSE fd (AGG2-18), says nothing
-            // about the bytes. Launch recovery already treats the same answer as INDETERMINATE and
-            // keeps the row; the live path must not be the stricter one in the DESTRUCTIVE
-            // direction (a busy provider deleted good takes).
+            // An unopenable provider says nothing about the bytes (a busy provider deleted good
+            // takes). Launch recovery treats the same answer as INDETERMINATE and keeps the row.
+            // An extractor throw on an OPENED file after the muxer.stop() throw is INVALID
+            // (AGG3-6): recovery could only re-throw on it forever (see classifyFinalizedVideoTrack).
             PendingProbe.INDETERMINATE -> FinalizedRecordingValidation.INDETERMINATE
             PendingProbe.INVALID, null -> FinalizedRecordingValidation.FAILED
         }
@@ -2044,7 +2047,9 @@ internal class RecordingStorageTail(
         return completeFrozenRecordingStorage(
             frozen,
             RecordingStorageEffects(
-                validateVideoTrack = { MediaStoreWriter.finalizedVideoTrackProbe(context, it) },
+                // validateVideoTrack runs only for SKIPPED validation, which only the tolerated
+                // muxer.stop() throw sets — so that throw is always part of this probe's evidence.
+                validateVideoTrack = { MediaStoreWriter.finalizedVideoTrackProbe(context, it, muxerStopThrew = true) },
                 markComplete = {
                     val completion = MediaStoreWriter.markWriteComplete(context, it)
                     completion.durable
