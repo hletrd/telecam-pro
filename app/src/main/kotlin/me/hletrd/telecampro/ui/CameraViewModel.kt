@@ -36,6 +36,8 @@ import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.hardwareActionAdmitted
+import me.hletrd.telecampro.AudioDenialReasonStore
+import me.hletrd.telecampro.bankAudioOffByDenial
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
 import me.hletrd.telecampro.camera.CameraUiState
@@ -749,6 +751,9 @@ class CameraViewModel private constructor(
     private var ownerlessMediaDeleteOverrides = OwnerlessMediaDeleteOverrides()
     private var mediaDeleteDispatcher = ownerlessMediaDeleteOverrides.dispatcher
     @Volatile private var cleared = false
+    // The ONE owner of the audio-denial reason (AGG4-49): the memory-bank store reads it here, so a
+    // bank's provenance never depends on which UI layer happened to reach this door.
+    private val audioDenialReason = AudioDenialReasonStore(app)
     private var encoderInventory: CodecInventory = CodecInventory.EMPTY
     private var pendingCodecUntilInventory: VideoCodec? = null
     private var pendingTransferUntilInventory: ColorTransfer? = null
@@ -3537,14 +3542,21 @@ class CameraViewModel private constructor(
         scheduleSettingsSave()
     }
 
-    override fun onStoreMemorySlot(slot: MemorySlot) = storeMemorySlot(slot, audioOffByDenial = null)
-
     /**
-     * [onStoreMemorySlot] with the bank's audio-off provenance (AGG3-8). The denial reason lives in
-     * the Activity's permission preferences, so only the Activity can supply it; null records
-     * "unknown" and recall keeps its pre-provenance rule for that bank.
+     * Stores the bank WITH its audio-off provenance (AGG3-8), read from the one shared denial-reason
+     * owner. This door used to record `null` ("unknown") and relied on an Activity wrapper to supply
+     * the real value (AGG4-49): any caller reaching the ViewModel directly — or a removal of that
+     * "redundant" wrapper — silently reverted recall to the provenance-blind rule.
      */
-    fun storeMemorySlot(slot: MemorySlot, audioOffByDenial: Boolean?) {
+    override fun onStoreMemorySlot(slot: MemorySlot) = storeMemorySlot(
+        slot,
+        audioOffByDenial = bankAudioOffByDenial(
+            recordAudio = _state.value.recordAudio,
+            audioDenialReason = audioDenialReason.read(),
+        ),
+    )
+
+    private fun storeMemorySlot(slot: MemorySlot, audioOffByDenial: Boolean) {
         if (rejectIfRecording()) return
         val live = _state.value
         // Same FRONT substitution as saveSettingsIfEnabled: recalled packets are REAR-route optics

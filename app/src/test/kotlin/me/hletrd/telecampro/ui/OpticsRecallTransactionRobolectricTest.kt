@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
+import me.hletrd.telecampro.AudioDenialReasonStore
 import me.hletrd.telecampro.camera.CameraController
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraRoute
@@ -221,10 +222,16 @@ class OpticsRecallTransactionRobolectricTest {
         assertNull(vm.recallMemorySlot(MemorySlot.MR2))
 
         // AGG3-8: the bank's audio-off provenance rides the store and comes back with the recall.
-        vm.storeMemorySlot(MemorySlot.MR2, audioOffByDenial = true)
-        assertEquals(true, vm.recallMemorySlot(MemorySlot.MR2)?.recordAudioOffByDenial)
+        // AGG4-49: the ViewModel door itself reads the shared denial reason, so a bank stored
+        // through it is never "unknown" (null) — it used to be, unless an Activity wrapper ran.
+        val reason = AudioDenialReasonStore(app)
+        reason.write(true)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(recordAudio = false)
         vm.onStoreMemorySlot(MemorySlot.MR2)
-        assertNull(requireNotNull(vm.recallMemorySlot(MemorySlot.MR2)).recordAudioOffByDenial)
+        assertEquals(true, vm.recallMemorySlot(MemorySlot.MR2)?.recordAudioOffByDenial)
+        reason.write(false)
+        vm.onStoreMemorySlot(MemorySlot.MR2)
+        assertEquals(false, requireNotNull(vm.recallMemorySlot(MemorySlot.MR2)).recordAudioOffByDenial)
     }
 
     @Test

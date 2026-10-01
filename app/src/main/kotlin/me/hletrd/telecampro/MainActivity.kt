@@ -514,18 +514,9 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            override fun onStoreMemorySlot(slot: MemorySlot) {
-                                // The bank records WHY it is silent (AGG3-8): only this Activity
-                                // knows whether recordAudio=false is the denial consequence.
-                                vm.storeMemorySlot(
-                                    slot,
-                                    audioOffByDenial = bankAudioOffByDenial(
-                                        recordAudio = vm.state.value.recordAudio,
-                                        audioDenialReason = permissionPreferences
-                                            .getBoolean(AUDIO_OFF_BY_DENIAL_KEY, false),
-                                    ),
-                                )
-                            }
+                            // onStoreMemorySlot is NOT wrapped: the ViewModel reads the bank's
+                            // audio-off provenance from the shared AudioDenialReasonStore itself
+                            // (AGG4-49), so no caller can store a bank with "unknown" provenance.
 
                             override fun onRecallMemorySlot(slot: MemorySlot) {
                                 val applied = vm.recallMemorySlot(slot)
@@ -535,16 +526,14 @@ class MainActivity : ComponentActivity() {
                                 // breaking the other (AGG-37 vs AGG2-26). `applied` is the recall's
                                 // own answer: the post-hoc activeMemorySlot check was also true for
                                 // a refused re-recall of the slot already active.
-                                val reason = audioDenialReasonAfterRecall(
+                                // The reconciliation against the CURRENT grant runs right here too
+                                // (AGG4-9): a denial-silent bank recalled while the mic is already
+                                // granted otherwise recorded silent clips until a later onResume.
+                                memoryBankAudioProvenance.afterRecall(
                                     recallApplied = applied != null,
                                     recalledRecordAudio = applied?.recordAudio ?: false,
                                     recalledOffByDenial = applied?.recordAudioOffByDenial,
                                 )
-                                if (reason != null) {
-                                    permissionPreferences.edit(commit = true) {
-                                        putBoolean(AUDIO_OFF_BY_DENIAL_KEY, reason)
-                                    }
-                                }
                             }
 
                             override fun onToggleRecordAudio(enabled: Boolean) {
@@ -992,16 +981,7 @@ class MainActivity : ComponentActivity() {
             // prevents a future Android auto-reset from inheriting an obsolete pre-grant denial.
             permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false) }
         }
-        if (audioRestoredByMicrophoneGrant(
-                audioDisabledByDenial = permissionPreferences.getBoolean(AUDIO_OFF_BY_DENIAL_KEY, false),
-                recordAudio = vm.state.value.recordAudio,
-                hasMicrophonePermission = hasMicrophonePermission,
-            )
-        ) {
-            permissionPreferences.edit(commit = true) { putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false) }
-            vm.onToggleRecordAudio(true)
-            vm.onAppStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
-        }
+        memoryBankAudioProvenance.restoreIfGranted(announce = true)
         cameraPermanentlyDenied = classifyCameraPermission(
             granted = hasCameraPermission,
             requestedBefore = requestedBefore && !hasCameraPermission,
@@ -1036,11 +1016,11 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     private companion object {
-        const val PERMISSION_PREFS_NAME = "permission_state"
+        const val PERMISSION_PREFS_NAME = AudioDenialReasonStore.PERMISSION_PREFS_NAME
         const val CAMERA_REQUESTED_BEFORE_KEY = "camera_requested_before"
 
         /** Whether audio is off BECAUSE a microphone request was refused, not by operator choice. */
-        const val AUDIO_OFF_BY_DENIAL_KEY = "audio_off_by_denial"
+        const val AUDIO_OFF_BY_DENIAL_KEY = AudioDenialReasonStore.AUDIO_OFF_BY_DENIAL_KEY
 
         // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
         // (device-captured via a dispatchKeyEvent log). Two are slide notches, one is the light-press.
@@ -1076,6 +1056,21 @@ class MainActivity : ComponentActivity() {
 
     private val permissionPreferences by lazy {
         getSharedPreferences(PERMISSION_PREFS_NAME, MODE_PRIVATE)
+    }
+
+    // Memory-bank recall provenance + the grant reconciliation, one host-tested owner (AGG4-49/9).
+    // The permission is read LIVE, not from the Compose mirror, so a recall right after a grant
+    // reconciles against the truth even before the next onResume refresh.
+    private val memoryBankAudioProvenance by lazy {
+        MemoryBankAudioProvenance(
+            reason = AudioDenialReasonStore(permissionPreferences),
+            recordAudio = { vm.state.value.recordAudio },
+            hasMicrophonePermission = { hasPermission(Manifest.permission.RECORD_AUDIO) },
+            restoreAudio = { announce ->
+                vm.onToggleRecordAudio(true)
+                if (announce) vm.onAppStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
+            },
+        )
     }
 
 }
