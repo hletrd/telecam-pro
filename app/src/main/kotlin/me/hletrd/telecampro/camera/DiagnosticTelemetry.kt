@@ -41,9 +41,12 @@ internal fun recurringDiagnosticAllowed(
     budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
 ): Boolean = debugEnabled && budget.tryAcquire()
 
-/** Finite process allowance for warnings/errors that must not overrun ColorOS's real quota. */
+/**
+ * Finite process allowance for warnings/errors that must not overrun ColorOS's real quota. The owner
+ * is explicit: production binds [processReservedDiagnosticLogBudget] once, in [DiagnosticLog].
+ */
 internal fun reservedDiagnosticAllowed(
-    budget: ProcessDiagnosticLogBudget = processReservedDiagnosticLogBudget,
+    budget: ProcessDiagnosticLogBudget,
 ): Boolean = budget.tryAcquire()
 
 /**
