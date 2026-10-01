@@ -158,6 +158,7 @@ class CameraController internal constructor(
     @Volatile private var rawChars: CameraCharacteristics? = null
     @Volatile private var rawCharsCameraId: String? = null
     private val rawCharsFailureLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val rawCharsRetryGate = LazyReadRetryGate(RAW_CHARS_RETRY_INTERVAL_NS)
     private var configAttempt = 0
     // HAL video stabilization mode for the repeating preview/video request (CONTROL_VIDEO_
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
@@ -1305,7 +1306,10 @@ class CameraController internal constructor(
     private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
         val targets = meteringRegionTargets(caps.maxAeRegions, caps.maxAfRegions, controls.focusMode)
         if (!targets.ae && !targets.af) return
-        val active = rawChars?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        // chars(), not the bare field (AGG2-19): after a failed open-time read every tap-AF/AE
+        // request used to ship WITHOUT regions while setMeteringPoint still reported ACCEPTED,
+        // because only tryComplete retried the read.
+        val active = chars()?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
 
         val point = meteringPoint
         val (cx, cy, fraction) = if (point != null) {
@@ -2262,8 +2266,9 @@ class CameraController internal constructor(
         }
         // A transient open-time read failure (the same resume race as openCamera's synchronous
         // CAMERA_DISABLED) used to leave rawChars null for the controller's whole life, failing
-        // EVERY still after the HAL had already delivered its image. Retry the read lazily here.
-        val chars = rawChars ?: readRawCharacteristics()?.also { rawChars = it }
+        // EVERY still after the HAL had already delivered its image. Retry the read lazily here
+        // (rate-limited inside chars(), since this is the camera handler with the Images held).
+        val chars = chars()
         try {
             if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
             else p.cb.onError(IllegalStateException("Missing camera characteristics"))
@@ -2409,6 +2414,19 @@ class CameraController internal constructor(
      * logged through the reserved facade (once per controller — the lazy retry in tryComplete can
      * run per shot) so a still that fails "Missing camera characteristics" has a cause in logcat.
      */
+    /**
+     * The ONE accessor for the producer's characteristics outside open() (AGG2-19): the cached
+     * value, else a lazy re-read admitted by [rawCharsRetryGate]. Metering and tryComplete both go
+     * through here so neither silently degrades while the other recovers, and a persistently
+     * failing read costs at most one camera-thread Binder call per interval, not one per shot.
+     */
+    private fun chars(): CameraCharacteristics? =
+        rawChars ?: if (rawCharsRetryGate.tryAcquire()) {
+            readRawCharacteristics()?.also { rawChars = it }
+        } else {
+            null
+        }
+
     private fun readRawCharacteristics(): CameraCharacteristics? {
         val id = rawCharsCameraId ?: return null
         return runCatching { manager.getCameraCharacteristics(id) }
@@ -2425,6 +2443,8 @@ class CameraController internal constructor(
         val controllerSequence = java.util.concurrent.atomic.AtomicLong(0)
         val previewRequestSequence = java.util.concurrent.atomic.AtomicLong(0)
         const val CUSTOM_WB_SAMPLE_TIMEOUT_MS = 2_000L
+        // At most one lazy characteristics re-read per second while the read keeps failing.
+        const val RAW_CHARS_RETRY_INTERVAL_NS = 1_000_000_000L
         // Sensor fast-path pacing: every repeating-request swap gaps this HAL ~180 ms (measured),
         // so high-churn sensor submits hold the same >=200 ms floor as the zoom fast path.
         const val SENSOR_SUBMIT_MIN_INTERVAL_MS = 200L
@@ -2457,6 +2477,31 @@ internal class PreviewModeIntentGate(initial: PreviewModeIntent) {
     }
 
     fun isCurrent(intent: PreviewModeIntent): Boolean = requested.get() === intent
+}
+
+/**
+ * Rate limit for a lazy provider re-read that runs on the camera handler (AGG2-19 / PERF2-5). The
+ * `rawChars` retry used to be a `getCameraCharacteristics` Binder call inside `tryComplete` on EVERY
+ * still while the read kept failing — each frame of a BURST/AEB chain, with the live Images held.
+ * The first retry is admitted at once (the open-time read already failed; the next caller deserves a
+ * fresh answer), later ones at most once per [minIntervalNs]. "Never attempted" is a separate flag,
+ * not a sentinel time, because `System.nanoTime()` may legally be any value including negative.
+ */
+internal class LazyReadRetryGate(
+    private val minIntervalNs: Long,
+    private val nowNs: () -> Long = System::nanoTime,
+) {
+    private var attempted = false
+    private var lastAttemptNs = 0L
+
+    @Synchronized
+    fun tryAcquire(): Boolean {
+        val now = nowNs()
+        if (attempted && now - lastAttemptNs < minIntervalNs) return false
+        attempted = true
+        lastAttemptNs = now
+        return true
+    }
 }
 
 /** Identity guard for callbacks that can outlive and race reuse of the single pending-shot slot. */
