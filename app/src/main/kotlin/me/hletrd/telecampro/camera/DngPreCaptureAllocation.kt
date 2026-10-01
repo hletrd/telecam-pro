@@ -96,18 +96,30 @@ internal class DngPreCaptureAllocation<T : Any>(
     private val beforeDeadlineCompletion: () -> Unit = {},
 ) {
     private val started = AtomicBoolean(false)
-    private lateinit var attempt: RecordingPreNativeAllocationAttempt<T>
+    private val cancelRequested = AtomicBoolean(false)
     private val deadline = AtomicReference<RecordingOperationDeadline?>(null)
+
+    /**
+     * Built at construction, not inside [start] (AGG4-21). The engine registers this owner for
+     * [cancel] BEFORE it starts it, so a cancel from `invalidateCameraReady()` on another thread
+     * could land between `start()`'s CAS and a deferred assignment: reading an unassigned
+     * `lateinit` threw out of the invalidation before Ready was cleared, and a non-volatile write
+     * was not even guaranteed visible after it. A final field is safely published with the object.
+     */
+    private val attempt = RecordingPreNativeAllocationAttempt<T>(
+        onRetired = {
+            deadline.get()?.complete()
+            onRetired()
+        },
+        onLateValue = onLateValue,
+    )
 
     fun start(): RecordingPreNativeDispatch {
         check(started.compareAndSet(false, true)) { "DNG pre-capture allocation already started" }
-        attempt = RecordingPreNativeAllocationAttempt(
-            onRetired = {
-                deadline.get()?.complete()
-                onRetired()
-            },
-            onLateValue = onLateValue,
-        )
+        // A cancel that landed before start() already retired (and settled) this owner. Never begin
+        // a provider allocation for it: report the same synchronous non-dispatch the scheduler
+        // refusal does, so [StillContinuationHandoff] answers from the settle that already ran.
+        if (cancelRequested.get()) return RecordingPreNativeDispatch.SHUTDOWN
         val allocationDeadline = deadlineScheduler?.let { scheduler ->
             RecordingOperationDeadline(
                 scheduler = scheduler,
@@ -163,8 +175,15 @@ internal class DngPreCaptureAllocation<T : Any>(
         return submission.dispatch
     }
 
-    /** Returns promptly even when allocation is already blocked in MediaProvider. */
-    fun cancel(): Boolean = started.get() && attempt.retire()
+    /**
+     * Returns promptly even when allocation is already blocked in MediaProvider. Safe at any point
+     * of the owner's life: before [start] it latches the request (so start never allocates) and
+     * retires the attempt exactly once, which settles the shot through [onRetired].
+     */
+    fun cancel(): Boolean {
+        cancelRequested.set(true)
+        return attempt.retire()
+    }
 }
 
 /**

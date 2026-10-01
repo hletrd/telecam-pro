@@ -5030,11 +5030,17 @@ class CameraEngine internal constructor(
         }
     }
 
+    /**
+     * First statement of [invalidateCameraReady]: nothing here may throw past it. One owner's
+     * cancel runs its retirement callbacks (settle, admission release, publication); a failure
+     * there must neither skip the remaining owners nor abort the invalidation before Ready is
+     * cleared (AGG4-21), so each cancel is sealed individually.
+     */
     private fun cancelDngPreCaptureAllocations() {
         val pending = synchronized(dngPreCaptureAllocationLock) {
             dngPreCaptureAllocations.toList()
         }
-        pending.forEach(DngPreCaptureAllocation<PendingOutputAllocation>::cancel)
+        cancelEachSealed(pending) { it.cancel() }
     }
 
     /** Returns true only when this press was admitted to a real still target. */
@@ -8608,6 +8614,13 @@ internal fun rollbackRawWanted(
     )
     return if (movesRestoredRoute) baseline else current
 }
+
+/**
+ * Runs [cancel] for every owner, sealing each one: a throwing owner neither escapes to the caller
+ * nor skips the owners after it. Returns how many cancels threw (diagnostic only).
+ */
+internal fun <T> cancelEachSealed(owners: Iterable<T>, cancel: (T) -> Unit): Int =
+    owners.count { owner -> runCatching { cancel(owner) }.isFailure }
 
 internal enum class PreflightFailureDisposition {
     /** Before the first Ready session (or with no controller): the bounded cold-start retry. */

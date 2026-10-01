@@ -318,6 +318,71 @@ class DngPreCaptureAllocationTest {
         assertEquals(1, ran.get())
     }
 
+    // AGG4-21: the engine registers the owner before start(); a cancel in that window must be safe
+    // (no lateinit read), settle exactly once, and keep start() from allocating at all.
+    @Test
+    fun `cancel before start is latched, settles once, and never allocates`() {
+        val retired = AtomicInteger()
+        val allocationRan = AtomicBoolean(false)
+        val dispatched = AtomicBoolean(false)
+        val owner = DngPreCaptureAllocation<String>(
+            dispatch = { task ->
+                dispatched.set(true)
+                task()
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = {
+                allocationRan.set(true)
+                "row"
+            },
+            isCurrent = { true },
+            onReady = { error("a cancelled owner cannot reach Camera2") },
+            onLateValue = { error("no row was allocated") },
+            onFailure = {},
+            onRetired = { retired.incrementAndGet() },
+        )
+
+        assertTrue("the pre-start cancel retires the attempt", owner.cancel())
+        assertFalse("a second cancel is a no-op", owner.cancel())
+        assertEquals(RecordingPreNativeDispatch.SHUTDOWN, owner.start())
+
+        assertEquals(1, retired.get())
+        assertFalse(dispatched.get())
+        assertFalse(allocationRan.get())
+    }
+
+    @Test
+    fun `a pre-start cancel hands the chain exactly one continuation`() {
+        val continuations = AtomicInteger()
+        val dispatched = dispatchDngPreCaptureAllocation<String>(
+            onDone = { continuations.incrementAndGet() },
+            register = { owner -> owner.cancel() },
+        ) { settle ->
+            DngPreCaptureAllocation(
+                dispatch = { error("a cancelled owner is never dispatched") },
+                allocate = { "row" },
+                isCurrent = { true },
+                onReady = { error("a cancelled owner cannot reach Camera2") },
+                onLateValue = { error("no row was allocated") },
+                onFailure = {},
+                onRetired = settle,
+            )
+        }
+        if (!dispatched) continuations.incrementAndGet()
+        assertEquals(1, continuations.get())
+    }
+
+    @Test
+    fun `one throwing cancel neither escapes nor skips the other owners`() {
+        val cancelled = mutableListOf<Int>()
+        val failures = cancelEachSealed(listOf(1, 2, 3)) { owner ->
+            cancelled += owner
+            if (owner == 2) error("retirement callback failed")
+        }
+        assertEquals(listOf(1, 2, 3), cancelled)
+        assertEquals(1, failures)
+    }
+
     @Test
     fun `allocation failure and dispatcher rejection retire without inline provider fallback`() {
         val failed = AtomicInteger()
