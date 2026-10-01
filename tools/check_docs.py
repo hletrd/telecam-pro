@@ -2508,14 +2508,16 @@ manifest_rows = [
 ]
 check(
     bool(manifest_rows)
-    and all(len(line.split("\t")) == 4 for line in manifest_rows)
+    and all(len(line.split("\t")) == 5 for line in manifest_rows)
+    # TE4-5 / REG4-8: each row binds its rationale to a cited-text fingerprint.
+    and all(re.fullmatch(r"sha256:[0-9a-f]{16}", line.split("\t")[3]) for line in manifest_rows)
     and all(
-        line.split("\t", 3)[3].startswith(
+        line.split("\t", 4)[4].startswith(
             ("framework-bound:", "proven-unreachable:", "race-only:"),
         )
         for line in manifest_rows
     ),
-    "Partition-A residual authority carries class count source and reviewed reason",
+    "Partition-A residual authority carries class count source fingerprint and reviewed reason",
 )
 
 # ---- Device Catalog is one classified matrix, not mutually inconsistent counts -----------------

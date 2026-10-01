@@ -74,7 +74,7 @@ class PartitionReportTest(unittest.TestCase):
                 if not raw.strip() or raw.lstrip().startswith("#"):
                     continue
                 fields = raw.split("\t")
-                if len(fields) != 4 or ":" not in fields[2]:
+                if len(fields) != 5 or ":" not in fields[2]:
                     continue
                 source_text, line_text = fields[2].rsplit(":", 1)
                 if not source_text.endswith(("/Pure.kt", "/Other.kt")):
@@ -193,8 +193,11 @@ class PartitionReportTest(unittest.TestCase):
             self.assertIn("me/hletrd/telecampro", text)
 
     def residual(self, class_name: str, missed: int = 2) -> str:
+        # run_report writes every fixture source as identical `line` rows, so any region of the same
+        # size has this fingerprint.
+        fingerprint = partition_report.region_fingerprint("line\n" * missed, set(range(1, missed + 1)))
         return (
-            f"{class_name}\t{missed}\tapp/src/main/kotlin/Pure.kt:1-{missed}"
+            f"{class_name}\t{missed}\tapp/src/main/kotlin/Pure.kt:1-{missed}\t{fingerprint}"
             "\tproven-unreachable: fixture branch is structurally unreachable\n"
         )
 
@@ -313,38 +316,45 @@ class PartitionReportTest(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertIn("lines inside cited regions", stdout)
 
-    def test_write_regions_recomputes_regions_and_keeps_rationales(self) -> None:
-        stale = self.residual("pkg/Pure")
-        report = report_xml(
+    PURE_SOURCE = "".join(f"statement{number}()\n" for number in range(1, 11))
+    RATIONALE = "proven-unreachable: fixture branch is structurally unreachable"
+
+    def regenerate(
+        self, pure_source: str, manifest: str, pure_missed: set[int], fresh: bool = False,
+    ) -> str:
+        classes = [
             class_xml("pkg/Device", 1, 0),
             class_xml("pkg/Excluded", 0, 1),
             class_xml(
                 "pkg/Pure",
-                2,
+                len(pure_missed),
                 8,
-                f'<method name="pure" desc="()V" line="1">{counter(2, 8)}</method>',
+                f'<method name="pure" desc="()V" line="1">{counter(len(pure_missed), 8)}</method>',
             ),
-            class_xml(
-                "pkg/Fresh",
-                1,
-                1,
-                f'<method name="fresh" desc="()V" line="1">{counter(1, 1)}</method>',
-                source_filename="Fresh.kt",
-            ),
-            source_xml("Pure.kt", {4, 8}, 10),
-            source_xml("Fresh.kt", {2}, 2),
-        )
+            source_xml("Pure.kt", pure_missed, len(pure_source.splitlines())),
+        ]
+        if fresh:
+            classes += [
+                class_xml(
+                    "pkg/Fresh",
+                    1,
+                    1,
+                    f'<method name="fresh" desc="()V" line="1">{counter(1, 1)}</method>',
+                    source_filename="Fresh.kt",
+                ),
+                source_xml("Fresh.kt", {2}, 2),
+            ]
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "app/src/main/kotlin/pkg").mkdir(parents=True)
-            (root / "app/src/main/kotlin/pkg/Pure.kt").write_text("line\n" * 10, encoding="utf-8")
+            (root / "app/src/main/kotlin/pkg/Pure.kt").write_text(pure_source, encoding="utf-8")
             (root / "app/src/main/kotlin/pkg/Fresh.kt").write_text("line\n" * 2, encoding="utf-8")
             paths = {}
             for name, text in (
-                ("report.xml", report),
+                ("report.xml", report_xml(*classes)),
                 ("partition-b.txt", "pkg/Device\n"),
                 ("partition-excluded.txt", "pkg/Excluded\n"),
-                ("partition-a-residuals.txt", stale),
+                ("partition-a-residuals.txt", manifest),
             ):
                 paths[name] = root / name
                 paths[name].write_text(text, encoding="utf-8")
@@ -357,17 +367,83 @@ class PartitionReportTest(unittest.TestCase):
                     "--source-root", str(root),
                     "--write-regions",
                 ])
-            written = paths["partition-a-residuals.txt"].read_text(encoding="utf-8")
+            return paths["partition-a-residuals.txt"].read_text(encoding="utf-8")
+
+    def reviewed_row(self, source: str, lines: set[int]) -> str:
+        fingerprint = partition_report.region_fingerprint(source, lines)
+        region = partition_report.compress_lines(lines)
+        return (
+            f"pkg/Pure\t{len(lines)}\tapp/src/main/kotlin/pkg/Pure.kt:{region}\t{fingerprint}"
+            f"\t{self.RATIONALE}\n"
+        )
+
+    def test_write_regions_carries_a_rationale_across_a_pure_line_shift(self) -> None:
+        # Two lines were inserted above the reviewed guards: same text, new numbers.
+        reviewed = self.reviewed_row(self.PURE_SOURCE, {4, 8})
+        shifted = "// a\n// b\n" + self.PURE_SOURCE
+        written = self.regenerate(shifted, reviewed, {6, 10}, fresh=True)
 
         self.assertTrue(written.startswith(partition_report.MANIFEST_HEADER))
+        fingerprint = partition_report.region_fingerprint(shifted, {6, 10})
+        self.assertEqual(fingerprint, partition_report.region_fingerprint(self.PURE_SOURCE, {4, 8}))
         self.assertIn(
-            "pkg/Pure\t2\tapp/src/main/kotlin/pkg/Pure.kt:4,8"
-            "\tproven-unreachable: fixture branch is structurally unreachable\n",
+            f"pkg/Pure\t2\tapp/src/main/kotlin/pkg/Pure.kt:6,10\t{fingerprint}\t{self.RATIONALE}\n",
             written,
         )
         # A new residual is never silently "reviewed": its placeholder fails the manifest loader.
-        self.assertIn(f"pkg/Fresh\t1\tapp/src/main/kotlin/pkg/Fresh.kt:2\t{partition_report.UNREVIEWED_REASON}", written)
+        self.assertIn("pkg/Fresh\t1\tapp/src/main/kotlin/pkg/Fresh.kt:2\tsha256:", written)
+        self.assertIn(f"\t{partition_report.UNREVIEWED_REASON}\n", written)
         self.assertFalse(partition_report.UNREVIEWED_REASON.startswith(partition_report.Residuals.REASON_PREFIXES))
+
+    def test_write_regions_does_not_launder_a_same_class_substitution(self) -> None:
+        # TE4-5 / REG4-8: the reviewed guard at line 8 became covered and an unreviewed miss appeared
+        # at line 9 in the SAME class with the SAME count. Carrying the rationale by class name
+        # re-explained line 9 with line 8's argument; the fingerprint refuses it.
+        reviewed = self.reviewed_row(self.PURE_SOURCE, {4, 8})
+        written = self.regenerate(self.PURE_SOURCE, reviewed, {4, 9})
+
+        self.assertIn("pkg/Pure\t2\tapp/src/main/kotlin/pkg/Pure.kt:4,9\tsha256:", written)
+        self.assertNotIn(self.RATIONALE, written)
+        self.assertIn(partition_report.UNREVIEWED_REASON, written)
+
+    def test_write_regions_does_not_carry_a_rationale_over_edited_cited_text(self) -> None:
+        reviewed = self.reviewed_row(self.PURE_SOURCE, {4, 8})
+        edited = self.PURE_SOURCE.replace("statement8()", "differentGuard()")
+        written = self.regenerate(edited, reviewed, {4, 8})
+        self.assertNotIn(self.RATIONALE, written)
+        self.assertIn(partition_report.UNREVIEWED_REASON, written)
+
+    def test_legacy_rows_without_a_fingerprint_are_never_carried(self) -> None:
+        legacy = f"pkg/Pure\t2\tapp/src/main/kotlin/pkg/Pure.kt:4,8\t{self.RATIONALE}\n"
+        written = self.regenerate(self.PURE_SOURCE, legacy, {4, 8})
+        self.assertNotIn(self.RATIONALE, written)
+
+    def test_gate_rejects_cited_text_that_changed_under_its_fingerprint(self) -> None:
+        # Lines kept their numbers but their CONTENT changed since review: the gate itself re-hashes.
+        stale = self.residual("pkg/Pure").replace(
+            partition_report.region_fingerprint("line\nline", {1, 2}), "sha256:0000000000000000"
+        )
+        code, _, stderr = self.run_report(
+            self.residual_report(), "pkg/Device\n", "pkg/Excluded\n", stale,
+        )
+        self.assertEqual(1, code)
+        self.assertIn("cited-text fingerprint drift for pkg/Pure", stderr)
+
+    def test_region_fingerprint_ignores_whitespace_and_tracks_content(self) -> None:
+        self.assertEqual(
+            partition_report.region_fingerprint("a\n  b  c\n", {2}),
+            partition_report.region_fingerprint("b c\n", {1}),
+        )
+        self.assertNotEqual(
+            partition_report.region_fingerprint("a\nb\n", {2}),
+            partition_report.region_fingerprint("a\nc\n", {2}),
+        )
+
+    def test_committed_manifest_fingerprints_match_current_sources(self) -> None:
+        manifest = partition_report.Residuals(
+            TOOLS_DIR / "partition-a-residuals.txt", TOOLS_DIR.parent.parent,
+        )
+        self.assertTrue(manifest.entries)
 
     def test_committed_manifest_documents_the_regeneration_command(self) -> None:
         text = (TOOLS_DIR / "partition-a-residuals.txt").read_text(encoding="utf-8")
@@ -381,7 +457,8 @@ class PartitionReportTest(unittest.TestCase):
     def test_malformed_duplicate_unsorted_and_unjustified_residuals_are_fatal(self) -> None:
         valid = self.residual("pkg/Pure")
         cases = {
-            "expected 4 tab-separated fields": "pkg/Pure\t2\n",
+            "expected 5 tab-separated fields": "pkg/Pure\t2\n",
+            "invalid cited-text fingerprint": valid.replace("\tsha256:", "\tmd5:"),
             "missed count must be a positive integer": valid.replace("\t2\t", "\tzero\t"),
             "invalid source region": valid.replace("Pure.kt:1-2", "Pure.kt"),
             "source file does not exist": valid.replace("Pure.kt", "Missing.kt"),

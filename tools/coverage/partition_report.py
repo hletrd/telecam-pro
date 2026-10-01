@@ -36,8 +36,16 @@ the class whose method starts nearest above it) must lie inside the cited region
 let a reviewed guard be deleted and an unreviewed one added elsewhere in the same class while the
 manifest kept "explaining" a line that no longer existed (TE3-1 / REG3-2).
 
-Regenerating the regions after source lines move (rationales are kept; a NEW residual class gets an
-`UNREVIEWED:` placeholder the manifest loader refuses until a reviewer writes a real rationale):
+Each row also carries a FINGERPRINT of the cited lines' whitespace-normalized source text, and the gate
+re-hashes the cited lines on every run (TE4-5 / REG4-8). `--write-regions` used to carry the old
+rationale by class name alone, so a same-class, same-count substitution (a reviewed guard became
+covered, a new miss appeared elsewhere in the class) was re-explained by a rationale about a different
+line with one command. A rationale now survives regeneration only when the new region's fingerprint
+equals the old one, i.e. the lines merely MOVED; any content change writes `UNREVIEWED:`.
+
+Regenerating the regions after source lines move (rationales are kept only on a fingerprint match; any
+other row, including a NEW residual class, gets an `UNREVIEWED:` placeholder the manifest loader
+refuses until a reviewer writes a real rationale):
   ./gradlew :app:createDebugUnitTestCoverageReport
   python3 tools/coverage/partition_report.py app/build/reports/coverage/test/debug/report.xml \
       --write-regions
@@ -48,6 +56,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import fnmatch
+import hashlib
 import os
 import re
 import sys
@@ -64,10 +73,13 @@ DEFAULT_SOURCE_ROOT = TOOL_DIR.parent.parent
 
 MANIFEST_HEADER = (
     "# Reviewed Partition-A line misses. Enforced exactly by partition_report.py.\n"
-    "# Format (TAB-separated, sorted by class): class | missed | source region | rationale.\n"
+    "# Format (TAB-separated, sorted by class):\n"
+    "#   class | missed | source region | cited-text fingerprint | rationale.\n"
     "# Rationale prefixes are closed: framework-bound, proven-unreachable, race-only.\n"
-    "# Every missed line the report attributes to a class must lie inside its cited region.\n"
-    "# Regenerate regions (keeps rationales) after source lines move:\n"
+    "# Every missed line the report attributes to a class must lie inside its cited region, and the\n"
+    "# fingerprint must match the cited lines' whitespace-normalized source text.\n"
+    "# Regenerate regions after source lines move (a rationale survives only when the fingerprint\n"
+    "# is unchanged; any content change writes UNREVIEWED for a reviewer to resolve):\n"
     "#   ./gradlew :app:createDebugUnitTestCoverageReport\n"
     "#   python3 tools/coverage/partition_report.py \\\n"
     "#       app/build/reports/coverage/test/debug/report.xml --write-regions\n"
@@ -75,11 +87,25 @@ MANIFEST_HEADER = (
 UNREVIEWED_REASON = "UNREVIEWED: write a framework-bound, proven-unreachable, or race-only rationale"
 
 
+FINGERPRINT = re.compile(r"sha256:[0-9a-f]{16}")
+
+
+def region_fingerprint(source_text: str, lines: frozenset[int] | set[int]) -> str:
+    """Hash of the cited lines' text with whitespace normalized: line moves keep it, edits change it."""
+    source_lines = source_text.splitlines()
+    normalized = "\n".join(
+        " ".join(source_lines[line - 1].split()) if 0 < line <= len(source_lines) else ""
+        for line in sorted(lines)
+    )
+    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class Residual:
     class_name: str
     missed: int
     source_region: str
+    fingerprint: str
     reason: str
     cited_lines: frozenset[int] = frozenset()
 
@@ -137,10 +163,10 @@ class Residuals:
             if not raw.strip() or raw.lstrip().startswith("#"):
                 continue
             fields = raw.split("\t")
-            if len(fields) != 4:
-                errors.append(f"line {number}: expected 4 tab-separated fields")
+            if len(fields) != 5:
+                errors.append(f"line {number}: expected 5 tab-separated fields")
                 continue
-            class_name, missed_text, source_region, reason = fields
+            class_name, missed_text, source_region, fingerprint, reason = fields
             if not re.fullmatch(r"[A-Za-z0-9_/$]+", class_name):
                 errors.append(f"line {number}: invalid class name {class_name!r}")
             try:
@@ -158,7 +184,8 @@ class Residuals:
                 if not source.is_file():
                     errors.append(f"line {number}: source file does not exist: {source_match.group('path')}")
                 else:
-                    line_count = len(source.read_text(encoding="utf-8").splitlines())
+                    source_text = source.read_text(encoding="utf-8")
+                    line_count = len(source_text.splitlines())
                     cited = []
                     for item in source_match.group("lines").split(","):
                         bounds = [int(value) for value in item.split("-")]
@@ -167,6 +194,13 @@ class Residuals:
                         errors.append(
                             f"line {number}: source region exceeds {source_match.group('path')} "
                             f"({line_count} lines)"
+                        )
+                    elif FINGERPRINT.fullmatch(fingerprint) is None:
+                        errors.append(f"line {number}: invalid cited-text fingerprint {fingerprint!r}")
+                    elif region_fingerprint(source_text, set(cited)) != fingerprint:
+                        errors.append(
+                            f"line {number}: cited-text fingerprint drift for {class_name}: the "
+                            f"source at {source_region} changed since its rationale was reviewed"
                         )
             if not reason.startswith(self.REASON_PREFIXES) or len(reason.split(":", 1)[-1].strip()) < 12:
                 errors.append(
@@ -179,7 +213,7 @@ class Residuals:
                 errors.append(f"line {number}: classes must be strictly sorted")
             previous = class_name
             self.entries[class_name] = Residual(
-                class_name, missed, source_region, reason, frozenset(cited),
+                class_name, missed, source_region, fingerprint, reason, frozenset(cited),
             )
         if errors:
             print(f"invalid Partition-A residual manifest: {path}", file=sys.stderr)
@@ -325,27 +359,37 @@ def attribute_package_lines(package: ET.Element) -> tuple[dict[str, frozenset[in
     return {name: frozenset(lines) for name, lines in owned.items()}, file_missed
 
 
-def read_rationales(path: Path) -> dict[str, tuple[str, str]]:
-    """Lenient manifest read for regeneration: class -> (source path, rationale); no validation."""
-    out: dict[str, tuple[str, str]] = {}
+def read_rationales(path: Path) -> dict[str, tuple[str, str, str]]:
+    """Lenient manifest read for regeneration: class -> (source path, fingerprint, rationale).
+
+    No validation. A legacy 4-field row has no fingerprint, so its rationale can never be carried.
+    """
+    out: dict[str, tuple[str, str, str]] = {}
     if not path.exists():
         return out
     for raw in path.read_text(encoding="utf-8").splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         fields = raw.split("\t")
-        if len(fields) == 4:
-            out[fields[0]] = (fields[2].rsplit(":", 1)[0], fields[3])
+        if len(fields) == 5:
+            out[fields[0]] = (fields[2].rsplit(":", 1)[0], fields[3], fields[4])
+        elif len(fields) == 4:
+            out[fields[0]] = (fields[2].rsplit(":", 1)[0], "", fields[3])
     return out
 
 
 def regenerated_manifest(
     actual: dict[str, ActualResidual],
     packages: dict[str, str],
-    rationales: dict[str, tuple[str, str]],
+    rationales: dict[str, tuple[str, str, str]],
     source_root: Path,
 ) -> str:
-    """The manifest with every region recomputed from the report; rationales carried by class."""
+    """The manifest with every region recomputed from the report.
+
+    A rationale is carried ONLY when the recomputed region's cited-text fingerprint equals the one
+    recorded beside it (the lines moved, their content did not). Anything else, a new class
+    included, is written UNREVIEWED, which the manifest loader refuses until a reviewer acts.
+    """
     rows: list[str] = []
     for name in sorted(actual):
         report = actual[name]
@@ -353,9 +397,15 @@ def regenerated_manifest(
         previous = rationales.get(name)
         if not (source_root / source).is_file() and previous is not None:
             source = previous[0]
-        reason = previous[1] if previous is not None else UNREVIEWED_REASON
         lines = report.attributed_lines or (report.file_missed_lines)
-        rows.append(f"{name}\t{report.missed}\t{source}:{compress_lines(lines)}\t{reason}")
+        source_path = source_root / source
+        source_text = source_path.read_text(encoding="utf-8") if source_path.is_file() else ""
+        fingerprint = region_fingerprint(source_text, lines)
+        carried = previous is not None and previous[1] == fingerprint
+        reason = previous[2] if carried else UNREVIEWED_REASON
+        rows.append(
+            f"{name}\t{report.missed}\t{source}:{compress_lines(lines)}\t{fingerprint}\t{reason}"
+        )
     return MANIFEST_HEADER + "".join(f"{row}\n" for row in rows)
 
 
@@ -378,8 +428,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="how many worst Partition A classes to list (default 40)")
     ap.add_argument("--write-regions", action="store_true",
                     help="rewrite --residuals with every region recomputed from this report "
-                         "(rationales kept by class; new classes get an UNREVIEWED placeholder) "
-                         "and exit without gating")
+                         "(a rationale is kept only when its cited-text fingerprint is unchanged; "
+                         "every other row gets an UNREVIEWED placeholder) and exit without gating")
     args = ap.parse_args(argv)
 
     part_b = Patterns(args.partition)
