@@ -239,7 +239,7 @@ class BilingualPresentationComposeTest {
                             onSetPhotoFormats = {},
                             processedAvailable = false,
                             rawAvailable = false,
-                            videoMode = true,
+                            tenBitVideoWanted = true,
                         )
                         SpeedAngleToggle(
                             mode = ShutterMode.SPEED,

@@ -111,6 +111,7 @@ import me.hletrd.telecampro.camera.ControlAvailability
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.hiResToggleEnabled
+import me.hletrd.telecampro.camera.tenBitSessionWanted
 import me.hletrd.telecampro.camera.videoBitRate
 import me.hletrd.telecampro.camera.rawSelectable
 import me.hletrd.telecampro.ui.CameraActions
@@ -892,7 +893,9 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // without disabling the control that brings it into force.
         rawInSession = state.photoSessionOutputs.raw,
         onSetPhotoFormats = actions::onSetPhotoFormats,
-        videoMode = state.mode == CaptureMode.VIDEO,
+        // The request's 10-bit answer, the same predicate the engine's ladder keys on — not bare
+        // videoMode, which also covers SDR video on the preview-only rung (AGG2-35).
+        tenBitVideoWanted = tenBitSessionWanted(state.mode == CaptureMode.VIDEO, state.transfer),
         heifAvailable = state.heifAvailable,
     )
     // Hi-res still: visible only when the SELECTED camera is a standalone route that actually

@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.R
 import android.util.Size
+import androidx.annotation.StringRes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.semantics.semantics
@@ -1034,6 +1035,18 @@ internal fun TransferSelector(
     }
 }
 
+/**
+ * Caption for a session with NO still reader. Only a 10-bit video request earns the trade wording.
+ *
+ * RESIDUAL (AGG2-35): this keys on the REQUEST, because CameraUiState publishes no accepted-session
+ * transfer fact. A 10-bit request that fell down the ladder to the 8-bit preview-only rung still reads
+ * "10-bit video · stills off" here until the engine publishes the accepted session's 10-bit truth.
+ */
+@StringRes
+internal fun noStillOutputCaption(tenBitVideoWanted: Boolean): Int =
+    if (tenBitVideoWanted) R.string.output_10_bit_video_stills_off
+    else R.string.status_still_capture_unavailable
+
 /** HEIF / JPEG / DNG output-format toggles; supported formats may be enabled simultaneously. */
 @Composable
 internal fun PhotoFormatToggles(
@@ -1049,9 +1062,11 @@ internal fun PhotoFormatToggles(
     // logical photo route this is false while [rawAvailable] is true, and selecting DNG is exactly
     // what switches the route so it becomes true.
     rawInSession: Boolean = rawAvailable,
-    // VIDEO reframes the "no still outputs" line: there it is the 10-bit session's deliberate trade,
-    // not a capability the route failed to deliver.
-    videoMode: Boolean = false,
+    // A 10-bit VIDEO request reframes the "no still outputs" line: there it is the 10-bit session's
+    // deliberate trade, not a capability the route failed to deliver. Keyed on
+    // `tenBitSessionWanted(videoMode, transfer)`, NOT on videoMode alone (AGG2-35): SDR video that
+    // lands on the preview-only rung has no still readers either, and is not 10-bit.
+    tenBitVideoWanted: Boolean = false,
     // Whether this DEVICE can encode HEIF at all (HeifWriter needs a platform HEVC encoder, which
     // is not CDD-mandatory at API 33). Without it the chip stayed live and a tap silently produced
     // JPEG instead — the selection normalizer's doing, invisible at the control (verification
@@ -1136,10 +1151,7 @@ internal fun PhotoFormatToggles(
                     // Same reasoning as the Ready-publication status: in VIDEO this is a designed trade
                     // (the 10-bit session drops the still readers), not a fault, so the sheet says what
                     // it BOUGHT rather than what it lost.
-                    stringResource(
-                        if (videoMode) R.string.output_10_bit_video_stills_off
-                        else R.string.status_still_capture_unavailable,
-                    ),
+                    stringResource(noStillOutputCaption(tenBitVideoWanted)),
                     color = CameraColors.TextSecondary,
                     style = MaterialTheme.typography.labelSmall,
                 )
