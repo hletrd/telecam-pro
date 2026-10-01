@@ -54,8 +54,12 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         start = self.gradle.index("if (hasReleaseSigning) {\n    val approvalValue")
         self.block = self.gradle[start:]
 
+    def release_signing_task_set(self) -> str:
+        start = self.gradle.index("val releaseSigningTasks = setOf(")
+        return self.gradle[start : self.gradle.index(")", start)]
+
     def test_every_release_package_and_sign_task_is_gated(self) -> None:
-        tasks = set(re.findall(r'"((?:package|sign)Release[A-Za-z]*)"', self.block))
+        tasks = set(re.findall(r'"((?:package|sign)Release[A-Za-z]*)"', self.release_signing_task_set()))
         self.assertEqual(
             {"packageRelease", "packageReleaseBundle", "packageReleaseUniversalApk", "signReleaseBundle"},
             tasks,
@@ -75,6 +79,28 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         self.assertIn('inputs.file(signingStoreFile).withPropertyName("uploadKeystore")', self.block)
         # Refusal text stays value-free.
         self.assertNotIn("$signingStorePassword", self.block)
+
+    def test_injected_signing_properties_refuse_every_release_package_task(self) -> None:
+        # SEC3-1: AGP replaces the gated signingConfig whenever android.injected.signing.* is set, so
+        # the gate would approve the keystore.properties key while AGP signed with the injected one.
+        start = self.gradle.index("val injectedSigningPropertyNames")
+        refusal = self.gradle[start : self.gradle.index("if (!hasReleaseSigning) {", start)]
+        self.assertIn('providers.gradlePropertiesPrefixedBy("android.injected.signing.")', refusal)
+        # Attached OUTSIDE `if (hasReleaseSigning)`, so it also holds with no keystore.properties.
+        self.assertLess(start, self.gradle.index("if (hasReleaseSigning) {\n    val approvalValue"))
+        self.assertIn(
+            'tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" '
+            '|| it.name == "assembleRelease" }',
+            refusal,
+        )
+        self.assertIn('inputs.property("injectedSigningProperties"', refusal)
+        self.assertIn("if (injectedNames.isNotEmpty())", refusal)
+        self.assertIn("Release signing refused: IDE-injected signing properties are present", refusal)
+        # Only names are captured; no provider value is ever read or echoed.
+        self.assertNotIn(".values", refusal)
+        self.assertNotIn("gradleProperty(", refusal)
+        # The approval gate's up-to-date input carries the injected names too.
+        self.assertIn("|$injectedNames\"", self.block)
 
 
 if __name__ == "__main__":

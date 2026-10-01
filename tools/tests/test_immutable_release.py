@@ -649,5 +649,71 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 )
 
 
+class GradleTaskArgumentTest(unittest.TestCase):
+    """SEC3-1: the positional task argv must never smuggle Gradle options into a sealed build."""
+
+    INJECTED = (
+        ["-Pandroid.injected.signing.store.file=blocked.jks"],
+        [":app:bundleRelease", "-Pandroid.injected.signing.key.alias=old"],
+        ["-I", "evil.gradle"],
+        ["-Ievil.gradle"],
+        ["--init-script", "evil.gradle"],
+        ["--init-script=evil.gradle"],
+        [":app:bundleRelease", "-x", ":app:lintVitalRelease"],
+        ["-Dorg.gradle.jvmargs=-Xmx1g"],
+        [":app:bundleRelease", "--offline"],
+        [":app:bundleRelease", ""],
+        ["app bundleRelease"],
+        ["::app:bundleRelease"],
+        [":app:bundleRelease:"],
+        [],
+    )
+
+    def test_options_and_malformed_paths_are_refused(self) -> None:
+        for tasks in self.INJECTED:
+            with self.subTest(tasks=tasks):
+                with self.assertRaisesRegex(RuntimeError, "Gradle task") as caught:
+                    release.validate_gradle_tasks(tasks)
+                self.assertNotIn("evil.gradle", str(caught.exception))
+                self.assertNotIn("blocked.jks", str(caught.exception))
+
+    def test_plain_task_paths_and_abbreviations_are_accepted(self) -> None:
+        release.validate_gradle_tasks([":app:lintRelease", ":app:assembleRelease", ":app:bundleRelease"])
+        release.validate_gradle_tasks(["bundleRelease", "app:bR", "lint-Vital_Release"])
+
+    def test_build_refuses_options_before_any_export_or_gradle_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            calls: list[list[str]] = []
+            for tasks in (["-Pandroid.injected.signing.store.file=x"], ["--init-script", "x"], ["-x", "lint"]):
+                with self.subTest(tasks=tasks):
+                    with self.assertRaisesRegex(RuntimeError, "not a plain Gradle task path"):
+                        release.build_immutable_release(
+                            root,
+                            [":app:bundleRelease", *tasks],
+                            root / "app/build/immutable-release/out",
+                            run=lambda command, cwd: calls.append(command),
+                        )
+            self.assertEqual([], calls)
+
+    def test_main_refuses_options_after_the_argv_separator(self) -> None:
+        # argparse alone rejects `-P…` as an unknown option, but `--` would hand it to `tasks`.
+        argv = ["build_immutable_release.py", "--", ":app:bundleRelease", "-Pandroid.injected.signing.key.alias=a"]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(release, "android_sdk_environment") as sdk,
+            patch.object(release, "require_approved_upload_key") as gate,
+            patch.object(release, "build_immutable_release") as build,
+            patch("sys.stderr") as stderr,
+        ):
+            self.assertEqual(1, release.main())
+        sdk.assert_not_called()
+        gate.assert_not_called()
+        build.assert_not_called()
+        written = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("immutable release build refused", written)
+        self.assertNotIn("alias=a", written)
+
+
 if __name__ == "__main__":
     unittest.main()

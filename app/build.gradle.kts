@@ -772,6 +772,39 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
 }
 
+// SEC3-1 / AGG3-31: AGP REPLACES the variant's signingConfig whenever the IDE "injected signing"
+// Gradle properties are present (`-Pandroid.injected.signing.store.file`, `.store.password`,
+// `.key.alias`, `.key.password`, and their siblings) — Android Studio's "Generate Signed Bundle/APK"
+// wizard signs through exactly that path. The upload-key gate below proves only the
+// keystore.properties key, so with an injected key it would approve one key while AGP signed with
+// another (possibly the blocked one). There is no honest way to verify a key the gate never opens,
+// so every task that PACKAGES OR SIGNS release bytes refuses outright while any such property is
+// set, with or without keystore.properties. Only the property NAMES are captured: they are not
+// secrets, and the refusal never echoes a value. The names are also a task input so an UP-TO-DATE
+// signed output can never satisfy a run that carries injected signing.
+val injectedSigningPropertyNames: List<String> =
+    providers.gradlePropertiesPrefixedBy("android.injected.signing.").get().keys.sorted()
+val releaseSigningTasks = setOf(
+    "packageRelease",
+    "packageReleaseBundle",
+    "packageReleaseUniversalApk",
+    "signReleaseBundle",
+)
+tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" || it.name == "assembleRelease" }
+    .configureEach {
+        val injectedNames = injectedSigningPropertyNames
+        inputs.property("injectedSigningProperties", injectedNames.joinToString(","))
+        doFirst {
+            if (injectedNames.isNotEmpty()) {
+                throw GradleException(
+                    "Release signing refused: IDE-injected signing properties are present " +
+                        "(${injectedNames.joinToString()}). Sign only through keystore.properties " +
+                        "and the upload-key gate; remove every android.injected.signing.* property.",
+                )
+            }
+        }
+    }
+
 if (!hasReleaseSigning) {
     tasks.matching { it.name == "packageReleaseBundle" || it.name == "bundleRelease" || it.name == "assembleRelease" }
         .configureEach {
@@ -810,18 +843,14 @@ if (hasReleaseSigning) {
     val signingStoreFile = rootProject.file(releaseStoreFile!!)
     val signingAlias = releaseKeyAlias!!
     val signingStorePassword = releaseStorePassword!!
-    val releaseSigningTasks = setOf(
-        "packageRelease",
-        "packageReleaseBundle",
-        "packageReleaseUniversalApk",
-        "signReleaseBundle",
-    )
+    val injectedNames = injectedSigningPropertyNames
     tasks.matching { it.name in releaseSigningTasks }.configureEach {
         // A doFirst never runs for an UP-TO-DATE or FROM-CACHE task, so the gate state itself is a
-        // task input: changing the approval, the approved fingerprint, the deny-list, or the
-        // keystore bytes re-executes the task (and therefore the gate). Without this, a signed
-        // output produced before the gate existed was reported as a successful build afterwards.
-        inputs.property("uploadKeyApprovalState", "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}")
+        // task input: changing the approval, the approved fingerprint, the deny-list, the injected
+        // signing property names (SEC3-1), or the keystore bytes re-executes the task (and therefore
+        // the gate). Without this, a signed output produced before the gate existed was reported as
+        // a successful build afterwards.
+        inputs.property("uploadKeyApprovalState", "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}|$injectedNames")
         inputs.file(signingStoreFile).withPropertyName("uploadKeystore").withPathSensitivity(PathSensitivity.NONE)
         doFirst {
             val sha256 = Regex("[0-9a-f]{64}")

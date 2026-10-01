@@ -682,6 +682,26 @@ def verify_upload_key_certificate(
         raise UploadKeyGateError("approved upload certificate fingerprint does not match")
 
 
+# SEC3-1 / AGG3-31: `tasks` is copied straight onto the Gradle command line, so before this check
+# `-P…` (including AGP's `android.injected.signing.*`, which REPLACES the gated signing config),
+# `-I`/`--init-script` (unsealed build logic inside the "sealed" build), `-D…`, and `-x` all rode
+# through the positional argv into a build whose evidence claims a sealed export. Only bare Gradle
+# task paths are accepted; any option, abbreviation-with-flag, or empty element is refused.
+_GRADLE_TASK_PATH = re.compile(r"(?::?[A-Za-z][A-Za-z0-9_-]*)+")
+
+
+def validate_gradle_tasks(tasks: Sequence[str]) -> None:
+    """Refuse every argv element that is not a plain Gradle task path (never echoes the value)."""
+    if not tasks:
+        raise RuntimeError("immutable release build needs at least one Gradle task")
+    for index, task in enumerate(tasks):
+        if task.startswith("-") or _GRADLE_TASK_PATH.fullmatch(task) is None:
+            raise RuntimeError(
+                f"immutable release task argument {index + 1} is not a plain Gradle task path; "
+                "options such as -P, -D, -I, --init-script, and -x are refused"
+            )
+
+
 def signing_capable(tasks: Sequence[str]) -> bool:
     """Fail closed: every task except an explicit lint task may sign (abbreviations included)."""
     return any(_NON_SIGNING_TASK.fullmatch(task) is None for task in tasks)
@@ -802,6 +822,7 @@ def build_immutable_release(
 ) -> tuple[str, str]:
     root = root.resolve()
     output_root = output_root.resolve()
+    validate_gradle_tasks(tasks)
     evidence_namespace = (root / "app/build/immutable-release").resolve()
     if output_root.parent != evidence_namespace:
         raise RuntimeError(
@@ -902,6 +923,11 @@ def main() -> int:
         default=[":app:lintRelease", ":app:assembleRelease", ":app:bundleRelease"],
     )
     args = parser.parse_args()
+    try:
+        validate_gradle_tasks(args.tasks)
+    except RuntimeError as error:
+        print(f"immutable release build refused: {error}", file=sys.stderr)
+        return 1
     try:
         os.environ.update(android_sdk_environment(args.root.resolve()))
     except (OSError, RuntimeError) as error:
