@@ -222,6 +222,10 @@ class CameraViewModel private constructor(
     private var autoPunchInActive = false
 
     private var punchInBeforeAuto = false
+    // MOMENTARY hardware bindings (AEL / PUNCH_IN) hold a setting without owning it (AGG4-74):
+    // the press snapshots the operator's value, the release restores it, and saves see the snapshot.
+    private val momentaryAeLock = MomentaryHold()
+    private val momentaryPunchIn = MomentaryHold()
     private val tapFocusPublicationGate = TapFocusPublicationGate()
     // A blob with no phone key falls back to the same detected-or-OTHER seed as a fresh launch.
     private val settingsStore = SettingsStore(app) { detectedPhone ?: PhoneModel.OTHER }
@@ -1682,7 +1686,11 @@ class CameraViewModel private constructor(
             // The OPERATOR's value, not the live one. While the focus-ruler assist owns the loupe
             // the two differ, and every save path funnels through here — including the background
             // save, which is exactly when the ruler can still be open.
-            punchIn = if (autoPunchInActive) punchInBeforeAuto else s.punchIn,
+            punchIn = if (autoPunchInActive) {
+                punchInBeforeAuto
+            } else {
+                momentaryPunchIn.persistedValue(s.punchIn)
+            },
             teleFinder = s.teleFinder,
             hiResStill = s.hiResStill,
             videoCodec = pendingCodecUntilInventory?.takeIf { inventoryPending } ?: s.videoCodec,
@@ -1723,13 +1731,19 @@ class CameraViewModel private constructor(
             s.controls.copy(zoomRatio = retainedRearZoomRatio(s, preFrontRearTeleconverter))
         } else {
             s.controls
-        }
+        }.let(::operatorOwnedControls)
         val extras = if (substituteRear) {
             currentExtras().copy(teleconverter = preFrontRearTeleconverter)
         } else {
             currentExtras()
         }
         settingsStore.save(controls, extras)
+    }
+
+    /** [controls] with any momentary hardware hold replaced by the operator's own value (AGG4-74). */
+    private fun operatorOwnedControls(controls: ManualControls): ManualControls {
+        val aeLock = momentaryAeLock.persistedValue(controls.aeLock)
+        return if (aeLock == controls.aeLock) controls else controls.copy(aeLock = aeLock)
     }
 
     private fun readBatteryPct(): Int = runCatching {
@@ -2083,7 +2097,11 @@ class CameraViewModel private constructor(
         refreshProgramAppSide(seedFromLive = outgoingHalAe)
     }
     // (onToggleAutoExposure was removed: dead API surface — every caller sets ExposureMode directly.)
-    override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
+    override fun onToggleAeLock(locked: Boolean) {
+        // An explicit toggle mid-hold is the operator's: the key's release must not undo it.
+        momentaryAeLock.cancel()
+        updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
+    }
     override fun onAntibanding(mode: Antibanding) = updateControls(persist = true) { it.copy(antibanding = mode) }
     // (onFps was removed: dead API surface — controls.fps is always driven by onVideoFrameRate.)
     // Unit switch only: the carried value is the exposure the old unit was applying (pure, tested).
@@ -3282,10 +3300,17 @@ class CameraViewModel private constructor(
         // stated an intent, so it is theirs to persist. (The assist's own close branch already
         // defers to this — "manual sheet toggles mid-drag win".)
         autoPunchInActive = false
+        momentaryPunchIn.cancel()
         engine.setPunchIn(enabled)
         _state.update { it.copy(punchIn = enabled) }
         markChanged(FnSlot.PUNCH_IN)
         scheduleSettingsSave()
+    }
+
+    /** Non-persisting loupe write for a momentary hold (no markChanged, no save, assist untouched). */
+    private fun applyMomentaryPunchIn(enabled: Boolean) {
+        engine.setPunchIn(enabled)
+        _state.update { it.copy(punchIn = enabled) }
     }
 
     override fun onAutoPunchIn(enabled: Boolean) {
@@ -3368,8 +3393,21 @@ class CameraViewModel private constructor(
                 if (_state.value.mode == CaptureMode.PHOTO) onCapturePhoto() else onToggleRecording()
             }
             HardwareKeyAction.AF_ON -> if (active) onTapFocus(0.5f, 0.5f)
-            HardwareKeyAction.AEL -> onToggleAeLock(active)
-            HardwareKeyAction.PUNCH_IN -> onTogglePunchIn(active)
+            // MOMENTARY: hold, then restore what the operator had — never "set to the key state",
+            // and never through the persistent toggles (AGG4-74). slot = null, persist = false:
+            // a hold is not a setting change (no recent-slot, no MR clear, no save).
+            HardwareKeyAction.AEL -> {
+                val target = if (active) {
+                    momentaryAeLock.press(_state.value.controls.aeLock)
+                } else {
+                    momentaryAeLock.release()
+                }
+                target?.let { locked -> updateControls(slot = null, persist = false) { it.copy(aeLock = locked) } }
+            }
+            HardwareKeyAction.PUNCH_IN -> {
+                val target = if (active) momentaryPunchIn.press(_state.value.punchIn) else momentaryPunchIn.release()
+                target?.let(::applyMomentaryPunchIn)
+            }
             HardwareKeyAction.ZOOM_IN -> if (active) onPinchZoom(HARDWARE_ZOOM_STEP)
             HardwareKeyAction.ZOOM_OUT -> if (active) onPinchZoom(1f / HARDWARE_ZOOM_STEP)
             HardwareKeyAction.NONE -> Unit
@@ -3593,7 +3631,7 @@ class CameraViewModel private constructor(
         }.copy(recordAudioOffByDenial = audioOffByDenial)
         settingsStore.saveGeneratedPreset(
             slot,
-            snapshot.controls,
+            operatorOwnedControls(snapshot.controls),
             extras,
         )
         refreshMemorySlotInfo(activeSlot = slot)
