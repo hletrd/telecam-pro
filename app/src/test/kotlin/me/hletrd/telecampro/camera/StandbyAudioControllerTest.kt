@@ -9,6 +9,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import me.hletrd.telecampro.video.NativeAcquisitionPublicationOwner
+import me.hletrd.telecampro.video.NativeAcquisitionPublicationResult
+import me.hletrd.telecampro.video.NativeAcquisitionPublicationToken
 import me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate
 
 // The production name of the thread-backed process-busy retry fallback (StandbyAudioController.kt).
@@ -803,6 +806,46 @@ class StandbyAudioControllerTest {
         // Quota-safe: one report for the whole controller, not one per generation.
         assertEquals(1, reports.size)
         assertTrue(reports.single().second is IllegalStateException)
+    }
+
+    @Test
+    fun `an input its termination owner refuses is released exactly once and finishes no token`() {
+        // REG3-7: the publication callback's bind throw left create() before `audioInput` was
+        // assigned, so the constructed AudioRecord was never released once the AGG2-25 catch kept
+        // the process alive. The fake gate offers a decoy first, so the real input's bind fails.
+        val input = FakeInput()
+        val decoy = FakeInput()
+        val finished = mutableListOf<NativeAcquisitionPublicationToken?>()
+        val real = RecorderStandbyNativeProcessGate(RecorderQuarantineAdmissionGate())
+        val gate = object : StandbyNativeProcessGate by real {
+            override fun create(
+                block: () -> StandbyAudioSetupResult,
+                publicationOwner: (StandbyAudioSetupResult) -> NativeAcquisitionPublicationOwner?,
+            ): NativeAcquisitionPublicationResult<StandbyAudioSetupResult> {
+                val value = block()
+                publicationOwner(StandbyAudioSetupResult.Ready(decoy))
+                publicationOwner(value)
+                error("unreachable: the second bind must throw")
+            }
+
+            override fun finish(token: NativeAcquisitionPublicationToken?) {
+                finished += token
+                real.finish(token)
+            }
+        }
+        val reports = mutableListOf<String>()
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            nativeProcessGate = gate,
+            reportInvariant = { message, _ -> reports += message },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(0, input.starts)
+        assertEquals(1, input.releases)
+        assertEquals(listOf<NativeAcquisitionPublicationToken?>(null), finished)
+        assertEquals(1, reports.size)
     }
 
     @Test

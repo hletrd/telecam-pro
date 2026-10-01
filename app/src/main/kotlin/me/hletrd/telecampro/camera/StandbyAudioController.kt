@@ -621,6 +621,8 @@ internal class StandbyAudioController(
                 createRelease = createRelease,
             )
         } ?: return
+        // Per GENERATION, created empty here (REG3-7): the finally below may finish only a token
+        // this generation published, never a previous generation's.
         val nativePublication = AtomicReference<NativeAcquisitionPublicationToken?>(null)
         val terminationOwner = StandbyInputTerminationOwner<StandbyAudioInput>(
             generationId = owner.id,
@@ -661,6 +663,11 @@ internal class StandbyAudioController(
         }
         val meterTask: () -> Unit = meterTask@{
             var audioInput: StandbyAudioInput? = null
+            // An input built by create() whose termination owner refused it (REG3-7). The throw
+            // below leaves create() before `audioInput` is assigned, and the unbound input is not
+            // the termination owner's to release, so the finally releases it directly — exactly
+            // once, and it was never started, so there is no native stop to await.
+            var unboundInput: StandbyAudioInput? = null
             var releaseProcessAdmission: (() -> Unit)? = null
             var processBusy = false
             // One PCM read resets the shared dead-route/setup budget.
@@ -682,8 +689,9 @@ internal class StandbyAudioController(
                     },
                     publicationOwner = { setup ->
                         val input = setup.input ?: return@create null
-                        check(terminationOwner.bind(input)) {
-                            "standby input owner rejected its generation"
+                        if (!terminationOwner.bind(input)) {
+                            unboundInput = input
+                            error("standby input owner rejected its generation")
                         }
                         val exactOwner = QuarantinedStandbyInput(input, terminationOwner)
                         NativeAcquisitionPublicationOwner(
@@ -791,6 +799,7 @@ internal class StandbyAudioController(
             } finally {
                 // Count the latch only after release on every path, including early returns.
                 audioInput?.let { input -> terminationOwner.finishAndRelease(input, StandbyAudioInput::release) }
+                unboundInput?.let { input -> runCatching { input.release() } }
                 nativeProcessGate.finish(nativePublication.get())
                 liveInputTermination.compareAndSet(terminationOwner, null)
                 runCatching { releaseProcessAdmission?.invoke() }
