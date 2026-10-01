@@ -253,6 +253,72 @@ class DngPreCaptureAllocationTest {
         }
     }
 
+    /**
+     * The engine's chain shape (AGG2-3): the settle path runs `onDone`, and a false dispatcher
+     * return makes the chain caller continue on its own. A synchronous rejection must produce
+     * exactly ONE of those per tick, or timelapse doubles its scheduled ticks every interval.
+     */
+    private fun rejectedChainStep(
+        dispatch: RecordingPreNativeDispatch,
+        deadlineArmable: Boolean,
+        onDone: (() -> Unit)?,
+    ): Boolean {
+        val continuation = StillContinuationHandoff(onDone)
+        val owner = DngPreCaptureAllocation<String>(
+            dispatch = { RecordingPreNativeSubmission(dispatch) },
+            allocate = { "row" },
+            isCurrent = { true },
+            onReady = { error("a rejected allocation cannot reach Camera2") },
+            onLateValue = { error("a rejected allocation cannot invent a row") },
+            onFailure = {},
+            onRetired = continuation::settle,
+            deadlineScheduler = if (deadlineArmable) null else RecordingTeardownScheduler { _, _ -> null },
+        )
+        return continuation.dispatchResult(owner.start())
+    }
+
+    @Test
+    fun `synchronous DNG rejection hands a chain exactly one continuation per tick`() {
+        for ((dispatch, armable) in listOf(
+            RecordingPreNativeDispatch.OVERFLOW to true,
+            RecordingPreNativeDispatch.SHUTDOWN to true,
+            // An unarmable deadline returns SHUTDOWN after its own synchronous retirement.
+            RecordingPreNativeDispatch.ACCEPTED to false,
+        )) {
+            val continuations = AtomicInteger()
+            var pending = 1
+            // Five timelapse ticks against a saturated allocator: each tick is one continuation.
+            repeat(5) {
+                pending--
+                val onDone = { continuations.incrementAndGet(); pending++; Unit }
+                val dispatched = rejectedChainStep(dispatch, armable, onDone)
+                if (!dispatched) { continuations.incrementAndGet(); pending++ }
+            }
+            assertEquals("$dispatch/$armable", 5, continuations.get())
+            assertEquals("no tick may fork a second schedule", 1, pending)
+        }
+    }
+
+    @Test
+    fun `continuation handoff keeps the plain refusal without a chain and one owner either way`() {
+        assertFalse(rejectedChainStep(RecordingPreNativeDispatch.OVERFLOW, deadlineArmable = true, onDone = null))
+        assertTrue(StillContinuationHandoff(null).dispatchResult(RecordingPreNativeDispatch.ACCEPTED))
+
+        // Dispatcher claims first (no settle yet): a later settle must not also continue.
+        val ran = AtomicInteger()
+        val claimedByDispatcher = StillContinuationHandoff { ran.incrementAndGet() }
+        assertFalse(claimedByDispatcher.dispatchResult(RecordingPreNativeDispatch.OVERFLOW))
+        claimedByDispatcher.settle()
+        assertEquals(0, ran.get())
+
+        // Accepted: only the asynchronous terminal continues, exactly once.
+        val accepted = StillContinuationHandoff { ran.incrementAndGet() }
+        assertTrue(accepted.dispatchResult(RecordingPreNativeDispatch.ACCEPTED))
+        accepted.settle()
+        accepted.settle()
+        assertEquals(1, ran.get())
+    }
+
     @Test
     fun `allocation failure and dispatcher rejection retire without inline provider fallback`() {
         val failed = AtomicInteger()

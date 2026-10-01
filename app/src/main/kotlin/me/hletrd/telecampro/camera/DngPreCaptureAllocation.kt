@@ -167,4 +167,35 @@ internal class DngPreCaptureAllocation<T : Any>(
     fun cancel(): Boolean = started.get() && attempt.retire()
 }
 
+/**
+ * Exactly-once owner of a still chain's continuation across one DNG pre-allocation.
+ *
+ * Chain callers (BURST/AEB/timelapse) read `dispatchStillCapture`'s Boolean as "true: `onDone`
+ * owns the next step; false: it never will, continue yourself". A SYNCHRONOUS allocator rejection
+ * (OVERFLOW/SHUTDOWN, or a deadline that cannot be armed) retires the attempt inside `start()`, and
+ * that retirement settles the shot — running `onDone` — before `start()` returns non-ACCEPTED. The
+ * dispatcher then ALSO returned false, so timelapse scheduled every tick twice (2^n live tasks while
+ * the shared allocator stayed saturated) and AEB reset the preview to base controls in the middle
+ * of the bracket step `onDone` had already fired (RPL cycle 2, AGG2-3). Whichever side claims first
+ * owns the continuation: the settle path runs [onDone] only if the dispatcher has not taken it, and
+ * the dispatcher answers true whenever the settle path already ran it.
+ */
+internal class StillContinuationHandoff(private val onDone: (() -> Unit)?) {
+    private val claimed = AtomicBoolean(false)
+
+    /** The settle path's continuation: runs [onDone] at most once, and never after a false return. */
+    fun settle() {
+        val done = onDone ?: return
+        if (claimed.compareAndSet(false, true)) done()
+    }
+
+    /** The dispatcher's return value for [dispatch]: true means [onDone] owns the next step. */
+    fun dispatchResult(dispatch: RecordingPreNativeDispatch): Boolean {
+        if (dispatch == RecordingPreNativeDispatch.ACCEPTED) return true
+        // No continuation to hand off: keep the plain refusal (SINGLE drive, byte-identical).
+        if (onDone == null) return false
+        return !claimed.compareAndSet(false, true)
+    }
+}
+
 internal const val DNG_PRE_CAPTURE_ALLOCATION_TIMEOUT_MS = 8_000L

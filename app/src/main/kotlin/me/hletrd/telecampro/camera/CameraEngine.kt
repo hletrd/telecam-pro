@@ -4755,6 +4755,10 @@ class CameraEngine internal constructor(
                 "CaptureFamily: registered stem=$stem outputs=$outputs",
             )
         }
+        // One continuation owner for both terminals of this allocation: a synchronous rejection
+        // settles (and may run onDone) inside start(), so the Boolean below must not ALSO hand the
+        // chain caller its own continuation (AGG2-3).
+        val continuation = StillContinuationHandoff(onDone)
         fun settleBeforeCamera() {
             rejectedCleanup.cancel()
             snapshotLease?.release()
@@ -4763,7 +4767,7 @@ class CameraEngine internal constructor(
                 registered = registered,
                 traceText = traceText,
                 traceSettlement = traceAdmission.settlement,
-                onDone = onDone,
+                onDone = continuation::settle,
             )
             publishProcessStillAdmission()
         }
@@ -4848,7 +4852,7 @@ class CameraEngine internal constructor(
             },
         )
         synchronized(dngPreCaptureAllocationLock) { dngPreCaptureAllocations.add(owner) }
-        return owner.start() == RecordingPreNativeDispatch.ACCEPTED
+        return continuation.dispatchResult(owner.start())
     }
 
     private fun cancelDngPreCaptureAllocations() {
