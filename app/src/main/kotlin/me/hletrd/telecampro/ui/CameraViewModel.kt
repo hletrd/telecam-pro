@@ -2456,11 +2456,7 @@ class CameraViewModel private constructor(
         } else {
             null
         }
-        if (routeOptics != null) {
-            engine.setRawWanted(formats.dngRaw, routeOptics.lens, routeOptics.controls)
-        } else {
-            engine.setRawWanted(formats.dngRaw)
-        }
+        engine.setRawWanted(formats.dngRaw, routeOptics?.lens, routeOptics?.controls)
         _state.update {
             it.copy(
                 // NOT normalizedFor(photoSessionOutputs) on the RAW axis any more: those outputs
