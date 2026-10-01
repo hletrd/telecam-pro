@@ -1,236 +1,294 @@
-# Causal-tracing review — cycle 51
+# Tracer review: causal flow tracing (2026-09-30)
 
-Date: 2026-08-25
-Reviewed revision: `7eb4ee951e769afe884f8115ffbde25c828028a3` (`origin/main`)
-Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
-Mode: review only; no implementation, commit, push, deployment, device mutation, or shared-main
-access
+Scope: the six requested flows, traced through the actual code (MainActivity → CameraViewModel →
+CameraEngine → CameraController/GlPipeline/VideoRecorder/StillCapturePipeline/MediaStoreWriter).
+I checked every candidate against CLAUDE.md, so none of the findings below are settled owner
+decisions. This was a read-only pass: nothing was built and nothing was run on a device.
 
-## Complete inventory and trace method
-
-I inventoried all 538 tracked paths and traced the complete runtime/evidence graph rather than a
-sample: 103 production modules, 240 host test files, four instrumented test files, 14 device-harness
-files, 25 tools, 17 resources/manifests, 11 build inputs, 65 docs/assets, root authorities, and 44
-tracked review-context paths. I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md` completely before tracing Activity/permission/input, ViewModel state/timers,
-optics intent/commit/rollback, route/session/capture correlation, GL preview/encoder/analysis,
-stills/DNG/storage, REC allocation/mic/native teardown, review/delete/recovery, UI, tests, coverage,
-release tools, and device evidence.
-
-The final causal sweep revisited every executor, Handler post, delayed task, retry/backoff,
-volatile/multi-field packet, atomic generation, monitor boundary, callback identity, native owner,
-provider call, and requested-versus-accepted truth. Focused pipeline/REC tests passed and the docs
-gate passed 153 checks (24 declared private skips); no device behavior was run or inferred.
-
-## Findings
-
-### TRACE51-01 — REC’s claimed immutable packet is discarded before setup, allowing torn GL and file transfers
-
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed data race and encoded-output truth violation; manifestation needs a
-  same-source-precision curve edit during the bounded REC start window.
-- **Exact regions:**
-  - `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5027-5061` snapshots
-    `frameRateAvailable`, codec, transfer, and candidates, but the resulting
-    `RecordingAdmissionSnapshot` retains only filtered candidates plus a session-only
-    `isCurrent` predicate. Size, selected frame rate, and transfer are not carried forward.
-  - `continueRecordingAfterAllocation` forwards only `admission.encoderCandidates` at
-    `CameraEngine.kt:5387-5399`.
-  - `startRecordingClaimed` then reads live `videoSize`, live `videoFrameRate`, and live `transfer`
-    twice at `CameraEngine.kt:5462-5483`: once for `glTransfer`, once for `fileTransfer`.
-    `fileTransfer` configures `VideoRecorder.start` at `:5580-5593`, while the independently frozen
-    `glTransfer` is posted to the admitted GL owner at `:5659-5663`.
-  - `setVideoPipeline` at `CameraEngine.kt:2571-2611` treats HLG/S-Log3/S-Log3.Cine/LogC3 changes as
-    the same HLG10 source-precision class, so those edits update the live transfer without
-    invalidating the accepted Camera2 session used by `admission.isCurrent`.
-- **Concrete causal sequence:**
-  1. Video is Ready under HEVC Main10 + HLG; REC snapshots that accepted session and packet.
-  2. Pending-row allocation or mic handoff delays native setup while `recorder` is still null.
-  3. The operator selects S-Log3. Both HLG and S-Log3 require the already-accepted HLG10 source, so
-     no optics/session generation changes; the old admission remains current.
-  4. Native setup reads `transfer` as HLG for `glTransfer`.
-  5. The main-thread pipeline command publishes S-Log3 before the second volatile read.
-  6. Native setup reads S-Log3 for `fileTransfer`. The shader bakes HLG while the MediaFormat/file
-     path is tagged S-Log3 (the reverse interleave is also possible).
-  7. The take can publish successfully: session identity, codec, candidate, muxer, and storage
-     ownership are all otherwise valid, so no later terminal repairs the semantic mismatch.
-- **Competing hypotheses checked:** session-current checks stop SDR/non-SDR or route/size/FPS
-  reconfiguration races, but not same-precision log-curve changes. Volatile reads guarantee
-  visibility, not equality across two reads. `recorder == null` remains true during the relevant
-  pre-publication window, so transfer changes are allowed and pushed to GL. The new snapshot test
-  observes only the early packet then deliberately takes an injected terminal before
-  `startRecordingClaimed`, so it does not refute the trace.
-- **Suggested fix:** make `RecordingAdmissionSnapshot` the actual native setup contract. Carry exact
-  size, frame-rate/capture-rate, codec, accepted transfer, and ordered candidates and derive both GL
-  and file transfer from its single transfer field. Decide and test an explicit linearization policy
-  for a same-precision edit after REC admission (old complete packet or abort/retry), never live
-  mixing. Add a forced interleave between the former reads through the production setup seam.
-
-### TRACE51-02 — rollback preserves a newer same-precision pipeline in Engine/UI but overwrites GL with the old curve
-
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed cross-owner divergence; manifestation needs an owned optics failure
-  overlapping a newer HLG/log pipeline command.
-- **Exact regions:**
-  - `CameraEngine.publishVideoPipelineLocked` at
-    `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:505-520` advances one complete
-    codec/candidate/requested/active-transfer publication.
-  - `beginOpticsTransaction` records the pipeline generation owned by that optics intent at
-    `CameraEngine.kt:614-641`.
-  - `rollbackOptics` correctly preserves a newer publication at `CameraEngine.kt:824-834`; its
-    `restoredVideoPipeline` then describes the actual winning Engine/UI packet.
-  - The next statement nevertheless posts `before.transfer` to GL at `CameraEngine.kt:835` rather
-    than `restoredVideoPipeline.activeTransfer`. `GlPipeline.setTransfer` is an asynchronous ordered
-    handler post at `app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt:550`, so the rollback's
-    later stale post wins over the newer curve command on the live GL lane.
-  - ViewModel generation handling at
-    `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:911-955` correctly withholds old
-    codec/transfer fields when the pipeline generation is newer, leaving UI and Engine agreeing
-    while GL alone diverges.
-- **Concrete causal sequence:** Video/HLG starts a lens or other optics transaction. The operator
-  selects S-Log3 while that transaction is pending; because both need HLG10 source precision, the
-  pipeline command publishes without a replacement optics generation and queues S-Log3 to GL. The
-  optics attempt fails. Rollback sees the newer pipeline generation and retains S-Log3 in Engine/UI,
-  then queues its baseline HLG to GL after the S-Log3 command. The viewfinder/encoder renderer ends
-  on HLG despite S-Log3 remaining selected and persisted. No convergence callback is required, so
-  the divergence can persist until another explicit GL replay/restart.
-- **Competing hypotheses checked:** the bug is sign-neutral in Photo because both active transfers
-  are SDR, which is why the existing AVC/SDR test misses it. The pipeline-generation check protects
-  Engine and delayed UI publication only; it does not alter the literal GL argument. `applyStabilization`
-  later in rollback does not reapply transfer. A future GL generation would seed from the correct
-  Engine field, but the active generation is not restarted on a retained-session rollback and is
-  precisely where the stale handler post lands.
-- **Suggested fix:** post `restoredVideoPipeline.activeTransfer` (or one complete winning pipeline
-  packet) to the exact current GL owner after rollback selection. Add a Video-mode HLG versus
-  S-Log3 same-precision interleave with an observable GL sink and assert Engine, UI, persisted
-  settings, GL, and next REC converge on one packet.
-
-## Confirmed flows, limits, and final missed-issue sweep
-
-I separately rechecked Ready/controller/session identity, nested/superseded optics rollback,
-front/rear/DNG route scales, zoom landing/fast paths, ZSL correlation, tap-AF/custom-WB owners,
-preview/EGL replacement, processed/DNG family publication, durable deletion/recovery, recorder
-allocation/stop/quarantine, microphone degradation, post-native storage, latest-capture ordering,
-review deadlines/bitmap ownership, system-delete modality, lifecycle teardown, input security,
-localization, and release provenance. No third causal defect survived competing-hypothesis
-validation.
-
-No Camera2 HAL, GLES fault injection, MediaProvider, microphone, HDR display, physical control,
-converter, or deployment ran. A3/A4/A5/D1/E1/E2 remain explicit field evidence gaps.
-
-## Totals
-
-- Findings: **2**
-- Severity: **2 Medium**
-- Confidence: **2 High**
-- Confirmed causal product defects: **2**
+Status legend: **confirmed** means the code path was read end to end and the failure follows
+from it directly. **likely** means the path is read but one runtime condition is assumed.
+**needs-manual-validation** means the finding depends on device timing or HAL behavior.
 
 ---
 
-## Archived prior review
+## Flow 1: settings restore on cold launch
 
-# Causal-tracing review — cycle 50
+**Traced path.** `CameraViewModel.init` runs `seedPhoneModel()` and then
+`restoreSettingsIfEnabled()`, which calls `applyLoaded(honorPreserveOptions=true)` (`CameraViewModel.kt:1243`).
+That function runs `restoredOptics(...)` (`ZoomMath.kt:372`) and then
+`engine.setResolvedOptics(mode, lens, TC, declaration, controls, photoExposure, recalledVideoSize,
+transfer, codec, candidates)` (`CameraEngine.kt:2683`). The engine has not started yet, so it
+publishes fields only. After that come the non-transaction setters: aspect, hi-res, open gate, fps,
+the renderer assists, and `setRawWanted(safeFormats.dngRaw)` (`:1461`). Last,
+`loadEncoderInventoryAsync()` calls `applyEncoderInventory`, which runs `setVideoPipeline` and
+`setRawWanted` again (`:2626`).
 
-Date: 2026-08-25
-Reviewed revision: `2388819d981d32bc3c59b3e81f75fd4f49fab8bd`
-Workspace: isolated clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
-Mode: review only; no production implementation, commit, deployment, or device mutation
+Every route input does reach the engine: DNG, hi-res, aspect, fps, transfer, codec, converter,
+lens, and TELE. Facing is never persisted. `saveSettingsIfEnabled` substitutes the pre-front rear
+snapshot while FRONT. The encoder-inventory race is handled by the `pending*UntilInventory` fields.
 
-## Complete inventory and trace method
+### T1. Restoring a DNG Photo setup drops the lens band (High, confirmed)
+- **Where:** `ZoomMath.kt:398-401` (the `restoredOptics` PHOTO branch), called from `CameraViewModel.kt:1328`.
+- **Why:** The PHOTO branch always treats the saved `zoomRatio` as **unified** and derives the lens
+  with `LensChoice.forZoom(unified)`. It never asks `standaloneRouteWanted(false, dngRaw,
+  rawForcesStandalone)`. With DNG on (PMA110: `rawRequiresStandalone`), Photo sits on a standalone
+  lens and the saved ratio is **lens-local**. The `preserveChangedOptics` branch (`:1311-1325`)
+  already handles this correctly. The ordinary branch, which covers the default launch and every
+  MR recall, does not.
+- **Failure:**
+  - Photo + DNG + 3× lens stores (lens = TELE3X, zoom = 1.0 local). After a relaunch or MR recall it
+    comes back as lens = `forZoom(1.0)` = MAIN, zoom 1.0. `resolveNonTeleId(MAIN)` then opens the
+    standalone **main** lens, so the operator's 70 mm framing becomes 23 mm.
+  - Local 2.0 on the 3× lens (6× unified) restores as 2× on the main lens.
+  - The ultrawide with DNG restores as main 1×.
+  - This is the same bug class as the "zoom scale follows the ROUTE, not the mode" bullet, on a
+    seventh site that bullet does not list.
+- **Fix:** Pass `photoStandalone = standaloneRouteWanted(false, e.dngRaw, rawForcesStandalone)` into
+  `restoredOptics`. When it is true, keep `requestedLens` and clamp the zoom as lens-local
+  (1..MAX_VIDEO_LOCAL_ZOOM), exactly like the VIDEO branch. Add a test for
+  `restoredOptics(PHOTO, TELE3X, dng standalone, 1.0)` → `TELE3X/1.0`.
 
-I first inventoried all 535 tracked paths, then examined the complete runtime and evidence graph:
-MainActivity/permissions/hardware input; every CameraAction and ViewModel reducer/timer; optics route
-inventory, intent, commit, fast-path and rollback generations; Camera2 controller/session/fallback/
-capture correlation; GL/EGL preview, encoder, analysis and assist owners; still snapshot, HEIF/JPEG/
-DNG publication, exact-family deletion and launch recovery; REC allocation, microphone handoff,
-MediaCodec/muxer teardown/quarantine and storage; review/player/ownerless-delete deadlines; settings,
-resources and localization; plus every host/instrumented/device test and build/release/attestation
-tool. The authority, source, tests, comments, coverage and device ledger were cross-checked rather
-than trusted independently. A final sweep revisited every executor, handler post, delayed callback,
-retry, mutable packet, process owner, and cross-thread read/write seam.
+### T2. The persisted/MR `videoResolution` is the engine's fallback choice, not the operator's request (Medium, likely)
+- **Where:**
+  - `CameraViewModel.kt:801-806`: `onVideoSizeChosen` writes the engine's *chosen* size into
+    `state.videoResolution`.
+  - `CameraViewModel.kt:1586`: `currentExtras` persists that value.
+  - `CameraEngine.kt:2742`: restore writes it into `requestedVideoSize`.
+  - `CameraEngine.kt:7664-7671`: `chooseVideoSize` falls back to `auto` when the request is not offered.
+- **Why:** The engine keeps the operator's pick (`requestedVideoSize`) apart from what it could
+  deliver on the current route/aspect (`videoSize`). The VM collapses both into one field and
+  persists the delivered value.
+- **Failure:** The operator picks 1080p, then enables Open Gate. The engine chooses 2560×1920 and
+  the VM shows and persists that. After a background kill and relaunch, `requestedVideoSize` is
+  2560×1920. When Open Gate is turned off, that size is not in the 16:9 list, so `auto` picks 4K UHD.
+  The 1080p pick is silently lost. The same thing happens through a lens/front route that lacks the
+  requested size, and through MR save/recall. Within one process the engine still holds the right
+  request, so the bug only shows up across persistence. That makes it hard to notice.
+- **Fix:** Mirror the *requested* size separately in the VM. Update it only in `onVideoResolution`
+  and restore, and persist that value. Keep `videoResolution` as the display-only delivered size.
 
-The full non-device host gate passed (2,103 JVM/Robolectric/Compose tests, debug/androidTest APK
-assembly, lint, 99.82% Partition A, 130 tool tests, nine coverage-tool tests, 195 harness self-tests,
-152 documentation checks, compilation, and diff checks). No device behavior was run or inferred.
+---
 
-## Finding
+## Flow 2: Photo↔Video and lens/TC/front/DNG doors
 
-### TRACE50-01 — a pipeline command can linearize after rollback with pre-rollback arguments, restoring engine/UI divergence and a refused next REC
+**Traced path.** `onModeChange` → `remapModeOptics` (ZoomMath) → `invalidateOpticsDerivedState`
+and `clearTapFocusUi` → `engine.setVideoMode`, which runs `beginOpticsTransaction` →
+`setupExecutor` → reconfigure or fast-path `commitFastPathOrReconfigure`.
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed data race and atomic-packet violation; manifestation requires an
-  operator or late inventory pipeline change overlapping an owned optics failure.
-- **Exact regions:**
-  - ViewModel freezes codec/transfer/candidate arguments before entering the Engine at
-    `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:2336-2353` (transfer),
-    `:2588-2612` (late codec inventory), and `:2855-2871` (codec selection).
-  - `CameraEngine.setVideoPipeline` is synchronized only on entry at
-    `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:2511-2556`; it correctly derives
-    active transfer from current mode under that monitor, but treats the already-frozen external
-    codec/candidate/requested-transfer packet as current.
-  - Owned rollback restores HEVC/candidates/requested/active transfer and posts the matching UI
-    packet under the same Engine monitor at `CameraEngine.kt:764-839`. The ViewModel applies it
-    later on main, guarded only by optics generation, at `CameraViewModel.kt:911-960`.
-  - When rollback has restored Photo, the queued pipeline command computes
-    `tenBitChanged=false` and takes the plain publish branch (`CameraEngine.kt:2541-2556`), so it
-    advances no optics generation and cannot supersede the queued rollback publication.
-  - The next Video transition updates mode/transfer but not codec/candidates
-    (`CameraEngine.kt:2197-2256`), and REC consumes those live fields through
-    `recordingEncoderAdmission` at `CameraEngine.kt:5046-5065` /
-    `CameraState.kt:993-1016`.
-- **Concrete failure scenario and causal sequence:**
-  1. Accepted state is Photo/SDR with next-Video HEVC/Main10/HLG.
-  2. Photo→Video publishes optimistic Video/HLG and starts optics generation *g*.
-  3. Before *g* settles, the operator selects AVC. `onVideoCodec` freezes AVC/Main/SDR candidates
-     on main and calls the synchronized Engine method.
-  4. The setup thread owns the Engine monitor first, fails *g*, restores Photo/SDR plus the accepted
-     HEVC/Main10/HLG tuple, and queues rollback *g* to main.
-  5. The blocked codec call then enters `setVideoPipeline`. It sees current Photo, so active transfer
-     is SDR and no Camera2 precision boundary changed; it publishes the stale AVC/Main/SDR next-video
-     tuple without a new generation.
-  6. The call returns and the ViewModel briefly publishes AVC/SDR. The already-queued rollback still
-     sees *g* as current and overwrites UI with Photo + HEVC/HLG. Engine remains Photo/SDR but owns
-     AVC/SDR for the next Video pipeline.
-  7. The next Video tap takes the UI's HLG transfer but leaves the Engine's stale AVC codec/candidates
-     untouched. Camera2 may reopen for HLG, while REC admission filters AVC against HLG and returns
-     `SELECTED_CODEC_UNAVAILABLE`; the operator sees HEVC/HLG but cannot start the take.
-- **Competing hypotheses checked:**
-  - `@Synchronized` does not close this race: Kotlin evaluates method arguments before monitor entry,
-    and the problematic packet is produced in CameraViewModel, not read inside the synchronized body.
-  - Main-thread serialization is insufficient: rollback runs on `setupExecutor` and posts its UI
-    repair to main. Main can be blocked at Engine monitor entry after it already froze the arguments.
-  - Volatile fields provide visibility only; they do not atomically join caller-built candidates to
-    rollback ownership.
-  - The optics generation guard cannot reject the rollback post because the Photo fast branch of
-    `setVideoPipeline` deliberately creates no generation.
-  - Eventual encoder-inventory reconciliation is not guaranteed for a live codec selection after
-    inventory is already loaded, and the next mode/REC door consumes the divergence before any
-    unrelated reconciliation is required.
-  - The new interleave test does not refute the trace: it queues HEVC/HLG behind a rollback that
-    restores HEVC/HLG (`ModeRollbackOwnershipRobolectricTest.kt:53-87`), so the stale and restored
-    packet owners are indistinguishable and it asserts neither codec nor candidates.
-- **Suggested fix:** give video-pipeline mutations a monotonic publication identity independent of
-  Camera2 reconfiguration. Linearize the complete external command packet under the Engine monitor,
-  and have rollback restore/publish its baseline only if no newer pipeline identity won; alternatively
-  advance an ownership generation even for Photo-only next-video changes without falsely clearing
-  Camera Ready. Publish the winning packet back to ViewModel so UI and Engine share that same
-  identity. Add a disjoint HEVC/HLG rollback versus AVC/SDR queued-command interleave and continue it
-  through the next public Video + REC admission.
+`onLens` and `onToggleTeleconverter` go to `engine.setLens` → `resolveLensOpticsIntent` /
+`resolveTeleZoomTransition`. `onToggleFrontCamera` goes to `engine.setFrontCamera`, using the
+unified pre-front snapshot and `rearReturnZoom`. Rollback runs `commitOpticsRollbackLocked` →
+`onOpticsRollback`, which mirrors mode, lens, TC, facing, route, controls, declaration and preTele.
 
-## Confirmed flows and residual validation
+On these five doors, zoom-scale conversion, `ZoomGlideState` invalidation, tap-AF retirement
+(engine `retireTapFocusLocked` plus the VM mirror) and the finder/punch-in resolve are consistent.
+**The DNG toggle is the exception.** It is documented as a route input, yet it is not handled as
+an optics-remap door.
 
-I separately traced the release capture-family diagnostic fix through registration, producer lease,
-processed/DNG terminal lanes and deletion retirement; the nullable-safe branch is currently correct.
-I rechecked Ready/controller/session ownership, front/rear/DNG route scales, ZSL admission/correlation,
-tap-AF/custom-WB owners, preview/EGL retries, recorder allocation/stop/quarantine, microphone
-handoff/degradation, post-native storage, latest-capture ordering, whole-family deletion, recovery,
-review setup/player deadlines, modal/input ownership, lifecycle teardown, and release provenance.
-No second current product defect survived competing-hypothesis validation. A3/A4/A5/D1/E1/E2
-remain explicit manual/field evidence gaps, not causal failures established from host source.
+### T3. Toggling DNG in Photo changes the route and the zoom scale, but never converts the zoom (High, confirmed)
+- **Where:** `CameraViewModel.kt:2370-2390` (`onSetPhotoFormats`) and `CameraEngine.kt:3959-3981` (`setRawWanted`).
+- **Why:**
+  - `setRawWanted` opens an optics transaction that sets only `overrideId = pin`, then reconfigures.
+  - `controls.zoomRatio` and `lensChoice` are carried across unchanged, even though the route moves
+    logical (unified scale) ↔ standalone (lens-local scale).
+  - `reconcileControlsWithCaps` (`:560-595`) only clamps to the caps range.
+  - `onSetPhotoFormats` also does none of the remap-door hygiene: no zoom rewrite, no
+    `invalidateOpticsDerivedState()`, no `cancelPendingControls`, no synchronous `pushTeleFinder`.
+- **Failure (PMA110, Photo, TC off):**
+  - **DNG ON at unified 3.0:** lens = TELE3X band, so `resolveNonTeleId(TELE3X)` opens standalone
+    70 mm at local 3.0. The operator sees a sudden 3× digital crop on the 70 mm lens. The OSD
+    `unifiedZoom` reads 9× / ~208 mm. These are exactly the "208 mm / 9.1×" symptoms that CLAUDE.md
+    records as fixed for the *lens tap*; this is the same bug reached through the format chip.
+  - At unified 5× the result is 15× local-read.
+  - **DNG OFF on the 3× lens (local 1.0):** logical at unified 1.0, then `forZoom(1.0)` = MAIN. The
+    framing jumps 3× → 1×.
+  - Other effects:
+    - A pending coalesced control packet or a hardware-key glide target set in the old scale keeps
+      driving the old number.
+    - The focus-confidence evidence from the old route is not invalidated.
+    - The GL Loupe Overview gate, which depends on `rawWanted` through `unifiedZoomOf`, stays stale
+      until `applyStabilization` runs after the reopen.
+- **Fix:** Treat the DNG flip as an optics door in both VM and engine, like `resolveTeleZoomTransition`:
+  - Compute `unified = unifiedZoomOf(lens, zoom, oldStandalone, optical)`.
+  - Rewrite zoom to `localZoomOf(unified)` (→ standalone) or `unified` (→ logical), and the lens to
+    the band inside the same `beginOpticsTransaction` publication and the matching VM `_state` write.
+  - Call `invalidateOpticsDerivedState()` and `cancelPendingControls()` in `onSetPhotoFormats` when
+    `standaloneRouteWanted` changes, and `pushTeleFinder()` in `setRawWanted`.
+  - Only act when the standalone answer actually flips (TC and FRONT are unaffected).
 
-## Totals
+### T4. The same-route fast-path terminal mutations re-derive the lens band while ignoring DNG (Medium, likely)
+- **Where:** `CameraEngine.kt:2665-2667` (`setVideoMode` fast path) and `CameraEngine.kt:2818-2820`
+  (`setResolvedOptics` fast path). Both use
+  `if (!video && !TC && route == BACK) lensChoice = LensChoice.forZoom(controls.zoomRatio)`.
+- **Why:** These are the two surviving sites of the pre-2026-08-04 predicate. The caps-install seam
+  (`:589`), the VM zoom path (`CameraViewModel.kt:2181`) and `reconcileZoomToCaps` (`:2968`) were
+  all corrected to `!standaloneRouteWanted(video, rawWanted, …)`.
+- **Failure:** With DNG on, a Video→Photo flip that keeps the same standalone camera and the same
+  stream size takes the fast path (for example Open Gate 4:3 on a lens whose photo field matches).
+  So does an MR recall of a DNG Photo preset onto the same standalone camera. In both cases the
+  lens-local ratio is read as unified: local 1.0 on the 70 mm lens becomes `lensChoice = MAIN`. The
+  next bare reopen, `resolveNonTeleId(MAIN)`, then moves the session to the main lens. The rail also
+  highlights 1× while the focal readout says 69 mm, which is the 2026-08-04 symptom again.
+- **Fix:** Use the same `!standaloneRouteWanted(videoMode, rawWanted, rawRequiresStandalone)` guard at
+  both sites. Better still, route all four sites through one helper.
 
-- Findings: **1**
-- Severity: **1 Medium**
-- Confidence: **High**
-- Confirmed causal product defects: **1**
+### T5. `rawWanted` is not part of the optics snapshot, so a failed DNG reopen or a failed MR recall leaves DNG on over a logical session (Medium, likely)
+- **Where:** `CameraEngine.kt:724-748` (`currentOpticsSnapshot`, which has no `rawWanted`),
+  `:940-1000` (`commitOpticsRollbackLocked`), and `:3959-3981`. On the VM side:
+  `CameraViewModel.kt:915-960` (rollback mirror, no `photoFormats`) and `OpticsConstraints.kt:68-69`
+  (Ready keeps `dngRaw` by design).
+- **Why:** Rollback restores `overrideId` to the previous route. That is the logical id, because
+  `setRawWanted` gets there through `reconfigureCamera`, whose `selectCurrentLens`/`cachedCaps` can
+  roll back with `CAMERA_UNAVAILABLE_CAMERA_UNCHANGED`, or the preview-unavailable branch. But
+  `rawWanted = true` survives the rollback. `applyLoaded` has the same problem: `setRawWanted` runs
+  after `setResolvedOptics`, so an async rollback of the recall restores optics but not the DNG
+  input.
+- **Failure:**
+  - The chip shows DNG on and the VM keeps `dngRaw = true`, as designed, but the session is logical
+    with `raw = false`.
+  - Every shutter press writes only HEIF/JPEG and posts `RAW_UNAVAILABLE`.
+  - Every later bare reopen (aspect, hi-res, 10-bit) reuses `overrideId` = logical.
+  - Re-tapping DNG on is a no-op because of the `rawWanted == enabled` gate. The operator has to
+    toggle it off and on again to recover.
+- **Fix:** Add `rawWanted` to `OpticsSnapshot`/`OpticsIntentState`. On rollback, restore it and
+  publish it in `OpticsRollbackPublication`, and have the VM mirror `photoFormats.dngRaw`. Otherwise,
+  on a rollback of a `setRawWanted` transaction, clear `overrideId` so the next reopen re-resolves.
+
+### T6. `setRawWanted` while `started && paused` leaves a stale cached route that `resume()` reuses (Low, needs-manual-validation)
+- **Where:** `CameraEngine.kt:3968`, where `if (!started || paused) return` runs after `rawWanted`
+  is mutated. `resume()` at `:7373-7379` reopens with `currentOpticsReconfiguration().overrideId`,
+  which is the last accepted id.
+- **Why:** The early return is correct only for `!started`, where the first configure resolves from
+  `rawWanted`. When `started && paused`, `overrideId` still caches the pre-pause camera. That is
+  exactly bug #2 in the CLAUDE.md DNG bullet.
+- **Failure:** This needs a `setRawWanted` that actually changes the answer while backgrounded. The
+  known trigger is a late `applyEncoderInventory` post after a fast background, but today that is a
+  no-op because `normalizedForEncoder` never touches `dngRaw`. Any future background-time route
+  input (a settings import, an intent) would reopen the wrong route permanently.
+- **Fix:** When `paused` and started, set `overrideId = userCameraPin` under the monitor before
+  returning, so `resume()` re-resolves.
+
+### T7. `setRawWanted` on the FRONT route runs a full front reopen for nothing (Low, confirmed)
+- **Where:** `CameraEngine.kt:3959-3981`. `standaloneRouteWanted` ignores facing, so the answer flips
+  and `reconfigureCamera(null, …)` runs. `selectCurrentLens()` then returns `cachedFront()`, the
+  same camera.
+- **Failure:** Tapping the DNG chip while FRONT causes a visible black dip (close/open of the same
+  front camera) with no route change.
+- **Fix:** Skip the transaction when `activeCameraRoute != BACK`. The field update alone is enough,
+  because leaving FRONT re-resolves through `resolveNonTeleId`.
+
+---
+
+## Flow 3: shutter → still → save → review → delete
+
+**Traced path.**
+- The VM `onCapturePhoto` → `dispatchPhotoShutter` → `fireShutterWithFeedback` → `engine.capturePhoto`.
+- The engine checks `stillOutputAdmission`, then `currentAcceptedCameraSession()` (which gates on
+  `cameraReady && !paused && controller && sessionGeneration`), then `formats.normalizedFor(accepted.outputs)`.
+- Next come the drive branches (SINGLE, BURST, AEB, TIMELAPSE) → `dispatchStillCapture` →
+  controller → `StillCapturePipeline` → `MediaStoreWriter` (REGISTERED → COMPLETE → publish).
+- Callbacks `onMediaSaved`/`onRawSaved` → `recordCaptureOutput` → `CaptureOutputTracker.record`
+  (synchronized, capture-id ordered) → review.
+- Delete: `captureOutputs.beginDelete` (freeze + tombstone) → `engine.markCaptureDeleted` → dispatcher
+  → `deleteUntrackedFamilySiblings` + `deleteKnownOutput` → survivor restore.
+
+Ownership, tombstoning and survivor restore look consistent. BURST/AEB re-check
+`acceptedSessionIsCurrent` on every link.
+
+### T8. A running timelapse keeps the formats frozen at its start, while DNG/format toggles mid-run take effect on the route (Low-Medium, confirmed)
+- **Where:** `CameraEngine.kt:4840` (`startTimelapse(formats)`) and `:4966`
+  (`requestedFormats.normalizedFor(accepted.outputs)` per tick). `CameraViewModel.kt:2370`
+  (`onSetPhotoFormats` only calls `cancelCountdown()`, and neither `stopTimelapse` nor the engine
+  re-reads the formats).
+- **Failure:** In a run started with HEIF only, turning DNG on moves the route to a standalone lens,
+  so seamless zoom is lost, yet no DNG is ever written. The chip says DNG. In a run started with DNG,
+  turning DNG off returns the route to logical, so ticks silently drop DNG. There is no status in
+  either direction. HEIF↔JPEG changes are ignored for the rest of the run.
+- **Fix:** Either stop the run on any format change (same idiom as a mode flip) or read the live
+  formats per tick through an engine-held `@Volatile` selection.
+
+---
+
+## Flow 4: REC start → admission → first swap → stop/pause/background mid-admission
+
+**Traced path.** The VM optimistically sets `isRecording && isRecordingStarting` (a generation token),
+then calls `engine.startRecording`. After that:
+- `RecordingAdmissionLatch.tryBeginAdmission` and the topology lease.
+- The `recorderExecutor` runs `beginRecordingAllocation`, which takes a frozen
+  `currentRecordingAdmissionSnapshot` (size, fps, codec, transfer, candidates, and an `isCurrent`
+  that includes `!paused`), registers the family, and arms the process pre-native allocator with a
+  deadline.
+- A claimed row goes to `continueRecordingAfterAllocation`, then the standby mic claim, then
+  `startRecordingClaimed` (≤400 ms release wait), then native setup, publication, and the first real
+  encoder swap → `onRecordingStarted`.
+- Stop is latched by `requestStop`/`completeAdmission`. Pause runs `retirePreNativeRecordingAllocation`
+  plus the recorder claim, and the VM bumps `recordingAttemptGeneration`. Camera faults claim the
+  recorder before `onRecordingTerminated`.
+
+**No new defect found.** Every async edge I followed is generation-owned or latched. A candidate
+race does exist: a stale `onRecordingTerminated` post landing after a user stop+restart. It needs
+two taps inside one main-queue hop while `recorderTeardownInFlight` already refuses the restart, so
+I rate it **Low / needs-manual-validation** and leave it out of the count.
+
+---
+
+## Flow 5: background/foreground during capture, recording and session config
+
+**Traced path.**
+- **onStop:** `MainActivity.onStop` releases any held key edges, then `vm.onStop` (clears progress,
+  countdown, REC UI, tickers, `invalidateOpticsDerivedState`, tap focus; saves settings; disables the
+  standby mic), then `engine.pause`. `engine.pause` sets `paused`, revokes the startup trace, retires
+  the pre-native REC attempt, cancels cold-start retry, disables standby, invalidates Ready (which
+  cancels DNG pre-allocations), stops timelapse, finalizes the recorder off main, stops the gyro, and
+  closes the controller on `setupExecutor`.
+- **onStart:** `vm.onStart` → `engine.resume`, which re-resolves from the current desired fields.
+
+Setup tasks re-check `paused` after every Binder phase. Nothing new beyond T6.
+
+---
+
+## Flow 6: permissions (camera, mic, visual media)
+
+**Traced path.**
+- **Camera:** a `RequestMultiplePermissions` launch at first composition →
+  `recordCameraPermissionResult` → `refreshPermissionState` (also run on `onResume`).
+- **Mic:** `permissionAwareActions` → `requestMicrophoneThen` (rationale → launcher) → grant/decline.
+  `declineMicrophone` sets `AUDIO_OFF_BY_DENIAL` and, for START_RECORDING, still records.
+  `refreshPermissionState` → `audioRestoredByMicrophoneGrant`.
+- **Visual media:** a contextual launch at an empty-gallery tap → `onGalleryAccessRequested`.
+
+### T9. MR recall/restore can set `recordAudio` without touching `AUDIO_OFF_BY_DENIAL`, so a later grant overrides a recalled deliberate silence (Low, likely)
+- **Where:** `CameraViewModel.kt:1504` (`recordAudio = e.recordAudio` in `applyLoaded`) and
+  `MainActivity.kt:961-969`.
+- **Why:** The denial-reason flag is cleared only through the Activity's
+  `onToggleRecordAudio(false)` decorator. After a denial the flag is true. The operator then recalls
+  an MR bank saved with audio deliberately OFF, so `recordAudio` stays false and the flag stays true.
+  On a later grant, audio is forced back ON and a status line says so. That overrides the preset's
+  choice.
+- **Fix:** Clear `AUDIO_OFF_BY_DENIAL` whenever a recall/restore publishes `recordAudio` (VM callback
+  → Activity), or move the flag into the VM next to `recordAudio`.
+
+---
+
+## Summary
+
+Total: **9 findings**.
+
+| # | Finding | Confidence | Status |
+|---|---|---|---|
+| T1 | `restoredOptics` drops the lens band for DNG Photo | High | confirmed |
+| T2 | The persisted video resolution is the engine's fallback, not the operator's request | Medium | likely |
+| T3 | The DNG toggle changes route and scale but never converts zoom or runs door hygiene | High | confirmed |
+| T4 | The fast-path `forZoom` re-derivation ignores DNG (2 sites) | Medium | likely |
+| T5 | `rawWanted` is missing from the optics rollback snapshot | Medium | likely |
+| T6 | `setRawWanted` while paused leaves `overrideId` stale for `resume()` | Low | needs-manual-validation |
+| T7 | The DNG toggle on FRONT runs a pointless full reopen | Low | confirmed |
+| T8 | A timelapse run ignores mid-run format/DNG changes | Low-Medium | confirmed |
+| T9 | Recall doesn't clear `AUDIO_OFF_BY_DENIAL` | Low | likely |
+
+**Common root cause:** T1, T3, T4, T5 and T7 all come from one design gap. DNG is documented as a
+ROUTE INPUT, but in code it is still handled as a format option. It has no zoom-scale conversion,
+no rollback membership, no remap-door hygiene, and no route-aware lens-band derivation at the
+remaining fast-path sites. Closing it once, by giving the DNG flip the same `beginOpticsTransaction`
+packet shape as a TELE on/off (including a rewrite of `lensChoice` and `zoomRatio`), fixes all five.
+All of these need on-device confirmation on the PMA110 before they are claimed fixed.

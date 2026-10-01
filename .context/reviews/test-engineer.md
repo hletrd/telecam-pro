@@ -1,241 +1,247 @@
-# Test-engineer review — cycle 51
+# Test-engineer review — 2026-09-30 (HEAD ba5b16e7)
 
-Date: 2026-08-25
-Reviewed revision: `7eb4ee951e769afe884f8115ffbde25c828028a3` (`origin/main`)
-Workspace: isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`
-Mode: review only; no production implementation, commit, push, deployment, device mutation, or
-shared-main access
+Scope: `app/src/test/**` (252 files, 2,271 `@Test`, 64 Robolectric classes), `app/src/androidTest/**`
+(4 files, compiled by the gate but not run), `tools/tests/**` (8 suites), `tools/coverage/tests/**`,
+`device-tests/tests/**` (5 suites). Read-only. Gradle was not run, so every finding here comes from
+reading the code. Confidence ratings are about the reasoning, not about a reproduced failure.
 
-## Complete inventory and method
+## What is already solid
 
-I inventoried all 538 tracked paths before reviewing. The complete executable/evidence inventory was
-all 103 Kotlin/Java production files under `app/src/main`, all 240 JVM/Robolectric/Compose test
-files (2,112 `@Test` methods), all four `androidTest` files (seven tests), all 14 device-harness
-files, all 25 host/coverage/release tools, all 17 main resources/manifests, all 11 Gradle/version/
-wrapper inputs, all 65 committed docs/assets, and the root legal/privacy/build plus 44 tracked
-review-context paths. I read `CLAUDE.md` completely first, then `docs/ARCHITECTURE.md` and
-`docs/FIELD_CHECKS.md` completely, and cross-checked the current cycle-50 plan, prior provenance,
-coverage manifests, README/device-harness authority, implementation, tests, tools, and docs rather
-than trusting any one layer.
-
-The exhaustive test pass inspected every test skip/early return, assertion-light probe,
-source/reflection contract, latch/barrier, delayed callback, mutable packet, effect declaration,
-coverage classification, and production caller. The source-to-test sweep covered lifecycle,
-permissions/input, Camera2 routes/sessions/capture correlation, optics and rollback generations,
-zoom/3A, GL/EGL preview/encoder/analysis, still/DNG/video/storage durability, review/delete/recovery,
-UI/accessibility/localization, and build/release/device tooling. Only the two findings below survived
-the final competing-hypothesis and mutation-sensitivity sweep.
-
-The focused current tests passed:
-
-`./gradlew :app:testDebugUnitTest --tests 'me.hletrd.telecampro.ui.ModeRollbackOwnershipRobolectricTest' --tests 'me.hletrd.telecampro.camera.CameraEngineRecordingPreNativeTest'`
-
-with the documented JDK/SDK environment. `python3 tools/check_docs.py` also passed 153 checks with
-24 declared optional-private skips. Those greens are evidence for the false-positive gaps below,
-not evidence against them.
+- No test reads production source text. The only file read is the shader in
+  `ShaderProgramCompileTest`.
+- There is no sleep-based synchronization. The only two `Thread.sleep(1)` calls sit inside
+  deadline-bounded polling loops (`StandbyAudioControllerTest.kt:1533`,
+  `FamilyDeletionMarkerIntegrationRobolectricTest.kt:181`).
+- Short timeouts are mostly driven by manual schedulers (`ManualDeadlineScheduler`,
+  `ManualRetryScheduler`, `ManualDeadline`) instead of wall-clock time.
+- 10 of the last 12 `fix(...)` commits included a regression test. The two without one are
+  2eb57e4e (see TE-7) and c70842b5, which is tooling.
+- Pure logic is held to a 99.5% line-coverage gate for Partition A, with every residual miss
+  documented. The coverage gaps below are therefore about structure, not raw line counts.
 
 ## Findings
 
-### C51-TEST-01 — the “immutable REC snapshot” test stops before production native setup consumes the packet
+### TE-1 — Retry in the lane test must finish within a real 100 ms, then an unchecked cast (Medium, flaky)
+- `app/src/test/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLaneTest.kt:145-189` (lane built at :152-164, retry at :177-178)
+- **Problem.** The lane is built with `terminalTimeoutMs = 100` so that the `slow` request times out.
+  The same lane is then reused for `lane.submit(Any(), "retry")`. That retry has to be dispatched onto
+  the 2-thread pool, run, and be observed inside `withTimeoutOrNull(100)` in real time. The result is
+  then cast with `as ProgressiveLatestWorkLane.Submission.Completed`.
+- **Scenario.** Under host load (JaCoCo instrumentation, a parallel Gradle daemon, or a GC pause over
+  100 ms) the retry returns `TimedOut`. The cast throws `ClassCastException`, which says nothing
+  about the cause. This is the same "real clock plus shared host" pattern that ba5b16e7 just fixed.
+- **Fix.** Pass the timeout per call, or build a second lane for the retry with the production 5 s
+  timeout (`REVIEW_WORK_TERMINAL_TIMEOUT_MS`). The alternative is to inject the timeout source the way
+  `ExactHandlePrepareOwner` takes `schedule`. Replace the cast with
+  `assertTrue(result.toString(), result is Completed)`.
+- **Status:** open.
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed false-green integration gap shared with `TRACE51-01`; current source
-  has a real torn-transfer race.
-- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/camera/CameraEngineRecordingPreNativeTest.kt:141-201`
-  blocks `beforeEncoderAdmissionSnapshot` and asserts only the observed `RecordingAdmissionInputs`.
-  The installed `RecordingPreNativeEngineOverrides` makes
-  `continueRecordingAfterAllocation` take the injected `afterMicrophoneClaim` terminal at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:5367-5386`; it never calls the
-  production `startRecordingClaimed` branch at `:5387-5399`. The snapshot itself stores accepted
-  session, observed inputs, filtered candidates, failure, and a session-only current predicate at
-  `CameraEngine.kt:5027-5061`; it does not carry size, selected frame rate, or the accepted transfer
-  into native setup. Production later re-reads `videoSize`/`videoFrameRate` and reads live `transfer`
-  independently for `glTransfer` and `fileTransfer` at `:5462-5483`; the latter configures
-  `VideoRecorder.start` at `:5580-5593`, while the former reaches GL at `:5659-5663`.
-- **Concrete failure scenario:** REC snapshots HEVC+HLG and then waits on provider/mic setup. While
-  the accepted HLG10 Camera2 session remains current, the operator selects S-Log3 (the same non-SDR
-  source-precision class, so no session generation changes). Native setup can read HLG for the GL
-  curve and S-Log3 for file tags, or the reverse. The test remains green because it proves only the
-  earlier observation callback and short-circuits before either live read.
-- **Suggested fix:** carry one immutable recording packet through `RecordingAdmissionSnapshot` into
-  `startRecordingClaimed`: exact accepted session, size, frame-rate selection/capture rate, codec,
-  accepted transfer, and ordered candidates. Derive GL and file transfer from that one value. Add a
-  barrier between the former live-transfer reads, change HLG to S-Log3/LogC3 concurrently, and drive
-  the real production setup composition through an injectable recorder/GL boundary; assert pixels,
-  encoder format tags, candidate, size, and FPS all come from one packet.
+### TE-2 — "The caller did not block" is checked with a 250 ms wall-clock budget (Medium, flaky)
+- `app/src/test/kotlin/me/hletrd/telecampro/ui/OwnerlessMediaDeleteLifecycleTest.kt:59-64`
+- `app/src/test/kotlin/me/hletrd/telecampro/ui/OwnerlessMediaDeleteOperationTest.kt:66-74`
+- **Problem.** Both tests time a dispatch with `System.nanoTime()` and assert `elapsedMs < 250L`.
+  The first dispatch in a fresh Robolectric sandbox pays for executor and thread creation, JIT, and
+  JaCoCo probes. A stop-the-world GC can also take more than 250 ms on a loaded CI host.
+- **Why the check adds little.** In the lifecycle test the provider lambda blocks on an untimed
+  `allowProvider.await()`. If the caller really did block, the test thread would deadlock before
+  reaching the assertion. So the wall-clock check adds flake risk without adding detection.
+- **Fix.** Make the proof structural. Run the call on a helper thread and assert that its
+  "returned" latch opens while `providerEntered` has fired and the provider is still parked. Use timed
+  awaits so that a regression fails the test instead of hanging it. Then drop the elapsed-time
+  threshold.
+- **Status:** open.
 
-### C51-TEST-02 — rollback supersession tests assert Engine/UI fields but never the GL command winner
+### TE-3 — `DiagnosticLogTest` is order-dependent and becomes vacuous once the process budget is spent (Medium, weak and flaky)
+- `app/src/test/kotlin/me/hletrd/telecampro/camera/DiagnosticLogTest.kt:20-54`
+- **Problem.** The test uses the process-global `processDiagnosticLogBudget` (180 rows) and
+  `processReservedDiagnosticLogBudget` (120 rows). All Robolectric classes share one sandbox, and
+  engine and ViewModel tests emit warnings, so the reserved budget is probably exhausted before this
+  class runs (this was not measured). When it is, both admitted counts are 0, `ShadowLog` holds 0
+  rows, and `in 0..2` / `in 0..3` pass. The test then passes even if `DiagnosticLog.w` never logs.
+- **Second problem.** When the budget is not exhausted, a leftover background thread from an earlier
+  test (a daemon retry scheduler or a released engine executor) can spend a row between the
+  `before` and `after` reads. That row is counted in `reservedAdmitted` but logged under a different
+  tag, so `assertEquals(..., ShadowLog.getLogsForTag(tag).size)` fails.
+- **Fix.** Give the `DiagnosticLog` doors an injectable budget, the way
+  `recurringDiagnosticAllowed(debugEnabled, budget)` already has one. Test each door against a fresh
+  `ProcessDiagnosticLogBudget` with exact counts (d/i spend 2, w/w/e spend 3). Add one exhaustion
+  test that proves a full budget suppresses the row. Keep the process-global relational check only
+  as a secondary assertion.
+- **Status:** open.
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed mutation-insensitive coverage gap shared with `TRACE51-02`; current
-  source posts a stale renderer curve.
-- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/ui/ModeRollbackOwnershipRobolectricTest.kt:53-140`
-  covers Photo/SDR rollback plus a newer AVC/SDR packet and asserts Engine/UI/candidate policy only.
-  Its unstarted Robolectric `GlPipeline` drops posts, and no transfer sink is observed. In production,
-  rollback correctly chooses the newer packet using `videoPipelinePublicationGeneration` at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:824-834`, but immediately posts
-  `before.transfer` to GL at `:835`. A mutation that leaves this stale post intact while preserving
-  all Engine/UI generation logic is invisible to the current tests.
-- **Concrete failure scenario:** an in-flight Video lens/optics door began under HLG. Before it
-  fails, the operator selects S-Log3, which is a newer pipeline publication but needs no Camera2
-  precision reopen. Rollback preserves S-Log3 in Engine/UI, then queues the old HLG curve into the
-  active GL generation; the finder/file-render path disagrees with the visible selection until a
-  later transfer replay happens.
-- **Suggested fix:** inject/observe the active GL transfer sink in the rollback test. Use a Video
-  baseline with disjoint same-precision curves (HLG versus S-Log3), force the newer publication to
-  win before owned rollback, drain both command lanes, and assert Engine, UI, persisted packet, GL
-  renderer, and subsequent REC all retain the same curve. Mutation-test `before.transfer` versus
-  `restoredVideoPipeline.activeTransfer` at the rollback post.
+### TE-4 — The same pattern ba5b16e7 fixed survives next to it: a plain `mutableListOf` sink on a process-wide signal (Medium, flaky)
+- `app/src/test/kotlin/me/hletrd/telecampro/storage/PendingAllocationIdentityRecoveryTest.kt:294-318`
+- **Problem.** `production storage subscription publishes close and reopen capacity edges`
+  subscribes a non-thread-safe `mutableListOf<Boolean>()` to
+  `MediaStoreWriter.subscribeStillStorageAdmission`. That signal combines the process-wide
+  rejected-output owner and the pending-identity recovery owner. The test asserts exact lists
+  (`[true,false]`, `[true,false,true]`) and requires `rejectedOutputAdmissionAvailable()` to be true
+  at entry.
+- **Scenario.** Both owners live in the shared Robolectric sandbox and use a real daemon retry
+  scheduler with backoff. Suppose any earlier Robolectric test (engine, ViewModel, or storage)
+  transferred an UNRESOLVED row into either owner. Then either the entry assertion fails, or a
+  worker-thread retry publishes an extra edge into the list mid-test. Because the list is not
+  thread-safe, a concurrent `add` can also corrupt it.
+- **Fix.** Use `CopyOnWriteArrayList`. Assert relative to a snapshot: record `events.size` after
+  subscribe and compare only the edges that follow. Where the test depends on a clean singleton,
+  replace the bare `assertTrue(rejectedOutputAdmissionAvailable())` with an
+  `awaitCondition { MediaStoreWriter.rejectedOutputAdmissionAvailable() }` precondition.
+- **Status:** open.
 
-## Final missed-issue and file-coverage sweep
+### TE-5 — No per-test or suite timeout, and many untimed `join()`/`await()` calls, so a regression hangs the gate instead of failing it (Medium)
+- `app/build.gradle.kts:648-652` and `:687-691` configure the `Test` tasks without setting `timeout`.
+  No test uses a JUnit `Timeout` rule or `@Test(timeout=)`.
+- **Examples of untimed waits.**
+  - `gl/CompletionDispatchTest.kt:687`: `second.join()` runs before `finish.countDown()`. If
+    `runCleanup` regresses so that the second caller blocks on the first, the test waits forever.
+    That regression is exactly what the test exists to catch.
+  - `CompletionDispatchTest.kt:506-507` and `:651-653`: bare `join()` calls.
+  - `LatestHeavyWorkLaneTest.kt` has about 20 untimed `Deferred.await()`/`join()` calls inside
+    `runBlocking`.
+  - `CameraEngineRecordingPreNativeTest.kt` has about 10, and there are more in
+    `MediaReviewOwnershipTest`, `RecordingTeardownTerminalGateTest`, and
+    `RecorderQuarantineAdmissionGateTest`.
+- **Scenario.** A deadlock regression in any ownership gate turns `python3 tools/verify_host.py`
+  into an indefinite hang with no failing test name. For a codebase whose central risk is ownership
+  and lock ordering, this is the most likely way these tests will fail.
+- **Fix.** Add a suite-level backstop: `tasks.withType<Test>().configureEach { timeout.set(Duration.ofMinutes(30)) }`.
+  In the concurrency classes, use `join(5_000); assertFalse(t.isAlive)` and
+  `withTimeout(5_000) { deferred.await() }`, or add a class-level `@get:Rule val timeout = Timeout.seconds(30)`.
+- **Status:** open.
 
-I re-ran the tracked inventory after the traces and revisited every executor/handler/scheduler,
-atomic/volatile/monitor boundary, CameraAction, capture and recording terminal, GL/native owner,
-provider durability decision, review setup/decode/delete owner, test skip/return/source assertion,
-coverage residual, device case, and documentation claim. The assertion-light instrumentation tests
-remain explicitly diagnostic and androidTest assembly remains truthfully described as compilation,
-not device execution. Required device-harness skips remain non-green unless partial evidence is
-explicitly attested. No additional flaky, false-green, or missing TDD seam survived validation.
+### TE-6 — The encoder `MediaFormat` builders are never exercised, so the PQ-tag trap has no guard (Medium, coverage gap)
+- `app/src/main/kotlin/me/hletrd/telecampro/video/ColorProfiles.kt:56-137`. The whole object is listed
+  in Partition B at `tools/coverage/partition-b.txt` (`video/ColorProfiles`).
+- **Problem.** `ColorTagsTest` fully covers the pure tag tables (`hevcColorTagsFor`,
+  `apvColorTagsFor`). Nothing checks that `hevcFormat`, `avcFormat`, `videoFormat`, or `aacFormat`
+  actually write those tags, or that they write `KEY_MAX_FPS_TO_ENCODER`,
+  `KEY_CAPTURE_RATE`/`KEY_OPERATING_RATE`, or `KEY_PROFILE`.
+- **Scenario.** CLAUDE.md documents that leaving `KEY_COLOR_TRANSFER` unset makes the QTI encoder tag
+  the stream as ST2084 (PQ). If a refactor drops `setInteger(KEY_COLOR_TRANSFER, ...)` from
+  `hevcFormat`, or stops applying `tags.profile`, every host test still passes.
+- **Fix.** `MediaFormat` is a real class under Robolectric. Add a Robolectric test that iterates
+  codec × `ColorTransfer`, calls `videoFormat(...)`, and asserts:
+  - `containsKey` and the value for STANDARD, RANGE, TRANSFER, and PROFILE
+  - `KEY_MAX_FPS_TO_ENCODER == 29.97f` at 30000/1001
+  - `KEY_CAPTURE_RATE` is absent when `captureRate == 0`
 
-No physical Camera2 HAL, GLES error injection, MediaProvider, microphone, HDR display, external
-keyboard, converter, or device test ran. `docs/FIELD_CHECKS.md` remains truthful that A3/A4/A5/D1/
-E1/E2 are open; none was inferred green from host coverage.
+  After that, move `ColorProfiles` from Partition B to Partition A.
+- **Status:** open.
 
-## Totals
+### TE-7 — The "a failed save with no log line" diagnostics from 2eb57e4e have no test (Low-Medium, gap)
+- `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt`: the pending image and video
+  insert, the registration disposition, and the identity-capture exits added in 2eb57e4e. No test
+  file changed in that commit.
+- **Why it matters.** CLAUDE.md now describes these warnings as the diagnostic signature of the
+  external-union-volume class of defect. Nothing checks that:
+  - an insert that throws or returns null emits exactly one reserved row and returns null;
+  - an "identity recovery owner at capacity" refusal logs and does not leak the reservation.
+- **Fix.** Reuse the `installProvider` pattern from `MediaStorePendingDiscardIdentityReaderTest` with
+  a provider that throws, then one that returns null. Assert a null return, one row through an
+  injected budget (see TE-3), and that `pendingIdentityRecoveryOwner` capacity is unchanged.
+- **Status:** open.
 
-- Findings: **2**
-- Severity: **2 Medium**
-- Confidence: **2 High**
-- Confirmed product races exposed by test gaps: **2**
+### TE-8 — Several structurally pure functions are tested but outside the coverage gate (Low-Medium, structural)
+- `tools/coverage/partition-b.txt` moves `camera/ManualControlsKt` and `camera/CaptureCapabilitiesKt`
+  entirely into Partition B, labelled "mixed owners conservatively surrendered".
+- **Problem.** `captureWatchdogTimeoutMs` (the saturating arithmetic), `manualAebExposuresNs`,
+  `previewExposureTrade`, `effectiveExposureNs`, `kelvinTintToRggbGainValues`, and `meteringRegionTargets`
+  all have tests (`ExposureMathTest`, `WbGainsTest`, `ControlCapabilityNormalizationTest`). But the
+  99.5% gate does not see them, so a new untested branch here (a new AEB step, a new clamp) will not
+  lower Partition A.
+- **Fix.** Split the Camera2 request writers (`applyManualControls`, the `CaptureRequest.Builder`
+  helpers, `kelvinTintToRggbGains`, which returns framework `RggbChannelVector`) into their own file,
+  or into an `…Android.kt` class-level owner. The pure math then compiles into a Partition A class.
+- **Status:** open.
 
----
+### TE-9 — `DigitalGainTest` copies the formula it is testing (Low, tautological)
+- `app/src/test/kotlin/me/hletrd/telecampro/gl/DigitalGainTest.kt:61-77` compared with `gl/GlPipeline.kt:2155-2165`.
+- **Problem.** The expected value is computed with the same expression and the same shared constant
+  (`SdrToHlgMapping.SDR_EOTF_GAMMA`) as production. The test name says the LUT "matches the shader
+  chain", but the shader is never consulted. A wrong gamma constant, or a change of the encode
+  exponent in both the test and production, would still pass.
+- **Fix.** Add a few golden anchors computed by hand. For gain 4 with gamma 2.4, `lut[64]` should
+  equal `round(255 * min((64/255)^2.4 * 4, 1)^(1/2.4))`, written as a literal. Also add an assertion
+  that ties `SDR_EOTF_GAMMA` to the shader literal that `ShaderProgramCompileTest` already reads.
+- **Status:** open.
 
-## Archived prior review
+### TE-10 — `StartupTraceTest` restores a different seam than production uses, and one test cannot fail (Low)
+- `app/src/test/kotlin/me/hletrd/telecampro/camera/StartupTraceTest.kt:39-43` compared with
+  `camera/StartupTrace.kt:39`.
+- **Seam drift.** `restoreSeams` sets `emit = { android.util.Log.i(...) }`, but production's default is
+  `Log.i(TAG, it)` through the `DiagnosticLog` alias, which is budget-gated. Any later plain-JVM test
+  in the same JVM that reaches `finish()` would call the unmocked `android.util.Log`, and would
+  bypass the quota facade that this commit series introduced.
+- **Fix.** Capture the original `elapsedMs`/`emit` in `@Before` and restore those exact values.
+- **Tautology.** The test at `:96-104` (`elapsed values are monotonic`) runs against an injected
+  clock that adds 5 on every call, so it cannot fail. Either delete it or feed a non-monotonic clock
+  and assert what production does with it.
+- **Status:** open.
 
-# Test-engineer review — cycle 50
+### TE-11 — Process singletons have no reset, and no test asserts they are idle afterwards (Low, order dependency)
+- **`UnsafeRecorderQuarantine`.**
+  - `CameraEngineRecordingPreNativeTest.kt:39-44`: the teardown releases engines but never checks
+    that the process recorder admission is free.
+  - `release classifies claimed setup…` at `:569-609` removes `old` from `engines` and releases its
+    blocked setup only on the final line (`releaseOldSetup.countDown()`). The old setup thread then
+    finishes asynchronously after the test has returned.
+  - Later tests in the same sandbox call `checkNotNull(UnsafeRecorderQuarantine.snapshotAdmission(...))`
+    (`:692`, `:735`, `:774`), which assumes the process is idle.
+- **`ProcessDngPreCaptureAdmission.owner`.** `DngPreCaptureAllocationTest.kt:72-77` and
+  `ProcessStillAdmissionEngineTest.kt:20` assert `canAdmit()` / `tryAcquire() != null` on the process
+  singleton at entry.
+- **Fix.** Add an `@After` in each class that touches a facade:
+  `awaitCondition { !UnsafeRecorderQuarantine.isActive() && ProcessDngPreCaptureAdmission.owner.canAdmit() }`.
+  That turns a leak into a failure attributed to the leaking test. Also await the old setup thread's
+  exit in the test at `:569`.
+- **Status:** open.
 
-Date: 2026-08-25
-Reviewed revision: `2388819d981d32bc3c59b3e81f75fd4f49fab8bd`
-Workspace: isolated clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
-Mode: review only; no production implementation, commit, deployment, or device mutation
+### TE-12 — Negative waits prove little under load (Low, weak assertion)
+- `CameraEngineRecordingPreNativeTest.kt:705` (`assertFalse(replayed.await(50, ms))`), `:741` and
+  `:786` (100 ms). The same pattern appears in `ProcessAdmissionSignalTest.kt:52` (`closer.join(50L)`
+  followed by `assertFalse(closeReturned)`).
+- **Problem.** These waits cannot fail spuriously, but under load they pass without proving
+  anything: a replay that arrives at 60 ms is missed.
+- **Fix.** Where possible, pair each one with a structural witness, such as a counter read after the
+  foreign token is released, or a barrier inside the replay path that records whether it ran before
+  the release.
+- **Status:** open.
 
-## Complete inventory and method
+### TE-13 — `tools/field/tap_af_aim.py` has no tests, and its first 3A reading can be arbitrarily stale (Low, tooling gap plus minor bug)
+- `tools/field/tap_af_aim.py:70-84` (`latest_3a`), `:87-100` (`sensitivity_range`), `:124-135`.
+- **Stale reading.** The initial `before = latest_3a(...)` does not run `logcat -c` first. The 3A
+  row is now paced (3 s change interval, 15 s heartbeat) and capped by the 180-row process budget
+  (`CameraController.kt:1184-1191`). So `before` can be the last row emitted before the budget ran
+  out, possibly many minutes old. The "AE is RAILED" gate then runs against an ISO that no longer
+  applies.
+- **Parsers.** The `(\w+)=(-?\d+)` field parser and the `dumpsys` range regex have no unit test, and
+  the harness's `test_tool_contracts.py` does not import this script.
+- **Fix.** Run `logcat -c`, then poll for a fresh `3A:` row with a deadline longer than
+  `THREE_A_HEARTBEAT_MS` before taking `before`. Add `tools/tests/test_field_tap_af_aim.py` with a
+  fixture 3A line and a `dumpsys` excerpt.
+- **Status:** open.
 
-I first inventoried all 535 tracked paths. The review-relevant inventory was complete rather than
-sampled: all 120 production files under `app/src/main`, all 238 host JVM/Robolectric/Compose tests,
-all four `androidTest` files, all 14 external device-harness files, all 25 host/coverage/release
-tools, all 16 main resources/manifests, the eight Gradle/version/wrapper inputs, and the 64 committed
-docs/assets. I read the clean-clone authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`) in full, plus `README.md`, `device-tests/README.md`, the current completed
-plans, prior provenance reviews, and current coverage manifests. I then examined the complete source
-and test inventory by module and cross-checked every production async/ownership boundary, public UI
-action, device-harness case, test skip/incomplete route, source-inspection assertion, reflection
-fixture, delayed task, and Partition-A/B classification against its claimed evidence.
+### TE-14 — `tools/release_permissions.py` is only tested indirectly (Low, gap)
+- `tools/release_permissions.py:27-44`.
+- **Problem.** `test_release_artifact.py` builds manifests only in the plain
+  `<uses-permission android:name=…/>` form. Two paths are never exercised:
+  - the `-sdk-\d+` alternative, which bundletool emits as `<uses-permission-sdk-23>`;
+  - `packaged_permission_declarations` for a `<permission>` tag without `protectionLevel`.
 
-The authoritative non-device gate passed with the documented SDK authority:
+  A regex regression would silently drop an sdk-23 permission from the closed-set comparison.
+- **Fix.** Add three table-driven cases: sdk-23, attributes before `android:name`, and a declaration
+  with no protection level.
+- **Status:** open.
 
-`ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ANDROID_SDK_ROOT=/opt/homebrew/share/android-commandlinetools python3 tools/verify_host.py`
+## Production observations made while reading (no defect confirmed)
 
-It assembled the debug and instrumented APKs, ran 2,103 JVM/Robolectric/Compose tests with no
-failure or skip, passed lint, enforced Partition A at 8,295/8,310 lines (99.82%, with its exact
-15-line reviewed residual manifest), and passed 130 tooling tests, nine coverage-tool tests, 195
-device-harness self-tests, 152 documentation checks (24 explicitly optional private-context skips),
-Python compilation, and `git diff --check`. Overall host coverage was 17,775/28,061 lines (63.34%);
-Partition B was 9,480/19,398 (48.87%) and remains explicitly device-bound. No physical device,
-Camera2 HAL, MediaProvider, microphone, HDR display, external keyboard, or system consent surface
-was exercised. The manual ledger still truthfully lists A3/A4/A5/D1/E1/E2 as open.
+- The union-volume identity fix (6b2f07dd) is well covered by
+  `MediaStorePendingDiscardIdentityReaderTest`. The 2eb57e4e logging now shares the 120-row reserved
+  budget with every other warning. After a long session with backoff-retry warnings, the one
+  diagnostic row that CLAUDE.md calls the signature of this defect class could itself be suppressed
+  by the quota. Consider reserving a small sub-budget for storage-refusal rows. This is a design
+  observation, not a confirmed bug.
 
-## Findings
+## Count
 
-### C50-TEST-01 — the rollback interleave test uses the restored packet, so it cannot detect a stale codec/candidate overwrite
-
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed false-positive test shape; it masks the confirmed runtime race
-  traced in `TRACE50-01`.
-- **Exact regions:** `app/src/test/kotlin/me/hletrd/telecampro/ui/ModeRollbackOwnershipRobolectricTest.kt:53-87`
-  freezes the engine's current HEVC/Main10 candidates and queues exactly that same HLG packet behind
-  a rollback which restores HEVC/HLG. Its terminal assertions cover only `videoMode`, active
-  `transfer`, and requested transfer. They never use a packet different from the rollback baseline,
-  never assert `videoCodec`/ordered candidates on both sides, never drain the queued ViewModel
-  rollback publication, and never enter the next mode/REC door. The actual callers freeze an
-  independently selected packet before the engine monitor at
-  `ui/CameraViewModel.kt:2336-2353,2588-2612,2855-2871`; the synchronized callee consumes those
-  already-built arguments at `camera/CameraEngine.kt:2511-2556`. Rollback restores and posts the
-  old tuple at `CameraEngine.kt:764-839`, while its ViewModel publication is delayed at
-  `CameraViewModel.kt:911-960`.
-- **Concrete failure scenario:** while a Photo→Video HLG attempt is pending, the operator selects
-  AVC/SDR. Setup rollback restores accepted Photo + HEVC/HLG and queues its UI publication. The
-  already-frozen AVC/SDR command then acquires the engine monitor, observes Photo, takes the
-  no-generation path, and overwrites the restored next-video codec/candidates. The queued rollback
-  still passes its generation check and paints HEVC/HLG in the UI. The current test substitutes
-  HEVC/HLG for AVC/SDR, so both possible packet owners are bit-identical and it stays green.
-- **Suggested fix:** make the deterministic interleave use disjoint packets: accepted/restored
-  HEVC+Main10+HLG versus queued AVC+Main+SDR. Drain the real ViewModel callback and assert one
-  explicitly selected linearization policy across engine codec, ordered candidates, requested and
-  active transfer, UI state, subsequent Video transition, and production REC admission. Mutation-
-  test removal of the pipeline generation/sequence edge, not only removal of `synchronized`.
-
-### C50-TEST-02 — the new REC rollback test still does not execute production REC wiring
-
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed integration/TDD gap; current production wiring is source-correct,
-  but the rollback-specific host evidence remains mutation-insensitive.
-- **Exact regions:** after forced rollback,
-  `ModeRollbackOwnershipRobolectricTest.kt:257-304` reads private engine fields and manually calls
-  `recordingEncoderAdmission`; `camera/CameraStateTest.kt:215-250` separately tests that pure seam.
-  Neither calls `CameraEngine.startRecording` or `beginRecordingAllocation`. The production wiring
-  at `camera/CameraEngine.kt:5046-5065` passes live frame-rate/codec/transfer/candidates and converts
-  the seam's failure to status, but those lines are all missed in the current JaCoCo report. The
-  host recorder tests install `RecordingPreNativeEngineOverrides`; that branch deliberately creates
-  an empty candidate snapshot at `CameraEngine.kt:5029-5035` and bypasses this admission decision.
-  The external device cases start real recordings, but none forces an owned pipeline rollback and
-  then presses REC.
-- **Concrete failure scenario:** a future edit wires `requestedVideoTransfer` instead of accepted
-  `transfer`, supplies stale candidates, reverses the FPS boolean, or stops calling the shared seam.
-  Both pure tests and the rollback test remain green because they invoke the correct policy directly;
-  the first REC after rollback is nevertheless refused with the wrong unavailable status.
-- **Suggested fix:** add a narrow recorder-allocation injection that leaves the production candidate
-  admission branch live, invoke public `startRecording` after each forced HLG and SDR rollback, and
-  capture the exact `RecordingAdmissionSnapshot`/status. Cover accepted ordered candidates, FPS
-  refusal, codec refusal, superseded rollback, and the disjoint-packet race from C50-TEST-01.
-
-### C50-TEST-03 — the completed release-trace plan claims a source contract that does not exist
-
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed evidence overclaim and mutation gap; current production code is
-  release-safe.
-- **Exact regions:** the completed cycle-49 plan promises “a release-source contract proving no
-  debug-only payload can be force-unwrapped” at `docs/plans/2026-08-25-rpf-cycle49.md:25-30`.
-  The only added coverage is the pure debug/release matrix at
-  `camera/CameraStateTest.kt:167-213`; repository-wide test search finds no source/variant contract
-  around the production call at `camera/CameraEngine.kt:4170-4183` or nullable trace consumption at
-  `:4723-4751`. Unit tests compile with debug `BuildConfig.DEBUG=true`, and the authoritative host
-  gate assembles but does not execute a release test variant.
-- **Concrete failure scenario:** the production caller is changed to pass `true`, or trace
-  consumption reintroduces `traceText!!` under the build-independent admission flags. The pure
-  matrix remains green because it still proves only that `captureFamilyTraceAdmission(..., false)`
-  is inert; it does not prove production supplies false in release or consumes the payload safely.
-- **Suggested fix:** either add the promised source/bytecode invariant (production call must use
-  `BuildConfig.DEBUG`, no force unwrap of the nullable trace payload), or inject build admission into
-  an executable `photoCallback` owner test and run it under both debug and release build constants.
-  Append a dated correction to the completed plan if the narrower pure-seam evidence is intentional.
-
-## Final missed-issue sweep
-
-I re-ran the complete inventory after tracing these findings and rechecked all test early returns,
-skips/incomplete results, reflection/source-text assertions, concurrency latches, device-case effect
-declarations, report/attestation exit semantics, production callback owners, capture/storage/video
-families, Camera2/GL seams, Compose modality/input, release/debug gates, and open field claims. The
-pinch probe is deliberately diagnostic and accurately says it never fails; androidTest assembly is
-accurately described as compilation rather than execution; full/reliability device skips remain
-non-green unless partial evidence is explicitly attested. No additional false-positive or flaky
-test survived source validation. Hardware-only behavior remains manual/device evidence rather than
-being inferred from the green host gate.
-
-## Totals
-
-- Findings: **3**
-- Severity: **2 Medium, 1 Low**
-- Confidence: **3 High**
-- Confirmed product failures: **1 race shared with `TRACE50-01`**
-- Confirmed test/evidence gaps: **3**
+14 findings: 0 High, 6 Medium (TE-1 to TE-6), 2 Low-Medium (TE-7, TE-8), 6 Low (TE-9 to TE-14).

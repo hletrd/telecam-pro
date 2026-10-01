@@ -1,197 +1,144 @@
-# Native Android designer review — cycle 50
+# Native Android designer review (RPL cycle 1)
 
-Date: 2026-08-25
-
-Reviewed revision: `2388819d` (`origin/main`)
-
-## Inventory and method
-
-This is a native Jetpack Compose application, so browser automation is not an applicable UI
-runtime. I inventoried and examined all 31 production files under `ui/` (screen, policy,
-ViewModel/actions, controls, overlays, review, theme, focus/input owners), `MainActivity`, UI-facing
-camera/storage/video state, all 93 UI tests, both string catalogs, the manifest/theme/resources,
-debug snapshot host, and every checked-in phone/tablet screenshot plus its validity manifest.
-
-The source-level pass covered Sony-style information architecture; control discoverability and
-enabled/selected feedback; touch, stylus/mouse, keyboard/D-pad, TalkBack and Switch Access; modal
-entry/containment/restoration; 48 dp targets; WCAG focus order/appearance, text and non-text
-contrast; compact, phone, tablet, freeform, rotation, insets, 2x font and overflow behavior;
-loading/empty/disabled/reconfiguring/recording/review/delete/error states; validation and retry;
-deterministic dark appearance; EN/KO, shaping and RTL; and perceived-performance feedback.
-
-## Findings
-
-No new actionable design, accessibility, responsive-layout, localization, state-presentation, or
-perceived-performance defect survived source and cross-file validation at this revision.
-
-The two cycle-49 interaction findings are closed in production code, not only tests. Viewfinder
-activation now fires once on the initial Enter/Space/DPAD-center DOWN and ignores repeat DOWN events
-(`CameraScreen.kt:364-403`), with all key families exercised in
-`ViewfinderAccessibilityComposeTest.kt`. Review Delete owns an exact focus requester and restores it
-after Back/Cancel dismissal (`MediaReview.kt:1051-1069,1737-1782`), and
-`ModalFocusComposeTest.kt:218-263` asserts the return before continued traversal.
-
-The quiet finder hierarchy, stable physical control homes, Fn/My/settings split, capability-aware
-disabled states, review/load/retry copy, restrained live regions, merged control semantics, input
-blocking, two-tone focus indication, contrast tokens, overflow affordances, absolute camera
-geometry under RTL, and window-following glyph policy otherwise remain coherent. The deterministic
-dark theme and explicitly light system-bar icons agree regardless of system theme. No hardcoded
-user prose lacking an EN/KO resource was found.
-
-## Final missed-issue sweep and evidence boundary
-
-The debug JVM/Robolectric/Compose suite passed. The documentation gate passed 152 checks; the full
-host gate could not start because the local SDK lacks the stable Emulator `glslangValidator`.
-Checked-in screenshot manifests intentionally block the stale phone captures and the unprovenanceable
-tablet captures from Play submission. I did not run an emulator or device and do not claim visual
-runtime, TalkBack speech, physical keyboard, camera pixels, or device performance evidence. Open
-field checks A3/A4/A5/D1/E1/E2 remain manual/device validation work, not design passes or failures.
-
----
-
-## Archived prior review
-
-# Native Android designer review — cycle 49
-
-Date: 2026-08-25
-
-Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27`
-
-## Scope
-
-This is a native Jetpack Compose app, so browser automation is not applicable. I reviewed the full
-production UI inventory (`MainActivity`, all UI/control/overlay/review/theme modules, state and
-resource authorities) plus all Compose/Robolectric UI tests and checked-in screenshot manifests.
-The sweep covered Sony-style information hierarchy, affordances, touch/stylus/mouse, keyboard/D-pad,
-TalkBack semantics, WCAG 2.2 keyboard/focus-order/focus-appearance concerns, 48 dp targets, contrast,
-loading/empty/error states, deterministic dark appearance, reduced motion, EN/KO, RTL, 2x font and
-compact/large-screen behavior, and perceived-performance feedback.
-
-## Findings
-
-### C49-DSN-01 — holding the viewfinder activation key repeatedly fires autofocus
-
-- **Severity / confidence:** Medium / High
-- **Status:** Confirmed; duplicate of `C49-CR-01`.
-- **Region:** `ui/CameraScreen.kt:364-385`; test gap at
-  `ui/ViewfinderAccessibilityComposeTest.kt:171-215`.
-- **User impact:** Enter/Space/DPAD-center behaves unlike a button: holding it restarts the same AF
-  action at repeat cadence. That is disruptive on TV remotes, keyboards, switch devices, and
-  accessibility controllers where long presses are common.
-- **Fix:** make activation one-shot per physical press and test repeat/cancel/fresh-press behavior.
-
-### C49-DSN-02 — canceling review Delete does not explicitly restore focus to Delete
-
-- **Severity / confidence:** Medium / Medium
-- **Status:** Likely runtime focus-order defect; source-confirmed missing owner and test assertion.
-- **Region:** `ui/review/MediaReview.kt:1053-1061,1727-1771` and
-  `ui/ModalFocusComposeTest.kt:218-253`.
-- **User impact:** after inspecting a destructive confirmation and canceling it, a keyboard/D-pad
-  user may lose their place in review instead of returning to the Delete button. This breaks the
-  spatial/operational continuity expected by WCAG focus order and by the app's new outer-modal focus
-  restoration policy.
-- **Fix:** add exact nested-modal origin restoration and assert it for Cancel, Back, and outside
-  dismiss before continuing traversal.
-
-## Full UI/UX sweep — no additional finding
-
-- The quiet Sony-style finder hierarchy, stable physical control homes, Fn/My Menu/settings split,
-  capability-aware disabled states, and review/loading/error copy remain coherent.
-- TalkBack roles, state descriptions, live-region restraint, modal entry exclusion, 48 dp targets,
-  HUD/destructive contrast, and two-tone keyboard focus outline are otherwise consistent.
-- The deterministic dark theme and pinned light system-bar icons agree under light/dark system
-  settings. Animations use platform-aware Compose primitives and no new looping motion was found.
-- EN/KO parity and intended camera abbreviations are enforced; absolute camera geometry remains
-  stable under RTL while localized text keeps shaping. Existing 2x-font and compact-wide snapshot
-  coverage addresses the highest-risk reflow surfaces.
-- Current phone/tablet screenshots remain intentionally blocked from Play submission; no stale asset
-  was treated as present UI evidence.
-
----
-
-## Archived prior review
-
-# Native Android designer review — cycle 39
-
-Date: 2026-08-24
-
-Reviewed revision: `5ee6b2133fb4ab07fb3605fd5576b087f5f43224`
-
-Workspace: isolated worktree `/private/tmp/find-x9-cycle39.feeBBZ`
+Date: 2026-09-30
+Reviewed revision: `ba5b16e7` (`main`, working tree has only review-archive renames)
+Method: static only. No device, emulator or TalkBack run. Compose UI is native, so browser tooling
+does not apply.
 
 ## Scope and method
 
-This is a native Android/Compose application, so browser automation is not applicable. I read the
-committed design and behavior authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`), inventoried all 493 tracked paths, and reviewed the complete production UI
-surface and its cross-file state/actions/resources/tests. The inventory included `CameraScreen`,
-`CameraScreenPolicy`, `CameraViewModel`, all `ui/controls`, `ui/overlays`, `ui/review`, theme,
-permission and external-navigation surfaces, EN/KO resources, manifests, debug snapshot host, phone
-and tablet screenshot assets, and the UI-facing camera/storage/video policies that decide what the
-operator may see or activate.
-
-The review covered information architecture; quiet Sony Alpha/Xperia-style affordances; touch,
-keyboard/D-pad, TalkBack, and Switch Access; focus containment and restoration; WCAG 2.2 target,
-contrast, naming, role, state, and live-region behavior; phone, tablet, freeform, insets, rotation,
-font-scale, overflow, and scroll behavior; loading, empty, disabled, reconfiguring, permission,
-recording, review, deletion, retry, and terminal-error states; dark-theme/system-bar consistency;
-EN/KO parity and layout-direction-sensitive placement; and perceived-performance ownership. I also
-visually inspected the checked-in phone/tablet captures while treating their validity manifest as
-authoritative rather than mistaking historical screenshots for current app evidence. No device was
-connected and no screenshot was represented as a current target-device validation.
+- Inventory: every file under `app/src/main/kotlin/me/hletrd/telecampro/ui/**` (31 files, about
+  21.3k lines), `MainActivity.kt` dialogs and the permission gate, and all of `app/src/main/res/**`.
+- Delta since the last designer pass (cycle 50, `2388819d`, 2026-08-25): seven commits touch UI
+  files. Only `f67023d5` (Speed/Angle unit switch) changes user-visible behaviour. The rest are
+  diagnostics and ownership changes.
+- Mechanical checks:
+  - **EN/KO parity.** 496 EN and 478 KO resources. Every translatable key has a KO entry, KO has no
+    extra keys, and no `translatable="false"` key is duplicated in KO. Format placeholders match on
+    every shared key.
+  - **Glyph coverage.** I extracted every non-ASCII, non-Hangul character from Kotlin string literals
+    and `strings.xml`: `© ° ± · × — ’ … ↑ → ↓ ∞`. fontTools confirmed all of them are in all three
+    bundled Inter faces (regular, medium, semibold), including `↑ ↓ ’`, which are outside the list
+    CLAUDE.md names.
+  - **Hardcoded prose.** No English prose literal reaches Compose. Status messages go through the
+    `CameraStatusMessage` enum mapped to resources (`LocalizedStatus.kt`). The remaining literals
+    (`T3s`, `TL5s`, `AEB±2`, `4:3`, `mm`) are camera-standard abbreviations, which fits the committed
+    abbreviation policy.
+  - **Icon semantics.** All three `contentDescription = null` sites are decorative children of a
+    parent node that is already named (`CameraScreen.kt:2705`, `MediaReview.kt:976`,
+    `ProControls.kt:400`). That is correct.
+  - **Touch targets.** Custom buttons use the outer-48 dp or inner-visual pattern (`MiniTextButton`,
+    `CloseButton`, the Fn close control, `MinTouchTarget48` dialog buttons).
+- Areas swept by reading the code: the OSD status row, the status plate lifecycle, Fn overlay
+  anchoring and held-landscape behaviour, ProSheet side and bottom layouts, the tab rail, dialogs,
+  review delete, the Speed/Angle conversion readout, and font-scale handling.
 
 ## Findings
 
-No new actionable design, accessibility, responsive-layout, localization, state-presentation, or
-perceived-performance defect survived source and cross-file validation at the reviewed revision.
+### DSN-R1-01: Settings tab-rail labels break mid-word at large font scales
 
-The cycle-38 selected-disabled focal-rail defect is closed: the active but locked chip now retains
-the shared dark live-frame plate and layers the quiet selection wash above it
-(`app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:2835-2859,2916-2937`), with a rendered
-bright/dark four-state regression matrix in
-`app/src/test/kotlin/me/hletrd/telecampro/ui/controls/AffordanceEdgeComposeTest.kt:110-147`.
-The finder overlay continues to share one geometry seam between GL and Compose after removal of the
-misleading dead margin input. The settings rail remains a selectable tab group with one merged,
-named 48 dp-plus action per category; modal surfaces contain traversal and expose an explicit close
-owner; the viewfinder and review expose capability-dependent non-touch actions without duplicating
-touch-only gesture nodes; disabled controls preserve both semantic and visual state; and scrolling
-surfaces retain explicit overflow/fade or per-tab position behavior.
+- **Region:** `ui/controls/ProSheet.kt:512-523` (`TabRailItem` Text with `Modifier.width(68.dp)`, no
+  `maxLines`, no scale-aware fallback). The rail itself is fixed at `width(76.dp)` (`ProSheet.kt:452`).
+- **Why:** the code comment sizes the box at 1.0x only ("Exposure measures ~46 dp at 11 sp inside
+  the fixed 68 dp box, so nothing wraps"). `labelSmall` is 11 sp and scales with the system font
+  setting. At 1.5x (16.5 sp) "Exposure" is about 69 dp. At 2.0x, the top of the Android 13+ range,
+  it is about 92 dp. Nonlinear scaling barely damps text this small. When one word is wider than the
+  line, Compose's line breaker splits it by character, so the rail shows "Exposu / re". "Setup",
+  "Assist" and "Shoot" also overflow at 2x. Korean is less affected because "보조 기능" breaks at the
+  space.
+- **Scenario:** a user with Settings > Display > Font size at maximum opens Menu. This is the sheet's
+  primary navigation and it reads as broken words. Other ProSheet surfaces already switch layout by
+  `fontScale`: `labelValueUsesStackedLayout` and `fnSlotOrderUsesCompactLayout`. The tab rail is the
+  only fixed-width text slot in the sheet with no such fallback, and no responsive test covers it.
+  The `*ResponsiveComposeTest` suite covers rows, dropdowns, toggles and formats, but not the tab
+  rail.
+- **Fix:** pick one of these:
+  1. Keep `softWrap = true` but make the rail width grow with `fontScale`, for example
+     `76.dp * fontScale.coerceIn(1f, 1.6f)`, and add `maxLines = 2` with ellipsis.
+  2. Pin the label's line breaking to word boundaries and scale down with `autoSize`
+     (`TextAutoSize.StepBased`, available in current Compose) with a floor near 11 sp.
 
-## Evidence boundaries and final missed-issues sweep
+  Add a 2x EN and KO Compose test asserting no label line ends mid-word, or at least that the text
+  layout's `lineCount` is at most 2 and has no hyphenless split.
+- **Confidence:** Medium. The width arithmetic comes from the comment's own 46 dp figure. I have not
+  seen it rendered.
+- **Status:** new, open.
 
-- `python3 tools/check_docs.py` passed all 120 applicable committed checks with zero failures; 24
-  checks for intentionally absent private maintainer files were skipped.
-- The two stale phone screenshots remain explicitly blocked by
-  `docs/assets/play/screenshots/asset-validity.json` and `docs/play-console-submit.md`. This is an
-  already-owned immutable-device recapture task, not a new UI finding; the assets were not modified
-  or treated as release-ready.
-- Open field checks A3, A4, D1, E1, and E2 remain accurately scoped to a real scene, rotatable
-  large-screen front route, acoustic comparison, or real MediaProvider consent/provenance. Host
-  inspection cannot close or fail those checks.
-- The final sweep rechecked small permanent text, 48 dp interaction ownership, compound semantics,
-  selected/disabled combinations, focus order, Back/scrim behavior, live-region urgency, timer and
-  review modals, permission denial/recovery, ownerless-delete cancellation, color tokens over live
-  bright/dark content, horizontal option overflow, window-following rotation, absolute finder
-  anchoring under RTL, bilingual resource parity, and lifecycle gating of expensive meters/scopes.
-  No additional confirmed defect remained.
+### DSN-R1-02: Status plate auto-dismiss ignores the Android accessibility timeout setting
 
-## Totals
+- **Region:** `camera/CameraStatus.kt:186-191` (fixed durations: error 6000 ms, success 1500 ms,
+  other 2500 ms). `ui/CameraViewModel.kt:1690-1708` posts the clear on `mainHandler` with that raw
+  duration. The plate renders at `ui/CameraScreen.kt:1302-1314` and `:1586-1609`. Nothing in the
+  codebase calls `AccessibilityManager.getRecommendedTimeoutMillis` or Compose's
+  `LocalAccessibilityManager.calculateRecommendedTimeoutMillis` (a grep of `ui/` and `MainActivity`
+  finds nothing).
+- **Why:** this plate is the only channel for capture, save, delete and permission errors. Examples
+  are "Some files could not be deleted. Retry in Gallery." and "%s save retained. Recovery marker
+  failed." Android exposes a user setting, Accessibility > Time to take action, for users who need
+  longer to read transient UI. Material Snackbar and Toast honour it. This plate does not. TalkBack
+  users still hear the assertive or polite live-region announcement, so the gap affects low-vision
+  and cognitive-load users who read rather than listen. The Korean error strings run to about 45
+  syllables over two lines, and success messages vanish after 1.5 s. This also relates to WCAG 2.2.1
+  (Timing Adjustable).
+- **Scenario:** a user with a 1-minute accessibility timeout deletes a capture from review, and the
+  partial-delete error appears and disappears in 6 s before they have finished reading the
+  two-line Korean text.
+- **Fix:** keep the ViewModel's sequencing, but resolve the delay through the accessibility manager.
+  Either:
+  - pass `CameraStatus.durationMs` through `calculateRecommendedTimeoutMillis(duration,
+    containsIcons = false, containsText = true, containsControls = false)` before `postDelayed`
+    (inject an `(Long) -> Long` from the Activity or Application), or
+  - move the clear into a keyed `LaunchedEffect(status)` in `CameraScreen` that uses
+    `LocalAccessibilityManager`.
 
-- New findings: 0
-- Confirmed regressions: 0
+  PROGRESS statuses stay timer-less as they are now. Add a unit test that injects a larger
+  recommended timeout.
+- **Confidence:** Medium. The absence is source-confirmed. The user impact depends on the setting.
+- **Status:** new, open.
 
----
+### DSN-R1-03: The critical status plate has no horizontal margin, so long messages run edge to edge
 
-# Native Android / Compose design review — cycle 51 (current)
+- **Region:** `ui/CameraScreen.kt:1586-1609` (`CriticalCameraStatusPlate`: background plus 12/6
+  inner padding, with no outer `padding`, `widthIn` or max width). The call site at
+  `CameraScreen.kt:1309-1314` passes only `align(Center)`.
+- **Why:** the Text is measured against the full window width. KO error strings of about 40-45
+  syllables at `bodyMedium` 14 sp are about 560-630 dp and wrap on the PMA110's 411 dp window, so
+  the dark plate spans the full width with its rounded 8 dp corners meeting the panel edge. At 2x
+  font size every error is multi-line and full-bleed. On an sw600dp landscape tablet the opposite
+  happens: a single line up to about 1000 dp wide stretches across the viewfinder centre. Every
+  sibling pill (the OSD row and HUD chips) keeps an inset from the window edge. This one does not.
+- **Scenario:** Korean locale, "카메라를 사용할 수 없습니다. 불러온 광학 설정은 적용되지 않았습니다."
+  renders as a full-width black band with its text touching the screen edge, next to the
+  curved-glass edge of the Find X9 Ultra.
+- **Fix:** add an outer `padding(horizontal = 24.dp)` or `widthIn(max = 360.dp)` before `background`,
+  applied inside `rotateLayout` so the rotated measurement axis still works. Also set
+  `textAlign = TextAlign.Center` for multi-line messages. Extend `CriticalStatusRotationTest` with a
+  long KO string at 2x font, asserting the plate bounds sit inside the window inset.
+- **Confidence:** Medium on geometry, Low on severity. This is cosmetic, but it is the app's most
+  important error surface.
+- **Status:** new, open.
 
-Date/HEAD: 2026-08-25, `7eb4ee95`; isolated clone; no device/deploy/source changes.
+## Checked with no finding
 
-## Complete design inventory
+- **`f67023d5` Speed to Angle conversion.** The dial readout (`ManualDials.kt:970`) shows both the
+  angle and the equivalent speed, so any exposure change caused by clamping to 1°-360° is visible,
+  not silent. The Fn value (`FnQuickActions.kt:60`) and the sheet readout agree because both use
+  `%.0f°`.
+- **OSD row.** The focal label cache is keyed on the localized TELE suffix. Tags are resource-backed
+  or approved abbreviations. The row scrolls horizontally, with a trailing-edge fade hint and a
+  priority reset.
+- **Fn overlay.** Physical layout is absolute under RTL, and each Text still gets bidi shaping. The
+  2x KO held-landscape case is tested. Disabled tiles publish `disabled()` and refuse `onClick`.
+- **ProSheet.** It has a pane title, a focus boundary, a Close control that receives initial focus,
+  and a scrim excluded from traversal. The side-panel corner shape resolves correctly under RTL.
+- **Dialogs.** Microphone rationale, privacy fallback and review delete all use 48 dp minimum
+  buttons, and all copy is from resources.
+- **Status lifecycle.** PROGRESS messages carry no timer and are cleared by an owned Ready event,
+  matching the CLAUDE.md rule.
 
-Reviewed all UI implementation files in `ui`, `ui/controls`, `ui/overlays`, `ui/review`, `MainActivity`, theme/resources, English/Korean strings, manifests, debug snapshot hosts, all 67 UI/controls/overlay/review Compose test files, and every committed phone/tablet/Play bitmap. Covered information architecture, Sony-style quiet-viewfinder policy, touch/keyboard/stylus/TalkBack semantics, modal focus and traversal, 48 dp interaction floors, selected/disabled paint, live regions, status/loading/error/empty/restart states, contrast tokens, font scaling, narrow/large-screen layouts, rotation, RTL ownership, dark system bars, bilingual parity, and perceived-performance transitions.
+## Evidence boundary
 
-## Result
-
-No new user-visible design regression survived the full pass. Existing automated evidence covers bilingual presentation, dropdown/selector semantics, modal focus/timers, self-timer and viewfinder accessibility, non-touch review controls, contrast, status scrolling, responsive rows, and focal overflow. The committed stale screenshots are explicitly blocked from submission by their validity manifests, not mistaken for current UI evidence.
-
-The stale “upright” Loupe implementation comments are a design-rationale risk but duplicate C51-CV-03 in the document report; the executable/UI contract remains the raw inverted same-stream exception. Open field checks remain manual. New designer findings: **0**.
+This was a static source review only. I made no claims about rendered pixels, TalkBack speech,
+physical keyboard behaviour or the tablet window. DSN-R1-01 and DSN-R1-03 geometry is estimated
+from type metrics (Inter at 11 and 14 sp) and should be confirmed with a Robolectric or Compose
+screenshot at `fontScale = 2f` in EN and KO before fixing.

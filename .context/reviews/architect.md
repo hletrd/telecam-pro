@@ -1,194 +1,230 @@
-# Architecture review — cycle 50
+# Architect review — 2026-09-30 (RPL cycle 1)
 
-Date: 2026-08-25
+Scope: layering, ownership boundaries, model-string seams, god-object seams, duplicated predicates,
+process-wide singletons across Engine generations, generation/ownership bypasses.
+Read-only pass over `app/src/main/kotlin/me/hletrd/telecampro/**` at HEAD `ba5b16e7` plus
+`CLAUDE.md` and `docs/ARCHITECTURE.md`. Nothing was device-verified; every item below that touches
+pixels or HAL behavior stays PENDING DEVICE until an on-device check confirms it.
 
-Reviewed revision: `2388819d` (`origin/main`)
+## Inventory summary
 
-Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle50.ZrnMqN`
+| Package | Notable owners | Size signal |
+|---|---|---|
+| `camera/` | `CameraEngine` (8,611 lines, 268 funs, 62 plain `var` + 85 `@Volatile` fields, 59 `synchronized(this)` sites, 14 `beginOpticsTransaction` doors), `CameraController` (2,848), `CameraState` (1,893), `ManualControls`, 11 `Process*` singleton owners | Engine is the god object |
+| `ui/` | `CameraViewModel` (4,538 lines, 209 funs), `CameraScreen` (3,403), `controls/*`, `review/*` | ViewModel is the second god object |
+| `gl/`, `video/`, `capture/`, `storage/`, `stab/`, `focus/` | `GlPipeline` (2,239), `VideoRecorder` (2,380), `MediaStoreWriter` (2,992, `object`) | |
 
-## Inventory and method
+Layering checks that passed:
+- `camera/ gl/ video/ capture/ storage/` import nothing from `ui/` and no Compose API beyond the
+  `@Immutable` annotation in `CameraState.kt:4` and `CameraStatus.kt:3`.
+- `ui/` never imports `android.hardware.camera2`. `CameraViewModel` reaches into `video/`
+  (`EncoderCaps`, `AudioInputInspector`) and `gl/` (`MotionInversionConfidence`) directly. That is a
+  mild facade bypass, but the calls are pure or inventory reads, so it is not a bug source.
+- The engine calls back only through `EngineCallbackSink` leases (`CameraEngine.kt:1606+`). I found
+  no raw lambda field that escapes teardown.
+- The process-lifetime capacity owners (`ProcessPreNativeMediaAllocator` and its
+  `ProcessRecordingPreNativeAllocator` facade, `ProcessStillPublicationOwner`,
+  `ProcessRecordingStorageOwner`, `ProcessRetainedStillDiscardOwner`,
+  `ProcessFamilyDeletionMarkerOwner`, `ProcessViewModelMediaDeleteOwner`,
+  `ProcessProcessedSnapshotBudget`, `ProcessDngPreCaptureAdmission`) each hold exactly one bounded
+  dispatcher. The recording-named allocator is a pure delegate
+  (`RecordingPreNativeAllocation.kt:296-299`), so capacity is not doubled.
 
-I read `CLAUDE.md`, `docs/ARCHITECTURE.md`, and `docs/FIELD_CHECKS.md` completely, then inventoried
-all 536 repository files. The architecture inventory contains all 103 production Kotlin/Java files,
-241 JVM/instrumented tests, manifests/resources/build inputs, the device harness, and the durability,
-release, and documentation gates. I traced every production module in the architecture map and its
-relevant tests rather than sampling only the recently changed files.
+## Model-string seam audit
 
-The cross-file pass followed Activity/ViewModel input and lifecycle ownership; Engine optics,
-accepted-session, callback, capture, and REC state machines; Controller fallback and Camera2 thread
-ownership; renderer/EGL generations; processed/RAW/video save lanes; process-finite dispatchers;
-MediaStore marker/family recovery; review workers; capability-normalized UI state; and immutable
-build evidence. The final sweep specifically rechecked the cycle-49 changes against rollback,
-recording admission, release builds, modal focus, and obscured-input terminals.
+`Build.MODEL` / `Build.MANUFACTURER` reads in main code:
+
+| Site | Use | Verdict |
+|---|---|---|
+| `ui/CameraViewModel.kt:381` → `detectPhone` | Preselects the phone dropdown (seam 1) | Sanctioned |
+| `camera/CameraEngine.kt:1171` → `DeviceProfile.resolve` | Quirk profile (seam 2) | Sanctioned |
+| `camera/CameraController.kt:67` → `DeviceProfile.resolve` | Second, independent resolution of seam 2 | Sanctioned, but duplicated (see A4) |
+| `camera/CameraEngine.kt:7778-7786` | EXIF make/model labels via `DeviceExifLabels` | Label only, no branch. Allowed by the EXIF bullet |
+
+No capability, route, or request decision branches on a model string outside `DeviceProfile`.
+**No constraint violation found.** The two seams do disagree about which devices are the same phone
+(A3), and the ViewModel comment that claims a single read is false (A6).
+
+---
 
 ## Findings
 
-### A50-01 — REC snapshots the session under the packet lock, then reads the packet after unlocking
+### A1 — Turning DNG on or off switches the zoom scale, but zoom is never remapped. The framing jumps to 3× the intended zoom (for example 9× instead of 3×)
+- **Where:** `ui/CameraViewModel.kt:2370-2393` (`onSetPhotoFormats`),
+  `camera/CameraEngine.kt:3959-3984` (`setRawWanted`), and the reconcile at `CameraEngine.kt:589`.
+- **Why:** On PMA110 (`rawRequiresStandalone = true`), DNG is a route input. Turning it on moves
+  Photo from the logical seamless camera, which reads `zoomRatio` main-relative, to a standalone
+  lens, which reads it lens-local. The other scale-changing doors all remap zoom through
+  `unifiedZoomOf`/`localZoomOf` and call `invalidateOpticsDerivedState()`: mode flip
+  (`remapModeOptics`, VM `:2300`), lens preset (`resolveLensOpticsIntent`), TELE, FRONT
+  (`rearReturnZoom`), and MR recall (VM `:1300`). The DNG toggle does neither. `onSetPhotoFormats`
+  writes only `photoFormats`. `setRawWanted` opens an optics transaction that changes only
+  `overrideId`, and the reconcile at `:575-593` only clamps the value and re-derives the band.
+- **Scenario (PMA110, Photo):** The operator pinches to 3× (wire 3.0 on logical camera 0, band
+  `TELE3X`) and turns DNG on in the Shoot tab. `resolveNonTeleId(TELE3X)` opens standalone cam 4,
+  and wire 3.0 is now 3× digital on the 70 mm lens, which is 9× total. The OSD then shows about
+  208 mm and the readout 9.1×. This is the same symptom the 2026-08-04 scale fix removed for lens
+  taps. The reverse also happens: at 3× on the standalone lens (wire 1.0), turning DNG off lands
+  the logical camera at unified 1.0, and the rail collapses to 1×. At 10×, turning DNG on asks the
+  230 mm lens for 10× local zoom (clamped by caps). Any in-flight coalesced pinch or hardware glide
+  also lands in the wrong scale, because `invalidateOpticsDerivedState()` is not called.
+- **Fix:** Treat the DNG toggle as an optics door, like `onModeChange`. In the ViewModel, compute
+  `unifiedZoomOf(before)` and then `localZoomOf` or unified for the new
+  `standaloneRouteWanted(...)`. Call `invalidateOpticsDerivedState()`. Pass the resolved controls
+  into the engine, for example `setRawWanted(enabled, resolvedControls)`, so they publish inside
+  the same `beginOpticsTransaction` that changes the route. Add a host test: logical 3.0 with DNG on
+  gives local 1.0 on the 70 mm lens, and the round trip back gives unified 3.0.
+- **Confidence:** Medium-High. The code path is unambiguous, and no test covers the toggle (the
+  `DeviceRouteLawsTest` and `ReconfigurationGenerationTest` DNG cases cover lens taps and round
+  trips, not the toggle itself). **Status:** OPEN, PENDING DEVICE.
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed source/JVM-memory-model race; runtime manifestation not device-observed.
-- **Exact regions:** `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:2511-2556`
-  publishes codec, ordered candidates, requested transfer, and active transfer under the Engine
-  monitor; rollback restores the same tuple under that monitor at `:764-793`. In contrast,
-  `currentAcceptedRecordingSession()` locks only while returning the accepted Camera2 identity at
-  `:4947-4958`; `beginRecordingAllocation()` then reads `videoFrameRate`, `caps`, `videoSize`,
-  `videoCodec`, `transfer`, and `videoEncoderCandidates` independently after that lock has ended at
-  `:5043-5065`.
+### A2 — `rawWanted` is a route input that sits outside the optics transaction, its rollback, and the MR-recall packet
+- **Where:** `camera/CameraEngine.kt:3205` (field), `:3959-3984` (written before and outside
+  `beginOpticsTransaction`), `:629-654` (`OpticsSnapshot` has no `rawWanted`),
+  `camera/OpticsConstraints.kt:23-40` (`OpticsRollbackPublication` has no photo formats), VM
+  rollback handler `ui/CameraViewModel.kt:915-960`, and VM recall order `:1400` then `:1461`.
+- **Why:** CLAUDE.md requires every reopen to own one complete optics generation, and requires
+  MR/settings recall to be one normalized packet. `rawWanted` decides which camera
+  `resolveNonTeleId` opens and which zoom scale every consumer uses (`:589, :3739, :3864, :3946,
+  :7488`), yet:
+  1. **Rollback leaves it stranded.** Suppose the DNG-triggered reopen fails, for example
+     standalone cam 4 returns `CAMERA_IN_USE` or `selectCurrentLens()`/`cachedCaps` return null at
+     `:4063-4088`. `rollbackOptics` then restores the logical `overrideId`, lens, and controls, but
+     `rawWanted` stays `true` and the UI's `photoFormats.dngRaw` stays `true`. The engine's route
+     answer is now standalone while the installed session is logical. Every
+     `unifiedZoomOf(..., standaloneRoute = true)` reads the logical camera's main-relative wire as
+     lens-local, so the Loupe gate, band, and OSD focal are wrong. The next plain
+     `reopenForSession()` (aspect, fps, hi-res) reuses the restored logical `overrideId`. The change
+     gate `if (rawWanted == enabled) return` then blocks re-selecting DNG. This is exactly the
+     permanent divergence documented as DNG bug #2, now reachable through rollback.
+  2. **Recall is split into two transactions.** `applyLoaded` publishes T1 with
+     `setResolvedOptics` (`:1400`), whose zoom is computed for the recalled DNG route, and 17
+     setters later calls `setRawWanted` (`:1461`). That opens T2, whose `before` baseline is T1's
+     unaccepted desired packet. Between the two calls, `setResolvedOptics → pushTeleFinder`
+     (`CameraEngine.kt:2750`) converts the recalled zoom with the old `rawWanted`. If T2 fails, the
+     rollback "restores" T1's recalled lens and controls onto the outgoing session, which violates
+     the rule that a rejected recall restores the accepted state.
+- **Fix:** Add `rawWanted` to `OpticsSnapshot` and restore it in `rollbackOpticsState`. Add
+  `photoFormats.dngRaw` (or the whole `PhotoFormats`) to `OpticsRollbackPublication` and have the
+  VM rollback handler restore it. Carry `rawWanted` as a parameter of `setResolvedOptics` so a recall
+  is one generation, and delete the trailing `setRawWanted` call from `applyLoaded`. In
+  `setRawWanted`, write the field inside the `beginOpticsTransaction { }` block.
+- **Confidence:** Medium. The rollback trigger is uncommon but real (another app holding the tele
+  lens, or a transient characteristics failure). The recall split is deterministic.
+  **Status:** OPEN.
 
-`@Volatile` makes each field visible but does not make that multi-field selection atomic. A
-concurrent pipeline commit or owned optics rollback can therefore interleave between those reads.
-For example, REC can read the old HEVC codec, then a setter publishes an AVC/SDR packet, then REC
-reads the new AVC candidates. `recordingEncoderAdmission` rejects that impossible hybrid as
-`SELECTED_CODEC_UNAVAILABLE` even though both the before and after packets are individually valid.
-The helper's exact codec/transfer filter fails closed, so I found no path from this race to an
-incompatible encoder start; the confirmed user-visible failure is a spurious refused REC attempt.
-`setVideoPipeline` also gates only on `recorder`, not the separate start-admission latch, so the
-pre-native window is not a mutation exclusion boundary.
+### A3 — The two sanctioned model seams disagree on hardware identity. The global Find X9 Ultra (`CPH2841`) gets the Hasselblad kit and none of the crash guards
+- **Where:** `camera/Teleconverter.kt:41` (`FIND_X9_ULTRA` matches `"PMA110", "CPH2841"`) versus
+  `camera/DeviceProfile.kt:83-84` (`resolve` matches only `"PMA110"`).
+- **Why:** Seam 1 declares that CPH2841 is the same phone. It preselects the X9 Ultra and the
+  300 mm Hasselblad kit, and the caption says "Detected OPPO Find X9 Ultra". Seam 2 treats the same
+  handset as `GENERIC` and trusts every advertised range. On the PMA110 HAL each of these quirks is
+  fatal or silently loses output. If CPH2841 shares that HAL (same SoC and vendor stack; unmeasured):
+  - `stillExposureCeilingNs = null`: the ruler offers 5–20 s, and a 5 s or longer M-mode still
+    raises `CAMERA_ERROR(3)` and the shot is lost.
+  - `rawRequiresStandalone = false`: DNG stays on logical camera 0, which on PMA110 errors the
+    whole device about 5 s after the shot.
+  - `logicalStillRequiresYuv = false`: the ladder may take HAL JPEG on the logical camera, which
+    fails gralloc on PMA110. Only the watchdog rescues the shutter.
+  - `frontStreamPreMirrored = false`: the front preview gets double-mirrored and front video files
+    are recorded mirrored.
+  The two failure directions are not symmetric. Giving PMA110 quirks to a spec HAL mostly costs
+  conservatism (a 4 s ceiling, standalone RAW). Giving GENERIC to a PMA110-class HAL costs crashes.
+- **Fix:** Put one `KnownHandset` identity table (model strings → phone plus measured-quirk key)
+  behind both seams, so they cannot drift. Then record an explicit decision for each variant model:
+  measured, or deliberately GENERIC. CLAUDE.md says "no speculative quirks", so the minimum fix is
+  to document CPH2841 as knowingly GENERIC and add a test asserting that both seams agree on each
+  `deviceModels` entry. The better fix, after one on-device check, is to map CPH2841 to the PMA110
+  profile.
+- **Confidence:** Medium. The divergence is certain; whether the CPH2841 HAL matches is
+  unmeasured. **Status:** OPEN, needs an owner decision and ideally a device.
 
-This directly defeats the packet invariant recorded in `docs/ARCHITECTURE.md:308-314` and
-`CLAUDE.md:867-871`. The cycle-49 rollback test proves that the writer is synchronized and tests the
-pure admission decision with a preassembled list; it never forces the production reader across a
-packet publication, so it cannot detect this race.
+### A4 — `DeviceProfile` is resolved twice and specialized for the route in two ways; the UI mirror reads a live getter rather than the published route
+- **Where:** `CameraEngine.kt:1171-1174` (`activeDeviceProfile()` derives the profile from the
+  volatile `activeCameraRoute` on every read), `CameraController.kt:67-73` (its own
+  `DeviceProfile.resolve` plus `useGenericDeviceProfile()`, frozen at `wireController`,
+  `CameraEngine.kt:2272`), `CameraEngine.kt:1663` (`rawForcesStandalone` getter), and VM
+  `:764`/`:1305` (`engine.rawForcesStandalone` read from main).
+- **Why:** The controller's profile is fixed when it is wired, while the engine's changes the moment
+  `setActiveCameraRoute` runs inside a newer transaction. They can therefore disagree for a whole
+  reconfigure window: the outgoing BACK controller carries PMA110 hints while the engine already
+  answers GENERIC for an EXTERNAL target. At VM `:764`, `cameraRoutePublishedState` pairs the
+  published `activeRoute` argument with `engine.rawForcesStandalone`, which reflects the engine's
+  *current* route and not the published one. The restore path at VM `:1305` computes the recalled
+  zoom scale from the pre-recall route's profile, although `setResolvedOptics` may move EXTERNAL
+  to BACK. The effect today is only transient, because the value differs only for EXTERNAL, where
+  `lensLocalZoom` dominates. It is the same "two copies of one answer" shape that produced the
+  zoom-scale bugs.
+- **Fix:** Resolve the base profile once (engine), pass it into the `CameraController` constructor,
+  and make route specialization a pure `deviceProfileForRoute(base, route)` that callers evaluate
+  against the route they are reasoning about. Publish the *base* `rawRequiresStandalone` once to
+  the UI and derive the per-route value from `CameraUiState.activeCameraRoute`.
+- **Confidence:** Medium (design). Low that it produces a visible bug today. **Status:** OPEN.
 
-**Suggested fix:** under one Engine-monitor section, obtain the accepted session and freeze every
-REC decision input (caps/size/rate, codec, transfer, candidates) into `RecordingAdmissionSnapshot`.
-Keep slow capability filtering and native work outside only if they consume that immutable snapshot.
-Add a latch-controlled production-path test that blocks the reader between old/new packet states and
-asserts that it observes either complete tuple, never a hybrid. Recheck session identity again at the
-existing later boundaries.
+### A5 — The diagnostic budget is process-LIFETIME and applies to every device. After 120 warnings or errors, save and camera failures log nothing
+- **Where:** `camera/DiagnosticTelemetry.kt:13-66`. `DiagnosticLog` is imported `as Log` in
+  `CameraEngine`, `StillCapturePipeline`, `VideoRecorder`, `VendorTagInspector`, and
+  `MediaStoreWriter`.
+- **Why:** `ProcessDiagnosticLogBudget` is a monotonic counter with no window. Once 120 `w`/`e`
+  rows have been emitted, every later `Log.e("StillCapturePipeline", "HEIF save failed", t)`,
+  camera fault, and MediaStore identity error in that process is silently dropped, on every device
+  and in release builds. CLAUDE.md's own triage rule for the 2026-09-09 tablet defect is "a save
+  that fails with no app log line is the signature of this class of defect". After a long session
+  (recovery loops, repeated reopen warnings) that rule gives a false positive for every failure.
+  The quota was measured on ColorOS only. The Lenovo tablets, where the last three field bugs were
+  found, get the cap without any benefit. ColorOS `LOG_FLOWCTRL` appears to be rate-windowed rather
+  than lifetime (the CLAUDE.md evidence, "spent the whole quota in about 20 s", fits a window too).
+  A lifetime cap turns a rate protection into permanent blindness.
+- **Fix:** Replace the lifetime counter with a token bucket (for example 120 rows/min for faults and
+  180 rows/min for recurring rows), or at minimum reset it per Engine resume. Keep the executable
+  inventory test. Gate the reduced budget on the measured ColorOS quirk, which could be a
+  `DeviceProfile` flag or a platform-property probe, instead of applying it globally.
+- **Confidence:** Medium. The lifetime behavior is certain; the ColorOS window semantics should be
+  confirmed with one logcat run. **Status:** OPEN.
 
-### A50-02 — the Ready terminal invokes a UI callback while the optics monitor is held
+### A6 — Documentation drift: the ViewModel claims a single `Build.MODEL` read
+- **Where:** `ui/CameraViewModel.kt:378-381` says "The ONE android.os.Build.MODEL read in the app".
+  There are four more (`CameraEngine.kt:1171, :7779, :7786` and `CameraController.kt:67`).
+- **Why:** This comment is exactly the kind of statement a future reviewer uses to skip the seam
+  audit, and it hides A3 and A4.
+- **Fix:** Reword it to "seam 1 of 2 (catalog preselection); DeviceProfile is seam 2; EXIF labels
+  read the build for identity only".
+- **Confidence:** High. **Status:** OPEN (trivial).
 
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed ownership-contract violation; no production deadlock observed.
-- **Exact regions:** `CameraEngine.commitOpticsReady()` explicitly says external callbacks must not
-  run under the optics monitor at `CameraEngine.kt:628-630`, but its `OpticsCommitGate.commit`
-  terminal calls `onCameraPolicyBlocked(false)` inside the locked mutation at `:633-677` (the
-  callback is at `:675`). The ordinary caps/Ready callbacks are correctly deferred until after the
-  commit at `:678-684`. `OpticsCommitGate.commit` itself holds the Engine monitor around the whole
-  terminal mutation at `:7265-7285`.
-
-The current ViewModel callback happens to perform only a `StateFlow.update`, but the Engine callback
-boundary is replaceable and guarded by `EngineCallbackSink`; invoking it under the state-machine
-lock permits a future/UI callback or an unconfined state collector to re-enter Engine operations
-halfway through Ready publication, and it extends the monitor hold across callback-sink locking and
-arbitrary consumer work. It also makes the authoritative statement that external callbacks run
-after unlock (`docs/ARCHITECTURE.md:301-307`) false.
-
-**Suggested fix:** capture a `policyUnblocked` publication flag inside the terminal mutation, then
-invoke `onCameraPolicyBlocked(false)` beside `beforeReadyPublication` / `onCameraReadyChange` after
-`OpticsCommitGate.commit` returns. Add a callback that attempts a competing optics operation and
-asserts it cannot execute inside the terminal critical section.
-
-## Final missed-issue sweep and validation boundary
-
-The complete debug JVM/Robolectric/Compose suite passed (`:app:testDebugUnitTest`). The authoritative
-host gate could not start because this clone's conventional Android SDK lacks the stable Emulator
-`glslangValidator`; that is an environment limitation, not a test failure. `tools/check_docs.py`
-passed 152 checks with 24 declared optional-private skips. No emulator/device run was performed, so
-no camera, pixel, audio, orientation, or visual-runtime claim is made here.
-
-I rechecked accepted-vs-requested session truth, release-safe capture tracing, rollback sequencing,
-finite provider lanes, family retirement, EGL teardown, and callback retirement after identifying
-the two findings. No additional independent architectural defect survived the final sweep.
+### A7 — God-object seam: 14 optics doors re-implement the same scale-transition checklist by hand
+- **Where:** `CameraEngine.kt` has 14 `beginOpticsTransaction` sites. Each door must remember to
+  (a) convert zoom between scales, (b) publish the full packet under the monitor, (c) extend
+  `OpticsSnapshot` and rollback for any new route input, and (d) have its VM twin call
+  `invalidateOpticsDerivedState()`.
+- **Why:** A1 and A2 are two missed checklist items on the one door (DNG) that was added after the
+  pattern existed. The next route input (hi-res on a capable device, an external-camera option, a
+  second-stream wide finder) will hit the same trap. The 8.6k-line engine hides the checklist from
+  review because the doors are thousands of lines apart.
+- **Fix:** Extract a pure `RouteInputs` value (mode, rawWanted, TC, facing/route, lens, pin) and one
+  `resolveOpticsTransition(before: RouteInputs, after: RouteInputs, controls, optical)` that returns
+  the complete packet, including the zoom in the target scale. Have every door, and the VM, call it.
+  Because `OpticsSnapshot` then embeds `RouteInputs` whole, a new input cannot be left out of
+  rollback. This is the natural first cut for splitting `CameraEngine` into an optics-transaction
+  owner and a session and capture facade.
+- **Confidence:** Medium (design recommendation with two concrete bugs as evidence).
+  **Status:** OPEN, refactor, do after A1 and A2.
 
 ---
 
-## Archived prior review
+## Count
 
-# Architecture review — cycle 49
+7 findings: 2 bug-class (A1, A2), 1 constraint-consistency risk (A3), 1 observability defect (A5),
+2 design/duplication (A4, A7), 1 doc drift (A6). No `Build.MODEL` constraint violation.
 
-Date: 2026-08-25
-
-Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27` (`origin/main`)
-
-Workspace: isolated clean clone `/tmp/find-x9-ultra-cycle49.oXnMVe/repo`
-
-## System inventory and architectural sweep
-
-I read the complete committed authorities (`CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-`docs/FIELD_CHECKS.md`) and inventoried all 534 tracked paths. The architecture pass traced the
-Activity/ViewModel unidirectional boundary; CameraEngine optics and capture orchestration;
-CameraController accepted-session/fallback ownership; RendererAssists/GlPipeline/EGL generations;
-processed and RAW save lanes; video pre-native/native/storage owners; exact-family MediaStore
-durability, deletion, and recovery; review work pools; settings/MR normalization; capability-driven
-UI projection; and immutable build/release evidence.
-
-The final cross-boundary sweep rechecked the system's load-bearing rules: requested state versus
-accepted session truth, generation-owned rollback, exact native identities, finite process queues,
-producer termination before family retirement, debug diagnostics as non-functional observers, and
-release behavior matching debug behavior apart from explicitly absent instrumentation.
-
-## Finding
-
-### A49-01 — a debug evidence payload is a required release capture dependency
-
-- **Severity / confidence:** High / High
-- **Classification:** Confirmed architecture and implementation defect.
-
-`CaptureFamilyTraceAdmission` is modeled as runtime capture state even though its contract says it is
-debug harness evidence. `CameraEngine.photoCallback` then creates the corresponding payload only
-under `BuildConfig.DEBUG` (`CameraEngine.kt:4713-4725`) but consumes admission outside that boundary
-(`CameraEngine.kt:4727-4743`). Because `captureFamilyTraceAdmission` admits every ordinary Single
-shot and every in-REC snapshot settlement (`CameraState.kt:971-986`), release Single callback
-construction dereferences a null debug payload. The enclosing public path catches the exception and
-returns `PHOTO_CAPTURE_FAILED` before Camera2 dispatch (`CameraEngine.kt:4164-4183`). The settlement
-variant can throw before producer-terminal publication and family-lease release
-(`CameraEngine.kt:4737-4751`).
-
-This violates two explicit architecture laws at once:
-
-- diagnostics must be observational and absent from release without changing product control flow;
-- every still-family producer must reach exactly one terminal edge before deletion/recovery may
-  retire its authority.
-
-The layering error is that build policy, diagnostic admission, diagnostic payload creation, and
-capture-family lifecycle are four separate decisions. Their invalid combination is representable:
-`DEBUG=false + admitted=true + payload=null`, and production uses that state on the default shutter
-path. The cycle-48 test covers only the admission reducer under the debug variant, while release
-assembly proves bytecode construction but executes no shutter behavior. The green authoritative
-host gate therefore gives false assurance about the release architecture.
-
-**Fix direction:** Collapse those decisions into one build-aware optional trace object (or a logger
-whose release implementation is a no-op) and let capture lifecycle consume only that interface.
-Registration/settlement observation must wrap no ownership mutation and cleanup must remain
-unconditional. Add an explicit build-mode matrix around callback creation and producer settlement,
-plus a release-variant public capture smoke test. The invariant should be structural: disabling a
-diagnostic must remove output only, never data or control-flow dependencies.
-
-## Architectural debt and final sweep
-
-The 7,000-plus-line CameraEngine facade remains the previously recorded deferred decomposition item.
-A49-01 does not justify a wholesale rewrite; it identifies a narrow extraction boundary for
-capture-family tracing that should become an optional observer beside, not inside, producer
-lifecycle ownership.
-
-I also rechecked the new video-pipeline transaction packet, rollback publication, shader binding
-authority, obscured gesture cancellation, modal focus ownership, release permission allowlist, and
-screenshot validation against their consumers and tests. No second independent architecture
-finding survived the final sweep. Open field checks remain validation risks rather than architecture
-defects, and no device-only claim was promoted.
-
----
-
-# Architecture review — cycle 51 (current)
-
-Date/HEAD/workspace: 2026-08-25, `7eb4ee95`, isolated clone `/tmp/find-x9-ultra-cycle51.WTu2dW`; shared main untouched.
-
-## Inventory and trace coverage
-
-Reviewed the complete 634-file non-build inventory: all 103 production Kotlin/Java modules plus main manifests/resources, all 239 JVM/Robolectric/Compose tests and 4 androidTests, debug hosts, tooling/device harnesses, root Gradle/version/provenance configuration, 65 documentation/assets, and every authoritative design/field/privacy document. Traced facade→controller/GL/recorder/storage/UI ownership, generation/monitor boundaries, process-wide finite lanes, MediaStore durability, Compose state reduction, and release evidence.
-
-## Finding
-
-### C51-CV-01 — newer video-pipeline ownership is not propagated to GL during rollback
-
-- Location: `CameraEngine.kt`, `rollbackOptics`, around lines 821–839.
-- Severity: Medium. Confidence: High. Classification: **confirmed (source-path)**.
-- Architecture break: the Engine correctly selects either baseline or newer `VideoPipelineSelection`, but then bypasses that owner and writes `before.transfer` into GL. This violates the stated one-packet invariant across Engine, accepted source, GL encoder curve, UI, and REC admission.
-- Concrete scenario: accepted Video/HLG → pending Photo; publish newer AVC/SDR packet; Photo reopen fails; rollback preserves AVC/SDR fields/publication but writes HLG into GL.
-- Fix/test: make the selected packet the sole rollback source (`restoredVideoPipeline.activeTransfer`), then assert a newer-before-rollback interleave across Engine, GL, ViewModel, and REC. Update architecture wording to describe baseline restoration only while the optics transaction still owns the independent pipeline generation.
-
-## Sweep result
-
-No second independent layering, ownership, lifecycle, storage, or native-resource defect survived the complete pass. The gate-race and documentation drift are recorded in the critic/verifier and document reports. Architecture findings: **1 Medium/High**.
+## Top 5
+1. **A1** Turning DNG on or off switches the zoom scale without remapping it. On PMA110, 3× jumps to
+   9× (and back to 1×).
+2. **A2** `rawWanted` is outside the snapshot, rollback, and recall packet. A failed DNG reopen
+   recreates the documented permanent DNG divergence, and MR recall is split into two transactions.
+3. **A3** `detectPhone` treats CPH2841 as the X9 Ultra while `DeviceProfile` gives it GENERIC, so
+   the HAL crash guards are off on that variant.
+4. **A5** The lifetime 120-row warning/error budget on every device silently drops save and camera
+   failure logs after a long session.
+5. **A4/A7** Profile specialization for the route is duplicated between engine and controller, and
+   the 14 optics doors re-implement the scale-transition checklist by hand, which is the structural
+   root of A1 and A2.

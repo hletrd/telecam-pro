@@ -1,234 +1,176 @@
-# Document-specialist review — cycle 50
+# Document-Specialist Review — doc/code/authoritative-source mismatches
 
-Date: 2026-08-25
+Date: 2026-09-30 · HEAD `ba5b16e7` · Read-only review (no edits, no commits).
 
-Reviewed revision: `2388819d` (`origin/main`)
+## Scope and method
 
-## Inventory and validation
-
-I inventoried all 92 Markdown files plus the published HTML privacy policy, EN/KO resources,
-manifests, version catalog/build scripts, release tools, device harness, and source/tests named by
-current documentation. I read the complete committed authorities (`CLAUDE.md`,
-`docs/ARCHITECTURE.md`, `docs/FIELD_CHECKS.md`), README, privacy authorities, device-harness guide,
-Play Data Safety authority, and the complete Play submission sheet. Historical plans/reviews were
-searched for unqualified current-state claims and checked through the repository's plan/doc gates.
-
-`tools/check_docs.py` passed all 152 applicable checks (24 optional-private checks skipped). EN/KO
-resource parity, manifest permissions, versionCode/versionName, Android floor/target, release
-not-ready state, screenshot blockers, field-check membership, privacy statements, and current
-Loupe/DNG/HLG wording agree. Current-version claims were also checked against official metadata:
-AGP 9.3.2 and Compose BOM 2026.08.00 are the newest stable Google Maven entries, Kotlin 2.4.10 is
-JetBrains' current stable release, and Gradle's official current endpoint reports 9.7.1. Sources:
-Google Maven metadata for
-[`com.android.tools.build:gradle`](https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle/maven-metadata.xml)
-and
-[`androidx.compose:compose-bom`](https://dl.google.com/dl/android/maven2/androidx/compose/compose-bom/maven-metadata.xml),
-JetBrains' [Kotlin releases](https://kotlinlang.org/docs/releases.html), and Gradle's
-[`versions/current`](https://services.gradle.org/versions/current).
+- Docs inventoried: `CLAUDE.md`, `README.md`, `docs/ARCHITECTURE.md`, `docs/FIELD_CHECKS.md`,
+  `docs/TESTING.md`, `docs/UX_POLICY.md`, `PRIVACY.md`, `privacy-policy/index.html`,
+  `docs/play-*.md`, `device-tests/README.md`, `gradle/libs.versions.toml`, `app/build.gradle.kts`,
+  `gradle/wrapper/gradle-wrapper.properties`.
+- Scripted an identifier sweep: every backticked camelCase / CONSTANT_CASE token in `CLAUDE.md`,
+  `ARCHITECTURE.md`, `FIELD_CHECKS.md`, and `README.md` was grepped against the tracked source.
+  A second pass grepped against `app/src/main` only, which catches names that survive only in tests.
+  About 90 CLAUDE.md-cited symbols were also checked one by one against main sources.
+- Every `*.kt` file in `app/src/main` (105 files) was checked for a mention in `ARCHITECTURE.md`.
+  Every `.kt` file named in the docs was checked for existence.
+- Numeric constants were checked against their definitions.
+- The declared manifest was compared with the merged release manifest and the privacy/Data-safety documents.
+- Compared `values/` against `values-ko/` string resources (names, `translatable`, format placeholders).
+  Swept Compose/Kotlin code for hardcoded English. Checked bundled Inter faces with fontTools
+  for glyph coverage of every non-ASCII UI character.
+- Latest versions were queried live from Google Maven / Maven Central `maven-metadata.xml`,
+  `services.gradle.org/versions/current`, and the AGP release-notes page on developer.android.com.
+- Ran `python3 tools/check_docs.py`: **188 checks, 0 failed**.
 
 ## Findings
 
-### D50-01 — the architecture promises an atomic REC video packet that production does not snapshot
+### DS-1 (MEDIUM, confidence HIGH): stale GL API name for the front-mirror push, plus a future-tense sentence about work already done
+- **Where:** `CLAUDE.md:688` ("Pushed as route state by `applyStabilization` (`gl.setFrontStreamPreMirrored`)");
+  `docs/ARCHITECTURE.md:551` ("pushed as route state by `GlPipeline.setFrontStreamPreMirrored`").
+- **Code truth:** no `setFrontStreamPreMirrored` exists anywhere in the repo. The push is
+  `gl.setFrontMirrorConvention(front, streamPreMirrored)`. It is defined at `gl/GlPipeline.kt:544`
+  and called from `CameraEngine.applyStabilization` at `camera/CameraEngine.kt:1918-1921`.
+  The roles are derived in `FrontMirrorConvention.kt`.
+- **Also stale:** `CLAUDE.md:688-689` says "On a multi-device build this inversion becomes a
+  DeviceProfile quirk flag." That already happened. `DeviceProfile.frontStreamPreMirrored` is at
+  `camera/DeviceProfile.kt:22`, with PMA110 `true` at :65 and GENERIC `false` at :74. ARCHITECTURE.md:89 already describes this correctly.
+- **Impact:** an agent following the authority doc will grep for a function that does not exist. It may
+  also "implement" a quirk flag that already exists and fork the mirror authority.
+- **Fix:** replace both citations with `GlPipeline.setFrontMirrorConvention(front, streamPreMirrored)`.
+  Rewrite the CLAUDE.md sentence in past tense: "Since 2026-08-01 this inversion is the
+  `DeviceProfile.frontStreamPreMirrored` quirk; GENERIC takes the naive roles." Also note that
+  `mapTapFocusGeometry(mirrorX=false)` is the PMA110 value, not a universal constant.
+- **Status:** open.
 
-- **Severity / confidence:** Medium / High
-- **Classification:** Confirmed authoritative-doc/code mismatch; same root cause as A50-01.
-- **Exact regions:** `docs/ARCHITECTURE.md:308-314` says codec, ordered candidates, requested
-  transfer, and active transfer form one immutable packet and that Ready/REC can never observe a
-  hybrid. `CLAUDE.md:867-871` repeats that rollback restores the packet before the next REC
-  admission. Writers do serialize it (`CameraEngine.kt:764-793,2511-2556`), but production REC
-  obtains the accepted session under a lock at `:4947-4958` and reads each packet/capability field
-  after unlocking at `:5043-5065`.
+### DS-2 (LOW, confidence HIGH): `statusDisplayDurationMs` no longer exists
+- **Where:** `CLAUDE.md:1141` ("because `statusDisplayDurationMs` classifies by wording").
+  `docs/BACKLOG.md:78` (private) says the same.
+- **Code truth:** the symbol is gone from main sources. Duration is now a typed property:
+  `CameraStatus.durationMs` (`camera/CameraStatus.kt:96`), resolved per `CameraStatusMessage` with the
+  2.5 s default at `camera/CameraStatus.kt:190` and `PROGRESS` giving null. The only remaining
+  mention is a test comment at `app/src/test/.../ui/CameraViewModelRobolectricTest.kt:762`.
+- **Impact:** the sentence reads as present-tense mechanism, but the wording-based classifier was replaced by the typed enum. Anyone
+  hunting that function to adjust a timeout will find nothing.
+- **Fix:** rephrase as history ("the former wording-classified `statusDisplayDurationMs`…") and point to
+  `CameraStatus.durationMs` / `CameraStatusLifecycle`. Update the test comment too.
+- **Status:** open.
 
-**Failure scenario:** a pipeline commit or rollback between those volatile reads can make admission
-pair HEVC with AVC candidates or a non-SDR transfer with an SDR-only component. The app can refuse a
-valid start as “Selected codec unavailable,” despite the authority's absolute “never” claim. The
-exact filter fails closed, so this review does not claim that an incompatible encoder is started.
-The new tests cover writer synchronization and the pure helper, not the production snapshot
-interleave.
+### DS-3 (MEDIUM, confidence HIGH): the glyph-coverage rule contradicts the EN+KO constraint
+- **Where:** `CLAUDE.md:562-563` says "Every user-facing literal must stay inside those faces". It refers to the three bundled Inter
+  faces in `app/src/main/res/font/`.
+- **Truth (verified with fontTools):** none of `inter_regular.ttf`, `inter_medium.ttf`, or `inter_semibold.ttf`
+  carries Hangul (U+AC00 absent, 2852 cmap entries each). All 478 `values-ko` strings therefore render in a
+  system fallback face by construction. The rule as written is violated by every Korean string, and
+  the same file mandates those strings (CLAUDE.md:45-52).
+  Positive result: every **non-Hangul** non-ASCII character in `values*/strings.xml` and in Kotlin
+  string literals is covered by Inter. U+2192 is present and U+25B8 is absent, so the actual intent of the rule currently holds.
+- **Impact:** a literal reading of the rule could push someone to strip Korean or bundle a large CJK font.
+  It also hides the real question: whether mixed Inter plus system-Hangul metrics in one OSD tag are acceptable
+  (for example `너무 가까움 → 1×`).
+- **Fix:** scope the rule: "Every non-Hangul symbol in a user-facing literal must be in the Inter faces;
+  Hangul intentionally uses the system face." Optionally add a host test that asserts non-Hangul glyph coverage.
+  The check above is a 20-line fontTools script and can be added to `tools/check_docs.py`.
+- **Status:** open.
 
-**Suggested fix:** fix the production snapshot as described in A50-01, then retain the current
-authority wording and add a docs/test invariant naming the one locked snapshot owner. If the code is
-not fixed, weaken both authorities to describe the actual per-field behavior; that would document a
-race rather than make it safe and is not the preferred resolution.
+### DS-4 (MEDIUM, confidence HIGH): toolchain pins are behind the latest stable (policy: "bump when newer stable ships")
+The CLAUDE.md toolchain table matches the build exactly. AGP 9.3.2, Kotlin 2.4.10, Gradle wrapper 9.7.1,
+BOM 2026.08.00, compileSdk/targetSdk/minSdk 37/36/33 (`app/build.gradle.kts:493,504,505`),
+`jvmToolchain(21)` (`:640`), and heifwriter 1.1.0 all agree. The table is simply out of date against the registries
+(queried 2026-09-30):
 
-### D50-02 — “external callbacks run after unlocking” has one live counterexample
+| Component | Pinned (`gradle/libs.versions.toml` / wrapper) | Latest stable | Note |
+|---|---|---|---|
+| AGP | 9.3.2 (`libs.versions.toml:5`) | **9.4.1** (9.3.3 patch also exists) | AGP 9.4 needs Gradle ≥ 9.6 (met), default Build Tools 36.0.0 (matches `tools/android_sdk.py:12`), max API 37 |
+| Kotlin / Compose compiler plugin | 2.4.10 (`:7`) | **2.4.20** | |
+| Compose BOM | 2026.08.00 (`:11`) | **2026.09.00** | |
+| Gradle | 9.7.1 (`gradle-wrapper.properties:4`) | **9.8.0** | update `distributionSha256Sum` too |
+| core-ktx | 1.19.0 (`:8`) | **1.19.1** | patch |
+| Robolectric | 4.16.1 (`:18-20`) | **4.17** | the toml comment says "4.17 is still beta"; that is now stale. `robolectricAndroidAll` must move in lockstep (`:26`) |
+| lifecycle 2.11.0, activity 1.13.0, coroutines 1.11.0, heifwriter 1.1.0, exifinterface 1.4.2, profileinstaller 1.4.1, androidx.test core/runner 1.7.0, ext-junit 1.3.0 | — | current | no action |
 
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed authoritative-doc/code mismatch; same root cause as A50-02.
-- **Exact regions:** `docs/ARCHITECTURE.md:301-307` states that external callbacks run after the
-  optics commit unlocks. `CameraEngine.kt:628-630` repeats the same rule in source. Nevertheless,
-  `commitOpticsReady` invokes `onCameraPolicyBlocked(false)` inside the
-  `OpticsCommitGate.commit` mutation at `CameraEngine.kt:633-677`; the gate holds the Engine monitor
-  for that mutation at `:7265-7285`.
+- **Impact:** a policy violation (CLAUDE.md "Latest toolchain"; global "latest versions"). The doc table and the toml comment
+  would both need updating with the bump.
+- **Fix:** bump each item in its own commit (AGP / Kotlin / BOM / Gradle / Robolectric+android-all). Run
+  `python3 tools/verify_host.py` after each and refresh `gradle/verification-metadata.xml`. Then update the CLAUDE.md
+  table row by row. The Robolectric bump may also allow simulated SDK 37.
+- **Status:** open, not verified by build here (read-only lane).
 
-**Failure scenario:** maintainers rely on the authority when adding work to that callback and
-unknowingly place Engine re-entry, callback-sink waiting, or UI work inside the Ready critical
-section. The mismatch also prevents the docs gate from protecting the real rule because it checks
-the prose but not this callback site.
+### DS-5 (LOW, confidence HIGH): a dead English wording function is the one the tests pin
+- **Where:** `focus/MacroProximity.kt:193-200` `focusConfidenceLabel()` returns hardcoded `"SOFT"` /
+  `"TOO CLOSE → $it"`. Nothing in `app/src/main` calls it. Only `FocusConfidenceTest.kt:232-242` and
+  `CameraUiPolicyTest.kt:317` do.
+- **Code truth:** the OSD actually renders `R.string.focus_confidence_soft/_too_close/_too_close_lens`
+  (`ui/overlays/Overlays.kt:1070-1071`), with Korean at `values-ko/strings.xml:485-487`.
+  `ARCHITECTURE.md:119` and `CLAUDE.md:556-563` describe `MacroProximity` as owning the OSD wording.
+- **Impact:** a wording-policy regression (for example, adding a `→ <lens>` suffix to the SOFT string resource, which
+  CLAUDE.md forbids) would pass every test, because the tests guard a copy the UI never shows.
+- **Fix:** either delete `focusConfidenceLabel` and move the invariant tests onto the resource-selection
+  seam in `Overlays.kt`, or make the function return a typed key (`SOFT` / `TOO_CLOSE(lens?)`) that the UI
+  maps to resources, and test that. Update ARCHITECTURE.md:119 accordingly.
+- **Status:** open.
 
-**Suggested fix:** move the policy-unblocked callback beside the other post-commit publications at
-`CameraEngine.kt:678-684`, then add a source-contract check (or a behavior test) that terminal
-mutation bodies contain no callback invocation. The present architecture wording can remain.
+### DS-6 (LOW, confidence MEDIUM): latent English fallbacks on localized UI paths
+- **Where:** `ui/controls/FnQuickActions.kt:49` has `fnSlotValue(..., context: Context? = null)`, where each slot falls back to
+  English `*Label()` when `context` is null. `ui/CameraScreenPolicy.kt:504-506` has `fnOverlayVisualLabel` defaults
+  `fullLabel = fnSlotLabel(slot)`, `"Stab"`, and `"Gate"`. `ui/controls/ControlLabels.kt:171` (`"Custom"`) and `:346` (`"Phone"`) are English-only
+  label tables.
+- **Current reachability:** none in production. Every production caller passes a localized context or
+  string (`CameraScreen.kt:2561`, `:2601-2606`; `ProSheet.kt:682`).
+- **Impact:** if a new caller omits the argument, it silently ships English to Korean users. Lint will not catch it, and
+  the EN/KO parity check in resources cannot see it.
+- **Fix:** make `context` non-null (or pass a resolver) and remove the English defaults from
+  `fnOverlayVisualLabel`. Keep English `*Label()` functions test/diagnostic-only (for example `@VisibleForTesting`).
+- **Status:** open (defensive).
 
-## Final sweep and evidence limits
+### DS-7 (INFO, confidence LOW): the privacy contact address should be confirmed as a monitored mailbox
+- `01@0101010101.com` is used consistently in `PRIVACY.md:62`, `privacy-policy/index.html:296,412`,
+  `docs/play-store-listing.md:15`, and `docs/play-console-submit.md:560`. It is consistent but looks like a placeholder.
+  Google Play requires a working contact. If it is intentional and real, no action is needed.
 
-No other current documentation defect survived the full inventory sweep. The six open field checks
-remain A3, A4, A5, D1, E1, and E2; no host result was promoted to device evidence. The complete debug
-test task passed. The consolidated host gate was not runnable in this clone because the local SDK is
-missing the stable Emulator `glslangValidator`, so this review does not repeat the historical
-cycle-49 host-gate pass as evidence for current execution.
+### DS-8 (INFO): several documented timings are unnamed literals
+- `ui/CameraViewModel.kt:2126` (16 ms zoom flush), `:2166` (700 ms interaction end), `:2168` (250 ms quiet
+  landing), and `:3930` (40 ms controls throttle) all match CLAUDE.md. However, they are bare literals, while most other
+  documented numbers are named constants. Naming them (as `SETTINGS_SAVE_DEBOUNCE_MS` already is) would let the docs and
+  `check_docs.py` anchor to them. Optional.
 
----
+## Verified consistent (no action)
 
-## Archived prior review
+- **Constants:** these all match their docs.
+  - `PREVIEW_FRAME_GAP_THRESHOLD_MS = 200L` and 15 s summary (`DiagnosticTelemetry.kt:340-341`).
+  - `RECURRING_DIAGNOSTIC_ROW_BUDGET = 180`, `RESERVED_… = 120`, `COLOR_OS_PROCESS_LOG_ROW_LIMIT = 300` (`:31-33`).
+  - `HAL_SAFE_MAX_STILL_EXPOSURE_NS = 4 s` (`CaptureCapabilities.kt:20`).
+  - `PREVIEW_FLUIDITY_MAX_EXPOSURE_NS = 1/15 s`, `PREVIEW_SAFE_MAX_EXPOSURE_NS = 500 ms`, `PREVIEW_MAX_DIGITAL_GAIN = 16`, `CAPTURE_WATCHDOG_FLOOR_MS = 8 s` (`ManualControls.kt:325,340,341,484`).
+  - `TELE_MAX_DISPLAY_ZOOM = 60f`, `FINDER_MIN_ZOOM = 3f` (`CameraState.kt:353,397`).
+  - `SENSOR_SUBMIT_MIN_INTERVAL_MS = 200L` (`CameraController.kt:2409`).
+  - `SETTINGS_SAVE_DEBOUNCE_MS = 500L` (`CameraViewModel.kt:4094`).
+  - ZSL: 400 ms / 1/6 stop / 2 % / depth 3 (`ZslAdmission.kt:36-45`).
+  - `MAX_STEP_STOPS 0.30` / `MAX_FAR_STEP_STOPS 1.20` (`AutoExposure.kt:44-45`).
+  - `MACRO_HOLD_MS = 700`, `FOCUS_DETAIL_MAX_AGE_MS = 1 s`, ×16 shutter gate (`MacroProximity.kt:40,63,77`).
+  - `ZOOM_GESTURE_MARGIN = 1.2f` (`CameraEngine.kt:7864`).
+  - `FLAT_GRAVITY_THRESHOLD = 4.9` (≈½ g) and `LEVEL_GRAVITY_THRESHOLD = 2.5` (`GyroEis.kt:328,332`).
+  - `TELECONVERTER_MAGNIFICATION = 300/70`.
+  - Pre-native allocator backlog 4 and rejected-output 2 workers + 8 backlog.
+  - 3840-px video width cap (`CameraEngine.kt:7703,7714`).
+- **Identifiers:** apart from DS-1 and DS-2, every CLAUDE.md / ARCHITECTURE.md cited symbol and every `.kt` path exists.
+  All 105 `app/src/main` Kotlin files appear in ARCHITECTURE.md.
+  - The names that CLAUDE.md lists as deliberately removed are absent, as claimed: `VendorLogMode`, `vendorLogMode`, `setNativeLog`,
+    `delogAssist`, `com.oplus.VideoColorBT709`, and `landscapeOperator`.
+  - `tenBitExperimentEnabled` survives as documented.
+- **Permissions:** the manifest declares CAMERA, RECORD_AUDIO, READ_MEDIA_IMAGES/VIDEO/VISUAL_USER_SELECTED, and removes
+  INTERNET and ACCESS_NETWORK_STATE.
+  - The merged release manifest adds only the signature-scoped `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.
+  - This matches `PRIVACY.md`, `privacy-policy/index.html` (EN and KO sections), and `docs/play-data-safety.md:8-9`.
+  - There is no location permission, as the docs claim.
+  - `localeConfig` is generated through `androidResources.generateLocaleConfig = true` (`app/build.gradle.kts:593-600`).
+- **Strings:** 496 EN entries and 478 KO entries. The 18 non-KO entries are exactly the `translatable="false"` set, and **0 translatable strings lack Korean**.
+  No KO-only keys. Format placeholders match in every pair. The only KO value identical to EN is `fn_short_focal_mm` (`%1$dmm`,
+  a unit). There are no hardcoded English `Text("…")` / `contentDescription` literals in Compose code. The remaining literals are `"×"`, `"4:3"`, and
+  `"T${s}s"`. Statuses flow through `CameraStatusMessage`, which is localized.
+- **SDK claims:** Platform 37 / Build Tools 36.0.0 (README.md:114, CLAUDE.md:81, `tools/android_sdk.py:12`)
+  agree with AGP 9.4's default Build Tools.
+- **Secrets:** `keystore.properties`, `*.jks`, `telecampro-upload-passwords.txt.gpg`, and `local.properties` sit in the
+  working tree but are **untracked**. Only `keystore.properties.example` is tracked.
 
-# Document-specialist review — cycle 49
-
-Date: 2026-08-25
-
-Reviewed revision: `69c9c64ac778341189be9dbee5621601b1353a27`
-
-## Coverage
-
-I read the three committed operating authorities completely, then the README, privacy policy,
-device-harness guide, Play Data Safety authority, and complete Play submission sheet. I inventoried
-all 93 tracked Markdown files and checked historical plans/reviews for current-tense claims that
-escaped their supersession labels. I also ran the full documentation checker (151 pass, 24 declared
-private-file skips) and cross-checked user-facing EN/KO resources, manifest permissions, release
-state, field-check membership, and current source behavior.
-
-## Findings
-
-### C49-DOC-01 — a historical matrix still calls the already-fixed AppOps disclosure an open UX gap
-
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed documentation contradiction.
-- **Evidence:** `docs/play-console-submit.md:386-392` says the app “said NOTHING” and declares
-  “This is an open UX gap,” directing readers to BACKLOG. The same document's current release delta
-  at `:280-287` says the AppOps-policy path now surfaces “Camera blocked for this app on this
-  device.” plus Settings and is confirmed. Production contains that localized status
-  (`app/src/main/res/values/strings.xml:271`, Korean peer present) and handles the policy failure in
-  `CameraEngine.kt:3000-3080`.
-- **Failure scenario:** a release reviewer or maintainer treats a closed behavior as current work,
-  duplicates it, or reports the present artifact as silently black despite the implemented status.
-  The surrounding matrix is labeled historical, but the paragraph uses unqualified present tense
-  and the emphatic “open” status, so it conflicts with the current authority within the same file.
-- **Concrete fix:** explicitly mark the paragraph as the historical pre-fix observation and point
-  to the current fixed release item/commit. Extend `tools/check_docs.py` to reject the exact active
-  “open UX gap” phrase outside an explicitly superseded quotation.
-
-### C49-DOC-02 — cycle-48 claims delete-dialog focus coverage without asserting focus return
-
-- **Severity / confidence:** Low / High
-- **Classification:** Confirmed evidence-record gap; product behavior is separately `C49-CT-02`.
-- **Evidence:** `docs/plans/2026-08-25-rpf-cycle48.md:77-82` marks delete-dialog cancel covered, but
-  `ModalFocusComposeTest.kt:218-253` checks disappearance only and never asserts the Delete opener or
-  any review node regains focus.
-- **Concrete fix:** after adding the missing product assertion/ownership, append a dated correction
-  to cycle 48 describing the evidence actually added.
-
-## Final documentation sweep
-
-No further current-source contradiction survived. EN/KO parity, privacy permissions, minSdk,
-current no-artifact release state, screenshot blockers, Loupe orientation, device-evidence limits,
-and the six open field checks all agree across the committed authorities.
-
----
-
-## Archived prior review
-
-# Document-specialist review — cycle 39
-
-Date: 2026-08-24
-
-Reviewed revision: `5ee6b21` (`origin/main`)
-
-Workspace: isolated worktree `/private/tmp/find-x9-cycle39.feeBBZ`
-
-## Scope and evidence
-
-Inventoried all 493 tracked paths and examined the complete committed instruction/architecture/field
-authority, README, privacy and Play material, release/build configuration, device-harness guidance,
-resources/manifests, production implementation, tests, and current/historical review plans. Optional
-private maintainer documents are absent, as the committed clean-clone policy permits.
-`tools/check_docs.py` passed 120 checks with 24 optional-private skips. Current stable dependency
-claims were cross-checked against Google Maven, JetBrains plugin metadata, Maven Central, and
-Gradle's official current-release service; no toolchain-version drift was found.
-
-## Findings
-
-### DOC39-01 — current authorities and the renderer comment put Loupe Overview on the wrong side
-
-- **Severity / confidence:** Low / High.
-- **Exact regions:** `CLAUDE.md:251-253` and `docs/ARCHITECTURE.md:745-749` both say the viewport is
-  in the bottom-left corner; the renderer repeats that stale claim at
-  `app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt:1067-1073` even as it consumes
-  `rect.x`. The executable geometry explicitly insets from the **right** at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:665-691`, because the left column
-  owns the exposure/zoom ruler. Compose consumes that absolute x-coordinate from a BottomLeft
-  origin at `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraScreen.kt:896-917`, so the positive
-  `boxWidth - width - inset` offset lands the overview at bottom-right. The position-sensitive test
-  pins that right-side x value at
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/FinderGeometryTest.kt:18-33`.
-- **Mismatch / scenario:** a maintainer following either authority or the renderer comment can move or test the overlay as a
-  bottom-left element, exactly where the implementation comments record that it overlapped the
-  persistent ruler. The two authoritative prose copies therefore describe the superseded placement,
-  while code and tests enforce the user-requested right side.
-- **Suggested fix:** change both current-authority occurrences to “bottom-right” (or “right-inset
-  bottom corner”) and extend `tools/check_docs.py` to bind the authority wording to `finderRect`'s
-  right-edge law so the two copies cannot drift again.
-
-### DOC39-02 — cycle 38 records pure predicate tests as Engine-facing stabilization proof
-
-- **Severity / confidence:** Low / High.
-- **Exact regions:** `docs/plans/2026-08-24-rpf-cycle38.md:27-28` marks focused pure **and
-  Engine-facing** regression coverage complete, and `:75-80` reports that stabilization
-  normalization avoids rebuild/reopen. The only new stabilization tests are the direct pure-helper
-  assertions at
-  `app/src/test/kotlin/me/hletrd/telecampro/camera/CaptureCapabilitiesTest.kt:65-100`. Repository-wide
-  search finds no test that invokes `CameraEngine.setVideoStabMode`, whose state assignment,
-  `applyStabilization()`, and `reopenForSession()` control flow lives at
-  `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:1587-1600`.
-- **Mismatch / scenario:** the durable completion record promises integration evidence that does not
-  exist. A future reviewer can accept a green pure predicate as proof that no request or session side
-  effect occurred, even though a call-order regression in the Engine would be invisible to it.
-- **Suggested fix:** add the Engine-side-effect regression described by TEST39-01, then append a
-  dated correction to the completed cycle-38 plan identifying the new test. Do not rewrite away the
-  historical overclaim.
-
-## Final sweep
-
-Android floor, current stable toolchain versions, privacy disclosures, Play release/artifact state,
-field-check membership, afocal-orientation exception, DNG routing, ZSL boundary, finder geometry,
-and current source/module ownership otherwise agree with committed truth. No other current-authority
-drift survived the final sweep.
-
-## Totals
-
-- New findings: 2
-- Severity: 2 Low
-- Confidence: 2 High
-
----
-
-# Document-specialist review — cycle 51 (current)
-
-Date/HEAD: 2026-08-25, `7eb4ee95`. Isolated clone only; no implementation/deploy/device work.
-
-## Complete inventory and checks
-
-Read `CLAUDE.md` (1,153 lines), `docs/ARCHITECTURE.md` (1,372), `docs/FIELD_CHECKS.md` (284), README/privacy/legal/notices, all committed plans/submission/data-safety/device-catalog docs, every source KDoc/comment touching stated behavior, both locale resource sets, manifest/build authorities, all tooling/device-harness READMEs and contract tests, and all 15 committed visual/vector Play assets plus validity manifests. `tools/check_docs.py` passed 153/153 checks with 24 explicitly optional private-file skips; locale pairing and screenshot hashes/geometry passed.
-
-## Finding
-
-### C51-CV-03 — orientation and rollback prose is stale despite a green docs gate
-
-- Locations: `FlipRenderer.kt:294-298`, `GlPipeline.kt:1090-1110` and `1127`; `CLAUDE.md:867-871`; `docs/ARCHITECTURE.md:308-315`.
-- Severity: Low. Confidence: High. Classification: **confirmed**.
-- Mismatch: current authorities say the same converter-fed overview deliberately omits afocal correction and is raw/inverted; source comments still call it “UPRIGHT,” “world the right way up,” and a pre-converter-world stand-in. The same architecture section says rollback restores the baseline packet without noting the new independent publication generation that preserves a newer codec/candidate/transfer packet. The docs check's reported Loupe agreement therefore does not cover these contradictory comments.
-- Failure scenario: maintainers reintroduce a superseded rotation or baseline-overwrites-newer-intent behavior using comments presented as design authority.
-- Suggested fix: consistently call the current inset raw/inverted same-stream truth; reserve upright language for a future real wide stream. Document conditional packet restoration, publication-generation recheck, and atomic REC inputs; mutation-test the stale phrases.
-
-## Coverage conclusion
-
-Open A3/A4/A5/D1/E1/E2 remain correctly manual, screenshots explicitly marked stale/non-submission-ready remain so, and no other current-source/doc/resource/i18n mismatch survived. Findings: **1 Low/High**.
+## Counts
+8 findings: 0 HIGH, 3 MEDIUM (DS-1, DS-3, DS-4), 3 LOW (DS-2, DS-5, DS-6), 2 INFO (DS-7, DS-8).
