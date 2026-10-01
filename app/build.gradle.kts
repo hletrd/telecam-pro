@@ -736,6 +736,14 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        // QA4-1 / AGG4-76: a Kotlin `w:` line prints only when its compile task actually runs, so a
+        // green gate over UP-TO-DATE compiles attested nothing about warnings, and "no deprecated
+        // APIs" rested on whoever happened to read a fresh compile. Every warning (deprecations
+        // included) now fails the compile that produces it, in main, unit-test, and androidTest
+        // sources alike. Verified warning-free under a forced recompile when enabled (2026-10-02).
+        allWarningsAsErrors.set(true)
+    }
 }
 
 // Robolectric loads app classes through its sandbox classloader WITHOUT a code-source location, and
