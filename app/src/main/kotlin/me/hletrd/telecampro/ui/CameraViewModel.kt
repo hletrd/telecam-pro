@@ -232,6 +232,10 @@ class CameraViewModel private constructor(
     private var recordStartMs = 0L
     private val recordTicker = object : Runnable {
         override fun run() {
+            // Self-reposting: a late post that lands after onCleared's purge would otherwise tick
+            // whole-state updates at 5 Hz for the rest of the process and pin this ViewModel
+            // (AGG2-15). Every self-reposting runnable below carries the same guard.
+            if (cleared) return
             // 200 ms tick bounds display lag, but the mm:ss readout changes at 1 Hz — publish only
             // when the DISPLAYED second advances, or 4 of 5 ticks were whole-state copies that
             // recomposed the root for an unchanged string (perf review #5).
@@ -431,6 +435,7 @@ class CameraViewModel private constructor(
     // sweeps smoothly like a powered zoom rocker.
     private val zoomEaseTicker = object : Runnable {
         override fun run() {
+            if (cleared) return
             val target = zoomGlide.easeTarget ?: return
             val cur = currentZoomBase()
             // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
@@ -467,7 +472,7 @@ class CameraViewModel private constructor(
 
     private val levelTicker = object : Runnable {
         override fun run() {
-            if (!lifecycleStarted || !_state.value.level) return
+            if (cleared || !lifecycleStarted || !_state.value.level) return
             // Quantized to 0.2° BEFORE the compare (perf review #4): raw smoothed-gravity floats
             // virtually never repeat, so the unquantized publish defeated StateFlow dedup and
             // recomposed the whole tree at 10 Hz even on a tripod. 0.2° is 2.5× finer than the
@@ -485,7 +490,7 @@ class CameraViewModel private constructor(
     // though the activity is portrait-locked. Only writes state when the discrete value changes.
     private val orientationTicker = object : Runnable {
         override fun run() {
-            if (!lifecycleStarted) return
+            if (cleared || !lifecycleStarted) return
             val o = engine.currentDeviceOrientation()
             if (o != _state.value.deviceOrientation) _state.update { it.copy(deviceOrientation = o) }
             mainHandler.postDelayed(this, 200)
@@ -516,7 +521,7 @@ class CameraViewModel private constructor(
     }
     private val infoTicker = object : Runnable {
         override fun run() {
-            if (!lifecycleStarted) return
+            if (cleared || !lifecycleStarted) return
             infoRefresh.request()
             mainHandler.postDelayed(this, 10_000)
         }
@@ -3371,6 +3376,7 @@ class CameraViewModel private constructor(
         _state.update { it.copy(timerCountdownSec = seconds) }
         val tick = object : Runnable {
             override fun run() {
+                if (cleared) return
                 val cur = _state.value.timerCountdownSec
                 if (cur <= 1) {
                     _state.update { it.copy(timerCountdownSec = 0) }
@@ -4208,12 +4214,18 @@ class CameraViewModel private constructor(
         // publish, then remove its already-posted Runnable with every other stale ViewModel task.
         latestCaptureRestoreOwner.close()
         recordingAttemptGeneration++
+        // Detach BEFORE purging (AGG2-15): engine callbacks post to main from camera/setup/recorder
+        // threads, so a post landing between a purge and a later detach survived — e.g. a late
+        // onRecordingStarted restarting the self-reposting recordTicker on a cleared ViewModel.
+        // Purge again afterwards for a callback lambda read just before the detach; the `cleared`
+        // guards on the self-reposting runnables cover anything still in flight past that.
+        engine.detachCallbacks()
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
         debugZoomReceiver = null
         debugZslSpikeReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
         debugZslSpikeReceiver = null
-        engine.detachCallbacks()
+        mainHandler.removeCallbacksAndMessages(null)
         // Ordered camera/codec/GL release contains bounded joins and can legitimately take seconds.
         // ViewModel teardown runs on main, so transfer ownership to a dedicated non-daemon thread.
         val ownedEngine = engine

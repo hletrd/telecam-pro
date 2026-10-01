@@ -198,4 +198,24 @@ class CameraViewModelTickersRobolectricTest {
         // admission gate declines with the authoritative status instead of a silent dead press.
         assertEquals(CameraStatusMessage.CAMERA_RECONFIGURING.status(), vm.state.value.status)
     }
+
+    // AGG2-15: a late post that lands after onCleared's purge must not restart a self-reposting
+    // ticker — recordTicker reposted at 5 Hz forever and pinned the cleared ViewModel.
+    @Test fun `self-reposting tickers stop once the ViewModel is cleared`() {
+        fun field(name: String): Any = CameraViewModel::class.java.getDeclaredField(name)
+            .apply { isAccessible = true }
+            .get(vm)
+        CameraViewModel::class.java.getDeclaredField("lifecycleStarted")
+            .apply { isAccessible = true }
+            .setBoolean(vm, true)
+        CameraViewModel::class.java.getDeclaredMethod("onCleared")
+            .apply { isAccessible = true }
+            .invoke(vm)
+        val handler = field("mainHandler") as android.os.Handler
+        listOf("recordTicker", "orientationTicker", "infoTicker").forEach { name ->
+            val ticker = field(name) as Runnable
+            ticker.run()
+            assertEquals(name, false, handler.hasCallbacks(ticker))
+        }
+    }
 }
