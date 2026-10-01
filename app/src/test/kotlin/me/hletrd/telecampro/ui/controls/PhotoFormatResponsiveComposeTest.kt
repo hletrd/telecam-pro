@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -42,6 +43,7 @@ class PhotoFormatResponsiveComposeTest {
     private fun show(
         initial: PhotoFormats,
         viewportWidthDp: Int = 212,
+        cameraReady: Boolean = true,
     ) {
         formats = mutableStateOf(initial)
         compose.setContent {
@@ -58,9 +60,9 @@ class PhotoFormatResponsiveComposeTest {
                         PhotoFormatToggles(
                             formats = formats.value,
                             onSetPhotoFormats = { formats.value = it },
-                            processedAvailable = true,
+                            sessionOutputs = PhotoSessionOutputs(processed = true, raw = true),
+                            cameraReady = cameraReady,
                             rawAvailable = true,
-                            hlgSessionAccepted = false,
                         )
                     }
                 }
@@ -105,7 +107,10 @@ class PhotoFormatResponsiveComposeTest {
 
     @Test
     fun `every multi-select format remains scrollable clickable and context-named at two-x font`() {
-        show(PhotoFormats(heif = false, jpeg = false, dngRaw = false))
+        // Reopening: the row shows the bare REQUEST with every chip live. On an accepted session
+        // an empty request is displayed as the HEIF the shutter would write (AGG4-66), which is a
+        // locked chip by design and not what this reachability fixture exercises.
+        show(PhotoFormats(heif = false, jpeg = false, dngRaw = false), cameraReady = false)
 
         listOf("HEIF", "JPEG", "DNG").forEach { name ->
             formatNode(name)

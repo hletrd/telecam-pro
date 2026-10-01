@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 import org.junit.Rule
@@ -84,7 +85,8 @@ class SelectorRoleSemanticsComposeTest {
                     PhotoFormatToggles(
                         formats = PhotoFormats(heif = true, jpeg = true, dngRaw = true),
                         onSetPhotoFormats = {},
-                        processedAvailable = true,
+                        sessionOutputs = PhotoSessionOutputs(processed = true, raw = true),
+                        cameraReady = true,
                         rawAvailable = true,
                         hlgSessionAccepted = false,
                     )

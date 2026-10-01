@@ -890,6 +890,47 @@ class CameraViewModelRobolectricTest {
         assertEquals(dngOnly, v.state.value.effectivePhotoFormats)
     }
 
+    // AGG4-67: the DNG-only substitution status is a TRANSITION notice. With the request no longer
+    // normalized at Ready, every later Ready of the same RAW-only session re-announced it.
+    @Test fun `DNG-only Ready status fires on the transition edge only`() {
+        val (v, e) = createViewModel()
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        setState(v) { it.copy(photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true)) }
+        var sequence = 0L
+        fun ready(outputs: PhotoSessionOutputs): CameraStatusMessage? {
+            setState(v) { it.copy(status = null) }
+            e.onCameraReadyChange!!.invoke(
+                CameraReadyPublication(
+                    sequence = ++sequence,
+                    ready = true,
+                    opticsGeneration = optics,
+                    sessionGeneration = session,
+                    photoOutputs = outputs,
+                ),
+            )
+            idleFor(0)
+            return v.state.value.status?.message
+        }
+        val rawOnly = PhotoSessionOutputs(raw = true)
+        assertEquals(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY, ready(rawOnly))
+        assertNull("same session shape: no re-announcement", ready(rawOnly))
+        assertNull(ready(PhotoSessionOutputs(processed = true, raw = true)))
+        assertEquals(
+            "a new transition into DNG-only announces again",
+            CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY,
+            ready(rawOnly),
+        )
+    }
+
     @Test fun `camera condition progress waits for Ready not a timer`() {
         val (v, e) = createViewModel()
         val conditions = listOf(

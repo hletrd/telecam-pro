@@ -39,6 +39,7 @@ import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.AudioDenialReasonStore
 import me.hletrd.telecampro.bankAudioOffByDenial
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
+import me.hletrd.telecampro.camera.dngOnlySubstitution
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -751,6 +752,10 @@ class CameraViewModel private constructor(
     private var ownerlessMediaDeleteOverrides = OwnerlessMediaDeleteOverrides()
     private var mediaDeleteDispatcher = ownerlessMediaDeleteOverrides.dispatcher
     @Volatile private var cleared = false
+    // Main-confined: whether the last OWNED Ready already carried (and so announced) a DNG-only
+    // substitution. Not-Ready publications leave it alone, so a reopen of the same session shape
+    // does not re-announce; a Ready that is not DNG-only re-arms it (AGG4-67).
+    private var readyDngOnlyAnnounced = false
     // The ONE owner of the audio-denial reason (AGG4-49): the memory-bank store reads it here, so a
     // bank's provenance never depends on which UI layer happened to reach this door.
     private val audioDenialReason = AudioDenialReasonStore(app)
@@ -879,6 +884,7 @@ class CameraViewModel private constructor(
                     // output into run 2's `preTeleUnifiedZoom` input.
                     var acceptedPreTele = Float.NaN
                     var acceptedApplied = false
+                    var acceptedDngOnly = false
                     _state.update { current ->
                         // Reset PER ATTEMPT: update() retries on CAS contention, and a retry that
                         // LOSES gate ownership must not leave attempt 1's acceptedApplied=true
@@ -887,6 +893,7 @@ class CameraViewModel private constructor(
                         // comment above already bans the mirror-image leak).
                         acceptedPreTele = Float.NaN
                         acceptedApplied = false
+                        acceptedDngOnly = false
                         formatStatus = null
                         if (!cameraReadyPublicationGate.owns(publication)) return@update current
                         // RAW truth and the pre-TELE return baseline change only when a camera intent
@@ -899,6 +906,8 @@ class CameraViewModel private constructor(
                         )
                         acceptedPreTele = accepted.preTeleUnifiedZoom
                         acceptedApplied = true
+                        acceptedDngOnly = current.mode == CaptureMode.PHOTO &&
+                            dngOnlySubstitution(current.photoFormats, publication.photoOutputs)
                         formatStatus = when {
                             // VIDEO never reports this. Stills during a take are not a feature this
                             // app owes anyone -- a professional body records, it does not offer a
@@ -908,9 +917,11 @@ class CameraViewModel private constructor(
                             current.mode == CaptureMode.VIDEO -> null
                             !publication.photoOutputs.hasStillTarget ->
                                 CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status()
-                            current.photoFormats.wantsProcessedStill &&
-                                !accepted.effectivePhotoFormats.wantsProcessedStill &&
-                                accepted.effectivePhotoFormats.dngRaw ->
+                            // The RISING EDGE only (AGG4-67): before AGG3-18 the first such Ready
+                            // normalized the request to DNG-only, which silenced every later one;
+                            // with the request kept, each fast commit, recovery and resume of the
+                            // same RAW-only session re-announced it.
+                            acceptedDngOnly && !readyDngOnlyAnnounced ->
                                 // Word for word the engine's capture-time refusal and the
                                 // PhotoFormatToggles caption: this fires on Ready publication and
                                 // those fire at the shutter, so one user sees all three for one
@@ -931,7 +942,10 @@ class CameraViewModel private constructor(
                             photoSessionOutputs = publication.photoOutputs,
                         )
                     }
-                    if (acceptedApplied) preTeleUnifiedZoom = acceptedPreTele
+                    if (acceptedApplied) {
+                        preTeleUnifiedZoom = acceptedPreTele
+                        readyDngOnlyAnnounced = acceptedDngOnly
+                    }
                     formatStatus?.let { status ->
                         cameraReadyPublicationGate.runIfOwned(publication) { showStatus(status) }
                     }

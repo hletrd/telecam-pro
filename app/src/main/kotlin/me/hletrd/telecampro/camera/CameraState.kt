@@ -1542,6 +1542,17 @@ fun PhotoFormats.effectiveFor(outputs: PhotoSessionOutputs): PhotoFormats =
     if (outputs.hasStillTarget) normalizedFor(outputs).copy(dngRaw = dngRaw && outputs.raw) else this
 
 /**
+ * True when an accepted session SUBSTITUTES DNG-only for a request that wants a processed still —
+ * the mask the Ready-time "HEIF/JPEG unavailable · DNG only" status announces. A pure STATE: the
+ * ViewModel announces only its rising edge across Ready publications (AGG4-67). Since AGG3-18 the
+ * request is never normalized, so this stays true on every later Ready of the same session shape.
+ */
+internal fun dngOnlySubstitution(request: PhotoFormats, outputs: PhotoSessionOutputs): Boolean {
+    val effective = request.effectiveFor(outputs)
+    return request.wantsProcessedStill && !effective.wantsProcessedStill && effective.dngRaw
+}
+
+/**
  * Immutable snapshot the UI renders. Hardware-independent so it can be previewed/unit-tested.
  * [controls] holds capture parameters; the remaining fields are viewfinder assists and app state.
  *
@@ -1785,6 +1796,20 @@ data class CameraUiState(
     /** [photoFormats] is the REQUEST; this is what the accepted session writes ([effectiveFor]). */
     val effectivePhotoFormats: PhotoFormats
         get() = photoFormats.effectiveFor(photoSessionOutputs)
+
+    /**
+     * The OSD's output readout (AGG4-70): the accepted session's answer, NOTHING ("--") for a Ready
+     * session with no still target, and the request while reopening. [effectiveFor] deliberately
+     * returns the request when there is no still target (capture normalization relies on that), so
+     * the OSD of a preview-only photo session kept saying "HEIF" beside a dimmed shutter long after
+     * the 6 s "Still capture unavailable" status had gone.
+     */
+    val osdPhotoFormats: PhotoFormats
+        get() = if (cameraReady && !photoSessionOutputs.hasStillTarget) {
+            PhotoFormats(heif = false, jpeg = false, dngRaw = false)
+        } else {
+            effectivePhotoFormats
+        }
 
     /** Operator-facing file raster: accepted fallback during REC, requested/session size otherwise. */
     val encodedVideoResolution: Size

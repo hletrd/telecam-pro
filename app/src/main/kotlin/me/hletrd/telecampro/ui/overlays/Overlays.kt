@@ -759,7 +759,7 @@ internal fun photoFormatLabel(formats: PhotoFormats): String = buildString {
 /** Compact strip: the default HEIF-only combination is not an output-changing state, so it is silent. */
 internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
     if (state.mode != CaptureMode.PHOTO) return null
-    val formats = state.effectivePhotoFormats
+    val formats = state.osdPhotoFormats
     if (formats.heif && !formats.jpeg && !formats.dngRaw) return null
     return photoFormatLabel(formats)
 }
@@ -832,7 +832,7 @@ internal fun statusBarPriorityResetKey(
         mutedTagVisible = videoMode && !state.recordAudio,
         stabilizationTag = state.videoStabMode.takeIf { videoMode },
         photoFormatTag = if (photoMode) {
-            if (compact) compactPhotoFormatLabel(state) else photoFormatLabel(state.effectivePhotoFormats)
+            if (compact) compactPhotoFormatLabel(state) else photoFormatLabel(state.osdPhotoFormats)
         } else {
             null
         },
@@ -988,7 +988,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         } else {
             if (!compact) {
                 Text(
-                    photoFormatLabel(state.effectivePhotoFormats),
+                    photoFormatLabel(state.osdPhotoFormats),
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.labelMedium,
                 )

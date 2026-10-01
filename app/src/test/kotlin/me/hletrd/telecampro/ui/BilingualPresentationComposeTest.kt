@@ -42,6 +42,7 @@ import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.MemoryPresetPresentation
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.VideoFrameRate
@@ -237,9 +238,9 @@ class BilingualPresentationComposeTest {
                         PhotoFormatToggles(
                             formats = PhotoFormats(),
                             onSetPhotoFormats = {},
-                            processedAvailable = false,
+                            sessionOutputs = PhotoSessionOutputs(hlg = true),
+                            cameraReady = true,
                             rawAvailable = false,
-                            hlgSessionAccepted = true,
                         )
                         SpeedAngleToggle(
                             mode = ShutterMode.SPEED,

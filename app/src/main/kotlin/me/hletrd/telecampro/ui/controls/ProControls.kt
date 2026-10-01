@@ -86,6 +86,7 @@ import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.ui.theme.CameraColors
 
 /**
@@ -1047,42 +1048,38 @@ internal fun noStillOutputCaption(hlgSessionAccepted: Boolean): Int =
     if (hlgSessionAccepted) R.string.output_10_bit_video_stills_off
     else R.string.status_still_capture_unavailable
 
-/** HEIF / JPEG / DNG output-format toggles; supported formats may be enabled simultaneously. */
+/**
+ * HEIF / JPEG / DNG output-format toggles; supported formats may be enabled simultaneously.
+ *
+ * Selection, enablement and the caption all come from ONE pure [photoFormatChipModel] over the
+ * REQUEST ([formats]) and the ACCEPTED session ([sessionOutputs], [cameraReady]) — see it for why the
+ * processed chips render the session's effective set while the DNG chip keeps the request.
+ */
 @Composable
 internal fun PhotoFormatToggles(
     formats: PhotoFormats,
     onSetPhotoFormats: (PhotoFormats) -> Unit,
-    processedAvailable: Boolean,
-    // Whether the DEVICE can produce RAW at all — what the DNG chip's enablement keys off.
+    sessionOutputs: PhotoSessionOutputs,
+    cameraReady: Boolean,
+    // [me.hletrd.telecampro.camera.rawSelectable]: neither pure session truth nor bare capability.
     rawAvailable: Boolean,
     // `modifier` stays the FIRST optional parameter (Compose convention, enforced by the
-    // ModifierParameter lint); route facts follow it.
+    // ModifierParameter lint).
     modifier: Modifier = Modifier,
-    // Whether the CURRENT session actually carries a RAW output. Drives the caption only: on the
-    // logical photo route this is false while [rawAvailable] is true, and selecting DNG is exactly
-    // what switches the route so it becomes true.
-    rawInSession: Boolean = rawAvailable,
-    // An accepted HLG10 session reframes the "no still outputs" line: there it is the 10-bit
-    // session's deliberate trade, not a capability the route failed to deliver. Keyed on the
-    // ACCEPTED session (`PhotoSessionOutputs.hlg`), NOT on videoMode (AGG2-35) and NOT on the
-    // request (AGG3-17): SDR video, or a 10-bit request that fell to the 8-bit preview-only rung,
-    // has no still readers either, and is not 10-bit. No default (AGG4-47): an omitted argument
-    // would silently drop the designed 10-bit caption for "Still capture unavailable".
-    hlgSessionAccepted: Boolean,
     // Whether this DEVICE can encode HEIF at all (HeifWriter needs a platform HEVC encoder, which
     // is not CDD-mandatory at API 33). Without it the chip stayed live and a tap silently produced
     // JPEG instead — the selection normalizer's doing, invisible at the control (verification
     // 2026-08-02).
     heifAvailable: Boolean = true,
 ) {
-    val processedSelected = processedAvailable && formats.wantsProcessedStill
-    val rawSelected = rawAvailable && formats.dngRaw
-    // Hoisted so the chip's border sees the SAME enablement as the chip: at least one processed
-    // format must survive unless RAW is on, and RAW needs a processed sibling.
-    val heifEnabled = heifAvailable && processedAvailable &&
-        (!formats.heif || formats.jpeg || rawSelected)
-    val jpegEnabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected)
-    val dngEnabled = rawAvailable && (!formats.dngRaw || processedSelected)
+    val model = photoFormatChipModel(
+        request = formats,
+        outputs = sessionOutputs,
+        cameraReady = cameraReady,
+        rawAvailable = rawAvailable,
+        heifAvailable = heifAvailable,
+    )
+    val shown = model.displayed
     val optionScroll = rememberScrollState()
     val heifIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
     val jpegIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
@@ -1092,12 +1089,12 @@ internal fun PhotoFormatToggles(
     // settings or enabled through another surface cannot sit beyond a narrow viewport. A direct
     // tap is already visible; this edge is for initial/external state and constrained-font reflow.
     val selectedIntoView = when {
-        formats.dngRaw -> dngIntoView
-        formats.jpeg -> jpegIntoView
-        formats.heif -> heifIntoView
+        shown.dngRaw -> dngIntoView
+        shown.jpeg -> jpegIntoView
+        shown.heif -> heifIntoView
         else -> null
     }
-    LaunchedEffect(formats, selectedIntoView) { selectedIntoView?.bringIntoView() }
+    LaunchedEffect(shown, selectedIntoView) { selectedIntoView?.bringIntoView() }
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // No `enabled` axis on this row: each format chip carries its own availability, so the label
         // itself is never the thing that is unavailable.
@@ -1122,62 +1119,29 @@ internal fun PhotoFormatToggles(
                 // leading check so two lit chips read as pick-many, not a rendering glitch.
                 OutputFormatChip(
                     name = "HEIF",
-                    selected = formats.heif,
-                    enabled = heifEnabled,
-                    onToggle = {
-                        onSetPhotoFormats(formats.copy(heif = !formats.heif))
-                    },
+                    selected = shown.heif,
+                    enabled = model.heifEnabled,
+                    onToggle = { onSetPhotoFormats(model.toggled(PhotoFormatAxis.HEIF)) },
                     modifier = Modifier.bringIntoViewRequester(heifIntoView),
                 )
                 OutputFormatChip(
                     name = "JPEG",
-                    selected = formats.jpeg,
-                    enabled = jpegEnabled,
-                    onToggle = {
-                        onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg))
-                    },
+                    selected = shown.jpeg,
+                    enabled = model.jpegEnabled,
+                    onToggle = { onSetPhotoFormats(model.toggled(PhotoFormatAxis.JPEG)) },
                     modifier = Modifier.bringIntoViewRequester(jpegIntoView),
                 )
                 OutputFormatChip(
                     name = "DNG",
-                    selected = formats.dngRaw,
-                    enabled = dngEnabled,
-                    onToggle = {
-                        onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw))
-                    },
+                    selected = shown.dngRaw,
+                    enabled = model.dngEnabled,
+                    onToggle = { onSetPhotoFormats(model.toggled(PhotoFormatAxis.DNG)) },
                     modifier = Modifier.bringIntoViewRequester(dngIntoView),
                 )
             }
-            if (!processedAvailable && !rawAvailable) {
+            model.caption?.let { caption ->
                 Text(
-                    // Same reasoning as the Ready-publication status: in VIDEO this is a designed trade
-                    // (the 10-bit session drops the still readers), not a fault, so the sheet says what
-                    // it BOUGHT rather than what it lost.
-                    stringResource(noStillOutputCaption(hlgSessionAccepted)),
-                    color = CameraColors.TextSecondary,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            } else if (!rawAvailable) {
-                // BEFORE the "switching" line, not after: on a route that structurally cannot carry RAW
-                // (front, hi-res, 10-bit video) nothing is switching, and announcing a lens change that
-                // will never happen is worse than saying plainly that RAW is off the table. The DNG
-                // request itself survives — it is intent, and it applies again the moment the operator
-                // returns to a route that can serve it.
-                Text(
-                    stringResource(R.string.output_raw_unavailable),
-                    color = CameraColors.TextSecondary,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            } else if (!rawInSession && formats.dngRaw) {
-                Text(
-                    stringResource(R.string.output_switching_single_lens),
-                    color = CameraColors.TextSecondary,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            } else if (!processedAvailable) {
-                Text(
-                    // Word for word the status CameraEngine emits for the same accepted-output mask.
-                    stringResource(R.string.output_processed_unavailable_dng_only),
+                    stringResource(caption),
                     color = CameraColors.TextSecondary,
                     style = MaterialTheme.typography.labelSmall,
                 )

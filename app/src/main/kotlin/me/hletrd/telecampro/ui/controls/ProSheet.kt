@@ -876,7 +876,10 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_format))
     PhotoFormatToggles(
         formats = state.photoFormats,
-        processedAvailable = state.photoSessionOutputs.processed,
+        // The ACCEPTED session (AGG4-66/69): processed chips show what it writes, its HLG fact keys
+        // the 10-bit trade caption (AGG2-35/AGG3-17), and a reopen reads as "reconfiguring".
+        sessionOutputs = state.photoSessionOutputs,
+        cameraReady = state.cameraReady,
         // Neither pure session truth nor pure device capability — see [rawSelectable]. Session truth
         // alone made the chip unreachable on the logical photo route (the route only moves BECAUSE
         // DNG is chosen); capability alone left it live in a 10-bit video session that drops both
@@ -888,13 +891,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             hiResSession = state.photoSessionOutputs.hiRes,
             frontFacing = state.facing == CameraFacing.FRONT,
         ),
-        // Session truth still drives the CAPTION, so the sheet can say RAW is not in force yet
-        // without disabling the control that brings it into force.
-        rawInSession = state.photoSessionOutputs.raw,
         onSetPhotoFormats = actions::onSetPhotoFormats,
-        // The ACCEPTED session's HLG fact — not bare videoMode (AGG2-35), and not the 10-bit
-        // request either, which also covers a ladder fall to the 8-bit preview-only rung (AGG3-17).
-        hlgSessionAccepted = state.photoSessionOutputs.hlg,
         heifAvailable = state.heifAvailable,
     )
     // Hi-res still: visible only when the SELECTED camera is a standalone route that actually
