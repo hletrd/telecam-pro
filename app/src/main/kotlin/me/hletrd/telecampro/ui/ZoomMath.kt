@@ -256,8 +256,10 @@ internal fun restoredRouteUsesCurrentCaps(
      * so the outgoing range is not authoritative there (AGG2-13). A standalone PHOTO route is also
      * per-lens, exactly like Video, so the lens must match too.
      */
-    currentStandalone: Boolean = false,
-    targetStandalone: Boolean = false,
+    // NO defaults (AGG3-41): a defaulted `false` pair silently compared two logical routes, so a
+    // call site that dropped the arguments compiled and restored the pre-AGG2-13 bug.
+    currentStandalone: Boolean,
+    targetStandalone: Boolean,
 ): Boolean {
     // A recall always targets a REAR route (facing is never persisted, and setResolvedOptics exits
     // FRONT). While FRONT the current mode/lens fields can coincidentally equal the target's, but

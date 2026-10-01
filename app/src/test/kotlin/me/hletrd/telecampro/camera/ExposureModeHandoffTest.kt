@@ -52,13 +52,13 @@ class ExposureModeHandoffTest {
     @Test
     fun `choosing an angle in a loop-owned mode takes the shutter`() {
         val isoPriority = ManualControls(exposureMode = ExposureMode.ISO, exposureTimeNs = 1_000_000_000L / 60L, fps = 30)
-        val angle = isoPriority.withShutterModeTakingOwnership(ShutterMode.ANGLE)
+        val angle = isoPriority.withShutterModeTakingOwnership(ShutterMode.ANGLE, null, null)
         assertEquals(ExposureMode.MANUAL, angle.exposureMode)
         assertEquals(ShutterMode.ANGLE, angle.shutterMode)
         assertEquals(180f, angle.shutterAngle, 1e-3f)
 
         val appProgram = ManualControls(exposureMode = ExposureMode.PROGRAM, programAppSide = true, fps = 30)
-        assertEquals(ExposureMode.MANUAL, appProgram.withShutterModeTakingOwnership(ShutterMode.ANGLE).exposureMode)
+        assertEquals(ExposureMode.MANUAL, appProgram.withShutterModeTakingOwnership(ShutterMode.ANGLE, null, null).exposureMode)
     }
 
     @Test
@@ -66,10 +66,10 @@ class ExposureModeHandoffTest {
         val shutterPriority = ManualControls(exposureMode = ExposureMode.SHUTTER, fps = 30)
         assertEquals(
             ExposureMode.SHUTTER,
-            shutterPriority.withShutterModeTakingOwnership(ShutterMode.ANGLE).exposureMode,
+            shutterPriority.withShutterModeTakingOwnership(ShutterMode.ANGLE, null, null).exposureMode,
         )
         val isoSpeed = ManualControls(exposureMode = ExposureMode.ISO)
-        assertEquals(ExposureMode.ISO, isoSpeed.withShutterModeTakingOwnership(ShutterMode.SPEED).exposureMode)
+        assertEquals(ExposureMode.ISO, isoSpeed.withShutterModeTakingOwnership(ShutterMode.SPEED, null, null).exposureMode)
     }
 
     // AGG2-17: the dial doors leave HAL-AE P through the same handoff, so the OTHER axis is the live
@@ -137,11 +137,11 @@ class ExposureModeHandoffTest {
         )
         assertEquals(
             isoPriority.copy(exposureMode = ExposureMode.MANUAL, shutterAngle = 90f, shutterMode = ShutterMode.ANGLE),
-            isoPriority.withShutterAngleTakingOwnership(90f),
+            isoPriority.withShutterAngleTakingOwnership(90f, null, null),
         )
         val manual = ManualControls(exposureMode = ExposureMode.MANUAL)
-        assertEquals(manual.copy(shutterAngle = 45f, shutterMode = ShutterMode.ANGLE), manual.withShutterAngleTakingOwnership(45f))
-        assertEquals(manual.copy(exposureTimeNs = 2_000L), manual.withShutterNsTakingOwnership(2_000L))
-        assertEquals(manual.copy(iso = 200), manual.withIsoTakingOwnership(200))
+        assertEquals(manual.copy(shutterAngle = 45f, shutterMode = ShutterMode.ANGLE), manual.withShutterAngleTakingOwnership(45f, null, null))
+        assertEquals(manual.copy(exposureTimeNs = 2_000L), manual.withShutterNsTakingOwnership(2_000L, null, null))
+        assertEquals(manual.copy(iso = 200), manual.withIsoTakingOwnership(200, null, null))
     }
 }

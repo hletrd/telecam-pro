@@ -369,6 +369,8 @@ class ZoomMathTest {
                 targetMode = CaptureMode.PHOTO,
                 targetLens = LensChoice.MAIN,
                 targetTeleconverter = false,
+                currentStandalone = true,
+                targetStandalone = false,
             ),
         )
         val restored = restoredExposureState(
@@ -394,6 +396,8 @@ class ZoomMathTest {
                 targetMode = CaptureMode.PHOTO,
                 targetLens = LensChoice.TELE3X,
                 targetTeleconverter = false,
+                currentStandalone = false,
+                targetStandalone = false,
             ),
         )
         val restored = restoredExposureState(
@@ -451,6 +455,8 @@ class ZoomMathTest {
                 targetMode = CaptureMode.PHOTO,
                 targetLens = LensChoice.MAIN,
                 targetTeleconverter = false,
+                currentStandalone = false,
+                targetStandalone = false,
             ),
         )
     }
@@ -516,6 +522,8 @@ class ZoomMathTest {
                 targetMode = CaptureMode.PHOTO,
                 targetLens = LensChoice.MAIN,
                 targetTeleconverter = false,
+                currentStandalone = false,
+                targetStandalone = false,
                 currentFrontFacing = true,
             ),
         )

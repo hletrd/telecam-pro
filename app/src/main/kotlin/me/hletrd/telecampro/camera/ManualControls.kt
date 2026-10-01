@@ -503,8 +503,8 @@ fun ManualControls.exposureModeHandoff(
  */
 fun ManualControls.withShutterModeTakingOwnership(
     mode: ShutterMode,
-    liveIso: Int? = null,
-    liveExposureNs: Long? = null,
+    liveIso: Int?,
+    liveExposureNs: Long?,
 ): ManualControls {
     val owner = if (mode == ShutterMode.ANGLE &&
         (exposureMode == ExposureMode.PROGRAM || autoShutterDriven)
@@ -517,7 +517,10 @@ fun ManualControls.withShutterModeTakingOwnership(
 }
 
 /**
- * The dial doors' escalation (AGG2-17). Turning the ISO dial while ISO is auto (PROGRAM / SHUTTER
+ * The dial doors' escalation (AGG2-17). The `live*` parameters of every ownership helper carry NO
+ * default (AGG3-41): a defaulted null pair compiled at a call site that forgot the live result and
+ * silently re-seeded MANUAL from stale stored values — the AGG2-17 bug — so omission must not
+ * compile. Pass `null, null` explicitly where no live result exists. Turning the ISO dial while ISO is auto (PROGRAM / SHUTTER
  * priority), or the shutter / angle dial while the shutter is auto (PROGRAM / ISO priority), takes
  * that axis and lands in MANUAL — through the SAME [exposureModeHandoff] `onExposureMode` uses, so
  * leaving a HAL-AE PROGRAM (video P, flash-metered photo P) seeds the OTHER axis from the live
@@ -535,8 +538,8 @@ private fun ManualControls.manualOwnerIf(
 /** The ISO dial: see [manualOwnerIf]. */
 fun ManualControls.withIsoTakingOwnership(
     iso: Int,
-    liveIso: Int? = null,
-    liveExposureNs: Long? = null,
+    liveIso: Int?,
+    liveExposureNs: Long?,
 ): ManualControls = manualOwnerIf(
     exposureMode == ExposureMode.PROGRAM || autoIsoDriven,
     liveIso,
@@ -546,8 +549,8 @@ fun ManualControls.withIsoTakingOwnership(
 /** The shutter-speed dial: see [manualOwnerIf]. */
 fun ManualControls.withShutterNsTakingOwnership(
     exposureTimeNs: Long,
-    liveIso: Int? = null,
-    liveExposureNs: Long? = null,
+    liveIso: Int?,
+    liveExposureNs: Long?,
 ): ManualControls = manualOwnerIf(
     exposureMode == ExposureMode.PROGRAM || autoShutterDriven,
     liveIso,
@@ -557,8 +560,8 @@ fun ManualControls.withShutterNsTakingOwnership(
 /** The shutter-angle dial: see [manualOwnerIf]. */
 fun ManualControls.withShutterAngleTakingOwnership(
     angle: Float,
-    liveIso: Int? = null,
-    liveExposureNs: Long? = null,
+    liveIso: Int?,
+    liveExposureNs: Long?,
 ): ManualControls = manualOwnerIf(
     exposureMode == ExposureMode.PROGRAM || autoShutterDriven,
     liveIso,
