@@ -202,9 +202,11 @@ class CameraViewModelTickersRobolectricTest {
     // AGG2-15: a late post that lands after onCleared's purge must not restart a self-reposting
     // ticker — recordTicker reposted at 5 Hz forever and pinned the cleared ViewModel.
     @Test fun `self-reposting tickers stop once the ViewModel is cleared`() {
-        fun field(name: String): Any = CameraViewModel::class.java.getDeclaredField(name)
-            .apply { isAccessible = true }
-            .get(vm)
+        fun field(name: String): Any = checkNotNull(
+            CameraViewModel::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(vm),
+        ) { "$name is null" }
         CameraViewModel::class.java.getDeclaredField("lifecycleStarted")
             .apply { isAccessible = true }
             .setBoolean(vm, true)
