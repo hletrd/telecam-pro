@@ -109,6 +109,18 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         # Refusal text stays value-free.
         self.assertNotIn("$signingStorePassword", self.block)
 
+    def test_missing_signing_refuses_every_release_package_task(self) -> None:
+        # SEC3-6: a doFirst on assembleRelease runs after packageRelease already wrote the APK, so the
+        # no-keystore refusal must attach to the package/sign tasks themselves.
+        start = self.gradle.index("if (!hasReleaseSigning) {")
+        refusal = self.gradle[start : self.gradle.index("\n}\n", start)]
+        self.assertIn(
+            'tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" '
+            '|| it.name == "assembleRelease" }',
+            refusal,
+        )
+        self.assertIn("Release signing is required for Play upload.", refusal)
+
     def test_injected_signing_properties_refuse_every_release_package_task(self) -> None:
         # SEC3-1: AGP replaces the gated signingConfig whenever android.injected.signing.* is set, so
         # the gate would approve the keystore.properties key while AGP signed with the injected one.

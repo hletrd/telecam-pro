@@ -805,8 +805,13 @@ tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" ||
         }
     }
 
+// SEC3-6 / AGG3-36: the refusal attaches to every task that PACKAGES OR SIGNS release bytes
+// (`packageRelease` and `packageReleaseUniversalApk` included), not only the bundle/assemble
+// lifecycle tasks. A doFirst on `assembleRelease` runs AFTER `packageRelease` has already written a
+// signed APK, so `./gradlew assembleRelease` with signing injected some other way used to leave a
+// sideloadable APK behind and only then report failure.
 if (!hasReleaseSigning) {
-    tasks.matching { it.name == "packageReleaseBundle" || it.name == "bundleRelease" || it.name == "assembleRelease" }
+    tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" || it.name == "assembleRelease" }
         .configureEach {
             doFirst {
                 throw GradleException(
