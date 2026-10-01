@@ -1425,11 +1425,12 @@ class CameraController internal constructor(
 
         // Sensor fast path (mirrors the zoom fast path): a focus/ISO/shutter drag and the app-side
         // AE loop feed this at up to 25 Hz, and EVERY full rebuild's repeating-request swap gaps
-        // this HAL's stream 170-250 ms. Anything broader keeps the full rebuild.
-        if (sensorFastPathAdmitted(previous, normalized)) {
-            submitSensorFastPath()
-        } else {
-            startPreview()
+        // this HAL's stream 170-250 ms. An EV-only delta under admitted manual AE changes no wire
+        // key at all (AGG4-34), so it swaps nothing. Anything broader keeps the full rebuild.
+        when (controlsApplyPlan(previous, normalized, manualAeAdmitted(normalized, caps))) {
+            ControlsApplyPlan.NO_OP -> Unit
+            ControlsApplyPlan.SENSOR_FAST_PATH -> submitSensorFastPath()
+            ControlsApplyPlan.FULL_REBUILD -> startPreview()
         }
     }
 

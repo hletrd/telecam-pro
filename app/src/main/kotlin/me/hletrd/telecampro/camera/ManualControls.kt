@@ -713,6 +713,37 @@ internal fun sensorOnlyControlsDelta(previous: ManualControls, next: ManualContr
         exposureTimeNs = next.exposureTimeNs,
     ) == next
 
+/** True when [next] differs from [previous] ONLY in exposure compensation. */
+internal fun evOnlyControlsDelta(previous: ManualControls, next: ManualControls): Boolean =
+    previous != next && previous.copy(exposureCompensation = next.exposureCompensation) == next
+
+/** One camera-thread action for an ordinary (non-optics) controls update. */
+internal enum class ControlsApplyPlan {
+    NO_OP,
+    SENSOR_FAST_PATH,
+    FULL_REBUILD,
+}
+
+/**
+ * Classifies a controls update by its WIRE effect, not by which field moved (AGG4-34, EV half).
+ * Under admitted manual AE ([manualAe] — every AE-OFF mode, including photo PROGRAM when it runs
+ * app-side, the PMA110 default) [applyExposure] writes no `CONTROL_AE_EXPOSURE_COMPENSATION` at all;
+ * EV only moves the app-side loop's TARGET, and the loop's follow-up ISO/exposure write takes the
+ * paced sensor path. An EV drag therefore used to pay a full repeating-request swap (~180 ms stall
+ * on this HAL) per 40 ms tick for a request that came out byte-identical. The updated controls are
+ * still stored, so the next real rebuild and every still carry the new value. Equal controls keep
+ * their historical full rebuild.
+ */
+internal fun controlsApplyPlan(
+    previous: ManualControls,
+    next: ManualControls,
+    manualAe: Boolean,
+): ControlsApplyPlan = when {
+    manualAe && evOnlyControlsDelta(previous, next) -> ControlsApplyPlan.NO_OP
+    sensorFastPathAdmitted(previous, next) -> ControlsApplyPlan.SENSOR_FAST_PATH
+    else -> ControlsApplyPlan.FULL_REBUILD
+}
+
 /** True only when an optics remap changed the Camera2 packet's zoom ratio. */
 internal fun zoomOnlyControlsDelta(previous: ManualControls, next: ManualControls): Boolean =
     previous != next && previous.copy(zoomRatio = next.zoomRatio) == next

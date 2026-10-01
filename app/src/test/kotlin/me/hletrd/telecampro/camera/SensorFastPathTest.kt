@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -65,5 +66,51 @@ class SensorFastPathTest {
                 base.copy(iso = base.iso + 100, wbMode = WbMode.MANUAL),
             ),
         )
+    }
+}
+
+/**
+ * AGG4-34 (EV half): a controls update is classified by its WIRE effect. Under admitted manual AE
+ * the request carries no AE-compensation key, so an EV-only delta must not swap the repeating
+ * request; under HAL AE it is a real wire change and keeps the full rebuild.
+ */
+class ControlsApplyPlanTest {
+    private val base = ManualControls()
+
+    @Test
+    fun `an EV-only delta under manual AE is a wire no-op`() {
+        assertEquals(
+            ControlsApplyPlan.NO_OP,
+            controlsApplyPlan(base, base.copy(exposureCompensation = 3), manualAe = true),
+        )
+    }
+
+    @Test
+    fun `an EV-only delta under HAL AE rebuilds`() {
+        assertEquals(
+            ControlsApplyPlan.FULL_REBUILD,
+            controlsApplyPlan(base, base.copy(exposureCompensation = 3), manualAe = false),
+        )
+    }
+
+    @Test
+    fun `EV with any other field keeps its ordinary plan`() {
+        assertEquals(
+            ControlsApplyPlan.FULL_REBUILD,
+            controlsApplyPlan(base, base.copy(exposureCompensation = 3, wbMode = WbMode.MANUAL), manualAe = true),
+        )
+        assertEquals(
+            ControlsApplyPlan.FULL_REBUILD,
+            controlsApplyPlan(base, base.copy(exposureCompensation = 3, iso = base.iso + 100), manualAe = true),
+        )
+    }
+
+    @Test
+    fun `sensor-only and equal packets keep their historical plans`() {
+        assertEquals(
+            ControlsApplyPlan.SENSOR_FAST_PATH,
+            controlsApplyPlan(base, base.copy(iso = base.iso + 100), manualAe = true),
+        )
+        assertEquals(ControlsApplyPlan.FULL_REBUILD, controlsApplyPlan(base, base.copy(), manualAe = true))
     }
 }
