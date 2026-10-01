@@ -65,7 +65,7 @@ deprecated APIs, latest stable everything.
 | AGP | 9.4.1 | **Kotlin is built-in** — do NOT apply `org.jetbrains.kotlin.android` |
 | Kotlin | 2.4.20 | Compose compiler plugin version; AGP supplies Kotlin Android support |
 | Gradle | 9.8.0 | wrapper |
-| Compose BOM | 2026.08.00 | Material3 |
+| Compose BOM | 2026.09.00 | Material3 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / **33** | compileSdk 37 required by lifecycle 2.11.0; minSdk 33 since the 2026-08-01 multi-device decision — this row said 36 for two days while the constraint bullet above said 33 |
 | JDK | 21 (aarch64) | Homebrew `openjdk@21` |
 | heifwriter | 1.1.0 | latest STABLE (the earlier "no stable 1.1.0 exists" note was wrong) |

@@ -1282,7 +1282,7 @@ See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup
 - JDK 21 required; set JAVA_HOME for CLI builds
 - Android SDK resolution follows the committed `README.md` **Android SDK setup** authority:
   ignored `local.properties`, agreeing SDK environment variables, then conventional macOS/Linux paths
-- Compose BOM 2026.08.00
+- Compose BOM 2026.09.00
 
 **Build:**
 ```bash
