@@ -207,6 +207,28 @@ class CameraViewModelRobolectricTest {
         assertEquals(LensChoice.TELE3X, v.state.value.lens)
     }
 
+    // AGG3-13: route decisions take the RAW law from the engine (GENERIC here: RAW rides the
+    // logical camera), never the state copy that still holds the PMA110 default. With DNG on, the
+    // generic photo route is the seamless logical camera, so the lens band must follow the zoom.
+    @Test fun `zoom band follows the engine RAW law instead of the state default`() {
+        val (v, e) = createViewModel()
+        assertFalse(e.rawForcesStandalone)
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.PHOTO,
+                lens = LensChoice.MAIN,
+                photoFormats = it.photoFormats.copy(dngRaw = true),
+                controls = it.controls.copy(zoomRatio = 1f),
+                rawForcesStandalone = true,
+            )
+        }
+
+        v.onZoomRatio(5f)
+
+        assertEquals(LensChoice.forZoom(v.state.value.controls.zoomRatio), v.state.value.lens)
+        assertEquals(LensChoice.TELE3X, v.state.value.lens)
+    }
+
     // AGG2-12: the engine refuses a mid-REC camera override; the UI must not publish it anyway.
     @Test fun `camera override refuses while recording and keeps the live pin`() {
         val (v, _) = createViewModel()

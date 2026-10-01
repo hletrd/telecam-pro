@@ -1403,11 +1403,7 @@ class CameraViewModel private constructor(
             currentFrontFacing = currentState.facing == CameraFacing.FRONT,
             // DNG is a route input too (AGG2-13). TC is already standalone, so it counts as such on
             // both sides and a DNG difference under TC never discards the same camera's caps.
-            currentStandalone = currentState.teleconverterMode || standaloneRouteWanted(
-                currentState.mode == CaptureMode.VIDEO,
-                currentState.photoFormats.dngRaw,
-                engine.rawForcesStandalone,
-            ),
+            currentStandalone = currentState.teleconverterMode || standaloneRouteFor(currentState),
             targetStandalone = restoredTeleconverter || restoredRouteStandalone,
         )
         val lastCapsExp = currentState.caps
@@ -2275,7 +2271,7 @@ class CameraViewModel private constructor(
         // standalone route (video, TC, and DNG) carries a lens-local ratio.
         val lensBand = if (
             !s.teleconverterMode && s.activeCameraRoute == CameraRoute.BACK &&
-            !standaloneRouteWanted(s.mode == CaptureMode.VIDEO, s.photoFormats.dngRaw, s.rawForcesStandalone)
+            !standaloneRouteFor(s)
         ) {
             LensChoice.forZoom(z)
         } else {
@@ -2402,10 +2398,7 @@ class CameraViewModel private constructor(
             frontFacing = before.facing == CameraFacing.FRONT,
             lensLocalRoute = before.activeCameraRoute.lensLocalZoom,
             // DNG keeps PHOTO on a standalone lens too, so there is no unified↔local gap to bridge.
-            photoIsStandalone = standaloneRouteWanted(
-                videoMode = false, rawWanted = before.photoFormats.dngRaw,
-                rawForcesStandalone = before.rawForcesStandalone,
-            ),
+            photoIsStandalone = standaloneRouteFor(before, videoMode = false),
             optical = before.lensInventory.optical,
         )
         _state.update {
@@ -2605,9 +2598,7 @@ class CameraViewModel private constructor(
         var acceptedTransition: me.hletrd.telecampro.camera.TeleZoomTransition? = null
         _state.update {
             val transition = resolveTeleZoomTransition(
-                nonTeleStandaloneRoute = standaloneRouteWanted(
-                    it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
-                ),
+                nonTeleStandaloneRoute = standaloneRouteFor(it),
                 opticalPresets = it.lensInventory.optical,
                 currentLens = it.lens,
                 currentTeleconverter = it.teleconverterMode,
@@ -2851,13 +2842,22 @@ class CameraViewModel private constructor(
     private var preFrontRearTeleconverter = false
     private var preFrontRearUnifiedZoom = Float.NaN
 
+    /**
+     * THE ViewModel answer to "does this state's rear route land on a standalone lens?" (AGG3-13):
+     * [videoMode] / the DNG intent from [state], the RAW law from the ENGINE
+     * ([CameraEngine.rawForcesStandalone]), the same answer `setRawWanted` and the engine's own
+     * route resolution decide with. `CameraUiState.rawForcesStandalone` defaults to the PMA110 law
+     * until the first route inventory publishes, so a route decision taken from that copy could
+     * disagree with the engine on a GENERIC device; the state field remains for display only.
+     */
+    private fun standaloneRouteFor(
+        state: CameraUiState,
+        videoMode: Boolean = state.mode == CaptureMode.VIDEO,
+    ): Boolean = standaloneRouteWanted(videoMode, state.photoFormats.dngRaw, engine.rawForcesStandalone)
+
     /** Converts the canonical rear snapshot into the route a save/recall will actually restore. */
     private fun retainedRearZoomRatio(state: CameraUiState, teleconverter: Boolean): Float {
-        val targetStandalone = teleconverter || standaloneRouteWanted(
-            state.mode == CaptureMode.VIDEO,
-            state.photoFormats.dngRaw,
-            state.rawForcesStandalone,
-        )
+        val targetStandalone = teleconverter || standaloneRouteFor(state)
         // Inverse of the entry snapshot's lens-based conversion, NOT `localZoomOf` (whose base comes
         // from the ratio and picked the 10× lens for a TELE past local 3.33 — AGG2-5).
         return retainedRearWireZoom(
@@ -2891,10 +2891,7 @@ class CameraViewModel private constructor(
                 controls = it.controls.copy(
                     zoomRatio = if (keepTc) {
                         1f
-                    } else if (standaloneRouteWanted(
-                            it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
-                        )
-                    ) {
+                    } else if (standaloneRouteFor(it)) {
                         // Divide by the OPTICAL lens the standalone route lands on, not by the
                         // preset: on a one-camera device "3×" is a crop of the main lens, and a flat
                         // 1× would throw that framing away (device-seen: 3× read 27 mm, not 81 mm).
@@ -2971,11 +2968,7 @@ class CameraViewModel private constructor(
             preFrontRearUnifiedZoom = unifiedZoomOf(
                 lens = before.lens,
                 zoomRatio = before.controls.zoomRatio,
-                standaloneRoute = before.teleconverterMode || standaloneRouteWanted(
-                    before.mode == CaptureMode.VIDEO,
-                    before.photoFormats.dngRaw,
-                    before.rawForcesStandalone,
-                ),
+                standaloneRoute = before.teleconverterMode || standaloneRouteFor(before),
                 optical = before.lensInventory.optical,
             )
         }
@@ -3000,11 +2993,7 @@ class CameraViewModel private constructor(
                         // every flip back (user-reported).
                         zoomRatio = if (it.cameraRoutes.back) {
                             rearReturnZoom(
-                                targetStandaloneRoute = standaloneRouteWanted(
-                                    it.mode == CaptureMode.VIDEO,
-                                    it.photoFormats.dngRaw,
-                                    it.rawForcesStandalone,
-                                ),
+                                targetStandaloneRoute = standaloneRouteFor(it),
                                 preFrontUnifiedZoom = preFrontRearUnifiedZoom,
                                 lensPreset = it.lens.zoomPreset,
                                 opticalPresets = it.lensInventory.optical,
@@ -3127,9 +3116,7 @@ class CameraViewModel private constructor(
         )
         val lens = if (
             !current.teleconverterMode && current.activeCameraRoute == CameraRoute.BACK &&
-            !standaloneRouteWanted(
-                current.mode == CaptureMode.VIDEO, current.photoFormats.dngRaw, current.rawForcesStandalone,
-            )
+            !standaloneRouteFor(current)
         ) {
             LensChoice.forZoom(normalizedControls.zoomRatio)
         } else {
