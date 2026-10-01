@@ -198,7 +198,16 @@ internal class StillCapturePipeline(
         var rotated: Bitmap? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (d == null) { emitStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status()); return }
+            if (d == null) {
+                // decodeByteArray returns null (it does not throw) on a corrupt/truncated JPEG — a
+                // StillSnapshot YUV→JPEG repack fault or a garbage HAL blob. Every other failure edge
+                // here logs; this one used to toast "Photo save failed" with NO app line, the exact
+                // signature CLAUDE.md names for swallowed save defects (AGG2-22). One reserved row
+                // per failed shot.
+                Log.e("StillCapturePipeline", "processed decode returned null (${bytes.size} bytes, hiRes=${spec.hiRes})")
+                emitStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
+                return
+            }
             decoded = d
             // ONE createBitmap does crop AND rotate (perf review #3b): the old crop-then-rotate
             // chain materialized a ~37 MB 16:9 intermediate that existed only to be re-read by the
