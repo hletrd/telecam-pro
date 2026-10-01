@@ -236,4 +236,25 @@ internal fun <T : Any> dispatchDngPreCaptureAllocation(
     return continuation.dispatchResult(owner.start())
 }
 
+/**
+ * The engine's DNG owner retirement: the settle-before-camera terminal of one pre-allocation
+ * (AGG4-46). Unregister the owner, release its reservations, settle the registered shot with the
+ * handoff's [settle] — NEVER the chain's raw `onDone`, which is exactly the AGG2-3 defect (a
+ * synchronous rejection then continued the chain twice: 2^n timelapse ticks, AEB resetting
+ * mid-bracket) — and republish admission. Extracted so the test drives this production line
+ * rather than a test-side `onRetired = settle` copy of it.
+ */
+internal fun dngOwnerRetirement(
+    settle: () -> Unit,
+    unregister: () -> Unit,
+    releaseReservations: () -> Unit,
+    settleRegisteredShot: (continuation: () -> Unit) -> Unit,
+    publishAdmission: () -> Unit,
+): () -> Unit = {
+    unregister()
+    releaseReservations()
+    settleRegisteredShot(settle)
+    publishAdmission()
+}
+
 internal const val DNG_PRE_CAPTURE_ALLOCATION_TIMEOUT_MS = 8_000L

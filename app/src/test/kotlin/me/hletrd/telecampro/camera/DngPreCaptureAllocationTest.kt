@@ -257,12 +257,15 @@ class DngPreCaptureAllocationTest {
      * The engine's chain shape (AGG2-3): the settle path runs `onDone`, and a false dispatcher
      * return makes the chain caller continue on its own. A synchronous rejection must produce
      * exactly ONE of those per tick, or timelapse doubles its scheduled ticks every interval.
-     * Driven through [dispatchDngPreCaptureAllocation], the engine's own wiring (AGG3-39).
+     * Driven through [dispatchDngPreCaptureAllocation] AND [dngOwnerRetirement], the engine's own
+     * wiring and settle-before-camera terminal (AGG3-39, AGG4-46). The registered-shot effect
+     * mirrors the engine's `settleRegisteredStillShot`: it runs the continuation it is handed.
      */
     private fun rejectedChainStep(
         dispatch: RecordingPreNativeDispatch,
         deadlineArmable: Boolean,
         onDone: (() -> Unit)?,
+        events: MutableList<String> = mutableListOf(),
     ): Boolean = dispatchDngPreCaptureAllocation<String>(onDone) { settle ->
         DngPreCaptureAllocation(
             dispatch = { RecordingPreNativeSubmission(dispatch) },
@@ -271,9 +274,25 @@ class DngPreCaptureAllocationTest {
             onReady = { error("a rejected allocation cannot reach Camera2") },
             onLateValue = { error("a rejected allocation cannot invent a row") },
             onFailure = {},
-            onRetired = settle,
+            onRetired = dngOwnerRetirement(
+                settle = settle,
+                unregister = { events += "unregister" },
+                releaseReservations = { events += "release" },
+                settleRegisteredShot = { continuation ->
+                    events += "settle"
+                    continuation()
+                },
+                publishAdmission = { events += "publish" },
+            ),
             deadlineScheduler = if (deadlineArmable) null else RecordingTeardownScheduler { _, _ -> null },
         )
+    }
+
+    @Test
+    fun `owner retirement releases before settling and republishes last`() {
+        val events = mutableListOf<String>()
+        rejectedChainStep(RecordingPreNativeDispatch.OVERFLOW, deadlineArmable = true, onDone = {}, events = events)
+        assertEquals(listOf("unregister", "release", "settle", "publish"), events)
     }
 
     @Test

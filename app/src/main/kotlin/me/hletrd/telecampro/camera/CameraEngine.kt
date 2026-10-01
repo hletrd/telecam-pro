@@ -4943,18 +4943,6 @@ class CameraEngine internal constructor(
                 synchronized(dngPreCaptureAllocationLock) { dngPreCaptureAllocations.add(owner) }
             },
         ) { settle ->
-            fun settleBeforeCamera() {
-                rejectedCleanup.cancel()
-                snapshotLease?.release()
-                releaseDngAdmission()
-                settleRegisteredStillShot(
-                    registered = registered,
-                    traceText = traceText,
-                    traceSettlement = traceAdmission.settlement,
-                    onDone = settle,
-                )
-                publishProcessStillAdmission()
-            }
             fun cleanLateAllocation(allocation: PendingOutputAllocation) {
                 val dispatch = MediaStoreWriter.dispatchRejectedOutput(
                     context,
@@ -5013,12 +5001,32 @@ class CameraEngine internal constructor(
                     }
                     onStatus?.invoke(CameraStatusMessage.DNG_SAVE_FAILED.status())
                 },
-                onRetired = {
-                    synchronized(dngPreCaptureAllocationLock) {
-                        dngPreCaptureAllocations.remove(owner)
-                    }
-                    settleBeforeCamera()
-                },
+                // The settle-before-camera terminal is [dngOwnerRetirement], the SAME function
+                // DngPreCaptureAllocationTest drives (AGG4-46): the AGG2-3 bug line — handing the
+                // registered shot the chain's raw onDone instead of the handoff's settle — lives
+                // inside it, so a revert there fails the exactly-one-continuation proof.
+                onRetired = dngOwnerRetirement(
+                    settle = settle,
+                    unregister = {
+                        synchronized(dngPreCaptureAllocationLock) {
+                            dngPreCaptureAllocations.remove(owner)
+                        }
+                    },
+                    releaseReservations = {
+                        rejectedCleanup.cancel()
+                        snapshotLease?.release()
+                        releaseDngAdmission()
+                    },
+                    settleRegisteredShot = { continuation ->
+                        settleRegisteredStillShot(
+                            registered = registered,
+                            traceText = traceText,
+                            traceSettlement = traceAdmission.settlement,
+                            onDone = continuation,
+                        )
+                    },
+                    publishAdmission = ::publishProcessStillAdmission,
+                ),
                 onClaimed = {
                     synchronized(dngPreCaptureAllocationLock) {
                         dngPreCaptureAllocations.remove(owner)
