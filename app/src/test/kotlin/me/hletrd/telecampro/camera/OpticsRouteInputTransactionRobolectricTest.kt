@@ -229,7 +229,7 @@ class OpticsRouteInputTransactionRobolectricTest {
             .single { it.simpleName == "OpticsTransaction" }
         return transactionType.declaredConstructors.single()
             .apply { isAccessible = true }
-            .newInstance(generation, baseline)
+            .newInstance(generation, baseline, true)
     }
 
     private fun forceOwnedRollback(camera: CameraEngine) {

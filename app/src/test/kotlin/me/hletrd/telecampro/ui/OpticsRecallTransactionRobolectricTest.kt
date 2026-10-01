@@ -93,7 +93,7 @@ class OpticsRecallTransactionRobolectricTest {
             .single { it.simpleName == "OpticsTransaction" }
         val constructor = transactionType.declaredConstructors.single()
             .apply { isAccessible = true }
-        return RollbackAttempt(generation, constructor.newInstance(generation, baseline))
+        return RollbackAttempt(generation, constructor.newInstance(generation, baseline, true))
     }
 
     /** Invokes the production rollback body; no Engine field or UI callback is pre-restored here. */

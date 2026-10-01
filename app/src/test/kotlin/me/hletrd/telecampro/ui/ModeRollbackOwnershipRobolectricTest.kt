@@ -306,7 +306,7 @@ class ModeRollbackOwnershipRobolectricTest {
             .single { it.simpleName == "OpticsTransaction" }
         val transaction = transactionType.declaredConstructors.single()
             .apply { isAccessible = true }
-            .newInstance(generation, baseline)
+            .newInstance(generation, baseline, true)
         CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
             .apply { isAccessible = true }
             .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
