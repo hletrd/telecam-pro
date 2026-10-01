@@ -23,6 +23,7 @@ if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 from android_sdk import android_sdk_environment
 from immutable_outputs import FrozenOutputSet
+from upload_key_policy import is_blocked_upload_certificate
 
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
@@ -529,6 +530,14 @@ def release_store_file(properties_payload: bytes) -> str:
 # confirmed. That refusal used to live only in the scoped helper, so this wrapper (the documented
 # Play-release command) and plain Gradle still signed upload-ready bundles with the blocked key.
 # Both wrappers now cross this ONE gate before any signing-capable Gradle task runs.
+#
+# The approval below is SELF-ATTESTED (it lives in the same local file it protects), so on its own it
+# proves only "the configured keystore exports the certificate this file names". What it CANNOT be
+# talked into is the shared deny-list (tools/blocked-upload-certificates.txt): a listed certificate is
+# refused even with approval set and even when the keystore really exports it, so copying the blocked
+# key's public fingerprint into keystore.properties no longer passes. check_release_artifact.py reads
+# the approved fingerprint through `approved_upload_certificate_sha256` below, so gate and checker
+# share one authority instead of the checker pinning a constant.
 
 STORE_PASSWORD_ENV = "TELECAMPRO_STORE_PASSWORD"
 KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
@@ -575,6 +584,30 @@ def _no_follow_regular(root: pathlib.Path, relative: str) -> pathlib.Path:
     return current
 
 
+def approved_upload_certificate_from_entries(entries: Sequence[tuple[str, str]]) -> str:
+    approved = _single_property(entries, APPROVAL_PROPERTY).casefold()
+    if approved != "true":
+        raise UploadKeyGateError(
+            "upload key is blocked until owner-confirmed strong-key rotation or Play reset",
+        )
+    fingerprint = _single_property(entries, FINGERPRINT_PROPERTY).replace(":", "").casefold()
+    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+        raise UploadKeyGateError("approved upload certificate fingerprint is invalid")
+    if is_blocked_upload_certificate(fingerprint):
+        raise UploadKeyGateError("approved upload certificate is on the blocked deny-list")
+    return fingerprint
+
+
+def approved_upload_certificate_sha256(root: pathlib.Path) -> str:
+    """The owner-approved upload certificate as the gate reads it; shared with the artifact checker."""
+    try:
+        properties_payload, _ = read_regular_beneath(root.resolve(), "keystore.properties")
+        entries = parse_java_properties(properties_payload)
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
+    return approved_upload_certificate_from_entries(entries)
+
+
 def load_upload_key_prerequisite(
     root: pathlib.Path,
     environment: Mapping[str, str],
@@ -586,14 +619,7 @@ def load_upload_key_prerequisite(
         store_relative = release_store_file(properties_payload)
     except (OSError, RuntimeError, UnicodeError) as error:
         raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
-    approved = _single_property(entries, APPROVAL_PROPERTY).casefold()
-    if approved != "true":
-        raise UploadKeyGateError(
-            "upload key is blocked until owner-confirmed strong-key rotation or Play reset",
-        )
-    fingerprint = _single_property(entries, FINGERPRINT_PROPERTY).replace(":", "").casefold()
-    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-        raise UploadKeyGateError("approved upload certificate fingerprint is invalid")
+    fingerprint = approved_upload_certificate_from_entries(entries)
     alias = environment.get(KEY_ALIAS_ENV, "").strip()
     if not alias:
         alias = _single_property(entries, "keyAlias")
@@ -649,7 +675,10 @@ def verify_upload_key_certificate(
     if verified.returncode != 0:
         raise UploadKeyGateError("approved upload keystore verification failed")
     certificate = verified.stdout if isinstance(verified.stdout, bytes) else b""
-    if hashlib.sha256(certificate).hexdigest() != prerequisite.certificate_sha256:
+    actual = hashlib.sha256(certificate).hexdigest()
+    if is_blocked_upload_certificate(actual):
+        raise UploadKeyGateError("configured upload keystore exports a blocked certificate")
+    if actual != prerequisite.certificate_sha256:
         raise UploadKeyGateError("approved upload certificate fingerprint does not match")
 
 

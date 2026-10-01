@@ -13,6 +13,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+from tools.upload_key_policy import BLOCKED_UPLOAD_CERT_SHA256
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check_release_artifact.py"
 SPEC = importlib.util.spec_from_file_location("check_release_artifact", SCRIPT)
@@ -20,6 +22,20 @@ assert SPEC and SPEC.loader
 release = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = release
 SPEC.loader.exec_module(release)
+
+# The checker no longer pins a signer: it reads the owner-approved fingerprint through the release
+# gate's own authority (keystore.properties), and refuses anything on the shared deny-list.
+APPROVED_SIGNER = hashlib.sha256(b"fixture-approved-upload-certificate").hexdigest()
+BLOCKED_SIGNER = sorted(BLOCKED_UPLOAD_CERT_SHA256)[0]
+
+
+def write_upload_key_approval(root: Path, *, approved: bool = True, fingerprint: str = APPROVED_SIGNER) -> None:
+    (root / "keystore.properties").write_text(
+        "storeFile=release-key.jks\nkeyAlias=telecampro\n"
+        f"uploadKeyRotationApproved={'true' if approved else 'false'}\n"
+        f"uploadKeyCertificateSha256={fingerprint}\n",
+        encoding="utf-8",
+    )
 
 
 class ReleaseArtifactIdentityTest(unittest.TestCase):
@@ -89,7 +105,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                     "version_name": "1.0.2",
                     "aab_path": str(aab.relative_to(root)),
                     "aab_sha256": digest,
-                    "signer_sha256": release.EXPECTED_UPLOAD_CERT_SHA256,
+                    "signer_sha256": APPROVED_SIGNER,
                     "release_evidence_path": str(evidence.relative_to(root)),
                 },
                 sort_keys=True,
@@ -99,6 +115,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         attestation.with_name(attestation.name + ".sha256").write_text(
             f"{release.sha256_file(attestation)}  {attestation.name}\n"
         )
+        write_upload_key_approval(root)
         return attestation, aab, commit
 
     def test_receipt_requires_sealed_wrapper_source_authority(self) -> None:
@@ -167,6 +184,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         commit: str,
         *,
         additional_signer: str | None = None,
+        signer: str = APPROVED_SIGNER,
         strict_returncode: int = 0,
         manifest_permissions: frozenset[str] | None = None,
         private_guard_name: str | None = None,
@@ -198,7 +216,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                         "",
                     )
                 fingerprint = ":".join(
-                    release.EXPECTED_UPLOAD_CERT_SHA256[i : i + 2].upper()
+                    signer[i : i + 2].upper()
                     for i in range(0, 64, 2)
                 )
                 output = f"SHA256: {fingerprint}\n"
@@ -630,6 +648,51 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 )
 
             self.assertIsNone(release.packaged_source_provenance(aab))
+
+    def test_blocked_signer_is_refused_even_when_approved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, aab, commit = self.fixture(root)
+            document = json.loads(attestation.read_text(encoding="utf-8"))
+            document["signer_sha256"] = BLOCKED_SIGNER
+            attestation.write_text(json.dumps(document, sort_keys=True) + "\n")
+            attestation.with_name(attestation.name + ".sha256").write_text(
+                f"{release.sha256_file(attestation)}  {attestation.name}\n"
+            )
+            # Self-attestation cannot un-block it: approve the blocked key's own public fingerprint.
+            write_upload_key_approval(root, fingerprint=BLOCKED_SIGNER)
+
+            failures = release.check_release_identity(
+                root, attestation, run=self.runner(commit, signer=BLOCKED_SIGNER)
+            )
+
+            self.assertIn("attested signer is a blocked upload certificate", failures)
+
+    def test_signer_must_be_the_gate_approved_certificate(self) -> None:
+        other = hashlib.sha256(b"some-other-certificate").hexdigest()
+        cases = (
+            ("unapproved", lambda root: write_upload_key_approval(root, approved=False)),
+            ("missing", lambda root: (root / "keystore.properties").unlink()),
+            ("different", lambda root: write_upload_key_approval(root, fingerprint=other)),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                mutate(root)
+
+                failures = release.check_release_identity(
+                    root, attestation, run=self.runner(commit)
+                )
+
+                self.assertTrue(
+                    any(
+                        item.startswith("no owner-approved upload certificate")
+                        or item == "attested signer is not the owner-approved upload certificate"
+                        for item in failures
+                    ),
+                    failures,
+                )
 
     def test_additional_signer_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -5,7 +5,9 @@ The ordinary Gradle output path is mutable and is never accepted as an upload ar
 cut must first be copied to a digest-qualified path (normally under the gitignored ``releases/``
 directory), then described by a JSON attestation and a SHA-256 sidecar. This checker joins that
 attestation to the current clean HEAD, source version, AAB bytes, packaged manifest, and the one
-recorded Play upload certificate.
+owner-approved Play upload certificate. The approved certificate is read through the SAME authority
+the immutable-release gate verifies (`approved_upload_certificate_sha256`), never pinned here, and
+any certificate on the shared deny-list (tools/blocked-upload-certificates.txt) is refused outright.
 """
 
 from __future__ import annotations
@@ -40,11 +42,14 @@ except ModuleNotFoundError:  # Direct `python3 tools/check_release_artifact.py` 
         packaged_permission_declarations,
         packaged_permissions,
     )
+try:
+    from tools.build_immutable_release import UploadKeyGateError, approved_upload_certificate_sha256
+    from tools.upload_key_policy import is_blocked_upload_certificate
+except ModuleNotFoundError:  # Direct `python3 tools/check_release_artifact.py` execution.
+    from build_immutable_release import UploadKeyGateError, approved_upload_certificate_sha256
+    from upload_key_policy import is_blocked_upload_certificate
 
 
-EXPECTED_UPLOAD_CERT_SHA256 = (
-    "9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584"
-)
 ATTESTATION_SCHEMA = 2
 RELEASE_EVIDENCE_NAME = "release-evidence.json"
 RELEASE_EVIDENCE_BOUNDARY = "sealed-export-frozen-outputs-v1"
@@ -694,8 +699,16 @@ def check_release_identity(
             failures.append("release evidence tree does not match the attested commit")
 
     signer = normalize_sha256(str(document["signer_sha256"]))
-    if signer != EXPECTED_UPLOAD_CERT_SHA256:
-        failures.append("attested signer is not the recorded Play upload certificate")
+    if signer is None or is_blocked_upload_certificate(signer):
+        failures.append("attested signer is a blocked upload certificate")
+    else:
+        try:
+            approved_signer = approved_upload_certificate_sha256(root)
+        except UploadKeyGateError as error:
+            failures.append(f"no owner-approved upload certificate: {error}")
+        else:
+            if signer != approved_signer:
+                failures.append("attested signer is not the owner-approved upload certificate")
 
     cert_result = run(["keytool", "-printcert", "-jarfile", str(verified_aab_path)], root)
     if not private_artifact_current("after signer inspection"):

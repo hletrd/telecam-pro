@@ -96,9 +96,13 @@ python3 tools/verify_host.py --release
 # rejected rather than treated as authentication. Only this outer wrapper seals the exported inputs,
 # rechecks them after build, freezes allowlisted outputs, and publishes release-evidence.json plus the
 # verified commit/tree/output hashes in a unique immutable-release namespace. Any non-lint task is
-# refused unless keystore.properties carries uploadKeyRotationApproved=true and keytool proves the
-# signing alias's certificate matches uploadKeyCertificateSha256 — the SAME gate the scoped helper
-# (tools/run_scoped_signed_release.py) enforces, so neither wrapper signs with the blocked key.
+# refused unless keystore.properties carries uploadKeyRotationApproved=true, keytool proves the
+# signing alias's certificate matches uploadKeyCertificateSha256, and neither value is on the shared
+# deny-list tools/blocked-upload-certificates.txt. The scoped helper (run_scoped_signed_release.py)
+# and a plain-Gradle doFirst on every release package/sign task enforce the same three checks, and
+# check_release_artifact.py reads the approved fingerprint through that gate. The approval is
+# SELF-ATTESTED (it lives in the local file it guards): this proves the keystore matches the approved,
+# non-blocked fingerprint — NOT that the owner's rotation/reset actually happened.
 python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # Device evidence must use the exact immutable debug APK printed by the wrapper.

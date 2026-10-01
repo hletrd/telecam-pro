@@ -1,0 +1,12 @@
+# Upload-key certificates that must NEVER sign a release again (SEC2-2 / AGG2-37).
+#
+# One lowercase SHA-256 of a DER-encoded PUBLIC certificate per line; `#` starts a comment. These are
+# public fingerprints, not secrets. This file is the ONE deny-list read by:
+#   - tools/upload_key_policy.py (the immutable-release gate, the scoped signed-release helper, and
+#     tools/check_release_artifact.py), and
+#   - app/build.gradle.kts (the doFirst refusal on every release package/sign task).
+# An approval flag in keystore.properties cannot un-block an entry here: approving a listed
+# certificate is refused by every reader. Append the retired certificate after each rotation.
+
+# Upload key in use through v1.0.1; security-blocked pending owner rotation/reset.
+9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584

@@ -713,7 +713,7 @@ and must not turn historical device evidence into exact-current-artifact verific
      "version_name": "1.0.2",
      "aab_path": "releases/telecam-pro-1.0.2-<commit>-<digest>.aab",
      "aab_sha256": "<64 lowercase hex characters>",
-     "signer_sha256": "9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584",
+     "signer_sha256": "<the approved uploadKeyCertificateSha256, never a blocked certificate>",
      "release_evidence_path": "app/build/immutable-release/<unique-child>/release-evidence.json"
    }
    ```
@@ -726,7 +726,9 @@ and must not turn historical device evidence into exact-current-artifact verific
    The checker fails unless the tree is clean; HEAD and source/package versions match; the AAB name
    carries its commit and digest; the bytes match the schema-2 wrapper receipt's unique AAB output
    and `source_authority=sealed-wrapper-export-v1`;
-   `jarsigner` succeeds; and the certificate is the recorded Play upload key. It rejects
+   `jarsigner` succeeds; and the certificate is the owner-approved `uploadKeyCertificateSha256` that
+   the release gate reads from `keystore.properties` and is not on the shared deny-list
+   (`tools/blocked-upload-certificates.txt`, which the gate and Gradle also enforce). It rejects
    `app/build/outputs` and any missing/out-of-namespace wrapper receipt. After every verifier,
    digest, source-identity recheck, and private inspection-file cleanup has finished, one
    NUL-delimited Git porcelain-v2 status process supplies a final best-effort observation of HEAD plus

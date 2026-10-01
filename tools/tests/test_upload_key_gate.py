@@ -19,6 +19,8 @@ assert SPEC and SPEC.loader
 release = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = release
 SPEC.loader.exec_module(release)
+# The gate resolves the deny-list through this exact module object (tools/ is on sys.path).
+policy = sys.modules["upload_key_policy"]
 
 CERTIFICATE = b"approved-public-certificate-der"
 FINGERPRINT = hashlib.sha256(CERTIFICATE).hexdigest()
@@ -27,13 +29,19 @@ ENV_PASSWORD = "Env-store-password-Entropy-8!"
 SIGNING_TASKS = (":app:lintRelease", ":app:assembleRelease", ":app:bundleRelease")
 
 
-def write_properties(root: Path, *, approved: bool, password: str | None = FILE_PASSWORD) -> None:
+def write_properties(
+    root: Path,
+    *,
+    approved: bool,
+    password: str | None = FILE_PASSWORD,
+    fingerprint: str = FINGERPRINT,
+) -> None:
     (root / "release-key.jks").write_bytes(b"not-a-real-keystore")
     lines = ["storeFile=release-key.jks", "keyAlias=telecampro"]
     if password is not None:
         lines.append(f"storePassword={password}")
     lines.append(f"uploadKeyRotationApproved={'true' if approved else 'false'}")
-    lines.append(f"uploadKeyCertificateSha256={FINGERPRINT}")
+    lines.append(f"uploadKeyCertificateSha256={fingerprint}")
     (root / "keystore.properties").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -128,6 +136,44 @@ class UploadKeyGateTest(unittest.TestCase):
                     root, SIGNING_TASKS, self.environment(), Recorder(returncode=1),
                 )
             self.assertNotIn(FILE_PASSWORD, str(caught.exception))
+
+    def test_blocked_fingerprint_is_refused_even_with_approval(self) -> None:
+        # SEC2-2: approval is self-attested, so approving the blocked key's own PUBLIC fingerprint
+        # must not pass. The refusal happens before keytool ever opens the keystore.
+        blocked = sorted(policy.BLOCKED_UPLOAD_CERT_SHA256)[0]
+        for spelling in (blocked, ":".join(blocked[i : i + 2].upper() for i in range(0, 64, 2))):
+            with self.subTest(spelling=spelling), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                write_properties(root, approved=True, fingerprint=spelling)
+                run = Recorder()
+                with self.assertRaisesRegex(release.UploadKeyGateError, "blocked deny-list"):
+                    release.require_approved_upload_key(root, SIGNING_TASKS, self.environment(), run)
+                self.assertEqual([], run.calls)
+                with self.assertRaisesRegex(release.UploadKeyGateError, "blocked deny-list"):
+                    release.approved_upload_certificate_sha256(root)
+
+    def test_keystore_exporting_a_blocked_certificate_is_refused(self) -> None:
+        blocked_certificate = b"retired-upload-certificate-der"
+        blocked = hashlib.sha256(blocked_certificate).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_properties(root, approved=True)
+            with (
+                patch.object(policy, "BLOCKED_UPLOAD_CERT_SHA256", frozenset({blocked})),
+                self.assertRaisesRegex(release.UploadKeyGateError, "exports a blocked certificate"),
+            ):
+                release.require_approved_upload_key(
+                    root, SIGNING_TASKS, self.environment(), Recorder(certificate=blocked_certificate),
+                )
+
+    def test_approved_certificate_authority_is_shared_with_the_checker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_properties(root, approved=True)
+            self.assertEqual(FINGERPRINT, release.approved_upload_certificate_sha256(root))
+            write_properties(root, approved=False)
+            with self.assertRaisesRegex(release.UploadKeyGateError, "upload key is blocked"):
+                release.approved_upload_certificate_sha256(root)
 
     def test_main_refuses_before_any_build_when_the_gate_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -2,6 +2,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Properties
@@ -782,4 +783,86 @@ if (!hasReleaseSigning) {
                 )
             }
         }
+}
+
+// SEC2-2 / AGG2-37: plain Gradle used to sign with whatever keystore.properties named, so
+// `./gradlew bundleRelease` produced a bundle under the security-blocked upload key while only the
+// Python wrappers refused it. Every task that actually PACKAGES OR SIGNS release bytes now crosses
+// the same three checks the immutable-release gate makes, BEFORE it writes a signed file:
+//   1. `uploadKeyRotationApproved=true` (owner-attested, and only that — it is a local file),
+//   2. `uploadKeyCertificateSha256` is not on tools/blocked-upload-certificates.txt (the ONE shared
+//      deny-list; tools/upload_key_policy.py reads the same file), and
+//   3. the configured alias's certificate, opened in-process, hashes to that approved value and is
+//      itself not on the deny-list — so copying the blocked key's PUBLIC fingerprint into the
+//      properties file cannot pass.
+// Lint and compile tasks are untouched; debug builds never configure release signing at all.
+// Everything the action needs is copied into locals first: a task action that referenced
+// script-level vals would capture the script object and break the configuration cache.
+if (hasReleaseSigning) {
+    val approvalValue = keystoreProps.getProperty("uploadKeyRotationApproved")?.trim().orEmpty()
+    val approvedCertificate = keystoreProps.getProperty("uploadKeyCertificateSha256")
+        ?.trim()?.replace(":", "")?.lowercase().orEmpty()
+    val blockedListFile = rootProject.file("tools/blocked-upload-certificates.txt")
+    val blockedCertificates: Set<String>? = blockedListFile.takeIf { it.isFile }?.readLines()
+        ?.map { it.substringBefore('#').trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.toSet()
+    val signingStoreFile = rootProject.file(releaseStoreFile!!)
+    val signingAlias = releaseKeyAlias!!
+    val signingStorePassword = releaseStorePassword!!
+    val releaseSigningTasks = setOf(
+        "packageRelease",
+        "packageReleaseBundle",
+        "packageReleaseUniversalApk",
+        "signReleaseBundle",
+    )
+    tasks.matching { it.name in releaseSigningTasks }.configureEach {
+        // A doFirst never runs for an UP-TO-DATE or FROM-CACHE task, so the gate state itself is a
+        // task input: changing the approval, the approved fingerprint, the deny-list, or the
+        // keystore bytes re-executes the task (and therefore the gate). Without this, a signed
+        // output produced before the gate existed was reported as a successful build afterwards.
+        inputs.property("uploadKeyApprovalState", "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}")
+        inputs.file(signingStoreFile).withPropertyName("uploadKeystore").withPathSensitivity(PathSensitivity.NONE)
+        doFirst {
+            val sha256 = Regex("[0-9a-f]{64}")
+            val blocked = blockedCertificates
+            if (blocked.isNullOrEmpty() || blocked.any { !sha256.matches(it) }) {
+                throw GradleException(
+                    "Release signing refused: tools/blocked-upload-certificates.txt is missing or malformed.",
+                )
+            }
+            if (!approvalValue.equals("true", ignoreCase = true)) {
+                throw GradleException(
+                    "Release signing refused: the upload key is security-blocked until the owner approves a " +
+                        "strong-key rotation or Play upload-key reset (uploadKeyRotationApproved=true plus " +
+                        "uploadKeyCertificateSha256 in keystore.properties; docs/play-console-submit.md).",
+                )
+            }
+            if (!sha256.matches(approvedCertificate) || approvedCertificate in blocked) {
+                throw GradleException(
+                    "Release signing refused: uploadKeyCertificateSha256 is invalid or names a blocked certificate.",
+                )
+            }
+            val actualCertificate = try {
+                val keyStore = KeyStore.getInstance(signingStoreFile, signingStorePassword.toCharArray())
+                val encoded = keyStore.getCertificate(signingAlias)?.encoded
+                    ?: throw GradleException("Release signing refused: the configured alias has no certificate.")
+                MessageDigest.getInstance("SHA-256").digest(encoded)
+                    .joinToString("") { byte -> "%02x".format(byte) }
+            } catch (error: GradleException) {
+                throw error
+            } catch (error: Exception) {
+                // The message stays value-free: never echo the store password or keystore bytes.
+                throw GradleException("Release signing refused: the upload keystore could not be verified.")
+            }
+            if (actualCertificate in blocked) {
+                throw GradleException("Release signing refused: the configured upload key is a blocked certificate.")
+            }
+            if (actualCertificate != approvedCertificate) {
+                throw GradleException(
+                    "Release signing refused: the configured upload key does not match uploadKeyCertificateSha256.",
+                )
+            }
+        }
+    }
 }
