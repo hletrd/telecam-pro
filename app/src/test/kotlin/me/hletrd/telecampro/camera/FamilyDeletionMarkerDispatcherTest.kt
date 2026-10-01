@@ -230,6 +230,56 @@ class FamilyDeletionMarkerDispatcherTest {
         assertEquals(0, registry.callbackCount())
     }
 
+    @Test
+    fun `a submit reserved before the worker dequeues the backlog is never rejected`() {
+        // AGG4-26 / CR4-16: the permit returns in the task wrapper's finally, while the worker is
+        // still busy and the backlog task is still queued. A reservation in that window used to be
+        // admitted by the semaphore and then rejected by a backlog-sized queue.
+        val releaseFirst = CountDownLatch(1)
+        val firstEntered = CountDownLatch(1)
+        val allFinished = CountDownLatch(3)
+        val windowSubmit = CopyOnWriteArrayList<Boolean>()
+        lateinit var owner: FamilyDeletionMarkerCapacityOwner
+        owner = FamilyDeletionMarkerCapacityOwner(
+            workerCount = 1,
+            backlogCapacity = 1,
+            threadFactory = ThreadFactory { task -> Thread(task, "test-family-window").apply { isDaemon = true } },
+            afterTaskReleased = {
+                if (windowSubmit.isEmpty()) {
+                    // On the worker, after the first task returned its permit and before it can
+                    // dequeue the queued second task: the queue is still occupied.
+                    assertEquals(1, owner.queuedTaskCount())
+                    val reserved = checkNotNull(owner.reserve(family(3))) { "permit was not returned" }
+                    windowSubmit += reserved.submit(Runnable { allFinished.countDown() })
+                }
+            },
+        )
+        val dispatcher = FamilyDeletionMarkerDispatcher(owner)
+        try {
+            assertTrue(
+                checkNotNull(dispatcher.reserve(family(1)).reservation).submit(
+                    Runnable {
+                        firstEntered.countDown()
+                        releaseFirst.await()
+                        allFinished.countDown()
+                    },
+                ),
+            )
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
+            assertTrue(
+                checkNotNull(dispatcher.reserve(family(2)).reservation)
+                    .submit(Runnable { allFinished.countDown() }),
+            )
+            assertEquals(FamilyDeletionMarkerDispatch.OVERFLOW, dispatcher.reserve(family(9)).dispatch)
+
+            releaseFirst.countDown()
+            assertTrue(allFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(true), windowSubmit.toList())
+        } finally {
+            releaseFirst.countDown()
+        }
+    }
+
     private fun isolatedDispatcher(
         workerCount: Int,
         backlogCapacity: Int,

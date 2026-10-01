@@ -130,11 +130,24 @@ internal class FamilyDeletionMarkerDispatcher internal constructor(
     internal fun admittedFamilyCount(): Int = capacityOwner.admittedFamilyCount()
 }
 
-/** The only active+queued pre-marker capacity shared by all Engine generations. */
+/**
+ * The only active+queued pre-marker capacity shared by all Engine generations.
+ *
+ * The semaphore — not the executor — is the admission bound. A task's permit is released in its
+ * wrapper's `finally`, i.e. while its worker is still busy and BEFORE that worker dequeues the next
+ * task, so for that window the executor still holds a full backlog while a fresh permit is free
+ * (AGG4-26 / CR4-16). With a queue of only [backlogCapacity], a submit reserved in exactly that
+ * window was rejected and reported as a failed delete although capacity accounting had admitted
+ * it. The queue therefore holds [workerCount] + [backlogCapacity] tasks: every reserved task fits
+ * in the queue alone, whatever the workers are doing, so a reserved submit can only be refused by
+ * a shut-down executor.
+ */
 internal class FamilyDeletionMarkerCapacityOwner(
     private val workerCount: Int,
     private val backlogCapacity: Int,
     threadFactory: ThreadFactory = familyDeletionMarkerThreadFactory(),
+    /** Test seam: runs on the worker right after a finished task returns its permit. */
+    private val afterTaskReleased: () -> Unit = {},
 ) {
     private val executor: ThreadPoolExecutor
     private val admission = Semaphore(workerCount + backlogCapacity, true)
@@ -147,7 +160,7 @@ internal class FamilyDeletionMarkerCapacityOwner(
             workerCount,
             0L,
             TimeUnit.MILLISECONDS,
-            ArrayBlockingQueue(backlogCapacity),
+            ArrayBlockingQueue(workerCount + backlogCapacity),
             threadFactory,
             ThreadPoolExecutor.AbortPolicy(),
         )
@@ -163,12 +176,13 @@ internal class FamilyDeletionMarkerCapacityOwner(
                     task.run()
                 } finally {
                     releaseReservation()
+                    afterTaskReleased()
                 }
             },
         )
         true
     } catch (_: RejectedExecutionException) {
-        // The semaphore matches worker+queue cardinality, so production reaches this only if the
+        // The queue alone holds every permit's task, so production reaches this only if the
         // executor itself becomes unavailable. Return ownership to the caller rather than running
         // marker/provider work inline on a UI/camera thread.
         releaseReservation()
