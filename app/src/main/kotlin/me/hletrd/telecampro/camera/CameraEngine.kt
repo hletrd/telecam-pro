@@ -6533,16 +6533,11 @@ class CameraEngine internal constructor(
             previewRotationDegrees(),
         )
         val encoderSize = Size(encW, encH)
-        val requestedBitRate = bitRateFor(size, rate)
-        val attemptBitRate: (Int, Int) -> Int = { width, height ->
-            videoBitRate(
-                width,
-                height,
-                rate.encoderRate,
-                effectiveBpp(bitrateLevel, codec),
-                codec,
-            )
-        }
+        // One rule from the FROZEN packet's codec for both the encoder attempts and the diagnostic
+        // fallback: the latter used to read the live videoCodec field, so a codec edit between
+        // admission and setup logged a bitrate the file never had (AGG4-30).
+        val attemptBitRate = frozenRecordingBitRate(rate.encoderRate, bitrateLevel, codec)
+        val requestedBitRate = attemptBitRate(size.width, size.height)
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-before-setup")
             abortRecordingStart()
@@ -8012,11 +8007,6 @@ class CameraEngine internal constructor(
             ?: Size(1920, 1080)
     }
 
-    // Resolved encoder bitrate (bits/s) for the current level, size, true frame rate, and codec.
-    // effectiveBpp scales the level up for the all-intra APV codec.
-    private fun bitRateFor(size: Size, rate: VideoFrameRate): Int =
-        videoBitRate(size.width, size.height, rate.encoderRate, effectiveBpp(bitrateLevel, videoCodec), videoCodec)
-
     // Per-SHUTTER-PRESS counter (one id shared by every container a capture produces), so the review
     // UI and durable filename can group the HEIF/JPEG with its DNG sibling.
     private val captureSeq = java.util.concurrent.atomic.AtomicInteger(0)
@@ -8624,6 +8614,19 @@ internal fun rollbackRawWanted(
         rawForcesStandalone = rawForcesStandalone,
     )
     return if (movesRestoredRoute) baseline else current
+}
+
+/**
+ * Resolved encoder bitrate (bits/s) per attempt size for a FROZEN REC packet: the packet's own
+ * [codec] and [encoderRate], never the live Engine fields (AGG4-30). effectiveBpp scales the level
+ * up for the all-intra APV codec.
+ */
+internal fun frozenRecordingBitRate(
+    encoderRate: Double,
+    level: BitrateLevel,
+    codec: VideoCodec,
+): (width: Int, height: Int) -> Int = { width, height ->
+    videoBitRate(width, height, encoderRate, effectiveBpp(level, codec), codec)
 }
 
 /**

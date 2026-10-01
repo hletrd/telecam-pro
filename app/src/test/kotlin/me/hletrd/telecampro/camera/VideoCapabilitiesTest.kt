@@ -115,6 +115,19 @@ class VideoCapabilitiesTest {
         assertEquals(8_000_000, lo)
     }
 
+    // AGG4-30: the REC packet's attempt AND diagnostic bitrate follow the frozen codec only.
+    @Test
+    fun `frozen recording bitrate follows the packet codec`() {
+        val apv = frozenRecordingBitRate(30.0, BitrateLevel.MEDIUM, VideoCodec.APV)
+        val hevc = frozenRecordingBitRate(30.0, BitrateLevel.MEDIUM, VideoCodec.HEVC)
+        assertEquals(
+            videoBitRate(3840, 2160, 30.0, BitrateLevel.MEDIUM.bpp * 8f, VideoCodec.APV),
+            apv(3840, 2160),
+        )
+        assertEquals(24_883_200, hevc(3840, 2160))
+        assertTrue(apv(3840, 2160) > hevc(3840, 2160))
+    }
+
     @Test
     fun `MAX preset reaches the HEVC HW ceiling range at 4K`() {
         // 4K30 MAX (0.40 bpp): ~99.5 Mbps — the whole point of adding the higher presets.
