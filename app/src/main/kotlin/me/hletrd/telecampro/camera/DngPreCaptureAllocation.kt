@@ -198,4 +198,23 @@ internal class StillContinuationHandoff(private val onDone: (() -> Unit)?) {
     }
 }
 
+/**
+ * The ONE wiring of a DNG pre-allocation into a still chain (AGG3-39): one
+ * [StillContinuationHandoff] per shot, its [StillContinuationHandoff.settle] handed to [build] as
+ * the settle path's continuation (the owner's retirement), the owner [register]ed before it starts,
+ * and the chain's Boolean answered by [StillContinuationHandoff.dispatchResult] over `start()`. The
+ * engine and DngPreCaptureAllocationTest both call this, so the AGG2-3 exactly-one-continuation
+ * proof covers the production wiring rather than a test-side copy of it.
+ */
+internal fun <T : Any> dispatchDngPreCaptureAllocation(
+    onDone: (() -> Unit)?,
+    register: (DngPreCaptureAllocation<T>) -> Unit = {},
+    build: (settle: () -> Unit) -> DngPreCaptureAllocation<T>,
+): Boolean {
+    val continuation = StillContinuationHandoff(onDone)
+    val owner = build(continuation::settle)
+    register(owner)
+    return continuation.dispatchResult(owner.start())
+}
+
 internal const val DNG_PRE_CAPTURE_ALLOCATION_TIMEOUT_MS = 8_000L

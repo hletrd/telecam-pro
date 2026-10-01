@@ -4869,102 +4869,109 @@ class CameraEngine internal constructor(
         }
         // One continuation owner for both terminals of this allocation: a synchronous rejection
         // settles (and may run onDone) inside start(), so the Boolean below must not ALSO hand the
-        // chain caller its own continuation (AGG2-3).
-        val continuation = StillContinuationHandoff(onDone)
-        fun settleBeforeCamera() {
-            rejectedCleanup.cancel()
-            snapshotLease?.release()
-            releaseDngAdmission()
-            settleRegisteredStillShot(
-                registered = registered,
-                traceText = traceText,
-                traceSettlement = traceAdmission.settlement,
-                onDone = continuation::settle,
-            )
-            publishProcessStillAdmission()
-        }
-        fun cleanLateAllocation(allocation: PendingOutputAllocation) {
-            val dispatch = MediaStoreWriter.dispatchRejectedOutput(
-                context,
-                allocation,
-            ) { _ ->
+        // chain caller its own continuation (AGG2-3). The handoff/settle/dispatchResult wiring is
+        // [dispatchDngPreCaptureAllocation], the SAME function DngPreCaptureAllocationTest drives
+        // (AGG3-39) — a copy in the test proved only the copy.
+        return dispatchDngPreCaptureAllocation(
+            onDone = onDone,
+            register = { owner ->
+                synchronized(dngPreCaptureAllocationLock) { dngPreCaptureAllocations.add(owner) }
+            },
+        ) { settle ->
+            fun settleBeforeCamera() {
+                rejectedCleanup.cancel()
+                snapshotLease?.release()
+                releaseDngAdmission()
+                settleRegisteredStillShot(
+                    registered = registered,
+                    traceText = traceText,
+                    traceSettlement = traceAdmission.settlement,
+                    onDone = settle,
+                )
                 publishProcessStillAdmission()
             }
-            if (dispatch != me.hletrd.telecampro.storage.RejectedOutputCleanupDispatch.ACCEPTED) {
-                // REGISTERED is already durable. Launch recovery owns this exact incomplete row;
-                // provider work never falls back inline on the allocator/cancellation caller.
-                publishProcessStillAdmission()
-            }
-        }
-
-        lateinit var owner: DngPreCaptureAllocation<PendingOutputAllocation>
-        owner = DngPreCaptureAllocation(
-            dispatch = ProcessPreNativeMediaAllocator::dispatch,
-            allocate = {
-                MediaStoreWriter.createPendingImageAllocation(
+            fun cleanLateAllocation(allocation: PendingOutputAllocation) {
+                val dispatch = MediaStoreWriter.dispatchRejectedOutput(
                     context,
-                    registered.spec.familyKey.displayName("dng"),
-                    "image/x-adobe-dng",
-                )
-            },
-            isCurrent = { acceptedSessionIsCurrent(accepted) },
-            onReady = { allocation ->
-                val callback = checkNotNull(
-                    photoCallback(
-                        formats = formats,
-                        shotControls = shotControls,
-                        hiRes = hiRes,
-                        optics = optics,
-                        retainedSnapshotLease = snapshotLease,
-                        traceAdmission = traceAdmission,
-                        onDone = onDone,
-                        registeredShotOverride = registered,
-                        dngAllocation = allocation,
-                        rejectedDngCleanupOverride = rejectedCleanup,
-                        dngPreCaptureLease = dngAdmission,
-                        registrationAlreadyTraced = true,
-                    ),
-                )
-                accepted.controller.capturePhoto(
-                    wantJpeg = formats.wantsProcessedStill,
-                    wantRaw = true,
-                    cb = callback,
-                    allowZsl = allowZsl,
-                    frozenControls = shotControls,
-                )
-            },
-            onLateValue = ::cleanLateAllocation,
-            onFailure = { failure ->
-                failure?.let {
-                    Log.e("CameraEngine", "DNG preallocation failed", it)
+                    allocation,
+                ) { _ ->
+                    publishProcessStillAdmission()
                 }
-                onStatus?.invoke(CameraStatusMessage.DNG_SAVE_FAILED.status())
-            },
-            onRetired = {
-                synchronized(dngPreCaptureAllocationLock) {
-                    dngPreCaptureAllocations.remove(owner)
+                if (dispatch != me.hletrd.telecampro.storage.RejectedOutputCleanupDispatch.ACCEPTED) {
+                    // REGISTERED is already durable. Launch recovery owns this exact incomplete row;
+                    // provider work never falls back inline on the allocator/cancellation caller.
+                    publishProcessStillAdmission()
                 }
-                settleBeforeCamera()
-            },
-            onClaimed = {
-                synchronized(dngPreCaptureAllocationLock) {
-                    dngPreCaptureAllocations.remove(owner)
-                }
-            },
-            deadlineScheduler = RecordingTeardownScheduler { delayMs, action ->
-                runCatching {
-                    recorderWatchdog.schedule(
-                        action,
-                        delayMs,
-                        java.util.concurrent.TimeUnit.MILLISECONDS,
+            }
+
+            lateinit var owner: DngPreCaptureAllocation<PendingOutputAllocation>
+            owner = DngPreCaptureAllocation(
+                dispatch = ProcessPreNativeMediaAllocator::dispatch,
+                allocate = {
+                    MediaStoreWriter.createPendingImageAllocation(
+                        context,
+                        registered.spec.familyKey.displayName("dng"),
+                        "image/x-adobe-dng",
                     )
-                }.getOrNull()?.let { future ->
-                    RecordingTeardownCancellation { future.cancel(false) }
-                }
-            },
-        )
-        synchronized(dngPreCaptureAllocationLock) { dngPreCaptureAllocations.add(owner) }
-        return continuation.dispatchResult(owner.start())
+                },
+                isCurrent = { acceptedSessionIsCurrent(accepted) },
+                onReady = { allocation ->
+                    val callback = checkNotNull(
+                        photoCallback(
+                            formats = formats,
+                            shotControls = shotControls,
+                            hiRes = hiRes,
+                            optics = optics,
+                            retainedSnapshotLease = snapshotLease,
+                            traceAdmission = traceAdmission,
+                            onDone = onDone,
+                            registeredShotOverride = registered,
+                            dngAllocation = allocation,
+                            rejectedDngCleanupOverride = rejectedCleanup,
+                            dngPreCaptureLease = dngAdmission,
+                            registrationAlreadyTraced = true,
+                        ),
+                    )
+                    accepted.controller.capturePhoto(
+                        wantJpeg = formats.wantsProcessedStill,
+                        wantRaw = true,
+                        cb = callback,
+                        allowZsl = allowZsl,
+                        frozenControls = shotControls,
+                    )
+                },
+                onLateValue = ::cleanLateAllocation,
+                onFailure = { failure ->
+                    failure?.let {
+                        Log.e("CameraEngine", "DNG preallocation failed", it)
+                    }
+                    onStatus?.invoke(CameraStatusMessage.DNG_SAVE_FAILED.status())
+                },
+                onRetired = {
+                    synchronized(dngPreCaptureAllocationLock) {
+                        dngPreCaptureAllocations.remove(owner)
+                    }
+                    settleBeforeCamera()
+                },
+                onClaimed = {
+                    synchronized(dngPreCaptureAllocationLock) {
+                        dngPreCaptureAllocations.remove(owner)
+                    }
+                },
+                deadlineScheduler = RecordingTeardownScheduler { delayMs, action ->
+                    runCatching {
+                        recorderWatchdog.schedule(
+                            action,
+                            delayMs,
+                            java.util.concurrent.TimeUnit.MILLISECONDS,
+                        )
+                    }.getOrNull()?.let { future ->
+                        RecordingTeardownCancellation { future.cancel(false) }
+                    }
+                },
+            )
+            owner
+        }
     }
 
     private fun cancelDngPreCaptureAllocations() {

@@ -257,24 +257,23 @@ class DngPreCaptureAllocationTest {
      * The engine's chain shape (AGG2-3): the settle path runs `onDone`, and a false dispatcher
      * return makes the chain caller continue on its own. A synchronous rejection must produce
      * exactly ONE of those per tick, or timelapse doubles its scheduled ticks every interval.
+     * Driven through [dispatchDngPreCaptureAllocation], the engine's own wiring (AGG3-39).
      */
     private fun rejectedChainStep(
         dispatch: RecordingPreNativeDispatch,
         deadlineArmable: Boolean,
         onDone: (() -> Unit)?,
-    ): Boolean {
-        val continuation = StillContinuationHandoff(onDone)
-        val owner = DngPreCaptureAllocation<String>(
+    ): Boolean = dispatchDngPreCaptureAllocation<String>(onDone) { settle ->
+        DngPreCaptureAllocation(
             dispatch = { RecordingPreNativeSubmission(dispatch) },
             allocate = { "row" },
             isCurrent = { true },
             onReady = { error("a rejected allocation cannot reach Camera2") },
             onLateValue = { error("a rejected allocation cannot invent a row") },
             onFailure = {},
-            onRetired = continuation::settle,
+            onRetired = settle,
             deadlineScheduler = if (deadlineArmable) null else RecordingTeardownScheduler { _, _ -> null },
         )
-        return continuation.dispatchResult(owner.start())
     }
 
     @Test
