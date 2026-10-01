@@ -539,7 +539,9 @@ fun standaloneRouteWanted(
     // [DeviceProfile.rawRequiresStandalone]: only that HAL forces DNG off the seamless camera. A
     // spec device carries RAW on the logical route, so moving it there would cost the seamless
     // zoom for nothing. VIDEO's standalone pin is a separate, still-universal EIS decision.
-    rawForcesStandalone: Boolean = true,
+    // No default (AGG4-47): defaulting to the PMA110 law made an omitted argument compile into
+    // the wrong route on every GENERIC device.
+    rawForcesStandalone: Boolean,
 ): Boolean = videoMode || (rawWanted && rawForcesStandalone)
 
 /**

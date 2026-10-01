@@ -1066,8 +1066,9 @@ internal fun PhotoFormatToggles(
     // session's deliberate trade, not a capability the route failed to deliver. Keyed on the
     // ACCEPTED session (`PhotoSessionOutputs.hlg`), NOT on videoMode (AGG2-35) and NOT on the
     // request (AGG3-17): SDR video, or a 10-bit request that fell to the 8-bit preview-only rung,
-    // has no still readers either, and is not 10-bit.
-    hlgSessionAccepted: Boolean = false,
+    // has no still readers either, and is not 10-bit. No default (AGG4-47): an omitted argument
+    // would silently drop the designed 10-bit caption for "Still capture unavailable".
+    hlgSessionAccepted: Boolean,
     // Whether this DEVICE can encode HEIF at all (HeifWriter needs a platform HEVC encoder, which
     // is not CDD-mandatory at API 33). Without it the chip stayed live and a tap silently produced
     // JPEG instead — the selection normalizer's doing, invisible at the control (verification

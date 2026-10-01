@@ -86,6 +86,7 @@ class SelectorRoleSemanticsComposeTest {
                         onSetPhotoFormats = {},
                         processedAvailable = true,
                         rawAvailable = true,
+                        hlgSessionAccepted = false,
                     )
                     MemoryPresetAction(saved = false, enabled = true, onClick = clicks::incrementAndGet)
                     MemoryPresetAction(saved = true, enabled = false, onClick = clicks::incrementAndGet)

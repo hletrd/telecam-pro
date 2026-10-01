@@ -60,6 +60,7 @@ class PhotoFormatResponsiveComposeTest {
                             onSetPhotoFormats = { formats.value = it },
                             processedAvailable = true,
                             rawAvailable = true,
+                            hlgSessionAccepted = false,
                         )
                     }
                 }

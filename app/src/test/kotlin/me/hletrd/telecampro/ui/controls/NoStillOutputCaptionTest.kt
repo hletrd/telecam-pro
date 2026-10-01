@@ -22,10 +22,13 @@ class NoStillOutputCaptionTest {
             standalone = true,
             tenBitVideoOnly = true,
         )
+        // The production plan -> outputs function: the HLG fact comes from the plan inside it, so
+        // the test cannot supply (or forget) the very argument whose omission would be the bug.
         val outputs = acceptedPhotoSessionOutputs(
+            plan = plan,
             processedReaderPresent = plan.useJpeg,
             rawReaderPresent = plan.useRaw,
-            hlgSessionAccepted = plan.useHlg,
+            hiResReaderPresent = false,
         )
         return noStillOutputCaption(outputs.hlg)
     }
@@ -42,7 +45,19 @@ class NoStillOutputCaptionTest {
 
     @Test
     fun `an SDR session without still readers reads still capture unavailable`() {
-        val outputs = acceptedPhotoSessionOutputs(processedReaderPresent = false, rawReaderPresent = false)
+        val plan = sessionAttemptPlan(
+            attempt = 3,
+            wantHlg = false,
+            supportsRaw = true,
+            standalone = true,
+            tenBitVideoOnly = false,
+        )
+        val outputs = acceptedPhotoSessionOutputs(
+            plan = plan,
+            processedReaderPresent = plan.useJpeg,
+            rawReaderPresent = plan.useRaw,
+            hiResReaderPresent = false,
+        )
         assertEquals(R.string.status_still_capture_unavailable, noStillOutputCaption(outputs.hlg))
     }
 }

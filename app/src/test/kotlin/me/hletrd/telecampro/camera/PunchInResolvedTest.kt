@@ -160,25 +160,25 @@ class StandaloneRouteWantedTest {
 
     @Test
     fun videoAlwaysTakesTheStandaloneRoute() {
-        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = false))
-        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = true))
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = false, rawForcesStandalone = true))
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = true, rawForcesStandalone = true))
     }
 
     @Test
     fun photoWithoutRawKeepsTheSeamlessLogicalRoute() {
-        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false))
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false, rawForcesStandalone = true))
     }
 
     /** The point of the change: DNG at ANY focal length, not only through the teleconverter. */
     @Test
     fun photoWantingRawSwitchesToAStandaloneLens() {
-        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true))
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true, rawForcesStandalone = true))
     }
 
     /** Turning DNG back off must restore seamless zoom rather than stranding the standalone route. */
     @Test
     fun droppingRawReturnsToTheLogicalRoute() {
-        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true))
-        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false))
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true, rawForcesStandalone = true))
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false, rawForcesStandalone = true))
     }
 }

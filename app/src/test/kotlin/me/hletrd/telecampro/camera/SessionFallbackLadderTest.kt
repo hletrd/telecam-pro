@@ -456,10 +456,14 @@ class SessionFallbackLadderTest {
         }
     }
 
+    /** A plain SDR rung: the reader masks below come from the readers, HLG from the plan. */
+    private val sdrPlan = SessionAttemptPlan(useHlg = false, useJpeg = true, useRaw = true)
+
     @Test
     fun `accepted hi-res truth requires the processed reader`() {
         assertTrue(
             acceptedPhotoSessionOutputs(
+                plan = sdrPlan,
                 processedReaderPresent = true,
                 rawReaderPresent = false,
                 hiResReaderPresent = true,
@@ -468,6 +472,7 @@ class SessionFallbackLadderTest {
         // Defensive: a hi-res flag without a surviving processed reader must not claim hi-res.
         assertFalse(
             acceptedPhotoSessionOutputs(
+                plan = sdrPlan,
                 processedReaderPresent = false,
                 rawReaderPresent = true,
                 hiResReaderPresent = true,
@@ -475,6 +480,7 @@ class SessionFallbackLadderTest {
         )
         assertFalse(
             acceptedPhotoSessionOutputs(
+                plan = sdrPlan,
                 processedReaderPresent = true,
                 rawReaderPresent = false,
                 hiResReaderPresent = false,
@@ -484,23 +490,36 @@ class SessionFallbackLadderTest {
 
     @Test
     fun `accepted reader set reports actual still outputs`() {
-        assertEquals(
-            PhotoSessionOutputs(processed = true, raw = true),
-            acceptedPhotoSessionOutputs(processedReaderPresent = true, rawReaderPresent = true),
+        fun outputs(processed: Boolean, raw: Boolean) = acceptedPhotoSessionOutputs(
+            plan = sdrPlan,
+            processedReaderPresent = processed,
+            rawReaderPresent = raw,
+            hiResReaderPresent = false,
         )
-        assertEquals(
-            PhotoSessionOutputs(processed = true, raw = false),
-            acceptedPhotoSessionOutputs(processedReaderPresent = true, rawReaderPresent = false),
-        )
-        assertEquals(
-            PhotoSessionOutputs(processed = false, raw = true),
-            acceptedPhotoSessionOutputs(processedReaderPresent = false, rawReaderPresent = true),
+        assertEquals(PhotoSessionOutputs(processed = true, raw = true), outputs(processed = true, raw = true))
+        assertEquals(PhotoSessionOutputs(processed = true, raw = false), outputs(processed = true, raw = false))
+        assertEquals(PhotoSessionOutputs(processed = false, raw = true), outputs(processed = false, raw = true))
+        assertFalse(outputs(processed = false, raw = false).hasStillTarget)
+    }
+
+    @Test
+    fun `accepted HLG truth is the configured plan's, never the request`() {
+        val tenBitStillLess = SessionAttemptPlan(useHlg = true, useJpeg = false, useRaw = false)
+        assertTrue(
+            acceptedPhotoSessionOutputs(
+                plan = tenBitStillLess,
+                processedReaderPresent = false,
+                rawReaderPresent = false,
+                hiResReaderPresent = false,
+            ).hlg,
         )
         assertFalse(
             acceptedPhotoSessionOutputs(
+                plan = sdrPlan,
                 processedReaderPresent = false,
                 rawReaderPresent = false,
-            ).hasStillTarget,
+                hiResReaderPresent = false,
+            ).hlg,
         )
     }
 }

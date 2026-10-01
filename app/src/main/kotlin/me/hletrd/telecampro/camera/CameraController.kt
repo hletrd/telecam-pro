@@ -789,10 +789,10 @@ class CameraController internal constructor(
                     when (sessionStartDelivery(startPreview())) {
                         SessionStartDelivery.READY -> onReady.onReady(
                             acceptedPhotoSessionOutputs(
+                                plan = plan,
                                 processedReaderPresent = jpegReader != null,
                                 rawReaderPresent = rawReader != null,
                                 hiResReaderPresent = hiResReaderActive,
-                                hlgSessionAccepted = useHlg,
                             ),
                         )
                         SessionStartDelivery.ERROR ->
@@ -2596,17 +2596,21 @@ internal fun customWbResultBelongsToRequest(
     awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED &&
     gainsAvailable
 
-/** Accepted-output truth comes from created readers, not the fallback plan that requested them. */
+/**
+ * Accepted-output truth comes from created readers, not the fallback plan that requested them —
+ * except the HLG fact, which IS the configured rung's: [plan] is the attempt that configured, never
+ * the request (AGG3-17). Built from the plan itself, with no defaults, so neither the controller nor
+ * the "10-bit video · stills off" caption test can drop or re-derive the HLG argument (AGG4-47).
+ */
 internal fun acceptedPhotoSessionOutputs(
+    plan: SessionAttemptPlan,
     processedReaderPresent: Boolean,
     rawReaderPresent: Boolean,
-    hiResReaderPresent: Boolean = false,
-    /** The accepted plan's `useHlg` — the rung that configured, never the request. */
-    hlgSessionAccepted: Boolean = false,
+    hiResReaderPresent: Boolean,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
-    hlg = hlgSessionAccepted,
+    hlg = plan.useHlg,
     // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
     // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).
     hiRes = processedReaderPresent && hiResReaderPresent,
