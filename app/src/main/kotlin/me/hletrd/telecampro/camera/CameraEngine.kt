@@ -662,6 +662,7 @@ class CameraEngine internal constructor(
         val hiResConfigured: Boolean,
         /** DNG intent is a ROUTE input, so it rolls back with the route it selected (AGG-4). */
         val rawWanted: Boolean,
+        val rawWantedDirectWrites: Long,
     )
 
     private data class AcceptedCameraSession(
@@ -757,6 +758,7 @@ class CameraEngine internal constructor(
         photoSessionOutputs = acceptedCameraSession?.outputs ?: PhotoSessionOutputs(),
         hiResConfigured = acceptedCameraSession?.hiResConfigured ?: false,
         rawWanted = rawWanted,
+        rawWantedDirectWrites = rawWantedDirectWrites,
     )
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
@@ -1006,7 +1008,7 @@ class CameraEngine internal constructor(
         requestedVideoSize = restored.requestedVideoSize
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
-        rawWanted = before.rawWanted
+        if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted
         val opticsPublication = OpticsRollbackPublication(
             mode = restored.mode,
             transfer = restoredVideoPipeline.requestedTransfer,
@@ -1027,7 +1029,7 @@ class CameraEngine internal constructor(
             declaration = restored.declaration,
             generation = transaction.generation,
             videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
-            rawWanted = before.rawWanted,
+            rawWanted = rawWanted,
             requestedVideoSize = restored.requestedVideoSize,
         )
         val restoreSession = before.ready && before.readyController === controller && !paused &&
@@ -3220,6 +3222,12 @@ class CameraEngine internal constructor(
     // DNG intent, mirrored from the ViewModel: decides whether photo takes the standalone route.
     @Volatile
     private var rawWanted = false
+    // Bumped by every DNG write that does NOT own an optics transaction (no route flip: Video,
+    // FRONT/EXTERNAL, before start, or a device without the RAW law). A rollback restores the
+    // baseline DNG intent only while this still matches the baseline's value — otherwise it would
+    // silently revert a later operator choice that never moved the route (RPL cycle 1 review).
+    @Volatile
+    private var rawWantedDirectWrites = 0L
 
     @Volatile private var loupeCenterSensorX = 0.5f
     @Volatile private var loupeCenterSensorY = 0.5f
@@ -3998,6 +4006,7 @@ class CameraEngine internal constructor(
         if (!routeFlips || !started || activeCameraRoute != CameraRoute.BACK) {
             synchronized(this) {
                 rawWanted = enabled
+                rawWantedDirectWrites++
                 if (routeFlips) {
                     resolvedLens?.let { lensChoice = it }
                     resolvedControls?.let { controls = it }
@@ -4010,6 +4019,8 @@ class CameraEngine internal constructor(
             // names the pre-pause route — the permanent-divergence shape of DNG bug #2 below. Drop
             // the cached resolution so resume re-resolves from the new intent (tracer T6).
             synchronized(this) {
+                // Not counted as a direct write: this one DOES change the route answer (and drops
+                // overrideId), so a rollback must restore DNG together with the route it restores.
                 rawWanted = enabled
                 resolvedLens?.let { lensChoice = it }
                 resolvedControls?.let { controls = it }
