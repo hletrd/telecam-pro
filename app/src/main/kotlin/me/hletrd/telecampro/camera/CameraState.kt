@@ -55,6 +55,17 @@ internal fun backOpticsDoorRefusal(recording: Boolean, frontFacing: Boolean): Ba
     else -> BackOpticsRefusal.NONE
 }
 
+/**
+ * [backOpticsDoorRefusal] fed from the ONE input both callers own: the ACTIVE route (AGG4-16).
+ * Sharing the predicate's body never helped while the ViewModel passed `facing == FRONT ||
+ * !cameraRoutes.back` and the Engine passed `activeCameraRoute != BACK`: on an EXTERNAL route with a
+ * back camera in the inventory the VM admitted a lens/TC change the Engine then refused, leaving
+ * the VM's optimistic TC focal on an external webcam (and persisted). EXTERNAL is not a rear-optics
+ * route, so the door refuses there exactly as on FRONT.
+ */
+internal fun backOpticsDoorRefusal(recording: Boolean, activeRoute: CameraRoute): BackOpticsRefusal =
+    backOpticsDoorRefusal(recording, frontFacing = activeRoute != CameraRoute.BACK)
+
 /** Truthful scope promised by the media-review delete confirmation. */
 enum class MediaDeleteScope { CAPTURE_FAMILY, FILE_ONLY }
 

@@ -1838,10 +1838,7 @@ class CameraViewModel private constructor(
      */
     private fun rejectBackOnlyOpticsDoor(): Boolean {
         val message = when (
-            backOpticsDoorRefusal(
-                _state.value.isRecording,
-                _state.value.facing == CameraFacing.FRONT || !_state.value.cameraRoutes.back,
-            )
+            backOpticsDoorRefusal(_state.value.isRecording, _state.value.activeCameraRoute)
         ) {
             BackOpticsRefusal.RECORDING -> CameraStatusMessage.STOP_RECORDING_FIRST
             BackOpticsRefusal.FRONT_ROUTE -> CameraStatusMessage.SWITCH_TO_REAR_FIRST

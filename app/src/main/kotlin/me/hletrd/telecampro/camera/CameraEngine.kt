@@ -3947,10 +3947,7 @@ class CameraEngine internal constructor(
         // the flip button is the one exit. Defensive twin of the ViewModel's gate, through the same
         // shared decision so their answers cannot drift.
         when (
-            backOpticsDoorRefusal(
-                recorder != null,
-                activeCameraRoute != CameraRoute.BACK,
-            )
+            backOpticsDoorRefusal(recorder != null, activeCameraRoute)
         ) {
             BackOpticsRefusal.RECORDING -> { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
             BackOpticsRefusal.FRONT_ROUTE -> { onStatus?.invoke(CameraStatusMessage.SWITCH_TO_REAR_FIRST.status()); return }
