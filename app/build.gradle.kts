@@ -702,7 +702,8 @@ tasks.withType<Test>().configureEach {
     // FileDescriptorInterceptor reaches jdk.internal.access.SharedSecrets reflectively; JDK 17+
     // does not export that package, so EVERY Robolectric test failed before its body ran
     // ("Failed to interact with raw FileDescriptor internals"). The export is scoped to the
-    // host test JVM only. Upstream fix: robolectric#11496 (expected in 4.17.1) — drop this then.
+    // host test JVM only. Drop it once a Robolectric release no longer needs the export (re-check
+    // on every Robolectric bump: remove the flag and run :app:testDebugUnitTest).
     jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
 }
 
