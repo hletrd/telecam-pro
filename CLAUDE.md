@@ -559,8 +559,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
     smuggle back the causal claim. Only `AF_LIMIT` may say `TOO CLOSE → 1×`. The separator is
     **U+2192**, not the U+25B8 triangle it shipped with: **none of the three bundled Inter faces
     (`app/src/main/res/font/`) carries U+25B8**, so that glyph fell back to a system typeface inside
-    one OSD tag. Every user-facing literal must stay inside those faces — the covered set in use is
-    `§ © ° · ± × γ — … → ∞ ≈`.
+    one OSD tag. Every NON-HANGUL symbol in a user-facing literal must stay inside those faces —
+    the covered set in use is `§ © ° · ± × γ — … → ∞ ≈`. Hangul is the deliberate exception: no
+    bundled Inter face carries it, so every `values-ko` string renders in the system face by design
+    (EN+KO is mandatory above); do not strip Korean or bundle a CJK font to "fix" that.
   - **Deliberate design facts** (each cost a wrong turn to find): curvature, not gradient — a ramp
     is locally linear at every scale, so a first-difference ratio returns exactly `1/k` on a sky
     gradient (guaranteed false fire), while curvature is identically zero there. **No noise
@@ -582,7 +584,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (one 26 mm-equiv back lens, `zoomRatioRange` 1.0–8.0): 0.6× sat below the zoom floor and 10×
   above the ceiling, and tapping 0.6× left the wire zoom at 1.0. `LensInventory`
   (`camera/CameraState.kt`, pure + host-tested) resolves availability by ENUMERATION —
-  optical when a back lens's measured 35 mm-equivalent is within ±35% of the preset target, else
+  optical when a back lens's measured 35 mm-equivalent is within a ×1.35 ratio of the preset target
+  (log-symmetric `max/min ≤ 1.35`: +35 % / −25.9 %, not ±35 %), else
   reachable only if the photo-home route's advertised zoom range covers the preset ratio — and the
   engine publishes it once on `setupExecutor` (`onLensInventory`). PMA110 keeps all four (all
   optical, pinned by test). A preset reachable only by zoom is spoken as "3× zoom", never "3× lens",
@@ -685,14 +688,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   selfie-mirror view), the ENCODER/ANALYSIS draws apply the x-inversion (`gl/texCoordQuad` →
   `mirrorX`) to write the TRUE scene into files, stills are untouched HAL buffers (correct either
   way), and tap-AF needs NO un-flip (displayed x == texture x; `mapTapFocusGeometry(mirrorX=false)`).
-  Pushed as route state by `applyStabilization` (`gl.setFrontStreamPreMirrored`). On a multi-device
-  build this inversion becomes a DeviceProfile quirk flag. Capture rotation FRONT =
+  Pushed as route state by `applyStabilization` via
+  `GlPipeline.setFrontMirrorConvention(front, streamPreMirrored)` (roles in `FrontMirrorConvention.kt`).
+  Since the 2026-08-01 multi-device decision this inversion IS the `DeviceProfile.frontStreamPreMirrored`
+  quirk (PMA110 `true`); GENERIC takes the naive roles (preview adds the selfie mirror, files stay
+  true-scene), so `mapTapFocusGeometry(mirrorX=false)` is the PMA110 value, not a universal constant.
+  Capture rotation FRONT =
   `(sensor + device) % 360` — the gravity term is GyroEis CCW-POSITIVE, so it ADDS on the front and
   SUBTRACTS on the rear; the old `− device` here was the same sign error that saved every
   landscape-held REAR still 180° rotated (device-bisected 2026-07-25). Afocal never applies
-  (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. RAW,
-  hi-res, flash, and the Loupe Overview all resolve off the existing capability/route axes — no
-  facing special cases in those predicates.
+  (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. Hi-res and
+  flash resolve off the existing capability/route axes with no facing term. RAW and the punch-in
+  loupe (and with it the Loupe Overview) are DELIBERATELY excluded on FRONT: `sessionAttemptPlan`'s
+  `!frontRoute` plus `rawSelectable`'s `!frontFacing` drop DNG, and `punchInResolved(enabled,
+  frontFacing)` suppresses the loupe (toggle kept, restored on the rear). The RAW exclusion is a
+  scope decision, not a measured HAL fault — the front route KEEPS its processed still readers
+  (deep YUV → shallow YUV → HAL-JPEG); front RAW is simply unmeasured on every device.
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.
   Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
   `c2.android.av1.encoder` — too slow/low-res to ship). **APV** (`VideoCodec.APV`, HW
@@ -1138,8 +1149,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   **A "camera starts slowly" report is a UI question before it is a camera one (owner-reported,
   device-bisected 2026-08-04).** The one such report resolved to the STATUS PILL, not the pipeline:
   `am start` 412 ms, session configured ~950 ms, yet the `"Starting camera…"` pill was still on
-  screen 5.2 s later because `statusDisplayDurationMs` classifies by wording and this message fell
-  into the neutral 2.5 s bucket. **A PROGRESS status must carry no timer** — it reports a condition,
+  screen 5.2 s later because the former wording-classified `statusDisplayDurationMs` put this
+  message in the neutral 2.5 s bucket. Duration is now TYPED, not inferred from wording:
+  `CameraStatus.durationMs`, resolved per `CameraStatusMessage` through `CameraStatusLifecycle`. **A PROGRESS status must carry no timer** — it reports a condition,
   so an EVENT ends it (`CameraStatusLifecycle.PROGRESS` → null duration; the owned Ready publication clears it,
   guarded on the message still being that status so a message published during bring-up is not
   swallowed). The same rule covers reconfiguration, preview/camera recovery, and bounded retry

@@ -103,7 +103,7 @@ object AutoExposure {
      * "auto min shutter" every real camera applies in P — and let ISO carry the exposure. Only when
      * ISO clamps does the shutter leave the preferred point: at max ISO in the dark it lengthens (down
      * to a 1/10 s handheld ceiling), at min ISO in the bright it shortens. Per tick the shutter moves
-     * at most one stop (no visible exposure snaps), and ISO counter-moves so a shutter re-centering
+     * at most ±0.35 stop (no visible exposure snaps), and ISO counter-moves so a shutter re-centering
      * never changes overall brightness.
      */
     fun driveProgram(
@@ -125,7 +125,7 @@ object AutoExposure {
         val pref = preferredNs.coerceIn(expMinNs, slowCapNs)
 
         val corr = correctionStops(meanLuma(luma), evCompStops) ?: 0f
-        // Re-center the shutter toward the preferred point by at most 1 stop this tick…
+        // Re-center the shutter toward the preferred point by at most ±0.35 stop this tick…
         val shutterStops = log2(pref.toFloat() / currentNs.toFloat()).coerceIn(-0.35f, 0.35f)
         // …and give ISO the exposure correction minus what the shutter move already contributes
         // (longer shutter = brighter), so re-centering is brightness-neutral.

@@ -93,8 +93,10 @@ internal fun acceptedOpticsAuxState(
  * So: honour the capability, and require that the session either already carries RAW or belongs to a
  * mode where selecting DNG is what brings it. [hiResSession] is excluded because its one ladder rung
  * force-drops RAW (a full-sensor blob plus RAW is the over-demanding combo this HAL punishes), and
- * [frontFacing] because the session plan force-drops RAW on the front route as well — the front
- * camera advertising RAW would otherwise leave a live chip promising a DNG that never arrives.
+ * [frontFacing] because the session plan deliberately excludes RAW on the front route (`!frontRoute`
+ * in `sessionAttemptPlan`) — a scope decision, not a measured HAL fault: the front route keeps its
+ * processed still readers, but front RAW is unmeasured on every device. A front camera advertising
+ * RAW would otherwise leave a live chip promising a DNG that never arrives.
  */
 internal fun rawSelectable(
     deviceSupportsRaw: Boolean,

@@ -2698,14 +2698,19 @@ internal fun sessionAttemptPlan(
     // sub-camera it rejects the stream ("DataSpace override not allowed"), and on the plain
     // LOGICAL camera a still with the RAW target errors the whole camera device ~5 s after the
     // shot (device-observed CAMERA_ERROR(3), 2026-07-14) — no image ever arrives. DNG therefore
-    // exists only in TELE mode (standalone 3×) and on any explicit standalone selection.
+    // rides only a STANDALONE route; since the 2026-07-29 route-input model, wanting RAW is what
+    // moves photo onto the matching standalone lens (`standaloneRouteWanted`), so DNG is available
+    // on every rear lens, not only TELE.
     // Hi-res additionally FORCES RAW off on its one attempt: a 200MP blob + RAW in one session is
     // exactly the over-demanding stream combo this HAL punishes, and the maximum-resolution map
     // need not carry RAW at all.
     // The standalone/logical terms are PMA110 HAL faults (see DeviceProfile.rawRequiresStandalone);
     // a spec device may carry RAW on the logical camera or a routed sub-camera, and forcing the law
     // there removed DNG entirely from phones whose rear lenses exist only as physical sub-cameras.
-    // The FRONT exclusion is not device-specific: that route drops both still readers by design.
+    // The FRONT exclusion is a deliberate scope decision, not a measured HAL fault and not
+    // device-specific: the front route keeps its processed still readers (deep YUV → shallow YUV →
+    // HAL-JPEG), but RAW on FRONT has never been measured on any device, so it stays excluded
+    // (paired with `rawSelectable`'s `!frontFacing`) until it is.
     useRaw = streamAttempt < 1 && supportsRaw && !hiRes && !frontRoute &&
         (!rawStandaloneOnly || (standalone && !logicalMultiCamera)),
     useVendorOperationMode = vendorMode,

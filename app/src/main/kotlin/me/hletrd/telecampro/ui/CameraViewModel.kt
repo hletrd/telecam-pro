@@ -378,9 +378,11 @@ class CameraViewModel private constructor(
     // would leave it null and NPE on a launch that restores saved settings.
     private val zoomGlide = ZoomGlideState()
 
-    // The ONE android.os.Build.MODEL read in the app (see seedTeleconverterProfile): it may only
-    // pre-select which teleconverter entry starts SELECTED. Declared BEFORE init for the same
-    // reason as the zoom state above — seedTeleconverterProfile() runs during construction.
+    // Model-string seam 1 of 2 — catalog PRESELECTION only (see seedPhoneModel): it may only
+    // pre-select which phone/teleconverter entries start SELECTED. DeviceProfile.resolve is seam 2
+    // (measured HAL quirks); the EXIF labels also read the build, but only to write the device's
+    // own identity into saved files, never to decide behavior. Declared BEFORE init for the same
+    // reason as the zoom state above — seedPhoneModel() runs during construction.
     private val deviceModel: String = android.os.Build.MODEL.orEmpty()
 
     // Resolved once from [deviceModel]. Kept as a FIELD, not recomputed at each use, because it is
@@ -2734,14 +2736,15 @@ class CameraViewModel private constructor(
      * First-launch default for the converter PAIR, seeded from the phone.
      *
      * An afocal converter is passive glass on a clamp — no contacts, no ID — so the app can NEVER
-     * detect one. What it CAN read is the PHONE, and this is the ONE place in the codebase that does
-     * ([detectPhone] itself stays pure). A model match may only choose which entries start SELECTED
+     * detect one. What it CAN read is the PHONE, and this is model-string seam 1 of 2 (catalog
+     * preselection; [detectPhone] itself stays pure — `DeviceProfile.resolve` is seam 2). A model match may only choose which entries start SELECTED
      * and license the "Detected …" caption; no capability, route, or request decision may ever
      * branch on a model string (every lens is still resolved by ENUMERATING Camera2 capabilities).
      *
      * Runs before [restoreSettingsIfEnabled], so a persisted pair always wins over this seed. On an
-     * unrecognised phone nothing is seeded: the state defaults stand and [phoneModelDetected] stays
-     * false, which is exactly what the caption must be able to say.
+     * unrecognised phone it seeds [PhoneModel.OTHER] with that phone's default converter (not the
+     * Find X9 Ultra state default) and [phoneModelDetected] stays false, which is exactly what the
+     * caption must be able to say.
      */
     private fun seedPhoneModel() {
         // An UNRECOGNISED phone seeds PhoneModel.OTHER, not the state default: DEFAULT_PHONE_MODEL is

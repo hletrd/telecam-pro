@@ -548,8 +548,9 @@ PMA110's front HAL pre-mirrors its SurfaceTexture stream, so preview draws it as
 encoder/analysis apply the texcoord x-inversion
 (`gl/texCoordQuad` via `mirrorX`) to write the TRUE scene into files and scopes. Every draw role
 plus the tap display axis derives from ONE authority, `camera/DeviceProfile.kt`
-(`DeviceProfile.frontStreamPreMirrored`), pushed as route state by `GlPipeline.setFrontStreamPreMirrored`
-from `applyStabilization`. GENERIC assumes an unmirrored stream, adds the selfie mirror on preview,
+(`DeviceProfile.frontStreamPreMirrored`), pushed as route state by
+`GlPipeline.setFrontMirrorConvention(front, streamPreMirrored)` from `applyStabilization` (roles
+derived in `FrontMirrorConvention.kt`). GENERIC assumes an unmirrored stream, adds the selfie mirror on preview,
 and leaves encoder/analysis true-scene. The front capture-ROTATION sign is DEVICE-VERIFIED (2026-07-25): a
 landscape-held front still saved upright, and a wrong sign would have rotated BOTH landscape
 directions 180°, so one direction settles it. The mirror roles above were separately

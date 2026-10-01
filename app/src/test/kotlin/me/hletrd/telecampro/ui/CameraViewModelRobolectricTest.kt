@@ -759,7 +759,7 @@ class CameraViewModelRobolectricTest {
         assertEquals(guidance, v.state.value.status)
         idleFor(2_499)
         assertEquals(guidance, v.state.value.status)
-        idleFor(1) // ordinary messages clear at 2.5 s (statusDisplayDurationMs)
+        idleFor(1) // ordinary messages clear at 2.5 s (CameraStatus.durationMs)
         assertNull(v.state.value.status)
     }
 
