@@ -1015,17 +1015,34 @@ object MediaStoreWriter {
         listener: (Boolean) -> Unit,
     ): ProcessAdmissionSubscription = stillStorageAdmissionSignal.subscribe(listener)
 
+    /**
+     * Per-(site, URI) change gate for the storage warnings below (AGG2-29), the same discipline as
+     * the identity-read warnings: a URI logs its FIRST failure at a site and then only when the
+     * failure CLASS changes; a success forgets it, so a later relapse reports again. Every row here
+     * spends the process-lifetime 120-row reserved budget, and one URI is legitimately retried —
+     * a save's sibling opens of the same row, launch recovery's bounded page retries of the same
+     * publish — so a persistent per-row fault used to spend one row per retry. Bounded LRU memory.
+     */
+    private val storageWarningGate = IdentityReadWarningGate()
+
+    private fun warnStorageOnce(site: String, uri: Uri, message: String, failure: Throwable?) {
+        val reason = failure?.javaClass?.name ?: "none"
+        if (storageWarningGate.shouldLog("$site|$uri", reason)) DiagnosticLog.w(TAG, message, failure)
+    }
+
     // Both helpers sit on the same save chain as the insert, whose silent exits were fixed on
     // 2026-09-09; FileNotFound/Security/IllegalState (row deleted, volume unmounted) here turned into
-    // HEIF/JPEG/REC failure toasts with no app log line. One reserved row per failed open.
+    // HEIF/JPEG/REC failure toasts with no app log line. One reserved row per failing URI and cause.
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }
-            .onFailure { DiagnosticLog.w(TAG, "open $mode failed for $uri", it) }
+            .onSuccess { storageWarningGate.clear("open $mode|$uri") }
+            .onFailure { warnStorageOnce("open $mode", uri, "open $mode failed for $uri", it) }
             .getOrNull()
 
     fun openOutputStream(context: Context, uri: Uri): OutputStream? =
         runCatching { context.contentResolver.openOutputStream(uri) }
-            .onFailure { DiagnosticLog.w(TAG, "open output stream failed for $uri", it) }
+            .onSuccess { storageWarningGate.clear("open output|$uri") }
+            .onFailure { warnStorageOnce("open output", uri, "open output stream failed for $uri", it) }
             .getOrNull()
 
     /**
@@ -1069,6 +1086,7 @@ object MediaStoreWriter {
                     context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
                         .edit(commit = true) { remove(uri.toString()) }
                 }
+                storageWarningGate.clear("publish|$uri")
                 return@withLookupAuthority true
             }
             if (attempt < PUBLISH_ATTEMPTS - 1) {
@@ -1077,7 +1095,9 @@ object MediaStoreWriter {
         }
         // Exhaustion only — never per attempt. The row is retained for recovery either way; this
         // row records WHY (a throwing provider policy vs. a vanished/foreign row matching 0 rows).
-        DiagnosticLog.w(TAG, "publish exhausted $PUBLISH_ATTEMPTS attempts for $uri", lastFailure)
+        // Change-gated per URI: launch recovery re-runs the same row's publish on each bounded
+        // page retry, which used to spend one reserved row per retry (AGG2-29).
+        warnStorageOnce("publish", uri, "publish exhausted $PUBLISH_ATTEMPTS attempts for $uri", lastFailure)
         false
     }
 

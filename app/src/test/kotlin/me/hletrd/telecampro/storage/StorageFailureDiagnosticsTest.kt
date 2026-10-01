@@ -69,6 +69,34 @@ class StorageFailureDiagnosticsTest {
         }
     }
 
+    @Test
+    fun `retrying the same failing uri spends one row per site, not one per retry`() {
+        // AGG2-29: sibling opens of one save and recovery's page retries hit the SAME URI; each
+        // used to spend a reserved row. Change-gated per (site, URI, failure class) now.
+        val uri = register()
+        val suffix = UUID.randomUUID().toString()
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = "publish-gate-$suffix.db",
+            legacyPreferences = context.getSharedPreferences("publish-gate-$suffix", Context.MODE_PRIVATE),
+        )
+        val budgetOpen = processReservedDiagnosticLogBudget.usedRows() + 3 <= RESERVED_DIAGNOSTIC_ROW_BUDGET
+
+        repeat(4) {
+            assertNull(MediaStoreWriter.openParcelFd(context, uri, "rw"))
+            assertNull(MediaStoreWriter.openOutputStream(context, uri))
+        }
+        repeat(2) { assertFalse(MediaStoreWriter.publish(context, uri, journal)) }
+
+        val rows = rowsFor(uri)
+        assertTrue("rows=${rows.map { it.msg }}", rows.size <= 3)
+        if (budgetOpen) {
+            assertEquals(1, rows.count { it.msg.startsWith("open rw failed") })
+            assertEquals(1, rows.count { it.msg.startsWith("open output stream failed") })
+            assertEquals(1, rows.count { it.msg.startsWith("publish exhausted") })
+        }
+    }
+
     private fun reservedBudgetOpen(): Boolean =
         processReservedDiagnosticLogBudget.usedRows() + 2 <= RESERVED_DIAGNOSTIC_ROW_BUDGET
 
