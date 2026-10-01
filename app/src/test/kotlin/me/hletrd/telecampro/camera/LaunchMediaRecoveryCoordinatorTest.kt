@@ -407,6 +407,29 @@ class LaunchMediaRecoveryCoordinatorTest {
         assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
     }
 
+    // AGG3-30: an interrupted backoff (sleepPreservingInterrupt -> false) means the owner was
+    // retired mid-wait; the run stops instead of paying the rest of its retry budget in provider work.
+    @Test
+    fun `an interrupted backoff stops the run and leaves the page for the next launch`() {
+        var batches = 0
+        val completion = executeLaunchMediaRecovery(
+            maxFailureAttempts = 3,
+            backoff = { false },
+        ) { cursor ->
+            batches++
+            OrphanRecoveryBatch(
+                report = RecoveryReport().record(RecoveryEvent.QUERY_FAILED),
+                nextCursor = cursor,
+                hasMore = false,
+            )
+        }
+
+        assertEquals(1, batches)
+        assertEquals(1, completion.attempts)
+        assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
+        assertTrue(completion.report.retryRequired)
+    }
+
     @Test
     fun `failed discard page exhausts locally then advances to later durable entries`() {
         val cursors = mutableListOf<String?>()

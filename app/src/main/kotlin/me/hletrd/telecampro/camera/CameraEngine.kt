@@ -36,6 +36,7 @@ import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import me.hletrd.telecampro.storage.PendingOutputAllocation
 import me.hletrd.telecampro.storage.RecoveryReport
 import me.hletrd.telecampro.storage.RecoveryRetryDecision
+import me.hletrd.telecampro.storage.sleepPreservingInterrupt
 import me.hletrd.telecampro.video.NativeGraphDisposition
 import me.hletrd.telecampro.video.AudioRouteStatus
 import me.hletrd.telecampro.video.EncoderSelection
@@ -7605,8 +7606,11 @@ class CameraEngine internal constructor(
             recover = {
                 executeLaunchMediaRecovery(
                     maxFailureAttempts = MAX_MEDIA_RECOVERY_ATTEMPTS,
+                    // Not `runCatching { Thread.sleep() }`: that swallowed the interrupt and
+                    // cleared its flag, so a retired owner's recovery kept doing provider work
+                    // (AGG3-30, same contract as the MediaStoreWriter retry loops).
                     backoff = { attempt ->
-                        runCatching { Thread.sleep(MEDIA_RECOVERY_RETRY_BACKOFF_MS * attempt) }
+                        sleepPreservingInterrupt(MEDIA_RECOVERY_RETRY_BACKOFF_MS * attempt)
                     },
                     recoverBatch = { cursor ->
                         MediaStoreWriter.cleanupOrphanedPendingBatch(recoveryContext, cursor)

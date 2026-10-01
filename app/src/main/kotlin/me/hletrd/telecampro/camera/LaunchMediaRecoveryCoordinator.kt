@@ -241,10 +241,16 @@ internal object ProcessLaunchMediaRecovery {
 
 internal const val PROCESS_LAUNCH_MEDIA_RECOVERY_DEADLINE_MS = 120_000L
 
-/** Pages clean work to completion while bounding retries of a failing durable provider operation. */
+/**
+ * Pages clean work to completion while bounding retries of a failing durable provider operation.
+ *
+ * [backoff] answers false when its wait was INTERRUPTED (`sleepPreservingInterrupt`, AGG3-30): the
+ * owner was retired mid-backoff, so the run stops at once with the rows it could not settle left for
+ * the next launch, instead of resuming provider/SQLite work on a thread its owner asked to stop.
+ */
 internal fun executeLaunchMediaRecovery(
     maxFailureAttempts: Int,
-    backoff: (attempt: Int) -> Unit = {},
+    backoff: (attempt: Int) -> Boolean = { true },
     recoverBatch: (OrphanRecoveryCursor) -> OrphanRecoveryBatch,
 ): MediaRecoveryCompletion {
     var cursor = OrphanRecoveryCursor()
@@ -284,7 +290,13 @@ internal fun executeLaunchMediaRecovery(
                 }
                 continue
             }
-            backoff(consecutiveFailures)
+            if (!backoff(consecutiveFailures)) {
+                return MediaRecoveryCompletion(
+                    cumulative.copy(failureClasses = exhaustedProgressFailures + batch.report.failureClasses),
+                    attempts,
+                    RecoveryRetryDecision.EXHAUSTED,
+                )
+            }
             continue
         }
         consecutiveFailures = 0
