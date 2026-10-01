@@ -8,7 +8,7 @@ import android.opengl.EGLSurface
 /**
  * Robolectric leaves EGL14's sentinel statics (EGL_NO_DISPLAY / EGL_NO_SURFACE / EGL_NO_CONTEXT)
  * null: the real framework assigns them from `_nativeClassInit()`, which the sandbox no-ops, and
- * ShadowEGL14 (4.16.1) shadows only the egl* entry points — it has no static-initializer shadow.
+ * ShadowEGL14 (4.16.1 and 4.17) shadows only the egl* entry points — it has no static-initializer shadow.
  * `GlPipeline`'s field initializers read `EGL14.EGL_NO_SURFACE` into non-null Kotlin types, so
  * constructing the REAL `CameraEngine` under Robolectric requires the sentinels first. The fields
  * are deliberately non-final in the framework; handle value 0 matches the native sentinel.

@@ -683,7 +683,7 @@ tasks.withType<Test>().configureEach {
 // At first test run Robolectric's own MavenArtifactFetcher (NOT Gradle: it ignores Gradle repos,
 // caches, and verification-metadata.xml) downloads the ~40 MB pre-instrumented framework jar for
 // each simulated SDK straight from Maven Central into ~/.m2 — a side channel outside this repo's
-// dependency-verification perimeter. Instead, declare the exact jar Robolectric 4.16.1 pins for
+// dependency-verification perimeter. Instead, declare the exact jar Robolectric 4.17 pins for
 // simulated SDK 36 as a REAL Gradle dependency, copy it into the build dir, and run the tests
 // offline against that dir — so its sha256 lives in gradle/verification-metadata.xml like any
 // other dependency. The pinned version must move in lockstep with Robolectric upgrades; on drift
@@ -698,6 +698,12 @@ tasks.withType<Test>().configureEach {
     dependsOn(fetchRobolectricJars)
     systemProperty("robolectric.offline", "true")
     systemProperty("robolectric.dependency.dir", robolectricJarsDir.get().asFile.path)
+    // Robolectric 4.17 creates ApplicationSharedMemory for SDK 36+ in every test's setup, and its
+    // FileDescriptorInterceptor reaches jdk.internal.access.SharedSecrets reflectively; JDK 17+
+    // does not export that package, so EVERY Robolectric test failed before its body ran
+    // ("Failed to interact with raw FileDescriptor internals"). The export is scoped to the
+    // host test JVM only. Upstream fix: robolectric#11496 (expected in 4.17.1) — drop this then.
+    jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
 }
 
 composeCompiler {

@@ -15,10 +15,11 @@ coroutines = "1.11.0"
 # the earlier "no stable 1.1.0 exists" note that justified the 1.2.0-alpha01 pin was wrong.
 heifwriter = "1.1.0"
 junit = "4.13.2"
-# Latest stable (verified against Maven Central 2026-07; 4.17 is still beta and only needed for
-# simulated SDK 37 — irrelevant while targetSdk stays 36). Simulated SDK 36 requires JDK 21 (met).
-robolectric = "4.16.1"
-# The android-all runtime jar Robolectric 4.16.1 pins for simulated SDK 36 (DefaultSdkProvider).
+# Latest stable (verified against Maven Central 2026-10-02). 4.17 also knows simulated SDK 37, which
+# stays unused while targetSdk is 36. Simulated SDK 36 requires JDK 21 (met).
+robolectric = "4.17"
+# The android-all runtime jar Robolectric 4.17 pins for simulated SDK 36 (DefaultSdkProvider:
+# BAKLAVA -> "16" / "13921718", PREINSTRUMENTED_VERSION 7 — unchanged from 4.16.1).
 # Declared as a REAL Gradle dependency (see app/build.gradle.kts robolectricJars) so the ~40 MB
 # framework jar rides gradle/verification-metadata.xml instead of Robolectric's own side-channel
 # Maven fetch. MUST be bumped in lockstep with the robolectric version above (a mismatch fails the
