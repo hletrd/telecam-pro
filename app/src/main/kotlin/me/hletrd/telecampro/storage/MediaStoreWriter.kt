@@ -1392,6 +1392,14 @@ object MediaStoreWriter {
             nextCursor = nextCursor,
             // Even an empty media scan must enter the independent DISCARD stage once.
             hasMore = !nextCursor.mediaComplete || !nextCursor.discardComplete,
+            // A media page whose failure is a ROW (publish/delete failed, journal unavailable) has
+            // already retained that row and moved its cursor past it; once the bounded retry budget
+            // is spent it may advance, or one persistently failing row would starve every later
+            // Images/Video page and the whole DISCARD stage on every launch. A page that did NOT
+            // advance (its collection query itself failed) must stop instead: continuing would
+            // re-run the identical failing query forever. The preflight stage stays blocking
+            // because media disposition depends on the family journal it reconciles.
+            continueAfterFailureExhaustion = nextCursor != cursor,
         )
     }
 
