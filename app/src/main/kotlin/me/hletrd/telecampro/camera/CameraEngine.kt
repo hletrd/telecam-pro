@@ -3283,7 +3283,7 @@ class CameraEngine internal constructor(
     @Volatile
     private var rawWanted = false
     // Bumped by every DNG write that does NOT own an optics transaction (no route flip: Video,
-    // FRONT/EXTERNAL, before start, or a device without the RAW law). A rollback restores the
+    // TELE, FRONT/EXTERNAL, before start, or a device without the RAW law). A rollback restores the
     // baseline DNG intent only while this still matches the baseline's value — otherwise it would
     // silently revert a later operator choice that never moved the route (RPL cycle 1 review).
     @Volatile
@@ -4055,8 +4055,17 @@ class CameraEngine internal constructor(
     ) {
         if (rawWanted == enabled) return
         val rawLaw = activeDeviceProfile().rawRequiresStandalone
-        val routeFlips = standaloneRouteWanted(videoMode, rawWanted, rawLaw) !=
-            standaloneRouteWanted(videoMode, enabled, rawLaw)
+        // TELE already pins the standalone 3×, whose session carries RAW by ROUTE (the reader plan
+        // never asks rawWanted), so a DNG toggle there names the same camera: asking only the
+        // mode/law reopened the identical id + TC session for a visible black dip per toggle
+        // (RPL cycle 2, AGG2-10). The VM's scale remap already treated it as no change.
+        val routeFlips = dngIntentChangesRearRoute(
+            video = videoMode,
+            teleconverter = teleconverterMode,
+            from = rawWanted,
+            to = enabled,
+            rawForcesStandalone = rawLaw,
+        )
         // Before start there is no session to move: the FIRST configure resolves the route from
         // `rawWanted` directly (that is how a restored DNG selection lands), and opening a
         // transaction here would bump the optics generation under the cold-start path for nothing.

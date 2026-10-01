@@ -121,6 +121,24 @@ class OpticsRouteInputTransactionRobolectricTest {
         assertEquals(null, field(camera, "acceptedCameraSession"))
     }
 
+    @Test
+    fun `DNG toggle on the TELE route publishes the intent without a reopen`() {
+        val camera = acceptedPma110Engine()
+        setBoolean(camera, "started", true)
+        setBoolean(camera, "teleconverterMode", true)
+        setField(camera, "lensChoice", LensChoice.TELE3X)
+        val generation = (field(camera, "opticsIntentGeneration") as AtomicLong).get()
+        val directWrites = getLong(camera, "rawWantedDirectWrites")
+
+        camera.setRawWanted(true)
+
+        assertTrue(getBoolean(camera, "rawWanted"))
+        assertEquals("same standalone 3× camera: no optics transaction", generation, (field(camera, "opticsIntentGeneration") as AtomicLong).get())
+        assertTrue("the Ready TELE session is untouched", getBoolean(camera, "cameraReady"))
+        assertEquals(directWrites + 1, getLong(camera, "rawWantedDirectWrites"))
+        setBoolean(camera, "started", false)
+    }
+
     // ---- fixtures ----
 
     private fun acceptedPma110Engine(): CameraEngine {
