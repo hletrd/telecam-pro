@@ -406,6 +406,28 @@ class SessionFallbackLadderTest {
     }
 
     @Test
+    fun `after the ten bit rung the ordinary ladder resumes at its drop-RAW rung`() {
+        // Pinned as-is (verifier V4): attempt 1 is HLG + processed still WITHOUT RAW, attempt 2
+        // drops HLG, attempt 3 is preview-only. RAW never rides any rung of a 10-bit request.
+        fun plan(attempt: Int) = sessionAttemptPlan(
+            attempt = attempt,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            tenBitVideoOnly = true,
+        )
+        assertTrue(plan(1).useHlg)
+        assertTrue(plan(1).useJpeg)
+        assertFalse(plan(1).useRaw)
+        assertFalse(plan(2).useHlg)
+        assertTrue(plan(2).useJpeg)
+        assertFalse(plan(2).useRaw)
+        assertFalse(plan(3).useHlg)
+        assertFalse(plan(3).useJpeg)
+        assertFalse(plan(3).useRaw)
+    }
+
+    @Test
     fun `accepted hi-res truth requires the processed reader`() {
         assertTrue(
             acceptedPhotoSessionOutputs(

@@ -2659,8 +2659,12 @@ internal fun sessionAttemptPlan(
     // 10-bit EXPERIMENT rung (debug-gated upstream). HLG10 + full-res JPEG + RAW together CRASH
     // this HAL — a crash, not a config rejection, so the fallback ladder below cannot rescue it.
     // The only safe way to ask for 10 bits is therefore to drop both still readers in the same
-    // breath, which costs the in-REC snapshot while it is active. Attempt 0 only: any later attempt
-    // falls straight through to the ordinary 8-bit ladder.
+    // breath, which costs the in-REC snapshot while it is active. Attempt 0 only: later attempts
+    // are the ORDINARY ladder from its rung 1 — not an 8-bit restart, as this comment used to claim
+    // (verifier V4): rung 1 is the historical "drop RAW" rung, HLG10 + the processed still reader
+    // with no RAW (two of the three crash members; the crash needs all three), rung 2 drops HLG, and
+    // rung 3 is preview-only. Pinned by SessionFallbackLadderTest; changing it needs a PMA110
+    // measurement of HLG10+still without RAW first.
     if (tenBitVideoOnly && attempt == 0) {
         return SessionAttemptPlan(
             useHlg = true,
