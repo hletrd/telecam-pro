@@ -279,6 +279,14 @@ class FinalizedVideoTrackProbeTest {
             },
         )
         assertEquals(Mp4MoovPresence.UNKNOWN, probeMp4MoovPresence(-1L) { _, _ -> null })
+        // A large-size header whose 64-bit size cannot be read.
+        val large = largeBox("mdat", 32)
+        assertEquals(
+            Mp4MoovPresence.UNKNOWN,
+            probeMp4MoovPresence(large.size.toLong()) { offset, count ->
+                if (offset == 0L) large.copyOfRange(0, count) else null
+            },
+        )
         val manyFree = ByteArrayOutputStream().apply { repeat(4_097) { write(box("free", 8)) } }.toByteArray()
         assertEquals(Mp4MoovPresence.UNKNOWN, walk(manyFree, box("moov", 16)))
     }
