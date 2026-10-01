@@ -1434,9 +1434,9 @@ object MediaStoreWriter {
                                 )
                             }
                             OrphanDisposition.KEEP_PENDING -> {
-                                // A DISCARD row is the DISCARD stage's to delete; re-arming its
-                                // expiry would only delay a delete the user already asked for.
-                                if (journalState != PendingJournalState.DISCARD) {
+                                // Bounded re-arm (AGG4-4): only a row a later launch can still
+                                // adopt buys another expiry window — see keptRowReassertsPending.
+                                if (keptRowReassertsPending(journalState, probeOutcome)) {
                                     reassertPending(context, uri)
                                 }
                                 report = report.record(RecoveryEvent.RETAINED)
@@ -2864,6 +2864,25 @@ internal fun moovPresenceVerdict(presence: Mp4MoovPresence): PendingProbe =
 private const val MAX_MP4_TOP_LEVEL_BOXES = 4_096
 
 internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
+
+/**
+ * Which KEPT rows re-arm MediaProvider's pending expiry ([MediaStoreWriter.reassertPending]).
+ *
+ * AGG4-4 (CRIT4-1, DBG4-2): re-arming every kept row made the never-judgeable ones immortal — a
+ * hidden, undeletable, multi-GB leak, because a pending row is invisible to Gallery and to the user.
+ * The re-arm is for rows a LATER launch can still adopt: those whose probe could not run this time
+ * (open/read/extractor threw — [PendingProbeOutcome.failed], e.g. a busy provider, or a
+ * fail-closed take whose COMPLETE marker never landed and whose bytes were unreachable). A row whose
+ * bytes WERE read and whose verdict is a constant of those bytes — an unknown MIME with no
+ * conservative probe, an undecidable HEIF layout, a probed non-VALID zero-size COMPLETE row — is
+ * kept but NOT re-armed: the next launch would reach the same answer, so MediaProvider's expiry is
+ * its terminal, exactly as before AGG3-4. A DISCARD row belongs to the DISCARD stage; re-arming it
+ * would only delay a delete the user already asked for.
+ */
+internal fun keptRowReassertsPending(
+    journalState: PendingJournalState,
+    probeOutcome: PendingProbeOutcome,
+): Boolean = journalState != PendingJournalState.DISCARD && probeOutcome.failed
 
 /** Pure conservative launch-recovery decision; an unknown answer never destroys user media. */
 internal fun orphanDisposition(

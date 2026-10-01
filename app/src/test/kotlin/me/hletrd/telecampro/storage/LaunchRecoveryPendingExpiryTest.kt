@@ -21,22 +21,28 @@ import org.robolectric.shadows.ShadowContentResolver
 /**
  * AGG3-4 (CRIT3-2, DES3-2): a row launch recovery KEEPS pending used to be left untouched, so
  * MediaProvider's pending expiry (about a week from insert) silently deleted a take the status copy
- * promised would be retained. Recovery now re-writes `IS_PENDING = 1` on exactly the kept URI;
- * adopted, deleted, and DISCARD-owned rows never receive it. Whether that update re-arms
- * `DATE_EXPIRES` is MediaProvider behaviour and stays PENDING DEVICE.
+ * promised would be retained. Recovery now re-writes `IS_PENDING = 1` on a kept URI a later launch
+ * can still adopt; adopted, deleted, and DISCARD-owned rows never receive it. AGG4-4 bounds it: a
+ * row whose bytes were read and are undecidable (unknown MIME) is kept but NOT re-armed, so
+ * MediaProvider's expiry stays its terminal. Whether the update re-arms `DATE_EXPIRES` on a given
+ * OEM provider stays PENDING DEVICE.
  */
 @RunWith(RobolectricTestRunner::class)
 class LaunchRecoveryPendingExpiryTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun `only a kept pending row has its pending flag re-asserted`() {
+    fun `only a kept row a later launch can adopt has its pending flag re-asserted`() {
         val suffix = UUID.randomUUID().toString()
         val authority = "recovery-expiry-$suffix"
         val imageBase = Uri.parse("content://$authority/images")
         val rows = mapOf(
-            // No conservative structural probe exists for webp: INDETERMINATE, kept pending.
+            // No conservative structural probe exists for webp: INDETERMINATE on read bytes, kept
+            // pending but NOT re-armed — every later launch reaches the same answer (AGG4-4).
             KEPT to Row("image/webp", 16L),
+            // A JPEG whose descriptor cannot be opened this launch: a transient probe failure on a
+            // row a later launch can still adopt, so its expiry IS re-armed.
+            TRANSIENT to Row("image/jpeg", 16L),
             // Zero bytes is provably incomplete: deleted.
             DELETED to Row("image/jpeg", 0L),
             // A durable COMPLETE marker adopts: published with IS_PENDING = 0.
@@ -71,8 +77,9 @@ class LaunchRecoveryPendingExpiryTest {
 
         assertEquals(1, batch.report.adopted)
         assertEquals(1, batch.report.deleted)
-        assertEquals(2, batch.report.retained)
-        assertEquals(listOf(1), provider.pendingWrites[KEPT])
+        assertEquals(3, batch.report.retained)
+        assertEquals(listOf(1), provider.pendingWrites[TRANSIENT])
+        assertFalse(KEPT in provider.pendingWrites)
         assertEquals(listOf(0), provider.pendingWrites[ADOPTED])
         assertFalse(DELETED in provider.pendingWrites)
         assertFalse(DISCARDED in provider.pendingWrites)
@@ -175,5 +182,6 @@ class LaunchRecoveryPendingExpiryTest {
         const val DELETED = 2L
         const val ADOPTED = 3L
         const val DISCARDED = 4L
+        const val TRANSIENT = 5L
     }
 }

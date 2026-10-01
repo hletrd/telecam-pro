@@ -251,4 +251,21 @@ class OrphanSweepTest {
         assertFalse(providerUnknown.restoreAsSurvivor)
         assertFalse(providerUnknown.fullyRetired)
     }
+
+    @Test
+    fun `only a kept row whose probe could not run re-arms its pending expiry`() {
+        // AGG4-4: re-arming a row whose bytes were read and are undecidable made it immortal.
+        val transient = PendingProbeOutcome(PendingProbe.INDETERMINATE, failed = true)
+        val undecidable = PendingProbeOutcome(PendingProbe.INDETERMINATE, failed = false)
+        listOf(
+            PendingJournalState.UNKNOWN,
+            PendingJournalState.REGISTERED,
+            PendingJournalState.COMPLETE,
+        ).forEach { journal ->
+            assertTrue("$journal", keptRowReassertsPending(journal, transient))
+            assertFalse("$journal", keptRowReassertsPending(journal, undecidable))
+        }
+        assertFalse(keptRowReassertsPending(PendingJournalState.DISCARD, transient))
+        assertFalse(keptRowReassertsPending(PendingJournalState.DISCARD, undecidable))
+    }
 }
