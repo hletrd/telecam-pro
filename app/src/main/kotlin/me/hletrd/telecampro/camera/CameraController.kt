@@ -154,7 +154,10 @@ class CameraController internal constructor(
     // @Volatile for visibility; updateControls confines the actual write to the handler thread.
     @Volatile private var controls = ManualControls()
     private var tenBitHlg = false
-    private var rawChars: CameraCharacteristics? = null
+    // Written by open() on setupExecutor, lazily re-read on the camera handler (tryComplete).
+    @Volatile private var rawChars: CameraCharacteristics? = null
+    @Volatile private var rawCharsCameraId: String? = null
+    private val rawCharsFailureLogged = java.util.concurrent.atomic.AtomicBoolean(false)
     private var configAttempt = 0
     // HAL video stabilization mode for the repeating preview/video request (CONTROL_VIDEO_
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
@@ -317,9 +320,8 @@ class CameraController internal constructor(
         this.diagnosticRequestMode = if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO
         this.diagnosticOpticsGeneration = diagnosticOpticsGeneration
         modeIntentGate.reset(PreviewModeIntent(pinAutoFps, diagnosticOpticsGeneration))
-        this.rawChars = runCatching {
-            manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
-        }.getOrNull()
+        this.rawCharsCameraId = selection.physicalId ?: selection.logicalId
+        this.rawChars = readRawCharacteristics()
 
         // openCamera can throw SYNCHRONOUSLY — CameraAccessException CAMERA_DISABLED when the app is
         // opening from a background proc state (e.g. relaunched behind the keyguard / while the screen
@@ -2258,7 +2260,10 @@ class CameraController internal constructor(
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
             Log.i(TAG, "ShutterLag: images+result +${(System.nanoTime() - p.queuedAtNs) / 1_000_000} ms")
         }
-        val chars = rawChars
+        // A transient open-time read failure (the same resume race as openCamera's synchronous
+        // CAMERA_DISABLED) used to leave rawChars null for the controller's whole life, failing
+        // EVERY still after the HAL had already delivered its image. Retry the read lazily here.
+        val chars = rawChars ?: readRawCharacteristics()?.also { rawChars = it }
         try {
             if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
             else p.cb.onError(IllegalStateException("Missing camera characteristics"))
@@ -2398,6 +2403,22 @@ class CameraController internal constructor(
         val timeout: Runnable,
         val onResult: (android.hardware.camera2.params.RggbChannelVector?) -> Unit,
     )
+
+    /**
+     * Reads the producer's characteristics for this controller's camera. The first failure is
+     * logged through the reserved facade (once per controller — the lazy retry in tryComplete can
+     * run per shot) so a still that fails "Missing camera characteristics" has a cause in logcat.
+     */
+    private fun readRawCharacteristics(): CameraCharacteristics? {
+        val id = rawCharsCameraId ?: return null
+        return runCatching { manager.getCameraCharacteristics(id) }
+            .onFailure { failure ->
+                if (rawCharsFailureLogged.compareAndSet(false, true)) {
+                    Log.w(TAG, "camera characteristics read failed for $id", failure)
+                }
+            }
+            .getOrNull()
+    }
 
     private companion object {
         const val TAG = "CameraController"
