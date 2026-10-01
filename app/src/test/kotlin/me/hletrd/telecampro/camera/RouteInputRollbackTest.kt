@@ -70,6 +70,25 @@ class RouteInputRollbackTest {
         assertNull(restorable(current = 8L, preflight = 8L, paused = true))
     }
 
+    // AGG3-7: a bare reopen's baseline is snapshotted AFTER its door mutated, so its own
+    // preflight invalidation must not license re-accepting the outgoing controller.
+    @Test
+    fun `only a pre-mutation baseline may restore under its preflight generation`() {
+        assertEquals(8L, preflightRestorableSessionGeneration(baselinePrecedesMutation = true, preflightSessionGeneration = 8L))
+        assertNull(preflightRestorableSessionGeneration(baselinePrecedesMutation = false, preflightSessionGeneration = 8L))
+        // Composed: a bare door whose reopen already bumped the session (7 -> 8) stays Not-Ready.
+        assertNull(
+            rollbackRestorableSessionGeneration(
+                beforeReady = true,
+                controllerMatches = true,
+                paused = false,
+                beforeSessionGeneration = 7L,
+                currentSessionGeneration = 8L,
+                preflightSessionGeneration = preflightRestorableSessionGeneration(false, 8L),
+            ),
+        )
+    }
+
     @Test
     fun `a newer transaction-less write survives an older rollback`() {
         assertEquals("1080p", keepNewerDirectWrite(current = "1080p", baseline = "4K", directWriteSinceBaseline = true))

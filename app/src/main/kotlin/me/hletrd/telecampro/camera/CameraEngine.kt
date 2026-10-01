@@ -711,7 +711,19 @@ class CameraEngine internal constructor(
         val nativeFinalization: RecorderNativeFinalizationGate,
     )
 
-    private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
+    /**
+     * [baselinePrecedesMutation] is true only for [beginOpticsTransaction], whose `before` is frozen
+     * INSIDE the commit gate before the door publishes its desired packet. A
+     * [currentOpticsReconfiguration] token (bare `reopenForSession()` doors — video size, stab,
+     * aspect/hi-res, frame rate — and the resume/cold-start paths) snapshots AFTER the door already
+     * mutated its field, so that `before` describes the NEW request, not the streaming session, and
+     * must never re-accept the outgoing controller as Ready (AGG3-7).
+     */
+    private data class OpticsTransaction(
+        val generation: Long,
+        val before: OpticsSnapshot,
+        val baselinePrecedesMutation: Boolean,
+    )
     private data class OpticsReconfiguration(val overrideId: String?, val transaction: OpticsTransaction)
 
     /**
@@ -777,7 +789,7 @@ class CameraEngine internal constructor(
             // back to the last Ready state, never to the first tap's unaccepted intermediate fields.
             val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
             opticsRollbackBaseline = before
-            val transaction = OpticsTransaction(generation, before)
+            val transaction = OpticsTransaction(generation, before, baselinePrecedesMutation = true)
             // Generation and its complete desired packet share the commit gate's monitor. Resume
             // cannot capture the new token between increment and desired-state publication.
             val desired = publishDesiredOptics()
@@ -952,6 +964,8 @@ class CameraEngine internal constructor(
         transaction = OpticsTransaction(
             generation = opticsIntentGeneration.get(),
             before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline),
+            // Snapshotted after a bare door's own write: see [OpticsTransaction].
+            baselinePrecedesMutation = false,
         ),
     )
 
@@ -969,14 +983,23 @@ class CameraEngine internal constructor(
      * other door happened to reopen (RPL cycle 2, AGG2-4). The generation this door's own
      * invalidation produced is therefore restorable too; any LATER bump (a camera error, pause, or
      * another door) moves it again and keeps the rollback Not-Ready.
+     *
+     * Only a transaction whose baseline PRECEDES its door's mutation qualifies (AGG3-7): a bare
+     * `reopenForSession()` door snapshots after writing its video size / stab / aspect / rate, so
+     * re-accepting the outgoing controller would publish Ready over a session that does not carry
+     * the restored fields. Those keep the pre-cycle-2 Not-Ready outcome.
      */
     private fun rollbackOpticsAfterPreflight(
         transaction: OpticsTransaction,
         status: CameraStatus,
         preflightSessionGeneration: Long,
     ) {
+        val restorable = preflightRestorableSessionGeneration(
+            baselinePrecedesMutation = transaction.baselinePrecedesMutation,
+            preflightSessionGeneration = preflightSessionGeneration,
+        )
         val effects = synchronized(this) {
-            commitOpticsRollbackLocked(transaction, status, preflightSessionGeneration)
+            commitOpticsRollbackLocked(transaction, status, restorable)
         } ?: return
         executeOpticsRollbackEffects(effects)
     }
@@ -8528,6 +8551,17 @@ internal fun rollbackRawWanted(
  * retired no camera — the outgoing controller is still the one streaming (AGG2-4). Any other value
  * means a camera error, pause, or newer door moved the session, and that stays non-restorable.
  */
+/**
+ * The preflight generation a [rollbackRestorableSessionGeneration] may additionally accept: only a
+ * transaction whose rollback baseline was frozen BEFORE its door mutated anything (AGG3-7). A bare
+ * reopen's post-mutation snapshot gets null, i.e. the ordinary baseline-generation rule, which its
+ * own pre-close invalidation has already moved — so it publishes Not-Ready.
+ */
+internal fun preflightRestorableSessionGeneration(
+    baselinePrecedesMutation: Boolean,
+    preflightSessionGeneration: Long,
+): Long? = preflightSessionGeneration.takeIf { baselinePrecedesMutation }
+
 internal fun rollbackRestorableSessionGeneration(
     beforeReady: Boolean,
     controllerMatches: Boolean,

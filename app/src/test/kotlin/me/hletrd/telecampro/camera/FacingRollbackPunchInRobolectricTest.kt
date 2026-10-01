@@ -69,6 +69,38 @@ class FacingRollbackPunchInRobolectricTest {
         assertEquals(4f, (field(camera, "controls") as ManualControls).zoomRatio, 1e-4f)
     }
 
+    /**
+     * AGG3-7, wiring half: a bare-reopen token ([currentOpticsReconfiguration], snapshotted after
+     * the door's own write) whose preflight fails must publish Not-Ready, never re-accept the
+     * outgoing controller under its own preflight invalidation.
+     */
+    @Test
+    fun `bare reopen preflight failure stays Not-Ready`() {
+        val camera = acceptedRoute(CameraRoute.BACK)
+        setBoolean(camera, "paused", false)
+        val sessions = field(camera, "cameraSessionGeneration") as AtomicLong
+        val desired = CameraEngine::class.java.declaredMethods
+            .single { it.name == "currentOpticsReconfiguration" }
+            .apply { isAccessible = true }
+            .invoke(camera)!!
+        val transaction = field(desired, "transaction")!!
+        assertFalse(field(transaction, "baselinePrecedesMutation") as Boolean)
+        // The reopen's own pre-close invalidation.
+        val preflight = sessions.incrementAndGet()
+
+        CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOpticsAfterPreflight" }
+            .apply { isAccessible = true }
+            .invoke(
+                camera,
+                transaction,
+                CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+                preflight,
+            )
+
+        assertFalse(field(camera, "cameraReady") as Boolean)
+        assertEquals("Not-Ready rollback retires the session", preflight + 1, sessions.get())
+    }
+
     private fun acceptedRoute(route: CameraRoute): CameraEngine {
         RobolectricEglSentinels.ensure()
         val camera = CameraEngine(app)
@@ -89,7 +121,7 @@ class FacingRollbackPunchInRobolectricTest {
             .single { it.simpleName == "OpticsTransaction" }
         val transaction = transactionType.declaredConstructors.single()
             .apply { isAccessible = true }
-            .newInstance(generation, baseline)
+            .newInstance(generation, baseline, true)
         CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
             .apply { isAccessible = true }
             .invoke(camera, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_FACING_UNCHANGED.status())
