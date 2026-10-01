@@ -1,32 +1,48 @@
 package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.R
-import me.hletrd.telecampro.camera.ColorTransfer
-import me.hletrd.telecampro.camera.tenBitSessionWanted
+import me.hletrd.telecampro.camera.acceptedPhotoSessionOutputs
+import me.hletrd.telecampro.camera.sessionAttemptPlan
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * AGG2-35: "10-bit video · stills off" names the designed 10-bit trade, so it must follow the
- * request's 10-bit answer, not bare video mode. SDR video on the preview-only rung has no still
- * readers either, and claiming 10-bit there was false.
+ * "10-bit video · stills off" names the designed 10-bit trade, so it must follow the ACCEPTED
+ * session's HLG fact: not bare video mode (AGG2-35 — SDR video on the preview-only rung has no
+ * still readers either), and not the 10-bit request (AGG3-17 — a request that fell down the ladder
+ * to the 8-bit preview-only rung is neither 10-bit nor a deliberate trade).
  */
 class NoStillOutputCaptionTest {
-    private fun caption(videoMode: Boolean, transfer: ColorTransfer): Int =
-        noStillOutputCaption(tenBitSessionWanted(videoMode, transfer))
-
-    @Test
-    fun `only a non-SDR video request earns the 10-bit trade caption`() {
-        ColorTransfer.entries.filter { it != ColorTransfer.SDR }.forEach { transfer ->
-            assertEquals(transfer.name, R.string.output_10_bit_video_stills_off, caption(true, transfer))
-        }
+    /** The caption the sheet shows for the session [attempt] of a 10-bit request would accept. */
+    private fun tenBitRequestCaptionAt(attempt: Int): Int {
+        val plan = sessionAttemptPlan(
+            attempt = attempt,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            tenBitVideoOnly = true,
+        )
+        val outputs = acceptedPhotoSessionOutputs(
+            processedReaderPresent = plan.useJpeg,
+            rawReaderPresent = plan.useRaw,
+            hlgSessionAccepted = plan.useHlg,
+        )
+        return noStillOutputCaption(outputs.hlg)
     }
 
     @Test
-    fun `SDR video and every photo session fall back to the plain unavailable caption`() {
-        assertEquals(R.string.status_still_capture_unavailable, caption(true, ColorTransfer.SDR))
-        ColorTransfer.entries.forEach { transfer ->
-            assertEquals(transfer.name, R.string.status_still_capture_unavailable, caption(false, transfer))
-        }
+    fun `the accepted 10-bit still-less rung earns the trade caption`() {
+        assertEquals(R.string.output_10_bit_video_stills_off, tenBitRequestCaptionAt(0))
+    }
+
+    @Test
+    fun `a 10-bit request that fell to the 8-bit preview-only rung reads still capture unavailable`() {
+        assertEquals(R.string.status_still_capture_unavailable, tenBitRequestCaptionAt(3))
+    }
+
+    @Test
+    fun `an SDR session without still readers reads still capture unavailable`() {
+        val outputs = acceptedPhotoSessionOutputs(processedReaderPresent = false, rawReaderPresent = false)
+        assertEquals(R.string.status_still_capture_unavailable, noStillOutputCaption(outputs.hlg))
     }
 }

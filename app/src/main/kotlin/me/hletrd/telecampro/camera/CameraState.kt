@@ -1282,6 +1282,11 @@ data class PhotoSessionOutputs(
     // routinely diverge). Downstream honesty keys off this: format collapse to passthrough JPEG,
     // the OSD HR tag, and the still request's SENSOR_PIXEL_MODE.
     val hiRes: Boolean = false,
+    // True only when the ACCEPTED session's preview stream carries HLG10 — the rung that actually
+    // configured, not the 10-bit REQUEST (AGG3-17). A 10-bit request that fell down the ladder to
+    // the 8-bit preview-only rung has no still readers AND no HLG, and must not be captioned as the
+    // designed "10-bit video · stills off" trade.
+    val hlg: Boolean = false,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }

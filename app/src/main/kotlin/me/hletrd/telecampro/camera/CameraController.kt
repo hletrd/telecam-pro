@@ -790,6 +790,7 @@ class CameraController internal constructor(
                                 processedReaderPresent = jpegReader != null,
                                 rawReaderPresent = rawReader != null,
                                 hiResReaderPresent = hiResReaderActive,
+                                hlgSessionAccepted = useHlg,
                             ),
                         )
                         SessionStartDelivery.ERROR ->
@@ -2567,9 +2568,12 @@ internal fun acceptedPhotoSessionOutputs(
     processedReaderPresent: Boolean,
     rawReaderPresent: Boolean,
     hiResReaderPresent: Boolean = false,
+    /** The accepted plan's `useHlg` — the rung that configured, never the request. */
+    hlgSessionAccepted: Boolean = false,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
+    hlg = hlgSessionAccepted,
     // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
     // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).
     hiRes = processedReaderPresent && hiResReaderPresent,
