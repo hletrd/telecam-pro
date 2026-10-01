@@ -685,6 +685,31 @@ class ZoomMathTest {
         )
     }
 
+    // AGG2-11: the DNG door remaps only where the engine's own law moves the zoom scale.
+    @Test
+    fun `DNG door remaps zoom scale only on a BACK non-TC photo route the RAW law moves`() {
+        fun remaps(
+            video: Boolean = false,
+            law: Boolean = true,
+            tc: Boolean = false,
+            lensLocal: Boolean = false,
+            from: Boolean = false,
+            to: Boolean = true,
+        ) = dngDoorRemapsZoomScale(video, from, to, law, tc, lensLocal)
+        // PMA110 photo on BACK: both directions move the scale (byte-identical to before).
+        assertTrue(remaps())
+        assertTrue(remaps(from = true, to = false))
+        // GENERIC law: RAW rides the logical camera, nothing moves — the stale state copy said it did.
+        assertFalse(remaps(law = false))
+        // Video is standalone either way.
+        assertFalse(remaps(video = true))
+        // TC already sits on the standalone 3× lens; FRONT/EXTERNAL keep their one camera.
+        assertFalse(remaps(tc = true))
+        assertFalse(remaps(lensLocal = true))
+        // No edit on the DNG axis.
+        assertFalse(remaps(from = true, to = true))
+    }
+
     @Test
     fun `retained rear zoom keeps unified on the seamless route and round-trips every lens`() {
         val optical = LensChoice.entries.toSet()

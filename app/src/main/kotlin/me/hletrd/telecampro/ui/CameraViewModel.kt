@@ -2463,13 +2463,26 @@ class CameraViewModel private constructor(
         // framing into the target scale, drop every in-flight value expressed in the old scale, and
         // hand the converted packet to the engine's own transaction (AGG-1). Pushed BEFORE the state
         // write so the reopen it may trigger is already in flight when the UI reflects it.
+        // The RAW law is read from the ENGINE, the same answer setRawWanted decides with — the
+        // state copy defaults to PMA110's until the first route inventory (AGG2-11) — and the door
+        // is a remap door only where the zoom scale really moves: TC and the lens-local routes keep
+        // their camera, so they neither cancel in-flight controls nor drop a held tap focus.
+        val rawLaw = engine.rawForcesStandalone
         val fromStandalone = standaloneRouteWanted(
-            s.mode == CaptureMode.VIDEO, s.photoFormats.dngRaw, s.rawForcesStandalone,
+            s.mode == CaptureMode.VIDEO, s.photoFormats.dngRaw, rawLaw,
         )
         val toStandalone = standaloneRouteWanted(
-            s.mode == CaptureMode.VIDEO, formats.dngRaw, s.rawForcesStandalone,
+            s.mode == CaptureMode.VIDEO, formats.dngRaw, rawLaw,
         )
-        val routeOptics = if (fromStandalone != toStandalone) {
+        val remapsScale = dngDoorRemapsZoomScale(
+            videoMode = s.mode == CaptureMode.VIDEO,
+            fromDng = s.photoFormats.dngRaw,
+            toDng = formats.dngRaw,
+            rawForcesStandalone = rawLaw,
+            teleconverter = s.teleconverterMode,
+            lensLocalRoute = s.activeCameraRoute.lensLocalZoom,
+        )
+        val routeOptics = if (remapsScale) {
             cancelPendingControls()
             remapRouteScaleOptics(
                 lens = s.lens,

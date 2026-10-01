@@ -10,6 +10,7 @@ import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
+import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.teleDisplayBase
 import kotlin.math.abs
 import kotlin.math.max
@@ -432,6 +433,29 @@ internal fun retainedRearWireZoom(
     val routeLens = if (teleconverter) LensChoice.TELE3X else lens
     return (unified / opticalBaseFor(routeLens.zoomPreset, optical).zoomPreset).coerceAtLeast(1f)
 }
+
+/**
+ * Whether a DNG toggle MOVES the zoom scale, i.e. whether the format door is an optics-remap door
+ * at all (AGG2-11). [rawForcesStandalone] must be the ENGINE's live law
+ * (`CameraEngine.rawForcesStandalone`), not the `CameraUiState` copy: that copy defaults to the
+ * PMA110 answer until the first route inventory, so on a GENERIC device an early toggle remapped
+ * the UI to lens-local while the engine — seeing no flip — ignored the packet and the next control
+ * apply pushed that lens-local ratio onto the logical camera.
+ *
+ * TC (already a standalone 3× lens) and the lens-local FRONT/EXTERNAL routes keep their one camera
+ * and their scale whatever DNG says, so the door there is a plain field write: it must not cancel
+ * in-flight controls or drop a tap-focus hold the engine still keeps on the wire.
+ */
+internal fun dngDoorRemapsZoomScale(
+    videoMode: Boolean,
+    fromDng: Boolean,
+    toDng: Boolean,
+    rawForcesStandalone: Boolean,
+    teleconverter: Boolean,
+    lensLocalRoute: Boolean,
+): Boolean = !teleconverter && !lensLocalRoute &&
+    standaloneRouteWanted(videoMode, fromDng, rawForcesStandalone) !=
+    standaloneRouteWanted(videoMode, toDng, rawForcesStandalone)
 
 /** Resolves the exact lens-local/unified zoom representation used by both engine and UI restore. */
 internal fun restoredOptics(

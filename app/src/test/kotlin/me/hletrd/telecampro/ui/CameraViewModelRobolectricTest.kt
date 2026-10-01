@@ -182,6 +182,31 @@ class CameraViewModelRobolectricTest {
         assertEquals("1920x1080", currentExtras(v).videoResolution)
     }
 
+    // AGG2-11 / CRIT2-5: Robolectric resolves the GENERIC DeviceProfile (RAW rides the logical
+    // camera), while CameraUiState.rawForcesStandalone still holds its PMA110 default before any
+    // route inventory. The door must follow the engine's law: no remap, unified 3.0 stays 3.0.
+    @Test fun `DNG door follows the engine RAW law instead of the state default`() {
+        val (v, e) = createViewModel()
+        assertFalse(e.rawForcesStandalone)
+        @Suppress("UNCHECKED_CAST")
+        val state = CameraViewModel::class.java.getDeclaredField("_state")
+            .apply { isAccessible = true }
+            .get(v) as MutableStateFlow<CameraUiState>
+        state.value = state.value.copy(
+            mode = CaptureMode.PHOTO,
+            lens = LensChoice.TELE3X,
+            controls = state.value.controls.copy(zoomRatio = 3f),
+            rawForcesStandalone = true,
+        )
+        assertEquals(CameraRoute.BACK, state.value.activeCameraRoute)
+
+        v.onSetPhotoFormats(state.value.photoFormats.copy(dngRaw = true))
+
+        assertTrue(v.state.value.photoFormats.dngRaw)
+        assertEquals(3f, v.state.value.controls.zoomRatio, 0f)
+        assertEquals(LensChoice.TELE3X, v.state.value.lens)
+    }
+
     // ---- Construction / init contract ----
 
     @Test fun `AndroidViewModelFactory retains the public Application constructor`() {
