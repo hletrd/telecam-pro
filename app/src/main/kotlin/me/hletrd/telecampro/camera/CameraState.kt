@@ -1503,11 +1503,14 @@ internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoForm
  * never chose. Capture-time normalization in `CameraEngine.capturePhoto` is the shot's guarantee.
  *
  * No still lane at all is a session STATE (10-bit video, preview-only), not an answer about formats,
- * so it shows the request. The RAW axis keeps the request as well: wanting DNG is what moves the
- * route, so RAW's absence on the way there is not an answer either (DNG rule 4 in CLAUDE.md).
+ * so it shows the request. With a still lane, the RAW axis follows the session too: a DNG-only
+ * request on FRONT (RAW structurally excluded) or a drop-RAW rung writes HEIF alone, and the OSD tag
+ * and per-shot storage estimate used to promise a DNG nobody would write (RPL cycle 3, MRG3-3). The
+ * REQUEST keeps `dngRaw` regardless — wanting DNG is what moves the route (DNG rule 4 in CLAUDE.md),
+ * and this readout is never written back.
  */
 fun PhotoFormats.effectiveFor(outputs: PhotoSessionOutputs): PhotoFormats =
-    if (outputs.hasStillTarget) normalizedFor(outputs).copy(dngRaw = dngRaw) else this
+    if (outputs.hasStillTarget) normalizedFor(outputs).copy(dngRaw = dngRaw && outputs.raw) else this
 
 /**
  * Immutable snapshot the UI renders. Hardware-independent so it can be previewed/unit-tested.

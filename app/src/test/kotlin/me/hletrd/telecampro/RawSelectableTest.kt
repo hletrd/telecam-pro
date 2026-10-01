@@ -126,12 +126,11 @@ class AcceptedPhotoFormatsTest {
     }
 
     @Test
-    fun `a processed-only session normalises the processed axis but keeps the RAW request`() {
-        // dngRaw SURVIVES: on the logical photo route that request is exactly what moves the session
-        // to a lens that can serve it. Clearing it here diverged the UI from the engine's rawWanted
-        // and the change gate then froze that divergence.
+    fun `a processed-only session reads out processed stills without a DNG`() {
+        // The readout follows the session on both axes (MRG3-3); the request itself is never written
+        // from this value (AGG3-18), so the engine's rawWanted cannot diverge from the UI here.
         assertEquals(
-            PhotoFormats(heif = true, jpeg = true, dngRaw = true),
+            PhotoFormats(heif = true, jpeg = true, dngRaw = false),
             accepted(
                 PhotoFormats(heif = true, jpeg = true, dngRaw = true),
                 PhotoSessionOutputs(processed = true, raw = false),

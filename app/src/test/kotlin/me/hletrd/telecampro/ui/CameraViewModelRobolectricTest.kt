@@ -870,7 +870,8 @@ class CameraViewModelRobolectricTest {
         idleFor(0)
         assertEquals(PhotoSessionOutputs(processed = true), v.state.value.photoSessionOutputs)
         assertEquals(dngOnly, v.state.value.photoFormats)
-        assertEquals(PhotoFormats(heif = true, jpeg = false, dngRaw = true), v.state.value.effectivePhotoFormats)
+        // The readout names what this session writes: HEIF, and no DNG (MRG3-3).
+        assertEquals(PhotoFormats(heif = true, jpeg = false, dngRaw = false), v.state.value.effectivePhotoFormats)
 
         // And the mirror: a processed request on a RAW-only session keeps its processed axis.
         val heifDng = PhotoFormats(heif = true, jpeg = false, dngRaw = true)

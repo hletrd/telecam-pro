@@ -52,10 +52,10 @@ class OpticsTransitionPolicyTest {
         )
 
         assertTrue(accepted.preTeleUnifiedZoom.isNaN())
-        // dngRaw is NOT cleared any more: on the logical photo route the request is precisely what
-        // moves the session to a lens that can serve it, so clearing it here diverged the UI from the
-        // engine's rawWanted and setRawWanted's change gate then froze that divergence.
-        assertTrue(accepted.effectivePhotoFormats.dngRaw)
+        // The REQUEST is no longer part of this packet (AGG3-18), so the engine's rawWanted and the
+        // UI's dngRaw cannot diverge here. The READOUT says what this session writes: no RAW reader,
+        // no DNG (MRG3-3).
+        assertFalse(accepted.effectivePhotoFormats.dngRaw)
     }
 
     @Test
