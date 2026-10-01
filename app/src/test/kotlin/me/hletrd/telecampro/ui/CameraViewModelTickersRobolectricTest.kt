@@ -170,6 +170,23 @@ class CameraViewModelTickersRobolectricTest {
         assertEquals("700 ms end must not duplicate the landed ratio", listOf(2f, 2.5f), submittedZooms)
     }
 
+    // AGG4-20: a takeover (dial/pinch) nulls the ease target while the previous chain's 33 ms
+    // repost is still queued; the next key step saw "idle" and posted a SECOND chain on top of it.
+    @Test fun `a hardware zoom step after a takeover never runs two ease chains`() {
+        val state = ViewModelTestAccess.state(vm)
+        state.value = state.value.copy(caps = ViewModelTestAccess.caps())
+        val handler = ViewModelTestAccess.field(vm, "mainHandler") as android.os.Handler
+        val ticker = ViewModelTestAccess.field(vm, "zoomEaseTicker") as Runnable
+        vm.onHardwareZoomStep(1.04f)
+        idleFor(1) // the first tick runs and re-posts itself 33 ms out
+        assertEquals(1, ViewModelTestAccess.queuedCallbackCount(handler, ticker))
+
+        vm.onZoomRatio(2f) // takeover: target nulled, the queued repost survives
+        vm.onHardwareZoomStep(1.04f)
+
+        assertEquals(1, ViewModelTestAccess.queuedCallbackCount(handler, ticker))
+    }
+
     // ---- Self-timer countdown ----
 
     @Test fun `countdown ticks once per second and a shutter press while counting cancels`() {

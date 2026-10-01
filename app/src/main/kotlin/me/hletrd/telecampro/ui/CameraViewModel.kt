@@ -2314,7 +2314,13 @@ class CameraViewModel private constructor(
         val base = zoomGlide.easeTarget ?: currentZoomBase()
         val wasIdle = zoomGlide.easeTarget == null
         zoomGlide.easeTarget = (base * factor).coerceIn(bounds.lower, bounds.upper)
-        if (wasIdle) mainHandler.post(zoomEaseTicker)
+        if (wasIdle) {
+            // "Idle" means no TARGET, not no queued tick: a dial/pinch/mark nulls the target while
+            // the previous chain's postDelayed copy is still queued. Re-posting on top of it ran
+            // two 30 Hz chains — double glide speed, double submits (AGG4-20).
+            mainHandler.removeCallbacks(zoomEaseTicker)
+            mainHandler.post(zoomEaseTicker)
+        }
     }
 
     override fun onPinchEnd() {
