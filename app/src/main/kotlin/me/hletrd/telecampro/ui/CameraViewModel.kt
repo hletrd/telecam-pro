@@ -980,6 +980,17 @@ class CameraViewModel private constructor(
                         },
                     )
                 }
+                // The same DNG mirror for the pre-inventory REQUEST. Left stale, the rolled-back
+                // DNG was persisted by currentExtras and then replayed by applyEncoderInventory's
+                // setRawWanted with no remap packet — re-flipping the route rollback just restored
+                // with the zoom number still on the old scale (AGG2-9).
+                pendingPhotoFormatsUntilInventory = pendingPhotoFormatsUntilInventory?.let { pending ->
+                    if (pending.dngRaw == rollback.rawWanted) {
+                        pending
+                    } else {
+                        pending.copy(dngRaw = rollback.rawWanted).withDefaultIfEmpty()
+                    }
+                }
                 // Mode-derived owners were applied optimistically with the rejected packet. The
                 // Engine transaction restores its exact accepted transfer/GL snapshot; replay the
                 // UI-owned visible standby AudioRecord after this generation restores the mode.

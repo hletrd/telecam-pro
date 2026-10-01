@@ -525,6 +525,28 @@ class ModeRollbackOwnershipRobolectricTest {
         assertTrue(engineReady(engine))
     }
 
+    // AGG2-9: a DNG door that rolls back inside the encoder-inventory window must also roll back
+    // the pending REQUEST, or the inventory replays DNG with no remap packet and saves persist it.
+    @Test
+    fun `rollback mirrors restored DNG into the pre-inventory pending formats`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        state(viewModel).value = state(viewModel).value.copy(encoderInventoryLoaded = false)
+        val transaction = beginUnchangedOpticsTransaction(engine)
+        setField(
+            viewModel,
+            "pendingPhotoFormatsUntilInventory",
+            me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = true),
+        )
+
+        forceOwnedRollback(engine, transaction, drainMain = true)
+
+        assertEquals(
+            me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = false),
+            field(viewModel, "pendingPhotoFormatsUntilInventory"),
+        )
+        assertFalse(viewModel.state.value.photoFormats.dngRaw)
+    }
+
     private fun transferFor(mode: CaptureMode) =
         if (mode == CaptureMode.VIDEO) ColorTransfer.HLG else ColorTransfer.SDR
 
