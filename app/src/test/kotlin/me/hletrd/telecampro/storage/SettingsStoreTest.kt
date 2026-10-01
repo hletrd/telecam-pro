@@ -191,6 +191,47 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun everyRestoredExposureAndWbNumberIsBoundedAtBothEnds() {
+        // AGG2-27: the AGG-33 bound skipped the sibling photoExposureTimeNs key (upper end) and
+        // wbTint entirely. A Video-saved blob carrying Long.MAX_VALUE for the Photo shutter became
+        // the ACTIVE exposure on the next Video→Photo flip, ahead of any caps clamp.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putLong("exposureTimeNs", Long.MAX_VALUE)
+            .putLong("photoExposureTimeNs", Long.MAX_VALUE)
+            .putInt("fps", Int.MAX_VALUE)
+            .putInt("wbKelvin", -1)
+            .putInt("wbTint", Int.MAX_VALUE)
+            .commit()
+        val high = SettingsStore(prefs).load()
+
+        assertEquals(60_000_000_000L, high?.controls?.exposureTimeNs)
+        assertEquals(60_000_000_000L, high?.extras?.photoExposureTimeNs)
+        assertEquals(240, high?.controls?.fps)
+        assertEquals(2000, high?.controls?.wbKelvin)
+        assertEquals(50, high?.controls?.wbTint)
+
+        prefs.edit()
+            .putLong("photoExposureTimeNs", Long.MIN_VALUE)
+            .putInt("wbTint", Int.MIN_VALUE)
+            .commit()
+        val low = SettingsStore(prefs).load()
+
+        assertEquals(1L, low?.extras?.photoExposureTimeNs)
+        assertEquals(-50, low?.controls?.wbTint)
+
+        // In-range values are restored untouched (PMA110 behavior unchanged).
+        prefs.edit()
+            .putLong("photoExposureTimeNs", 4_000_000_000L)
+            .putInt("wbTint", -17)
+            .commit()
+        val inRange = SettingsStore(prefs).load()
+        assertEquals(4_000_000_000L, inRange?.extras?.photoExposureTimeNs)
+        assertEquals(-17, inRange?.controls?.wbTint)
+    }
+
+    @Test
     fun aBlobWithoutAPhoneKeyRestoresTheCallersSeedNotTheFindX9Ultra() {
         // A blob or MR bank written before the phone key existed must not replace the OTHER seed
         // on foreign hardware with the Find X9 Ultra + Hasselblad 300 mm kit (AGG-35).

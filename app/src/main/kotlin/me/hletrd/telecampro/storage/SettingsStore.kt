@@ -258,7 +258,10 @@ class SettingsStore(
                 wbMode = enumOr(safeString("${prefix}wbMode", null), d.wbMode),
                 wbKelvin = safeInt("${prefix}wbKelvin", d.wbKelvin)
                     .coerceIn(MIN_PERSISTED_WB_KELVIN, MAX_PERSISTED_WB_KELVIN),
-                wbTint = safeInt("${prefix}wbTint", d.wbTint),
+                // AGG2-27: the tint was the one WB number restored raw; bound it to the slider's own
+                // range like the Kelvin above.
+                wbTint = safeInt("${prefix}wbTint", d.wbTint)
+                    .coerceIn(MIN_PERSISTED_WB_TINT, MAX_PERSISTED_WB_TINT),
                 awbLock = safeBoolean("${prefix}awbLock", d.awbLock),
                 meteringMode = enumOr(safeString("${prefix}meteringMode", null), d.meteringMode),
                 afSpotSize = enumOr(safeString("${prefix}afSpotSize", null), d.afSpotSize),
@@ -300,8 +303,12 @@ class SettingsStore(
                 mode = enumOr(safeString("${prefix}mode", null), ed.mode),
                 // Legacy installs have no separate Photo value; their one saved shutter is the best
                 // lossless migration source, especially when they last exited in Video slow-shutter.
+                // Same outer bounds as exposureTimeNs (AGG2-27): this retained Photo shutter becomes
+                // the ACTIVE exposure on a Video→Photo flip, reaching withShutterMode /
+                // previewExposureTrade / watchdog arithmetic before any caps clamp — and on a route
+                // without manual sensor that clamp never lands. The lower end was already bounded.
                 photoExposureTimeNs = safeLong("${prefix}photoExposureTimeNs", controls.exposureTimeNs)
-                    .coerceAtLeast(1L),
+                    .coerceIn(MIN_PERSISTED_EXPOSURE_NS, MAX_PERSISTED_EXPOSURE_NS),
                 lens = enumOr(safeString("${prefix}lens", null), ed.lens),
                 teleconverter = safeBoolean("${prefix}teleconverter", ed.teleconverter),
                 phoneModel = restoredPhone,
@@ -487,6 +494,9 @@ class SettingsStore(
         // The Kelvin ruler's own range (ProSheet / ManualDials).
         const val MIN_PERSISTED_WB_KELVIN = 2000
         const val MAX_PERSISTED_WB_KELVIN = 10000
+        // ManualControls.wbTint's documented range (-50 green .. +50 magenta; the ProSheet slider).
+        const val MIN_PERSISTED_WB_TINT = -50
+        const val MAX_PERSISTED_WB_TINT = 50
         fun presetPrefix(slot: MemorySlot): String = "preset_${slot.name}_"
     }
 }
