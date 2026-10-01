@@ -22,8 +22,10 @@ import org.robolectric.shadows.ShadowContentResolver
  * Launch media recovery used to stop for good at the first persistently failing media row: the
  * media stage never set `continueAfterFailureExhaustion`, so after the retry budget the whole
  * recovery returned without advancing, and every later Images/Video page and the DISCARD stage
- * never ran — on every launch. A page that advanced its cursor may now continue past exhaustion;
- * a page that did not (its collection query failed) must still stop rather than loop.
+ * never ran — on every launch. A page that advanced its cursor may now continue past exhaustion.
+ * A collection whose QUERY itself keeps failing is skipped for the rest of that run once its retry
+ * budget is spent (AGG2-21): stopping there starved DISCARD on every launch, while re-running the
+ * failing query on every later page (3 retries each) risked the process-terminal 120 s deadline.
  */
 @RunWith(RobolectricTestRunner::class)
 class LaunchRecoveryProgressTest {
@@ -51,7 +53,38 @@ class LaunchRecoveryProgressTest {
     }
 
     @Test
-    fun `a failing collection query still stops instead of looping`() {
+    fun `a failing collection query is skipped for the rest of the run, not re-queried per page`() {
+        val fixture = register(
+            stuckIds = emptySet(),
+            rowIds = listOf(1L),
+            failImageQuery = true,
+            videoRowIds = listOf(10L, 11L, 12L),
+        )
+        var batches = 0
+
+        val completion = executeLaunchMediaRecovery(maxFailureAttempts = 2) { cursor ->
+            batches += 1
+            check(batches < 50) { "recovery looped on a non-advancing failed query" }
+            MediaStoreWriter.cleanupOrphanedPendingBatch(
+                context = context,
+                cursor = cursor.copy(preflightComplete = true),
+                batchLimit = 1,
+                discardJournal = fixture.journal,
+                targets = fixture.targets,
+            )
+        }
+
+        assertEquals(RecoveryRetryDecision.EXHAUSTED, completion.decision)
+        assertEquals(setOf(RecoveryFailureClass.QUERY), completion.report.failureClasses)
+        // The healthy Video collection still pages to its end behind the broken Images query…
+        assertEquals(setOf(10L, 11L, 12L), fixture.provider.deleted)
+        // …and the broken query is paid only its own retry budget, not once more per later page.
+        assertEquals(2, fixture.provider.imageQueries)
+        assertTrue("batches=$batches", batches <= 8)
+    }
+
+    @Test
+    fun `a lone failing collection query still reaches the discard stage and terminates`() {
         val fixture = register(stuckIds = emptySet(), rowIds = listOf(1L), failImageQuery = true)
         var batches = 0
 
@@ -73,7 +106,7 @@ class LaunchRecoveryProgressTest {
     }
 
     @Test
-    fun `media page continuation is granted only when that page advanced`() {
+    fun `media page continuation always makes progress after exhaustion`() {
         val advancing = register(stuckIds = setOf(1L), rowIds = listOf(1L, 2L))
         val advanced = MediaStoreWriter.cleanupOrphanedPendingBatch(
             context = context,
@@ -95,8 +128,13 @@ class LaunchRecoveryProgressTest {
             targets = stuck.targets,
         )
         assertTrue(refused.report.retryRequired)
+        // Retries re-run the SAME page; only exhaustion skips the broken collection for this run.
         assertEquals(start, refused.nextCursor)
-        assertEquals(false, refused.continueAfterFailureExhaustion)
+        assertTrue(refused.continueAfterFailureExhaustion)
+        assertEquals(
+            start.withAfterId(OrphanRecoveryCollection.IMAGES, OrphanRecoveryCursor.COLLECTION_COMPLETE),
+            refused.exhaustedCursor,
+        )
     }
 
     private class Fixture(
@@ -109,12 +147,13 @@ class LaunchRecoveryProgressTest {
         stuckIds: Set<Long>,
         rowIds: List<Long>,
         failImageQuery: Boolean = false,
+        videoRowIds: List<Long> = emptyList(),
     ): Fixture {
         val suffix = UUID.randomUUID().toString()
         val authority = "recovery-progress-$suffix"
         val imageBase = Uri.parse("content://$authority/images")
         val videoBase = Uri.parse("content://$authority/videos")
-        val provider = InvalidPendingRowsProvider(imageBase, rowIds, stuckIds, failImageQuery)
+        val provider = InvalidPendingRowsProvider(imageBase, videoBase, rowIds, videoRowIds, stuckIds, failImageQuery)
         provider.attachInfo(context, ProviderInfo().apply { this.authority = authority })
         ShadowContentResolver.registerProviderInternal(authority, provider)
         return Fixture(
@@ -137,12 +176,16 @@ class LaunchRecoveryProgressTest {
     /** Zero-byte pending JPEG rows: each is provably INVALID, so recovery deletes it. */
     private class InvalidPendingRowsProvider(
         private val imageBase: Uri,
+        private val videoBase: Uri,
         rowIds: List<Long>,
+        videoRowIds: List<Long>,
         private val stuckIds: Set<Long>,
         private val failImageQuery: Boolean,
     ) : ContentProvider() {
         private val present = rowIds.toSortedSet()
+        private val presentVideo = videoRowIds.toSortedSet()
         val deleted = linkedSetOf<Long>()
+        var imageQueries = 0
 
         override fun onCreate(): Boolean = true
 
@@ -156,6 +199,7 @@ class LaunchRecoveryProgressTest {
             val columns = projection ?: arrayOf(MediaStore.MediaColumns._ID)
             val rows = when {
                 uri == imageBase -> {
+                    imageQueries += 1
                     if (failImageQuery) throw IllegalStateException("provider query failed")
                     // orphanSweepPage appends the `_ID > afterId` argument last.
                     val afterId = selectionArgs?.lastOrNull()?.toLongOrNull() ?: Long.MIN_VALUE
@@ -163,6 +207,12 @@ class LaunchRecoveryProgressTest {
                 }
                 uri.toString().startsWith("$imageBase/") ->
                     listOfNotNull(uri.lastPathSegment?.toLongOrNull()?.takeIf { it in present })
+                uri == videoBase -> {
+                    val afterId = selectionArgs?.lastOrNull()?.toLongOrNull() ?: Long.MIN_VALUE
+                    presentVideo.filter { it > afterId }
+                }
+                uri.toString().startsWith("$videoBase/") ->
+                    listOfNotNull(uri.lastPathSegment?.toLongOrNull()?.takeIf { it in presentVideo })
                 else -> emptyList()
             }
             return MatrixCursor(columns).apply {
@@ -183,8 +233,8 @@ class LaunchRecoveryProgressTest {
 
         override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int {
             val id = uri.lastPathSegment?.toLongOrNull() ?: return 0
-            if (id in stuckIds || id !in present) return 0
-            present.remove(id)
+            if (id in stuckIds) return 0
+            if (!present.remove(id) && !presentVideo.remove(id)) return 0
             deleted += id
             return 1
         }

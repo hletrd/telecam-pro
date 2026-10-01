@@ -272,7 +272,9 @@ internal fun executeLaunchMediaRecovery(
                 // cannot starve every lexicographically later delete forever.
                 exhaustedProgressFailures += batch.report.failureClasses
                 consecutiveFailures = 0
-                cursor = batch.nextCursor
+                // exhaustedCursor, not nextCursor (AGG2-21): a collection whose query failed is
+                // skipped for the rest of this run instead of re-paying its retry budget per page.
+                cursor = batch.exhaustedCursor
                 if (!batch.hasMore) {
                     return MediaRecoveryCompletion(
                         cumulative.copy(failureClasses = exhaustedProgressFailures),

@@ -1216,8 +1216,12 @@ object MediaStoreWriter {
             if (batch.report.retryRequired) {
                 if (!batch.continueAfterFailureExhaustion) return cumulative
                 progressedFailures += batch.report.failureClasses
+                // No retry budget here: a failure is exhausted at once, so continue from the
+                // exhausted cursor (a failed collection query is skipped for the rest of the run).
+                cursor = batch.exhaustedCursor
+            } else {
+                cursor = batch.nextCursor
             }
-            cursor = batch.nextCursor
             hasMore = batch.hasMore
         } while (hasMore)
         return if (progressedFailures.isEmpty()) {
@@ -1287,6 +1291,7 @@ object MediaStoreWriter {
 
         var report = RecoveryReport()
         var nextCursor = cursor
+        var exhaustedCursor = cursor
         for (target in targets) {
             val base = target.base
             val collection = target.collection
@@ -1392,11 +1397,11 @@ object MediaStoreWriter {
             }
             if (collectionResult.isFailure) {
                 report = report.record(RecoveryEvent.QUERY_FAILED)
+                exhaustedCursor = exhaustedCursor.withAfterId(collection, OrphanRecoveryCursor.COLLECTION_COMPLETE)
             } else {
-                nextCursor = nextCursor.withAfterId(
-                    collection,
-                    if (collectionHasMore) nextAfterId else OrphanRecoveryCursor.COLLECTION_COMPLETE,
-                )
+                val advancedAfterId = if (collectionHasMore) nextAfterId else OrphanRecoveryCursor.COLLECTION_COMPLETE
+                nextCursor = nextCursor.withAfterId(collection, advancedAfterId)
+                exhaustedCursor = exhaustedCursor.withAfterId(collection, advancedAfterId)
             }
         }
         return OrphanRecoveryBatch(
@@ -1407,11 +1412,16 @@ object MediaStoreWriter {
             // A media page whose failure is a ROW (publish/delete failed, journal unavailable) has
             // already retained that row and moved its cursor past it; once the bounded retry budget
             // is spent it may advance, or one persistently failing row would starve every later
-            // Images/Video page and the whole DISCARD stage on every launch. A page that did NOT
-            // advance (its collection query itself failed) must stop instead: continuing would
-            // re-run the identical failing query forever. The preflight stage stays blocking
-            // because media disposition depends on the family journal it reconciles.
-            continueAfterFailureExhaustion = nextCursor != cursor,
+            // Images/Video page and the whole DISCARD stage on every launch. A collection whose
+            // QUERY failed did not advance; after exhaustion it is skipped for the rest of this run
+            // via [exhaustedCursor] (AGG2-21) — stopping starved DISCARD on every launch while the
+            // query kept failing, and continuing from nextCursor re-ran the identical failing query
+            // with its full retry budget on every later page. exhaustedCursor therefore always
+            // differs from the input cursor when anything failed, which is the progress guarantee.
+            // The preflight stage stays blocking because media disposition depends on the family
+            // journal it reconciles.
+            continueAfterFailureExhaustion = exhaustedCursor != cursor,
+            exhaustedCursor = exhaustedCursor,
         )
     }
 
@@ -2370,6 +2380,15 @@ internal data class OrphanRecoveryBatch(
     val hasMore: Boolean,
     /** A durable per-entry failure may advance only after the ordinary retry budget is exhausted. */
     val continueAfterFailureExhaustion: Boolean = false,
+    /**
+     * Where a run continues once this page's retry budget is spent (AGG2-21). Equal to [nextCursor]
+     * except that a collection whose QUERY failed is marked complete for the rest of the run: its
+     * cursor never advances on its own, so continuing from [nextCursor] re-ran the identical failing
+     * query (with its full retry budget) on every later page. The next launch retries it from zero.
+     * Only meaningful when [continueAfterFailureExhaustion]; [hasMore] stays valid for it because
+     * the skip only touches media cursors, never the DISCARD stage that keeps a media page live.
+     */
+    val exhaustedCursor: OrphanRecoveryCursor = nextCursor,
 )
 
 internal data class DiscardJournalPage(
