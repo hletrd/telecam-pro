@@ -403,6 +403,20 @@ class CompletionDispatchTest {
         assertTrue(runtime.isEmpty())
     }
 
+    // AGG4-18: a failed preview detach orphans the poisoned surface for the checked sweep and
+    // clears the owner, so a same-surface rebind creates a fresh EGLSurface.
+    @Test
+    fun `a poisoned preview output is orphaned for the sweep and its owner cleared`() {
+        val orphans = RetainedOutputs<String>()
+
+        assertEquals("none", orphanPoisonedOutput("poisoned-preview", "none", orphans))
+        assertEquals("no owner retains nothing", "none", orphanPoisonedOutput("none", "none", orphans))
+
+        val swept = mutableListOf<String>()
+        orphans.releaseAll { swept += it }
+        assertEquals(listOf("poisoned-preview"), swept)
+    }
+
     @Test
     fun `abandoned retained outputs are never released`() {
         val outputs = RetainedOutputs<String>()

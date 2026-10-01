@@ -509,6 +509,20 @@ class GlPipeline(
         previewSignal = null
     }
 
+    /**
+     * The ONE containment for a preview whose detach failed, shared by the texture-acquisition and
+     * draw/swap branches (AGG4-18): retain the poisoned EGLSurface for the checked orphan sweep
+     * ([clearOrphanedOutputs] destroys it later) and clear every preview owner field, so the next
+     * bind of the same native window creates a fresh EGLSurface instead of taking
+     * [applyPreviewOutput]'s same-surface early return onto the poisoned one.
+     */
+    private fun orphanPoisonedPreviewOutput() {
+        previewEgl = orphanPoisonedOutput(previewEgl, EGL14.EGL_NO_SURFACE, orphanedEglOutputs)
+        previewSurface = null
+        previewSignal?.cancel()
+        previewSignal = null
+    }
+
     private fun clearOrphanedOutputs(core: EglCore) {
         orphanedEglOutputs.releaseAll { orphan ->
             detachEglOutput(
@@ -983,11 +997,20 @@ class GlPipeline(
                     FrameAcquisitionOwner.PREVIEW -> {
                         previewSignal?.fail(acquisitionFailure)
                         val detachFailure = runCatching { clearPreviewOutput(core) }.exceptionOrNull()
-                        // If the broken preview cannot relinquish native-window ownership, encoder
-                        // continuation is no longer safe. Terminate it explicitly instead of letting
-                        // the next frame escape the GL looper or silently freeze REC.
-                        if (detachFailure != null && frameEncoderSignal?.isActive() == true) {
-                            failEncoderOutput(core, frameEncoderSignal, detachFailure)
+                        if (detachFailure != null) {
+                            // If the broken preview cannot relinquish native-window ownership,
+                            // encoder continuation is no longer safe. Terminate it explicitly
+                            // instead of letting the next frame escape the GL looper or silently
+                            // freeze REC.
+                            if (frameEncoderSignal?.isActive() == true) {
+                                failEncoderOutput(core, frameEncoderSignal, detachFailure)
+                            }
+                            // And orphan the poisoned surface (AGG4-18). Retaining it left the
+                            // same-surface early return in applyPreviewOutput re-binding it on
+                            // every recovery retry — all three burned on one EGLSurface, ending
+                            // PREVIEW_UNAVAILABLE_REOPEN — while the still-"available" preview kept
+                            // the encoder from ever becoming the acquisition owner.
+                            orphanPoisonedPreviewOutput()
                         }
                     }
                     FrameAcquisitionOwner.ENCODER -> {
@@ -1224,12 +1247,7 @@ class GlPipeline(
                     if (activeEncoderSignal?.isActive() == true) {
                         failEncoderOutput(core, activeEncoderSignal, detachFailure)
                     }
-                    val poisoned = previewEgl
-                    if (poisoned != EGL14.EGL_NO_SURFACE) orphanedEglOutputs.retain(poisoned)
-                    previewEgl = EGL14.EGL_NO_SURFACE
-                    previewSurface = null
-                    previewSignal?.cancel()
-                    previewSignal = null
+                    orphanPoisonedPreviewOutput()
                     return
                 }
             }
@@ -1281,12 +1299,7 @@ class GlPipeline(
                         if (activeEncoderSignal?.isActive() == true) {
                             failEncoderOutput(core, activeEncoderSignal, detachFailure)
                         }
-                        val poisoned = previewEgl
-                        if (poisoned != EGL14.EGL_NO_SURFACE) orphanedEglOutputs.retain(poisoned)
-                        previewEgl = EGL14.EGL_NO_SURFACE
-                        previewSurface = null
-                        previewSignal?.cancel()
-                        previewSignal = null
+                        orphanPoisonedPreviewOutput()
                     }
                 }
             }
@@ -2051,6 +2064,15 @@ internal class OnceAction(private val callback: () -> Unit) {
         runCatching(callback)
         return true
     }
+}
+
+/**
+ * Retains a poisoned [owned] output (when there is one) for the checked orphan sweep and answers
+ * the cleared owner value [none] — the bookkeeping half of a failed-detach containment (AGG4-18).
+ */
+internal fun <T> orphanPoisonedOutput(owned: T, none: T, orphans: RetainedOutputs<T>): T {
+    if (owned != none) orphans.retain(owned)
+    return none
 }
 
 /** Owns provisional native outputs until their checked destruction succeeds or shutdown abandons. */
