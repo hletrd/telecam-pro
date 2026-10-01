@@ -750,7 +750,7 @@ class VideoRecorder(private val context: Context) {
         val audioStart = runCatching {
             startNativeOwnerIfSafe(
                 runNativeAcquisition = { block ->
-                    UnsafeRecorderQuarantine.runNativeAcquisition(processAdmissionToken?.owner, block)
+                    UnsafeRecorderQuarantine.runRecorderWorkerNative(processAdmissionToken, block)
                 },
                 isTerminal = terminallyQuarantined::get,
                 start = record::startRecording,
@@ -916,7 +916,7 @@ class VideoRecorder(private val context: Context) {
         ) {
             startNativeOwnerIfSafe(
                 runNativeAcquisition = { block ->
-                    UnsafeRecorderQuarantine.runNativeAcquisition(processAdmissionToken?.owner, block)
+                    UnsafeRecorderQuarantine.runRecorderWorkerNative(processAdmissionToken, block)
                 },
                 isTerminal = terminallyQuarantined::get,
                 start = ownedMuxer::start,
@@ -1242,14 +1242,11 @@ internal class RecorderQuarantineAdmissionGate {
     ): NativeAcquisitionResult {
         val admitted = lock.withLock {
             // A pending REC token can already be inside MediaCodec setup while its recorder has not
-            // yet reached the published Engine slot. General GL/Camera2 acquisition must wait for
-            // that setup to publish or retire; the token's OWN workers are admitted by owner, exactly
-            // as they are once the token is active. The audio-encode worker is spawned by that
-            // setup and reaches AudioRecord.startRecording before the Engine publishes the token
-            // whenever the encoder's first swap is slow (TB336ZU, device-measured 2026-09-09: two of
-            // three takes); refusing it there exited the worker silently with two tracks still
-            // expected, and the muxer rendezvous degraded every such take to a silent clip.
-            if (quarantined.get() || foreignRecorderHoldsAdmissionLocked(owner)) {
+            // yet reached the published Engine slot. General GL/Camera2 acquisition — INCLUDING the
+            // setup-owning Engine's own, since GL, Camera2 and the REC token all share one Engine
+            // owner object — must wait for that setup to publish or retire. The recorder's own
+            // workers do not come through here: they enter by TOKEN via [runRecorderWorkerNative].
+            if (quarantined.get() || recorderHoldsAdmissionAgainstLocked(owner)) {
                 false
             } else {
                 nativeAcquisitions++
@@ -1275,10 +1272,46 @@ internal class RecorderQuarantineAdmissionGate {
         }
     }
 
-    /** True while a pending or active REC token belongs to someone other than [owner]. */
-    private fun foreignRecorderHoldsAdmissionLocked(owner: Any?): Boolean =
-        pendingToken?.let { it.owner !== owner } == true ||
-            activeToken?.let { it.owner !== owner } == true
+    /**
+     * True while REC admission excludes an owner-keyed caller: ANY pending token (whoever owns it —
+     * the owner is the whole Engine, so admitting "the pending token's owner" would also admit that
+     * Engine's GL/EGL and Camera2 acquisitions mid-setup, which is what 0ab5c1ba briefly did), or an
+     * active token belonging to someone other than [owner].
+     */
+    private fun recorderHoldsAdmissionAgainstLocked(owner: Any?): Boolean =
+        pendingToken != null || activeToken?.let { it.owner !== owner } == true
+
+    /**
+     * Token-scoped native door for the recorder's OWN workers (audio `startRecording`, muxer
+     * `start`): admitted iff [token] is the exact pending or active REC token and the process is not
+     * quarantined. Setup runs under the PENDING token and spawns the audio-encode worker, which
+     * reaches `AudioRecord.startRecording` before the Engine publishes the token whenever the
+     * encoder's first swap is slow (TB336ZU, device-measured 2026-09-09: two of three takes);
+     * refusing it there exited the worker silently with two tracks still expected and the muxer
+     * rendezvous degraded the take to a silent clip. Scoping the exception to the TOKEN rather than
+     * its owner keeps that fix without re-admitting the same Engine's GL/Camera2 work mid-setup.
+     */
+    fun runRecorderWorkerNative(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean {
+        val admitted = lock.withLock {
+            if (quarantined.get() || (pendingToken != token && activeToken != token)) {
+                false
+            } else {
+                nativeAcquisitions++
+                true
+            }
+        }
+        if (!admitted) return false
+        try {
+            block()
+        } finally {
+            lock.withLock {
+                nativeAcquisitions--
+                check(nativeAcquisitions >= 0) { "Native admission count underflow" }
+                if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
+            }
+        }
+        return lock.withLock { !quarantined.get() }
+    }
 
     /**
      * Runs one native creator and publishes its concrete termination owner under the process lock.
@@ -1291,7 +1324,7 @@ internal class RecorderQuarantineAdmissionGate {
         publicationOwner: (T) -> NativeAcquisitionPublicationOwner?,
     ): NativeAcquisitionPublicationResult<T> {
         val admitted = lock.withLock {
-            if (quarantined.get() || foreignRecorderHoldsAdmissionLocked(owner)) {
+            if (quarantined.get() || recorderHoldsAdmissionAgainstLocked(owner)) {
                 false
             } else {
                 nativeAcquisitions++
@@ -1617,6 +1650,17 @@ internal object UnsafeRecorderQuarantine :
 
     fun runPendingNativeSetup(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
         admissionGate.runPendingNative(token, block)
+
+    /**
+     * The recorder workers' door: by exact REC TOKEN (pending or active) when this recorder holds
+     * one; a token-less recorder (host harnesses) keeps the historical anonymous owner-keyed gate.
+     */
+    fun runRecorderWorkerNative(token: UnsafeRecorderAdmissionToken?, block: () -> Unit): Boolean =
+        if (token != null) {
+            admissionGate.runRecorderWorkerNative(token, block)
+        } else {
+            runNativeAcquisition(null, block)
+        }
 
     fun hasPendingRecorderSetup(): Boolean = admissionGate.hasPendingRecorderSetup()
 
