@@ -142,7 +142,7 @@ class RecordingTeardownTerminalGateTest {
                         completeFrozenRecordingStorage(
                             completeFrozen("first"),
                             RecordingStorageEffects(
-                                validateVideoTrack = { true },
+                                validateVideoTrack = { me.hletrd.telecampro.storage.PendingProbe.VALID },
                                 markComplete = { completed += it; true },
                                 publish = {
                                     firstPublishEntered.countDown()
@@ -181,7 +181,7 @@ class RecordingTeardownTerminalGateTest {
                         completeFrozenRecordingStorage(
                             completeFrozen("second"),
                             RecordingStorageEffects(
-                                validateVideoTrack = { true },
+                                validateVideoTrack = { me.hletrd.telecampro.storage.PendingProbe.VALID },
                                 markComplete = { completed += it; true },
                                 publish = { true },
                                 delete = { deleted += it },

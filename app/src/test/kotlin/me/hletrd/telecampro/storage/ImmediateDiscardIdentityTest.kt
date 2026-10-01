@@ -156,7 +156,7 @@ class ImmediateDiscardIdentityTest {
                 finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED,
             ),
             RecordingStorageEffects(
-                validateVideoTrack = { true },
+                validateVideoTrack = { me.hletrd.telecampro.storage.PendingProbe.VALID },
                 markComplete = { true },
                 publish = { true },
                 delete = { uriDeleteCalled = true },

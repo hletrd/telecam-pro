@@ -25,6 +25,7 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.normalizeAudioGain
 import me.hletrd.telecampro.storage.CompletedOutputPublication
 import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.PendingProbe
 import me.hletrd.telecampro.storage.PendingOutputAllocation
 import me.hletrd.telecampro.storage.publishCompletedOutput
 import java.nio.ByteBuffer
@@ -59,6 +60,12 @@ class VideoRecorder(private val context: Context) {
         PUBLISHED,
         RETAINED_MARKER_UNAVAILABLE,
         RETAINED_PUBLICATION_UNAVAILABLE,
+        /**
+         * The tolerated empty-audio stop needed a reopen to prove the video track, and the provider
+         * could not be opened. Nothing about the bytes is known, so the row stays REGISTERED and
+         * private for launch recovery's structural probe — never published, never deleted.
+         */
+        RETAINED_VALIDATION_UNAVAILABLE,
     }
 
     data class StopResult(
@@ -1907,7 +1914,8 @@ internal data class FrozenRecordingStorage<T>(
 
 /** Provider effects kept injectable so the real frozen tail can be integration-tested on host. */
 internal data class RecordingStorageEffects<T>(
-    val validateVideoTrack: (T) -> Boolean,
+    /** Tri-state: INDETERMINATE (provider unopenable) retains; only INVALID licenses deletion. */
+    val validateVideoTrack: (T) -> PendingProbe,
     val markComplete: (T) -> Boolean,
     val publish: (T) -> Boolean,
     val delete: (T) -> Unit,
@@ -1924,14 +1932,28 @@ internal fun <T> completeFrozenRecordingStorage(
     // The tolerated empty-audio-track stop exception is not proof of a finalized container.
     // This extractor/provider work deliberately happens only after every native owner is closed.
     if (validation == FinalizedRecordingValidation.SKIPPED) {
-        validation = if (outputUri != null && effects.validateVideoTrack(outputUri)) {
-            FinalizedRecordingValidation.PASSED
-        } else {
-            FinalizedRecordingValidation.FAILED
+        validation = when (outputUri?.let(effects.validateVideoTrack)) {
+            PendingProbe.VALID -> FinalizedRecordingValidation.PASSED
+            // An unopenable provider says nothing about the bytes. Launch recovery already treats
+            // the same answer as INDETERMINATE and keeps the row; the live path must not be the
+            // stricter one in the DESTRUCTIVE direction (a busy provider deleted good takes).
+            PendingProbe.INDETERMINATE -> FinalizedRecordingValidation.INDETERMINATE
+            PendingProbe.INVALID, null -> FinalizedRecordingValidation.FAILED
         }
         if (validation == FinalizedRecordingValidation.FAILED && failure == null) {
             failure = IllegalStateException("Finalized video track validation failed")
         }
+    }
+    if (validation == FinalizedRecordingValidation.INDETERMINATE &&
+        failure == null && frozen.muxerStarted && frozen.wroteVideoSample && outputUri != null
+    ) {
+        // Fail closed exactly like an exhausted COMPLETE marker: the row stays REGISTERED (no
+        // COMPLETE, no publish, no delete) so relaunch recovery's structural probe decides it.
+        return VideoRecorder.StopResult(
+            saved = false,
+            error = null,
+            storageDisposition = VideoRecorder.StorageDisposition.RETAINED_VALIDATION_UNAVAILABLE,
+        )
     }
 
     val complete = shouldPublishRecording(
@@ -1986,7 +2008,7 @@ internal class RecordingStorageTail(
         return completeFrozenRecordingStorage(
             frozen,
             RecordingStorageEffects(
-                validateVideoTrack = { MediaStoreWriter.hasReadableVideoTrack(context, it) },
+                validateVideoTrack = { MediaStoreWriter.finalizedVideoTrackProbe(context, it) },
                 markComplete = {
                     val completion = MediaStoreWriter.markWriteComplete(context, it)
                     completion.durable
@@ -2300,7 +2322,11 @@ internal fun shouldPublishRecording(
     (finalizedValidation == FinalizedRecordingValidation.NOT_REQUIRED ||
         finalizedValidation == FinalizedRecordingValidation.PASSED)
 
-internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED }
+/**
+ * [INDETERMINATE] is the reopen that could not be attempted (provider open failed): neither
+ * publishable nor deletable, so the stop tail retains the private row for launch recovery.
+ */
+internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED, INDETERMINATE }
 
 enum class NativeGraphDisposition { RELEASED, QUARANTINE_REQUIRED }
 

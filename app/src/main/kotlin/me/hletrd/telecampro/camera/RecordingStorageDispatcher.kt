@@ -121,6 +121,7 @@ internal fun recordingStorageTerminalDisposition(
     }
     me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_MARKER_UNAVAILABLE,
     me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_PUBLICATION_UNAVAILABLE,
+    me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.RETAINED_VALIDATION_UNAVAILABLE,
     -> RecordingStorageTerminalDisposition.RETAINED_PENDING
     me.hletrd.telecampro.video.VideoRecorder.StorageDisposition.NOT_APPLICABLE ->
         RecordingStorageTerminalDisposition.FAILED

@@ -1654,9 +1654,36 @@ object MediaStoreWriter {
         }
     }
 
-    /** Reopens a closed recording and requires an extractor-readable video track. */
-    internal fun hasReadableVideoTrack(context: Context, uri: Uri): Boolean =
-        runCatching { probeFinalizedVideo(context, uri) == PendingProbe.VALID }.getOrDefault(false)
+    /**
+     * Reopens a closed recording and classifies its video track for the live stop tail. This used
+     * to collapse every exception to "no track", so a provider that was merely busy at the moment
+     * of reopen (media scan, transient Binder failure) made the live path DELETE a good take that
+     * launch recovery — which classifies the same exception as INDETERMINATE — would have kept.
+     * Now only a successful open followed by an extractor verdict is authoritative; an open that
+     * fails is INDETERMINATE and the caller retains the private row for launch recovery.
+     */
+    internal fun finalizedVideoTrackProbe(context: Context, uri: Uri): PendingProbe =
+        classifyFinalizedVideoTrack(
+            open = { openReadableParcelFd(context, uri) },
+            hasVideoTrack = { descriptor ->
+                val extractor = MediaExtractor()
+                try {
+                    extractor.setDataSource(descriptor.fileDescriptor)
+                    (0 until extractor.trackCount).any { index ->
+                        extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
+                            ?.startsWith("video/") == true
+                    }
+                } finally {
+                    runCatching { extractor.release() }
+                }
+            },
+            onOpenFailure = { failure ->
+                DiagnosticLog.w(TAG, "finalized video reopen failed for $uri; retained for recovery", failure)
+            },
+            onParseFailure = { failure ->
+                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri", failure)
+            },
+        )
 
     private fun probeCompleteHeif(context: Context, uri: Uri): PendingProbe {
         val pfd = openReadableParcelFd(context, uri)
@@ -2522,6 +2549,35 @@ internal fun pendingMediaProbeKind(
 internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE, DISCARD, UNAVAILABLE }
 
 internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
+
+/**
+ * Pure tri-state for the live finalized-video check. Provider OPEN failure proves nothing about the
+ * bytes and is INDETERMINATE (retain, never delete). After a successful open, the extractor is the
+ * authority: no video track, or a container it cannot parse, is INVALID. Open failure and parse
+ * failure each report their cause exactly once through the supplied observer.
+ */
+internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
+    open: () -> D,
+    hasVideoTrack: (D) -> Boolean,
+    onOpenFailure: (Throwable) -> Unit = {},
+    onParseFailure: (Throwable) -> Unit = {},
+): PendingProbe {
+    val descriptor = try {
+        open()
+    } catch (failure: Exception) {
+        onOpenFailure(failure)
+        return PendingProbe.INDETERMINATE
+    }
+    return try {
+        if (hasVideoTrack(descriptor)) PendingProbe.VALID else PendingProbe.INVALID
+    } catch (failure: Exception) {
+        onParseFailure(failure)
+        PendingProbe.INVALID
+    } finally {
+        // A read-only descriptor's close cannot change the verdict already reached on its bytes.
+        runCatching { descriptor.close() }
+    }
+}
 
 internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
 

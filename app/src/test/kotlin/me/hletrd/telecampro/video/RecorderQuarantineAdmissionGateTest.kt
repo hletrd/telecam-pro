@@ -133,7 +133,7 @@ class RecorderQuarantineAdmissionGateTest {
         val result = completeFrozenRecordingStorage(
             frozenStorage("clip", validation = FinalizedRecordingValidation.SKIPPED),
             RecordingStorageEffects(
-                validateVideoTrack = { events += "validate:$it"; true },
+                validateVideoTrack = { events += "validate:$it"; PendingProbe.VALID },
                 markComplete = { events += "complete:$it"; true },
                 publish = { events += "publish:$it"; true },
                 delete = { events += "delete:$it" },
@@ -151,7 +151,7 @@ class RecorderQuarantineAdmissionGateTest {
         val result = completeFrozenRecordingStorage(
             frozenStorage("clip"),
             RecordingStorageEffects(
-                validateVideoTrack = { events += "validate:$it"; true },
+                validateVideoTrack = { events += "validate:$it"; PendingProbe.VALID },
                 markComplete = {
                     val marker = markCompletionWithRetry(
                         maxAttempts = 3,
@@ -183,7 +183,7 @@ class RecorderQuarantineAdmissionGateTest {
         val result = completeFrozenRecordingStorage(
             frozenStorage("invalid", validation = FinalizedRecordingValidation.SKIPPED),
             RecordingStorageEffects(
-                validateVideoTrack = { events += "validate:$it"; false },
+                validateVideoTrack = { events += "validate:$it"; PendingProbe.INVALID },
                 markComplete = { events += "complete:$it"; true },
                 publish = { events += "publish:$it"; true },
                 delete = { events += "delete:$it" },
@@ -193,6 +193,57 @@ class RecorderQuarantineAdmissionGateTest {
         assertFalse(result.saved)
         assertEquals("Finalized video track validation failed", result.error?.message)
         assertEquals(listOf("validate:invalid", "delete:invalid"), events)
+    }
+
+    @Test
+    fun `unopenable provider retains the registered row without publish delete or failure`() {
+        val events = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage("busy", validation = FinalizedRecordingValidation.SKIPPED),
+            RecordingStorageEffects(
+                validateVideoTrack = { events += "validate:$it"; PendingProbe.INDETERMINATE },
+                markComplete = { events += "complete:$it"; true },
+                publish = { events += "publish:$it"; true },
+                delete = { events += "delete:$it" },
+                deleteAllocation = { events += "deleteAllocation" },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertEquals(null, result.error)
+        assertEquals(
+            VideoRecorder.StorageDisposition.RETAINED_VALIDATION_UNAVAILABLE,
+            result.storageDisposition,
+        )
+        // Neither COMPLETE (unproven bytes) nor publish nor delete: launch recovery decides.
+        assertEquals(listOf("validate:busy"), events)
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.REGISTERED, PendingProbe.INDETERMINATE),
+        )
+    }
+
+    @Test
+    fun `an indeterminate probe never overrides an earlier video failure`() {
+        val original = IllegalStateException("codec failed")
+        val deleted = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage(
+                "failed",
+                failure = original,
+                validation = FinalizedRecordingValidation.SKIPPED,
+            ),
+            RecordingStorageEffects(
+                validateVideoTrack = { PendingProbe.INDETERMINATE },
+                markComplete = { true },
+                publish = { true },
+                delete = { deleted += it },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertSame(original, result.error)
+        assertEquals(listOf("failed"), deleted)
     }
 
     @Test
@@ -206,7 +257,7 @@ class RecorderQuarantineAdmissionGateTest {
                 validation = FinalizedRecordingValidation.SKIPPED,
             ),
             RecordingStorageEffects(
-                validateVideoTrack = { false },
+                validateVideoTrack = { PendingProbe.INVALID },
                 markComplete = { true },
                 publish = { true },
                 delete = { deleted += it },
@@ -224,7 +275,7 @@ class RecorderQuarantineAdmissionGateTest {
         val result = completeFrozenRecordingStorage(
             frozenStorage<String>(null, validation = FinalizedRecordingValidation.SKIPPED),
             RecordingStorageEffects(
-                validateVideoTrack = { effectsCalled = true; true },
+                validateVideoTrack = { effectsCalled = true; PendingProbe.VALID },
                 markComplete = { effectsCalled = true; true },
                 publish = { effectsCalled = true; true },
                 delete = { effectsCalled = true },
@@ -242,7 +293,7 @@ class RecorderQuarantineAdmissionGateTest {
         val result = completeFrozenRecordingStorage(
             frozenStorage("empty", muxerStarted = false),
             RecordingStorageEffects(
-                validateVideoTrack = { true },
+                validateVideoTrack = { PendingProbe.VALID },
                 markComplete = { true },
                 publish = { true },
                 delete = { deleted += it },
