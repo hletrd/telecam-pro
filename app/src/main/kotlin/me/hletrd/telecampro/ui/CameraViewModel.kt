@@ -4402,24 +4402,37 @@ internal fun ownerlessMediaDeleteResolution(
     )
 }
 
-/** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */
+/**
+ * Mirrors the pre-open route decision into UI truth without inventing a second selection policy.
+ *
+ * The inventory callback is a DISCOVERY publication, and it re-fires on every resume and every GL
+ * generation start with the route unchanged. Its route-transition side effect (the lens-local
+ * route's zoom reset to 1×) therefore applies only when the active route actually changes
+ * (AGG4-15); the TC clamp is a route invariant, a no-op on any consistent same-route state.
+ * Applied to every republish, a FRONT 2× reset to 1× in the UI after each
+ * background→foreground return while the Engine reopened at 2×, and the next pinch compounded
+ * from the wrong base.
+ */
 internal fun cameraRoutePublishedState(
     current: CameraUiState,
     routes: CameraRouteInventory,
     activeRoute: CameraRoute,
     rawForcesStandalone: Boolean,
-): CameraUiState = current.copy(
-    cameraRoutes = routes,
-    facing = activeRoute.facing,
-    activeCameraRoute = activeRoute,
-    teleconverterMode = current.teleconverterMode && activeRoute == CameraRoute.BACK,
-    rawForcesStandalone = rawForcesStandalone,
-    controls = if (activeRoute.lensLocalZoom) {
-        current.controls.copy(zoomRatio = 1f)
-    } else {
-        current.controls
-    },
-)
+): CameraUiState {
+    val routeChanged = activeRoute != current.activeCameraRoute
+    return current.copy(
+        cameraRoutes = routes,
+        facing = activeRoute.facing,
+        activeCameraRoute = activeRoute,
+        teleconverterMode = current.teleconverterMode && activeRoute == CameraRoute.BACK,
+        rawForcesStandalone = rawForcesStandalone,
+        controls = if (routeChanged && activeRoute.lensLocalZoom) {
+            current.controls.copy(zoomRatio = 1f)
+        } else {
+            current.controls
+        },
+    )
+}
 
 internal fun standbyAudioMeterShouldRun(
     lifecycleStarted: Boolean,

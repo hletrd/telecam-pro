@@ -106,6 +106,41 @@ class FacingRollbackPunchInRobolectricTest {
     }
 
     /**
+     * AGG4-15, engine half: a forced inventory retry that re-resolves the ALREADY active FRONT route
+     * is discovery; it must not write 1× into the Engine outside any optics transaction.
+     */
+    @Test
+    fun `re-resolving the active front route keeps the engine's zoom and pin`() {
+        val camera = acceptedRoute(CameraRoute.FRONT)
+        setField(camera, "controls", ManualControls(zoomRatio = 2f))
+        setField(camera, "userCameraPin", "1")
+
+        applyResolvedRoute(camera, CameraRoute.FRONT)
+
+        assertEquals(2f, (field(camera, "controls") as ManualControls).zoomRatio, 0f)
+        assertEquals("1", field(camera, "userCameraPin"))
+    }
+
+    @Test
+    fun `a real transition onto the front route still applies its optics reset`() {
+        val camera = acceptedRoute(CameraRoute.BACK)
+        setBoolean(camera, "teleconverterMode", true)
+        setField(camera, "controls", ManualControls(zoomRatio = 2f))
+
+        applyResolvedRoute(camera, CameraRoute.FRONT)
+
+        assertEquals(CameraRoute.FRONT, field(camera, "activeCameraRoute"))
+        assertEquals(1f, (field(camera, "controls") as ManualControls).zoomRatio, 0f)
+        assertFalse(field(camera, "teleconverterMode") as Boolean)
+    }
+
+    private fun applyResolvedRoute(camera: CameraEngine, route: CameraRoute) {
+        CameraEngine::class.java.declaredMethods.single { it.name == "applyResolvedCameraRoute" }
+            .apply { isAccessible = true }
+            .invoke(camera, route)
+    }
+
+    /**
      * AGG3-7, wiring half: a bare-reopen token ([currentOpticsReconfiguration], snapshotted after
      * the door's own write) whose preflight fails must publish Not-Ready, never re-accept the
      * outgoing controller under its own preflight invalidation. Since AGG4-2 such a token is routed

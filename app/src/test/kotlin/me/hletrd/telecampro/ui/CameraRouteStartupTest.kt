@@ -70,3 +70,41 @@ class CameraRouteStartupTest {
         assertEquals(1f, after.controls.zoomRatio)
     }
 }
+
+/**
+ * AGG4-15: the route-inventory callback re-fires on every resume and GL generation with the route
+ * unchanged. It is discovery, not a transition, so the operator's FRONT/EXTERNAL zoom survives it.
+ */
+class CameraRouteRepublishTest {
+    @Test
+    fun `republishing the same front route keeps the operator's zoom`() {
+        val routes = CameraRouteInventory(back = true, front = true, external = false)
+        val front = CameraUiState(
+            facing = CameraFacing.FRONT,
+            activeCameraRoute = CameraRoute.FRONT,
+            controls = CameraUiState().controls.copy(zoomRatio = 2f),
+        )
+
+        val once = cameraRoutePublishedState(front, routes, CameraRoute.FRONT, rawForcesStandalone = true)
+        val twice = cameraRoutePublishedState(once, routes, CameraRoute.FRONT, rawForcesStandalone = true)
+
+        assertEquals(2f, once.controls.zoomRatio)
+        assertEquals(2f, twice.controls.zoomRatio)
+    }
+
+    @Test
+    fun `a real transition onto a lens-local route still resets zoom`() {
+        val routes = CameraRouteInventory(back = false, front = true, external = true)
+        val external = cameraRoutePublishedState(
+            CameraUiState(
+                facing = CameraFacing.FRONT,
+                activeCameraRoute = CameraRoute.FRONT,
+                controls = CameraUiState().controls.copy(zoomRatio = 2f),
+            ),
+            routes,
+            CameraRoute.EXTERNAL,
+            rawForcesStandalone = false,
+        )
+        assertEquals(1f, external.controls.zoomRatio)
+    }
+}

@@ -1490,7 +1490,18 @@ class CameraEngine internal constructor(
         facing = route.facing
     }
 
+    /**
+     * Applies a DISCOVERED route. Its optics side effects (TC off, lens-local 1×, override/pin
+     * cleared) belong to a route TRANSITION only (AGG4-15): a forced, complete inventory retry that
+     * re-resolves the route already active (a partial first read completing later) used to write
+     * zoom 1× straight into the Engine, outside any optics transaction and without a request
+     * rebuild, so the Engine said 1× while the wire kept the operator's zoom.
+     */
     private fun applyResolvedCameraRoute(route: CameraRoute) {
+        if (!resolvedRouteChangesOptics(current = activeCameraRoute, resolved = route)) {
+            setActiveCameraRoute(route)
+            return
+        }
         when (route) {
             CameraRoute.BACK -> setActiveCameraRoute(CameraRoute.BACK)
             CameraRoute.FRONT -> {
@@ -8634,6 +8645,14 @@ internal fun rollbackRawWanted(
     )
     return if (movesRestoredRoute) baseline else current
 }
+
+/**
+ * Whether a discovered route resolution is a real route TRANSITION whose optics side effects
+ * (TC off, lens-local 1×, override/pin cleared) must apply (AGG4-15). Re-resolving the route that
+ * is already active is pure discovery and leaves the operator's optics alone.
+ */
+internal fun resolvedRouteChangesOptics(current: CameraRoute, resolved: CameraRoute): Boolean =
+    current != resolved
 
 /**
  * Resolved encoder bitrate (bits/s) per attempt size for a FROZEN REC packet: the packet's own
