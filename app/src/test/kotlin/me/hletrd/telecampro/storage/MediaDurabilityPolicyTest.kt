@@ -412,6 +412,14 @@ class MediaDurabilityPolicyTest {
                 u16(2) + u16(0),
         )
         assertEquals(PendingProbe.INVALID, probe(rawIlocHeif(truncatedSkip)))
+
+        // A v1 iloc whose extent declares a 4-byte extent_index but the box ends right there: the
+        // index skip itself runs off the box end.
+        val truncatedIndex = fullBox(
+            1,
+            byteArrayOf(0x44, 0x04) + u16(1) + u16(1) + u16(0) + u16(0) + u16(1),
+        )
+        assertEquals(PendingProbe.INVALID, probe(rawIlocHeif(truncatedIndex)))
     }
 
     @Test
