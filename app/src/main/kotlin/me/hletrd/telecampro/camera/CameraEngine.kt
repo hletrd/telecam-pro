@@ -8554,13 +8554,6 @@ internal fun rollbackRawWanted(
 }
 
 /**
- * The session generation a rollback may re-accept its baseline controller under, or null when it
- * must publish Not-Ready. The baseline's own generation qualifies (nothing touched the session);
- * so does the generation the failing door's OWN pre-close invalidation produced, because that bump
- * retired no camera — the outgoing controller is still the one streaming (AGG2-4). Any other value
- * means a camera error, pause, or newer door moved the session, and that stays non-restorable.
- */
-/**
  * The preflight generation a [rollbackRestorableSessionGeneration] may additionally accept: only a
  * transaction whose rollback baseline was frozen BEFORE its door mutated anything (AGG3-7). A bare
  * reopen's post-mutation snapshot gets null, i.e. the ordinary baseline-generation rule, which its
@@ -8571,6 +8564,13 @@ internal fun preflightRestorableSessionGeneration(
     preflightSessionGeneration: Long,
 ): Long? = preflightSessionGeneration.takeIf { baselinePrecedesMutation }
 
+/**
+ * The session generation a rollback may re-accept its baseline controller under, or null when it
+ * must publish Not-Ready. The baseline's own generation qualifies (nothing touched the session);
+ * so does the generation the failing door's OWN pre-close invalidation produced, because that bump
+ * retired no camera — the outgoing controller is still the one streaming (AGG2-4). Any other value
+ * means a camera error, pause, or newer door moved the session, and that stays non-restorable.
+ */
 internal fun rollbackRestorableSessionGeneration(
     beforeReady: Boolean,
     controllerMatches: Boolean,
