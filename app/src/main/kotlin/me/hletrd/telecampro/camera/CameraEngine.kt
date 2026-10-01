@@ -2418,7 +2418,7 @@ class CameraEngine internal constructor(
                 glInputSurface = input,
                 controls = controls,
                 // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
-                tenBitHlg = tenBitSessionWanted(videoMode, transfer) || tenBitExperimentEnabled(),
+                tenBitHlg = tenBitSessionWanted(videoMode, transfer),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -4235,7 +4235,7 @@ class CameraEngine internal constructor(
                     glInputSurface = input,
                     controls = controls,
                     // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
-                tenBitHlg = tenBitSessionWanted(videoMode, transfer) || tenBitExperimentEnabled(),
+                tenBitHlg = tenBitSessionWanted(videoMode, transfer),
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
@@ -7562,7 +7562,9 @@ class CameraEngine internal constructor(
 
     /**
      * DEBUG-only RGBA1010102 EGL experiment gate. It does not arm native log or the shipping HLG10
-     * Camera2 session; release builds always use the stable 8-bit EGL target.
+     * Camera2 session; release builds always use the stable 8-bit EGL target. (It used to also OR
+     * into the session's `tenBitHlg`, so a leftover flag file turned PHOTO into the still-less HLG10
+     * rung — a debug photo mode that could not shoot, contradicting this very doc; AGG-45.)
      */
     internal fun tenBitExperimentEnabled(): Boolean =
         BuildConfig.DEBUG &&
