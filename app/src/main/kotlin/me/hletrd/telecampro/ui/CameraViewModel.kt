@@ -4073,9 +4073,14 @@ class CameraViewModel private constructor(
                 if (MediaStoreWriter.discardPendingOutput(application, uri) ==
                     me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
                 ) {
+                    // Status only. `stillCaptureAdmissionAvailable` is ENGINE-owned: its publication
+                    // (`onStillCaptureAdmissionChanged`) is change-gated, so a VM write of `false`
+                    // here was never followed by a `true` and latched the photo and hardware
+                    // shutters dead for the life of this ViewModel (AGG4-1). The durable family
+                    // marker already owns restart recovery of this row; capture admission does not
+                    // depend on it.
                     mainHandler.post {
                         if (cleared) return@post
-                        _state.update { it.copy(stillCaptureAdmissionAvailable = false) }
                         showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE)
                     }
                 }
