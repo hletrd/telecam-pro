@@ -140,7 +140,7 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         self.assertIn("if (actualCertificate in blocked)", self.block)
         self.assertIn("if (actualCertificate != approvedCertificate)", self.block)
         # A doFirst never runs for an up-to-date task: the gate state must be a task input.
-        self.assertIn('inputs.property("uploadKeyApprovalState"', self.block)
+        self.assertIn('inputs.property(\n            "uploadKeyApprovalState",', self.block)
         self.assertIn('inputs.file(signingStoreFile).withPropertyName("uploadKeystore")', self.block)
         # Refusal text stays value-free.
         self.assertNotIn("$signingStorePassword", self.block)
@@ -177,7 +177,26 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         self.assertNotIn(".values", refusal)
         self.assertNotIn("gradleProperty(", refusal)
         # The approval gate's up-to-date input carries the injected names too.
-        self.assertIn("|$injectedNames\"", self.block)
+        self.assertIn("|$injectedNames|\" +", self.block)
+
+    def test_gradle_gate_applies_the_secret_floor_to_both_effective_passwords(self) -> None:
+        # SEC4-2 / AGG4-38: plain Gradle refuses a weak rotated key like both wrappers do.
+        self.assertIn("val storePasswordMeetsFloor = meetsGeneratedSecretFloor(signingStorePassword)", self.block)
+        self.assertIn("val keyPasswordMeetsFloor = meetsGeneratedSecretFloor(releaseKeyPassword!!)", self.block)
+        self.assertIn(
+            'val releaseKeyPassword = signingValue("keyPassword", "TELECAMPRO_KEY_PASSWORD") ?: releaseStorePassword',
+            self.gradle,
+        )
+        self.assertIn("if (!storePasswordMeetsFloor) {", self.block)
+        self.assertIn("if (!keyPasswordMeetsFloor) {", self.block)
+        self.assertIn("$storePasswordMeetsFloor|$keyPasswordMeetsFloor", self.block)
+        # Floor before the keystore is opened with the password; value-free messages.
+        self.assertLess(
+            self.block.index("if (!keyPasswordMeetsFloor) {"),
+            self.block.index("KeyStore.getInstance(signingStoreFile"),
+        )
+        self.assertNotIn("$signingStorePassword", self.block)
+        self.assertNotIn("$releaseKeyPassword", self.block)
 
 
 if __name__ == "__main__":

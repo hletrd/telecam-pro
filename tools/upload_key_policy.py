@@ -7,7 +7,10 @@ blocked certificate back into an acceptable signer.
 The deny-list blocks the retired key's CERTIFICATE, not the weakness that got it retired. The
 generated-secret floor below is therefore applied by both wrappers to the effective store and key
 passwords (SEC3-2 / AGG3-32): it used to live in the scoped helper alone, so the documented
-`build_immutable_release.py` path would sign with a freshly rotated but equally weak key.
+`build_immutable_release.py` path would sign with a freshly rotated but equally weak key. Since
+SEC4-2 / AGG4-38 app/build.gradle.kts carries a Kotlin port of the same floor for plain Gradle;
+tools/check_docs.py pins its constants to the ones below and tools/tests/test_upload_key_floor_gradle.py
+runs both implementations over the same vectors.
 """
 
 from __future__ import annotations

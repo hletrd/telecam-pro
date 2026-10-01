@@ -399,6 +399,102 @@ val releaseStoreFile = configuredReleaseStoreFile
 val releaseKeyAlias = signingValue("keyAlias", "TELECAMPRO_KEY_ALIAS")
 val releaseStorePassword = signingValue("storePassword", "TELECAMPRO_STORE_PASSWORD")
 val releaseKeyPassword = signingValue("keyPassword", "TELECAMPRO_KEY_PASSWORD") ?: releaseStorePassword
+// SEC4-2 / AGG4-38: the generated-secret floor, ported from tools/upload_key_policy.py so plain
+// `./gradlew bundleRelease` (and Android Studio's Build menu) refuses a freshly rotated but weak key
+// exactly as both Python wrappers do. ONE rule: tools/check_docs.py pins every constant below to its
+// Python twin, and tools/tests/test_upload_key_gate.py runs this function over the same vectors as
+// the Python one (`verifyUploadKeySecretFloorFixture`). It answers only yes/no, never why.
+val uploadKeyMinStrongPasswordLength = 20
+val uploadKeyMinStrongPasswordClasses = 3
+val uploadKeyMaxMonotonicRun = 5
+val uploadKeyMinDistinctCharacters = 12
+val uploadKeyMaxRepeatRun = 3
+
+fun uploadKeyHasMonotonicRun(value: String): Boolean {
+    var run = 1
+    var direction = 0
+    var previous: Char? = null
+    for (character in value.lowercase()) {
+        val prior = previous
+        val comparable = prior != null && (
+            (uploadKeyAsciiLetter(prior) && uploadKeyAsciiLetter(character)) ||
+                (uploadKeyAsciiDigit(prior) && uploadKeyAsciiDigit(character))
+            )
+        if (!comparable) {
+            run = 1
+            direction = 0
+        } else {
+            val step = character.code - prior!!.code
+            if (step == 1 || step == -1) {
+                if (step == direction) {
+                    run += 1
+                } else {
+                    direction = step
+                    run = 2
+                }
+                if (run > uploadKeyMaxMonotonicRun) return true
+            } else {
+                run = 1
+                direction = 0
+            }
+        }
+        previous = character
+    }
+    return false
+}
+
+fun uploadKeyAsciiLetter(character: Char): Boolean = character in 'a'..'z' || character in 'A'..'Z'
+fun uploadKeyAsciiDigit(character: Char): Boolean = character in '0'..'9'
+
+fun uploadKeyHasLongRepeatRun(value: String): Boolean {
+    var run = 0
+    var previous: Char? = null
+    for (character in value) {
+        run = if (character == previous) run + 1 else 1
+        if (run > uploadKeyMaxRepeatRun) return true
+        previous = character
+    }
+    return false
+}
+
+fun uploadKeyHasShortPeriod(value: String): Boolean =
+    (1..value.length / 2).any { period ->
+        (0 until value.length - period).all { index -> value[index] == value[index + period] }
+    }
+
+fun meetsGeneratedSecretFloor(value: String): Boolean {
+    if (value.length < uploadKeyMinStrongPasswordLength || value != value.trim()) return false
+    val classes = listOf(
+        value.any { it.isLowerCase() },
+        value.any { it.isUpperCase() },
+        value.any { it.isDigit() },
+        value.any { !it.isLetterOrDigit() },
+    ).count { it }
+    return classes >= uploadKeyMinStrongPasswordClasses &&
+        value.toSet().size >= uploadKeyMinDistinctCharacters &&
+        !uploadKeyHasLongRepeatRun(value) &&
+        !uploadKeyHasShortPeriod(value) &&
+        !uploadKeyHasMonotonicRun(value)
+}
+
+// Executable tools-suite seam for the floor above, shaped like `verifyCleanReleaseGitFixture`: it
+// exists only when a test supplies a vectors file (one UTF-8 value per line, synthetic values only)
+// and writes one accept/reject verdict per line, so tools/tests can prove the Kotlin port agrees
+// with tools/upload_key_policy.py value for value. Release tasks never depend on it.
+providers.gradleProperty("uploadKeyFloorFixtureVectors").orNull?.let { vectorsPath ->
+    val verdicts = file(vectorsPath).readText(Charsets.UTF_8).split('\n').dropLast(1).map { value ->
+        if (meetsGeneratedSecretFloor(value)) "accept" else "reject"
+    }
+    val verdictFile = file(
+        providers.gradleProperty("uploadKeyFloorFixtureOutput").orNull
+            ?: error("uploadKeyFloorFixtureOutput is required with uploadKeyFloorFixtureVectors"),
+    )
+    tasks.register("verifyUploadKeySecretFloorFixture") {
+        outputs.upToDateWhen { false }
+        doLast { verdictFile.writeText(verdicts.joinToString("") { "$it\n" }, Charsets.UTF_8) }
+    }
+}
+
 val hasReleaseSigning =
     keystorePropsFile.exists() &&
         releaseStoreFile != null &&
@@ -848,6 +944,11 @@ if (hasReleaseSigning) {
     val signingStoreFile = rootProject.file(releaseStoreFile!!)
     val signingAlias = releaseKeyAlias!!
     val signingStorePassword = releaseStorePassword!!
+    // SEC4-2 / AGG4-38: the floor applies to the EFFECTIVE values AGP signs with — storePassword and
+    // `keyPassword ?: storePassword` (`releaseKeyPassword`), file over environment exactly like the
+    // wrappers. Only the two yes/no answers enter the task action and its inputs, never a value.
+    val storePasswordMeetsFloor = meetsGeneratedSecretFloor(signingStorePassword)
+    val keyPasswordMeetsFloor = meetsGeneratedSecretFloor(releaseKeyPassword!!)
     val injectedNames = injectedSigningPropertyNames
     tasks.matching { it.name in releaseSigningTasks }.configureEach {
         // A doFirst never runs for an UP-TO-DATE or FROM-CACHE task, so the gate state itself is a
@@ -855,7 +956,12 @@ if (hasReleaseSigning) {
         // signing property names (SEC3-1), or the keystore bytes re-executes the task (and therefore
         // the gate). Without this, a signed output produced before the gate existed was reported as
         // a successful build afterwards.
-        inputs.property("uploadKeyApprovalState", "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}|$injectedNames")
+        // The floor verdicts (SEC4-2) ride along so a weakened secret also re-executes the gate.
+        inputs.property(
+            "uploadKeyApprovalState",
+            "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}|$injectedNames|" +
+                "$storePasswordMeetsFloor|$keyPasswordMeetsFloor",
+        )
         inputs.file(signingStoreFile).withPropertyName("uploadKeystore").withPathSensitivity(PathSensitivity.NONE)
         doFirst {
             val sha256 = Regex("[0-9a-f]{64}")
@@ -876,6 +982,14 @@ if (hasReleaseSigning) {
                 throw GradleException(
                     "Release signing refused: uploadKeyCertificateSha256 is invalid or names a blocked certificate.",
                 )
+            }
+            // Approval and fingerprint are reported first (MRG3-4), and the floor still runs before
+            // the store password ever opens the keystore — the same order as the Python wrappers.
+            if (!storePasswordMeetsFloor) {
+                throw GradleException("Release signing refused: the store password does not meet the strong-key policy.")
+            }
+            if (!keyPasswordMeetsFloor) {
+                throw GradleException("Release signing refused: the key password does not meet the strong-key policy.")
             }
             val actualCertificate = try {
                 val keyStore = KeyStore.getInstance(signingStoreFile, signingStorePassword.toCharArray())

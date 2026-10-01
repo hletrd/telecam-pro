@@ -59,6 +59,9 @@ class _SealedPath(NamedTuple):
 
 class ReleaseLocalInputs(NamedTuple):
     sealed_paths: tuple[str, ...]
+    # The exact keystore.properties bytes written into the sealed checkout (None when absent): the
+    # floor re-check reads THESE, never the live file again (SEC4-2 / AGG4-38).
+    signing_properties: bytes | None
 
 
 class ReleaseSnapshotSeal:
@@ -795,7 +798,36 @@ def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> Relea
         payload, mode = read_regular_beneath(root, store_file)
         write_regular_exclusive(snapshot / relative_store, payload, mode)
         copied.append(store_file)
-    return ReleaseLocalInputs(tuple(copied))
+    return ReleaseLocalInputs(tuple(copied), signing_payload)
+
+
+def require_frozen_secret_floor(
+    signing_properties: bytes | None,
+    tasks: Sequence[str],
+    environment: Mapping[str, str],
+) -> None:
+    """Re-apply the generated-secret floor to the keystore.properties bytes Gradle will sign from.
+
+    SEC4-2 / AGG4-38: `require_approved_upload_key` reads the LIVE work tree; the snapshot copy is
+    a second read, so a swap between the two (a concurrent editor, a sync tool) let the floor approve
+    one file while Gradle signed with another. This runs against the frozen copy itself, with the
+    same effective-value rule (file over environment, `keyPassword ?: storePassword`). An absent
+    password is left to Gradle, which then has no signing config and refuses every signing task.
+    """
+    if signing_properties is None or not signing_capable(tasks):
+        return
+    try:
+        entries = parse_java_properties(signing_properties)
+    except (RuntimeError, UnicodeError) as error:
+        raise UploadKeyGateError("frozen release signing properties are unreadable") from error
+    store_password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
+    key_password = (
+        _gradle_signing_value(entries, "keyPassword", environment, KEY_PASSWORD_ENV) or store_password
+    )
+    if store_password is not None and not meets_generated_secret_floor(store_password):
+        raise UploadKeyGateError("frozen release store password does not meet the strong-key policy")
+    if key_password is not None and not meets_generated_secret_floor(key_password):
+        raise UploadKeyGateError("frozen release key password does not meet the strong-key policy")
 
 
 def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
@@ -860,6 +892,8 @@ def build_immutable_release(
         local_inputs = copy_local_build_inputs(root, snapshot)
         seal = seal_release_snapshot(snapshot, (*expected, *local_inputs.sealed_paths))
         try:
+            # After the seal: the bytes checked here are the bytes the seal then keeps immutable.
+            require_frozen_secret_floor(local_inputs.signing_properties, tasks, os.environ)
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
             # Gradle receives no wrapper-origin or immutable-evidence claim. It records only the

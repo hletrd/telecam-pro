@@ -1500,6 +1500,40 @@ check(
     "signed release procedure scopes secrets and requires owner-approved key replacement",
 )
 
+# SEC4-2 / AGG4-38: the Gradle release gate carries a Kotlin port of the generated-secret floor. One
+# rule, two languages: every Python constant must have a Kotlin twin with the SAME value, and the
+# gate must apply it to both effective passwords. tools/tests/test_upload_key_floor_gradle.py runs
+# the port itself over shared vectors; this check catches a constant edited on one side only.
+SECRET_FLOOR_CONSTANTS = {
+    "MIN_STRONG_PASSWORD_LENGTH": "uploadKeyMinStrongPasswordLength",
+    "MIN_STRONG_PASSWORD_CLASSES": "uploadKeyMinStrongPasswordClasses",
+    "MAX_MONOTONIC_RUN": "uploadKeyMaxMonotonicRun",
+    "MIN_DISTINCT_CHARACTERS": "uploadKeyMinDistinctCharacters",
+    "MAX_REPEAT_RUN": "uploadKeyMaxRepeatRun",
+}
+
+
+def secret_floor_constant_mismatches(python_source: str, kotlin_source: str) -> list[str]:
+    mismatches = []
+    for python_name, kotlin_name in SECRET_FLOOR_CONSTANTS.items():
+        python_value = re.findall(rf"(?m)^{python_name} = (\d+)$", python_source)
+        kotlin_value = re.findall(rf"(?m)^val {kotlin_name} = (\d+)$", kotlin_source)
+        if len(python_value) != 1 or python_value != kotlin_value:
+            mismatches.append(f"{python_name}={python_value} vs {kotlin_name}={kotlin_value}")
+    return mismatches
+
+
+secret_floor_mismatches = secret_floor_constant_mismatches(upload_key_policy_source, gradle)
+check(
+    not secret_floor_mismatches
+    and "val storePasswordMeetsFloor = meetsGeneratedSecretFloor(signingStorePassword)" in gradle
+    and "val keyPasswordMeetsFloor = meetsGeneratedSecretFloor(releaseKeyPassword!!)" in gradle
+    and "if (!storePasswordMeetsFloor) {" in gradle
+    and "if (!keyPasswordMeetsFloor) {" in gradle,
+    "Gradle release gate enforces the same generated-secret floor as tools/upload_key_policy.py",
+    "; ".join(secret_floor_mismatches),
+)
+
 
 # A credential's PROPERTIES are secret too (SEC2-1): stating a password's length, character class,
 # or how it was delivered turns an offline brute force over a stolen keystore into a trivial search.

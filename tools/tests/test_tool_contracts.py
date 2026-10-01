@@ -72,6 +72,8 @@ def run_documentation_gate_from_committed_export(
             "tools/build_immutable_debug.py",
             "tools/build_immutable_release.py",
             "tools/run_scoped_signed_release.py",
+            "tools/upload_key_policy.py",
+            "app/build.gradle.kts",
             "keystore.properties.example",
             "README.md",
             "CLAUDE.md",
@@ -1684,6 +1686,31 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(
                     "FAIL  signed release procedure scopes secrets and requires owner-approved key replacement",
+                    result.stdout,
+                )
+
+    def test_committed_export_rejects_a_secret_floor_constant_edited_on_one_side(self) -> None:
+        # SEC4-2 / AGG4-38: the Gradle floor is a port; a one-sided edit must turn the gate red.
+        for relative, current, stale in (
+            ("app/build.gradle.kts", "val uploadKeyMinDistinctCharacters = 12", "val uploadKeyMinDistinctCharacters = 2"),
+            ("tools/upload_key_policy.py", "MAX_REPEAT_RUN = 3", "MAX_REPEAT_RUN = 30"),
+            (
+                "app/build.gradle.kts",
+                "            if (!keyPasswordMeetsFloor) {",
+                "            if (false) {",
+            ),
+        ):
+            with self.subTest(relative=relative, stale=stale):
+                def regress(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(regress)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  Gradle release gate enforces the same generated-secret floor",
                     result.stdout,
                 )
 

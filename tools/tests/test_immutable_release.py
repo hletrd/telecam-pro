@@ -251,7 +251,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 self.fixture(root)
                 (root / "local.properties").write_text("sdk.dir=/safe/sdk\n", encoding="utf-8")
                 (root / "keystore.properties").write_text(
-                    "storeFile=release-key.jks\nstorePassword=secret-A\n",
+                    "storeFile=release-key.jks\nstorePassword=Synthetic-Seal-A-9qZ!\n",
                     encoding="utf-8",
                 )
                 (root / "release-key.jks").write_bytes(b"key-A")
@@ -276,7 +276,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                         output,
                         run=package,
                     )
-                self.assertNotIn("secret-A", str(raised.exception))
+                self.assertNotIn("Synthetic-Seal-A-9qZ!", str(raised.exception))
                 self.assertNotIn("secret-B", str(raised.exception))
                 self.assertFalse(output.exists())
 
@@ -377,6 +377,83 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode)
 
+    def test_frozen_signing_properties_are_rechecked_against_the_secret_floor(self) -> None:
+        # SEC4-2 / AGG4-38: the floor re-runs on the COPIED keystore.properties, before Gradle.
+        # Synthetic values only.
+        weak = "a" * 18 + "A1"
+        strong = "Zk4!mR9#vT2$wQ8%nnnB"
+        cases = (
+            (f"storeFile=release-key.jks\nstorePassword={weak}\n", {}, "store password"),
+            (
+                f"storeFile=release-key.jks\nstorePassword={strong}\nkeyPassword={weak}\n",
+                {},
+                "key password",
+            ),
+            # No file value: the environment value is the effective one (Gradle's precedence).
+            ("storeFile=release-key.jks\n", {"TELECAMPRO_STORE_PASSWORD": weak}, "store password"),
+            # A strong keyPassword cannot hide a weak storePassword.
+            (
+                f"storeFile=release-key.jks\nstorePassword={weak}\nkeyPassword={strong}\n",
+                {},
+                "store password",
+            ),
+        )
+        for properties, environment, refused in cases:
+            with self.subTest(properties=properties, environment=sorted(environment)):
+                with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+                    os.environ,
+                    {"TELECAMPRO_STORE_PASSWORD": "", "TELECAMPRO_KEY_PASSWORD": "", **environment},
+                ):
+                    root = Path(temp_dir) / "fixture"
+                    root.mkdir()
+                    self.fixture(root)
+                    self.signing_fixture(root, properties.encode("ascii"))
+                    output = root / "app/build/immutable-release/test-output"
+                    commands: list[list[str]] = []
+
+                    def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                        commands.append(command)
+                        return subprocess.CompletedProcess(command, 0, "", "")
+
+                    with self.assertRaisesRegex(release.UploadKeyGateError, refused) as raised:
+                        release.build_immutable_release(root, [":app:bundleRelease"], output, run=package)
+                    self.assertNotIn(weak, str(raised.exception))
+                    self.assertEqual([], commands)
+                    self.assertFalse(output.exists())
+
+    def test_frozen_floor_recheck_passes_strong_values_and_skips_lint(self) -> None:
+        strong = "Zk4!mR9#vT2$wQ8%nnnB"
+        with patch.dict(os.environ, {"TELECAMPRO_STORE_PASSWORD": "", "TELECAMPRO_KEY_PASSWORD": ""}):
+            release.require_frozen_secret_floor(
+                f"storePassword={strong}\n".encode("ascii"), [":app:bundleRelease"], os.environ
+            )
+            release.require_frozen_secret_floor(b"storePassword=weak\n", [":app:lintRelease"], os.environ)
+            release.require_frozen_secret_floor(None, [":app:bundleRelease"], os.environ)
+            with self.assertRaises(release.UploadKeyGateError):
+                release.require_frozen_secret_floor(
+                    b"storePassword=weak\n", [":app:bundleRelease"], os.environ
+                )
+
+    def test_frozen_floor_recheck_reads_the_copy_not_the_live_file(self) -> None:
+        # The live file is swapped to a weak value after the copy; only the frozen bytes count.
+        strong = "Zk4!mR9#vT2$wQ8%nnnB"
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"TELECAMPRO_STORE_PASSWORD": "", "TELECAMPRO_KEY_PASSWORD": ""}
+        ):
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            self.signing_fixture(
+                root, f"storeFile=release-key.jks\nstorePassword={strong}\n".encode("ascii")
+            )
+            snapshot = Path(temp_dir) / "snapshot"
+            snapshot.mkdir()
+            inputs = release.copy_local_build_inputs(root, snapshot)
+            (root / "keystore.properties").write_bytes(b"storeFile=release-key.jks\nstorePassword=weak\n")
+            self.assertIn(strong.encode("ascii"), inputs.signing_properties or b"")
+            self.assertEqual(inputs.signing_properties, (snapshot / "keystore.properties").read_bytes())
+            release.require_frozen_secret_floor(inputs.signing_properties, [":app:bundleRelease"], os.environ)
+
     def test_environment_only_store_file_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "fixture"
@@ -397,7 +474,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                         root / "app/build/immutable-release/test-output",
                         run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                     )
-            self.assertNotIn("secret-A", str(raised.exception))
+            self.assertNotIn("Synthetic-Seal-A-9qZ!", str(raised.exception))
             self.assertNotIn(str(outside), str(raised.exception))
 
     def test_ambiguous_or_non_relative_store_file_is_rejected(self) -> None:
