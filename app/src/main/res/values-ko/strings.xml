@@ -409,6 +409,9 @@
     <string name="a11y_shutter_speed">셔터 속도</string>
     <string name="a11y_white_balance">화이트 밸런스</string>
     <string name="a11y_exposure_compensation">노출 보정</string>
+    <string name="a11y_exposure_meter">노출계</string>
+    <string name="a11y_exposure_meter_metered">측광값 %1$s EV</string>
+    <string name="a11y_exposure_meter_metering">측광 중…</string>
     <plurals name="a11y_percent_value"><item quantity="other">%1$d퍼센트</item></plurals>
     <plurals name="a11y_kelvin_value"><item quantity="other">%1$d켈빈</item></plurals>
     <string name="a11y_auto_value">자동 %1$s</string>

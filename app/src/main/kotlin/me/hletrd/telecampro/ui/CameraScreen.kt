@@ -2758,6 +2758,14 @@ private fun ExposureMeter(
             else -> formatEvComp(compensationEv)
         }
     }
+    // One spoken leaf instead of raw glyphs plus an unlabelled Canvas (AGG4-71).
+    val speech = exposureMeterSpeech(state.controls.exposureMode, manualEv, compensationEv)
+    val spokenName = stringResource(speech.name)
+    val spokenState = if (speech.value == null) {
+        stringResource(speech.stateText)
+    } else {
+        stringResource(speech.stateText, speech.value)
+    }
     // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.
     // 6/8 DELIBERATELY, not the 12/6 HUD pill inset: this is the one HUD plate whose content is a
     // vertical instrument rather than a line of text, and its axis needs are the inverse of a pill's.
@@ -2771,7 +2779,11 @@ private fun ExposureMeter(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(HudPlate)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
+            .padding(horizontal = 6.dp, vertical = 8.dp)
+            .clearAndSetSemantics {
+                contentDescription = spokenName
+                stateDescription = spokenState
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
