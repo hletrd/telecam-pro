@@ -25,6 +25,7 @@ import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
@@ -837,6 +838,55 @@ class CameraViewModelRobolectricTest {
         assertEquals(guidance, v.state.value.status)
         idleFor(1) // ordinary messages clear at 2.5 s (CameraStatus.durationMs)
         assertNull(v.state.value.status)
+    }
+
+    // AGG3-18 / VER3-2: Ready publication must not rewrite the processed axes of the REQUEST. A
+    // DNG-only selection on a session without RAW (FRONT, the drop-RAW rung) came back HEIF+DNG and
+    // persisted; capture-time normalisation is the shot's guarantee, readouts show the answer.
+    @Test fun `Ready keeps the format request and only the readout reflects the session`() {
+        val (v, e) = createViewModel()
+        // The main-thread half re-checks the publication against the engine's live generations.
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        val dngOnly = PhotoFormats(heif = false, jpeg = false, dngRaw = true)
+        setState(v) { it.copy(photoFormats = dngOnly) }
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = optics,
+                sessionGeneration = session,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            )
+        )
+        idleFor(0)
+        assertEquals(PhotoSessionOutputs(processed = true), v.state.value.photoSessionOutputs)
+        assertEquals(dngOnly, v.state.value.photoFormats)
+        assertEquals(PhotoFormats(heif = true, jpeg = false, dngRaw = true), v.state.value.effectivePhotoFormats)
+
+        // And the mirror: a processed request on a RAW-only session keeps its processed axis.
+        val heifDng = PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+        setState(v) { it.copy(photoFormats = heifDng) }
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 2L,
+                ready = true,
+                opticsGeneration = optics,
+                sessionGeneration = session,
+                photoOutputs = PhotoSessionOutputs(raw = true),
+            )
+        )
+        idleFor(0)
+        assertEquals(heifDng, v.state.value.photoFormats)
+        assertEquals(dngOnly, v.state.value.effectivePhotoFormats)
     }
 
     @Test fun `camera condition progress waits for Ready not a timer`() {

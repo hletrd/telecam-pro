@@ -39,7 +39,7 @@ class OpticsTransitionPolicyTest {
         )
 
         assertEquals(8f, rolledBack.preTeleUnifiedZoom)
-        assertTrue(rolledBack.photoFormats.dngRaw)
+        assertTrue(rolledBack.effectivePhotoFormats.dngRaw)
     }
 
     @Test
@@ -55,7 +55,7 @@ class OpticsTransitionPolicyTest {
         // dngRaw is NOT cleared any more: on the logical photo route the request is precisely what
         // moves the session to a lens that can serve it, so clearing it here diverged the UI from the
         // engine's rawWanted and setRawWanted's change gate then froze that divergence.
-        assertTrue(accepted.photoFormats.dngRaw)
+        assertTrue(accepted.effectivePhotoFormats.dngRaw)
     }
 
     @Test
@@ -72,7 +72,7 @@ class OpticsTransitionPolicyTest {
             photoFormats = PhotoFormats(heif = false, jpeg = false, dngRaw = true),
         )
 
-        assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = true), accepted.photoFormats)
+        assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = true), accepted.effectivePhotoFormats)
     }
 
     @Test

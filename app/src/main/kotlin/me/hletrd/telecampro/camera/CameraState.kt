@@ -1494,6 +1494,20 @@ internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoForm
 }
 
 /**
+ * What an accepted session will actually write for the operator's [PhotoFormats] REQUEST, for
+ * readouts only (OSD label, storage estimate, the Ready-time DNG-only status). Never stored back into
+ * the request (AGG3-18 / VER3-2): a DNG-only request on a session without RAW (FRONT, the drop-RAW
+ * rung) used to come back as HEIF+DNG and persist, so the rear route then wrote a HEIF the operator
+ * never chose. Capture-time normalization in `CameraEngine.capturePhoto` is the shot's guarantee.
+ *
+ * No still lane at all is a session STATE (10-bit video, preview-only), not an answer about formats,
+ * so it shows the request. The RAW axis keeps the request as well: wanting DNG is what moves the
+ * route, so RAW's absence on the way there is not an answer either (DNG rule 4 in CLAUDE.md).
+ */
+fun PhotoFormats.effectiveFor(outputs: PhotoSessionOutputs): PhotoFormats =
+    if (outputs.hasStillTarget) normalizedFor(outputs).copy(dngRaw = dngRaw) else this
+
+/**
  * Immutable snapshot the UI renders. Hardware-independent so it can be previewed/unit-tested.
  * [controls] holds capture parameters; the remaining fields are viewfinder assists and app state.
  *
@@ -1733,6 +1747,10 @@ data class CameraUiState(
 
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
+
+    /** [photoFormats] is the REQUEST; this is what the accepted session writes ([effectiveFor]). */
+    val effectivePhotoFormats: PhotoFormats
+        get() = photoFormats.effectiveFor(photoSessionOutputs)
 
     /** Operator-facing file raster: accepted fallback during REC, requested/session size otherwise. */
     val encodedVideoResolution: Size

@@ -16,7 +16,8 @@ internal fun pendingControlsForTransition(
 
 internal data class AcceptedOpticsAuxState(
     val preTeleUnifiedZoom: Float,
-    val photoFormats: PhotoFormats,
+    /** What the accepted session writes for the request; a readout, never stored back (AGG3-18). */
+    val effectivePhotoFormats: PhotoFormats,
 )
 
 /** Complete Engine -> UI rollback publication for one generation-owned optics transaction. */
@@ -56,29 +57,22 @@ internal fun acceptedOpticsAuxState(
     photoFormats: PhotoFormats,
 ): AcceptedOpticsAuxState = AcceptedOpticsAuxState(
     preTeleUnifiedZoom = if (teleconverter) preTeleUnifiedZoom else Float.NaN,
-    // What an accepted session may edit in the operator's format request, and what it may not
-    // (both halves device-reproduced 2026-07-29):
+    // An accepted session edits NOTHING in the operator's format request (AGG3-18 / VER3-2). Each
+    // axis it once rewrote was device-reproduced as a lost selection:
     //
-    // - No still lane AT ALL is a session STATE, not an answer about formats — the 10-bit video
-    //   session drops both still readers by design, and preview-only is a fallback rung. Normalising
-    //   against that wrote the EMPTY set over the request, which persisted on background and came
-    //   back as HEIF-only next launch.
-    // - The PROCESSED axis IS a genuine session answer: a hi-res session collapses to passthrough
-    //   JPEG, and a DNG-only session really has no processed reader. It still normalises.
-    // - The RAW axis is NOT. RAW's presence is a CONSEQUENCE of this very request — wanting DNG is
-    //   what moves the route — so letting the session clear it made the engine's `rawWanted` and the
-    //   UI's `dngRaw` diverge, and `setRawWanted`'s change gate froze the divergence: the operator
-    //   saw DNG off while photo stayed pinned to a standalone lens, silently losing seamless zoom for
-    //   a format they no longer appeared to have chosen (seen on the front-camera trip).
+    // - No still lane AT ALL is a session STATE — the 10-bit video session drops both still readers
+    //   by design. Normalising against that wrote the EMPTY set over the request, which persisted
+    //   on background and came back as HEIF-only next launch (2026-07-29).
+    // - The RAW axis: RAW's presence is a CONSEQUENCE of this very request — wanting DNG is what
+    //   moves the route — so letting the session clear it froze an engine/UI divergence behind
+    //   `setRawWanted`'s change gate (seen on the front-camera trip, 2026-07-29).
+    // - The PROCESSED axis: a DNG-only request on a session without RAW (FRONT, the drop-RAW rung)
+    //   normalised to HEIF+DNG and persisted, so the rear route then wrote HEIFs never chosen.
     //
-    // [rawSelectable] disables the chip wherever the route structurally cannot deliver RAW, and
-    // capture-time normalisation in CameraEngine still refuses to shoot a missing output — so keeping
-    // intent here can never produce a bogus capture.
-    photoFormats = if (photoOutputs.hasStillTarget) {
-        photoFormats.normalizedFor(photoOutputs).copy(dngRaw = photoFormats.dngRaw)
-    } else {
-        photoFormats
-    },
+    // The session's answer is still real, so it is returned as a READOUT ([effectiveFor]); and
+    // capture-time normalisation in CameraEngine refuses to shoot a missing output, so keeping the
+    // request here can never produce a bogus capture.
+    effectivePhotoFormats = photoFormats.effectiveFor(photoOutputs),
 )
 
 /**

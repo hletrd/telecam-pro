@@ -2280,7 +2280,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
     // (PERF4-2).
     val remaining: String? = remember(
         state.freeBytes, state.mode, state.encodedVideoResolution, state.videoFrameRate,
-        state.bitrateLevel, state.videoCodec, state.photoFormats,
+        state.bitrateLevel, state.videoCodec, state.effectivePhotoFormats,
     ) {
         when {
             state.freeBytes <= 0 -> null
@@ -2301,9 +2301,9 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
             }
             else -> {
                 var perShot = 0L
-                if (state.photoFormats.heif) perShot += 8_000_000L
-                if (state.photoFormats.jpeg) perShot += 6_000_000L
-                if (state.photoFormats.dngRaw) perShot += 26_000_000L
+                if (state.effectivePhotoFormats.heif) perShot += 8_000_000L
+                if (state.effectivePhotoFormats.jpeg) perShot += 6_000_000L
+                if (state.effectivePhotoFormats.dngRaw) perShot += 26_000_000L
                 if (perShot == 0L) perShot = 8_000_000L
                 val shots = state.freeBytes / perShot
                 if (shots > 9999) "9999+" else "$shots"

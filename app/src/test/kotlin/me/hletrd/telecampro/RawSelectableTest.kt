@@ -115,7 +115,7 @@ class AcceptedPhotoFormatsTest {
             photoOutputs = outputs,
             preTeleUnifiedZoom = Float.NaN,
             photoFormats = formats,
-        ).photoFormats
+        ).effectivePhotoFormats
 
     @Test
     fun `a still-less session leaves the request untouched`() {

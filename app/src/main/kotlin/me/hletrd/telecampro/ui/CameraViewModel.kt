@@ -903,7 +903,8 @@ class CameraViewModel private constructor(
                             !publication.photoOutputs.hasStillTarget ->
                                 CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status()
                             current.photoFormats.wantsProcessedStill &&
-                                !accepted.photoFormats.wantsProcessedStill && accepted.photoFormats.dngRaw ->
+                                !accepted.effectivePhotoFormats.wantsProcessedStill &&
+                                accepted.effectivePhotoFormats.dngRaw ->
                                 // Word for word the engine's capture-time refusal and the
                                 // PhotoFormatToggles caption: this fires on Ready publication and
                                 // those fire at the shutter, so one user sees all three for one
@@ -917,10 +918,11 @@ class CameraViewModel private constructor(
                             // actual shot dropped its DNG.
                             else -> null
                         }
+                        // photoFormats stays the REQUEST (AGG3-18); readouts derive the session's
+                        // answer from photoSessionOutputs at render time (effectivePhotoFormats).
                         current.copy(
                             cameraReady = true,
                             photoSessionOutputs = publication.photoOutputs,
-                            photoFormats = accepted.photoFormats,
                         )
                     }
                     if (acceptedApplied) preTeleUnifiedZoom = acceptedPreTele

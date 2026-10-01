@@ -194,7 +194,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   4. **A still-less session must not edit the request.** `acceptedOpticsAuxState` normalized
      `photoFormats` against accepted outputs; in 10-bit video those are EMPTY, so a trip through log
      video wrote the empty set over the operator's selection, which persisted on background and came
-     back as HEIF-only. Normalization now runs only when the session has a still target at all.
+     back as HEIF-only. Since 2026-10-02 (AGG3-18) NO accepted session edits the request: a
+     DNG-only request on a session without RAW (FRONT, the drop-RAW rung) also came back HEIF+DNG.
+     Readouts derive `CameraUiState.effectivePhotoFormats` at render time instead.
      Capture-time normalization still guarantees no shot is attempted against a missing output.
 - **Last-capture review is owned by monotonic capture id, then displayability.** A newer RAW-only
   success replaces an older thumbnail with a truthful DNG metadata placeholder. A processed sibling
