@@ -40,8 +40,10 @@ data class OpticsRollbackPublication(
     /**
      * The DNG route input restored with the route it selected. Without it a failed DNG reopen left
      * the engine wanting RAW over the restored logical session, and the UI chip on (AGG-4).
+     * Deliberately REQUIRED (no default): DNG is a route input, and a silently defaulted route input
+     * is exactly how a rollback can restore the wrong route.
      */
-    val rawWanted: Boolean = false,
+    val rawWanted: Boolean,
     /** The operator's recording-size REQUEST restored with the packet (not the delivered size). */
     val requestedVideoSize: android.util.Size?,
 )
