@@ -2710,6 +2710,18 @@ class CameraEngine internal constructor(
         resolvedTransfer: ColorTransfer,
         resolvedVideoCodec: VideoCodec,
         resolvedVideoEncoderCandidates: List<EncoderSelection>,
+        /**
+         * The recalled DNG intent. It is a ROUTE input ([standaloneRouteWanted]), so it belongs in
+         * THIS packet: recall used to publish the optics here and the DNG intent through a
+         * trailing [setRawWanted], a second transaction. `setupExecutor` could run this one first,
+         * resolve the LOGICAL camera from the still-old `rawWanted = false`, and its fast-path
+         * terminal re-banded the recalled lens-local 1.0 to MAIN; the DNG door then reopened the
+         * standalone 23 mm lens instead of the recalled 70 mm one, and a failure of the second
+         * door rolled back to a mixed-scale packet (RPL cycle 2, AGG2-2). Published inside the
+         * same `beginOpticsTransaction`, so `resolveNonTeleId`, the fast-path band predicate, and
+         * the rollback snapshot all see one coherent value.
+         */
+        resolvedRawWanted: Boolean,
     ): Boolean {
         if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
         val declaration = teleconverterDeclaration(
@@ -2757,6 +2769,9 @@ class CameraEngine internal constructor(
             // intermediate front-with-recalled-optics state.
             setActiveCameraRoute(route)
             controls = modeControls
+            // Not a direct write (no rawWantedDirectWrites bump): it rides this transaction, so a
+            // failed recall restores the baseline DNG intent together with the route it selected.
+            rawWanted = resolvedRawWanted
             photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
             recalledVideoSize?.let { requestedVideoSize = it }
             preTeleUnifiedZoom = Float.NaN

@@ -1437,6 +1437,12 @@ class CameraViewModel private constructor(
             resolvedTransfer = safeTransfer,
             resolvedVideoCodec = safeCodec,
             resolvedVideoEncoderCandidates = restoredVideoCandidates,
+            // DNG is a ROUTE input, so a RESTORED selection has to reach the engine exactly like a
+            // live one (without it the persisted choice was silently inert on every launch: the
+            // session came up logical with raw=false and the shutter wrote outputs=jpg). It rides
+            // the SAME transaction as the recalled lens/zoom: a trailing setRawWanted let the
+            // engine resolve the route before the DNG intent arrived (RPL cycle 2, AGG2-2).
+            resolvedRawWanted = safeFormats.dngRaw,
         )
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
@@ -1485,11 +1491,6 @@ class CameraViewModel private constructor(
         engine.setAudioScene(e.audioScene)
         engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(safeFrameRate)
-        // DNG is a ROUTE input, so a RESTORED selection has to reach the engine exactly like a live
-        // one. Without this the persisted choice was silently inert on every launch: the sheet
-        // showed DNG selected, the session came up on the logical route with raw=false, and the
-        // shutter produced outputs=jpg with no DNG at all (found by the 2026-07-29 review pass).
-        engine.setRawWanted(safeFormats.dngRaw)
         // Restore the user-selected recording resolution ("Remember Settings" previously dropped it
         // silently — the engine re-picked the largest size on every launch). The engine re-validates
         // the request against the live caps once the camera opens and falls back to auto if the
