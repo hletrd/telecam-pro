@@ -718,7 +718,8 @@ class CameraEngine internal constructor(
      * [currentOpticsReconfiguration] token (bare `reopenForSession()` doors — video size, stab,
      * aspect/hi-res, frame rate — and the resume/cold-start paths) snapshots AFTER the door already
      * mutated its field, so that `before` describes the NEW request, not the streaming session, and
-     * must never re-accept the outgoing controller as Ready (AGG3-7).
+     * must never re-accept the outgoing controller as Ready (AGG3-7). A preflight failure on such a
+     * token converges through the bounded retry instead ([handlePreflightFailure], AGG4-2).
      */
     private data class OpticsTransaction(
         val generation: Long,
@@ -988,7 +989,8 @@ class CameraEngine internal constructor(
      * Only a transaction whose baseline PRECEDES its door's mutation qualifies (AGG3-7): a bare
      * `reopenForSession()` door snapshots after writing its video size / stab / aspect / rate, so
      * re-accepting the outgoing controller would publish Ready over a session that does not carry
-     * the restored fields. Those keep the pre-cycle-2 Not-Ready outcome.
+     * the restored fields. Those never reach this rollback: [handlePreflightFailure] sends them to
+     * the bounded retry instead (AGG4-2), and the guard below stays as defence in depth.
      */
     private fun rollbackOpticsAfterPreflight(
         transaction: OpticsTransaction,
@@ -1003,6 +1005,60 @@ class CameraEngine internal constructor(
             commitOpticsRollbackLocked(transaction, status, restorable)
         } ?: return
         executeOpticsRollbackEffects(effects)
+    }
+
+    /**
+     * The one disposition for a [reconfigureCamera] preflight failure (selection or capabilities
+     * unavailable) that ran after the door's own `invalidateCameraReady()` but before the outgoing
+     * controller was closed. See [preflightFailureDisposition] for the table.
+     *
+     * The BARE_RETRY arm closes AGG4-2: a bare `reopenForSession()` door (stabilization, frame rate,
+     * hi-res/aspect, video size, camera-error recovery) cannot honestly re-accept the outgoing
+     * controller — its baseline was snapshotted AFTER its own write (AGG3-7) — and the plain
+     * Not-Ready rollback it used to take scheduled nothing, so the app sat Not-Ready over a live,
+     * still-streaming preview, shutter and REC dead, under "camera unchanged" copy, until some
+     * unrelated door reopened it (the AGG2-4 symptom, reopened by cycle 3). Its desired packet is
+     * still the operator's newest intent, so it converges through the same bounded, generation-
+     * claimed retry the cold path uses: a newer door supersedes it, and an exhausted budget ends
+     * in the honest terminal reopen status rather than a silent park.
+     */
+    private fun handlePreflightFailure(
+        transaction: OpticsTransaction,
+        recoverColdPreflight: Boolean,
+        preflightSessionGeneration: Long,
+        startupTraceOwner: StartupTrace.Owner?,
+    ) {
+        when (
+            preflightFailureDisposition(
+                recoverColdPreflight = recoverColdPreflight,
+                baselinePrecedesMutation = transaction.baselinePrecedesMutation,
+            )
+        ) {
+            PreflightFailureDisposition.COLD_RETRY -> scheduleColdStartRetry(
+                transaction,
+                CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+                startupTraceOwner,
+            )
+            PreflightFailureDisposition.RESTORE_ROLLBACK -> {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                // The outgoing controller is still open and streaming and this transaction's
+                // baseline precedes its mutation: restore the baseline packet and its Ready.
+                rollbackOpticsAfterPreflight(
+                    transaction,
+                    CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+                    preflightSessionGeneration,
+                )
+            }
+            PreflightFailureDisposition.BARE_RETRY -> {
+                // A bare door is never a cold start; it owns no startup measurement.
+                startupTraceOwnership.revoke(startupTraceOwner)
+                scheduleColdStartRetry(
+                    transaction,
+                    CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+                    startupTraceOwner = null,
+                )
+            }
+        }
     }
 
     /** Engine-monitor-only state commit. No controller/GL call or external callback is allowed here. */
@@ -4257,39 +4313,22 @@ class CameraEngine internal constructor(
             // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
             // the old camera keeps streaming while they run, shrinking the visible freeze.
             val sel = selectCurrentLens() ?: run {
-                if (recoverColdPreflight) {
-                    scheduleColdStartRetry(
-                        transaction,
-                        CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
-                        startupTraceOwner,
-                    )
-                } else {
-                    startupTraceOwnership.revoke(startupTraceOwner)
-                    // The outgoing controller is still open and streaming: restore its Ready.
-                    rollbackOpticsAfterPreflight(
-                        transaction,
-                        CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
-                        preflightSessionGeneration,
-                    )
-                }
+                handlePreflightFailure(
+                    transaction,
+                    recoverColdPreflight,
+                    preflightSessionGeneration,
+                    startupTraceOwner,
+                )
                 return@execute
             }
             val c = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run {
-                    if (recoverColdPreflight) {
-                        scheduleColdStartRetry(
-                            transaction,
-                            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
-                            startupTraceOwner,
-                        )
-                    } else {
-                        startupTraceOwnership.revoke(startupTraceOwner)
-                        rollbackOpticsAfterPreflight(
-                            transaction,
-                            CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
-                            preflightSessionGeneration,
-                        )
-                    }
+                    handlePreflightFailure(
+                        transaction,
+                        recoverColdPreflight,
+                        preflightSessionGeneration,
+                        startupTraceOwner,
+                    )
                     return@execute
                 }
             if (!ownsOpticsTransaction(transaction)) {
@@ -8552,6 +8591,29 @@ internal fun rollbackRawWanted(
         rawForcesStandalone = rawForcesStandalone,
     )
     return if (movesRestoredRoute) baseline else current
+}
+
+internal enum class PreflightFailureDisposition {
+    /** Before the first Ready session (or with no controller): the bounded cold-start retry. */
+    COLD_RETRY,
+
+    /** A live controller and a pre-mutation baseline: roll back and re-accept it (AGG2-4). */
+    RESTORE_ROLLBACK,
+
+    /**
+     * A live controller and a POST-mutation baseline (a bare `reopenForSession()` door): the
+     * newest intent converges through the same bounded retry, never a parked Not-Ready (AGG4-2).
+     */
+    BARE_RETRY,
+}
+
+internal fun preflightFailureDisposition(
+    recoverColdPreflight: Boolean,
+    baselinePrecedesMutation: Boolean,
+): PreflightFailureDisposition = when {
+    recoverColdPreflight -> PreflightFailureDisposition.COLD_RETRY
+    baselinePrecedesMutation -> PreflightFailureDisposition.RESTORE_ROLLBACK
+    else -> PreflightFailureDisposition.BARE_RETRY
 }
 
 /**

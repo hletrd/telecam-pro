@@ -72,7 +72,9 @@ class FacingRollbackPunchInRobolectricTest {
     /**
      * AGG3-7, wiring half: a bare-reopen token ([currentOpticsReconfiguration], snapshotted after
      * the door's own write) whose preflight fails must publish Not-Ready, never re-accept the
-     * outgoing controller under its own preflight invalidation.
+     * outgoing controller under its own preflight invalidation. Since AGG4-2 such a token is routed
+     * to the bounded retry before it reaches this rollback; this pins the guard kept as defence in
+     * depth.
      */
     @Test
     fun `bare reopen preflight failure stays Not-Ready`() {

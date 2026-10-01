@@ -89,6 +89,28 @@ class RouteInputRollbackTest {
         )
     }
 
+    // AGG4-2: the bare door's preflight failure converges through the bounded retry; only a
+    // pre-mutation baseline may restore the outgoing session, and a cold start keeps its retry.
+    @Test
+    fun `preflight failure disposition never parks a bare door Not-Ready`() {
+        assertEquals(
+            PreflightFailureDisposition.COLD_RETRY,
+            preflightFailureDisposition(recoverColdPreflight = true, baselinePrecedesMutation = false),
+        )
+        assertEquals(
+            PreflightFailureDisposition.COLD_RETRY,
+            preflightFailureDisposition(recoverColdPreflight = true, baselinePrecedesMutation = true),
+        )
+        assertEquals(
+            PreflightFailureDisposition.RESTORE_ROLLBACK,
+            preflightFailureDisposition(recoverColdPreflight = false, baselinePrecedesMutation = true),
+        )
+        assertEquals(
+            PreflightFailureDisposition.BARE_RETRY,
+            preflightFailureDisposition(recoverColdPreflight = false, baselinePrecedesMutation = false),
+        )
+    }
+
     @Test
     fun `a newer transaction-less write survives an older rollback`() {
         assertEquals("1080p", keepNewerDirectWrite(current = "1080p", baseline = "4K", directWriteSinceBaseline = true))

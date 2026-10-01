@@ -121,6 +121,51 @@ class OpticsRouteInputTransactionRobolectricTest {
         assertEquals(null, field(camera, "acceptedCameraSession"))
     }
 
+    /**
+     * AGG4-2: a bare `reopenForSession()` token (snapshotted after its door wrote the new video
+     * size/stab/aspect) whose preflight fails on a live controller must not park Not-Ready under
+     * "camera unchanged" copy. It schedules the bounded, generation-claimed retry instead.
+     */
+    @Test
+    fun `bare reopen preflight failure schedules the bounded retry instead of parking`() {
+        val camera = acceptedPma110Engine()
+        setBoolean(camera, "previewReady", true)
+        setBoolean(camera, "started", true)
+        val texture = android.graphics.SurfaceTexture(0)
+        val input = android.view.Surface(texture)
+        val gl = (field(camera, "glOwners") as me.hletrd.telecampro.gl.AtomicOwnerSlot<*>).current()!!
+        gl.javaClass.getDeclaredField("inputSurface").apply { isAccessible = true }.set(gl, input)
+        val statuses = mutableListOf<CameraStatusMessage>()
+        camera.onStatus = { it?.message?.let(statuses::add) }
+        val desired = invoke(camera, "currentOpticsReconfiguration")!!
+        val transaction = field(desired, "transaction")!!
+        assertFalse(field(transaction, "baselinePrecedesMutation") as Boolean)
+        val preflight = invoke(camera, "invalidateCameraReady") as Long
+
+        try {
+            invoke(camera, "handlePreflightFailure", transaction, false, preflight, null)
+
+            assertEquals(listOf(CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING), statuses.toList())
+            assertFalse(
+                "no 'camera unchanged' rollback over the never-configured request",
+                CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED in statuses,
+            )
+            val gate = field(camera, "coldStartRetryGate")!!
+            assertTrue("one retry is owned for this exact intent", field(gate, "scheduled") != null)
+            assertEquals(
+                "no Not-Ready rollback retired the session a second time",
+                preflight,
+                (field(camera, "cameraSessionGeneration") as AtomicLong).get(),
+            )
+        } finally {
+            // Keep the 1 s retry inert: it re-checks started/paused before claiming.
+            setBoolean(camera, "paused", true)
+            setBoolean(camera, "started", false)
+            input.release()
+            texture.release()
+        }
+    }
+
     @Test
     fun `DNG toggle on the TELE route publishes the intent without a reopen`() {
         val camera = acceptedPma110Engine()
