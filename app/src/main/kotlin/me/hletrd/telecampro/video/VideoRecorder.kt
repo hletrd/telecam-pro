@@ -1038,10 +1038,9 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun cancelVideoStartupDeadline() {
-        videoStartupDeadline?.cancel(false)
+        retireStartupDeadline(videoStartupDeadline, videoStartupDeadlineExecutor)
         videoStartupDeadline = null
         videoStartupDeadlineNs = Long.MAX_VALUE
-        videoStartupDeadlineExecutor.shutdownNow()
     }
 
     private fun recordFailure(t: Throwable) {
@@ -2346,6 +2345,23 @@ internal fun transitionMuxerStart(
  * by a stop (the same-executor-tick case the admission latch serializes) has no muxed video sample
  * yet, so the half-created pending file is DELETED, never published to the gallery.
  */
+/**
+ * Cancels the video-startup deadline and retires its executor WITHOUT interrupting (AGG2-24 /
+ * PERF2-9). The deadline's own expiry runs ON that executor's thread and reaches here through
+ * `recordFailure`; the former `shutdownNow()` therefore interrupted the very thread that was about
+ * to invoke `onFailure` → the Engine's unexpected-recorder-failure path, so any interruptible
+ * wait/IO later added to that path would fail at once. `shutdown()` is enough: `cancel(false)`
+ * already stops a not-yet-run expiry, and ScheduledThreadPoolExecutor's shutdown purges cancelled
+ * delayed tasks, so the daemon thread still exits promptly.
+ */
+internal fun retireStartupDeadline(
+    deadline: java.util.concurrent.Future<*>?,
+    executor: java.util.concurrent.ExecutorService,
+) {
+    deadline?.cancel(false)
+    executor.shutdown()
+}
+
 internal fun shouldPublishRecording(
     muxerStarted: Boolean,
     wroteVideoSample: Boolean,
