@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -62,16 +63,24 @@ class OwnerlessMediaDeleteOperationTest {
                 timeoutMs = 25L,
                 postDelayed = { task, _ -> scheduled.set(task); true },
             )
-            val before = System.nanoTime()
+            val providerReturned = CountDownLatch(1)
+            val providerThread = AtomicReference<Thread>()
             executor.execute {
+                providerThread.set(Thread.currentThread())
                 providerEntered.countDown()
-                releaseProvider.await()
+                // TIMED, so a caller-blocking regression fails below instead of hanging the suite.
+                releaseProvider.await(10, TimeUnit.SECONDS)
                 terminal.complete("provider")
+                providerReturned.countDown()
             }
-            val callerElapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+            // Structural non-blocking proof, no wall-clock budget: dispatch has returned while
+            // the provider is still parked, on a different thread, with nothing delivered yet.
+            val parkedAtReturn = providerReturned.count == 1L
 
             assertTrue(providerEntered.await(2, TimeUnit.SECONDS))
-            assertTrue("dispatch blocked caller for ${callerElapsedMs}ms", callerElapsedMs < 250L)
+            assertTrue("dispatch returned only after the provider finished", parkedAtReturn)
+            assertNotSame(Thread.currentThread(), providerThread.get())
+            assertEquals(0, deliveries.get())
             scheduled.get().run()
             assertEquals("timeout", delivered.get())
 

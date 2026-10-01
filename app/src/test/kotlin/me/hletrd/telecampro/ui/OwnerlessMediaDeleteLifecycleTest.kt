@@ -11,6 +11,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraStatusMessage
@@ -21,6 +22,7 @@ import me.hletrd.telecampro.storage.MediaProvenance
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -47,21 +49,27 @@ class OwnerlessMediaDeleteLifecycleTest {
         val providerEntered = CountDownLatch(1)
         val allowProvider = CountDownLatch(1).also { releaseBlocker = it }
         val lateReturned = CountDownLatch(1)
+        val providerThread = AtomicReference<Thread>()
         val vm = createViewModel(
             createRequest = { _, _ ->
+                providerThread.set(Thread.currentThread())
                 providerEntered.countDown()
-                allowProvider.await()
+                // TIMED, so an inline (caller-blocking) regression fails the assertions below
+                // instead of deadlocking the suite.
+                allowProvider.await(PARKED_PROVIDER_MAX_S, TimeUnit.SECONDS)
                 lateReturned.countDown()
                 pendingIntent()
             },
         )
         val request = freezeOwnerless(vm, uri(101))
 
-        val before = System.nanoTime()
+        // Structural non-blocking proof, no wall-clock budget: the caller has RETURNED while the
+        // provider is still parked inside its call, on a different thread.
         vm.beginOwnerlessMediaDeleteRequestCreation(request)
-        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+        val parkedAtReturn = lateReturned.count == 1L
         assertTrue(providerEntered.await(2, TimeUnit.SECONDS))
-        assertTrue("caller blocked ${elapsedMs}ms", elapsedMs < 250L)
+        assertTrue("caller returned only after the provider finished", parkedAtReturn)
+        assertNotSame(Thread.currentThread(), providerThread.get())
 
         idleProviderDeadline()
         assertFalse(vm.state.value.ownerlessDeleteConsentPending)
@@ -340,4 +348,9 @@ class OwnerlessMediaDeleteLifecycleTest {
             .get(vm) as MutableStateFlow<CameraUiState>
 
     private fun uri(id: Int): Uri = Uri.parse("content://media/external/images/media/$id")
+
+    private companion object {
+        /** Bound on a deliberately parked provider; only an inline regression ever waits it out. */
+        const val PARKED_PROVIDER_MAX_S = 10L
+    }
 }
