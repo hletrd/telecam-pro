@@ -516,6 +516,55 @@ fun ManualControls.withShutterModeTakingOwnership(
     return owner.withShutterMode(mode)
 }
 
+/**
+ * The dial doors' escalation (AGG2-17). Turning the ISO dial while ISO is auto (PROGRAM / SHUTTER
+ * priority), or the shutter / angle dial while the shutter is auto (PROGRAM / ISO priority), takes
+ * that axis and lands in MANUAL — through the SAME [exposureModeHandoff] `onExposureMode` uses, so
+ * leaving a HAL-AE PROGRAM (video P, flash-metered photo P) seeds the OTHER axis from the live
+ * result. Copying only the dialled field kept the other axis at its stale stored value: Video P
+ * settled at ISO 1600 / 1/30 s, drag ISO to 1600, and MANUAL shot at a leftover 1/125 s (~2 stops
+ * dark). Outside HAL-AE the handoff seeds nothing, exactly as before.
+ */
+private fun ManualControls.manualOwnerIf(
+    takeover: Boolean,
+    liveIso: Int?,
+    liveExposureNs: Long?,
+): ManualControls =
+    if (takeover) exposureModeHandoff(ExposureMode.MANUAL, liveIso, liveExposureNs) else this
+
+/** The ISO dial: see [manualOwnerIf]. */
+fun ManualControls.withIsoTakingOwnership(
+    iso: Int,
+    liveIso: Int? = null,
+    liveExposureNs: Long? = null,
+): ManualControls = manualOwnerIf(
+    exposureMode == ExposureMode.PROGRAM || autoIsoDriven,
+    liveIso,
+    liveExposureNs,
+).copy(iso = iso)
+
+/** The shutter-speed dial: see [manualOwnerIf]. */
+fun ManualControls.withShutterNsTakingOwnership(
+    exposureTimeNs: Long,
+    liveIso: Int? = null,
+    liveExposureNs: Long? = null,
+): ManualControls = manualOwnerIf(
+    exposureMode == ExposureMode.PROGRAM || autoShutterDriven,
+    liveIso,
+    liveExposureNs,
+).copy(exposureTimeNs = exposureTimeNs)
+
+/** The shutter-angle dial: see [manualOwnerIf]. */
+fun ManualControls.withShutterAngleTakingOwnership(
+    angle: Float,
+    liveIso: Int? = null,
+    liveExposureNs: Long? = null,
+): ManualControls = manualOwnerIf(
+    exposureMode == ExposureMode.PROGRAM || autoShutterDriven,
+    liveIso,
+    liveExposureNs,
+).copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE)
+
 /** The exact app-owned exposure placed on a request after applying the advertised sensor range. */
 internal fun ManualControls.clampedEffectiveExposureNs(minNs: Long?, maxNs: Long?): Long {
     return clampExposureNs(effectiveExposureNs(), minNs, maxNs)

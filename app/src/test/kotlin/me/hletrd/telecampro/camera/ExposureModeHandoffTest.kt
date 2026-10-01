@@ -71,4 +71,77 @@ class ExposureModeHandoffTest {
         val isoSpeed = ManualControls(exposureMode = ExposureMode.ISO)
         assertEquals(ExposureMode.ISO, isoSpeed.withShutterModeTakingOwnership(ShutterMode.SPEED).exposureMode)
     }
+
+    // AGG2-17: the dial doors leave HAL-AE P through the same handoff, so the OTHER axis is the live
+    // result rather than a stale stored value.
+    @Test
+    fun `dial doors leaving HAL program seed the other axis from live`() {
+        val stale = 1_000_000_000L / 125L
+        val halProgram = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = false,
+            iso = 100,
+            exposureTimeNs = stale,
+            fps = 30,
+        )
+
+        val iso = halProgram.withIsoTakingOwnership(1600, liveIso, liveExposureNs)
+        assertEquals(ExposureMode.MANUAL, iso.exposureMode)
+        assertEquals(1600, iso.iso)
+        assertEquals(liveExposureNs, iso.exposureTimeNs)
+
+        val shutter = halProgram.withShutterNsTakingOwnership(stale, liveIso, liveExposureNs)
+        assertEquals(ExposureMode.MANUAL, shutter.exposureMode)
+        assertEquals(stale, shutter.exposureTimeNs)
+        assertEquals(liveIso, shutter.iso)
+
+        val angle = halProgram.withShutterAngleTakingOwnership(90f, liveIso, liveExposureNs)
+        assertEquals(ExposureMode.MANUAL, angle.exposureMode)
+        assertEquals(ShutterMode.ANGLE, angle.shutterMode)
+        assertEquals(90f, angle.shutterAngle, 0f)
+        assertEquals(liveIso, angle.iso)
+    }
+
+    @Test
+    fun `dial doors keep non-HAL ownership byte-identical`() {
+        // App-side P: escalates to MANUAL but seeds nothing from the traded wire.
+        val appProgram = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = true,
+            iso = 800,
+            exposureTimeNs = 100_000_000L,
+        )
+        assertEquals(
+            appProgram.copy(exposureMode = ExposureMode.MANUAL, iso = 1600),
+            appProgram.withIsoTakingOwnership(1600, liveIso, liveExposureNs),
+        )
+        // SHUTTER priority owns the shutter: ISO dial escalates; shutter dial stays put.
+        val shutterPriority = ManualControls(exposureMode = ExposureMode.SHUTTER, iso = 800)
+        assertEquals(
+            shutterPriority.copy(exposureMode = ExposureMode.MANUAL, iso = 1600),
+            shutterPriority.withIsoTakingOwnership(1600, liveIso, liveExposureNs),
+        )
+        assertEquals(
+            shutterPriority.copy(exposureTimeNs = 1_000L),
+            shutterPriority.withShutterNsTakingOwnership(1_000L, liveIso, liveExposureNs),
+        )
+        // ISO priority owns ISO: shutter/angle dials escalate, the ISO dial stays put.
+        val isoPriority = ManualControls(exposureMode = ExposureMode.ISO, iso = 800)
+        assertEquals(
+            isoPriority.copy(iso = 1600),
+            isoPriority.withIsoTakingOwnership(1600, liveIso, liveExposureNs),
+        )
+        assertEquals(
+            isoPriority.copy(exposureMode = ExposureMode.MANUAL, exposureTimeNs = 1_000L),
+            isoPriority.withShutterNsTakingOwnership(1_000L, liveIso, liveExposureNs),
+        )
+        assertEquals(
+            isoPriority.copy(exposureMode = ExposureMode.MANUAL, shutterAngle = 90f, shutterMode = ShutterMode.ANGLE),
+            isoPriority.withShutterAngleTakingOwnership(90f),
+        )
+        val manual = ManualControls(exposureMode = ExposureMode.MANUAL)
+        assertEquals(manual.copy(shutterAngle = 45f, shutterMode = ShutterMode.ANGLE), manual.withShutterAngleTakingOwnership(45f))
+        assertEquals(manual.copy(exposureTimeNs = 2_000L), manual.withShutterNsTakingOwnership(2_000L))
+        assertEquals(manual.copy(iso = 200), manual.withIsoTakingOwnership(200))
+    }
 }

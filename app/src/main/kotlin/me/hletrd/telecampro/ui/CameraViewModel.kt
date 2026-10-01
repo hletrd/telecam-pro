@@ -56,6 +56,9 @@ import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.effectiveExposureNs
 import me.hletrd.telecampro.camera.withShutterMode
 import me.hletrd.telecampro.camera.withShutterModeTakingOwnership
+import me.hletrd.telecampro.camera.withIsoTakingOwnership
+import me.hletrd.telecampro.camera.withShutterAngleTakingOwnership
+import me.hletrd.telecampro.camera.withShutterNsTakingOwnership
 import me.hletrd.telecampro.camera.exposureModeHandoff
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
@@ -2034,19 +2037,20 @@ class CameraViewModel private constructor(
 
     // ---- Exposure ----
     // Dragging the ISO dial only makes sense when the user owns ISO (ISO/MANUAL). If ISO is currently
-    // auto (PROGRAM or SHUTTER), taking manual control of it drops to MANUAL.
+    // auto (PROGRAM or SHUTTER), taking manual control of it drops to MANUAL — through the same
+    // handoff as onExposureMode, so leaving HAL-AE P seeds the other axis from live (AGG2-17).
     override fun onIso(iso: Int) {
+        val live = _state.value
         updateControls(FnSlot.ISO) {
-            val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoIsoDriven) ExposureMode.MANUAL else it.exposureMode
-            it.copy(iso = iso, exposureMode = mode)
+            it.withIsoTakingOwnership(iso, live.liveIso, live.liveExposureNs)
         }
         refreshProgramAppSide() // taking manual control can leave PROGRAM → the app-side flag follows
     }
     // Likewise for shutter: if the shutter is currently auto (PROGRAM or ISO), taking it over → MANUAL.
     override fun onShutterNs(ns: Long) {
+        val live = _state.value
         updateControls(FnSlot.SHUTTER) {
-            val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
-            it.copy(exposureTimeNs = ns, exposureMode = mode)
+            it.withShutterNsTakingOwnership(ns, live.liveIso, live.liveExposureNs)
         }
         refreshProgramAppSide()
     }
@@ -2079,9 +2083,9 @@ class CameraViewModel private constructor(
         refreshProgramAppSide()
     }
     override fun onShutterAngle(angle: Float) {
+        val live = _state.value
         updateControls(FnSlot.SHUTTER) {
-            val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
-            it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, exposureMode = mode)
+            it.withShutterAngleTakingOwnership(angle, live.liveIso, live.liveExposureNs)
         }
         refreshProgramAppSide()
     }
