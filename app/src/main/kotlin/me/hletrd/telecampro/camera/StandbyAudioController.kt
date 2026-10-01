@@ -39,6 +39,14 @@ internal enum class StandbyAudioFailureReason {
     THREAD_LAUNCH,
     RETRY_SCHEDULER,
     TERMINAL_READ,
+
+    /**
+     * An ownership/publication invariant did not hold (AGG2-25). These used to be `check` /
+     * `checkNotNull` throws on the plain, non-daemon meter thread (or on main from `start`), so an
+     * ordering regression killed the whole process while video was merely ARMED. The generation now
+     * fails like any other bounded setup failure and the first occurrence is logged once.
+     */
+    INVARIANT,
 }
 
 internal data class StandbyAudioUnavailable(
@@ -495,6 +503,11 @@ internal class StandbyAudioController(
     private val nativeProcessGate: StandbyNativeProcessGate =
         RecorderStandbyNativeProcessGate(RecorderQuarantineAdmissionGate()),
     private val retainQuarantinedInput: (QuarantinedStandbyInput) -> Unit = {},
+    // Reached at most ONCE per controller (see reportInvariantOnce); the default spends one
+    // reserved row, so a recurring invariant break cannot drain the ColorOS quota.
+    private val reportInvariantFailure: (String, Throwable?) -> Unit = { message, failure ->
+        Log.w(TAG, message, failure)
+    },
 ) {
     internal constructor(
         context: Context,
@@ -552,6 +565,13 @@ internal class StandbyAudioController(
     // without one PCM read. Explicit user intent and a successful PCM read reset the shared budget.
     private val failureStreak = AtomicInteger(0)
     private val nativeTerminal = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val invariantFailureReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun reportInvariantOnce(message: String, failure: Throwable? = null) {
+        if (invariantFailureReported.compareAndSet(false, true)) {
+            runCatching { reportInvariantFailure(message, failure) }
+        }
+    }
 
     fun setEnabled(enabled: Boolean) {
         if (!enabled) {
@@ -630,8 +650,14 @@ internal class StandbyAudioController(
                 nativeProcessGate.quarantine(checkNotNull(nativePublication.get()))
             },
         )
-        check(liveInputTermination.compareAndSet(null, terminationOwner)) {
-            "standby input generation overlap"
+        if (!liveInputTermination.compareAndSet(null, terminationOwner)) {
+            // A previous generation's termination owner is still live. Starting would open a SECOND
+            // AudioRecord beside it; throwing here (main, the meter thread's retry, or the fallback
+            // thread) used to crash the process. Refuse this generation like a launch failure: the
+            // bounded recreation budget retries once the older generation's finally clears it.
+            reportInvariantOnce("standby input generation overlap; generation refused")
+            completeGeneration(owner, StandbyAudioFailureReason.INVARIANT)
+            return
         }
         val meterTask: () -> Unit = meterTask@{
             var audioInput: StandbyAudioInput? = null
@@ -754,6 +780,14 @@ internal class StandbyAudioController(
                     )
                     heldPeaks.fill(0f)
                 }
+            } catch (failure: Throwable) {
+                // AGG2-25: this is a plain non-daemon Thread, so an escaped invariant failure (a
+                // `check`/`checkNotNull` above, or one thrown through the process gate's publication
+                // callback) was an uncaught exception = process crash while merely armed in VIDEO.
+                // Fail the generation instead; the finally below still releases exactly as before
+                // and completeGeneration applies the ordinary bounded recreation budget.
+                generationFailure = StandbyAudioFailureReason.INVARIANT
+                reportInvariantOnce("standby meter generation failed an invariant; degraded", failure)
             } finally {
                 // Count the latch only after release on every path, including early returns.
                 audioInput?.let { input -> terminationOwner.finishAndRelease(input, StandbyAudioInput::release) }
@@ -777,8 +811,11 @@ internal class StandbyAudioController(
         exactOwner: QuarantinedStandbyInput,
         logicalRelease: CountDownLatch,
     ) {
-        check(exactOwner.terminationOwner.abandon(exactOwner.input)) {
-            "standby input owner could not abandon revoked generation"
+        if (!exactOwner.terminationOwner.abandon(exactOwner.input)) {
+            // Degrade, never crash (AGG2-25): the input is already strongly retained by the process
+            // gate and is never stopped/released here either way, so the terminal quarantine below
+            // is still the safe answer; only the diagnosis would be lost without this report.
+            reportInvariantOnce("standby input owner could not abandon revoked generation")
         }
         nativeTerminal.set(true)
         runCatching { retainQuarantinedInput(exactOwner) }

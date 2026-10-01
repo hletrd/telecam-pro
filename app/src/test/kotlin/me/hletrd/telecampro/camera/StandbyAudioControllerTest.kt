@@ -63,6 +63,7 @@ class StandbyAudioControllerTest {
         stopTimeoutMs: Long = 1_500L,
         retainEffect: (QuarantinedStandbyInput) -> Unit = {},
         unsafeEffect: () -> Unit = {},
+        reportInvariant: (String, Throwable?) -> Unit = { _, _ -> },
     ): Fixture {
         val scheduled = ArrayDeque<() -> Unit>()
         val fallbackScheduled = ArrayDeque<() -> Unit>()
@@ -104,6 +105,7 @@ class StandbyAudioControllerTest {
                     retained += owner
                     retainEffect(owner)
                 },
+                reportInvariantFailure = reportInvariant,
             ),
             scheduled = scheduled,
             fallbackScheduled = fallbackScheduled,
@@ -761,6 +763,46 @@ class StandbyAudioControllerTest {
             StandbyAudioUnavailable(StandbyAudioFailureReason.START, failedGenerations = 4),
             fixture.unavailable.single(),
         )
+    }
+
+    @Test
+    fun `meter thread invariant failure degrades the generation instead of escaping`() {
+        // AGG2-25: the meter task runs on a plain non-daemon Thread; anything escaping it was an
+        // uncaught exception, i.e. a process crash while merely armed in VIDEO.
+        val inputs = mutableListOf<FakeInput>()
+        val escaped = mutableListOf<Throwable>()
+        val reports = mutableListOf<Pair<String, Throwable?>>()
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(FakeInput().also(inputs::add)) },
+            recorderAbsent = { throw IllegalStateException("injected ownership invariant") },
+            threadLauncher = StandbyThreadLauncher { _, task ->
+                try {
+                    task()
+                } catch (t: Throwable) {
+                    escaped += t
+                }
+                true
+            },
+            reportInvariant = { message, failure -> reports += message to failure },
+        )
+
+        fixture.controller.setEnabled(true)
+        repeat(3) {
+            assertTrue(fixture.unavailable.isEmpty())
+            fixture.scheduled.removeFirst().invoke()
+        }
+
+        assertTrue("nothing may escape the meter thread: $escaped", escaped.isEmpty())
+        // Each generation still releases its exact input on the ordinary finally path.
+        assertEquals(4, inputs.size)
+        assertTrue(inputs.all { it.starts == 1 && it.stops == 1 && it.releases == 1 })
+        assertEquals(
+            StandbyAudioUnavailable(StandbyAudioFailureReason.INVARIANT, failedGenerations = 4),
+            fixture.unavailable.single(),
+        )
+        // Quota-safe: one report for the whole controller, not one per generation.
+        assertEquals(1, reports.size)
+        assertTrue(reports.single().second is IllegalStateException)
     }
 
     @Test
