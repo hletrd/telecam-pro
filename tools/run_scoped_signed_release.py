@@ -20,72 +20,26 @@ from build_immutable_release import (
     APPROVAL_PROPERTY,
     FINGERPRINT_PROPERTY,
     KEY_ALIAS_ENV,
+    KEY_PASSWORD_ENV,
     STORE_PASSWORD_ENV,
     UploadKeyGateError,
     UploadKeyPrerequisite,
     load_upload_key_prerequisite,
     verify_upload_key_certificate,
 )
+# The generated-secret floor is the SAME rule the immutable wrapper applies (SEC3-2).
+from upload_key_policy import meets_generated_secret_floor
 
 
-KEY_PASSWORD_ENV = "TELECAMPRO_KEY_PASSWORD"
 STORE_FILE_ENV = "TELECAMPRO_STORE_FILE"
 SECRET_FIELDS = {"storePassword": STORE_PASSWORD_ENV, "keyPassword": KEY_PASSWORD_ENV}
 MAX_CREDENTIAL_BYTES = 64 * 1024
-MIN_STRONG_PASSWORD_LENGTH = 20
-MIN_STRONG_PASSWORD_CLASSES = 3
-MAX_MONOTONIC_RUN = 5
 
 Run = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
 # One refusal type for both wrappers; its message never includes a credential value.
 ScopedReleaseError = UploadKeyGateError
-
-
-def _has_monotonic_run(value: str) -> bool:
-    """Reject human-memorable alphabetic/numeric walks without claiming entropy proof."""
-    run = 1
-    direction = 0
-    previous: str | None = None
-    for character in value.casefold():
-        if previous is None or not (
-            (previous.isascii() and previous.isalpha() and character.isascii() and character.isalpha())
-            or (previous.isascii() and previous.isdigit() and character.isascii() and character.isdigit())
-        ):
-            run = 1
-            direction = 0
-        else:
-            step = ord(character) - ord(previous)
-            if step in {-1, 1}:
-                if step == direction:
-                    run += 1
-                else:
-                    direction = step
-                    run = 2
-                if run > MAX_MONOTONIC_RUN:
-                    return True
-            else:
-                run = 1
-                direction = 0
-        previous = character
-    return False
-
-
-def _meets_generated_secret_floor(value: str) -> bool:
-    if len(value) < MIN_STRONG_PASSWORD_LENGTH or value != value.strip():
-        return False
-    classes = (
-        any(character.islower() for character in value),
-        any(character.isupper() for character in value),
-        any(character.isdigit() for character in value),
-        any(not character.isalnum() for character in value),
-    )
-    return (
-        sum(classes) >= MIN_STRONG_PASSWORD_CLASSES
-        and len(set(value)) > 1
-        and not _has_monotonic_run(value)
-    )
 
 
 def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
@@ -105,7 +59,7 @@ def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
             raise ScopedReleaseError("scoped signing credentials have an invalid field set")
         if not value or any(ord(character) < 0x20 for character in value):
             raise ScopedReleaseError("scoped signing credentials contain an invalid value")
-        if not _meets_generated_secret_floor(value):
+        if not meets_generated_secret_floor(value):
             raise ScopedReleaseError("scoped signing credentials do not meet the strong-key policy")
         values[key] = value
     if values.keys() != SECRET_FIELDS.keys():

@@ -1,8 +1,13 @@
-"""The one blocked upload-certificate deny-list shared by every release reader (SEC2-2).
+"""Upload-key policy shared by every release reader: the deny-list (SEC2-2) and the secret floor.
 
 `tools/blocked-upload-certificates.txt` is the data; app/build.gradle.kts reads the same file. A
 missing or malformed list is a hard error: a deny-list that silently loads empty would turn every
 blocked certificate back into an acceptable signer.
+
+The deny-list blocks the retired key's CERTIFICATE, not the weakness that got it retired. The
+generated-secret floor below is therefore applied by both wrappers to the effective store and key
+passwords (SEC3-2 / AGG3-32): it used to live in the scoped helper alone, so the documented
+`build_immutable_release.py` path would sign with a freshly rotated but equally weak key.
 """
 
 from __future__ import annotations
@@ -50,3 +55,54 @@ def is_blocked_upload_certificate(value: str) -> bool:
     """Fail closed: an unparseable fingerprint is treated as blocked, never as acceptable."""
     normalized = normalize_certificate_sha256(value)
     return not normalized or normalized in BLOCKED_UPLOAD_CERT_SHA256
+
+
+MIN_STRONG_PASSWORD_LENGTH = 20
+MIN_STRONG_PASSWORD_CLASSES = 3
+MAX_MONOTONIC_RUN = 5
+
+
+def _has_monotonic_run(value: str) -> bool:
+    """Reject human-memorable alphabetic/numeric walks without claiming entropy proof."""
+    run = 1
+    direction = 0
+    previous: str | None = None
+    for character in value.casefold():
+        if previous is None or not (
+            (previous.isascii() and previous.isalpha() and character.isascii() and character.isalpha())
+            or (previous.isascii() and previous.isdigit() and character.isascii() and character.isdigit())
+        ):
+            run = 1
+            direction = 0
+        else:
+            step = ord(character) - ord(previous)
+            if step in {-1, 1}:
+                if step == direction:
+                    run += 1
+                else:
+                    direction = step
+                    run = 2
+                if run > MAX_MONOTONIC_RUN:
+                    return True
+            else:
+                run = 1
+                direction = 0
+        previous = character
+    return False
+
+
+def meets_generated_secret_floor(value: str) -> bool:
+    """True only for a generated-looking secret; the answer never says WHY a value failed."""
+    if len(value) < MIN_STRONG_PASSWORD_LENGTH or value != value.strip():
+        return False
+    classes = (
+        any(character.islower() for character in value),
+        any(character.isupper() for character in value),
+        any(character.isdigit() for character in value),
+        any(not character.isalnum() for character in value),
+    )
+    return (
+        sum(classes) >= MIN_STRONG_PASSWORD_CLASSES
+        and len(set(value)) > 1
+        and not _has_monotonic_run(value)
+    )

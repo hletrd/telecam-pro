@@ -46,6 +46,35 @@ class BlockedUploadCertificateListTest(unittest.TestCase):
         self.assertIn("is_blocked_upload_certificate(signer)", checker)
 
 
+class GeneratedSecretFloorTest(unittest.TestCase):
+    """SEC3-2: one floor, shared by the scoped helper and the immutable wrapper."""
+
+    def test_weak_shapes_fail_and_generated_shapes_pass(self) -> None:
+        for weak in (
+            "123456",
+            "0" * 20,
+            "a" * 20,
+            "abcdefghijklmnopqrst",
+            "only-two-classes-long",
+            " Strong-password-Value-7!",
+            "Strong-password-Value-7! ",
+            "Abcdefg-1234567-Value!",
+        ):
+            with self.subTest(weak=weak):
+                self.assertFalse(policy.meets_generated_secret_floor(weak))
+        for strong in ("Store-password-with-Entropy-7!", "Key-password-with-Entropy-8!"):
+            with self.subTest(strong=strong):
+                self.assertTrue(policy.meets_generated_secret_floor(strong))
+
+    def test_both_wrappers_use_the_policy_module_rule(self) -> None:
+        for name in ("build_immutable_release.py", "run_scoped_signed_release.py"):
+            text = (REPO_ROOT / "tools" / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertIn("meets_generated_secret_floor", text)
+                self.assertNotIn("def _has_monotonic_run", text)
+                self.assertNotIn("MIN_STRONG_PASSWORD_LENGTH = ", text)
+
+
 class GradleReleaseSigningRefusalTest(unittest.TestCase):
     """Plain `./gradlew bundleRelease` must refuse the same way the wrappers do."""
 

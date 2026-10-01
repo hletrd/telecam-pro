@@ -23,7 +23,7 @@ if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 from android_sdk import android_sdk_environment
 from immutable_outputs import FrozenOutputSet
-from upload_key_policy import is_blocked_upload_certificate
+from upload_key_policy import is_blocked_upload_certificate, meets_generated_secret_floor
 
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
@@ -540,6 +540,7 @@ def release_store_file(properties_payload: bytes) -> str:
 # share one authority instead of the checker pinning a constant.
 
 STORE_PASSWORD_ENV = "TELECAMPRO_STORE_PASSWORD"
+KEY_PASSWORD_ENV = "TELECAMPRO_KEY_PASSWORD"
 KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
 APPROVAL_PROPERTY = "uploadKeyRotationApproved"
 FINGERPRINT_PROPERTY = "uploadKeyCertificateSha256"
@@ -747,6 +748,17 @@ def require_approved_upload_key(
     password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
     if password is None:
         raise UploadKeyGateError("release store password is unavailable")
+    # SEC3-2: the deny-list blocks the retired CERTIFICATE, not the weakness that retired it, so a
+    # rotation could install an equally weak key and pass every other gate. Apply the shared floor to
+    # the EFFECTIVE values Gradle will sign with (`keyPassword ?: storePassword`, file over env).
+    # The refusal names which secret failed, never its value or why.
+    key_password = (
+        _gradle_signing_value(entries, "keyPassword", environment, KEY_PASSWORD_ENV) or password
+    )
+    if not meets_generated_secret_floor(password):
+        raise UploadKeyGateError("release store password does not meet the strong-key policy")
+    if not meets_generated_secret_floor(key_password):
+        raise UploadKeyGateError("release key password does not meet the strong-key policy")
     gate_environment[STORE_PASSWORD_ENV] = password
     try:
         prerequisite = load_upload_key_prerequisite(root, gate_environment)

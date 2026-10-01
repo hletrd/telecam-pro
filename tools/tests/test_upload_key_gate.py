@@ -35,11 +35,17 @@ def write_properties(
     approved: bool,
     password: str | None = FILE_PASSWORD,
     fingerprint: str = FINGERPRINT,
+    key_password: str | None = None,
+    alias: str | None = "telecampro",
 ) -> None:
     (root / "release-key.jks").write_bytes(b"not-a-real-keystore")
-    lines = ["storeFile=release-key.jks", "keyAlias=telecampro"]
+    lines = ["storeFile=release-key.jks"]
+    if alias is not None:
+        lines.append(f"keyAlias={alias}")
     if password is not None:
         lines.append(f"storePassword={password}")
+    if key_password is not None:
+        lines.append(f"keyPassword={key_password}")
     lines.append(f"uploadKeyRotationApproved={'true' if approved else 'false'}")
     lines.append(f"uploadKeyCertificateSha256={fingerprint}")
     (root / "keystore.properties").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -122,6 +128,47 @@ class UploadKeyGateTest(unittest.TestCase):
 
             with self.assertRaisesRegex(release.UploadKeyGateError, "password is unavailable"):
                 release.require_approved_upload_key(root, SIGNING_TASKS, self.environment(), run)
+
+    def test_weak_effective_passwords_are_refused_before_keytool(self) -> None:
+        # SEC3-2: approval plus a non-blocked fingerprint is not enough; a rotation to an equally
+        # weak key must fail the documented wrapper too, not only the scoped helper.
+        weak = "weak-store-pw"
+        cases = {
+            "store password from the file": (
+                {"password": weak}, {}, "store password does not meet",
+            ),
+            "store password from the environment": (
+                {"password": None}, {release.STORE_PASSWORD_ENV: weak}, "store password does not meet",
+            ),
+            "key password from the file": (
+                {"key_password": weak}, {}, "key password does not meet",
+            ),
+            "key password from the environment": (
+                {}, {release.KEY_PASSWORD_ENV: weak}, "key password does not meet",
+            ),
+        }
+        for label, (properties, extra_environment, message) in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                write_properties(root, approved=True, **properties)
+                run = Recorder()
+                with self.assertRaisesRegex(release.UploadKeyGateError, message) as caught:
+                    release.require_approved_upload_key(
+                        root, SIGNING_TASKS, {**self.environment(), **extra_environment}, run,
+                    )
+                self.assertEqual([], run.calls)
+                self.assertNotIn(weak, str(caught.exception))
+
+    def test_strong_file_key_password_wins_over_a_weak_environment_one(self) -> None:
+        # Gradle's signingValue: keystore.properties wins, so the env value is not what signs.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_properties(root, approved=True, key_password="Key-password-with-Entropy-8!")
+            run = Recorder()
+            release.require_approved_upload_key(
+                root, SIGNING_TASKS, {**self.environment(), release.KEY_PASSWORD_ENV: "weak"}, run,
+            )
+            self.assertEqual(1, len(run.calls))
 
     def test_certificate_mismatch_or_keytool_failure_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
