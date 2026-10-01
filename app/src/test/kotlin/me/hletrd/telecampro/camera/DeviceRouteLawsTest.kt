@@ -346,6 +346,18 @@ class TransferEncoderHonestyTest {
         )
         // An unchanged edit is the request itself.
         assertEquals(request, request.withEdit(displayed, displayed))
+        // AGG3-19 / TE3-7: turning off the displayed JPEG that stands in for the requested HEIF
+        // leaves DNG only; per-axis merging kept the HEIF and the tap did nothing.
+        assertEquals(
+            PhotoFormats(heif = false, jpeg = false, dngRaw = true),
+            request.withEdit(displayed, displayed.copy(jpeg = false)),
+        )
+        assertEquals(
+            PhotoFormats(heif = false, jpeg = false, dngRaw = true),
+            PhotoFormats(heif = true, jpeg = true, dngRaw = true).let { both ->
+                both.withEdit(both.normalizedForEncoder(heifEncodeAvailable = false), PhotoFormats(dngRaw = true, heif = false, jpeg = false))
+            },
+        )
     }
 }
 

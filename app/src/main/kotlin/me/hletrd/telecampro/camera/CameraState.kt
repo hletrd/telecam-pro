@@ -1265,12 +1265,29 @@ fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormat
  * toggle that never touched the processed axis. Only the axes the edit actually CHANGED against
  * [displayed] are taken from [edited]; every other axis keeps the [request] value, exactly as
  * `onTransfer` stores the raw transfer rather than its normalized placeholder.
+ *
+ * One exception (AGG3-19 / TE3-7): the displayed JPEG may be STANDING IN for a requested HEIF. When
+ * the edit clears every processed output [displayed] showed, the operator asked for no processed
+ * still, so the request's processed axes clear too. Per-axis merging alone kept the substituted
+ * HEIF: a "JPEG off" tap on `{jpeg, dng}` displayed for a `{heif, dng}` request came back as the
+ * unchanged request, re-displayed `{jpeg, dng}`, and silently kept writing a processed still.
  */
-fun PhotoFormats.withEdit(displayed: PhotoFormats, edited: PhotoFormats): PhotoFormats = PhotoFormats(
-    heif = if (edited.heif != displayed.heif) edited.heif else heif,
-    jpeg = if (edited.jpeg != displayed.jpeg) edited.jpeg else jpeg,
-    dngRaw = if (edited.dngRaw != displayed.dngRaw) edited.dngRaw else dngRaw,
-)
+fun PhotoFormats.withEdit(displayed: PhotoFormats, edited: PhotoFormats): PhotoFormats {
+    val processedCleared = (displayed.heif || displayed.jpeg) && !edited.heif && !edited.jpeg
+    return PhotoFormats(
+        heif = when {
+            processedCleared -> false
+            edited.heif != displayed.heif -> edited.heif
+            else -> heif
+        },
+        jpeg = when {
+            processedCleared -> false
+            edited.jpeg != displayed.jpeg -> edited.jpeg
+            else -> jpeg
+        },
+        dngRaw = if (edited.dngRaw != displayed.dngRaw) edited.dngRaw else dngRaw,
+    )
+}
 
 
 /** Actual still readers present in one accepted Camera2 session. */
