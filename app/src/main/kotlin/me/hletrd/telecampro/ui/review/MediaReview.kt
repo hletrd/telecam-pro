@@ -1163,7 +1163,10 @@ fun MediaReviewOverlay(
         mediaState is ReviewMediaState.Ready.Still || mediaState is ReviewMediaState.Ready.Video
     val rawReady = mediaState is ReviewMediaState.Ready.Raw
     val deleteCopy = mediaDeleteConfirmationCopy(deleteScope, rawReady)
-    val deleteTitle = stringResource(deleteCopy.title)
+    // The button's TalkBack name is its own imperative resource, never the dialog's question with
+    // the mark cut off: Korean titles end in an interrogative verb ("…삭제할까요?"), so stripping "?"
+    // still asked a question on the app's most destructive control (DES2-1).
+    val deleteActionLabel = stringResource(deleteCopy.action)
     val provenanceLabel = reviewProvenanceLabel(provenance)?.let { stringResource(it) }
     val zoom4Action = stringResource(R.string.a11y_zoom_4x)
     val zoom8Action = stringResource(R.string.a11y_zoom_8x)
@@ -1879,7 +1882,7 @@ fun MediaReviewOverlay(
                 .clip(CircleShape)
                 .background(HudPlate)
                 .semantics {
-                    contentDescription = deleteTitle.removeSuffix("?")
+                    contentDescription = deleteActionLabel
                     role = Role.Button
                 }
                 .clickable { confirmDelete = true },
@@ -1918,7 +1921,12 @@ fun MediaReviewOverlay(
     }
 }
 
-internal data class MediaDeleteConfirmationCopy(@StringRes val title: Int, @StringRes val body: Int)
+internal data class MediaDeleteConfirmationCopy(
+    @StringRes val title: Int,
+    @StringRes val body: Int,
+    /** Imperative accessible name of the review Delete button for this scope. */
+    @StringRes val action: Int,
+)
 
 internal fun mediaDeleteConfirmationCopy(
     scope: MediaDeleteScope,
@@ -1927,6 +1935,7 @@ internal fun mediaDeleteConfirmationCopy(
     MediaDeleteScope.CAPTURE_FAMILY -> MediaDeleteConfirmationCopy(
         title = if (raw) R.string.review_delete_raw_capture_title else R.string.review_delete_capture_title,
         body = R.string.review_delete_family_body,
+        action = if (raw) R.string.a11y_delete_raw_capture else R.string.a11y_delete_capture,
     )
     MediaDeleteScope.FILE_ONLY -> MediaDeleteConfirmationCopy(
         title = if (raw) R.string.review_delete_raw_file_title else R.string.review_delete_file_title,
@@ -1934,6 +1943,7 @@ internal fun mediaDeleteConfirmationCopy(
         // CAPTURE_FAMILY is the whole reason the two dialogs exist, so the body states it instead
         // of restating the title in the passive voice.
         body = R.string.review_delete_file_body,
+        action = if (raw) R.string.a11y_delete_raw_file else R.string.a11y_delete_file,
     )
 }
 

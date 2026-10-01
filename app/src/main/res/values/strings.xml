@@ -439,6 +439,10 @@
     <string name="review_delete_raw_file_title">Delete RAW file?</string>
     <string name="review_delete_file_title">Delete file?</string>
     <string name="review_delete_file_body">Only this file is deleted.</string>
+    <string name="a11y_delete_raw_capture">Delete RAW capture</string>
+    <string name="a11y_delete_capture">Delete capture</string>
+    <string name="a11y_delete_raw_file">Delete RAW file</string>
+    <string name="a11y_delete_file">Delete file</string>
     <string name="review_legacy_unverified_provenance">Legacy TeleCam format · origin unverified</string>
     <string name="a11y_review_zoom">Zoom %1$s</string>
     <string name="a11y_review_zoom_position">%1$s, %2$s</string>

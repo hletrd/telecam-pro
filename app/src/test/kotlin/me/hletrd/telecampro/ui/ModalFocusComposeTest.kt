@@ -405,7 +405,7 @@ class ModalFocusComposeTest {
         val close = compose.onNodeWithContentDescription(context.getString(R.string.a11y_close_review))
         close.assertIsFocused()
         val delete = compose.onNodeWithContentDescription(
-            context.getString(R.string.review_delete_file_title).removeSuffix("?"),
+            context.getString(R.string.a11y_delete_file),
         )
         delete.requestFocus().performKeyInput { pressKey(Key.Enter) }
         compose.onNode(isDialog()).assertExists()

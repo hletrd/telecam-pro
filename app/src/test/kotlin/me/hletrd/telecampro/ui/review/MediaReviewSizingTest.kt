@@ -76,6 +76,7 @@ class MediaReviewSizingTest {
             MediaDeleteConfirmationCopy(
                 title = R.string.review_delete_capture_title,
                 body = R.string.review_delete_family_body,
+                action = R.string.a11y_delete_capture,
             ),
             mediaDeleteConfirmationCopy(MediaDeleteScope.CAPTURE_FAMILY, raw = false),
         )
@@ -85,6 +86,7 @@ class MediaReviewSizingTest {
             MediaDeleteConfirmationCopy(
                 title = R.string.review_delete_raw_file_title,
                 body = R.string.review_delete_file_body,
+                action = R.string.a11y_delete_raw_file,
             ),
             mediaDeleteConfirmationCopy(MediaDeleteScope.FILE_ONLY, raw = true),
         )

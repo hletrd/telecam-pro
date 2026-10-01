@@ -9,7 +9,9 @@ import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.ui.review.mediaDeleteConfirmationCopy
 import me.hletrd.telecampro.video.AudioPortKind
 import me.hletrd.telecampro.video.AudioRouteAvailability
 import me.hletrd.telecampro.video.AudioRouteStatus
@@ -99,6 +101,26 @@ class KoreanLocalizationRobolectricTest {
                 .status(CameraStatusArgument.Text("MR2"))
                 .resolve(ko),
         )
+    }
+
+    @Test
+    fun `review delete button names are actions, never the dialog's question`() {
+        // DES2-1: the old name was the dialog title minus "?", which in Korean still asked a
+        // question ("…삭제할까요"). Every scope's button name must be an imperative noun phrase.
+        val en = context("en")
+        val ko = context("ko")
+        MediaDeleteScope.entries.forEach { scope ->
+            listOf(false, true).forEach { raw ->
+                val copy = mediaDeleteConfirmationCopy(scope, raw)
+                val koAction = ko.getString(copy.action)
+                val enAction = en.getString(copy.action)
+                assertFalse("$scope raw=$raw: $koAction", koAction.endsWith("까요") || koAction.endsWith("?"))
+                assertTrue("$scope raw=$raw: $koAction", koAction.endsWith("삭제"))
+                assertFalse("$scope raw=$raw: $enAction", enAction.endsWith("?"))
+                assertTrue("$scope raw=$raw: $enAction", enAction.startsWith("Delete "))
+                assertEquals(raw, koAction.startsWith("RAW "))
+            }
+        }
     }
 
     @Test
