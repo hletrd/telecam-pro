@@ -75,7 +75,6 @@ import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.opticalBaseFor
-import me.hletrd.telecampro.camera.localZoomOf
 import me.hletrd.telecampro.camera.resolveTeleZoomTransition
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.standaloneRouteWanted
@@ -2797,11 +2796,15 @@ class CameraViewModel private constructor(
             state.photoFormats.dngRaw,
             state.rawForcesStandalone,
         )
-        return if (targetStandalone) {
-            localZoomOf(preFrontRearUnifiedZoom, state.lensInventory.optical)
-        } else {
-            preFrontRearUnifiedZoom
-        }
+        // Inverse of the entry snapshot's lens-based conversion, NOT `localZoomOf` (whose base comes
+        // from the ratio and picked the 10× lens for a TELE past local 3.33 — AGG2-5).
+        return retainedRearWireZoom(
+            unified = preFrontRearUnifiedZoom,
+            lens = state.lens,
+            teleconverter = teleconverter,
+            targetStandalone = targetStandalone,
+            optical = state.lensInventory.optical,
+        )
     }
 
     override fun onLens(choice: LensChoice) {

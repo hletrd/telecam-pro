@@ -5,6 +5,7 @@ import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.localZoomOf
+import me.hletrd.telecampro.camera.opticalBaseFor
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
@@ -406,6 +407,30 @@ internal fun remapRouteScaleOptics(
             ),
         )
     }
+}
+
+/**
+ * The wire zoom a save/MR store persists for the REAR setup retained across a FRONT trip, i.e. the
+ * exact inverse of the `unifiedZoomOf(lens, local, standaloneRoute = true)` snapshot taken at FRONT
+ * entry (AGG2-5 / CR2-3).
+ *
+ * The snapshot takes its base from the LENS (TELE: the 3× host), so the inverse must too. The
+ * earlier `localZoomOf(unified)` takes its base from the RATIO — the 10× lens once `3·z ≥ 10` — so a
+ * TELE at lens-local 4.0 (~52× total) was persisted as 12 / 10 = 1.2 and the next launch or recall
+ * landed at ~16×. Restore ([restoredOptics]) keeps the persisted lens on every lens-local route and
+ * forces TELE3X under the converter, so dividing by THAT lens's optical base is what round-trips;
+ * on a one-camera device the base of the "3×" band is the 1× main, exactly as at snapshot time.
+ */
+internal fun retainedRearWireZoom(
+    unified: Float,
+    lens: LensChoice,
+    teleconverter: Boolean,
+    targetStandalone: Boolean,
+    optical: Set<LensChoice>,
+): Float {
+    if (!targetStandalone) return unified
+    val routeLens = if (teleconverter) LensChoice.TELE3X else lens
+    return (unified / opticalBaseFor(routeLens.zoomPreset, optical).zoomPreset).coerceAtLeast(1f)
 }
 
 /** Resolves the exact lens-local/unified zoom representation used by both engine and UI restore. */

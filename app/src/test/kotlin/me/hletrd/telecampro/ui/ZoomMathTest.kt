@@ -661,4 +661,56 @@ class ZoomMathTest {
         assertNull(selectedTeleZoomMark(marks, 30f * 1.05f))
         assertNull(selectedTeleZoomMark(marks, Float.NaN))
     }
+
+    // AGG2-5 / CR2-3: the FRONT-retained rear snapshot is `unifiedZoomOf(lens, z)` (base from the
+    // LENS); converting it back with `localZoomOf` takes the base from the RATIO, i.e. the 10x lens
+    // once `3z >= 10`, so a TELE at local 4.0 (unified 12) persisted as 1.2.
+    @Test
+    fun `retained rear zoom round-trips TELE local 4 through the host lens base`() {
+        val optical = LensChoice.entries.toSet()
+        val unified = me.hletrd.telecampro.camera.unifiedZoomOf(
+            LensChoice.TELE3X, 4f, standaloneRoute = true, optical = optical,
+        )
+        assertEquals(12f, unified, 1e-4f)
+        assertEquals(
+            4f,
+            retainedRearWireZoom(unified, LensChoice.TELE3X, teleconverter = true, targetStandalone = true, optical),
+            1e-4f,
+        )
+        // Same law for a non-TC standalone (Video / DNG) 3x lens zoomed past 3.33x.
+        assertEquals(
+            4f,
+            retainedRearWireZoom(unified, LensChoice.TELE3X, teleconverter = false, targetStandalone = true, optical),
+            1e-4f,
+        )
+    }
+
+    @Test
+    fun `retained rear zoom keeps unified on the seamless route and round-trips every lens`() {
+        val optical = LensChoice.entries.toSet()
+        assertEquals(
+            12f,
+            retainedRearWireZoom(12f, LensChoice.TELE3X, teleconverter = false, targetStandalone = false, optical),
+            0f,
+        )
+        for (lens in LensChoice.entries) {
+            for (local in listOf(1f, 1.5f, 3.4f, 4f, 7f)) {
+                val unified = me.hletrd.telecampro.camera.unifiedZoomOf(lens, local, true, optical)
+                assertEquals(
+                    "$lens local $local",
+                    local,
+                    retainedRearWireZoom(unified, lens, teleconverter = false, targetStandalone = true, optical),
+                    1e-4f,
+                )
+            }
+        }
+        // A one-camera device: the 3x band is a crop of the main lens, so the divisor is 1x.
+        val mainOnly = setOf(LensChoice.MAIN)
+        val crop = me.hletrd.telecampro.camera.unifiedZoomOf(LensChoice.TELE3X, 4f, true, mainOnly)
+        assertEquals(
+            4f,
+            retainedRearWireZoom(crop, LensChoice.TELE3X, teleconverter = false, targetStandalone = true, mainOnly),
+            1e-4f,
+        )
+    }
 }
