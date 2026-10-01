@@ -1464,6 +1464,7 @@ check(
     f"Gradle signing environment values={sorted(signing_environment_values)}",
 )
 play_console_submit = read("docs/play-console-submit.md")
+upload_key_policy_source = read("tools/upload_key_policy.py")
 check(
     "SECURITY-BLOCKED** pending owner rotation/reset" in play_console_submit
     and "owner explicitly\n> approves a strong-key rotation or completes Google's upload-key reset" in play_console_submit
@@ -1485,9 +1486,13 @@ check(
     and "child_environment.pop(name, None)" in scoped_release_helper
     and scoped_release_helper.index("load_upload_key_prerequisite(args.root, os.environ)") <
         scoped_release_helper.index("sys.stdin.buffer.read")
-    and "MIN_STRONG_PASSWORD_LENGTH = 20" in scoped_release_helper
-    and "MIN_STRONG_PASSWORD_CLASSES = 3" in scoped_release_helper
-    and "_has_monotonic_run(value)" in scoped_release_helper
+    # SEC3-2: ONE generated-secret floor in the shared policy module, applied by BOTH wrappers.
+    and "MIN_STRONG_PASSWORD_LENGTH = 20" in upload_key_policy_source
+    and "MIN_STRONG_PASSWORD_CLASSES = 3" in upload_key_policy_source
+    and "_has_monotonic_run(value)" in upload_key_policy_source
+    and "if not meets_generated_secret_floor(value):" in scoped_release_helper
+    and "if not meets_generated_secret_floor(password):" in release_wrapper
+    and "if not meets_generated_secret_floor(key_password):" in release_wrapper
     and "uploadKeyRotationApproved=false" in keystore_example
     and "uploadKeyCertificateSha256=<64 lowercase hex characters>" in keystore_example
     and "export TELECAMPRO_STORE_PASSWORD" not in keystore_example
