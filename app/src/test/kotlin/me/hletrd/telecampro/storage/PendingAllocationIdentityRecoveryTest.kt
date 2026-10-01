@@ -2,6 +2,7 @@ package me.hletrd.telecampro.storage
 
 import android.net.Uri
 import java.util.ArrayDeque
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -181,7 +182,7 @@ class PendingAllocationIdentityRecoveryTest {
         // Appended from the owner's worker thread; the reopening event lands a moment AFTER
         // unresolvedCount() reaches zero, so the assertion below awaits it explicitly (it raced
         // once under host load and compared a two-element list).
-        val admissionEvents = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
+        val admissionEvents = CopyOnWriteArrayList<Boolean>()
         val subscription = admission.subscribe(admissionEvents::add)
         val owner = RejectedOutputCleanupCapacityOwner<String>(
             workerCount = 1,
@@ -292,26 +293,38 @@ class PendingAllocationIdentityRecoveryTest {
 
     @Test
     fun `production storage subscription publishes close and reopen capacity edges`() {
-        assertTrue(MediaStoreWriter.rejectedOutputAdmissionAvailable())
-        val events = mutableListOf<Boolean>()
+        // Both owners behind this signal are PROCESS singletons shared with every other
+        // Robolectric class in the sandbox, each with a real daemon retry scheduler. Wait for a
+        // clean entry state instead of asserting it, collect on a thread-safe sink, and judge only
+        // the edges published after each snapshot so a foreign retry edge cannot fail (or corrupt)
+        // the exact-list comparison.
+        awaitCondition { MediaStoreWriter.rejectedOutputAdmissionAvailable() }
+        val events = CopyOnWriteArrayList<Boolean>()
         val subscription = MediaStoreWriter.subscribeStillStorageAdmission(events::add)
         val reservations = mutableListOf<RejectedOutputCleanupReservation<MediaStoreWriter.RejectedOutput>>()
         try {
+            assertEquals("subscribe replays the current open state", true, events.lastOrNull())
+            val beforeClose = events.size
             repeat(REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY) {
                 reservations += requireNotNull(MediaStoreWriter.reserveRejectedOutputCleanup())
             }
             assertFalse(MediaStoreWriter.rejectedOutputAdmissionAvailable())
-            assertEquals(listOf(true, false), events)
+            val closeEdges = events.drop(beforeClose)
+            assertTrue("close edge published: $closeEdges", closeEdges.isNotEmpty())
+            assertEquals(false, closeEdges.last())
 
+            val beforeReopen = events.size
             assertTrue(reservations.removeAt(0).cancel())
             assertTrue(MediaStoreWriter.rejectedOutputAdmissionAvailable())
-            assertEquals(listOf(true, false, true), events)
+            val reopenEdges = events.drop(beforeReopen)
+            assertTrue("reopen edge published: $reopenEdges", reopenEdges.isNotEmpty())
+            assertEquals(true, reopenEdges.last())
 
             subscription.close()
             val detachedEvents = events.toList()
             val extra = requireNotNull(MediaStoreWriter.reserveRejectedOutputCleanup())
             extra.cancel()
-            assertEquals(detachedEvents, events)
+            assertEquals(detachedEvents, events.toList())
         } finally {
             reservations.forEach { it.cancel() }
             subscription.close()
