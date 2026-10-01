@@ -586,13 +586,22 @@ class CameraEngine internal constructor(
         // other standalone route. This asked `!videoMode`, which misses the DNG door: with RAW on,
         // the lens-local 1.0 was read as main-relative and collapsed the band to 1×, so the rail
         // highlighted 1× while the focal readout correctly said 69 mm (device-reported 2026-08-04).
-        if (!standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone) &&
-            !teleconverterMode && activeCameraRoute == CameraRoute.BACK
-        ) {
+        if (lensBandFollowsZoom(videoMode, teleconverterMode, activeCameraRoute)) {
             lensChoice = LensChoice.forZoom(controls.zoomRatio)
         }
         seedGlZoom()
     }
+
+    /**
+     * The lens band is a REAR *unified*-zoom concept: it only means anything while zoomRatio is
+     * main-relative, i.e. on the LOGICAL seamless camera. Every site that re-derives the band from
+     * zoom asks this ONE predicate — two fast-path commits still asked `!video` after the caps seam
+     * was fixed, which reads a DNG Photo lens-local 1.0 as main-relative and parks the band on 1×
+     * while the session stays on the 70 mm lens (RPL cycle 1, AGG-3).
+     */
+    private fun lensBandFollowsZoom(video: Boolean, teleconverter: Boolean, route: CameraRoute): Boolean =
+        !standaloneRouteWanted(video, rawWanted, activeDeviceProfile().rawRequiresStandalone) &&
+            !teleconverter && route == CameraRoute.BACK
 
     private data class VideoPipelineSelection(
         val codec: VideoCodec,
@@ -651,6 +660,8 @@ class CameraEngine internal constructor(
         val sessionGeneration: Long,
         val photoSessionOutputs: PhotoSessionOutputs,
         val hiResConfigured: Boolean,
+        /** DNG intent is a ROUTE input, so it rolls back with the route it selected (AGG-4). */
+        val rawWanted: Boolean,
     )
 
     private data class AcceptedCameraSession(
@@ -745,6 +756,7 @@ class CameraEngine internal constructor(
         sessionGeneration = cameraSessionGeneration.get(),
         photoSessionOutputs = acceptedCameraSession?.outputs ?: PhotoSessionOutputs(),
         hiResConfigured = acceptedCameraSession?.hiResConfigured ?: false,
+        rawWanted = rawWanted,
     )
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
@@ -994,6 +1006,7 @@ class CameraEngine internal constructor(
         requestedVideoSize = restored.requestedVideoSize
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
+        rawWanted = before.rawWanted
         val opticsPublication = OpticsRollbackPublication(
             mode = restored.mode,
             transfer = restoredVideoPipeline.requestedTransfer,
@@ -1014,6 +1027,7 @@ class CameraEngine internal constructor(
             declaration = restored.declaration,
             generation = transaction.generation,
             videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
+            rawWanted = before.rawWanted,
         )
         val restoreSession = before.ready && before.readyController === controller && !paused &&
             before.sessionGeneration == cameraSessionGeneration.get()
@@ -2662,7 +2676,9 @@ class CameraEngine internal constructor(
                                 capsUpper = range?.upper,
                             )
                             if (!enabled) photoExposureTimeNs = controls.exposureTimeNs
-                            if (!enabled && !teleconverterMode && activeCameraRoute == CameraRoute.BACK) {
+                            // Same route-scale predicate as reconcileControlsWithCaps: `!enabled`
+                            // alone read a DNG Photo lens-local ratio as unified (AGG-3).
+                            if (lensBandFollowsZoom(enabled, teleconverterMode, activeCameraRoute)) {
                                 lensChoice = LensChoice.forZoom(controls.zoomRatio)
                             }
                             seedGlZoom()
@@ -2815,7 +2831,7 @@ class CameraEngine internal constructor(
                             capsUpper = range?.upper,
                         )
                         if (!enabledVideo) photoExposureTimeNs = controls.exposureTimeNs
-                        if (!enabledVideo && !routeTeleconverter && route == CameraRoute.BACK) {
+                        if (lensBandFollowsZoom(enabledVideo, routeTeleconverter, route)) {
                             lensChoice = LensChoice.forZoom(controls.zoomRatio)
                         }
                         seedGlZoom()
@@ -3956,16 +3972,50 @@ class CameraEngine internal constructor(
      * lens. Reopens only when the answer actually changes, so toggling HEIF/JPEG never disturbs the
      * session.
      */
-    fun setRawWanted(enabled: Boolean) {
+    fun setRawWanted(
+        enabled: Boolean,
+        /**
+         * The DNG door's target-scale optics, resolved by the caller with [remapRouteScaleOptics]
+         * when the standalone answer flips. Published inside this door's own optics transaction:
+         * the toggle moves PHOTO between unified and lens-local zoom, and carrying the old number
+         * across turned a unified 3× into a 9× crop on the 70 mm lens (RPL cycle 1, AGG-1). Null
+         * keeps the current packet (restore, encoder inventory, and other non-door callers).
+         */
+        resolvedLens: LensChoice? = null,
+        resolvedControls: ManualControls? = null,
+    ) {
         if (rawWanted == enabled) return
-        val before = standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone)
-        rawWanted = enabled
-        if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone) == before) return
+        val rawLaw = activeDeviceProfile().rawRequiresStandalone
+        val routeFlips = standaloneRouteWanted(videoMode, rawWanted, rawLaw) !=
+            standaloneRouteWanted(videoMode, enabled, rawLaw)
         // Before start there is no session to move: the FIRST configure resolves the route from
         // `rawWanted` directly (that is how a restored DNG selection lands), and opening a
         // transaction here would bump the optics generation under the cold-start path for nothing.
-        // Same guard the bare reopen applies, so paused/stopped behaviour is unchanged.
-        if (!started || paused) return
+        // FRONT/EXTERNAL keep their one camera whatever DNG says (selectCurrentLens ignores the
+        // answer there), so a reopen would be a visible black dip for no route change; leaving
+        // FRONT re-resolves through resolveNonTeleId with the updated intent (tracer T7).
+        if (!routeFlips || !started || activeCameraRoute != CameraRoute.BACK) {
+            synchronized(this) {
+                rawWanted = enabled
+                if (routeFlips) {
+                    resolvedLens?.let { lensChoice = it }
+                    resolvedControls?.let { controls = it }
+                }
+            }
+            return
+        }
+        if (paused) {
+            // Backgrounded: no reopen now, but resume() reuses the CACHED overrideId, which still
+            // names the pre-pause route — the permanent-divergence shape of DNG bug #2 below. Drop
+            // the cached resolution so resume re-resolves from the new intent (tracer T6).
+            synchronized(this) {
+                rawWanted = enabled
+                resolvedLens?.let { lensChoice = it }
+                resolvedControls?.let { controls = it }
+                overrideId = userCameraPin
+            }
+            return
+        }
         // RE-RESOLVE the route; do NOT go through the bare reopenForSession(). That path reuses
         // `overrideId`, which caches the id the LAST ACCEPTED session resolved to — after a
         // Video→Photo trip that is the LOGICAL camera — so the reopen rebuilt the one route that
@@ -3976,8 +4026,19 @@ class CameraEngine internal constructor(
         // ANSWER changes — hi-res, aspect, fps and transfer all keep the same camera — which is why
         // it alone needs this. An explicit user camera pin still wins; only the cached resolution
         // is dropped.
+        //
+        // `rawWanted` itself is published INSIDE the transaction and is part of OpticsSnapshot, so
+        // a failed reopen rolls the intent back with the route instead of leaving DNG wanted over a
+        // logical session that the change gate would then refuse to repair (AGG-4).
         val pin = synchronized(this) { userCameraPin }
-        val transaction = beginOpticsTransaction { overrideId = pin }.first
+        val transaction = beginOpticsTransaction {
+            rawWanted = enabled
+            resolvedLens?.let { lensChoice = it }
+            resolvedControls?.let { controls = it }
+            overrideId = pin
+        }.first
+        // The Loupe Overview gate converts zoom through the route answer that just changed.
+        pushTeleFinder()
         reconfigureCamera(pin, transaction)
     }
 

@@ -37,6 +37,11 @@ data class OpticsRollbackPublication(
     val generation: Long,
     /** Exact video-pipeline publication restored or retained by this rollback. */
     val videoPipelineGeneration: Long,
+    /**
+     * The DNG route input restored with the route it selected. Without it a failed DNG reopen left
+     * the engine wanting RAW over the restored logical session, and the UI chip on (AGG-4).
+     */
+    val rawWanted: Boolean = false,
 )
 
 /** Auxiliary UI state changes only when the desired camera transaction reaches Ready. */

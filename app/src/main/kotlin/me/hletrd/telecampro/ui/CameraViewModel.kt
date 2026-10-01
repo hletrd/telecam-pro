@@ -956,6 +956,14 @@ class CameraViewModel private constructor(
                         // pin stays internal) — so a routine failed door can no longer surface the
                         // Setup Camera ID row or poison the same-route recall fast path.
                         cameraOverrideId = rollback.userPin,
+                        // DNG is a route input: the engine restored it with the route it selected,
+                        // so the chip must follow or the UI keeps promising a DNG the restored
+                        // logical session cannot write (AGG-4).
+                        photoFormats = if (it.photoFormats.dngRaw == rollback.rawWanted) {
+                            it.photoFormats
+                        } else {
+                            it.photoFormats.copy(dngRaw = rollback.rawWanted).withDefaultIfEmpty()
+                        },
                     )
                 }
                 // Mode-derived owners were applied optimistically with the rejected packet. The
@@ -2378,10 +2386,41 @@ class CameraViewModel private constructor(
         // the shutter produce nothing (2026-08-02 review).
         val formats = formats.normalizedForEncoder(s.heifAvailable)
         if (!s.encoderInventoryLoaded) pendingPhotoFormatsUntilInventory = formats
+        // A running timelapse froze its formats at start, while a DNG flip moves the route under
+        // it: the run kept writing the old set on the new route with no status either way
+        // (tracer T8). Same idiom as a mode flip — a format change ends the run.
+        if (s.timelapseRunning && formats != s.photoFormats) engine.stopTimelapse()
         // DNG is a ROUTE input: RAW cannot come off the logical photo camera, so wanting it moves
-        // the session to a standalone lens. Pushed BEFORE the state write so the reopen it may
-        // trigger is already in flight when the UI reflects the new selection.
-        engine.setRawWanted(formats.dngRaw)
+        // the session to a standalone lens — and with it the zoom SCALE (unified ↔ lens-local).
+        // When that answer flips this is an optics-remap door exactly like a mode flip: convert the
+        // framing into the target scale, drop every in-flight value expressed in the old scale, and
+        // hand the converted packet to the engine's own transaction (AGG-1). Pushed BEFORE the state
+        // write so the reopen it may trigger is already in flight when the UI reflects it.
+        val fromStandalone = standaloneRouteWanted(
+            s.mode == CaptureMode.VIDEO, s.photoFormats.dngRaw, s.rawForcesStandalone,
+        )
+        val toStandalone = standaloneRouteWanted(
+            s.mode == CaptureMode.VIDEO, formats.dngRaw, s.rawForcesStandalone,
+        )
+        val routeOptics = if (fromStandalone != toStandalone) {
+            cancelPendingControls()
+            remapRouteScaleOptics(
+                lens = s.lens,
+                controls = s.controls,
+                fromStandalone = fromStandalone,
+                toStandalone = toStandalone,
+                teleconverter = s.teleconverterMode,
+                lensLocalRoute = s.activeCameraRoute.lensLocalZoom,
+                optical = s.lensInventory.optical,
+            )
+        } else {
+            null
+        }
+        if (routeOptics != null) {
+            engine.setRawWanted(formats.dngRaw, routeOptics.lens, routeOptics.controls)
+        } else {
+            engine.setRawWanted(formats.dngRaw)
+        }
         _state.update {
             it.copy(
                 // NOT normalizedFor(photoSessionOutputs) on the RAW axis any more: those outputs
@@ -2389,7 +2428,13 @@ class CameraViewModel private constructor(
                 // selection that asks for the new route.
                 photoFormats = formats,
                 activeMemorySlot = null,
+                lens = routeOptics?.lens ?: it.lens,
+                controls = routeOptics?.controls ?: it.controls,
             )
+        }
+        if (routeOptics != null) {
+            invalidateOpticsDerivedState()
+            clearTapFocusUi()
         }
         scheduleSettingsSave()
     }
