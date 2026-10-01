@@ -2274,9 +2274,11 @@ class CameraController internal constructor(
         }
         // A transient open-time read failure (the same resume race as openCamera's synchronous
         // CAMERA_DISABLED) used to leave rawChars null for the controller's whole life, failing
-        // EVERY still after the HAL had already delivered its image. Retry the read lazily here
-        // (rate-limited inside chars(), since this is the camera handler with the Images held).
-        val chars = chars()
+        // EVERY still after the HAL had already delivered its image. Retry the read lazily here —
+        // ONCE per shot, never behind the metering rate limit: a metering build that consumed the
+        // gate a moment earlier used to fail this shot even though a fresh read would succeed,
+        // discarding Images the HAL had already delivered (AGG3-9).
+        val chars = chars(shot = true)
         try {
             if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
             else p.cb.onError(IllegalStateException("Missing camera characteristics"))
@@ -2418,23 +2420,21 @@ class CameraController internal constructor(
     )
 
     /**
+     * The ONE accessor for the producer's characteristics outside open() (AGG2-19): the cached
+     * value, else a lazy re-read. Metering and tryComplete both go through here so neither silently
+     * degrades while the other recovers. See [lazyCharacteristicsRead] for which caller is
+     * rate-limited: metering builds take [rawCharsRetryGate], while a [shot] — Images already
+     * delivered and held — always gets its one re-read (AGG3-9).
+     */
+    private fun chars(shot: Boolean = false): CameraCharacteristics? =
+        lazyCharacteristicsRead(rawChars, shot, rawCharsRetryGate, ::readRawCharacteristics)
+            ?.also { rawChars = it }
+
+    /**
      * Reads the producer's characteristics for this controller's camera. The first failure is
      * logged through the reserved facade (once per controller — the lazy retry in tryComplete can
      * run per shot) so a still that fails "Missing camera characteristics" has a cause in logcat.
      */
-    /**
-     * The ONE accessor for the producer's characteristics outside open() (AGG2-19): the cached
-     * value, else a lazy re-read admitted by [rawCharsRetryGate]. Metering and tryComplete both go
-     * through here so neither silently degrades while the other recovers, and a persistently
-     * failing read costs at most one camera-thread Binder call per interval, not one per shot.
-     */
-    private fun chars(): CameraCharacteristics? =
-        rawChars ?: if (rawCharsRetryGate.tryAcquire()) {
-            readRawCharacteristics()?.also { rawChars = it }
-        } else {
-            null
-        }
-
     private fun readRawCharacteristics(): CameraCharacteristics? {
         val id = rawCharsCameraId ?: return null
         return runCatching { manager.getCameraCharacteristics(id) }
@@ -2511,6 +2511,20 @@ internal class LazyReadRetryGate(
         return true
     }
 }
+
+/**
+ * Which lazy characteristics re-read may run (AGG3-9). A [cached] value always wins. A metering
+ * request build is recurring camera-handler work, so it is rate-limited by [gate]; a completing
+ * [shot] holds HAL-delivered Images that are discarded if the read is skipped, so it always gets its
+ * one re-read and neither consumes nor waits on the metering gate. A persistently failing read
+ * therefore costs one Binder call per completed shot — bounded by the shutter, not the frame rate.
+ */
+internal fun <T : Any> lazyCharacteristicsRead(
+    cached: T?,
+    shot: Boolean,
+    gate: LazyReadRetryGate,
+    read: () -> T?,
+): T? = cached ?: if (shot || gate.tryAcquire()) read() else null
 
 /**
  * True only on the streaming true→false edge: the ring's held Images must be released then, since

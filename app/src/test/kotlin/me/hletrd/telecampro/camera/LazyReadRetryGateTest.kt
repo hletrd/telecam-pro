@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.camera
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,5 +36,27 @@ class LazyReadRetryGateTest {
         assertTrue(gate.tryAcquire())
         now += 500L
         assertFalse(gate.tryAcquire())
+    }
+
+    // AGG3-9: a metering build that consumed the gate must not cost the next shot its re-read.
+    @Test
+    fun `a shot re-reads even after metering consumed the gate at the same instant`() {
+        val now = 0L
+        val gate = LazyReadRetryGate(minIntervalNs = 1_000L, nowNs = { now })
+        var calls = 0
+        val failingThenSucceeding: () -> String? = { if (calls++ == 0) null else "chars" }
+
+        assertNull("metering read fails and consumes the gate", lazyCharacteristicsRead(null, false, gate, failingThenSucceeding))
+        assertNull("metering stays rate-limited", lazyCharacteristicsRead(null, false, gate, failingThenSucceeding))
+        assertEquals(1, calls)
+        assertEquals("chars", lazyCharacteristicsRead(null, true, gate, failingThenSucceeding))
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `a cached value never reads`() {
+        val gate = LazyReadRetryGate(minIntervalNs = 1_000L, nowNs = { 0L })
+        assertEquals("cached", lazyCharacteristicsRead("cached", true, gate) { error("must not read") })
+        assertTrue("the gate stays unconsumed", gate.tryAcquire())
     }
 }
