@@ -174,11 +174,29 @@ class LatestHeavyWorkLaneTest {
                 release.countDown()
                 assertTrue(disposed.await(2, TimeUnit.SECONDS))
 
-                val retry = (lane.submit(Any(), "retry") as
-                    ProgressiveLatestWorkLane.Submission.Completed).completion
+                // The retry runs on a SECOND lane over the SAME two-thread dispatcher, with the
+                // production terminal timeout. Reusing the 100 ms lane made the retry race a real
+                // 100 ms wall clock on a loaded host (JaCoCo, GC, a parallel daemon) and fail with
+                // an opaque ClassCastException on TimedOut. What this proves is unchanged: the
+                // timed-out worker returned its dispatcher thread once released, and the timeout
+                // was not recorded as exhausted process capacity.
+                val retryLane = ProgressiveLatestWorkLane<String, String>(
+                    dispatcher = dispatcher,
+                    workerCount = 2,
+                    terminalTimeoutMs = REVIEW_WORK_TERMINAL_TIMEOUT_MS,
+                    work = { input -> "result-$input" },
+                    dispose = {},
+                )
+                val result = retryLane.submit(Any(), "retry")
+                assertTrue(
+                    result.toString(),
+                    result is ProgressiveLatestWorkLane.Submission.Completed,
+                )
+                val retry = (result as ProgressiveLatestWorkLane.Submission.Completed).completion
                 var published: String? = null
-                assertTrue(lane.claim(retry) { published = it })
+                assertTrue(retryLane.claim(retry) { published = it })
                 assertEquals("result-retry", published)
+                assertFalse(retryLane.hasLatestRequest())
                 assertFalse(lane.hasLatestRequest())
             }
         } finally {
