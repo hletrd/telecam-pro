@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,33 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT_JAVA_HOME = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")
 
 
-def java_home() -> Path:
+REQUIRED_JDK_MAJOR = 21
+REQUIRED_JDK_TOOLS = ("java", "keytool", "jarsigner")
+
+
+def java_major_version(java: Path) -> int | None:
+    """The feature release of `java -version`, or None when it cannot be determined."""
+    try:
+        result = subprocess.run(
+            [str(java), "-version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'version "(\d+)(?:\.(\d+))?', result.stderr + result.stdout)
+    if match is None:
+        return None
+    major = int(match.group(1))
+    # Pre-9 JDKs report "1.8.0_x"; their feature release is the second component.
+    if major == 1 and match.group(2) is not None:
+        major = int(match.group(2))
+    return major
+
+
+def java_home_candidates() -> list[Path]:
     candidates = []
     configured = os.environ.get("JAVA_HOME")
     if configured:
@@ -29,10 +56,36 @@ def java_home() -> Path:
     javac = shutil.which("javac")
     if javac:
         candidates.append(Path(javac).resolve().parent.parent)
-    for candidate in candidates:
-        if (candidate / "bin/java").is_file() and (candidate / "bin/jarsigner").is_file():
-            return candidate
-    raise SystemExit("JDK 21 with java, keytool, and jarsigner is required")
+    return candidates
+
+
+def java_home(
+    candidates: list[Path] | None = None,
+    version_of=java_major_version,
+) -> Path:
+    """First candidate JDK that carries every required tool AND is feature release 21.
+
+    Gradle's toolchain and the release signing/verification wrappers all assume JDK 21 with
+    keytool and jarsigner; a JDK 17 (or a JRE) on PATH would otherwise pass this preflight and
+    fail much later inside Gradle or the signing step.
+    """
+    rejected: list[str] = []
+    for candidate in java_home_candidates() if candidates is None else candidates:
+        missing = [tool for tool in REQUIRED_JDK_TOOLS if not (candidate / "bin" / tool).is_file()]
+        if missing:
+            rejected.append(f"{candidate}: missing {', '.join(missing)}")
+            continue
+        major = version_of(candidate / "bin/java")
+        if major != REQUIRED_JDK_MAJOR:
+            found = "unknown version" if major is None else f"JDK {major}"
+            rejected.append(f"{candidate}: {found}")
+            continue
+        return candidate
+    detail = "; ".join(rejected) if rejected else "no JDK candidates found"
+    raise SystemExit(
+        f"JDK {REQUIRED_JDK_MAJOR} with {', '.join(REQUIRED_JDK_TOOLS)} is required "
+        f"(set JAVA_HOME; rejected: {detail})"
+    )
 
 
 def run(command: list[str], env: dict[str, str]) -> None:

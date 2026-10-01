@@ -17,7 +17,37 @@ import sys
 import threading
 
 
-def pump(src, dst):
+class _Connection:
+    """One proxied client/upstream pair; the LAST of its two pumps to finish closes both sockets.
+
+    Each pump shuts both directions down on exit so its sibling's recv() returns promptly, but
+    shutdown() alone never releases the file descriptors: a long-running proxy leaked two fds
+    per connection. close() must wait for the sibling, which may still be inside recv/sendall.
+    """
+
+    def __init__(self, *sockets):
+        self._sockets = sockets
+        self._lock = threading.Lock()
+        self._live_pumps = 2
+
+    def pump_finished(self):
+        for s in self._sockets:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        with self._lock:
+            self._live_pumps -= 1
+            last = self._live_pumps == 0
+        if last:
+            for s in self._sockets:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+
+def pump(src, dst, connection):
     try:
         while True:
             chunk = src.recv(65536)
@@ -27,11 +57,7 @@ def pump(src, dst):
     except OSError:
         pass
     finally:
-        for s in (src, dst):
-            try:
-                s.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+        connection.pump_finished()
 
 
 def serve(local_port, remote_host, remote_port):
@@ -50,8 +76,9 @@ def serve(local_port, remote_host, remote_port):
             continue
         client.settimeout(None)
         upstream.settimeout(None)
-        threading.Thread(target=pump, args=(client, upstream), daemon=True).start()
-        threading.Thread(target=pump, args=(upstream, client), daemon=True).start()
+        connection = _Connection(client, upstream)
+        threading.Thread(target=pump, args=(client, upstream, connection), daemon=True).start()
+        threading.Thread(target=pump, args=(upstream, client, connection), daemon=True).start()
 
 
 def parse_args(argv):
