@@ -114,11 +114,24 @@ data class ExtraSettings(
  * stored by name and restored defensively (an unknown name falls back to the field default), so a
  * schema change or a renamed enum constant degrades gracefully instead of crashing.
  */
-class SettingsStore(private val prefs: SharedPreferences) {
+class SettingsStore(
+    private val prefs: SharedPreferences,
+    /**
+     * The phone a blob WITHOUT a phone key restores to: the caller's detected-or-OTHER seed. The
+     * field default is the Find X9 Ultra, so a blob or MR bank written before the key existed (or
+     * with it corrupted) replaced the OTHER seed on foreign hardware and showed a Lenovo owner the
+     * Hasselblad 300 mm kit — exactly what the 2026-08-02 OTHER seeding removed (AGG-35). Read
+     * lazily at load time, so the ViewModel can hand over a seed it computes after construction.
+     */
+    private val missingPhoneModel: () -> PhoneModel = { DEFAULT_PHONE_MODEL },
+) {
 
     // The SharedPreferences seam exists so the persistence contract is unit-testable with an
     // in-memory fake (the real app uses the Context-backed secondary constructor below).
-    constructor(context: Context) : this(context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE))
+    constructor(
+        context: Context,
+        missingPhoneModel: () -> PhoneModel = { DEFAULT_PHONE_MODEL },
+    ) : this(context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE), missingPhoneModel)
 
     // Default ON: photographers expect their setup to survive an app restart out of the box.
     var rememberEnabled: Boolean
@@ -267,7 +280,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 jpegQuality = safeInt("${prefix}jpegQuality", d.jpegQuality),
             )
             val ed = ExtraSettings()
-            val restoredPhone = enumOr(safeString("${prefix}phoneModel", null), ed.phoneModel)
+            val restoredPhone = enumOr(safeString("${prefix}phoneModel", null), missingPhoneModel())
             val extras = ExtraSettings(
                 // Legacy alias: pre-2026-07-22 builds persisted the removed O-Log2 option as
                 // "LOG". Map it to S-Log3.Cine (the closest shipped log profile) explicitly —

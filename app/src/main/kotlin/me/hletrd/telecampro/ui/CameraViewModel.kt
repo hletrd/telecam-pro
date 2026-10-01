@@ -216,7 +216,8 @@ class CameraViewModel private constructor(
 
     private var punchInBeforeAuto = false
     private val tapFocusPublicationGate = TapFocusPublicationGate()
-    private val settingsStore = SettingsStore(app)
+    // A blob with no phone key falls back to the same detected-or-OTHER seed as a fresh launch.
+    private val settingsStore = SettingsStore(app) { detectedPhone ?: PhoneModel.OTHER }
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
     private val _ownerlessMediaDeleteLaunch = MutableStateFlow<OwnerlessMediaDeleteLaunch?>(null)
@@ -1563,11 +1564,17 @@ class CameraViewModel private constructor(
     }
 
     private fun currentExtras(): ExtraSettings = _state.value.let { s ->
+        // Before the async encoder inventory lands, state holds the DEGRADED placeholders (HEIF
+        // promoted to JPEG, transfer forced to SDR) while the operator's real request waits in the
+        // pending fields. A save inside that window — a background, or any immediate-save door —
+        // used to persist the placeholders and permanently rewrite HEIF/HLG/log to JPEG/SDR (AGG-34).
+        val inventoryPending = !s.encoderInventoryLoaded
+        val formats = pendingPhotoFormatsUntilInventory?.takeIf { inventoryPending } ?: s.photoFormats
         ExtraSettings(
-            transfer = s.transfer,
-            heif = s.photoFormats.heif,
-            jpeg = s.photoFormats.jpeg,
-            dngRaw = s.photoFormats.dngRaw,
+            transfer = pendingTransferUntilInventory?.takeIf { inventoryPending } ?: s.transfer,
+            heif = formats.heif,
+            jpeg = formats.jpeg,
+            dngRaw = formats.dngRaw,
             mode = s.mode,
             photoExposureTimeNs = if (s.mode == CaptureMode.PHOTO) {
                 s.controls.exposureTimeNs
@@ -1600,7 +1607,7 @@ class CameraViewModel private constructor(
             punchIn = if (autoPunchInActive) punchInBeforeAuto else s.punchIn,
             teleFinder = s.teleFinder,
             hiResStill = s.hiResStill,
-            videoCodec = s.videoCodec,
+            videoCodec = pendingCodecUntilInventory?.takeIf { inventoryPending } ?: s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
             videoResolution = "${s.videoResolution.width}x${s.videoResolution.height}",

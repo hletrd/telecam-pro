@@ -174,6 +174,24 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun aBlobWithoutAPhoneKeyRestoresTheCallersSeedNotTheFindX9Ultra() {
+        // A blob or MR bank written before the phone key existed must not replace the OTHER seed
+        // on foreign hardware with the Find X9 Ultra + Hasselblad 300 mm kit (AGG-35).
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putBoolean("preset_MR1_hasSaved", true)
+            .commit()
+        val store = SettingsStore(prefs) { PhoneModel.OTHER }
+
+        assertEquals(PhoneModel.OTHER, store.load()?.extras?.phoneModel)
+        assertEquals(PhoneModel.OTHER, store.loadPreset(MemorySlot.MR1)?.extras?.phoneModel)
+        // A persisted phone still wins over the seed.
+        prefs.edit().putString("phoneModel", PhoneModel.FIND_X9_ULTRA.name).commit()
+        assertEquals(PhoneModel.FIND_X9_ULTRA, store.load()?.extras?.phoneModel)
+    }
+
+    @Test
     fun loadReconcilesAConverterThatCannotClampOntoTheRestoredPhone() {
         // The phone and converter are two independent keys, so nothing in the file format stops a
         // pair that never existed together (an older catalog, a hand-edited blob, a preset written
