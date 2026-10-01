@@ -2478,6 +2478,10 @@ class CameraViewModel private constructor(
         scheduleSettingsSave()
     }
     override fun onAspectRatio(ratio: AspectRatio) {
+        // Aspect sizes the still reader, i.e. it is fixed at configureStreams like every other
+        // session-reconfiguring control; the Fn cycle contract (ControlCycles) already states that
+        // it rejects mid-REC, and this handler was the one door that did not (AGG-66).
+        if (rejectIfRecording()) return
         cancelCountdown()
         engine.setAspectRatio(ratio)
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
