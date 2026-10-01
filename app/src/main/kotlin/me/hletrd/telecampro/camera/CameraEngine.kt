@@ -4291,11 +4291,21 @@ class CameraEngine internal constructor(
             val old = controller
             val next = wireController(ownedGl)
             val candidatePublication = synchronized(this) {
-                if (UnsafeRecorderQuarantine.isActive() || !glInputTransactionMayProceed(
-                        ownerCurrent = glOwners.owns(ownedGl),
-                        engineStarted = started,
-                        inputCurrent = ownedGl.inputSurface === input,
-                    ) || !ownsOpticsTransaction(transaction)
+                // paused/recorder are rechecked INSIDE the monitor, like the sequential path: the
+                // outside check above races pause(), which writes `paused` first and then nulls
+                // `controller` under this monitor. Installing `next` after that null meant pause
+                // queued no close for it, and `next.open` ran behind the keyguard (AGG2-14).
+                if (!dualOpenCandidateInstallAdmitted(
+                        quarantined = UnsafeRecorderQuarantine.isActive(),
+                        glInputMayProceed = glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        ),
+                        ownsTransaction = ownsOpticsTransaction(transaction),
+                        paused = paused,
+                        recording = recorder != null,
+                    )
                 ) {
                     null
                 } else {
@@ -8535,6 +8545,19 @@ internal fun rollbackRestorableSessionGeneration(
         it == beforeSessionGeneration || it == preflightSessionGeneration
     }
 }
+
+/**
+ * Whether a dual-open candidate controller may replace the streaming one. Evaluated inside the
+ * Engine monitor, where pause() nulls `controller`: a camera must never be installed (and opened)
+ * once the Engine is backgrounded or a recorder owns the session.
+ */
+internal fun dualOpenCandidateInstallAdmitted(
+    quarantined: Boolean,
+    glInputMayProceed: Boolean,
+    ownsTransaction: Boolean,
+    paused: Boolean,
+    recording: Boolean,
+): Boolean = !quarantined && glInputMayProceed && ownsTransaction && !paused && !recording
 
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
 internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =

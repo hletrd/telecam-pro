@@ -75,4 +75,21 @@ class RouteInputRollbackTest {
         assertEquals("1080p", keepNewerDirectWrite(current = "1080p", baseline = "4K", directWriteSinceBaseline = true))
         assertEquals("4K", keepNewerDirectWrite(current = "1080p", baseline = "4K", directWriteSinceBaseline = false))
     }
+
+    @Test
+    fun `dual-open candidate never installs once paused or recording`() {
+        fun admitted(
+            quarantined: Boolean = false,
+            gl: Boolean = true,
+            owns: Boolean = true,
+            paused: Boolean = false,
+            recording: Boolean = false,
+        ) = dualOpenCandidateInstallAdmitted(quarantined, gl, owns, paused, recording)
+        assertTrue(admitted())
+        assertFalse("pause landed between the outer check and the install", admitted(paused = true))
+        assertFalse(admitted(recording = true))
+        assertFalse(admitted(quarantined = true))
+        assertFalse(admitted(gl = false))
+        assertFalse(admitted(owns = false))
+    }
 }
