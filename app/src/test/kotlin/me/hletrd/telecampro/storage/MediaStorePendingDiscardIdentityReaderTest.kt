@@ -94,6 +94,54 @@ class MediaStorePendingDiscardIdentityReaderTest {
         assertEquals("external_primary", (read as PendingDiscardIdentityRead.Present).identity.volumeName)
     }
 
+    @Test
+    fun `retries of one unavailable uri spend one warning until the reason changes`() {
+        installProvider(rows = listOf(row(volume = "external_primary")))
+        val warnings = mutableListOf<String>()
+        var mounted = emptySet<String>()
+        val reader = MediaStorePendingDiscardIdentityReader(
+            context = context,
+            mountedVolumes = { mounted },
+            providerVersion = { volume -> MediaStore.getVersion(context, volume) },
+            warningGate = IdentityReadWarningGate(),
+            warn = { message, _ -> warnings += message },
+        )
+
+        // A parked identity-recovery claim retries this read with backoff, without end.
+        repeat(50) {
+            assertEquals(PendingDiscardIdentityRead.Unavailable, reader.read(unionUri))
+        }
+        assertEquals(1, warnings.size)
+
+        // A different URI is its own episode; a different reason for the first URI reports again.
+        reader.read(primaryUri)
+        assertEquals(2, warnings.size)
+        installProvider(rows = listOf(row(volume = "1234-5678")))
+        mounted = setOf("external_primary", "1234-5678")
+        repeat(5) { assertEquals(PendingDiscardIdentityRead.Ambiguous, reader.read(unionUri)) }
+        assertEquals(3, warnings.size)
+
+        // Recovery ends the episode, so a later relapse is news again.
+        installProvider(rows = listOf(row(volume = "external_primary")))
+        assertTrue(reader.read(unionUri) is PendingDiscardIdentityRead.Present)
+        installProvider(rows = listOf(row(volume = "1234-5678")))
+        reader.read(unionUri)
+        assertEquals(4, warnings.size)
+    }
+
+    @Test
+    fun `the warning gate is bounded and evicts the least recently failing uri`() {
+        val gate = IdentityReadWarningGate(capacity = 2)
+        assertTrue(gate.shouldLog("a", "x"))
+        assertTrue(gate.shouldLog("b", "x"))
+        assertEquals(false, gate.shouldLog("a", "x"))
+        assertTrue(gate.shouldLog("c", "x"))
+        assertEquals(2, gate.trackedUris())
+        // "b" was least recently touched and was evicted; "a" is still remembered.
+        assertTrue(gate.shouldLog("b", "x"))
+        assertTrue(gate.shouldLog("a", "y"))
+    }
+
     private fun reader(mounted: Set<String>): MediaStorePendingDiscardIdentityReader =
         MediaStorePendingDiscardIdentityReader(
             context = context,

@@ -566,16 +566,61 @@ internal enum class DiscardReplayIdentity {
     LEGACY,
 }
 
+/**
+ * Change-gates identity-read warnings per URI. The reader runs on EVERY retry of every parked
+ * identity-recovery claim (exponential backoff capped at 30 s, unbounded count), on launch recovery
+ * and inside `mark()`; one stuck row logging each retry drained the process-lifetime 120-row
+ * reserved budget in about an hour (a full 32-claim owner: about a minute), after which every
+ * camera-fault, recorder and still-save warning in the process was silently dropped. A URI now
+ * logs its FIRST failure and then only when its reason CHANGES; a successful read forgets it, so a
+ * later relapse reports again. Bounded LRU memory: the least recently failing URI is evicted.
+ */
+internal class IdentityReadWarningGate(private val capacity: Int = 64) {
+    private val lastReasonByUri = object : LinkedHashMap<String, String>(capacity, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > capacity
+    }
+
+    init {
+        require(capacity > 0)
+    }
+
+    /** True when [reason] is new for [uri] and should spend a reserved row. */
+    @Synchronized
+    fun shouldLog(uri: String, reason: String): Boolean = lastReasonByUri.put(uri, reason) != reason
+
+    /** A successful read ends the failure episode for [uri]. */
+    @Synchronized
+    fun clear(uri: String) {
+        lastReasonByUri.remove(uri)
+    }
+
+    @Synchronized
+    internal fun trackedUris(): Int = lastReasonByUri.size
+}
+
 /** Reads one exact MediaStore row only after establishing mounted-volume/provider-version truth. */
 internal class MediaStorePendingDiscardIdentityReader(
     private val context: Context,
     private val mountedVolumes: () -> Set<String> = { MediaStore.getExternalVolumeNames(context) },
     private val providerVersion: (String) -> String = { volume -> MediaStore.getVersion(context, volume) },
+    // Process-wide by default: journals construct a fresh reader per use, so a per-instance gate
+    // would not deduplicate the retry loop at all.
+    private val warningGate: IdentityReadWarningGate = PROCESS_IDENTITY_READ_WARNING_GATE,
+    private val warn: (String, Throwable?) -> Unit = { message, failure ->
+        DiagnosticLog.w(TAG, message, failure)
+    },
 ) : PendingDiscardIdentityReader {
-    override fun read(uri: String): PendingDiscardIdentityRead = runCatching {
+    override fun read(uri: String): PendingDiscardIdentityRead = readUngated(uri).also { read ->
+        if (read is PendingDiscardIdentityRead.Present || read is PendingDiscardIdentityRead.Absent) {
+            warningGate.clear(uri)
+        }
+    }
+
+    private fun readUngated(uri: String): PendingDiscardIdentityRead = runCatching {
         val parsed = uri.toUri()
         if (parsed.scheme != ContentResolver.SCHEME_CONTENT || parsed.authority != MediaStore.AUTHORITY) {
-            return@runCatching unavailable("foreign authority $uri")
+            return@runCatching unavailable(uri, "foreign authority $uri")
         }
         // MediaProvider answers an EXTERNAL_CONTENT_URI insert with the URI it was handed, i.e. on
         // the VOLUME_EXTERNAL union pseudo-volume, which is never a mounted volume name; for every
@@ -587,7 +632,7 @@ internal class MediaStorePendingDiscardIdentityReader(
         val volumeName = resolveVolumeName(MediaStore.getVolumeName(parsed))
         val mounted = mountedVolumes()
         if (volumeName !in mounted) {
-            return@runCatching unavailable("volume $volumeName not in $mounted for $uri")
+            return@runCatching unavailable(uri, "volume $volumeName not in $mounted for $uri")
         }
         // The platform docs permit null for an unmounted volume even though the SDK annotation is
         // non-null. Kotlin's generated null check is contained by this fail-closed runCatching.
@@ -600,60 +645,66 @@ internal class MediaStorePendingDiscardIdentityReader(
             IDENTITY_PROJECTION,
             queryArgs,
             null,
-        ) ?: return@runCatching unavailable("null cursor for $uri")
+        ) ?: return@runCatching unavailable(uri, "null cursor for $uri")
         cursor.use {
             if (!cursor.moveToFirst()) {
                 if (providerVersion(volumeName) != providerVersion) {
-                    return@runCatching unavailable("provider version moved during empty read of $uri")
+                    return@runCatching unavailable(uri, "provider version moved during empty read of $uri")
                 }
                 return@runCatching PendingDiscardIdentityRead.Absent(volumeName, providerVersion)
             }
             val rowVolume = cursor.rowVolumeName()
             if (rowVolume != null && rowVolume != volumeName) {
-                return@runCatching ambiguous("row volume $rowVolume differs from $volumeName for $uri")
+                return@runCatching ambiguous(uri, "row volume $rowVolume differs from $volumeName for $uri")
             }
-            val identity = cursor.readIdentity(volumeName, providerVersion)
-                ?: return@runCatching unavailable("required identity column missing for $uri")
-            if (cursor.moveToNext()) return@runCatching ambiguous("multiple rows for $uri")
+            val identity = cursor.readIdentity(uri, volumeName, providerVersion)
+                ?: return@runCatching PendingDiscardIdentityRead.Unavailable
+            if (cursor.moveToNext()) return@runCatching ambiguous(uri, "multiple rows for $uri")
             val uriRowId = runCatching { android.content.ContentUris.parseId(parsed) }.getOrNull()
-                ?: return@runCatching unavailable("unparseable row id in $uri")
+                ?: return@runCatching unavailable(uri, "unparseable row id in $uri")
             if (identity.rowId != uriRowId) {
-                return@runCatching ambiguous("row id ${identity.rowId} differs from $uri")
+                return@runCatching ambiguous(uri, "row id ${identity.rowId} differs from $uri")
             }
             if (providerVersion(volumeName) != providerVersion) {
-                return@runCatching unavailable("provider version moved during read of $uri")
+                return@runCatching unavailable(uri, "provider version moved during read of $uri")
             }
             PendingDiscardIdentityRead.Present(identity)
         }
     }.getOrElse { failure ->
-        DiagnosticLog.w(TAG, "identity read threw for $uri", failure)
+        // Keyed by the exception class, not its message: messages can carry per-attempt detail.
+        gatedWarn(uri, "threw ${failure.javaClass.name}", "identity read threw for $uri", failure)
         PendingDiscardIdentityRead.Unavailable
     }
 
-    private fun unavailable(reason: String): PendingDiscardIdentityRead {
-        DiagnosticLog.w(TAG, "identity read unavailable: $reason")
+    private fun gatedWarn(uri: String, reason: String, message: String, failure: Throwable? = null) {
+        if (warningGate.shouldLog(uri, reason)) warn(message, failure)
+    }
+
+    private fun unavailable(uri: String, reason: String): PendingDiscardIdentityRead {
+        gatedWarn(uri, "unavailable: $reason", "identity read unavailable: $reason")
         return PendingDiscardIdentityRead.Unavailable
     }
 
-    private fun ambiguous(reason: String): PendingDiscardIdentityRead {
-        DiagnosticLog.w(TAG, "identity read ambiguous: $reason")
+    private fun ambiguous(uri: String, reason: String): PendingDiscardIdentityRead {
+        gatedWarn(uri, "ambiguous: $reason", "identity read ambiguous: $reason")
         return PendingDiscardIdentityRead.Ambiguous
     }
 
     private fun Cursor.readIdentity(
+        uri: String,
         volumeName: String,
         providerVersion: String,
     ): PendingDiscardIdentity? {
         val rowId = requiredLong(MediaStore.MediaColumns._ID)
-            ?: return missing(MediaStore.MediaColumns._ID)
+            ?: return missing(uri, MediaStore.MediaColumns._ID)
         val generationAdded = requiredLong(MediaStore.MediaColumns.GENERATION_ADDED)
-            ?: return missing(MediaStore.MediaColumns.GENERATION_ADDED)
+            ?: return missing(uri, MediaStore.MediaColumns.GENERATION_ADDED)
         val displayName = requiredString(MediaStore.MediaColumns.DISPLAY_NAME)
-            ?: return missing(MediaStore.MediaColumns.DISPLAY_NAME)
+            ?: return missing(uri, MediaStore.MediaColumns.DISPLAY_NAME)
         val relativePath = requiredString(MediaStore.MediaColumns.RELATIVE_PATH)
-            ?: return missing(MediaStore.MediaColumns.RELATIVE_PATH)
+            ?: return missing(uri, MediaStore.MediaColumns.RELATIVE_PATH)
         val mimeType = requiredString(MediaStore.MediaColumns.MIME_TYPE)
-            ?: return missing(MediaStore.MediaColumns.MIME_TYPE)
+            ?: return missing(uri, MediaStore.MediaColumns.MIME_TYPE)
         val ownerPackageName = optionalString(MediaStore.MediaColumns.OWNER_PACKAGE_NAME)
         val dateTaken = optionalLong(MediaStore.MediaColumns.DATE_TAKEN)
         val familyIdentity = CaptureFamilyKey.parse(displayName)?.familyKey?.discardIdentity()
@@ -683,8 +734,10 @@ internal class MediaStorePendingDiscardIdentityReader(
     private fun Cursor.optionalLong(column: String): Long? =
         getColumnIndexOrThrow(column).let { index -> if (isNull(index)) null else getLong(index) }
 
-    private fun missing(column: String): PendingDiscardIdentity? {
-        DiagnosticLog.w(TAG, "identity column $column missing or invalid")
+    /** One row per episode names both the URI and the column (it used to log twice per read). */
+    private fun missing(uri: String, column: String): PendingDiscardIdentity? {
+        val reason = "unavailable: required identity column $column missing or invalid"
+        gatedWarn(uri, reason, "identity read $reason for $uri")
         return null
     }
 
@@ -700,6 +753,7 @@ internal class MediaStorePendingDiscardIdentityReader(
 
     companion object {
         private const val TAG = "PendingIdentityReader"
+        private val PROCESS_IDENTITY_READ_WARNING_GATE = IdentityReadWarningGate()
         private val IDENTITY_PROJECTION = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.GENERATION_ADDED,
