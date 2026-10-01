@@ -1759,8 +1759,12 @@ check(
 )
 completed_plans = []
 malformed_completed_plans = []
-plan_identity_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})-rpf-cycle(\d+)\.md$")
-for plan_path in (ROOT / "docs/plans").glob("*.md"):
+plan_identity_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})-rp[fl]-cycle(\d+)\.md$")
+# Finished plans are archived under docs/plans/archive/; they remain the completed-plan history.
+for plan_path in [
+    *(ROOT / "docs/plans").glob("*.md"),
+    *(ROOT / "docs/plans/archive").glob("*.md"),
+]:
     plan_text = plan_path.read_text(encoding="utf-8")
     if re.search(r"^Status:\s*complete\b", plan_text, re.M):
         match = plan_identity_pattern.fullmatch(plan_path.name)
