@@ -5673,15 +5673,7 @@ class CameraEngine internal constructor(
                 pending.allocation,
                 pending.captureId,
             )
-            reportStatus(
-                if (pending.completionMarkerDurable) {
-                    CameraStatusMessage.DNG_SAVE_DELAYED.status()
-                } else {
-                    CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(
-                        CameraStatusArgument.Text("DNG"),
-                    )
-                },
-            )
+            reportStatus(retainedDngStatus(pending.completionMarkerDurable))
         }
         fun dispatchCompletedDng(pending: PendingDngPublication) {
             stillPublicationDispatcher.dispatchRecoverable(
@@ -5791,9 +5783,13 @@ class CameraEngine internal constructor(
                                     dngPublishQueued = submitIncompleteDngCleanup()
                                 }
                                 is DngWriteResult.Failed -> {
+                                    // Bytes complete, marker threw: the private row is a whole DNG
+                                    // that launch recovery publishes. Retain it like marker
+                                    // exhaustion (tombstoned family → durable discard) and say
+                                    // "saved, pending recovery", not "save failed" (AGG-31).
                                     rejectedDngCleanup?.cancel()
-                                    Log.e("CameraEngine", "DNG write failed", write.failure)
-                                    reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
+                                    Log.e("CameraEngine", "DNG completion marker failed", write.failure)
+                                    retainCompletedDngForRecovery(write.publication)
                                 }
                             }
                         } else {
@@ -8558,6 +8554,17 @@ internal fun dualOpenCandidateInstallAdmitted(
     paused: Boolean,
     recording: Boolean,
 ): Boolean = !quarantined && glInputMayProceed && ownsTransaction && !paused && !recording
+
+/**
+ * Status for a structurally complete DNG kept private for launch recovery: a durable COMPLETE
+ * marker means only publication is delayed; without one, recovery's structural probe adopts it.
+ */
+internal fun retainedDngStatus(completionMarkerDurable: Boolean): CameraStatus =
+    if (completionMarkerDurable) {
+        CameraStatusMessage.DNG_SAVE_DELAYED.status()
+    } else {
+        CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(CameraStatusArgument.Text("DNG"))
+    }
 
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
 internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =

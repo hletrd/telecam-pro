@@ -109,7 +109,16 @@ internal sealed interface DngWriteResult {
         val allocation: PendingOutputAllocation,
         val failure: Throwable,
     ) : DngWriteResult
-    data class Failed(val failure: Throwable) : DngWriteResult
+    /**
+     * The bytes are COMPLETE (the stream closed) but the durable COMPLETE marker threw. The row is
+     * a structurally complete private DNG that launch recovery adopts, so it carries the same
+     * publication packet as marker exhaustion — never a bare failure the engine would report as
+     * "save failed" over a file the next launch publishes (RPL cycle 2, AGG-31).
+     */
+    data class Failed(
+        val publication: PendingDngPublication,
+        val failure: Throwable,
+    ) : DngWriteResult
 }
 
 /**
@@ -401,7 +410,16 @@ internal class StillCapturePipeline(
             return if (!outputComplete) {
                 DngWriteResult.Rejected(allocation, t)
             } else {
-                DngWriteResult.Failed(t)
+                DngWriteResult.Failed(
+                    PendingDngPublication(
+                        allocation = allocation,
+                        captureId = spec.captureId,
+                        familyKey = spec.familyKey,
+                        // The marker attempt is what threw, so durability is unproven.
+                        completionMarkerDurable = false,
+                    ),
+                    t,
+                )
             }
         }
     }

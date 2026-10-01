@@ -142,7 +142,9 @@ class ImmediateDiscardIdentityTest {
         val failure = IllegalStateException("failed")
         assertEquals(pending, DngWriteResult.Complete(pending).publication)
         assertEquals(allocation, DngWriteResult.Rejected(allocation, failure).allocation)
-        assertEquals(failure, DngWriteResult.Failed(failure).failure)
+        val markerFailed = DngWriteResult.Failed(pending.copy(completionMarkerDurable = false), failure)
+        assertEquals(failure, markerFailed.failure)
+        assertEquals(allocation, markerFailed.publication.allocation)
 
         var deletedAllocation: PendingOutputAllocation? = null
         var uriDeleteCalled = false
