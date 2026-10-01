@@ -999,6 +999,12 @@ class CameraViewModel private constructor(
                         } else {
                             it.photoFormats.copy(dngRaw = liveRawWanted).withDefaultIfEmpty()
                         },
+                        // The restored optics are NOT the bank any more (AGG4-10): a failed MR
+                        // recall lit its slot on the optimistic apply, and leaving it lit claimed
+                        // the camera matched a preset whose route was just refused. A rollback
+                        // restores a BASELINE, not a bank: at worst this drops a still-true
+                        // indicator, never shows a false one.
+                        activeMemorySlot = null,
                     )
                 }
                 // The same DNG mirror for the pre-inventory REQUEST. Left stale, the rolled-back

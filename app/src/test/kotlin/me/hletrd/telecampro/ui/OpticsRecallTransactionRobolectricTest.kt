@@ -234,6 +234,23 @@ class OpticsRecallTransactionRobolectricTest {
         assertEquals(false, requireNotNull(vm.recallMemorySlot(MemorySlot.MR2)).recordAudioOffByDenial)
     }
 
+    // AGG4-10: a failed recall lit its slot on the optimistic apply; the rollback restores a
+    // baseline that is not the bank, so the indicator must go out with it.
+    @Test
+    fun `owned recall rollback clears the active memory slot`() {
+        saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+
+        vm.onRecallMemorySlot(MemorySlot.MR1)
+        assertEquals(MemorySlot.MR1, vm.state.value.activeMemorySlot)
+        invokeRollback(engine, currentRollbackAttempt(engine))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertNull(vm.state.value.activeMemorySlot)
+    }
+
     @Test
     fun `synchronous recording refusal leaves declaration and Engine packet unchanged`() {
         saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
