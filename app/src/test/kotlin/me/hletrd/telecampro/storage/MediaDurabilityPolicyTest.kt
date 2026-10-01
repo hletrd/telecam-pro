@@ -28,6 +28,34 @@ class MediaDurabilityPolicyTest {
     }
 
     @Test
+    fun `retry backoff preserves the interrupt flag and stops the retry loop`() {
+        // AGG-30: runCatching { Thread.sleep } swallowed InterruptedException AND cleared the flag,
+        // so a shutdownNow() could not stop a retry loop mid-backoff. Every outcome of stopping is
+        // fail-closed (the row stays REGISTERED / retained for launch recovery).
+        val worker = Thread.currentThread()
+        try {
+            assertTrue("an uninterrupted sleep completes", sleepPreservingInterrupt(1L))
+
+            worker.interrupt()
+            assertFalse("an interrupted sleep reports it", sleepPreservingInterrupt(10_000L))
+            assertTrue("and the flag survives for the owner", worker.isInterrupted)
+
+            var calls = 0
+            val marker = markCompletionWithRetry(
+                maxAttempts = 3,
+                commit = { calls++; false },
+                backoff = { sleepPreservingInterrupt(10_000L) },
+            )
+            assertFalse(marker.durable)
+            assertEquals("no further commit after an interrupted backoff", 1, calls)
+            assertEquals(1, marker.attempts)
+            assertTrue(worker.isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
     fun `HEIF primary item with a supported in-mdat extent is structurally valid`() {
         assertEquals(PendingProbe.VALID, probe(locatedHeif()))
         assertEquals(

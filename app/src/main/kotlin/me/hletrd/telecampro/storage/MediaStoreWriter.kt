@@ -643,9 +643,7 @@ object MediaStoreWriter {
                     PENDING_COMPLETE,
                 )
             },
-            backoff = { attempt ->
-                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
-            },
+            backoff = { attempt -> sleepPreservingInterrupt(COMPLETION_MARK_BACKOFF_MS * attempt) },
         )
 
     /**
@@ -667,7 +665,8 @@ object MediaStoreWriter {
         while (committed == null && zeroBased < COMPLETION_MARK_ATTEMPTS) {
             committed = discardJournal.mark(allocation)
             if (committed == null && zeroBased < COMPLETION_MARK_ATTEMPTS - 1) {
-                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * (zeroBased + 1)) }
+                // Interrupted = owner retired: stop retrying; UNRESOLVED below is the fail-closed answer.
+                if (!sleepPreservingInterrupt(COMPLETION_MARK_BACKOFF_MS * (zeroBased + 1))) break
             }
             zeroBased += 1
         }
@@ -750,8 +749,11 @@ object MediaStoreWriter {
             if (durable) return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
             if (attempt + 1 < COMPLETION_MARK_ATTEMPTS) {
                 // Preference I/O is serialized for capacity, but retry delay never owns global
-                // metadata authority and cannot stall another family's durable mark.
-                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * (attempt + 1)) }
+                // metadata authority and cannot stall another family's durable mark. An interrupted
+                // backoff (owner retired) stops retrying with the fail-closed UNAVAILABLE answer.
+                if (!sleepPreservingInterrupt(COMPLETION_MARK_BACKOFF_MS * (attempt + 1))) {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.UNAVAILABLE
+                }
             }
         }
         FamilyDeletionMarkResult.UNAVAILABLE
@@ -1089,8 +1091,13 @@ object MediaStoreWriter {
                 storageWarningGate.clear("publish|$uri")
                 return@withLookupAuthority true
             }
-            if (attempt < PUBLISH_ATTEMPTS - 1) {
-                runCatching { Thread.sleep(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1)) }
+            if (attempt < PUBLISH_ATTEMPTS - 1 &&
+                !sleepPreservingInterrupt(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1))
+            ) {
+                // Owner retired mid-backoff (AGG-30): stop retrying; the row stays retained for
+                // recovery exactly as on exhaustion, and the cause still gets its gated row.
+                warnStorageOnce("publish", uri, "publish interrupted after ${attempt + 1} attempts for $uri", lastFailure)
+                return@withLookupAuthority false
             }
         }
         // Exhaustion only — never per attempt. The row is retained for recovery either way; this
@@ -2349,9 +2356,31 @@ internal fun markCompletionWithRetry(
         if (runCatching(commit).getOrDefault(false)) {
             return CompletionMarkResult(durable = true, attempts = attempt)
         }
-        if (attempt < maxAttempts) backoff(attempt)
+        if (attempt < maxAttempts) {
+            backoff(attempt)
+            // An interrupted backoff means the owning executor is being retired (AGG-30): stop
+            // retrying. Non-durable is the fail-closed answer — the row stays REGISTERED and private.
+            if (Thread.currentThread().isInterrupted) {
+                return CompletionMarkResult(durable = false, attempts = attempt)
+            }
+        }
     }
     return CompletionMarkResult(durable = false, attempts = maxAttempts)
+}
+
+/**
+ * Retry backoff that keeps the interrupt contract (AGG-30 / D9). `runCatching { Thread.sleep() }`
+ * caught the InterruptedException and thereby CLEARED the thread's interrupt status, so a
+ * `shutdownNow()` on these executors could not stop a retry loop mid-backoff: it went on doing
+ * provider/SQLite work after its owner was retired. This restores the flag and returns false so the
+ * caller can stop retrying, matching `CameraTeardownTerminal` / `RecordingTeardownCoordinator`.
+ */
+internal fun sleepPreservingInterrupt(ms: Long): Boolean = try {
+    Thread.sleep(ms)
+    true
+} catch (_: InterruptedException) {
+    Thread.currentThread().interrupt()
+    false
 }
 
 internal enum class RecoveryFailureClass { QUERY, PROBE, PUBLISH, DELETE }
