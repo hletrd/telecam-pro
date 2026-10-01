@@ -1027,24 +1027,40 @@ object MediaStoreWriter {
      */
     private val storageWarningGate = IdentityReadWarningGate()
 
-    private fun warnStorageOnce(site: String, uri: Uri, message: String, failure: Throwable?) {
+    private fun warnStorageOnce(
+        site: String,
+        uri: Uri,
+        message: String,
+        failure: Throwable?,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ) {
         val reason = failure?.javaClass?.name ?: "none"
-        if (storageWarningGate.shouldLog("$site|$uri", reason)) DiagnosticLog.w(TAG, message, failure)
+        if (storageWarningGate.shouldLog("$site|$uri", reason)) warn(message, failure)
     }
 
     // Both helpers sit on the same save chain as the insert, whose silent exits were fixed on
     // 2026-09-09; FileNotFound/Security/IllegalState (row deleted, volume unmounted) here turned into
     // HEIF/JPEG/REC failure toasts with no app log line. One reserved row per failing URI and cause.
-    fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
+    // [warn] defaults to the process reserved door; tests bind fresh budgets for exact counts (TE2-2).
+    fun openParcelFd(
+        context: Context,
+        uri: Uri,
+        mode: String = "rw",
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }
             .onSuccess { storageWarningGate.clear("open $mode|$uri") }
-            .onFailure { warnStorageOnce("open $mode", uri, "open $mode failed for $uri", it) }
+            .onFailure { warnStorageOnce("open $mode", uri, "open $mode failed for $uri", it, warn) }
             .getOrNull()
 
-    fun openOutputStream(context: Context, uri: Uri): OutputStream? =
+    fun openOutputStream(
+        context: Context,
+        uri: Uri,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): OutputStream? =
         runCatching { context.contentResolver.openOutputStream(uri) }
             .onSuccess { storageWarningGate.clear("open output|$uri") }
-            .onFailure { warnStorageOnce("open output", uri, "open output stream failed for $uri", it) }
+            .onFailure { warnStorageOnce("open output", uri, "open output stream failed for $uri", it, warn) }
             .getOrNull()
 
     /**
@@ -1064,6 +1080,7 @@ object MediaStoreWriter {
         context: Context,
         uri: Uri,
         discardJournal: PendingDiscardJournal,
+        warn: (String, Throwable?) -> Unit = processWarn,
     ): Boolean = discardJournal.withLookupAuthority(uri.toString()) { lookup ->
         if (lookup != DiscardJournalLookup.ABSENT) return@withLookupAuthority false
         val preferenceState = pendingPreferenceState(context, uri)
@@ -1096,7 +1113,7 @@ object MediaStoreWriter {
             ) {
                 // Owner retired mid-backoff (AGG-30): stop retrying; the row stays retained for
                 // recovery exactly as on exhaustion, and the cause still gets its gated row.
-                warnStorageOnce("publish", uri, "publish interrupted after ${attempt + 1} attempts for $uri", lastFailure)
+                warnStorageOnce("publish", uri, "publish interrupted after ${attempt + 1} attempts for $uri", lastFailure, warn)
                 return@withLookupAuthority false
             }
         }
@@ -1104,11 +1121,14 @@ object MediaStoreWriter {
         // row records WHY (a throwing provider policy vs. a vanished/foreign row matching 0 rows).
         // Change-gated per URI: launch recovery re-runs the same row's publish on each bounded
         // page retry, which used to spend one reserved row per retry (AGG2-29).
-        warnStorageOnce("publish", uri, "publish exhausted $PUBLISH_ATTEMPTS attempts for $uri", lastFailure)
+        warnStorageOnce("publish", uri, "publish exhausted $PUBLISH_ATTEMPTS attempts for $uri", lastFailure, warn)
         false
     }
 
     private const val PUBLISH_ATTEMPTS = 3
+    private val processWarn: (String, Throwable?) -> Unit = { message, failure ->
+        DiagnosticLog.w(TAG, message, failure)
+    }
     private const val PUBLISH_RETRY_BACKOFF_MS = 50L
 
     /**

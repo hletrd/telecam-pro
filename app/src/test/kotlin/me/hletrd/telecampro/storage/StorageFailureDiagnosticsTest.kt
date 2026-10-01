@@ -10,8 +10,9 @@ import android.os.ParcelFileDescriptor
 import androidx.test.core.app.ApplicationProvider
 import java.io.FileNotFoundException
 import java.util.UUID
+import me.hletrd.telecampro.camera.DiagnosticLogDoors
+import me.hletrd.telecampro.camera.ProcessDiagnosticLogBudget
 import me.hletrd.telecampro.camera.RESERVED_DIAGNOSTIC_ROW_BUDGET
-import me.hletrd.telecampro.camera.processReservedDiagnosticLogBudget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -25,8 +26,10 @@ import org.robolectric.shadows.ShadowLog
 /**
  * "A save that fails with no app log line is the signature of this class of defect." The provider
  * open helpers and publish exhaustion used to swallow their cause. Each failure EVENT now spends
- * exactly one reserved row (never one per retry). The reserved owner is process-global, so other
- * host tests may already have spent it: the assertions are relational to its remaining capacity.
+ * exactly one reserved row (never one per retry). Each test binds FRESH budgets through the
+ * writer's `warn` seam, so the counts are exact and unconditional: the process-global reserved owner
+ * may already be spent by other classes in the shared sandbox, and its daemon retry threads could
+ * race a relational assertion (TE2-2).
  */
 @RunWith(RobolectricTestRunner::class)
 class StorageFailureDiagnosticsTest {
@@ -35,17 +38,31 @@ class StorageFailureDiagnosticsTest {
     @Test
     fun `a failed provider open logs its cause once`() {
         val uri = register()
-        val budgetOpen = reservedBudgetOpen()
+        val reserved = ProcessDiagnosticLogBudget(10)
+        val warn = warnThrough(reserved)
 
-        assertNull(MediaStoreWriter.openParcelFd(context, uri, "rw"))
-        assertNull(MediaStoreWriter.openOutputStream(context, uri))
+        assertNull(MediaStoreWriter.openParcelFd(context, uri, "rw", warn))
+        assertNull(MediaStoreWriter.openOutputStream(context, uri, warn))
 
         val rows = rowsFor(uri)
-        assertTrue(rows.size <= 2)
-        if (budgetOpen) {
-            assertEquals(2, rows.size)
-            rows.forEach { assertTrue(it.throwable is FileNotFoundException) }
-        }
+        assertEquals(2, rows.size)
+        assertEquals(2, reserved.usedRows())
+        rows.forEach { assertTrue(it.throwable is FileNotFoundException) }
+    }
+
+    @Test
+    fun `a spent reserved budget suppresses the row instead of overrunning the quota`() {
+        val uri = register()
+        val reserved = ProcessDiagnosticLogBudget(1)
+        val warn = warnThrough(reserved)
+
+        assertNull(MediaStoreWriter.openParcelFd(context, uri, "rw", warn))
+        assertNull(MediaStoreWriter.openOutputStream(context, uri, warn))
+
+        val rows = rowsFor(uri)
+        assertEquals(1, rows.size)
+        assertTrue(rows.single().msg.startsWith("open rw failed"))
+        assertEquals(1, reserved.usedRows())
     }
 
     @Test
@@ -57,16 +74,16 @@ class StorageFailureDiagnosticsTest {
             databaseName = "publish-diag-$suffix.db",
             legacyPreferences = context.getSharedPreferences("publish-diag-$suffix", Context.MODE_PRIVATE),
         )
-        val budgetOpen = reservedBudgetOpen()
+        val reserved = ProcessDiagnosticLogBudget(10)
 
-        assertFalse(MediaStoreWriter.publish(context, uri, journal))
+        assertFalse(MediaStoreWriter.publish(context, uri, journal, warnThrough(reserved)))
 
-        val rows = rowsFor(uri).filter { it.msg.startsWith("publish exhausted") }
-        assertTrue(rows.size <= 1)
-        if (budgetOpen) {
-            assertEquals(1, rows.size)
-            assertTrue(rows.single().throwable?.message.orEmpty().contains("matched 0 rows"))
-        }
+        val rows = rowsFor(uri)
+        assertEquals(1, rows.size)
+        assertTrue(rows.single().msg.startsWith("publish exhausted"))
+        assertTrue(rows.single().throwable?.message.orEmpty().contains("matched 0 rows"))
+        // Three attempts, one row: exhaustion spends the reserved owner once, never per retry.
+        assertEquals(1, reserved.usedRows())
     }
 
     @Test
@@ -80,25 +97,27 @@ class StorageFailureDiagnosticsTest {
             databaseName = "publish-gate-$suffix.db",
             legacyPreferences = context.getSharedPreferences("publish-gate-$suffix", Context.MODE_PRIVATE),
         )
-        val budgetOpen = processReservedDiagnosticLogBudget.usedRows() + 3 <= RESERVED_DIAGNOSTIC_ROW_BUDGET
+        val reserved = ProcessDiagnosticLogBudget(RESERVED_DIAGNOSTIC_ROW_BUDGET)
+        val warn = warnThrough(reserved)
 
         repeat(4) {
-            assertNull(MediaStoreWriter.openParcelFd(context, uri, "rw"))
-            assertNull(MediaStoreWriter.openOutputStream(context, uri))
+            assertNull(MediaStoreWriter.openParcelFd(context, uri, "rw", warn))
+            assertNull(MediaStoreWriter.openOutputStream(context, uri, warn))
         }
-        repeat(2) { assertFalse(MediaStoreWriter.publish(context, uri, journal)) }
+        repeat(2) { assertFalse(MediaStoreWriter.publish(context, uri, journal, warn)) }
 
         val rows = rowsFor(uri)
-        assertTrue("rows=${rows.map { it.msg }}", rows.size <= 3)
-        if (budgetOpen) {
-            assertEquals(1, rows.count { it.msg.startsWith("open rw failed") })
-            assertEquals(1, rows.count { it.msg.startsWith("open output stream failed") })
-            assertEquals(1, rows.count { it.msg.startsWith("publish exhausted") })
-        }
+        assertEquals("rows=${rows.map { it.msg }}", 3, rows.size)
+        assertEquals(1, rows.count { it.msg.startsWith("open rw failed") })
+        assertEquals(1, rows.count { it.msg.startsWith("open output stream failed") })
+        assertEquals(1, rows.count { it.msg.startsWith("publish exhausted") })
+        assertEquals(3, reserved.usedRows())
     }
 
-    private fun reservedBudgetOpen(): Boolean =
-        processReservedDiagnosticLogBudget.usedRows() + 2 <= RESERVED_DIAGNOSTIC_ROW_BUDGET
+    private fun warnThrough(reserved: ProcessDiagnosticLogBudget): (String, Throwable?) -> Unit {
+        val doors = DiagnosticLogDoors(recurring = ProcessDiagnosticLogBudget(1), reserved = reserved)
+        return { message, failure -> doors.w("MediaStoreWriter", message, failure) }
+    }
 
     private fun rowsFor(uri: Uri): List<ShadowLog.LogItem> =
         ShadowLog.getLogsForTag("MediaStoreWriter").filter { it.msg.contains(uri.toString()) }
