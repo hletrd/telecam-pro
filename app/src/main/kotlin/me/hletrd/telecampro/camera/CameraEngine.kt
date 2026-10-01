@@ -2962,6 +2962,7 @@ class CameraEngine internal constructor(
                 controllerAvailable = controller != null,
                 beforeReady = before.ready,
                 readyControllerMatches = before.readyController === controller,
+                videoStreamSizeChanges = recallVideoStreamSizeChanges(enabledVideo),
             )
             if (structuralChange) {
                 reconfigureCamera(id, transaction)
@@ -3000,6 +3001,21 @@ class CameraEngine internal constructor(
             }
         }
         return true
+    }
+
+    /**
+     * Whether a same-camera recall's Video packet names a different stream size than the session is
+     * streaming (AGG4-8). The recall writes only [requestedVideoSize]; nothing on the fast commit
+     * re-picks [videoSize] or reconfigures the stream, so a 1080p bank recalled over a 4K Video
+     * session showed 1080p while the session — and every file REC froze from it — stayed 4K.
+     * [chooseVideoSize] is the SAME resolution the reconfigure path applies, so this asks exactly
+     * "would a reopen configure something else?". Photo keeps its 4:3 full-field stream whatever
+     * the recalled video size is, so only a Video target can change the stream.
+     */
+    private fun recallVideoStreamSizeChanges(enabledVideo: Boolean): Boolean {
+        if (!enabledVideo) return false
+        val current = selection ?: return false
+        return chooseVideoSize(current) != videoSize
     }
 
     /**
@@ -8680,6 +8696,8 @@ internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendin
  * Whether a recalled optics packet changes the Camera2 route/session contract. A non-TELE Photo
  * lens band is a unified-zoom preset on one logical camera, so the lens enum itself is deliberately
  * absent: same-id recalls can commit controls through the request fast path without a blackout.
+ * [videoStreamSizeChanges] is part of that contract too: output dimensions are configured stream
+ * state, so a same-camera Video recall of a different resolution must reopen (AGG4-8).
  */
 internal fun resolvedOpticsRequiresReconfigure(
     beforeVideo: Boolean,
@@ -8691,10 +8709,12 @@ internal fun resolvedOpticsRequiresReconfigure(
     controllerAvailable: Boolean,
     beforeReady: Boolean,
     readyControllerMatches: Boolean,
+    videoStreamSizeChanges: Boolean,
 ): Boolean = beforeVideo != targetVideo ||
     beforeTeleconverter != targetTeleconverter ||
     beforeCameraId == null || beforeCameraId != targetCameraId ||
-    !controllerAvailable || !beforeReady || !readyControllerMatches
+    !controllerAvailable || !beforeReady || !readyControllerMatches ||
+    videoStreamSizeChanges
 
 /** Interval shooting is photo-owned and is cancelled only on the Photo -> Video edge. */
 internal fun captureModeTransitionStopsTimelapse(currentVideo: Boolean, targetVideo: Boolean): Boolean =

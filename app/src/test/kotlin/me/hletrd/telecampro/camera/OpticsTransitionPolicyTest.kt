@@ -88,6 +88,7 @@ class OpticsTransitionPolicyTest {
                 controllerAvailable = true,
                 beforeReady = true,
                 readyControllerMatches = true,
+                videoStreamSizeChanges = false,
             ),
         )
     }
@@ -104,6 +105,7 @@ class OpticsTransitionPolicyTest {
             controller: Boolean = true,
             ready: Boolean = true,
             owner: Boolean = true,
+            streamSize: Boolean = false,
         ) = resolvedOpticsRequiresReconfigure(
             beforeVideo,
             targetVideo,
@@ -114,6 +116,7 @@ class OpticsTransitionPolicyTest {
             controller,
             ready,
             owner,
+            streamSize,
         )
 
         assertTrue(requires(targetVideo = true))
@@ -123,5 +126,7 @@ class OpticsTransitionPolicyTest {
         assertTrue(requires(controller = false))
         assertTrue(requires(ready = false))
         assertTrue(requires(owner = false))
+        // AGG4-8: a same-camera Video recall of a different resolution is a stream change.
+        assertTrue(requires(beforeVideo = true, targetVideo = true, streamSize = true))
     }
 }

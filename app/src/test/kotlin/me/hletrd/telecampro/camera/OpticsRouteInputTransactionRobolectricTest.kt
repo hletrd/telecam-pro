@@ -219,6 +219,76 @@ class OpticsRouteInputTransactionRobolectricTest {
         assertEquals(null, camera.currentRequestedVideoSize())
     }
 
+    /**
+     * AGG4-8: a same-camera Video recall whose bank differs ONLY in resolution must be classified
+     * as a stream change (reconfigure), never the fast commit that keeps streaming the old size.
+     */
+    @Test
+    fun `same-camera video recall of another resolution is a stream change`() {
+        val camera = acceptedPma110Engine()
+        val uhd = android.util.Size(3840, 2160)
+        val fhd = android.util.Size(1920, 1080)
+        setField(camera, "selection", TeleSelection(logicalId = "2", physicalId = null, equivFocalMm = 23f))
+        setField(camera, "videoSize", uhd)
+        setField(camera, "caps", videoCaps(listOf(uhd, fhd)))
+        setField(camera, "requestedVideoSize", fhd)
+
+        assertTrue(recallStreamSizeChanges(camera, enabledVideo = true))
+        assertFalse("Photo keeps its 4:3 stream", recallStreamSizeChanges(camera, enabledVideo = false))
+        setField(camera, "requestedVideoSize", uhd)
+        assertFalse("same size keeps the fast commit", recallStreamSizeChanges(camera, enabledVideo = true))
+    }
+
+    private fun recallStreamSizeChanges(camera: CameraEngine, enabledVideo: Boolean): Boolean =
+        invoke(camera, "recallVideoStreamSizeChanges", enabledVideo) as Boolean
+
+    private fun videoCaps(videoSizes: List<android.util.Size>) = CameraCaps(
+        logicalId = "2",
+        physicalId = null,
+        sensorOrientation = 90,
+        minFocusDistanceDiopters = 0f,
+        hyperfocalDiopters = 0f,
+        isoRange = android.util.Range(100, 100),
+        exposureTimeRange = android.util.Range(1_000L, 1_000L),
+        maxFrameDurationNs = 1_000L,
+        evRange = android.util.Range(0, 0),
+        evStep = android.util.Rational(1, 3),
+        focalLengthsMm = floatArrayOf(4f),
+        equivalentFocalMm = 23f,
+        lensFocalLengthMm = 4f,
+        lensApertureF = 2f,
+        nativeFocalInImageWidths = 1f,
+        supportsManualSensor = false,
+        supportsManualPostProcessing = false,
+        supportsRaw = false,
+        lensFacingFront = false,
+        rawSize = null,
+        supportedDynamicRangeProfiles = emptySet(),
+        largestJpegSize = android.util.Size(4000, 3000),
+        hiResJpegSize = null,
+        hiResUsesMaxResolutionMode = false,
+        largestYuvSize = android.util.Size(4000, 3000),
+        timestampSource = 0,
+        isLogicalMultiCamera = false,
+        oisAvailable = false,
+        flashAvailable = false,
+        zoomRatioRange = android.util.Range(1f, 10f),
+        videoStabModes = intArrayOf(0),
+        afModes = intArrayOf(0),
+        awbModes = intArrayOf(1),
+        aeModes = intArrayOf(1),
+        maxAeRegions = 0,
+        maxAfRegions = 0,
+        antibandingModes = intArrayOf(0),
+        effectModes = intArrayOf(0),
+        edgeModes = intArrayOf(0),
+        noiseReductionModes = intArrayOf(0),
+        availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+        availableVideoSizes = videoSizes,
+        openGateVideoSizes = listOf(android.util.Size(1440, 1080)),
+        highSpeedConfigs = emptyMap(),
+    )
+
     // ---- fixtures ----
 
     private fun acceptedPma110Engine(): CameraEngine {
