@@ -674,9 +674,12 @@ class VideoRecorder(private val context: Context) {
             .setChannelMask(channelMask)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .build()
+        // startAudio() runs only from start() under `doAudio = recordAudio && hasRecordPermission()`,
+        // the dominating RECORD_AUDIO guard; lint cannot see it through this function boundary and
+        // the nativeOperation lambda, so the suppression stays on this one declaration (AGG4-82).
+        @Suppress("MissingPermission")
         val recordBuild = runCatching {
             nativeOperation {
-            @Suppress("MissingPermission")
                 AudioRecord.Builder()
                     .setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
                     .setAudioFormat(audioFormat)
