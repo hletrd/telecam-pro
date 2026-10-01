@@ -1008,7 +1008,21 @@ class CameraEngine internal constructor(
         requestedVideoSize = restored.requestedVideoSize
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
-        if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted
+        // A direct DNG write survives only while it does not move the RESTORED route. "Direct" was
+        // judged in the mode current at WRITE time (Video, FRONT, TELE), so a failed recall of a
+        // Video+DNG bank from Photo/DNG-off restored the logical Photo session with DNG still on:
+        // every shot dropped DNG and the band predicate read the unified wire zoom as lens-local
+        // (RPL cycle 2, AGG2-1). activeCameraRoute was restored above, so the profile is the
+        // restored route's.
+        rawWanted = rollbackRawWanted(
+            current = rawWanted,
+            baseline = before.rawWanted,
+            directWriteSinceBaseline = rawWantedDirectWrites != before.rawWantedDirectWrites,
+            restoredVideo = restored.mode == CaptureMode.VIDEO,
+            restoredTeleconverter = restored.teleconverter,
+            restoredRoute = restored.route,
+            rawForcesStandalone = activeDeviceProfile().rawRequiresStandalone,
+        )
         val opticsPublication = OpticsRollbackPublication(
             mode = restored.mode,
             transfer = restoredVideoPipeline.requestedTransfer,
@@ -8377,6 +8391,47 @@ internal fun rollbackOpticsState(
     snapshot: OpticsIntentState,
 ): OpticsIntentState? = snapshot.takeIf {
     reconfigurationOwnsGeneration(currentGeneration, expectedGeneration)
+}
+
+/**
+ * Whether moving the DNG intent from [from] to [to] changes the camera a REAR route resolves to.
+ * Only the non-TELE rear route asks the RAW law: TELE always pins the standalone 3× (whose session
+ * carries RAW by route, not by intent), and FRONT/EXTERNAL keep their one camera whatever DNG says.
+ */
+internal fun dngIntentChangesRearRoute(
+    video: Boolean,
+    teleconverter: Boolean,
+    from: Boolean,
+    to: Boolean,
+    rawForcesStandalone: Boolean,
+): Boolean = !teleconverter &&
+    standaloneRouteWanted(video, from, rawForcesStandalone) !=
+    standaloneRouteWanted(video, to, rawForcesStandalone)
+
+/**
+ * The DNG intent a rollback restores. A newer DIRECT write (one that owned no transaction) is an
+ * operator choice the failed door never saw, so it survives — but only while it leaves the
+ * restored route's standalone answer unchanged. Otherwise keeping it would pair the restored
+ * session with an intent that names a different camera and zoom scale (AGG2-1).
+ */
+internal fun rollbackRawWanted(
+    current: Boolean,
+    baseline: Boolean,
+    directWriteSinceBaseline: Boolean,
+    restoredVideo: Boolean,
+    restoredTeleconverter: Boolean,
+    restoredRoute: CameraRoute,
+    rawForcesStandalone: Boolean,
+): Boolean {
+    if (!directWriteSinceBaseline) return baseline
+    val movesRestoredRoute = restoredRoute == CameraRoute.BACK && dngIntentChangesRearRoute(
+        video = restoredVideo,
+        teleconverter = restoredTeleconverter,
+        from = baseline,
+        to = current,
+        rawForcesStandalone = rawForcesStandalone,
+    )
+    return if (movesRestoredRoute) baseline else current
 }
 
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */

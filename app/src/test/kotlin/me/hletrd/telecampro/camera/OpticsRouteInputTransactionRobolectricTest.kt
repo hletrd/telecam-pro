@@ -42,6 +42,36 @@ class OpticsRouteInputTransactionRobolectricTest {
         assertEquals(LensChoice.MAIN, field(camera, "lensChoice"))
     }
 
+    @Test
+    fun `rollback drops a direct DNG write that would move the restored Photo route`() {
+        val camera = acceptedPma110Engine()
+        // In-flight Video recall: while it is pending, DNG on is a DIRECT write (Video keeps its
+        // standalone lens whatever DNG says), so the counter moves.
+        recallPhoto(camera, LensChoice.MAIN, zoom = 1f, rawWanted = false, video = true)
+        camera.setRawWanted(true)
+        assertTrue(getBoolean(camera, "rawWanted"))
+
+        forceOwnedRollback(camera)
+
+        // Restored Photo is logical: keeping DNG on would name the standalone route over it.
+        assertFalse(getBoolean(camera, "videoMode"))
+        assertFalse(getBoolean(camera, "rawWanted"))
+        assertTrue(lensBandFollowsZoom(camera))
+    }
+
+    @Test
+    fun `rollback keeps a direct DNG write that leaves the restored Video route unchanged`() {
+        val camera = acceptedPma110Engine()
+        setBoolean(camera, "videoMode", true)
+        recallPhoto(camera, LensChoice.MAIN, zoom = 1f, rawWanted = false, video = true)
+        camera.setRawWanted(true)
+
+        forceOwnedRollback(camera)
+
+        assertTrue(getBoolean(camera, "videoMode"))
+        assertTrue("a newer operator choice survives an older failed door", getBoolean(camera, "rawWanted"))
+    }
+
     // ---- fixtures ----
 
     private fun acceptedPma110Engine(): CameraEngine {
@@ -60,11 +90,17 @@ class OpticsRouteInputTransactionRobolectricTest {
         return camera
     }
 
-    private fun recallPhoto(camera: CameraEngine, lens: LensChoice, zoom: Float, rawWanted: Boolean) {
+    private fun recallPhoto(
+        camera: CameraEngine,
+        lens: LensChoice,
+        zoom: Float,
+        rawWanted: Boolean,
+        video: Boolean = false,
+    ) {
         val declaration = field(camera, "teleconverterDeclaration") as TeleconverterDeclaration
         assertTrue(
             camera.setResolvedOptics(
-                enabledVideo = false,
+                enabledVideo = video,
                 resolvedLens = lens,
                 resolvedTeleconverter = false,
                 resolvedDeclaration = declaration,
