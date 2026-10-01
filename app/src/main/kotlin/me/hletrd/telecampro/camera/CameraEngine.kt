@@ -1396,10 +1396,14 @@ class CameraEngine internal constructor(
     /**
      * Retained beside the one-shot publication because the ZOOM SCALE needs it, not just the rail:
      * a standalone route's lens-local divisor is the optical lens the route lands on, which only the
-     * inventory knows. Empty until the enumeration runs — [opticalBaseFor] answers 1× then, i.e.
-     * leave the ratio alone, which is the pre-enumeration behaviour.
+     * inventory knows. Until the enumeration runs it is the SAME placeholder the ViewModel starts
+     * from (`CameraUiState.lensInventory = LensInventory.ALL`), so both sides convert every scale
+     * pair with one divisor (AGG4-25). It used to be empty here (divisor 1×) while the VM used
+     * every preset as optical, so a TC tap or FRONT flip inside that window restored different
+     * framings on the two sides (OSD vs wire). PMA110 enumerates all four presets as optical, so
+     * its post-inventory answer is unchanged.
      */
-    @Volatile private var acceptedOpticalPresets: Set<LensChoice> = emptySet()
+    @Volatile private var acceptedOpticalPresets: Set<LensChoice> = LensInventory.ALL.optical
 
     /**
      * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.

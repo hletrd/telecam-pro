@@ -106,6 +106,28 @@ class FacingRollbackPunchInRobolectricTest {
     }
 
     /**
+     * AGG4-25: before the lens inventory lands, the Engine converts with the SAME optical set the
+     * ViewModel's placeholder state uses, so a TC tap or FRONT flip in that window restores one
+     * framing on both sides.
+     */
+    @Test
+    fun `pre-inventory engine optical set equals the ViewModel placeholder`() {
+        RobolectricEglSentinels.ensure()
+        val camera = CameraEngine(app).also { engine = it }
+
+        assertEquals(CameraUiState().lensInventory.optical, field(camera, "acceptedOpticalPresets"))
+        // The concrete divergence: a TELE3X lens-local 2.0 is unified 6 on both sides.
+        val engineOptical = (field(camera, "acceptedOpticalPresets") as Set<*>)
+            .filterIsInstance<LensChoice>()
+            .toSet()
+        assertEquals(
+            unifiedZoomOf(LensChoice.TELE3X, 2f, true, CameraUiState().lensInventory.optical),
+            unifiedZoomOf(LensChoice.TELE3X, 2f, true, engineOptical),
+            0f,
+        )
+    }
+
+    /**
      * AGG4-15, engine half: a forced inventory retry that re-resolves the ALREADY active FRONT route
      * is discovery; it must not write 1× into the Engine outside any optics transaction.
      */
