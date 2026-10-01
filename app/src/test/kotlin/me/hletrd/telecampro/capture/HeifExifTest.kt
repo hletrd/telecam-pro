@@ -9,6 +9,26 @@ import org.junit.Test
 class HeifExifTest {
 
     @Test
+    fun `an EXIF payload failure yields null once instead of aborting the HEIF save`() {
+        val failures = mutableListOf<Exception>()
+        val cause = java.io.IOException("cache full")
+
+        val payload = bestEffortHeifExif(build = { throw cause }, onFailure = { failures += it })
+
+        assertNull(payload)
+        assertEquals(listOf<Exception>(cause), failures)
+    }
+
+    @Test
+    fun `a composed EXIF payload passes through unchanged`() {
+        val data = byteArrayOf(1, 2, 3)
+        var failed = false
+
+        assertArrayEquals(data, bestEffortHeifExif(build = { data }, onFailure = { failed = true }))
+        assertEquals(false, failed)
+    }
+
+    @Test
     fun `extracts APP1 payload without JPEG marker and length`() {
         val payload = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0, 0, 1, 2, 3)
         val segmentLength = payload.size + 2

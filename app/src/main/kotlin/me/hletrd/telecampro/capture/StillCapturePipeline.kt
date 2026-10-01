@@ -248,7 +248,16 @@ internal class StillCapturePipeline(
      * deleting a valuable take.
      */
     private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
-        val exifData = buildHeifExifData(exifShot, rotated.width, rotated.height)
+        // EXIF is best-effort here exactly as in the JPEG and passthrough lanes: the payload is
+        // composed through a cache temp file, a 1×1 encode and an ExifInterface save, so a full
+        // cache or an I/O hiccup used to abort the whole save (HEIF_SAVE_FAILED, frame lost). The
+        // pixels are already rotated, so a HEIF without EXIF is still an upright, valid photo.
+        val exifData = bestEffortHeifExif(
+            build = { buildHeifExifData(exifShot, rotated.width, rotated.height) },
+            onFailure = { failure ->
+                Log.w("StillCapturePipeline", "HEIF EXIF payload failed; saving without EXIF", failure)
+            },
+        )
         val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("heic"),
@@ -686,4 +695,19 @@ internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = bui
     // the stock app's market name here was both wrong off-device and wrong in principle.
     shot.deviceMake?.let { add(androidx.exifinterface.media.ExifInterface.TAG_MAKE to it) }
     shot.deviceModel?.let { add(androidx.exifinterface.media.ExifInterface.TAG_MODEL to it) }
+}
+
+/**
+ * HEIF EXIF is metadata, not the photograph: a payload that cannot be composed (full cache, I/O
+ * hiccup in the 1×1 seed or ExifInterface save) reports once and yields null so the HEIF is still
+ * written — the JPEG and passthrough lanes already treat EXIF this way.
+ */
+internal inline fun bestEffortHeifExif(
+    build: () -> ByteArray,
+    onFailure: (Exception) -> Unit,
+): ByteArray? = try {
+    build()
+} catch (failure: Exception) {
+    onFailure(failure)
+    null
 }
