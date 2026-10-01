@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.camera
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,5 +43,30 @@ class RouteInputRollbackTest {
         assertTrue(restore(direct = true, route = CameraRoute.FRONT))
         assertTrue(restore(direct = true, route = CameraRoute.EXTERNAL))
         assertTrue("a spec device keeps RAW on the logical route", restore(direct = true, law = false))
+    }
+
+    @Test
+    fun `rollback re-accepts the baseline under its own or the failing door's preflight generation`() {
+        fun restorable(
+            current: Long,
+            preflight: Long? = null,
+            ready: Boolean = true,
+            matches: Boolean = true,
+            paused: Boolean = false,
+        ) = rollbackRestorableSessionGeneration(
+            beforeReady = ready,
+            controllerMatches = matches,
+            paused = paused,
+            beforeSessionGeneration = 7L,
+            currentSessionGeneration = current,
+            preflightSessionGeneration = preflight,
+        )
+        assertEquals(7L, restorable(current = 7L))
+        assertNull("an ordinary rollback after a session bump stays Not-Ready", restorable(current = 8L))
+        assertEquals("the door's own pre-close invalidation retired no camera", 8L, restorable(current = 8L, preflight = 8L))
+        assertNull("a later camera error/pause bump is not restorable", restorable(current = 9L, preflight = 8L))
+        assertNull(restorable(current = 7L, ready = false))
+        assertNull(restorable(current = 7L, matches = false))
+        assertNull(restorable(current = 8L, preflight = 8L, paused = true))
     }
 }

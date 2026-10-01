@@ -72,6 +72,55 @@ class OpticsRouteInputTransactionRobolectricTest {
         assertTrue("a newer operator choice survives an older failed door", getBoolean(camera, "rawWanted"))
     }
 
+    @Test
+    fun `preflight failure after the door's invalidation restores the still-streaming session`() {
+        val camera = acceptedPma110Engine()
+        setBoolean(camera, "previewReady", true)
+        val controller = field(camera, "controller")
+        // A lens/override door: not started, so reconfigureCamera stops before its own
+        // invalidation and the test plays the setupExecutor half explicitly.
+        camera.setCameraOverride("2")
+        val transaction = currentTransaction(camera)
+        val preflight = invoke(camera, "invalidateCameraReady") as Long
+
+        invoke(
+            camera,
+            "rollbackOpticsAfterPreflight",
+            transaction,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+            preflight,
+        )
+
+        assertTrue("shutter/REC must come back over the unchanged camera", getBoolean(camera, "cameraReady"))
+        assertTrue(field(camera, "readyController") === controller)
+        assertEquals(
+            preflight,
+            (field(camera, "cameraSessionGeneration") as AtomicLong).get(),
+        )
+    }
+
+    @Test
+    fun `a session bump after the preflight invalidation keeps the rollback Not-Ready`() {
+        val camera = acceptedPma110Engine()
+        setBoolean(camera, "previewReady", true)
+        camera.setCameraOverride("2")
+        val transaction = currentTransaction(camera)
+        val preflight = invoke(camera, "invalidateCameraReady") as Long
+        // e.g. the outgoing controller's own camera error advanced the session again.
+        invoke(camera, "invalidateCameraReady")
+
+        invoke(
+            camera,
+            "rollbackOpticsAfterPreflight",
+            transaction,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+            preflight,
+        )
+
+        assertFalse(getBoolean(camera, "cameraReady"))
+        assertEquals(null, field(camera, "acceptedCameraSession"))
+    }
+
     // ---- fixtures ----
 
     private fun acceptedPma110Engine(): CameraEngine {
@@ -120,18 +169,29 @@ class OpticsRouteInputTransactionRobolectricTest {
             .apply { isAccessible = true }
             .invoke(camera, false, false, CameraRoute.BACK) as Boolean
 
-    private fun forceOwnedRollback(camera: CameraEngine) {
+    private fun currentTransaction(camera: CameraEngine): Any {
         val generation = (field(camera, "opticsIntentGeneration") as AtomicLong).get()
         val baseline = checkNotNull(field(camera, "opticsRollbackBaseline"))
         val transactionType = CameraEngine::class.java.declaredClasses
             .single { it.simpleName == "OpticsTransaction" }
-        val transaction = transactionType.declaredConstructors.single()
+        return transactionType.declaredConstructors.single()
             .apply { isAccessible = true }
             .newInstance(generation, baseline)
-        CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
-            .apply { isAccessible = true }
-            .invoke(camera, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
     }
+
+    private fun forceOwnedRollback(camera: CameraEngine) {
+        invoke(
+            camera,
+            "rollbackOptics",
+            currentTransaction(camera),
+            CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status(),
+        )
+    }
+
+    private fun invoke(camera: CameraEngine, name: String, vararg args: Any?): Any? =
+        CameraEngine::class.java.declaredMethods.single { it.name == name }
+            .apply { isAccessible = true }
+            .invoke(camera, *args)
 
     private fun field(owner: Any, name: String): Any? = owner.javaClass.getDeclaredField(name)
         .apply { isAccessible = true }

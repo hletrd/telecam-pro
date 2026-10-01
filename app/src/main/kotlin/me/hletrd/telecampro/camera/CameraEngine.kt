@@ -538,7 +538,8 @@ class CameraEngine internal constructor(
         gl.setPunchInCenter(0.5f, 0.5f)
     }
 
-    private fun invalidateCameraReady() {
+    /** Returns the session generation this invalidation produced (see [rollbackOpticsAfterPreflight]). */
+    private fun invalidateCameraReady(): Long {
         cancelDngPreCaptureAllocations()
         val (publication, tapPublication) = synchronized(this) {
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
@@ -554,6 +555,7 @@ class CameraEngine internal constructor(
         }
         tapPublication?.let { onTapFocusChange?.invoke(it) }
         onCameraReadyChange?.invoke(publication)
+        return publication.sessionGeneration
     }
 
     /**
@@ -950,10 +952,32 @@ class CameraEngine internal constructor(
         executeOpticsRollbackEffects(effects)
     }
 
+    /**
+     * Rollback for a [reconfigureCamera] preflight failure (selection/caps unavailable) that runs
+     * AFTER `invalidateCameraReady()` but BEFORE the outgoing controller was closed. That
+     * invalidation moved the session generation, so the ordinary rule — restore Ready only while
+     * the generation still equals the baseline's — always took the Not-Ready branch: the old camera
+     * kept streaming behind a "camera unchanged" status while shutter and REC stayed dead until some
+     * other door happened to reopen (RPL cycle 2, AGG2-4). The generation this door's own
+     * invalidation produced is therefore restorable too; any LATER bump (a camera error, pause, or
+     * another door) moves it again and keeps the rollback Not-Ready.
+     */
+    private fun rollbackOpticsAfterPreflight(
+        transaction: OpticsTransaction,
+        status: CameraStatus,
+        preflightSessionGeneration: Long,
+    ) {
+        val effects = synchronized(this) {
+            commitOpticsRollbackLocked(transaction, status, preflightSessionGeneration)
+        } ?: return
+        executeOpticsRollbackEffects(effects)
+    }
+
     /** Engine-monitor-only state commit. No controller/GL call or external callback is allowed here. */
     private fun commitOpticsRollbackLocked(
         transaction: OpticsTransaction,
         status: CameraStatus,
+        preflightSessionGeneration: Long? = null,
     ): OpticsRollbackEffects? {
         check(Thread.holdsLock(this)) { "optics rollback commit requires the Engine monitor" }
         val before = transaction.before
@@ -1046,8 +1070,15 @@ class CameraEngine internal constructor(
             rawWanted = rawWanted,
             requestedVideoSize = restored.requestedVideoSize,
         )
-        val restoreSession = before.ready && before.readyController === controller && !paused &&
-            before.sessionGeneration == cameraSessionGeneration.get()
+        val restoredSessionGeneration = rollbackRestorableSessionGeneration(
+            beforeReady = before.ready,
+            controllerMatches = before.readyController === controller,
+            paused = paused,
+            beforeSessionGeneration = before.sessionGeneration,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            preflightSessionGeneration = preflightSessionGeneration,
+        )
+        val restoreSession = restoredSessionGeneration != null
         if (restoreSession) {
             // The remaining zoom effects execute from the frozen packet after unlock.
             zoomInteractionState = ZoomInteractionState()
@@ -1056,7 +1087,7 @@ class CameraEngine internal constructor(
             val restoredController = checkNotNull(controller)
             acceptedCameraSession = AcceptedCameraSession(
                 controller = restoredController,
-                sessionGeneration = before.sessionGeneration,
+                sessionGeneration = checkNotNull(restoredSessionGeneration),
                 outputs = before.photoSessionOutputs,
                 hiResConfigured = restoredController.hiResStill,
             )
@@ -1066,7 +1097,7 @@ class CameraEngine internal constructor(
             nextCameraReadyPublication(
                 ready = effectiveReady,
                 opticsGeneration = transaction.generation,
-                sessionGeneration = before.sessionGeneration,
+                sessionGeneration = restoredSessionGeneration,
                 photoOutputs = before.photoSessionOutputs,
             )
         } else {
@@ -4135,7 +4166,7 @@ class CameraEngine internal constructor(
             }
             return
         } // @Volatile in GlPipeline: safe cross-thread read
-        invalidateCameraReady()
+        val preflightSessionGeneration = invalidateCameraReady()
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
@@ -4171,7 +4202,12 @@ class CameraEngine internal constructor(
                     )
                 } else {
                     startupTraceOwnership.revoke(startupTraceOwner)
-                    rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status())
+                    // The outgoing controller is still open and streaming: restore its Ready.
+                    rollbackOpticsAfterPreflight(
+                        transaction,
+                        CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+                        preflightSessionGeneration,
+                    )
                 }
                 return@execute
             }
@@ -4185,7 +4221,11 @@ class CameraEngine internal constructor(
                         )
                     } else {
                         startupTraceOwnership.revoke(startupTraceOwner)
-                        rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status())
+                        rollbackOpticsAfterPreflight(
+                            transaction,
+                            CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+                            preflightSessionGeneration,
+                        )
                     }
                     return@execute
                 }
@@ -8436,6 +8476,27 @@ internal fun rollbackRawWanted(
         rawForcesStandalone = rawForcesStandalone,
     )
     return if (movesRestoredRoute) baseline else current
+}
+
+/**
+ * The session generation a rollback may re-accept its baseline controller under, or null when it
+ * must publish Not-Ready. The baseline's own generation qualifies (nothing touched the session);
+ * so does the generation the failing door's OWN pre-close invalidation produced, because that bump
+ * retired no camera — the outgoing controller is still the one streaming (AGG2-4). Any other value
+ * means a camera error, pause, or newer door moved the session, and that stays non-restorable.
+ */
+internal fun rollbackRestorableSessionGeneration(
+    beforeReady: Boolean,
+    controllerMatches: Boolean,
+    paused: Boolean,
+    beforeSessionGeneration: Long,
+    currentSessionGeneration: Long,
+    preflightSessionGeneration: Long?,
+): Long? {
+    if (!beforeReady || !controllerMatches || paused) return null
+    return currentSessionGeneration.takeIf {
+        it == beforeSessionGeneration || it == preflightSessionGeneration
+    }
 }
 
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
