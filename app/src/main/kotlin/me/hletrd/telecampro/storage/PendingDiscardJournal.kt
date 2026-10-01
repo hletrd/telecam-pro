@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import me.hletrd.telecampro.camera.DiagnosticLog
 
 /** Ordered, cursorable ownership journal for exact MediaStore URIs that must be deleted. */
@@ -572,7 +573,7 @@ internal class MediaStorePendingDiscardIdentityReader(
     private val providerVersion: (String) -> String = { volume -> MediaStore.getVersion(context, volume) },
 ) : PendingDiscardIdentityReader {
     override fun read(uri: String): PendingDiscardIdentityRead = runCatching {
-        val parsed = Uri.parse(uri)
+        val parsed = uri.toUri()
         if (parsed.scheme != ContentResolver.SCHEME_CONTENT || parsed.authority != MediaStore.AUTHORITY) {
             return@runCatching unavailable("foreign authority $uri")
         }

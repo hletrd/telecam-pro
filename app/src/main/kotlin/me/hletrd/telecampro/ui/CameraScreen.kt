@@ -1691,10 +1691,10 @@ private fun TopBar(
     state: CameraUiState,
     actions: CameraActions,
     onOpenSheet: () -> Unit,
-    settingsModifier: Modifier = Modifier,
     compact: Boolean,
     onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
+    settingsModifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
 ) {
     val recordingLocked = state.isRecording
@@ -3159,11 +3159,11 @@ private fun ShutterRow(
     lastMediaUri: android.net.Uri?,
     lastMediaProvenance: MediaProvenance,
     onOpenReview: () -> Unit,
-    galleryModifier: Modifier = Modifier,
     reviewEnabled: Boolean,
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
     modifier: Modifier = Modifier,
+    galleryModifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
     cameraHealthy: Boolean = true,
     shutterEnabled: Boolean = true,
@@ -3243,10 +3243,10 @@ internal fun shutterVisualAlpha(cameraHealthy: Boolean): Float = if (cameraHealt
 internal fun ShutterButton(
     mode: CaptureMode,
     isRecording: Boolean,
-    timelapseRunning: Boolean = false,
     timerCountdownSec: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    timelapseRunning: Boolean = false,
     cameraHealthy: Boolean = true,
     enabled: Boolean = true,
 ) {

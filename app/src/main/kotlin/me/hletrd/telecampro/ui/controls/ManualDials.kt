@@ -219,8 +219,8 @@ fun ManualDialCluster(
     // No default: an empty lambda here silently disables the compact tray's only Fn entry point,
     // and a dead button is indistinguishable from a working one until it is pressed.
     onOpenFnMenu: () -> Unit,
-    fnButtonModifier: Modifier = Modifier,
     modifier: Modifier = Modifier,
+    fnButtonModifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
     val controls = state.controls
@@ -329,10 +329,10 @@ private fun DialChipRow(
     onSelect: (DialType) -> Unit,
     actions: CameraActions,
     onOpenFnMenu: () -> Unit,
-    fnButtonModifier: Modifier,
     availability: ControlAvailability,
     glyphRotation: Float,
     modifier: Modifier = Modifier,
+    fnButtonModifier: Modifier = Modifier,
 ) {
     val controls = state.controls
     // The chip row scrolls horizontally and its content is wider than the screen — without a hint
