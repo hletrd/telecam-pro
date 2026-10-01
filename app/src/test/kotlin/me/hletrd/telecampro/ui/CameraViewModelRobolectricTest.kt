@@ -1047,6 +1047,23 @@ class CameraViewModelRobolectricTest {
 
     // ---- The focus-ruler loupe assist must not become a persisted setting ----
 
+    @Test fun `the saved recording size is the operator's request, not the delivered fallback`() {
+        // AGG-36: a 1080p pick, then a route (Open Gate) that delivers 2560x1920. Persisting the
+        // delivered size lost the 1080p pick across a relaunch.
+        val (v, e) = createViewModel()
+        v.onVideoResolution(android.util.Size(1920, 1080))
+        e.onVideoSizeChosen!!.invoke(android.util.Size(2560, 1920), null)
+        idleFor(50)
+        assertEquals(android.util.Size(2560, 1920), v.state.value.videoResolution)
+
+        v.onGridType(GridType.NONE)
+        idleFor(600)
+
+        val saved = SettingsStore(app).load()
+        assertNotNull("a save must have landed, or this test proves nothing", saved)
+        assertEquals("1920x1080", saved!!.extras.videoResolution)
+    }
+
     @Test fun `the focus-ruler loupe assist never reaches the saved settings`() {
         val (v, _) = createViewModel()
         assertFalse("precondition: the operator has the loupe off", v.state.value.punchIn)

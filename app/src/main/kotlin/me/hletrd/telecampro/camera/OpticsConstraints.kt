@@ -42,6 +42,8 @@ data class OpticsRollbackPublication(
      * the engine wanting RAW over the restored logical session, and the UI chip on (AGG-4).
      */
     val rawWanted: Boolean = false,
+    /** The operator's recording-size REQUEST restored with the packet (not the delivered size). */
+    val requestedVideoSize: android.util.Size?,
 )
 
 /** Auxiliary UI state changes only when the desired camera transaction reaches Ready. */

@@ -742,6 +742,11 @@ class CameraViewModel private constructor(
     private var pendingCodecUntilInventory: VideoCodec? = null
     private var pendingTransferUntilInventory: ColorTransfer? = null
     private var pendingPhotoFormatsUntilInventory: PhotoFormats? = null
+    // The operator's recording-size REQUEST, kept apart from `videoResolution` (the size the engine
+    // could DELIVER on the current route/aspect). Persisting the delivered size turned a 1080p pick
+    // into Open Gate's 2560×1920 after one Open Gate trip and a relaunch, and then into 4K once Open
+    // Gate was off — the pick silently lost across persistence (tracer T2 / AGG-36). Null = auto.
+    private var requestedVideoResolution: Size? = null
 
     init {
         engine.onStatus = ::publishStatus
@@ -941,6 +946,7 @@ class CameraViewModel private constructor(
                 // restored its value — the next TC-off then showed the preset while the wire
                 // restored the retained framing (verification S4).
                 preTeleUnifiedZoom = rollback.preTeleUnifiedZoom
+                requestedVideoResolution = rollback.requestedVideoSize
                 _state.update {
                     it.copy(
                         mode = rollback.mode,
@@ -1434,6 +1440,8 @@ class CameraViewModel private constructor(
             photoExposureTimeNs = previousPhotoExposureTimeNs
             return
         }
+        // Mirrors setResolvedOptics: a recalled size becomes the request; none keeps the current one.
+        restoredVideoSize?.let { requestedVideoResolution = it }
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
         // These callbacks share the main queue, so cancelling immediately after synchronous
         // admission still precedes any stale trailing apply without mutating a rejected recall.
@@ -1610,7 +1618,7 @@ class CameraViewModel private constructor(
             videoCodec = pendingCodecUntilInventory?.takeIf { inventoryPending } ?: s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
-            videoResolution = "${s.videoResolution.width}x${s.videoResolution.height}",
+            videoResolution = (requestedVideoResolution ?: s.videoResolution).let { "${it.width}x${it.height}" },
             openGate = s.openGate,
             recordAudio = s.recordAudio,
             audioGain = s.audioGain,
@@ -2977,6 +2985,7 @@ class CameraViewModel private constructor(
     override fun onVideoResolution(size: Size) {
         if (rejectIfRecording()) return
         if (!engine.setVideoResolution(size)) return
+        requestedVideoResolution = size
         _state.update { it.copy(videoResolution = size, activeMemorySlot = null) }
         reconcileFrameRate()
         // The one pro setting "Remember Settings" used to drop: a user's 1080p pick silently

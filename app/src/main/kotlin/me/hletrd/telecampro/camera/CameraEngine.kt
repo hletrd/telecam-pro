@@ -1028,6 +1028,7 @@ class CameraEngine internal constructor(
             generation = transaction.generation,
             videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
             rawWanted = before.rawWanted,
+            requestedVideoSize = restored.requestedVideoSize,
         )
         val restoreSession = before.ready && before.readyController === controller && !paused &&
             before.sessionGeneration == cameraSessionGeneration.get()
