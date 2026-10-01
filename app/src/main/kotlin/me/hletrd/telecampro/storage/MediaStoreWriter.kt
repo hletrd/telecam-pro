@@ -1403,22 +1403,28 @@ object MediaStoreWriter {
                             ?.familyKey
                             ?.let { isFamilyDeleted(context, it) }
                             ?: false
+                        // Provider SIZE is metadata, not structural proof (AGG4-28): whether
+                        // MediaProvider keeps it current for a pending row after an abrupt process
+                        // death is unverified, so SIZE <= 0 decides nothing by itself. Every probe
+                        // below measures the opened descriptor's real length instead.
                         val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
                         val probeOutcome = when {
-                            sizeBytes <= 0L -> PendingProbeOutcome(PendingProbe.INVALID)
                             // The lexicographically paged DISCARD stage below is the only terminal
                             // owner for an exact durable URI marker. This generic MediaStore page
                             // still counts/advances past the row, but must not spend the whole launch
                             // retry budget trying the same delete before that progress-capable stage.
                             journalState == PendingJournalState.DISCARD ->
                                 PendingProbeOutcome(PendingProbe.INDETERMINATE)
-                            journalState == PendingJournalState.COMPLETE -> PendingProbeOutcome(PendingProbe.VALID)
+                            // A durable COMPLETE marker is the adoption proof for a row with bytes; a
+                            // COMPLETE row the provider reports EMPTY is probed first, so an empty
+                            // or unreadable file is never published on the marker alone.
+                            journalState == PendingJournalState.COMPLETE && sizeBytes > 0L ->
+                                PendingProbeOutcome(PendingProbe.VALID)
                             else -> probePendingMedia(
                                 context = context,
                                 uri = uri,
                                 mimeType = cursor.getString(mimeCol).orEmpty(),
                                 isVideoCollection = collection == OrphanRecoveryCollection.VIDEO,
-                                sizeBytes = sizeBytes,
                             )
                         }
                         if (probeOutcome.failed) {
@@ -1711,12 +1717,11 @@ object MediaStoreWriter {
         uri: Uri,
         mimeType: String,
         isVideoCollection: Boolean,
-        sizeBytes: Long,
     ): PendingProbeOutcome = pendingProbeOutcome {
         when (pendingMediaProbeKind(mimeType, isVideoCollection)) {
             PendingMediaProbeKind.VIDEO -> probeFinalizedVideo(context, uri)
-            PendingMediaProbeKind.JPEG -> probeCompleteJpeg(context, uri, sizeBytes)
-            PendingMediaProbeKind.DNG -> probeCompleteDng(context, uri, sizeBytes)
+            PendingMediaProbeKind.JPEG -> probeCompleteJpeg(context, uri)
+            PendingMediaProbeKind.DNG -> probeCompleteDng(context, uri)
             PendingMediaProbeKind.HEIF -> probeCompleteHeif(context, uri)
             PendingMediaProbeKind.KEEP_PENDING -> PendingProbe.INDETERMINATE
         }
@@ -1810,8 +1815,8 @@ object MediaStoreWriter {
         }
     }
 
-    private fun probeCompleteJpeg(context: Context, uri: Uri, sizeBytes: Long): PendingProbe {
-        if (sizeBytes < 4L) return PendingProbe.INVALID
+    /** Judged on the descriptor's real length, never the provider's SIZE column (AGG4-28). */
+    private fun probeCompleteJpeg(context: Context, uri: Uri): PendingProbe {
         val pfd = openReadableParcelFd(context, uri)
         return pfd.use {
             FileInputStream(it.fileDescriptor).use { input ->
@@ -1828,9 +1833,15 @@ object MediaStoreWriter {
         }
     }
 
-    private fun probeCompleteDng(context: Context, uri: Uri, sizeBytes: Long): PendingProbe {
+    /** Strip bounds are checked against the descriptor's real length (AGG4-28), not provider SIZE. */
+    private fun probeCompleteDng(context: Context, uri: Uri): PendingProbe {
         val pfd = openReadableParcelFd(context, uri)
         return pfd.use {
+            // fstat of the open descriptor; -1 means the provider handed back something that is not
+            // a sized regular file, which proves nothing about the bytes (a transient probe failure).
+            val sizeBytes = it.statSize
+            if (sizeBytes < 0L) throw IOException("DNG descriptor has no stat size")
+            if (sizeBytes == 0L) return@use PendingProbe.INVALID
             val exif = androidx.exifinterface.media.ExifInterface(it.fileDescriptor)
             val width = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_WIDTH, 0)
             val height = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_LENGTH, 0)
@@ -2904,7 +2915,11 @@ internal fun orphanDisposition(
     journalState == PendingJournalState.DISCARD -> OrphanDisposition.KEEP_PENDING
     journalState == PendingJournalState.UNAVAILABLE -> OrphanDisposition.KEEP_PENDING
     familyDeleted -> OrphanDisposition.DELETE
-    journalState == PendingJournalState.COMPLETE -> OrphanDisposition.ADOPT
+    // The caller certifies every positive-SIZE COMPLETE row as VALID; only a provider-EMPTY COMPLETE
+    // row is actually probed (AGG4-28), and one that is not proven VALID is kept, never deleted on a
+    // probe and never published on the marker alone.
+    journalState == PendingJournalState.COMPLETE ->
+        if (probe == PendingProbe.VALID) OrphanDisposition.ADOPT else OrphanDisposition.KEEP_PENDING
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
     probe == PendingProbe.INVALID -> OrphanDisposition.DELETE
     else -> OrphanDisposition.KEEP_PENDING

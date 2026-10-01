@@ -7,8 +7,10 @@ import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
+import java.io.File
 import java.util.UUID
 import me.hletrd.telecampro.camera.executeLaunchMediaRecovery
 import org.junit.Assert.assertEquals
@@ -173,7 +175,10 @@ class LaunchRecoveryProgressTest {
         )
     }
 
-    /** Zero-byte pending JPEG rows: each is provably INVALID, so recovery deletes it. */
+    /**
+     * Zero-byte pending rows: each opened descriptor's REAL length is zero, so it is provably
+     * INVALID and recovery deletes it (provider SIZE alone no longer decides that, AGG4-28).
+     */
     private class InvalidPendingRowsProvider(
         private val imageBase: Uri,
         private val videoBase: Uri,
@@ -245,6 +250,11 @@ class LaunchRecoveryProgressTest {
             selection: String?,
             selectionArgs: Array<out String>?,
         ): Int = 0
+
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            val empty = File.createTempFile("recovery-progress-", ".bin", context!!.cacheDir)
+            return ParcelFileDescriptor.open(empty, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
 
         override fun getType(uri: Uri): String? = "image/jpeg"
 

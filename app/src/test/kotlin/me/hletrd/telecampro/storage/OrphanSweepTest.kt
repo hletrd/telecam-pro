@@ -86,13 +86,21 @@ class OrphanSweepTest {
     }
 
     @Test
-    fun `completed journal rows are always adopted`() {
-        PendingProbe.entries.forEach { probe ->
-            assertEquals(
-                OrphanDisposition.ADOPT,
-                orphanDisposition(PendingJournalState.COMPLETE, probe),
-            )
-        }
+    fun `completed journal rows adopt only on a valid probe and are never deleted by one`() {
+        // The caller passes VALID for every positive-SIZE COMPLETE row; only a provider-EMPTY one is
+        // really probed (AGG4-28) and must not be published on the marker alone.
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.COMPLETE, PendingProbe.VALID),
+        )
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.COMPLETE, PendingProbe.INVALID),
+        )
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.COMPLETE, PendingProbe.INDETERMINATE),
+        )
     }
 
     @Test

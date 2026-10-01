@@ -7,8 +7,11 @@ import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
+import java.io.File
+import java.io.FileNotFoundException
 import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -43,8 +46,15 @@ class LaunchRecoveryPendingExpiryTest {
             // A JPEG whose descriptor cannot be opened this launch: a transient probe failure on a
             // row a later launch can still adopt, so its expiry IS re-armed.
             TRANSIENT to Row("image/jpeg", 16L),
-            // Zero bytes is provably incomplete: deleted.
-            DELETED to Row("image/jpeg", 0L),
+            // Provider SIZE 0 decides nothing by itself (AGG4-28): the descriptor's REAL length is
+            // zero, so the probe proves it incomplete and it is deleted.
+            DELETED to Row("image/jpeg", 0L, bytes = ByteArray(0)),
+            // A stale provider SIZE of 0 over a whole JPEG used to be deleted unopened; the real
+            // bytes prove it complete, so it is adopted.
+            STALE_SIZE to Row("image/jpeg", 0L, bytes = WHOLE_JPEG),
+            // A COMPLETE marker over a provider-EMPTY row is probed before adoption: empty bytes are
+            // neither published on the marker alone nor deleted, and are not re-armed.
+            EMPTY_COMPLETE to Row("image/jpeg", 0L, bytes = ByteArray(0)),
             // A durable COMPLETE marker adopts: published with IS_PENDING = 0.
             ADOPTED to Row("image/jpeg", 16L),
             // A durable DISCARD marker belongs to the DISCARD stage: kept, but not re-armed.
@@ -59,6 +69,7 @@ class LaunchRecoveryPendingExpiryTest {
             legacyPreferences = context.getSharedPreferences("recovery-expiry-$suffix", Context.MODE_PRIVATE),
         )
         assertTrue(MediaStoreWriter.markWriteComplete(context, Uri.parse("$imageBase/$ADOPTED")).durable)
+        assertTrue(MediaStoreWriter.markWriteComplete(context, Uri.parse("$imageBase/$EMPTY_COMPLETE")).durable)
         // The legacy preference DISCARD value: exact-identity SQLite marks need a provider
         // identity reader, and both spellings resolve to the same PendingJournalState.DISCARD.
         assertTrue(
@@ -75,12 +86,16 @@ class LaunchRecoveryPendingExpiryTest {
             targets = listOf(OrphanRecoveryTarget(imageBase, OrphanRecoveryCollection.IMAGES)),
         )
 
-        assertEquals(1, batch.report.adopted)
+        assertEquals(2, batch.report.adopted)
         assertEquals(1, batch.report.deleted)
-        assertEquals(3, batch.report.retained)
+        assertEquals(4, batch.report.retained)
         assertEquals(listOf(1), provider.pendingWrites[TRANSIENT])
         assertFalse(KEPT in provider.pendingWrites)
         assertEquals(listOf(0), provider.pendingWrites[ADOPTED])
+        assertEquals(listOf(0), provider.pendingWrites[STALE_SIZE])
+        assertFalse(EMPTY_COMPLETE in provider.pendingWrites)
+        assertTrue(EMPTY_COMPLETE in provider.rows)
+        assertFalse(DELETED in provider.rows)
         assertFalse(DELETED in provider.pendingWrites)
         assertFalse(DISCARDED in provider.pendingWrites)
     }
@@ -141,7 +156,8 @@ class LaunchRecoveryPendingExpiryTest {
         assertEquals("a relapse after success reports again", 2, warnings.size)
     }
 
-    private data class Row(val mime: String, val size: Long)
+    /** [bytes] null: the provider cannot open the row (a transient probe failure). */
+    private class Row(val mime: String, val size: Long, val bytes: ByteArray? = null)
 
     private class RecordingProvider(
         private val imageBase: Uri,
@@ -205,6 +221,14 @@ class LaunchRecoveryPendingExpiryTest {
             return if (pending == 0 && id in refusePublish) 0 else 1
         }
 
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            val bytes = rows[uri.lastPathSegment?.toLongOrNull()]?.bytes
+                ?: throw FileNotFoundException("provider busy: $uri")
+            val file = File.createTempFile("recovery-expiry-", ".bin", context!!.cacheDir)
+            file.writeBytes(bytes)
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
+
         override fun getType(uri: Uri): String? = rows[uri.lastPathSegment?.toLongOrNull()]?.mime
 
         override fun insert(uri: Uri, values: ContentValues?): Uri? = null
@@ -216,5 +240,8 @@ class LaunchRecoveryPendingExpiryTest {
         const val ADOPTED = 3L
         const val DISCARDED = 4L
         const val TRANSIENT = 5L
+        const val STALE_SIZE = 6L
+        const val EMPTY_COMPLETE = 7L
+        val WHOLE_JPEG = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte())
     }
 }
