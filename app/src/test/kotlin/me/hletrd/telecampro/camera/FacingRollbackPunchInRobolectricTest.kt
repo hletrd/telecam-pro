@@ -6,6 +6,7 @@ import me.hletrd.telecampro.gl.AtomicOwnerSlot
 import me.hletrd.telecampro.gl.GlPipeline
 import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +47,26 @@ class FacingRollbackPunchInRobolectricTest {
         assertFalse("restored front route suppresses the loupe", assists.isPunchInEnabled())
         replayIntoReplacement(camera, assists)
         assertFalse("replacement generation retains front suppression", assists.isPunchInEnabled())
+    }
+
+    /**
+     * AGG3-1, engine half: a Video TELE3X at lens-local 4.0 enters FRONT with the lens-based
+     * snapshot (unified 12) and must come back at 4.0 on the 3× camera — the ratio-based
+     * `localZoomOf` divided by the 10× lens's base and landed 1.2 (3.6× framing).
+     */
+    @Test
+    fun `front round trip returns a standalone TELE3X to its lens-local zoom`() {
+        val camera = acceptedRoute(CameraRoute.BACK)
+        setBoolean(camera, "videoMode", true)
+        setField(camera, "lensChoice", LensChoice.TELE3X)
+        setField(camera, "acceptedOpticalPresets", LensChoice.entries.toSet())
+        setField(camera, "controls", ManualControls(zoomRatio = 4f))
+
+        camera.setFrontCamera(true)
+        assertEquals(1f, (field(camera, "controls") as ManualControls).zoomRatio, 0f)
+        camera.setFrontCamera(false)
+
+        assertEquals(4f, (field(camera, "controls") as ManualControls).zoomRatio, 1e-4f)
     }
 
     private fun acceptedRoute(route: CameraRoute): CameraEngine {

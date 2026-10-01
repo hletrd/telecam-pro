@@ -73,6 +73,35 @@ class RearReturnZoomTest {
         assertEquals(1f, rearReturnZoom(true, Float.NaN, 3f, pma110Optical), 0f)
     }
 
+    /**
+     * AGG3-1: the return divides by the RETAINED LENS's optical base — the exact inverse of the
+     * lens-based entry snapshot — and equals the value a save/MR substitution persists. Dividing by
+     * the ratio's base (`localZoomOf`) returned TELE3X 4.0 as 1.2 and MAIN 4.0 as 1.33.
+     */
+    @Test
+    fun standaloneReturnRoundTripsTheEntrySnapshotOnTheRetainedLens() {
+        val cases = listOf(
+            LensChoice.ULTRAWIDE to 2f,
+            LensChoice.MAIN to 4f,
+            LensChoice.MAIN to 3.5f,
+            LensChoice.TELE3X to 4f,
+            LensChoice.TELE3X to 2f,
+        )
+        for ((lens, local) in cases) {
+            val entry = unifiedZoomOf(lens, local, standaloneRoute = true, optical = pma110Optical)
+            val exit = rearReturnZoom(true, entry, lens.zoomPreset, pma110Optical)
+            assertEquals("$lens local $local", local, exit, 1e-4f)
+            assertEquals(
+                "$lens local $local: live return == persisted value",
+                me.hletrd.telecampro.ui.retainedRearWireZoom(
+                    entry, lens, teleconverter = false, targetStandalone = true, optical = pma110Optical,
+                ),
+                exit,
+                0f,
+            )
+        }
+    }
+
     @Test
     fun cropOnlyStandaloneRouteUsesItsPhysicalOneXBase() {
         // On a one-camera tablet the selected 3x band is a crop of MAIN, so unified 3x returns as

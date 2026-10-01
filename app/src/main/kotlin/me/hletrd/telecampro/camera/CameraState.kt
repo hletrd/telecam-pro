@@ -602,6 +602,15 @@ val CameraUiState.unifiedZoom: Float
  * into the returning route's wire coordinate. NaN means nothing was captured (a recall or settings
  * restore exited front without going through the flip), and the preset is then the honest unified
  * fallback.
+ *
+ * The standalone divisor is the optical base of the RETAINED LENS ([lensPreset]), not of the ratio
+ * (AGG3-1). The returning standalone route opens the camera for that lens (`resolveNonTeleId`), and
+ * the entry snapshot was taken as `unifiedZoomOf(lens, local)` — base from the LENS — so only the
+ * lens base is its exact inverse. `localZoomOf(unified)` takes its base from the RATIO instead: a
+ * TELE3X held at lens-local 4.0 (unified 12) came back as 12 / 10 = 1.2 on the 3× camera (3.6×
+ * framing), and a MAIN at 4.0 came back as 4 / 3 = 1.33 on the main camera. This is the SAME
+ * conversion the save/MR substitution persists (`retainedRearWireZoom` delegates here), so the live
+ * return and the persisted value cannot disagree again.
  */
 fun rearReturnZoom(
     targetStandaloneRoute: Boolean,
@@ -610,7 +619,8 @@ fun rearReturnZoom(
     opticalPresets: Set<LensChoice>,
 ): Float {
     val unified = preFrontUnifiedZoom.takeIf { it.isFinite() && it > 0f } ?: lensPreset
-    return if (targetStandaloneRoute) localZoomOf(unified, opticalPresets) else unified
+    if (!targetStandaloneRoute) return unified
+    return (unified / opticalBaseFor(lensPreset, opticalPresets).zoomPreset).coerceAtLeast(1f)
 }
 
 fun teleFinderResolved(

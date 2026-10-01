@@ -5,7 +5,7 @@ import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.localZoomOf
-import me.hletrd.telecampro.camera.opticalBaseFor
+import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
@@ -440,9 +440,15 @@ internal fun retainedRearWireZoom(
     targetStandalone: Boolean,
     optical: Set<LensChoice>,
 ): Float {
-    if (!targetStandalone) return unified
     val routeLens = if (teleconverter) LensChoice.TELE3X else lens
-    return (unified / opticalBaseFor(routeLens.zoomPreset, optical).zoomPreset).coerceAtLeast(1f)
+    // ONE conversion with the live FRONT→rear return (AGG3-1): the persisted value and the zoom the
+    // engine/VM land on when the operator flips back must be the same number.
+    return rearReturnZoom(
+        targetStandaloneRoute = targetStandalone,
+        preFrontUnifiedZoom = unified,
+        lensPreset = routeLens.zoomPreset,
+        opticalPresets = optical,
+    )
 }
 
 /**
