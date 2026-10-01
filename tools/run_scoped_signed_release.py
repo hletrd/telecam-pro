@@ -4,48 +4,43 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import pathlib
-import re
-import shutil
-import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 
 _TOOLS_DIR = pathlib.Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
-from build_immutable_release import parse_java_properties, read_regular_beneath, release_store_file
+# The approval + certificate gate is SHARED with build_immutable_release.py, so the documented
+# release wrapper cannot sign with a key this helper refuses.
+from build_immutable_release import (
+    APPROVAL_PROPERTY,
+    FINGERPRINT_PROPERTY,
+    KEY_ALIAS_ENV,
+    STORE_PASSWORD_ENV,
+    UploadKeyGateError,
+    UploadKeyPrerequisite,
+    load_upload_key_prerequisite,
+    verify_upload_key_certificate,
+)
 
 
-STORE_PASSWORD_ENV = "TELECAMPRO_STORE_PASSWORD"
 KEY_PASSWORD_ENV = "TELECAMPRO_KEY_PASSWORD"
-KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
 STORE_FILE_ENV = "TELECAMPRO_STORE_FILE"
 SECRET_FIELDS = {"storePassword": STORE_PASSWORD_ENV, "keyPassword": KEY_PASSWORD_ENV}
 MAX_CREDENTIAL_BYTES = 64 * 1024
 MIN_STRONG_PASSWORD_LENGTH = 20
 MIN_STRONG_PASSWORD_CLASSES = 3
 MAX_MONOTONIC_RUN = 5
-APPROVAL_PROPERTY = "uploadKeyRotationApproved"
-FINGERPRINT_PROPERTY = "uploadKeyCertificateSha256"
 
 Run = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
-class ScopedReleaseError(RuntimeError):
-    """Expected fail-closed refusal whose message never includes a credential value."""
-
-
-@dataclass(frozen=True)
-class UploadKeyPrerequisite:
-    store_path: pathlib.Path
-    alias: str
-    certificate_sha256: str
+# One refusal type for both wrappers; its message never includes a credential value.
+ScopedReleaseError = UploadKeyGateError
 
 
 def _has_monotonic_run(value: str) -> bool:
@@ -119,74 +114,6 @@ def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
     return values
 
 
-def _single_property(entries: Sequence[tuple[str, str]], name: str) -> str:
-    matches = [value.strip() for key, value in entries if key == name]
-    if len(matches) != 1 or not matches[0]:
-        raise ScopedReleaseError(f"release signing prerequisite {name} is missing or ambiguous")
-    return matches[0]
-
-
-def _no_follow_regular(root: pathlib.Path, relative: str) -> pathlib.Path:
-    current = root
-    parts = pathlib.PurePosixPath(relative).parts
-    for index, component in enumerate(parts):
-        current = current / component
-        try:
-            attributes = current.lstat()
-        except OSError as error:
-            raise ScopedReleaseError("release upload keystore is unavailable") from error
-        if stat.S_ISLNK(attributes.st_mode):
-            raise ScopedReleaseError("release upload keystore path must not contain symlinks")
-        if index < len(parts) - 1 and not stat.S_ISDIR(attributes.st_mode):
-            raise ScopedReleaseError("release upload keystore parent is not a directory")
-    if not stat.S_ISREG(current.lstat().st_mode):
-        raise ScopedReleaseError("release upload keystore is not a regular file")
-    return current
-
-
-def load_upload_key_prerequisite(
-    root: pathlib.Path,
-    environment: Mapping[str, str],
-) -> UploadKeyPrerequisite:
-    root = root.resolve()
-    try:
-        properties_payload, _ = read_regular_beneath(root, "keystore.properties")
-        entries = parse_java_properties(properties_payload)
-        store_relative = release_store_file(properties_payload)
-    except (OSError, RuntimeError, UnicodeError) as error:
-        raise ScopedReleaseError("release signing properties are unavailable or unsafe") from error
-    approved = _single_property(entries, APPROVAL_PROPERTY).casefold()
-    if approved != "true":
-        raise ScopedReleaseError(
-            "upload key is blocked until owner-confirmed strong-key rotation or Play reset",
-        )
-    fingerprint = _single_property(entries, FINGERPRINT_PROPERTY).replace(":", "").casefold()
-    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-        raise ScopedReleaseError("approved upload certificate fingerprint is invalid")
-    alias = environment.get(KEY_ALIAS_ENV, "").strip()
-    if not alias:
-        alias = _single_property(entries, "keyAlias")
-    if any(ord(character) < 0x20 for character in alias):
-        raise ScopedReleaseError("release upload alias is invalid")
-    return UploadKeyPrerequisite(
-        store_path=_no_follow_regular(root, store_relative),
-        alias=alias,
-        certificate_sha256=fingerprint,
-    )
-
-
-def _keytool_path(environment: Mapping[str, str]) -> str:
-    java_home = environment.get("JAVA_HOME", "").strip()
-    if java_home:
-        candidate = pathlib.Path(java_home) / "bin" / "keytool"
-        if candidate.is_file():
-            return str(candidate)
-    resolved = shutil.which("keytool", path=environment.get("PATH"))
-    if resolved is None:
-        raise ScopedReleaseError("keytool is unavailable")
-    return resolved
-
-
 def run_scoped_signed_release(
     root: pathlib.Path,
     tasks: Sequence[str],
@@ -203,29 +130,7 @@ def run_scoped_signed_release(
         child_environment[STORE_PASSWORD_ENV] = credentials["storePassword"]
         child_environment[KEY_PASSWORD_ENV] = credentials["keyPassword"]
         child_environment[KEY_ALIAS_ENV] = prerequisite.alias
-        keytool_command = [
-            _keytool_path(child_environment),
-            "-exportcert",
-            "-keystore",
-            str(prerequisite.store_path),
-            "-alias",
-            prerequisite.alias,
-            "-storepass:env",
-            STORE_PASSWORD_ENV,
-        ]
-        verified = run(
-            keytool_command,
-            cwd=root,
-            env=child_environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        if verified.returncode != 0:
-            raise ScopedReleaseError("approved upload keystore verification failed")
-        certificate = verified.stdout if isinstance(verified.stdout, bytes) else b""
-        if hashlib.sha256(certificate).hexdigest() != prerequisite.certificate_sha256:
-            raise ScopedReleaseError("approved upload certificate fingerprint does not match")
+        verify_upload_key_certificate(root, prerequisite, child_environment, run)
 
         command = [
             sys.executable,

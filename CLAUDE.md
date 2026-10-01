@@ -95,7 +95,10 @@ python3 tools/verify_host.py --release
 # Direct Gradle release outputs are developer-only; caller-authored immutableRelease* properties are
 # rejected rather than treated as authentication. Only this outer wrapper seals the exported inputs,
 # rechecks them after build, freezes allowlisted outputs, and publishes release-evidence.json plus the
-# verified commit/tree/output hashes in a unique immutable-release namespace.
+# verified commit/tree/output hashes in a unique immutable-release namespace. Any non-lint task is
+# refused unless keystore.properties carries uploadKeyRotationApproved=true and keytool proves the
+# signing alias's certificate matches uploadKeyCertificateSha256 — the SAME gate the scoped helper
+# (tools/run_scoped_signed_release.py) enforces, so neither wrapper signs with the blocked key.
 python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # Device evidence must use the exact immutable debug APK printed by the wrapper.

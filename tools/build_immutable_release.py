@@ -10,11 +10,12 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import NamedTuple
 
 _TOOLS_DIR = pathlib.Path(__file__).resolve().parent
@@ -523,6 +524,188 @@ def release_store_file(properties_payload: bytes) -> str:
     return relative.as_posix()
 
 
+# ---- Upload-key approval gate (shared with run_scoped_signed_release.py) -----------------------
+# The owner blocked the current upload key until a strong-key rotation or Play upload-key reset is
+# confirmed. That refusal used to live only in the scoped helper, so this wrapper (the documented
+# Play-release command) and plain Gradle still signed upload-ready bundles with the blocked key.
+# Both wrappers now cross this ONE gate before any signing-capable Gradle task runs.
+
+STORE_PASSWORD_ENV = "TELECAMPRO_STORE_PASSWORD"
+KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
+APPROVAL_PROPERTY = "uploadKeyRotationApproved"
+FINGERPRINT_PROPERTY = "uploadKeyCertificateSha256"
+_UNSET_SIGNING_VALUE = "CHANGE_ME"
+_NON_SIGNING_TASK = re.compile(r"(?:.*:)?lint[A-Za-z0-9]*")
+
+GateRun = Callable[..., subprocess.CompletedProcess[bytes]]
+
+
+class UploadKeyGateError(RuntimeError):
+    """Expected fail-closed refusal whose message never includes a credential value."""
+
+
+class UploadKeyPrerequisite(NamedTuple):
+    store_path: pathlib.Path
+    alias: str
+    certificate_sha256: str
+
+
+def _single_property(entries: Sequence[tuple[str, str]], name: str) -> str:
+    matches = [value.strip() for key, value in entries if key == name]
+    if len(matches) != 1 or not matches[0]:
+        raise UploadKeyGateError(f"release signing prerequisite {name} is missing or ambiguous")
+    return matches[0]
+
+
+def _no_follow_regular(root: pathlib.Path, relative: str) -> pathlib.Path:
+    current = root
+    parts = pathlib.PurePosixPath(relative).parts
+    for index, component in enumerate(parts):
+        current = current / component
+        try:
+            attributes = current.lstat()
+        except OSError as error:
+            raise UploadKeyGateError("release upload keystore is unavailable") from error
+        if stat.S_ISLNK(attributes.st_mode):
+            raise UploadKeyGateError("release upload keystore path must not contain symlinks")
+        if index < len(parts) - 1 and not stat.S_ISDIR(attributes.st_mode):
+            raise UploadKeyGateError("release upload keystore parent is not a directory")
+    if not stat.S_ISREG(current.lstat().st_mode):
+        raise UploadKeyGateError("release upload keystore is not a regular file")
+    return current
+
+
+def load_upload_key_prerequisite(
+    root: pathlib.Path,
+    environment: Mapping[str, str],
+) -> UploadKeyPrerequisite:
+    root = root.resolve()
+    try:
+        properties_payload, _ = read_regular_beneath(root, "keystore.properties")
+        entries = parse_java_properties(properties_payload)
+        store_relative = release_store_file(properties_payload)
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
+    approved = _single_property(entries, APPROVAL_PROPERTY).casefold()
+    if approved != "true":
+        raise UploadKeyGateError(
+            "upload key is blocked until owner-confirmed strong-key rotation or Play reset",
+        )
+    fingerprint = _single_property(entries, FINGERPRINT_PROPERTY).replace(":", "").casefold()
+    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+        raise UploadKeyGateError("approved upload certificate fingerprint is invalid")
+    alias = environment.get(KEY_ALIAS_ENV, "").strip()
+    if not alias:
+        alias = _single_property(entries, "keyAlias")
+    if any(ord(character) < 0x20 for character in alias):
+        raise UploadKeyGateError("release upload alias is invalid")
+    return UploadKeyPrerequisite(
+        store_path=_no_follow_regular(root, store_relative),
+        alias=alias,
+        certificate_sha256=fingerprint,
+    )
+
+
+def keytool_path(environment: Mapping[str, str]) -> str:
+    java_home = environment.get("JAVA_HOME", "").strip()
+    if java_home:
+        candidate = pathlib.Path(java_home) / "bin" / "keytool"
+        if candidate.is_file():
+            return str(candidate)
+    resolved = shutil.which("keytool", path=environment.get("PATH"))
+    if resolved is None:
+        raise UploadKeyGateError("keytool is unavailable")
+    return resolved
+
+
+def verify_upload_key_certificate(
+    root: pathlib.Path,
+    prerequisite: UploadKeyPrerequisite,
+    environment: Mapping[str, str],
+    run: GateRun = subprocess.run,
+) -> None:
+    """Export the approved alias's certificate and require its exact SHA-256.
+
+    The store password reaches keytool only through `-storepass:env`, never argv or output.
+    """
+    keytool_command = [
+        keytool_path(environment),
+        "-exportcert",
+        "-keystore",
+        str(prerequisite.store_path),
+        "-alias",
+        prerequisite.alias,
+        "-storepass:env",
+        STORE_PASSWORD_ENV,
+    ]
+    verified = run(
+        keytool_command,
+        cwd=root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if verified.returncode != 0:
+        raise UploadKeyGateError("approved upload keystore verification failed")
+    certificate = verified.stdout if isinstance(verified.stdout, bytes) else b""
+    if hashlib.sha256(certificate).hexdigest() != prerequisite.certificate_sha256:
+        raise UploadKeyGateError("approved upload certificate fingerprint does not match")
+
+
+def signing_capable(tasks: Sequence[str]) -> bool:
+    """Fail closed: every task except an explicit lint task may sign (abbreviations included)."""
+    return any(_NON_SIGNING_TASK.fullmatch(task) is None for task in tasks)
+
+
+def _gradle_signing_value(
+    entries: Sequence[tuple[str, str]],
+    name: str,
+    environment: Mapping[str, str],
+    env_name: str,
+) -> str | None:
+    """Mirror app/build.gradle.kts `signingValue`: the properties file wins over the environment."""
+    for key, value in reversed(entries):
+        if key == name:
+            stripped = value.strip()
+            if stripped and stripped != _UNSET_SIGNING_VALUE:
+                return stripped
+            break
+    from_environment = environment.get(env_name, "").strip()
+    return from_environment or None
+
+
+def require_approved_upload_key(
+    root: pathlib.Path,
+    tasks: Sequence[str],
+    environment: Mapping[str, str],
+    run: GateRun = subprocess.run,
+) -> None:
+    """Refuse signing-capable release builds unless the owner-approved upload key is in use."""
+    if not signing_capable(tasks):
+        return
+    root = root.resolve()
+    try:
+        entries = parse_java_properties(read_regular_beneath(root, "keystore.properties")[0])
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
+    gate_environment = dict(environment)
+    # Verify the SAME alias and store password Gradle will sign with.
+    alias = _gradle_signing_value(entries, "keyAlias", environment, KEY_ALIAS_ENV)
+    gate_environment.pop(KEY_ALIAS_ENV, None)
+    if alias is not None:
+        gate_environment[KEY_ALIAS_ENV] = alias
+    password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
+    if password is None:
+        raise UploadKeyGateError("release store password is unavailable")
+    gate_environment[STORE_PASSWORD_ENV] = password
+    try:
+        prerequisite = load_upload_key_prerequisite(root, gate_environment)
+        verify_upload_key_certificate(root, prerequisite, gate_environment, run)
+    finally:
+        gate_environment.pop(STORE_PASSWORD_ENV, None)
+
+
 def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> ReleaseLocalInputs:
     """Descriptor-copy local inputs and resolve the sole effective release store-file path."""
     copied: list[str] = []
@@ -702,6 +885,11 @@ def main() -> int:
         )
     else:
         output = args.output
+    try:
+        require_approved_upload_key(args.root, args.tasks, os.environ)
+    except UploadKeyGateError as error:
+        print(f"immutable release build refused: {error}", file=sys.stderr)
+        return 1
     try:
         commit, tree = build_immutable_release(args.root, args.tasks, output)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:

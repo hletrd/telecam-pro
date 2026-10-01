@@ -1638,9 +1638,19 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 "export TELECAMPRO_STORE_PASSWORD=plaintext",
             ),
             (
-                "tools/run_scoped_signed_release.py",
+                "tools/build_immutable_release.py",
                 '"-storepass:env",',
                 '"-storepass",',
+            ),
+            (
+                "tools/build_immutable_release.py",
+                "        require_approved_upload_key(args.root, args.tasks, os.environ)\n",
+                "        pass\n",
+            ),
+            (
+                "tools/run_scoped_signed_release.py",
+                "verify_upload_key_certificate(root, prerequisite, child_environment, run)",
+                "None",
             ),
             (
                 "docs/play-console-submit.md",

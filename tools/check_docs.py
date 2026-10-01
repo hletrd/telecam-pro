@@ -1474,8 +1474,13 @@ check(
     and "export TELECAMPRO_STORE_PASSWORD" not in play_console_submit
     and "export TELECAMPRO_KEY_PASSWORD" not in play_console_submit
     and '-storepass "$TELECAMPRO_STORE_PASSWORD"' not in play_console_submit
-    and '"-storepass:env"' in scoped_release_helper
+    and '"-storepass:env"' in release_wrapper
+    and '"-storepass",' not in release_wrapper
     and '"-storepass",' not in scoped_release_helper
+    and "verify_upload_key_certificate(root, prerequisite, child_environment, run)" in scoped_release_helper
+    and "require_approved_upload_key(args.root, args.tasks, os.environ)" in release_wrapper
+    and release_wrapper.index("require_approved_upload_key(args.root, args.tasks, os.environ)") <
+        release_wrapper.index("commit, tree = build_immutable_release(args.root, args.tasks, output)")
     and "credentials.clear()" in scoped_release_helper
     and "child_environment.pop(name, None)" in scoped_release_helper
     and scoped_release_helper.index("load_upload_key_prerequisite(args.root, os.environ)") <
