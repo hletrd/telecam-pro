@@ -213,7 +213,9 @@ object MediaStoreWriter {
     private val stillStorageAdmissionSignal = ProcessAdmissionSignal(initial = true)
 
     private fun publishStillStorageAdmission() {
-        stillStorageAdmissionSignal.publish(rejectedOutputAdmissionAvailable())
+        // Read inside the signal monitor (AGG4-35): a value computed before it could land after a
+        // newer edge and leave the change-gated signal stale until an unrelated publication.
+        stillStorageAdmissionSignal.refresh(::rejectedOutputAdmissionAvailable)
     }
 
     private val rejectedOutputOwner = RejectedOutputCleanupCapacityOwner<RejectedOutput>(

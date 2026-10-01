@@ -41,10 +41,27 @@ internal class ProcessAdmissionSignal(initial: Boolean) {
 
     fun current(): Boolean = synchronized(lock) { available }
 
-    fun publish(value: Boolean) {
+    fun publish(value: Boolean) = publishLocked { value }
+
+    /**
+     * Re-reads the live admission state INSIDE the signal monitor and publishes it (AGG4-35).
+     *
+     * [publish] gates on a value its caller computed before taking the monitor. Two racing edges
+     * could therefore land out of order: a release computed `true`, a reserve computed and published
+     * `false` (a no-op), then the stale `true` flipped the signal while live capacity was `false`;
+     * the next real `true` was then swallowed by the change gate, and a subscriber that re-snapshots
+     * only on a delivered change kept the shutter closed while capacity was open. Evaluating [read]
+     * under the monitor serializes read-and-publish, so the last publication always carries the
+     * last read. Lock order is signal → owner; owners notify after releasing their own lock, so no
+     * inversion exists. [read] must not call back into this signal.
+     */
+    fun refresh(read: () -> Boolean) = publishLocked(read)
+
+    private inline fun publishLocked(read: () -> Boolean) {
         val publication: Publication
         val snapshot: List<Listener>
         synchronized(lock) {
+            val value = read()
             if (available == value) return
             available = value
             publication = Publication(++sequence, value)

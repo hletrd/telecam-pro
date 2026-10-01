@@ -74,4 +74,54 @@ class ProcessAdmissionSignalTest {
         bad.close()
         good.close()
     }
+
+    @Test
+    fun `refresh reads live state inside the monitor so a racing edge cannot leave it stale`() {
+        // AGG4-35 / PERF4-3 interleaving: capacity exhausted (false). T1 releases (live true) and is
+        // preempted between its read and its publish; T2 reserves (live false) and publishes. With
+        // read-outside-the-lock, T1's stale `true` then flipped the signal over a live `false`, and
+        // T3's real `true` was swallowed by the change gate.
+        val signal = ProcessAdmissionSignal(initial = false)
+        val events = CopyOnWriteArrayList<Boolean>()
+        val subscription = signal.subscribe(events::add)
+        val live = AtomicBoolean(false)
+        val t1Read = CountDownLatch(1)
+        val t1Resume = CountDownLatch(1)
+        val t2Reads = java.util.concurrent.atomic.AtomicInteger()
+
+        live.set(true) // T1's release
+        val t1 = Thread {
+            signal.refresh {
+                val value = live.get()
+                t1Read.countDown()
+                check(t1Resume.await(5, TimeUnit.SECONDS))
+                value
+            }
+        }.apply { start() }
+        assertTrue(t1Read.await(5, TimeUnit.SECONDS))
+        live.set(false) // T2's reserve
+        val t2 = Thread {
+            signal.refresh {
+                t2Reads.incrementAndGet()
+                live.get()
+            }
+        }.apply { start() }
+        // T2's read cannot begin while T1 holds the read-and-publish monitor.
+        Thread.sleep(100)
+        assertEquals(0, t2Reads.get())
+        t1Resume.countDown()
+        t1.join(5_000)
+        t2.join(5_000)
+        assertEquals(1, t2Reads.get())
+        // The last publication carries the last read: the signal agrees with live capacity.
+        assertFalse(signal.current())
+        assertEquals(listOf(false, true, false), events.toList())
+
+        // T3 releases: the change gate delivers it instead of swallowing it.
+        live.set(true)
+        signal.refresh(live::get)
+        assertTrue(signal.current())
+        assertEquals(listOf(false, true, false, true), events.toList())
+        subscription.close()
+    }
 }
