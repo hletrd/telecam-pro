@@ -100,13 +100,16 @@ class RearReturnZoomTest {
             val entry = unifiedZoomOf(lens, local, standaloneRoute = true, optical = pma110Optical)
             val exit = rearReturnZoom(true, entry, lens.zoomPreset, pma110Optical)
             assertEquals("$lens local $local", local, exit, 1e-4f)
+            // Independent oracle (AGG4-48): the persisted value must be the operator's own LITERAL
+            // lens-local zoom. Comparing it with rearReturnZoom compared that function with itself,
+            // since retainedRearWireZoom delegates to it.
             assertEquals(
-                "$lens local $local: live return == persisted value",
+                "$lens local $local: persisted value is the retained local zoom",
+                local,
                 me.hletrd.telecampro.ui.retainedRearWireZoom(
                     entry, lens, teleconverter = false, targetStandalone = true, optical = pma110Optical,
                 ),
-                exit,
-                0f,
+                1e-4f,
             )
         }
     }
