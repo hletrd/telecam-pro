@@ -125,12 +125,21 @@ object AutoExposure {
         val pref = preferredNs.coerceIn(expMinNs, slowCapNs)
 
         val corr = correctionStops(meanLuma(luma), evCompStops) ?: 0f
+        // Clamp the STARTING shutter onto the legal program span first and carry the stops the
+        // clamp removed into ISO (AGG2-16). Since AGG-10 the line is seeded from the operator's M
+        // exposure itself, so a 4 s / ISO 100 seed used to be cut to 1/10 s by the final clamp
+        // below with only the ±0.35-stop re-center counter-moved into ISO — the first P tick
+        // went ~5 stops dark and took several ticks to climb back. Inside the span the residual is
+        // exactly 0 (log2(1)), so the ordinary program line is unchanged.
+        val baseNs = currentNs.coerceIn(expMinNs, slowCapNs)
+        val clampResidualStops = log2(currentNs.toFloat() / baseNs.toFloat())
         // Re-center the shutter toward the preferred point by at most ±0.35 stop this tick…
-        val shutterStops = log2(pref.toFloat() / currentNs.toFloat()).coerceIn(-0.35f, 0.35f)
+        val shutterStops = log2(pref.toFloat() / baseNs.toFloat()).coerceIn(-0.35f, 0.35f)
         // …and give ISO the exposure correction minus what the shutter move already contributes
-        // (longer shutter = brighter), so re-centering is brightness-neutral.
-        val isoStops = corr - shutterStops
-        var newNs = (currentNs * pow2(shutterStops)).roundToLong()
+        // (longer shutter = brighter), so re-centering is brightness-neutral. Any ISO overflow from
+        // the clamp residual flows through the max/min branches below like ordinary correction.
+        val isoStops = corr - shutterStops + clampResidualStops
+        var newNs = (baseNs * pow2(shutterStops)).roundToLong()
         val wantIso = currentIso * pow2(isoStops)
         var newIso = wantIso.roundToInt()
         if (wantIso > isoMax) {

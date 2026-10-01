@@ -267,6 +267,35 @@ class AutoExposureTest {
         assertTrue("ISO counter-moves up so brightness holds", iso > 1600)
     }
 
+    @Test
+    fun program_longManualSeed_carriesClampedShutterIntoIso() {
+        // AGG2-16: P seeded from a 4 s M exposure (converged scene) must not drop ~5 stops in one
+        // tick. The handheld cap clamps the shutter to 1/10 s; the removed stops go into ISO.
+        val seedNs = 4_000_000_000L
+        val seedIso = 100
+        val (iso, ns) = AutoExposure.driveProgram(
+            histAt(115), currentIso = seedIso, currentNs = seedNs, preferredNs = prefNs,
+            isoMin = isoMin, isoMax = isoMax, expMinNs = expMin, expMaxNs = 4_000_000_000L,
+            evCompStops = 0f,
+        )!!
+        assertTrue("shutter respects the handheld cap, was ${ns}ns", ns <= 100_000_000L)
+        val before = seedIso.toDouble() * seedNs
+        val after = iso.toDouble() * ns
+        val deltaStops = kotlin.math.ln(after / before) / kotlin.math.ln(2.0)
+        assertTrue("exposure product holds within one tick, was $deltaStops stops", kotlin.math.abs(deltaStops) < 0.05)
+    }
+
+    @Test
+    fun program_seedBelowFloor_carriesClampIntoIso() {
+        // Symmetric: a seed shorter than the sensor floor is lifted to it and ISO drops to match.
+        val (iso, ns) = AutoExposure.driveProgram(
+            histAt(115), currentIso = 800, currentNs = 50_000L, preferredNs = prefNs,
+            isoMin = isoMin, isoMax = isoMax, expMinNs = expMin, expMaxNs = expMax, evCompStops = 0f,
+        )!!
+        val deltaStops = kotlin.math.ln(iso.toDouble() * ns / (800.0 * 50_000L)) / kotlin.math.ln(2.0)
+        assertTrue("exposure product holds, was $deltaStops stops", kotlin.math.abs(deltaStops) < 0.05)
+    }
+
     // ---- cycle-2 additions ----
 
     @Test
