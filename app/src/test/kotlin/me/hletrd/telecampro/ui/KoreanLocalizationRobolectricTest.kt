@@ -124,6 +124,26 @@ class KoreanLocalizationRobolectricTest {
     }
 
     @Test
+    fun `retained saves say they publish at the next app start, not an in-session retry`() {
+        // DES2-2: nothing in the running process retries a retained row; only launch recovery
+        // (CameraViewModel construction -> engine.cleanupOrphans) publishes it.
+        val en = context("en")
+        val ko = context("ko")
+        listOf(
+            CameraStatusMessage.DNG_SAVE_DELAYED.status(),
+            CameraStatusMessage.VIDEO_SAVE_DELAYED.status(),
+            CameraStatusMessage.OUTPUT_SAVED_PENDING.status(CameraStatusArgument.Text("HEIF")),
+        ).forEach { status ->
+            val english = status.resolve(en)
+            val korean = status.resolve(ko)
+            assertTrue(english, english.endsWith("It will be saved the next time the app starts."))
+            assertFalse(english, english.contains("retry", ignoreCase = true))
+            assertTrue(korean, korean.endsWith("앱을 다음에 시작할 때 저장됩니다."))
+            assertFalse(korean, korean.contains("다시 시도"))
+        }
+    }
+
+    @Test
     fun `audio routes localize while hardware product identity remains verbatim`() {
         val ko = context("ko")
         val route = AudioRouteStatus(
