@@ -1015,11 +1015,18 @@ object MediaStoreWriter {
         listener: (Boolean) -> Unit,
     ): ProcessAdmissionSubscription = stillStorageAdmissionSignal.subscribe(listener)
 
+    // Both helpers sit on the same save chain as the insert, whose silent exits were fixed on
+    // 2026-09-09; FileNotFound/Security/IllegalState (row deleted, volume unmounted) here turned into
+    // HEIF/JPEG/REC failure toasts with no app log line. One reserved row per failed open.
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
-        runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
+        runCatching { context.contentResolver.openFileDescriptor(uri, mode) }
+            .onFailure { DiagnosticLog.w(TAG, "open $mode failed for $uri", it) }
+            .getOrNull()
 
     fun openOutputStream(context: Context, uri: Uri): OutputStream? =
-        runCatching { context.contentResolver.openOutputStream(uri) }.getOrNull()
+        runCatching { context.contentResolver.openOutputStream(uri) }
+            .onFailure { DiagnosticLog.w(TAG, "open output stream failed for $uri", it) }
+            .getOrNull()
 
     /**
      * Clears IS_PENDING so the file becomes visible to other apps (e.g. the gallery).
@@ -1049,10 +1056,12 @@ object MediaStoreWriter {
         }
 
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+        var lastFailure: Throwable? = null
         repeat(PUBLISH_ATTEMPTS) { attempt ->
-            val published = runCatching {
-                context.contentResolver.update(uri, values, null, null) > 0
-            }.getOrDefault(false)
+            val update = runCatching { context.contentResolver.update(uri, values, null, null) }
+            lastFailure = update.exceptionOrNull()
+                ?: IllegalStateException("IS_PENDING=0 update matched ${update.getOrNull()} rows")
+            val published = (update.getOrNull() ?: 0) > 0
             if (published) {
                 // SQLite was proven absent while holding this URI's process authority. Remove only
                 // the older preference; a later exact DISCARD owner remains independently durable.
@@ -1066,6 +1075,9 @@ object MediaStoreWriter {
                 runCatching { Thread.sleep(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1)) }
             }
         }
+        // Exhaustion only — never per attempt. The row is retained for recovery either way; this
+        // row records WHY (a throwing provider policy vs. a vanished/foreign row matching 0 rows).
+        DiagnosticLog.w(TAG, "publish exhausted $PUBLISH_ATTEMPTS attempts for $uri", lastFailure)
         false
     }
 

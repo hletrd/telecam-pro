@@ -5578,7 +5578,9 @@ class CameraEngine internal constructor(
                     // Copy the live Image first so the ImageReader slot and Camera2 handler are held
                     // for the shortest possible interval; EXIF composition is cache-only.
                     val processedSnapshot = if (formats.wantsProcessedStill && jpeg != null) {
-                        runCatching { StillSnapshot.from(jpeg) }.getOrNull()
+                        runCatching { StillSnapshot.from(jpeg) }
+                            .onFailure { Log.e("CameraEngine", "Still snapshot failed", it) }
+                            .getOrNull()
                     } else {
                         null
                     }
@@ -5590,7 +5592,9 @@ class CameraEngine internal constructor(
                                 val queued = runCatching {
                                     ioExecutor.execute {
                                         try {
-                                            val bytes = runCatching { processedSnapshot.jpegBytes() }.getOrNull()
+                                            val bytes = runCatching { processedSnapshot.jpegBytes() }
+                                                .onFailure { Log.e("CameraEngine", "Still JPEG encode failed", it) }
+                                                .getOrNull()
                                             if (bytes == null) {
                                                 reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                                             } else {

@@ -148,6 +148,9 @@ class VideoRecorder(private val context: Context) {
     @Volatile private var videoStartupDeadlineNs = Long.MAX_VALUE
     private var onFailure: ((Throwable) -> Unit)? = null
     @Volatile private var wroteVideoSample = false
+    // One VideoRecorder per take: every degrade-to-video-only edge (setup or mid-REC) spends at most
+    // ONE reserved diagnostic row for the whole recording, so a dead mic cannot drain the budget.
+    private val audioDegradeLogged = AtomicBoolean(false)
     // Set the first time an AUDIO sample is muxed, and when a mid-REC audio fault degrades the
     // recording to video-only. Together they identify the one muxer.stop() failure that must NOT
     // delete the clip: a 2-track muxer whose audio track never received a sample because the mic
@@ -251,9 +254,14 @@ class VideoRecorder(private val context: Context) {
         this.onFailure = onFailure
         val descriptor = nativeOperation {
             MediaStoreWriter.openParcelFd(context, uri, "rw")?.also { pfd = it }
-        } ?: return null
+        } ?: run {
+            // Without this row a revoked/vanished pending row read as a bare "Recording failed"
+            // with no app line in release logcat (the 2026-09-09 diagnostic dead end).
+            Log.w(TAG, "REC setup aborted: no output descriptor for $uri")
+            return null
+        }
 
-        val videoOk = runCatching {
+        val videoSetup = runCatching {
             nativeOperation {
                 MediaMuxer(
                     descriptor.fileDescriptor,
@@ -313,7 +321,8 @@ class VideoRecorder(private val context: Context) {
             configuredBitRate = bitRateForSize(accepted.attempt.width, accepted.attempt.height)
             inputSurfaceOwner.install(checkNotNull(accepted.owner.surface))
             provisionalVideoOwners.remove(accepted.owner)
-        }.isSuccess
+        }
+        val videoOk = videoSetup.isSuccess
 
         // Setup timeout/quarantine may win while a vendor configure/start call is blocked. Once
         // that call returns, retain every partial owner untouched; the late setup result is revoked
@@ -321,6 +330,14 @@ class VideoRecorder(private val context: Context) {
         if (terminallyQuarantined.get()) return null
 
         if (!videoOk) {
+            // Keep the cause: `.isSuccess` alone discarded it, so an encoder ladder that refused every
+            // configure (or a MediaMuxer that threw on the descriptor) left no app line at all.
+            Log.w(
+                TAG,
+                "REC setup failed codec=$codec size=${size.width}x${size.height} " +
+                    "candidates=${admittedCandidates.size} transfer=$transfer",
+                videoSetup.exceptionOrNull(),
+            )
             // Video encoder/muxer setup failed before the Surface could leave this recorder. Release
             // its exactly-once owner first, then tear down the codec that created the native window.
             val surfaceReleased = inputSurfaceOwner.releaseConditionally { surface ->
@@ -350,9 +367,10 @@ class VideoRecorder(private val context: Context) {
         if (doAudio) {
             val audioStart = runCatching { startAudio() }
             if (terminallyQuarantined.get()) return null
-            audioStart.onFailure {
+            audioStart.onFailure { failure ->
                 // Audio setup failed after video was already configured; degrade to video-only
                 // instead of aborting the whole recording.
+                logAudioDegrade("audio encoder setup failed", failure)
                 onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
                 val recordReleased = nativeCleanup { audioRecord?.release() }
                 val codecStopped = recordReleased && nativeCleanup { audioCodec?.stop() }
@@ -646,6 +664,7 @@ class VideoRecorder(private val context: Context) {
             }
         }
         if (minBuf <= 0) {
+            logAudioDegrade("AudioRecord min buffer $minBuf for mask $channelMask")
             expectedTracks = 1
             onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
@@ -655,7 +674,7 @@ class VideoRecorder(private val context: Context) {
             .setChannelMask(channelMask)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .build()
-        val record = runCatching {
+        val recordBuild = runCatching {
             nativeOperation {
             @Suppress("MissingPermission")
                 AudioRecord.Builder()
@@ -665,8 +684,10 @@ class VideoRecorder(private val context: Context) {
                     .build()
                     .also { audioRecord = it }
             }
-        }.getOrNull() ?: run {
+        }
+        val record = recordBuild.getOrNull() ?: run {
             if (!nativeOperations.isOpen()) throw RecorderNativeOperationRevokedException()
+            logAudioDegrade("AudioRecord build failed for mask $channelMask", recordBuild.exceptionOrNull())
             expectedTracks = 1
             onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
@@ -675,6 +696,7 @@ class VideoRecorder(private val context: Context) {
         // STATE_UNINITIALIZED; calling startRecording() on it throws on the audio thread → crash.
         // Degrade to video-only instead.
         if (record.state != AudioRecord.STATE_INITIALIZED) {
+            logAudioDegrade("AudioRecord uninitialized (state=${record.state}) for mask $channelMask")
             if (!nativeCleanup { record.release() }) throw RecorderNativeOperationRevokedException()
             audioRecord = null
             expectedTracks = 1
@@ -772,6 +794,7 @@ class VideoRecorder(private val context: Context) {
         // audio degrades to video-only. Process/local terminal refusal is different: quarantine owns
         // the graph, so this thread stops Java-side progression without touching any native owner.
         if (audioStart.isFailure) {
+            logAudioDegrade("AudioRecord.startRecording failed", audioStart.exceptionOrNull())
             onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             muxerLock.withLock {
                 expectedTracks = 1
@@ -1046,7 +1069,7 @@ class VideoRecorder(private val context: Context) {
      * holding [muxerLock] (the monitor is reentrant).
      */
     private fun degradeAudioToVideoOnly(cause: Throwable) {
-        if (me.hletrd.telecampro.BuildConfig.DEBUG) Log.w(TAG, "audio degraded to video-only (mid-REC): ${cause.message}")
+        logAudioDegrade("audio degraded to video-only (mid-REC)", cause)
         audioDegradedMidRec = true
         onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
         // Zero the live meter explicitly: the mic is dead, and a meter frozen at its last level
@@ -1055,6 +1078,19 @@ class VideoRecorder(private val context: Context) {
         muxerLock.withLock {
             expectedTracks = 1
             maybeStartMuxer()
+        }
+    }
+
+    /**
+     * Every degrade-to-video-only edge publishes a silent clip ON PURPOSE, but its only trace used to
+     * be a UI route signal (or a DEBUG-only line), so a busy mic, an unsupported channel mask, a
+     * refused AAC encoder and the pending-token start race all looked identical in a release log.
+     * Release builds now keep the FIRST edge's reason and cause — once per recording, through the
+     * reserved facade, so a flapping route cannot spend more than one row.
+     */
+    private fun logAudioDegrade(reason: String, cause: Throwable? = null) {
+        if (audioDegradeLogged.compareAndSet(false, true)) {
+            Log.w(TAG, "audio degraded to video-only: $reason", cause)
         }
     }
 
