@@ -1714,25 +1714,49 @@ object MediaStoreWriter {
         }
     }
 
-    private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe {
+    /**
+     * Recovery's video verdict. An open failure throws (a transient PROBE failure). A parsed
+     * container decides on its tracks. An extractor THROW used to end there too, so a crash-truncated
+     * take — the commonest orphan, with no `moov` at all — stayed INDETERMINATE on every launch
+     * (AGG4-4). It is now judged structurally on the same descriptor: a proven-absent `moov` is
+     * INVALID; any other walk answer re-throws the extractor's cause, so the row stays a transient
+     * probe failure that is retained (and its expiry re-armed) for a later launch.
+     */
+    private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe =
+        openReadableParcelFd(context, uri).use { descriptor ->
+            recoveryVideoVerdict(
+                hasVideoTrack = { parcelFdHasVideoTrack(descriptor) },
+                moovPresence = { parcelFdMoovPresence(descriptor) },
+            )
+        }
+
+    private fun parcelFdHasVideoTrack(descriptor: ParcelFileDescriptor): Boolean {
         val extractor = MediaExtractor()
         return try {
-            val pfd = openReadableParcelFd(context, uri)
-            pfd.use { descriptor ->
-                extractor.setDataSource(descriptor.fileDescriptor)
-                if ((0 until extractor.trackCount).any { index ->
-                        extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
-                    }
-                ) {
-                    PendingProbe.VALID
-                } else {
-                    PendingProbe.INVALID
-                }
+            extractor.setDataSource(descriptor.fileDescriptor)
+            (0 until extractor.trackCount).any { index ->
+                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
             }
         } finally {
             runCatching { extractor.release() }
         }
     }
+
+    /** Positional reads only, so whatever offset the extractor left on the fd is irrelevant. */
+    private fun parcelFdMoovPresence(descriptor: ParcelFileDescriptor): Mp4MoovPresence =
+        FileInputStream(descriptor.fileDescriptor).use { input ->
+            val channel = input.channel
+            probeMp4MoovPresence(channel.size()) { offset, byteCount ->
+                val buffer = ByteBuffer.allocate(byteCount)
+                var position = offset
+                while (buffer.hasRemaining()) {
+                    val read = channel.read(buffer, position)
+                    if (read <= 0) return@probeMp4MoovPresence null
+                    position += read
+                }
+                buffer.array()
+            }
+        }
 
     /**
      * Reopens a closed recording and classifies its video track for the live stop tail. This used
@@ -1741,31 +1765,21 @@ object MediaStoreWriter {
      * launch recovery — which classifies the same exception as INDETERMINATE — would have kept.
      * Now only a successful open followed by a PARSED "no video track" verdict is authoritative; an
      * open or extractor throw is INDETERMINATE and the caller retains the private row for recovery
-     * — unless [muxerStopThrew], where an extractor throw on an opened file is INVALID (see
-     * [classifyFinalizedVideoTrack]).
+     * — unless [muxerStopThrew], where a confirming parse on a FRESH descriptor also throws AND the
+     * top-level walk proves no complete `moov` (see [classifyFinalizedVideoTrack], AGG4-3).
      */
     internal fun finalizedVideoTrackProbe(context: Context, uri: Uri, muxerStopThrew: Boolean): PendingProbe =
         classifyFinalizedVideoTrack(
             open = { openReadableParcelFd(context, uri) },
             muxerStopThrew = muxerStopThrew,
-            hasVideoTrack = { descriptor ->
-                val extractor = MediaExtractor()
-                try {
-                    extractor.setDataSource(descriptor.fileDescriptor)
-                    (0 until extractor.trackCount).any { index ->
-                        extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
-                            ?.startsWith("video/") == true
-                    }
-                } finally {
-                    runCatching { extractor.release() }
-                }
-            },
+            hasVideoTrack = ::parcelFdHasVideoTrack,
+            moovPresence = ::parcelFdMoovPresence,
             onOpenFailure = { failure ->
                 DiagnosticLog.w(TAG, "finalized video reopen failed for $uri; retained for recovery", failure)
             },
-            onParseFailure = { failure ->
-                val verdict = if (muxerStopThrew) "muxer stop threw; deleting" else "retained for recovery"
-                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; $verdict", failure)
+            onParseFailure = { failure, verdict ->
+                val outcome = if (verdict == PendingProbe.INVALID) "no complete moov; deleting" else "retained for recovery"
+                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; $outcome", failure)
             },
             // Recorder finalization thread, never main or camera; an interrupt simply skips the pause.
             beforeParseRetry = { sleepPreservingInterrupt(FINALIZED_VIDEO_PARSE_RETRY_MS) },
@@ -2673,7 +2687,8 @@ internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
 /**
  * Pure tri-state for the live finalized-video check. Provider OPEN failure proves nothing about the
  * bytes and is INDETERMINATE (retain, never delete). After a successful open, only an extractor that
- * PARSED the container and found no `video/` track is INVALID. A THROW from the extractor is
+ * PARSED the container and found no `video/` track is INVALID (plus, after a stop throw, a walk that
+ * PROVES the `moov` absent — below). A THROW from the extractor is
  * INDETERMINATE too (AGG2-18): `MediaExtractor.setDataSource` on a MediaProvider FUSE fd raises the
  * same `IOException("Failed to instantiate extractor")` for a transient provider/FUSE read failure
  * (media scan, MediaProvider restart mid-read, revoked fd) as for a corrupt container, and launch
@@ -2682,49 +2697,171 @@ internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
  * retained private and re-judged by recovery, which costs a pending row, never a good clip. Open
  * failure and parse failure each report their cause exactly once through the supplied observer.
  *
- * EXCEPT when [muxerStopThrew] (AGG3-6 / REG3-1): a `muxer.stop()` throw is independent evidence
- * that the moov was never written, and an opened-then-unparseable file is then a broken container,
- * not a transient read. Recovery cannot do better — it runs the same extractor and maps the same
- * throw to INDETERMINATE on every launch — so retaining it only kept a corrupt take private until
- * MediaProvider expired it, under copy promising it would be saved. An open failure stays
- * INDETERMINATE either way: an unopened provider still says nothing about the bytes.
- *
- * Because that INVALID deletes, one parse throw is not enough even then: the transient FUSE failure
- * AGG2-18 protects against can coincide with the stop throw. The parse is retried ONCE after
- * [beforeParseRetry] (a short pause in production), and only a SECOND throw is INVALID; a retry that
- * parses decides on the bytes as usual (RPL cycle 3, MRG3-2). Only the final cause is reported.
+ * [muxerStopThrew] (the tolerated empty-audio-track `muxer.stop()` throw — the ONLY stop throw that
+ * reaches this probe, see `muxerStopFailureIsTerminal`) is NOT evidence that the moov is missing
+ * (AGG4-3, correcting AGG3-6). AOSP `MPEG4Writer::reset()` reports a sample-less track as
+ * `ERROR_MALFORMED` and deliberately STILL writes the movie header for that one error ("Do not
+ * write out movie header on error except malformed track"), so that throw arrives over a finalized,
+ * playable file. A parse throw there is therefore the same AGG2-18 transient class as anywhere else
+ * and is never INVALID by itself. What the stop throw buys is one confirming parse: the first
+ * descriptor is closed, [beforeParseRetry] pauses, and a FRESH descriptor is opened (re-parsing the
+ * same fd only re-read a revoked/poisoned descriptor, CR4-7). A failed reopen is INDETERMINATE. If
+ * the fresh parse also throws, only [moovPresence]'s bounded top-level ISO-BMFF walk
+ * ([probeMp4MoovPresence]) may decide: a PROVEN absent `moov` is INVALID (the container was never
+ * finalized and recovery would judge it the same way), anything else — a present `moov` the
+ * extractor still rejected, or bytes the walk could not read — stays INDETERMINATE and is retained.
+ * Only the final cause is reported, together with the verdict it produced.
  */
 internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
     open: () -> D,
     hasVideoTrack: (D) -> Boolean,
+    moovPresence: (D) -> Mp4MoovPresence,
     muxerStopThrew: Boolean = false,
     onOpenFailure: (Throwable) -> Unit = {},
-    onParseFailure: (Throwable) -> Unit = {},
+    onParseFailure: (Throwable, PendingProbe) -> Unit = { _, _ -> },
     beforeParseRetry: () -> Unit = {},
 ): PendingProbe {
-    val descriptor = try {
+    val first = try {
         open()
     } catch (failure: Exception) {
         onOpenFailure(failure)
         return PendingProbe.INDETERMINATE
     }
-    return try {
-        val parsed = try {
-            hasVideoTrack(descriptor)
-        } catch (first: Exception) {
-            if (!muxerStopThrew) throw first
-            beforeParseRetry()
-            hasVideoTrack(descriptor)
-        }
-        if (parsed) PendingProbe.VALID else PendingProbe.INVALID
+    val firstFailure = try {
+        return if (hasVideoTrack(first)) PendingProbe.VALID else PendingProbe.INVALID
     } catch (failure: Exception) {
-        onParseFailure(failure)
-        if (muxerStopThrew) PendingProbe.INVALID else PendingProbe.INDETERMINATE
+        failure
     } finally {
         // A read-only descriptor's close cannot change the verdict already reached on its bytes.
-        runCatching { descriptor.close() }
+        runCatching { first.close() }
+    }
+    if (!muxerStopThrew) {
+        onParseFailure(firstFailure, PendingProbe.INDETERMINATE)
+        return PendingProbe.INDETERMINATE
+    }
+    beforeParseRetry()
+    val fresh = try {
+        open()
+    } catch (failure: Exception) {
+        failure.addSuppressed(firstFailure)
+        onOpenFailure(failure)
+        return PendingProbe.INDETERMINATE
+    }
+    try {
+        val secondFailure = try {
+            return if (hasVideoTrack(fresh)) PendingProbe.VALID else PendingProbe.INVALID
+        } catch (failure: Exception) {
+            failure
+        }
+        val presence = runCatching { moovPresence(fresh) }.getOrDefault(Mp4MoovPresence.UNKNOWN)
+        val verdict = moovPresenceVerdict(presence)
+        onParseFailure(secondFailure, verdict)
+        return verdict
+    } finally {
+        runCatching { fresh.close() }
     }
 }
+
+/** What a bounded top-level ISO-BMFF walk could PROVE about an MP4's movie box. */
+internal enum class Mp4MoovPresence {
+    /** A complete top-level `moov` box lies wholly inside the file. */
+    PRESENT,
+
+    /**
+     * Every top-level byte was accounted for and no complete `moov` exists: the walk reached EOF,
+     * or a box header was impossible / overran the file, so nothing complete can follow it.
+     */
+    ABSENT,
+
+    /** A read failed or the box bound was hit; nothing is proven either way. */
+    UNKNOWN,
+}
+
+/**
+ * AGG4-3 / AGG4-4: the structural "was this MP4 ever finalized" answer that `MediaExtractor` cannot
+ * give, because it throws the same exception for a transient FUSE read as for a moov-less file.
+ *
+ * Reads only 8- (or 16-) byte top-level box headers, never sample data. MediaMuxer/`MPEG4Writer`
+ * writes `moov` only at stop (into a reserved `free` area at the front or after `mdat`), and a
+ * killed recorder leaves `mdat` with its placeholder size — 0 (to EOF), a zero/garbage 64-bit
+ * largesize, or one that overruns the file. So a walk that hits EOF, an impossible header, or an
+ * overrun before seeing a whole `moov` is proof of absence: top-level boxes are sequential, and
+ * nothing complete can follow a box that does not end inside the file. A `moov` that itself overruns
+ * is truncated, not present. Any unreadable header or the [MAX_MP4_TOP_LEVEL_BOXES] bound is
+ * UNKNOWN — the caller then retains instead of deleting.
+ */
+internal fun probeMp4MoovPresence(
+    fileSize: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): Mp4MoovPresence {
+    if (fileSize < 0L) return Mp4MoovPresence.UNKNOWN
+    var offset = 0L
+    var boxes = 0
+    while (fileSize - offset >= 8L) {
+        if (++boxes > MAX_MP4_TOP_LEVEL_BOXES) return Mp4MoovPresence.UNKNOWN
+        val header = readAt(offset, 8)?.takeIf { it.size == 8 } ?: return Mp4MoovPresence.UNKNOWN
+        val size32 = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffff_ffffL
+        val type = String(header, 4, 4, Charsets.US_ASCII)
+        val remaining = fileSize - offset
+        val headerSize: Long
+        val boxSize: Long
+        when (size32) {
+            // "Extends to EOF": by definition the last top-level box.
+            0L -> {
+                headerSize = 8L
+                boxSize = remaining
+            }
+            1L -> {
+                if (remaining < 16L) return Mp4MoovPresence.ABSENT
+                val extended = readAt(offset + 8L, 8)?.takeIf { it.size == 8 }
+                    ?: return Mp4MoovPresence.UNKNOWN
+                headerSize = 16L
+                boxSize = ByteBuffer.wrap(extended).order(ByteOrder.BIG_ENDIAN).long
+            }
+            else -> {
+                headerSize = 8L
+                boxSize = size32
+            }
+        }
+        // Negative (unsigned overflow), smaller than its own header, or past EOF: no box can be
+        // delimited here, so neither this box nor anything after it is a complete moov.
+        if (boxSize < headerSize || boxSize > remaining) return Mp4MoovPresence.ABSENT
+        if (type == "moov") return Mp4MoovPresence.PRESENT
+        offset += boxSize
+    }
+    return Mp4MoovPresence.ABSENT
+}
+
+/**
+ * Launch recovery's video verdict on one opened descriptor (AGG4-4). A parse decides on its tracks;
+ * a parse throw is INVALID only when [moovPresence] PROVES the `moov` absent. Otherwise the
+ * extractor's cause is re-thrown (with any walk failure suppressed onto it) so `pendingProbeOutcome`
+ * records a transient probe failure — exactly the pre-walk answer for that row.
+ */
+internal fun recoveryVideoVerdict(
+    hasVideoTrack: () -> Boolean,
+    moovPresence: () -> Mp4MoovPresence,
+): PendingProbe {
+    val parseFailure = try {
+        return if (hasVideoTrack()) PendingProbe.VALID else PendingProbe.INVALID
+    } catch (failure: Exception) {
+        failure
+    }
+    val presence = try {
+        moovPresence()
+    } catch (walkFailure: Exception) {
+        parseFailure.addSuppressed(walkFailure)
+        throw parseFailure
+    }
+    if (moovPresenceVerdict(presence) == PendingProbe.INVALID) return PendingProbe.INVALID
+    throw parseFailure
+}
+
+/** Verdict a parse throw may take once the walk has spoken (shared by the live tail and recovery). */
+internal fun moovPresenceVerdict(presence: Mp4MoovPresence): PendingProbe =
+    if (presence == Mp4MoovPresence.ABSENT) PendingProbe.INVALID else PendingProbe.INDETERMINATE
+
+private const val MAX_MP4_TOP_LEVEL_BOXES = 4_096
 
 internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
 

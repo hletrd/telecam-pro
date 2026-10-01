@@ -1950,8 +1950,11 @@ internal data class FrozenRecordingStorage<T>(
 /** Provider effects kept injectable so the real frozen tail can be integration-tested on host. */
 internal data class RecordingStorageEffects<T>(
     /**
-     * Tri-state: INDETERMINATE (open failure) retains; only INVALID deletes. Called only after the
-     * tolerated muxer.stop() throw, so an extractor throw on an opened file is INVALID (AGG3-6).
+     * Tri-state: INDETERMINATE retains; only INVALID deletes. Called only after the tolerated
+     * muxer.stop() throw, which is NOT evidence of a missing moov (AOSP MPEG4Writer still writes the
+     * movie header over a sample-less track's ERROR_MALFORMED). An extractor throw is therefore
+     * INVALID only when a fresh-descriptor re-parse also throws AND the top-level box walk proves no
+     * complete moov (AGG4-3); every other throw or open failure retains.
      */
     val validateVideoTrack: (T) -> PendingProbe,
     val markComplete: (T) -> Boolean,
@@ -1974,8 +1977,9 @@ internal fun <T> completeFrozenRecordingStorage(
             PendingProbe.VALID -> FinalizedRecordingValidation.PASSED
             // An unopenable provider says nothing about the bytes (a busy provider deleted good
             // takes). Launch recovery treats the same answer as INDETERMINATE and keeps the row.
-            // An extractor throw on an OPENED file after the muxer.stop() throw is INVALID
-            // (AGG3-6): recovery could only re-throw on it forever (see classifyFinalizedVideoTrack).
+            // An extractor throw is INDETERMINATE too unless the structural walk proves the moov
+            // absent (AGG4-3) — recovery reaches the same verdict on the same bytes, so the live
+            // tail is never the stricter path (see classifyFinalizedVideoTrack).
             PendingProbe.INDETERMINATE -> FinalizedRecordingValidation.INDETERMINATE
             PendingProbe.INVALID, null -> FinalizedRecordingValidation.FAILED
         }
