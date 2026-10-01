@@ -215,6 +215,8 @@ class GlPipeline(
     private class AnalysisGeneration {
         val owner = AnalysisGenerationOwner()
         val executor = Executors.newSingleThreadExecutor()
+        // Generation-owned so a GL restart may report a still-recurring failure once more.
+        val failureLogGate = me.hletrd.telecampro.camera.AnalysisFailureLogGate()
         var frameCounter = 0
         var fbo = 0
         var texture = 0
@@ -1547,8 +1549,18 @@ class GlPipeline(
                     ) {
                         cb.invoke(hist, wave, focus, motion)
                     }
-                } catch (_: Throwable) {
-                    // Analysis is best-effort; swallow so a bad frame never surfaces to the UI.
+                } catch (failure: Throwable) {
+                    // Analysis is best-effort; contain so a bad frame never surfaces to the UI. But
+                    // this callback is also the app-side AE meter feed, so a deterministic throw
+                    // silently freezes S/ISO/P exposure (AGG2-23): report the first failure of each
+                    // class per GL generation through the reserved facade, never one per readback.
+                    if (generation.failureLogGate.shouldLog(failure)) {
+                        me.hletrd.telecampro.camera.DiagnosticLog.w(
+                            "GlPipeline",
+                            "analysis callback failed; contained (first of its class this generation)",
+                            failure,
+                        )
+                    }
                 } finally {
                     generation.owner.release()
                 }

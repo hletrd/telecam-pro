@@ -370,3 +370,29 @@ internal const val DIAGNOSTIC_HEARTBEAT_MS = 15_000L
 internal const val ZSL_SPIKE_WINDOW_MS = 1_000L
 internal const val PREVIEW_FRAME_GAP_THRESHOLD_MS = 200L
 internal const val FRAME_GAP_SUMMARY_INTERVAL_MS = 15_000L
+
+/**
+ * Once-per-class gate for the analysis executor's contained failures (AGG2-23 / DBG2-6).
+ *
+ * The analysis callback is also the app-side AE loop's meter feed, so a DETERMINISTIC exception in
+ * the AE step, the FocusDetail rider, or a scope consumer is thrown again on EVERY readback (every
+ * 5th frame). It used to be swallowed with no trace at all: the app-side exposure silently froze
+ * while the OSD still showed S/ISO/P. Logging it per readback would spend the ColorOS 300-row quota
+ * in seconds, so each GL generation (one instance per GlPipeline analysis generation) admits the
+ * FIRST failure of each exception class, up to [maxClasses] distinct classes, and nothing else.
+ */
+internal class AnalysisFailureLogGate(private val maxClasses: Int = 4) {
+    private val logged = HashSet<String>()
+
+    init {
+        require(maxClasses > 0)
+    }
+
+    @Synchronized
+    fun shouldLog(failure: Throwable): Boolean {
+        val key = failure.javaClass.name
+        if (key in logged || logged.size >= maxClasses) return false
+        logged += key
+        return true
+    }
+}
