@@ -514,18 +514,35 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
+                            override fun onStoreMemorySlot(slot: MemorySlot) {
+                                // The bank records WHY it is silent (AGG3-8): only this Activity
+                                // knows whether recordAudio=false is the denial consequence.
+                                vm.storeMemorySlot(
+                                    slot,
+                                    audioOffByDenial = bankAudioOffByDenial(
+                                        recordAudio = vm.state.value.recordAudio,
+                                        audioDenialReason = permissionPreferences
+                                            .getBoolean(AUDIO_OFF_BY_DENIAL_KEY, false),
+                                    ),
+                                )
+                            }
+
                             override fun onRecallMemorySlot(slot: MemorySlot) {
                                 val applied = vm.recallMemorySlot(slot)
-                                // A bank stores recordAudio with no provenance, so only an APPLIED
-                                // recall of a bank that WANTS audio may clear the denial reason.
-                                // Clearing it on every recall (tracer T9 / AGG-37) made a bank saved
-                                // while denied come back silent for good — a later grant could no
-                                // longer restore audio (AGG2-26). `applied` is the recall's own
-                                // answer: the post-hoc activeMemorySlot check was also true for a
-                                // refused re-recall of the slot already active.
-                                if (audioDenialReasonClearedByRecall(applied, vm.state.value.recordAudio)) {
+                                // The reason follows the APPLIED bank's own provenance (AGG3-8):
+                                // denial-silent sets it, operator-silent or audio-on clears it. A
+                                // provenance-blind rule protected one of those banks only by
+                                // breaking the other (AGG-37 vs AGG2-26). `applied` is the recall's
+                                // own answer: the post-hoc activeMemorySlot check was also true for
+                                // a refused re-recall of the slot already active.
+                                val reason = audioDenialReasonAfterRecall(
+                                    recallApplied = applied != null,
+                                    recalledRecordAudio = applied?.recordAudio ?: false,
+                                    recalledOffByDenial = applied?.recordAudioOffByDenial,
+                                )
+                                if (reason != null) {
                                     permissionPreferences.edit(commit = true) {
-                                        putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false)
+                                        putBoolean(AUDIO_OFF_BY_DENIAL_KEY, reason)
                                     }
                                 }
                             }

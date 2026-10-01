@@ -1602,6 +1602,7 @@ class CameraViewModel private constructor(
         // The one exit every APPLIED load reaches (refusals return above), so recallMemorySlot can
         // tell an applied recall from a refused one without a post-hoc state comparison (AGG2-26).
         appliedLoadCount++
+        appliedAudioOffByDenial = e.recordAudioOffByDenial
         // NOTE deliberately NO refreshProgramAppSide() here: the flag is already derived into
         // cSynced above, and calling the refresher would route the recalled packet back through
         // updateControls' whole-packet normalization against the outgoing route's caps (the
@@ -3526,7 +3527,14 @@ class CameraViewModel private constructor(
         scheduleSettingsSave()
     }
 
-    override fun onStoreMemorySlot(slot: MemorySlot) {
+    override fun onStoreMemorySlot(slot: MemorySlot) = storeMemorySlot(slot, audioOffByDenial = null)
+
+    /**
+     * [onStoreMemorySlot] with the bank's audio-off provenance (AGG3-8). The denial reason lives in
+     * the Activity's permission preferences, so only the Activity can supply it; null records
+     * "unknown" and recall keeps its pre-provenance rule for that bank.
+     */
+    fun storeMemorySlot(slot: MemorySlot, audioOffByDenial: Boolean?) {
         if (rejectIfRecording()) return
         val live = _state.value
         // Same FRONT substitution as saveSettingsIfEnabled: recalled packets are REAR-route optics
@@ -3551,7 +3559,7 @@ class CameraViewModel private constructor(
             currentExtras().copy(teleconverter = preFrontRearTeleconverter)
         } else {
             currentExtras()
-        }
+        }.copy(recordAudioOffByDenial = audioOffByDenial)
         settingsStore.saveGeneratedPreset(
             slot,
             snapshot.controls,
@@ -3567,16 +3575,24 @@ class CameraViewModel private constructor(
     // Main-confined count of loads that reached applyLoaded's applied exit (see recallMemorySlot).
     private var appliedLoadCount = 0L
 
+    // The applied bank's audio-off provenance, captured at the same exit (AGG3-8).
+    private var appliedAudioOffByDenial: Boolean? = null
+
+    /** What an APPLIED MR recall restored, for the Activity's audio-denial reason (AGG3-8). */
+    data class AppliedMemoryRecall(val recordAudio: Boolean, val recordAudioOffByDenial: Boolean?)
+
     /**
-     * [onRecallMemorySlot] that also answers whether the recall APPLIED. The Activity needs that
-     * truth for the audio-denial reason ([me.hletrd.telecampro.audioDenialReasonClearedByRecall]);
-     * the old `activeMemorySlot == slot` check after the fact was also true for a REFUSED re-recall of
-     * the slot that was already active (AGG2-26).
+     * [onRecallMemorySlot] that also answers whether the recall APPLIED, and with what audio
+     * provenance; null when refused. The Activity needs that truth for the audio-denial reason
+     * ([me.hletrd.telecampro.audioDenialReasonAfterRecall]); the old `activeMemorySlot == slot`
+     * check after the fact was also true for a REFUSED re-recall of the slot that was already
+     * active (AGG2-26).
      */
-    fun recallMemorySlot(slot: MemorySlot): Boolean {
+    fun recallMemorySlot(slot: MemorySlot): AppliedMemoryRecall? {
         val before = appliedLoadCount
         onRecallMemorySlot(slot)
-        return appliedLoadCount != before
+        if (appliedLoadCount == before) return null
+        return AppliedMemoryRecall(_state.value.recordAudio, appliedAudioOffByDenial)
     }
 
     override fun onRecallMemorySlot(slot: MemorySlot) {

@@ -1,6 +1,8 @@
 package me.hletrd.telecampro
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -82,14 +84,28 @@ class MicrophoneGrantRestoreTest {
         )
     }
 
-    // AGG2-26 / TE2-8: only an APPLIED recall of a bank that WANTS audio clears the denial reason.
+    // AGG3-8 (CRIT3-3, REG3-4): an applied recall sets the reason from the bank's own provenance.
     @Test
-    fun `recall clears the denial reason only when an applied bank wants audio`() {
-        assertTrue(audioDenialReasonClearedByRecall(recallApplied = true, recalledRecordAudio = true))
-        // A silent bank may have been saved while denied: keep the reason so a grant still restores.
-        assertFalse(audioDenialReasonClearedByRecall(recallApplied = true, recalledRecordAudio = false))
+    fun `recall sets the denial reason from the applied bank's provenance`() {
+        // A bank that wants audio clears the reason whatever it recorded.
+        assertEquals(false, audioDenialReasonAfterRecall(true, recalledRecordAudio = true, recalledOffByDenial = null))
+        assertEquals(false, audioDenialReasonAfterRecall(true, recalledRecordAudio = true, recalledOffByDenial = true))
+        // Silent by denial: set, so a later grant restores audio (AGG2-26).
+        assertEquals(true, audioDenialReasonAfterRecall(true, recalledRecordAudio = false, recalledOffByDenial = true))
+        // Silent by the operator: clear, so a later grant does not override them (AGG-37).
+        assertEquals(false, audioDenialReasonAfterRecall(true, recalledRecordAudio = false, recalledOffByDenial = false))
+        // A pre-provenance silent bank keeps the AGG2-26 rule: leave the reason alone.
+        assertNull(audioDenialReasonAfterRecall(true, recalledRecordAudio = false, recalledOffByDenial = null))
         // Refused recall (REC active, empty slot, rejected optics) changes nothing.
-        assertFalse(audioDenialReasonClearedByRecall(recallApplied = false, recalledRecordAudio = true))
-        assertFalse(audioDenialReasonClearedByRecall(recallApplied = false, recalledRecordAudio = false))
+        assertNull(audioDenialReasonAfterRecall(false, recalledRecordAudio = true, recalledOffByDenial = false))
+        assertNull(audioDenialReasonAfterRecall(false, recalledRecordAudio = false, recalledOffByDenial = true))
+    }
+
+    @Test
+    fun `a bank records denial provenance only when it is silent by denial`() {
+        assertTrue(bankAudioOffByDenial(recordAudio = false, audioDenialReason = true))
+        assertFalse(bankAudioOffByDenial(recordAudio = false, audioDenialReason = false))
+        // Audio on: a stale reason must not be frozen into the bank.
+        assertFalse(bankAudioOffByDenial(recordAudio = true, audioDenialReason = true))
     }
 }

@@ -24,6 +24,8 @@ import me.hletrd.telecampro.storage.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -203,20 +205,26 @@ class OpticsRecallTransactionRobolectricTest {
     // AGG2-26: the Activity keys the audio-denial reason on the recall's own applied answer; the
     // post-hoc `activeMemorySlot == slot` check was true for a refused re-recall of the same slot.
     @Test
-    fun `recallMemorySlot answers applied only for a recall that applied`() {
+    fun `recallMemorySlot answers an applied recall only for a recall that applied`() {
         saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
         val (vm, engine) = createViewModel()
         setAcceptedTeleBaseline(vm, engine)
 
-        assertTrue(vm.recallMemorySlot(MemorySlot.MR1))
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR1))
         assertEquals(MemorySlot.MR1, vm.state.value.activeMemorySlot)
 
         setRecordingState(vm, true)
-        assertFalse(vm.recallMemorySlot(MemorySlot.MR1))
+        assertNull(vm.recallMemorySlot(MemorySlot.MR1))
         assertEquals(MemorySlot.MR1, vm.state.value.activeMemorySlot)
 
         setRecordingState(vm, false)
-        assertFalse(vm.recallMemorySlot(MemorySlot.MR2))
+        assertNull(vm.recallMemorySlot(MemorySlot.MR2))
+
+        // AGG3-8: the bank's audio-off provenance rides the store and comes back with the recall.
+        vm.storeMemorySlot(MemorySlot.MR2, audioOffByDenial = true)
+        assertEquals(true, vm.recallMemorySlot(MemorySlot.MR2)?.recordAudioOffByDenial)
+        vm.onStoreMemorySlot(MemorySlot.MR2)
+        assertNull(requireNotNull(vm.recallMemorySlot(MemorySlot.MR2)).recordAudioOffByDenial)
     }
 
     @Test

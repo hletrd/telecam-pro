@@ -99,20 +99,34 @@ internal fun audioRestoredByMicrophoneGrant(
 ): Boolean = audioDisabledByDenial && !recordAudio && hasMicrophonePermission
 
 /**
- * Whether an MR recall clears the audio-denial reason ([audioRestoredByMicrophoneGrant]'s input).
- *
- * A bank stores only `recordAudio`, with no provenance, so `false` in a bank may be deliberate
- * silence OR the denial-disabled state it happened to be saved in. Clearing the reason on EVERY
- * recall re-created the self-locking silent-audio state the reason exists to prevent: a bank saved
- * while denied came back silent, and a later grant could no longer restore audio (AGG2-26). Only a
- * recall that actually APPLIED a bank that WANTS audio settles the question — audio is on, so no
- * stale denial may outlive it. A refused recall (REC active, empty slot, rejected optics), even of
- * the slot already active, changes nothing.
+ * The audio-off provenance an MR bank records at save time (AGG3-8): true only when the bank is
+ * silent BECAUSE the microphone was denied ([audioDenialReason] is the live AUDIO_OFF_BY_DENIAL_KEY).
+ * A bank that wants audio, or one the operator silenced, records false.
  */
-internal fun audioDenialReasonClearedByRecall(
+internal fun bankAudioOffByDenial(recordAudio: Boolean, audioDenialReason: Boolean): Boolean =
+    !recordAudio && audioDenialReason
+
+/**
+ * The audio-denial reason ([audioRestoredByMicrophoneGrant]'s input) after an MR recall: the value
+ * to persist, or null to leave it unchanged.
+ *
+ * A refused recall (REC active, empty slot, rejected optics), even of the slot already active,
+ * changes nothing. An applied recall sets the reason from the bank's OWN provenance (AGG3-8,
+ * CRIT3-3 / REG3-4): a bank that wants audio clears it (audio is on, so no stale denial may outlive
+ * it); a bank saved silent by denial sets it, so a later grant restores audio (AGG2-26); a bank the
+ * operator silenced clears it, so a later grant does NOT override that choice (AGG-37). The two
+ * earlier provenance-blind rules each re-opened the other bug. A bank saved before provenance was
+ * recorded ([recalledOffByDenial] null) keeps the AGG2-26 rule: clear only when it wants audio.
+ */
+internal fun audioDenialReasonAfterRecall(
     recallApplied: Boolean,
     recalledRecordAudio: Boolean,
-): Boolean = recallApplied && recalledRecordAudio
+    recalledOffByDenial: Boolean?,
+): Boolean? = when {
+    !recallApplied -> null
+    recalledRecordAudio -> false
+    else -> recalledOffByDenial
+}
 
 
 /**

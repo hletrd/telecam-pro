@@ -91,6 +91,13 @@ data class ExtraSettings(
     val videoResolution: String = "",
     val openGate: Boolean = false,
     val recordAudio: Boolean = true,
+    // AGG3-8 (CRIT3-3, REG3-4): an MR bank's audio-off PROVENANCE. true = the bank's
+    // recordAudio=false was the microphone-denial consequence (MainActivity's
+    // AUDIO_OFF_BY_DENIAL_KEY), false = the operator chose silence or the bank wants audio. Without
+    // it recall could not tell a denial snapshot from deliberate silence, and either recall rule
+    // re-opened the other's bug (AGG-37 vs AGG2-26). null = unknown: a bank saved before this key
+    // existed, or the main blob, whose provenance lives in the permission preferences instead.
+    val recordAudioOffByDenial: Boolean? = null,
     val audioGain: Float = 1f,
     val audioScene: AudioScene = AudioScene.STANDARD,
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
@@ -378,6 +385,10 @@ class SettingsStore(
                 videoResolution = safeString("${prefix}videoResolution", null) ?: ed.videoResolution,
                 openGate = safeBoolean("${prefix}openGate", ed.openGate),
                 recordAudio = safeBoolean("${prefix}recordAudio", ed.recordAudio),
+                recordAudioOffByDenial = runCatching {
+                    val key = "${prefix}recordAudioOffByDenial"
+                    if (prefs.contains(key)) prefs.getBoolean(key, false) else null
+                }.getOrNull(),
                 audioGain = normalizeAudioGain(safeFloat("${prefix}audioGain", ed.audioGain)),
                 audioScene = enumOr(safeString("${prefix}audioScene", null), ed.audioScene),
                 audioInputPreference = enumOr(safeString("${prefix}audioInputPreference", null), ed.audioInputPreference),
@@ -477,6 +488,9 @@ class SettingsStore(
         putString("${prefix}videoResolution", e.videoResolution)
         putBoolean("${prefix}openGate", e.openGate)
         putBoolean("${prefix}recordAudio", e.recordAudio)
+        // Absent, not false, when unknown: recall must keep its pre-provenance behaviour for it.
+        e.recordAudioOffByDenial?.let { putBoolean("${prefix}recordAudioOffByDenial", it) }
+            ?: remove("${prefix}recordAudioOffByDenial")
         putFloat("${prefix}audioGain", e.audioGain)
         putString("${prefix}audioScene", e.audioScene.name)
         putString("${prefix}audioInputPreference", e.audioInputPreference.name)

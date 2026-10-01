@@ -625,4 +625,88 @@ class SettingsStoreTest {
         assertEquals(100, recalled.exposureCompensation)
         assertEquals(0f, recalledPacket.extras.audioGain, 0f)
     }
+
+    // AGG3-8 (CRIT3-3, REG3-4): each sequence below goes through a real bank round trip, then the
+    // Activity's two pure decisions (what the bank records, what recall does to the reason), then
+    // the grant rule. A provenance-blind bank could satisfy only one of the two.
+    @Test
+    fun `a bank saved silent by denial is restored with audio by a later grant`() {
+        val store = SettingsStore(FakePrefs())
+        // Mic denied: audio dropped as a denial consequence, reason set; the operator saves MR1.
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            ManualControls(),
+            ExtraSettings(
+                recordAudio = false,
+                recordAudioOffByDenial = me.hletrd.telecampro.bankAudioOffByDenial(false, audioDenialReason = true),
+            ),
+        )
+        // Later the operator turns audio on (reason cleared), then recalls MR1.
+        val bank = requireNotNull(store.loadPreset(MemorySlot.MR1)).extras
+        assertEquals(true, bank.recordAudioOffByDenial)
+        val reason = me.hletrd.telecampro.audioDenialReasonAfterRecall(
+            recallApplied = true,
+            recalledRecordAudio = bank.recordAudio,
+            recalledOffByDenial = bank.recordAudioOffByDenial,
+        )
+        assertEquals(true, reason)
+        assertTrue(
+            me.hletrd.telecampro.audioRestoredByMicrophoneGrant(
+                audioDisabledByDenial = reason!!,
+                recordAudio = bank.recordAudio,
+                hasMicrophonePermission = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `a bank the operator silenced stays silent after a later grant`() {
+        val store = SettingsStore(FakePrefs())
+        // Mic granted, operator switches audio off on purpose (reason cleared) and saves MR1.
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            ManualControls(),
+            ExtraSettings(
+                recordAudio = false,
+                recordAudioOffByDenial = me.hletrd.telecampro.bankAudioOffByDenial(false, audioDenialReason = false),
+            ),
+        )
+        // Later the mic is revoked (reason set), then MR1 is recalled.
+        val bank = requireNotNull(store.loadPreset(MemorySlot.MR1)).extras
+        assertEquals(false, bank.recordAudioOffByDenial)
+        val reason = me.hletrd.telecampro.audioDenialReasonAfterRecall(
+            recallApplied = true,
+            recalledRecordAudio = bank.recordAudio,
+            recalledOffByDenial = bank.recordAudioOffByDenial,
+        )
+        assertEquals(false, reason)
+        assertFalse(
+            me.hletrd.telecampro.audioRestoredByMicrophoneGrant(
+                audioDisabledByDenial = reason!!,
+                recordAudio = bank.recordAudio,
+                hasMicrophonePermission = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `audio-off provenance is absent for a legacy bank and cleared by an unknown resave`() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        store.saveGeneratedPreset(MemorySlot.MR1, ManualControls(), ExtraSettings(recordAudio = false))
+        assertNull(requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            ManualControls(),
+            ExtraSettings(recordAudio = false, recordAudioOffByDenial = true),
+        )
+        assertEquals(true, requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+        // A resave without provenance must not leave the old answer standing for the new bank.
+        store.saveGeneratedPreset(MemorySlot.MR1, ManualControls(), ExtraSettings(recordAudio = false))
+        assertNull(requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+        // A type-mismatched key degrades alone to "unknown".
+        prefs.edit().putString("preset_MR1_recordAudioOffByDenial", "x").commit()
+        assertNull(requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+    }
 }
