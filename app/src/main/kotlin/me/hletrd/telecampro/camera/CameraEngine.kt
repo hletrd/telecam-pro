@@ -3778,6 +3778,18 @@ class CameraEngine internal constructor(
     }
 
     /**
+     * The operator's live recording-size REQUEST (not the delivered [videoSize]). The ViewModel's
+     * rollback mirror reads it on the main queue, after every interactive pick that preceded it.
+     */
+    internal fun currentRequestedVideoSize(): Size? = requestedVideoSize
+
+    /**
+     * The live DNG intent, for the same rollback mirror (AGG3-10): a direct [setRawWanted] write
+     * after the rollback committed is newer than the frozen packet's `rawWanted`.
+     */
+    internal fun currentRawWanted(): Boolean = rawWanted
+
+    /**
      * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
      * SurfaceTexture buffer and encoder all agree on the same dimensions.
      *
@@ -3787,12 +3799,6 @@ class CameraEngine internal constructor(
      * that wrote the field outside any transaction is exactly the transaction-less shortcut that can
      * pair an outgoing caps snapshot with a newer optics generation — do not reintroduce one.
      */
-    /**
-     * The operator's live recording-size REQUEST (not the delivered [videoSize]). The ViewModel's
-     * rollback mirror reads it on the main queue, after every interactive pick that preceded it.
-     */
-    internal fun currentRequestedVideoSize(): Size? = requestedVideoSize
-
     fun setVideoResolution(s: Size): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
         if (offered != null && s !in offered) {

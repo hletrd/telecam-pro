@@ -298,6 +298,24 @@ class OpticsRecallTransactionRobolectricTest {
     }
 
     @Test
+    fun `rollback mirror keeps a DNG toggle made after the rollback committed`() {
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        assertFalse(vm.state.value.photoFormats.dngRaw)
+        engine.setCameraOverride("2")
+        val attempt = currentRollbackAttempt(engine)
+        // TELE pins the standalone 3x, so the DNG tap is a direct write the engine keeps; it lands
+        // on the main queue before the rollback's mirror runs (AGG3-10).
+        invokeRollback(engine, attempt)
+        vm.onSetPhotoFormats(vm.state.value.photoFormats.copy(dngRaw = true))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(engine.currentRawWanted())
+        assertTrue("chip follows the engine's live intent", vm.state.value.photoFormats.dngRaw)
+    }
+
+    @Test
     fun `superseded rollback cannot replace a newer recalled declaration`() {
         saveTelePreset(MemorySlot.MR2, PhoneModel.VIVO_X300_ULTRA, TeleconverterProfile.ZEISS_200_X300)
         saveTelePreset(MemorySlot.MR3, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)

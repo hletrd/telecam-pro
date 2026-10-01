@@ -960,6 +960,11 @@ class CameraViewModel private constructor(
                 // queue after the rollback committed is a newer direct write the engine kept, and
                 // the packet would revert only the mirror (and then persist it) (AGG2-7).
                 requestedVideoResolution = engine.currentRequestedVideoSize()
+                // Same rule for the other direct-write route input (AGG3-10): a DNG tap on a
+                // non-remapping route (Video, TELE, FRONT/EXTERNAL, pre-start) between the engine's
+                // commit and this post is kept by the engine, so the packet's `rawWanted` would
+                // revert only the chip and the pending request — and then persist that.
+                val liveRawWanted = engine.currentRawWanted()
                 _state.update {
                     it.copy(
                         mode = rollback.mode,
@@ -981,10 +986,10 @@ class CameraViewModel private constructor(
                         // DNG is a route input: the engine restored it with the route it selected,
                         // so the chip must follow or the UI keeps promising a DNG the restored
                         // logical session cannot write (AGG-4).
-                        photoFormats = if (it.photoFormats.dngRaw == rollback.rawWanted) {
+                        photoFormats = if (it.photoFormats.dngRaw == liveRawWanted) {
                             it.photoFormats
                         } else {
-                            it.photoFormats.copy(dngRaw = rollback.rawWanted).withDefaultIfEmpty()
+                            it.photoFormats.copy(dngRaw = liveRawWanted).withDefaultIfEmpty()
                         },
                     )
                 }
@@ -993,10 +998,10 @@ class CameraViewModel private constructor(
                 // setRawWanted with no remap packet — re-flipping the route rollback just restored
                 // with the zoom number still on the old scale (AGG2-9).
                 pendingPhotoFormatsUntilInventory = pendingPhotoFormatsUntilInventory?.let { pending ->
-                    if (pending.dngRaw == rollback.rawWanted) {
+                    if (pending.dngRaw == liveRawWanted) {
                         pending
                     } else {
-                        pending.copy(dngRaw = rollback.rawWanted).withDefaultIfEmpty()
+                        pending.copy(dngRaw = liveRawWanted).withDefaultIfEmpty()
                     }
                 }
                 // Mode-derived owners were applied optimistically with the rejected packet. The
