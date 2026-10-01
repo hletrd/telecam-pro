@@ -9,6 +9,10 @@ import org.junit.Test
 
 class MediaDurabilityPolicyTest {
 
+    private companion object {
+        const val PRIMARY_GRID_ID = 10_048L
+    }
+
     @Test
     fun `completion marker retries boundedly and exposes exhaustion`() {
         var calls = 0
@@ -112,7 +116,7 @@ class MediaDurabilityPolicyTest {
             "meta version" to locatedHeif(metaVersion = 1),
             "pitm version" to locatedHeif(pitmVersion = 2),
             "iloc version" to locatedHeif(ilocVersion = 3),
-            "idat construction" to locatedHeif(ilocVersion = 1, constructionMethod = 1),
+            "item-offset construction" to locatedHeif(ilocVersion = 1, constructionMethod = 2),
             "external data reference" to locatedHeif(dataReferenceIndex = 1),
             "whole-source zero length" to locatedHeif(extentLength = 0),
         )
@@ -125,6 +129,104 @@ class MediaDurabilityPolicyTest {
                 orphanDisposition(PendingJournalState.REGISTERED, probe(bytes)),
             )
         }
+    }
+
+    @Test
+    fun `the MPEG4Writer gridded layout with an idat primary is structurally valid`() {
+        // AGG3-3 / DBG3-1: every HEIF this app writes has this shape — the grid descriptor is the
+        // primary item, stored in meta/idat (construction 1), and the coded tiles are
+        // construction-0 items in mdat. The probe used to call it INDETERMINATE, so launch recovery
+        // could never adopt a retained HEIF.
+        assertEquals(PendingProbe.VALID, probe(gridHeif()))
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.REGISTERED, probe(gridHeif())),
+        )
+        // base_offset is added to an idat-relative extent too.
+        assertEquals(
+            PendingProbe.VALID,
+            probe(gridHeif(primary = GridItem(construction = 1, base = 4, offset = 0, length = 4))),
+        )
+        // A second idat-stored item in range is judged against idat, not mdat.
+        assertEquals(
+            PendingProbe.VALID,
+            probe(gridHeif(items = List(2) { GridItem() } + GridItem(construction = 1, offset = 2, length = 6))),
+        )
+    }
+
+    @Test
+    fun `a truncated tile or an out-of-range idat primary is invalid`() {
+        val cases = mapOf(
+            "tile runs past mdat" to gridHeif(items = List(2) { GridItem() } + GridItem(length = 40)),
+            "tile points into meta" to gridHeif(items = List(2) { GridItem() } + GridItem(offset = 0)),
+            "primary past idat end" to gridHeif(primary = GridItem(construction = 1, offset = 4, length = 8)),
+            "primary base past idat" to gridHeif(primary = GridItem(construction = 1, base = 9, offset = 0, length = 1)),
+            "idat item past idat end" to
+                gridHeif(items = List(2) { GridItem() } + GridItem(construction = 1, offset = 6, length = 6)),
+            "no idat box" to gridHeif(includeIdat = false),
+            "no coded item at all" to gridHeif(items = emptyList()),
+            "only idat-stored items" to gridHeif(items = listOf(GridItem(construction = 1, offset = 0, length = 8))),
+            "tile base does not fit a Long" to
+                gridHeif(items = List(2) { GridItem() } + GridItem(baseBytes = ByteArray(8) { 0xff.toByte() })),
+            "tile base plus offset overflows" to
+                gridHeif(items = List(2) { GridItem() } + GridItem(base = Long.MAX_VALUE, offset = 1)),
+        )
+        cases.forEach { (name, bytes) -> assertEquals(name, PendingProbe.INVALID, probe(bytes)) }
+
+        // A crash-truncated file loses the mdat tail the tiles point into.
+        val complete = gridHeif()
+        assertEquals(PendingProbe.INVALID, probe(complete.copyOf(complete.size - 1)))
+        // A proven missing range outranks an item the probe cannot judge.
+        assertEquals(
+            PendingProbe.INVALID,
+            probe(gridHeif(items = listOf(GridItem(dataRef = 1), GridItem(length = 40)))),
+        )
+    }
+
+    @Test
+    fun `gridded items the probe cannot judge keep the row pending`() {
+        val cases = mapOf(
+            "external tile data reference" to gridHeif(items = List(2) { GridItem() } + GridItem(dataRef = 1)),
+            "item-offset tile construction" to gridHeif(items = List(2) { GridItem() } + GridItem(construction = 2)),
+            "whole-source tile length" to gridHeif(items = List(2) { GridItem() } + GridItem(length = 0)),
+            "item-offset primary construction" to gridHeif(primary = GridItem(construction = 2, offset = 0, length = 8)),
+        )
+        cases.forEach { (name, bytes) ->
+            assertEquals(name, PendingProbe.INDETERMINATE, probe(bytes))
+        }
+
+        // An unreadable tile field is a provider-read question, never proof of truncation.
+        val bytes = gridHeif()
+        val iloc = boxOffset(bytes, "iloc")
+        // iloc fields: fullbox(4) + sizes(2) + count(2); then each item is id(2) + construction(2)
+        // + data ref(2) + base(8) + extent count(2) + offset(4) + length(4) = 24 bytes. The primary
+        // is item 0, so item 1's base, offset and length start at these offsets.
+        val firstTile = iloc + 8L + 8L + 24L
+        listOf(firstTile + 6L, firstTile + 16L, firstTile + 20L).forEach { offset ->
+            assertEquals("unreadable at $offset", PendingProbe.INDETERMINATE, probe(bytes, nullAt = offset))
+        }
+    }
+
+    @Test
+    fun `non-primary iloc oddities still leave a construction-0 primary verdict unchanged`() {
+        // The construction-0 path only ever SKIPPED non-primary fields; reading them leniently for
+        // the grid branch must not move this path's verdict.
+        val odd = fullBox(
+            1,
+            byteArrayOf(0x44, 0x80.toByte()) + u16(2) +
+                u16(1) + u16(0) + u16(0) + u64(0) + u16(1) + u32(0) + u32(4) +
+                u16(2) + u16(0) + u16(7) + ByteArray(8) { 0xff.toByte() } + u16(1) + u32(0) + u32(0),
+        )
+        val withPlaceholder = rawIlocHeif(odd)
+        val mdatPayload = boxOffset(withPlaceholder, "mdat") + 8L
+        val primaryOffsetAt = boxOffset(withPlaceholder, "iloc") + 8L + 8L + 16L
+        val bytes = withPlaceholder.copyOf().apply {
+            u32(mdatPayload).copyInto(this, primaryOffsetAt.toInt())
+        }
+        assertEquals(PendingProbe.VALID, probe(bytes))
+        // ...and an unreadable non-primary field is likewise still ignored there.
+        val secondItemBase = boxOffset(bytes, "iloc") + 8L + 8L + 24L + 6L
+        assertEquals(PendingProbe.VALID, probe(bytes, nullAt = secondItemBase))
     }
 
     @Test
@@ -330,7 +432,7 @@ class MediaDurabilityPolicyTest {
 
     @Test
     fun `semantic HEIF indeterminacy is retained without becoming a retryable probe error`() {
-        val unsupported = locatedHeif(ilocVersion = 1, constructionMethod = 1)
+        val unsupported = locatedHeif(ilocVersion = 1, constructionMethod = 2)
         val outcome = pendingProbeOutcome { probe(unsupported) }
 
         assertEquals(PendingProbe.INDETERMINATE, outcome.probe)
@@ -547,6 +649,46 @@ class MediaDurabilityPolicyTest {
             else -> box("mdat", byteArrayOf(1, 2, 3, 4))
         }
         return ftyp + finalMeta + mdat
+    }
+
+    /** One iloc entry in [gridHeif]; a null [offset] auto-places a 4-byte tile in mdat. */
+    private data class GridItem(
+        val construction: Int = 0,
+        val dataRef: Int = 0,
+        val base: Long = 0,
+        val offset: Long? = null,
+        val length: Long = 4,
+        val baseBytes: ByteArray? = null,
+    )
+
+    /**
+     * The layout AOSP MPEG4Writer writes for a gridded HEIF (measured on the app's own device
+     * output): ftyp + meta(pitm, iloc v1, idat) + mdat, with the primary grid descriptor stored
+     * in an 8-byte idat (construction 1) and each coded item a 4-byte run in mdat.
+     */
+    private fun gridHeif(
+        primary: GridItem = GridItem(construction = 1, offset = 0, length = 8),
+        items: List<GridItem> = List(3) { GridItem() },
+        includeIdat: Boolean = true,
+    ): ByteArray {
+        val ftyp = box("ftyp", "heic\u0000\u0000\u0000\u0000mif1".toByteArray())
+        val mdatPayloadSize = 4 * maxOf(items.size, 1)
+        fun meta(mdatPayloadOffset: Long): ByteArray {
+            fun entry(id: Long, item: GridItem, autoIndex: Int): ByteArray =
+                u16(id) + u16(item.construction.toLong()) + u16(item.dataRef.toLong()) +
+                    (item.baseBytes ?: u64(item.base)) + u16(1) +
+                    u32(item.offset ?: (mdatPayloadOffset + 4L * autoIndex)) + u32(item.length)
+            val entries = items.foldIndexed(entry(PRIMARY_GRID_ID, primary, 0)) { index, acc, item ->
+                acc + entry(PRIMARY_GRID_ID + 1 + index, item, index)
+            }
+            val iloc = box("iloc", fullBox(1, byteArrayOf(0x44, 0x80.toByte()) + u16(items.size + 1L) + entries))
+            val children = box("pitm", fullBox(0, u16(PRIMARY_GRID_ID))) + iloc +
+                (if (includeIdat) box("idat", ByteArray(8) { it.toByte() }) else byteArrayOf())
+            return box("meta", fullBox(0, children))
+        }
+        val provisional = meta(0)
+        val finalMeta = meta(ftyp.size.toLong() + provisional.size + 8L)
+        return ftyp + finalMeta + box("mdat", ByteArray(mdatPayloadSize) { 7 })
     }
 
     private fun fullBox(version: Int, payload: ByteArray): ByteArray =

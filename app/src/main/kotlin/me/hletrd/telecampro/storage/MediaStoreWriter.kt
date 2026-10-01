@@ -2716,9 +2716,10 @@ internal fun orphanDisposition(
 /**
  * Structural HEIF completion probe. Reads bounded ISO-BMFF metadata only, never pixel data. A valid
  * result requires a HEIF brand, one supported primary item, and every explicit primary-item extent
- * to resolve wholly inside an mdat payload. Malformed or out-of-range structures are INVALID;
- * unreadable bytes, unbounded boxes, and unsupported meta/pitm/iloc variants are INDETERMINATE so
- * recovery retains the private row instead of risking deletion.
+ * to resolve wholly inside an mdat payload — or, for the idat-stored grid primary that every
+ * app-written still carries, the layout [idatDerivedVerdict] checks. Malformed or out-of-range
+ * structures are INVALID; unreadable bytes, unbounded boxes, and unsupported meta/pitm/iloc
+ * variants are INDETERMINATE so recovery retains the private row instead of risking deletion.
  */
 internal fun probeHeifIsoBmff(
     fileSize: Long,
@@ -2759,16 +2760,66 @@ internal fun probeHeifIsoBmff(
     if (offset != fileSize || !foundFtyp || metaBox == null || mdatPayloads.isEmpty()) {
         return PendingProbe.INVALID
     }
-    val primaryExtents = when (val parsed = parseHeifMeta(metaBox, readAt)) {
+    val layout = when (val parsed = parseHeifMeta(metaBox, readAt)) {
         is HeifParse.Success -> parsed.value
         is HeifParse.Failure -> return parsed.probe
     }
-    return if (primaryExtents.all { extent ->
-            extent.length > 0L &&
-                extent.offset <= fileSize - extent.length &&
-                mdatPayloads.any { payload -> extent.isWhollyInside(payload) }
+    fun inMdat(extent: HeifByteRange): Boolean =
+        extent.length > 0L &&
+            extent.offset <= fileSize - extent.length &&
+            mdatPayloads.any { payload -> extent.isWhollyInside(payload) }
+    return when (layout) {
+        is HeifPrimaryLayout.InMdat ->
+            if (layout.primaryExtents.all(::inMdat)) PendingProbe.VALID else PendingProbe.INVALID
+        is HeifPrimaryLayout.IdatDerived -> idatDerivedVerdict(layout, ::inMdat)
+    }
+}
+
+/**
+ * AGG3-3 / DBG3-1: the verdict for the layout AOSP `MPEG4Writer` writes for EVERY gridded HEIF —
+ * and `HeifWriter` grids every image wider than 512 px, so this is every still this app saves. The
+ * primary item is the grid DESCRIPTOR, stored inside `meta/idat` (construction_method 1, offsets
+ * relative to the idat payload plus base_offset), and the coded tiles (plus any Exif item) are
+ * construction-0 items in `mdat`. Measured on device output
+ * (`capture_then_kill_survives/IMG_TELECAM_F1_…0001.heic`): primary 10048 = one 8-byte idat
+ * extent, 49 tiles + 1 metadata item in mdat. Before this branch the probe called that layout
+ * INDETERMINATE, so a retained HEIF could never be adopted and stayed private until MediaProvider
+ * expired it.
+ *
+ * VALID needs the descriptor wholly inside idat AND every construction-0 local item wholly inside
+ * an mdat payload, with at least one such item (a grid with no coded data is not an image). A
+ * truncated tail fails the mdat bound, which is exactly the crash this probe exists to catch.
+ * INVALID (a proven out-of-range or unrepresentable location) outranks INDETERMINATE (an item this
+ * probe cannot judge — another construction method, an external data reference, or a
+ * whole-source zero length): a provably missing byte range cannot be repaired by the bytes this
+ * probe declined to read.
+ */
+private fun idatDerivedVerdict(
+    layout: HeifPrimaryLayout.IdatDerived,
+    inMdat: (HeifByteRange) -> Boolean,
+): PendingProbe {
+    val idat = layout.idatPayload ?: return PendingProbe.INVALID
+    if (!layout.primaryExtents.all { it.isWhollyInsideRelative(idat) }) return PendingProbe.INVALID
+    var undecidable = false
+    var codedItems = 0
+    for (item in layout.otherItems) {
+        when {
+            item.unrepresentable -> return PendingProbe.INVALID
+            item.dataReferenceIndex != 0L || item.constructionMethod !in 0..1 || item.wholeSource ->
+                undecidable = true
+            item.constructionMethod == 1 ->
+                if (!item.extents.all { it.isWhollyInsideRelative(idat) }) return PendingProbe.INVALID
+            else -> {
+                if (!item.extents.all(inMdat)) return PendingProbe.INVALID
+                codedItems++
+            }
         }
-    ) PendingProbe.VALID else PendingProbe.INVALID
+    }
+    return when {
+        undecidable -> PendingProbe.INDETERMINATE
+        codedItems == 0 -> PendingProbe.INVALID
+        else -> PendingProbe.VALID
+    }
 }
 
 private const val MAX_HEIF_BOXES = 4_096
@@ -2800,7 +2851,41 @@ private data class HeifByteRange(val offset: Long, val length: Long) {
         val relativeOffset = offset - container.offset
         return relativeOffset <= container.length && length <= container.length - relativeOffset
     }
+
+    /** This range's [offset] counts from [container]'s START (construction_method 1 / idat). */
+    fun isWhollyInsideRelative(container: HeifByteRange): Boolean =
+        length > 0L && offset in 0L..container.length && length <= container.length - offset
 }
+
+/** Where the primary item's bytes live, as parsed from `meta`; judged by [probeHeifIsoBmff]. */
+private sealed interface HeifPrimaryLayout {
+    /** construction_method 0: explicit absolute extents that must lie inside mdat. */
+    data class InMdat(val primaryExtents: List<HeifByteRange>) : HeifPrimaryLayout
+
+    /**
+     * construction_method 1: [primaryExtents] are idat-RELATIVE (base_offset already added);
+     * [idatPayload] is null when meta carries no idat box at all.
+     */
+    data class IdatDerived(
+        val primaryExtents: List<HeifByteRange>,
+        val idatPayload: HeifByteRange?,
+        val otherItems: List<HeifItemLocation>,
+    ) : HeifPrimaryLayout
+}
+
+/**
+ * One non-primary iloc entry, read leniently: a field this probe could only previously SKIP is
+ * recorded rather than failed on, so the construction-0 primary path keeps its exact old verdicts.
+ */
+private data class HeifItemLocation(
+    val constructionMethod: Int,
+    val dataReferenceIndex: Long,
+    val extents: List<HeifByteRange>,
+    /** A zero extent length ("the whole source") — legal, but no explicit crash-safe bound. */
+    val wholeSource: Boolean,
+    /** base_offset/offset/length did not fit a non-negative Long, or base + offset overflowed. */
+    val unrepresentable: Boolean,
+)
 
 private fun readHeifIsoBox(
     offset: Long,
@@ -2870,7 +2955,7 @@ private fun hasHeifBrand(
 private fun parseHeifMeta(
     meta: HeifIsoBox,
     readAt: (offset: Long, byteCount: Int) -> ByteArray?,
-): HeifParse<List<HeifByteRange>> {
+): HeifParse<HeifPrimaryLayout> {
     if (meta.payloadSize < 4L) return HeifParse.Failure(PendingProbe.INVALID)
     val fullBox = when (val parsed = readHeifUnsigned(meta.payloadOffset, 4, meta.endOffset, readAt)) {
         is HeifParse.Success -> parsed.value
@@ -2885,6 +2970,7 @@ private fun parseHeifMeta(
     var childCount = 0
     var pitm: HeifIsoBox? = null
     var iloc: HeifIsoBox? = null
+    var idat: HeifIsoBox? = null
     while (childOffset < meta.endOffset) {
         if (++childCount > MAX_HEIF_BOXES) return HeifParse.Failure(PendingProbe.INDETERMINATE)
         val child = when (val parsed = readHeifIsoBox(childOffset, meta.endOffset, readAt)) {
@@ -2900,6 +2986,10 @@ private fun parseHeifMeta(
                 if (iloc != null) return HeifParse.Failure(PendingProbe.INVALID)
                 iloc = child
             }
+            "idat" -> {
+                if (idat != null) return HeifParse.Failure(PendingProbe.INVALID)
+                idat = child
+            }
         }
         childOffset += child.size
     }
@@ -2910,7 +3000,8 @@ private fun parseHeifMeta(
         is HeifParse.Success -> parsed.value
         is HeifParse.Failure -> return parsed
     }
-    return parsePrimaryItemExtents(iloc, primaryItemId, readAt)
+    val idatPayload = idat?.let { HeifByteRange(it.payloadOffset, it.payloadSize) }
+    return parsePrimaryItemExtents(iloc, primaryItemId, idatPayload, readAt)
 }
 
 private fun parsePrimaryItemId(
@@ -2937,8 +3028,9 @@ private fun parsePrimaryItemId(
 private fun parsePrimaryItemExtents(
     iloc: HeifIsoBox,
     primaryItemId: Long,
+    idatPayload: HeifByteRange?,
     readAt: (offset: Long, byteCount: Int) -> ByteArray?,
-): HeifParse<List<HeifByteRange>> {
+): HeifParse<HeifPrimaryLayout> {
     val reader = HeifBoundedReader(iloc.payloadOffset, iloc.endOffset, readAt)
     val fullBox = reader.readUnsigned(4) ?: return HeifParse.Failure(reader.failure!!)
     val version = (fullBox ushr 24).toInt()
@@ -2969,8 +3061,10 @@ private fun parsePrimaryItemExtents(
     if (itemCount > MAX_HEIF_ITEMS) return HeifParse.Failure(PendingProbe.INDETERMINATE)
 
     var primaryFound = false
+    var primaryConstruction = 0
     var totalExtents = 0L
     val primaryExtents = mutableListOf<HeifByteRange>()
+    val otherItems = mutableListOf<HeifItemLocation>()
     repeat(itemCount.toInt()) {
         val itemId = reader.readUnsigned(if (version < 2) 2 else 4)
             ?: return HeifParse.Failure(reader.failure!!)
@@ -2986,17 +3080,31 @@ private fun parsePrimaryItemExtents(
             ?: return HeifParse.Failure(reader.failure!!)
         val isPrimary = itemId == primaryItemId
         if (isPrimary && primaryFound) return HeifParse.Failure(PendingProbe.INVALID)
-        if (isPrimary && constructionMethod != 0) {
+        // 0 = file offsets (mdat), 1 = idat-relative (the gridded layout AOSP MPEG4Writer writes,
+        // judged by idatDerivedVerdict). Item-offset construction (2) stays undecidable.
+        if (isPrimary && constructionMethod !in 0..1) {
             return HeifParse.Failure(PendingProbe.INDETERMINATE)
         }
         if (isPrimary && dataReferenceIndex != 0L) {
             return HeifParse.Failure(PendingProbe.INDETERMINATE)
         }
+        // Non-primary fields were only ever SKIPPED by the construction-0 primary path; they are
+        // now read leniently (an unreadable or overflowing value is RECORDED on the item, never
+        // failed on) so that path's verdicts stay exactly what they were.
+        var otherUnreadable = false
+        var otherUnrepresentable = false
+        var otherWholeSource = false
+        fun lenient(value: Long): Long {
+            when (value) {
+                HeifBoundedReader.UNREADABLE -> otherUnreadable = true
+                HeifBoundedReader.OVERFLOW -> otherUnrepresentable = true
+            }
+            return value.coerceAtLeast(0L)
+        }
         val baseOffset = if (isPrimary) {
             reader.readUnsigned(baseOffsetSize) ?: return HeifParse.Failure(reader.failure!!)
         } else {
-            if (!reader.skip(baseOffsetSize)) return HeifParse.Failure(reader.failure!!)
-            0L
+            lenient(reader.readUnsignedLenient(baseOffsetSize) ?: return HeifParse.Failure(reader.failure!!))
         }
         val extentCount = reader.readUnsigned(2)
             ?: return HeifParse.Failure(reader.failure!!)
@@ -3005,6 +3113,7 @@ private fun parsePrimaryItemExtents(
         if (extentCount == 0L) return HeifParse.Failure(PendingProbe.INVALID)
         if (isPrimary && lengthSize == 0) return HeifParse.Failure(PendingProbe.INDETERMINATE)
 
+        val otherExtents = mutableListOf<HeifByteRange>()
         repeat(extentCount.toInt()) {
             if (!reader.skip(indexSize)) return HeifParse.Failure(reader.failure!!)
             if (isPrimary) {
@@ -3020,17 +3129,41 @@ private fun parsePrimaryItemExtents(
                 }
                 primaryExtents += HeifByteRange(baseOffset + extentOffset, extentLength)
             } else {
-                if (!reader.skip(offsetSize + lengthSize)) return HeifParse.Failure(reader.failure!!)
+                val extentOffset = lenient(
+                    reader.readUnsignedLenient(offsetSize) ?: return HeifParse.Failure(reader.failure!!),
+                )
+                val extentLength = lenient(
+                    reader.readUnsignedLenient(lengthSize) ?: return HeifParse.Failure(reader.failure!!),
+                )
+                if (extentLength == 0L) otherWholeSource = true
+                if (baseOffset > Long.MAX_VALUE - extentOffset) otherUnrepresentable = true
+                if (!otherUnrepresentable) otherExtents += HeifByteRange(baseOffset + extentOffset, extentLength)
             }
         }
-        if (isPrimary) primaryFound = true
+        if (isPrimary) {
+            primaryFound = true
+            primaryConstruction = constructionMethod
+        } else {
+            otherItems += HeifItemLocation(
+                constructionMethod = constructionMethod,
+                dataReferenceIndex = dataReferenceIndex,
+                extents = otherExtents,
+                // An unreadable field is a provider-read question, not proof: it rides the same
+                // undecidable lane as a whole-source length.
+                wholeSource = otherWholeSource || otherUnreadable,
+                unrepresentable = otherUnrepresentable,
+            )
+        }
     }
     if (reader.cursor != iloc.endOffset) return HeifParse.Failure(PendingProbe.INVALID)
-    return if (primaryFound && primaryExtents.isNotEmpty()) {
-        HeifParse.Success(primaryExtents)
-    } else {
-        HeifParse.Failure(PendingProbe.INVALID)
-    }
+    if (!primaryFound || primaryExtents.isEmpty()) return HeifParse.Failure(PendingProbe.INVALID)
+    return HeifParse.Success(
+        if (primaryConstruction == 0) {
+            HeifPrimaryLayout.InMdat(primaryExtents)
+        } else {
+            HeifPrimaryLayout.IdatDerived(primaryExtents, idatPayload, otherItems)
+        },
+    )
 }
 
 private class HeifBoundedReader(
@@ -3043,7 +3176,16 @@ private class HeifBoundedReader(
     var failure: PendingProbe? = null
         private set
 
-    fun readUnsigned(byteCount: Int): Long? {
+    fun readUnsigned(byteCount: Int): Long? = read(byteCount, lenient = false)
+
+    /**
+     * Like [readUnsigned], but a value that is unreadable or does not fit a Long returns
+     * [UNREADABLE] / [OVERFLOW] (and still advances) instead of failing the whole parse. Running
+     * past the box end still fails exactly as a skip of the same width would.
+     */
+    fun readUnsignedLenient(byteCount: Int): Long? = read(byteCount, lenient = true)
+
+    private fun read(byteCount: Int, lenient: Boolean): Long? {
         if (failure != null) return null
         if (byteCount !in 0..8) {
             failure = PendingProbe.INDETERMINATE
@@ -3056,6 +3198,10 @@ private class HeifBoundedReader(
         }
         val bytes = readAt(cursor, byteCount)
         if (bytes == null || bytes.size != byteCount) {
+            if (lenient) {
+                cursor += byteCount
+                return UNREADABLE
+            }
             failure = PendingProbe.INDETERMINATE
             return null
         }
@@ -3063,6 +3209,10 @@ private class HeifBoundedReader(
         for (byte in bytes) {
             val unsigned = byte.toInt() and 0xff
             if (value > (Long.MAX_VALUE - unsigned) / 256L) {
+                if (lenient) {
+                    cursor += byteCount
+                    return OVERFLOW
+                }
                 failure = PendingProbe.INVALID
                 return null
             }
@@ -3070,6 +3220,11 @@ private class HeifBoundedReader(
         }
         cursor += byteCount
         return value
+    }
+
+    companion object {
+        const val UNREADABLE = -2L
+        const val OVERFLOW = -1L
     }
 
     fun skip(byteCount: Int): Boolean {
