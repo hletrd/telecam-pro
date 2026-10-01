@@ -1388,7 +1388,12 @@ fun RulerSlider(
             .focusable(enabled = enabled)
             // TalkBack: a bare Canvas is invisible to accessibility services — every manual dial
             // rides this control, so expose it as an adjustable value with a set action.
-            .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
+            // A snapped ruler publishes its detent count so one TalkBack swipe = one detent.
+            .progressSemantics(
+                value = fraction.coerceIn(0f, 1f),
+                valueRange = 0f..1f,
+                steps = rulerSemanticSteps(snap, totalUnits),
+            )
             .semantics {
                 contentDescription = semanticLabel
                 stateDescription = resolvedValueDescription
