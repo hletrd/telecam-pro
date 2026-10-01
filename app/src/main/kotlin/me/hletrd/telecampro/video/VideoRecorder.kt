@@ -584,7 +584,12 @@ class VideoRecorder(private val context: Context) {
                 // videoThread.join(timeout) after signalling EOS, so looping is safe.
                 idx == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                 idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> muxerLock.withLock {
-                    videoTrack = muxer!!.addTrack(codec.outputFormat)
+                    // One null idiom for every drain-loop muxer touch: checkNotNull. The muxer is
+                    // nulled only after both drain threads are joined (stopNative), so a null here
+                    // is an invariant breach that must surface as THIS loop's failure, never a
+                    // silent no-op (qa-adversary Finding 1).
+                    videoTrack = checkNotNull(muxer) { "muxer released before video format" }
+                        .addTrack(codec.outputFormat)
                     videoStartupProof.observeFormat()
                     maybeStartMuxer()
                 }
@@ -856,7 +861,8 @@ class VideoRecorder(private val context: Context) {
             while (outIdx != MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     muxerLock.withLock {
-                        audioTrack = muxer!!.addTrack(codec.outputFormat)
+                        audioTrack = checkNotNull(muxer) { "muxer released before audio format" }
+                            .addTrack(codec.outputFormat)
                         maybeStartMuxer()
                     }
                 } else if (outIdx >= 0) {
@@ -871,7 +877,11 @@ class VideoRecorder(private val context: Context) {
                             // firstFailure/delete latch is reserved for VIDEO codec/muxer errors — a
                             // muxer that is globally broken also fails the video write (:drainVideoLoop),
                             // whose recordFailure then correctly wins the save gate and deletes.
-                            muxer?.writeSampleData(audioTrack, buf, info)
+                            // Same checkNotNull idiom as the video write: a skipped write must not
+                            // claim a muxed audio sample, because wroteAudioSample feeds the
+                            // muxerStopFailureIsTerminal save gate.
+                            checkNotNull(muxer) { "muxer released before audio sample" }
+                                .writeSampleData(audioTrack, buf, info)
                             wroteAudioSample = true
                         }
                     }
