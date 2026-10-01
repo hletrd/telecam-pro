@@ -1858,6 +1858,30 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(f"FAIL  {rule}", result.stdout)
 
+    def test_stacked_kdoc_scan_reports_now_and_enforces_behind_the_documented_flag(self) -> None:
+        # DOC4-6 / AGG4-55: report-only until the known sites are re-homed; one flag enforces it.
+        relative = "app/src/main/kotlin/me/hletrd/telecampro/StackedKdocFixture.kt"
+        source = (
+            "package me.hletrd.telecampro\n\n"
+            "/** Detached rationale that documents nothing. */\n\n"
+            "/** The block Dokka actually attaches. */\n"
+            "internal val stackedKdocFixture = 1\n"
+        )
+
+        def add(root: Path) -> None:
+            (root / relative).write_text(source, encoding="utf-8")
+
+        reported, _ = run_documentation_gate_from_committed_export(add)
+        self.assertIn(f"  info    {relative}:3", reported.stdout)
+        self.assertNotIn("FAIL  no stacked KDoc pair", reported.stdout)
+
+        enforced, _ = run_documentation_gate_from_committed_export(
+            add, environment={**os.environ, "TELECAM_ENFORCE_STACKED_KDOC": "1"},
+        )
+        self.assertNotEqual(enforced.returncode, 0, enforced.stdout + enforced.stderr)
+        self.assertIn("FAIL  no stacked KDoc pair leaves a rationale detached", enforced.stdout)
+        self.assertIn(f"{relative}:3", enforced.stdout)
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"

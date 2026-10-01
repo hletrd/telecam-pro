@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import datetime
 import json
+import os
 import pathlib
 import re
 import struct
@@ -2589,6 +2590,45 @@ check(
     and "Two devices are capture-verified" not in device_catalog,
     "active Device Catalog carries no obsolete device count",
 )
+
+# ---- Stacked KDoc pairs (DOC4-6 / AGG4-55) -------------------------------------------------------
+# A `/** … */` block immediately followed by another `/**` (only blank lines between) documents no
+# declaration: Dokka and the IDE attach only the SECOND block, so the first block's HAL-quirk
+# rationale is detached from the symbol it explains. The known sites are being re-homed after the
+# RPL cycle-4 merge, so this scan is REPORT-ONLY for now: it prints every site as `info` lines and
+# never fails the gate. To enforce, set STACKED_KDOC_ENFORCED = True below (or export
+# TELECAM_ENFORCE_STACKED_KDOC=1 for a trial run); the scan then becomes an ordinary failing check.
+STACKED_KDOC_ENFORCED = False
+STACKED_KDOC_SCAN_ROOTS = ("app/src/main",)
+STACKED_KDOC = re.compile(r"\*/[ \t]*\n(?:[ \t]*\n)*[ \t]*/\*\*")
+
+
+def stacked_kdoc_sites() -> list[str]:
+    """`path:line` of every first block that is immediately followed by another KDoc."""
+    sites = []
+    for scan_root in STACKED_KDOC_SCAN_ROOTS:
+        for path in sorted((ROOT / scan_root).rglob("*.kt")):
+            text = path.read_text(encoding="utf-8")
+            for match in STACKED_KDOC.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                sites.append(f"{path.relative_to(ROOT).as_posix()}:{line}")
+    return sites
+
+
+stacked_kdocs = stacked_kdoc_sites()
+if STACKED_KDOC_ENFORCED or os.environ.get("TELECAM_ENFORCE_STACKED_KDOC") == "1":
+    check(
+        not stacked_kdocs,
+        "no stacked KDoc pair leaves a rationale detached from its declaration",
+        ", ".join(stacked_kdocs),
+    )
+else:
+    print(
+        f"  info  stacked KDoc pairs (report-only, STACKED_KDOC_ENFORCED=False): "
+        f"{len(stacked_kdocs)} site(s), each named by the line where the detached block ends"
+    )
+    for site in stacked_kdocs:
+        print(f"  info    {site}")
 
 print(f"\n{CHECKS} checks, {len(FAILURES)} failed, {PRIVATE_SKIPS} private checks skipped")
 sys.exit(1 if FAILURES else 0)
