@@ -1373,7 +1373,13 @@ freeze the live worktree and is deliberately not described as an atomic source s
 mutation and operator-path protection, not authentication against a malicious process already
 running as the same OS user.
 `TELECAMPRO_STORE_FILE` is cleared and unsupported; environment values remain valid only for
-alias/password fields, which cannot redirect Gradle to another file.
+alias/password fields, which cannot redirect Gradle to another file. The sealed Gradle child gets
+an ALLOWLISTED environment (no `GRADLE_OPTS`, `JAVA_TOOL_OPTIONS`, or `ORG_GRADLE_PROJECT_*`), the
+wrapper refuses a non-empty `$GRADLE_USER_HOME/init.d` and any user `gradle.properties` key beyond
+inert JVM/console settings, and it always passes `--no-build-cache --no-configuration-cache
+--no-daemon`; `release-evidence.json` records that argv and the environment NAMES it passed. The
+wrapper also re-applies the generated-secret floor to the frozen `keystore.properties` copy, and the
+Gradle release gate applies the same floor (a Kotlin port pinned by `check_docs.py`).
 
 **Focused Android test subset:** `app/src/test/` is the JVM/Robolectric/Compose source of truth. Run
 `./gradlew :app:testDebugUnitTest` while iterating on that surface, then run the authoritative

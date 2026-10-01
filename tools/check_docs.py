@@ -1443,7 +1443,13 @@ check(
         "TELECAMPRO_KEY_PASSWORD",
     }
     and 'STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"' in release_wrapper
-    and "environment.pop(STORE_FILE_ENVIRONMENT, None)" in release_wrapper
+    and "and name != STORE_FILE_ENVIRONMENT" in release_wrapper
+    # SEC4-4 / AGG4-41: allowlisted child environment, empty init.d, and the sealed fixed flags.
+    and "environment = release_child_environment(os.environ)" in release_wrapper
+    and "require_sealed_gradle_user_home(child_environment)" in release_wrapper
+    and 'SEALED_GRADLE_FLAGS = ("--no-build-cache", "--no-configuration-cache", "--no-daemon")'
+    in release_wrapper
+    and 'command = ["./gradlew", *SEALED_GRADLE_FLAGS, *tasks]' in release_wrapper
     and "-PimmutableRelease" not in release_wrapper
     and "create_release_authority" not in release_wrapper
     and 'signingValue("storeFile", "TELECAMPRO_STORE_FILE")' not in gradle

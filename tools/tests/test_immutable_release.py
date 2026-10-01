@@ -454,6 +454,120 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             self.assertEqual(inputs.signing_properties, (snapshot / "keystore.properties").read_bytes())
             release.require_frozen_secret_floor(inputs.signing_properties, [":app:bundleRelease"], os.environ)
 
+    def test_child_environment_is_an_allowlist(self) -> None:
+        # SEC4-4 / AGG4-41: ambient Gradle/JVM channels never reach the sealed child.
+        ambient = {
+            "PATH": "/bin",
+            "HOME": "/home/operator",
+            "LC_ALL": "C",
+            "JAVA_HOME": "/jdk",
+            "ANDROID_HOME": "/sdk",
+            "TELECAMPRO_STORE_PASSWORD": "synthetic-store",
+            "TELECAMPRO_KEY_PASSWORD": "synthetic-key",
+            "TELECAMPRO_KEY_ALIAS": "synthetic-alias",
+            release.STORE_FILE_ENVIRONMENT: "/outside/ambient-key.jks",
+            "GRADLE_OPTS": "-Dorg.gradle.project.android.injected.signing.key.alias=x",
+            "JAVA_TOOL_OPTIONS": "-javaagent:/tmp/agent.jar",
+            "_JAVA_OPTIONS": "-javaagent:/tmp/agent.jar",
+            "ORG_GRADLE_PROJECT_android.injected.signing.store.file": "/tmp/k.jks",
+            "MY_UNRELATED_TOKEN": "value",
+        }
+        child = release.release_child_environment(ambient)
+        self.assertEqual(
+            {
+                "PATH", "HOME", "LC_ALL", "JAVA_HOME", "ANDROID_HOME", "TELECAMPRO_STORE_PASSWORD",
+                "TELECAMPRO_KEY_PASSWORD", "TELECAMPRO_KEY_ALIAS",
+            },
+            set(child),
+        )
+
+    def test_default_runner_drops_ambient_gradle_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"GRADLE_OPTS": "-Xmx1g", "JAVA_TOOL_OPTIONS": "-Dx=y", "ORG_GRADLE_PROJECT_foo": "bar"},
+        ):
+            result = release.run_checked(
+                [
+                    "sh",
+                    "-c",
+                    'test -z "$GRADLE_OPTS" && test -z "$JAVA_TOOL_OPTIONS" && '
+                    'test -z "$(env | grep ORG_GRADLE_PROJECT_)"',
+                ],
+                Path(temp_dir),
+            )
+            self.assertEqual(0, result.returncode)
+
+    def gradle_home_case(self, setup) -> tuple[list[list[str]], BaseException | None]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            gradle_home = Path(temp_dir) / "gradle-home"
+            gradle_home.mkdir()
+            setup(gradle_home)
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            output = root / "app/build/immutable-release/test-output"
+            commands: list[list[str]] = []
+
+            def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"artifact")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            error: BaseException | None = None
+            with patch.dict(os.environ, {"GRADLE_USER_HOME": str(gradle_home)}):
+                try:
+                    release.build_immutable_release(root, [":app:bundleRelease"], output, run=package)
+                except RuntimeError as raised:
+                    error = raised
+            if error is None:
+                evidence = json.loads(output.joinpath(release.RELEASE_EVIDENCE_NAME).read_text())
+                self.assertEqual(commands[0], evidence["gradle_command"])
+                self.assertIn("GRADLE_USER_HOME", evidence["gradle_environment_names"])
+                self.assertNotIn(str(gradle_home), json.dumps(evidence["gradle_environment_names"]))
+            return commands, error
+
+    def test_sealed_run_refuses_init_scripts_and_foreign_user_properties(self) -> None:
+        def init_script(home: Path) -> None:
+            (home / "init.d").mkdir()
+            (home / "init.d/inject.gradle.kts").write_text("// unsealed\n", encoding="utf-8")
+
+        def project_property(home: Path) -> None:
+            (home / "gradle.properties").write_text("org.gradle.caching=true\nfoo.bar=1\n", encoding="utf-8")
+
+        def agent_jvmargs(home: Path) -> None:
+            (home / "gradle.properties").write_text(
+                "org.gradle.jvmargs=-Xmx2g -javaagent:/tmp/agent.jar\n", encoding="utf-8"
+            )
+
+        for setup, expected in (
+            (init_script, "init.d is not empty"),
+            (project_property, "foo.bar, org.gradle.caching"),
+            (agent_jvmargs, "org.gradle.jvmargs (agent or project property)"),
+        ):
+            with self.subTest(case=setup.__name__):
+                commands, error = self.gradle_home_case(setup)
+                self.assertIsNotNone(error)
+                self.assertIn(expected, str(error))
+                self.assertNotIn("/tmp/agent.jar", str(error))
+                self.assertEqual([], commands)
+
+    def test_sealed_run_passes_fixed_flags_with_an_inert_user_home(self) -> None:
+        def inert(home: Path) -> None:
+            (home / "init.d").mkdir()
+            (home / "gradle.properties").write_text(
+                "org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8\norg.gradle.daemon=true\n",
+                encoding="utf-8",
+            )
+
+        commands, error = self.gradle_home_case(inert)
+        self.assertIsNone(error)
+        self.assertEqual(
+            ["./gradlew", "--no-build-cache", "--no-configuration-cache", "--no-daemon", ":app:bundleRelease"],
+            commands[0],
+        )
+
     def test_environment_only_store_file_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "fixture"

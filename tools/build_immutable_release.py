@@ -119,12 +119,104 @@ class ReleaseSnapshotSeal:
                 pass
 
 
+# SEC4-4 / CRIT4-6 (AGG4-41): SEC3-1 closed the ARGV form of unsealed build logic, but the child
+# Gradle still inherited every other channel: GRADLE_OPTS / JAVA_TOOL_OPTIONS / _JAVA_OPTIONS
+# (`-javaagent:`, `-Dorg.gradle.project.*`), ORG_GRADLE_PROJECT_*, `$GRADLE_USER_HOME/init.d`, the
+# user gradle.properties, and the shared build cache that every unsealed developer build writes. The
+# child environment is therefore built from an ALLOWLIST (names only below; the three TELECAMPRO_*
+# values are the sole secrets and are values, never paths), init.d must be empty, the user
+# gradle.properties may set only inert JVM/console keys, and the sealed run forces the fixed flags.
+RELEASE_CHILD_ENVIRONMENT_NAMES = frozenset({
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TERM",
+    "LANG",
+    "JAVA_HOME",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    "ANDROID_USER_HOME",
+    "GRADLE_USER_HOME",
+    "TELECAMPRO_STORE_PASSWORD",
+    "TELECAMPRO_KEY_PASSWORD",
+    "TELECAMPRO_KEY_ALIAS",
+})
+RELEASE_CHILD_ENVIRONMENT_PREFIXES = ("LC_",)
+# A FROM-CACHE task skips its action, so its bytes would not come from the sealed inputs; the
+# configuration cache would persist the signing values; a reused daemon carries JVM state (agents,
+# system properties) from whichever unsealed build started it.
+SEALED_GRADLE_FLAGS = ("--no-build-cache", "--no-configuration-cache", "--no-daemon")
+USER_GRADLE_PROPERTY_ALLOWLIST = frozenset({
+    "org.gradle.jvmargs",
+    "org.gradle.daemon",
+    "org.gradle.parallel",
+    "org.gradle.workers.max",
+    "org.gradle.console",
+    "org.gradle.logging.level",
+    "org.gradle.warning.mode",
+    "org.gradle.vfs.watch",
+    "kotlin.daemon.jvmargs",
+})
+_JVM_ARGUMENT_INJECTION = re.compile(r"-javaagent|-agentpath|-agentlib|-Dorg\.gradle\.project\.|-Dandroid\.")
+
+
+def release_child_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """The allowlisted environment the sealed Gradle child receives (never TELECAMPRO_STORE_FILE).
+
+    The wrapper copies keystore.properties and its repository-relative store into the sealed
+    checkout. Password/key-alias values remain available, but an ambient path can never redirect
+    Gradle outside that checkout.
+    """
+    return {
+        name: value
+        for name, value in environment.items()
+        if (name in RELEASE_CHILD_ENVIRONMENT_NAMES or name.startswith(RELEASE_CHILD_ENVIRONMENT_PREFIXES))
+        and name != STORE_FILE_ENVIRONMENT
+    }
+
+
+def gradle_user_home(environment: Mapping[str, str]) -> pathlib.Path:
+    configured = environment.get("GRADLE_USER_HOME", "").strip()
+    if configured:
+        return pathlib.Path(configured)
+    return pathlib.Path(environment.get("HOME") or pathlib.Path.home()) / ".gradle"
+
+
+def require_sealed_gradle_user_home(environment: Mapping[str, str]) -> None:
+    """Refuse ambient build logic the sealed run would otherwise auto-apply (names only, no values)."""
+    home = gradle_user_home(environment)
+    init_directory = home / "init.d"
+    if init_directory.is_dir() and any(init_directory.iterdir()):
+        raise RuntimeError(
+            f"refusing a sealed release build: {init_directory} is not empty; Gradle would apply "
+            "those init scripts as unsealed build logic"
+        )
+    if init_directory.exists() and not init_directory.is_dir():
+        raise RuntimeError(f"refusing a sealed release build: {init_directory} is not a directory")
+    properties = home / "gradle.properties"
+    if not properties.exists():
+        return
+    try:
+        entries = parse_java_properties(properties.read_bytes())
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise RuntimeError(f"refusing a sealed release build: {properties} is unreadable") from error
+    unexpected = sorted({key for key, _ in entries if key not in USER_GRADLE_PROPERTY_ALLOWLIST})
+    injected = sorted({
+        key for key, value in entries
+        if key.endswith("jvmargs") and _JVM_ARGUMENT_INJECTION.search(value)
+    })
+    if unexpected or injected:
+        raise RuntimeError(
+            f"refusing a sealed release build: {properties} sets keys a sealed build cannot carry: "
+            + ", ".join([*unexpected, *(f"{key} (agent or project property)" for key in injected)])
+        )
+
+
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
-    environment = dict(os.environ)
-    # The wrapper copies keystore.properties and its repository-relative store into the sealed
-    # checkout. Password/key-alias values remain available, but an ambient path can never redirect
-    # Gradle outside that checkout.
-    environment.pop(STORE_FILE_ENVIRONMENT, None)
+    environment = release_child_environment(os.environ)
     return subprocess.run(command, cwd=cwd, env=environment, text=True, check=True)
 
 
@@ -301,6 +393,8 @@ def write_release_evidence(
     commit: str,
     tree: str,
     frozen_sets: Sequence[tuple[FrozenOutputSet, pathlib.PurePosixPath]],
+    gradle_command: Sequence[str],
+    environment_names: Sequence[str],
 ) -> None:
     """Describe only the outputs already frozen and reverified by this wrapper invocation."""
     outputs: list[dict[str, object]] = []
@@ -320,6 +414,10 @@ def write_release_evidence(
         "commit": commit,
         "tree": tree,
         "outputs": outputs,
+        # SEC4-4: what the sealed run controlled — its exact argv and the NAMES (never values) of
+        # the allowlisted environment it passed, so the evidence claim is no stronger than that.
+        "gradle_command": list(gradle_command),
+        "gradle_environment_names": sorted(environment_names),
     }
     payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
     write_regular_exclusive(staging / RELEASE_EVIDENCE_NAME, payload, 0o444)
@@ -885,6 +983,8 @@ def build_immutable_release(
     commit, tree = require_clean_commit(root)
     if os.path.lexists(output_root):
         raise RuntimeError(f"refusing to overwrite immutable release output: {output_root}")
+    child_environment = release_child_environment(os.environ)
+    require_sealed_gradle_user_home(child_environment)
 
     with tempfile.TemporaryDirectory(prefix="telecam-release-source-") as temp_dir:
         snapshot = pathlib.Path(temp_dir) / "source"
@@ -893,13 +993,13 @@ def build_immutable_release(
         seal = seal_release_snapshot(snapshot, (*expected, *local_inputs.sealed_paths))
         try:
             # After the seal: the bytes checked here are the bytes the seal then keeps immutable.
-            require_frozen_secret_floor(local_inputs.signing_properties, tasks, os.environ)
+            require_frozen_secret_floor(local_inputs.signing_properties, tasks, child_environment)
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
             # Gradle receives no wrapper-origin or immutable-evidence claim. It records only the
             # clean checkout identity it can observe itself. The outer process is the evidence
             # boundary: it owns this sealed export and publishes only after all checks below pass.
-            command = ["./gradlew", *tasks]
+            command = ["./gradlew", *SEALED_GRADLE_FLAGS, *tasks]
             run(command, snapshot)
             # Digest equality cannot detect A -> B -> A. The seal additionally proves the exact
             # input/ancestor identities and their unforgeable ctime transitions stayed unchanged.
@@ -950,7 +1050,9 @@ def build_immutable_release(
                     for frozen, _ in frozen_sets:
                         frozen.verify()
                     seal.verify()
-                    write_release_evidence(staging, commit, tree, frozen_sets)
+                    write_release_evidence(
+                        staging, commit, tree, frozen_sets, command, list(child_environment)
+                    )
                     if os.path.lexists(output_root):
                         raise RuntimeError(
                             f"refusing to overwrite immutable release output: {output_root}"
