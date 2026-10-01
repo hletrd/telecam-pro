@@ -6,6 +6,8 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.hletrd.telecampro.AudioDenialReasonStore
 import me.hletrd.telecampro.camera.CameraController
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraRouteInventory
@@ -249,6 +251,43 @@ class OpticsRecallTransactionRobolectricTest {
         shadowOf(Looper.getMainLooper()).idle()
 
         assertNull(vm.state.value.activeMemorySlot)
+    }
+
+    // AGG4-11: a REFUSED recall must not arm the pre-inventory request mirrors — when the encoder
+    // inventory later landed, applyEncoderInventory replayed the refused bank's codec/transfer/DNG.
+    @Test
+    fun `refused recall before the encoder inventory arms no pending request`() {
+        SettingsStore(app).savePreset(
+            MemorySlot.MR1,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(
+                mode = CaptureMode.VIDEO,
+                videoCodec = VideoCodec.AVC,
+                transfer = ColorTransfer.SLOG3_CINE,
+                dngRaw = true,
+            ),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        // A route inventory with no camera at all is recall's first refusal exit.
+        val none = CameraRouteInventory(back = false, front = false, external = false)
+        engine.onCameraRouteInventory?.invoke(none, CameraRoute.BACK)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(
+            encoderInventoryLoaded = false,
+            cameraRoutes = none,
+        )
+        listOf(
+            "pendingCodecUntilInventory",
+            "pendingTransferUntilInventory",
+            "pendingPhotoFormatsUntilInventory",
+        ).forEach { ViewModelTestAccess.setField(vm, it, null) }
+
+        assertNull(vm.recallMemorySlot(MemorySlot.MR1))
+
+        assertNull(ViewModelTestAccess.field(vm, "pendingCodecUntilInventory"))
+        assertNull(ViewModelTestAccess.field(vm, "pendingTransferUntilInventory"))
+        assertNull(ViewModelTestAccess.field(vm, "pendingPhotoFormatsUntilInventory"))
     }
 
     @Test

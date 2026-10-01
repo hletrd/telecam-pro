@@ -1343,11 +1343,6 @@ class CameraViewModel private constructor(
             safeCodec,
             inventoryLoaded && _state.value.tenBitEncodeAvailable,
         )
-        if (!inventoryLoaded) {
-            pendingCodecUntilInventory = e.videoCodec
-            pendingTransferUntilInventory = e.transfer
-            pendingPhotoFormatsUntilInventory = requestedFormats
-        }
         // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
         // restoring them independently let the AE/shutter-angle math run at a stale fps).
         // If a launch-time preserve option deliberately changed the saved optics, reset framing to
@@ -1492,6 +1487,15 @@ class CameraViewModel private constructor(
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
             return
+        }
+        // Armed only AFTER both refusal exits (AGG4-11): armed earlier, a REFUSED recall's codec,
+        // transfer and formats (DNG included — a route input) were replayed by
+        // applyEncoderInventory when the inventory landed, half-applying a bank the operator was
+        // told did not load.
+        if (!inventoryLoaded) {
+            pendingCodecUntilInventory = e.videoCodec
+            pendingTransferUntilInventory = e.transfer
+            pendingPhotoFormatsUntilInventory = requestedFormats
         }
         // Mirrors setResolvedOptics: a recalled size becomes the request; none keeps the current one.
         restoredVideoSize?.let { requestedVideoResolution = it }
