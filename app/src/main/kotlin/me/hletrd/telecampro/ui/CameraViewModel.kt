@@ -1623,7 +1623,10 @@ class CameraViewModel private constructor(
             videoCodec = pendingCodecUntilInventory?.takeIf { inventoryPending } ?: s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
-            videoResolution = (requestedVideoResolution ?: s.videoResolution).let { "${it.width}x${it.height}" },
+            // The REQUEST only; "" (never chosen -> auto-pick the largest) when there is none. The
+            // delivered `s.videoResolution` fallback pinned an auto user to whatever the current
+            // route delivered (Open Gate's 2560×1920, a 1080p-max lens) after one save (AGG2-6).
+            videoResolution = requestedVideoResolution?.let { "${it.width}x${it.height}" } ?: "",
             openGate = s.openGate,
             recordAudio = s.recordAudio,
             audioGain = s.audioGain,

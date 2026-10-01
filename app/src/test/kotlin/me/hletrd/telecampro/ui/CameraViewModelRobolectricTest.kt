@@ -165,6 +165,23 @@ class CameraViewModelRobolectricTest {
         }
     }
 
+    private fun currentExtras(v: CameraViewModel): ExtraSettings =
+        CameraViewModel::class.java.getDeclaredMethod("currentExtras")
+            .apply { isAccessible = true }
+            .invoke(v) as ExtraSettings
+
+    // AGG2-6 / CR2-4: "" is the persisted "never chosen -> auto-pick the largest" sentinel. The
+    // AGG-36 fix still fell back to the DELIVERED size, so an auto user was pinned to whatever the
+    // current route delivered (Open Gate's 2560x1920, a 1080p-max lens) after one save.
+    @Test fun `save persists auto video size when the operator never picked one`() {
+        val (v, _) = createViewModel()
+        assertEquals("", currentExtras(v).videoResolution)
+        CameraViewModel::class.java.getDeclaredField("requestedVideoResolution")
+            .apply { isAccessible = true }
+            .set(v, android.util.Size(1920, 1080))
+        assertEquals("1920x1080", currentExtras(v).videoResolution)
+    }
+
     // ---- Construction / init contract ----
 
     @Test fun `AndroidViewModelFactory retains the public Application constructor`() {
