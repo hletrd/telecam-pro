@@ -579,7 +579,7 @@ class CameraViewModel private constructor(
             // Result metadata, NOT controls.effectiveExposureNs(): the analysed frame rode the
             // trade-capped PREVIEW exposure, while the intended still can be seconds long.
             exposureNs = s.liveExposureNs,
-            handheldShutterNs = preferredProgramShutterNs(s),
+            handheldShutterNs = programHandheldShutterNs(s),
         )
         val candidate = focusConfidenceCandidate(afLimit = afLimit, frameDetail = frameDetail)
         // DEBUG-only verdict trace. Without it an on-device check can only observe the TAG, so a
@@ -599,7 +599,7 @@ class CameraViewModel private constructor(
                     "bestRatio=${lastFocusDetail?.bestRatio} ageMs=" +
                     (if (lastFocusDetail == null) -1L else now - lastFocusDetailAtMs) +
                     " af=${s.afIndication} focusMode=${s.controls.focusMode}" +
-                    " expNs=${s.liveExposureNs} handheldNs=${preferredProgramShutterNs(s)}",
+                    " expNs=${s.liveExposureNs} handheldNs=${programHandheldShutterNs(s)}",
             )
         }
         val show = focusConfidenceHold.update(candidate, now)
@@ -1894,24 +1894,6 @@ class CameraViewModel private constructor(
             }
         }
     }
-
-    /** Handheld-safe shutter target for app-side PROGRAM: the 1/(35mm-equivalent focal) rule. */
-    private fun preferredProgramShutterNs(s: CameraUiState): Long =
-        if (s.activeCameraRoute.lensLocalZoom) {
-            // FRONT/EXTERNAL do not use the retained rear band. Their opened lens's measured equiv
-            // is the honest 1/focal input, and rear-only TELE can never apply.
-            preferredProgramShutterNs(
-                s.caps?.equivalentFocalMm?.takeIf { it > 0f } ?: LensChoice.MAIN.targetEquivMm,
-                teleconverterMode = false,
-                teleconverterMagnification = s.teleconverterMagnification,
-            )
-        } else {
-            preferredProgramShutterNs(
-                s.lens.targetEquivMm,
-                s.teleconverterMode,
-                s.teleconverterMagnification,
-            )
-        }
 
     private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
         AudioInputInspector.status(getApplication(), preference)
@@ -4216,7 +4198,7 @@ class CameraViewModel private constructor(
                 exposureUpperNs != null && exposureUpperNs >= expRange.lower
             ) {
                 AutoExposure.driveProgram(
-                    luma, c.iso, c.effectiveExposureNs(), preferredProgramShutterNs(s),
+                    luma, c.iso, c.effectiveExposureNs(), programHandheldShutterNs(s),
                     isoRange.lower, isoRange.upper, expRange.lower, exposureUpperNs, evStops,
                 )?.let { (newIso, newNs) ->
                     // Compare the BRIGHTNESS product: the program line trades one axis against the
@@ -4781,14 +4763,33 @@ internal fun focusDetailAnalysisRequired(
 ): Boolean = focusMode != FocusMode.MANUAL && !recording && !recordingStarting
 
 /**
- * Handheld-safe shutter target (ns) for app-side PROGRAM: the 1/(35mm-equivalent focal) rule at the
- * effective focal length (native × teleconverter magnification). Pure for unit tests.
+ * Handheld-safe shutter target (ns) for app-side PROGRAM and the focus-detail exposure gate: the
+ * 1/(35mm-equivalent focal) rule at the ONE effective focal the OSD shows
+ * ([CameraUiState.effectiveEquivFocalMm], zoom included — AGG4-14). Before the opened camera's
+ * caps publish there is no measured lens, so the preset's nominal focal (× converter on the rear)
+ * stands in, exactly as the rule did before.
+ */
+internal fun programHandheldShutterNs(s: CameraUiState): Long {
+    s.effectiveEquivFocalMm?.let { return handheldShutterNs(it) }
+    // FRONT/EXTERNAL do not use the retained rear band, and rear-only TELE can never apply there.
+    val lensLocalRoute = s.activeCameraRoute.lensLocalZoom
+    return preferredProgramShutterNs(
+        if (lensLocalRoute) LensChoice.MAIN.targetEquivMm else s.lens.targetEquivMm,
+        teleconverterMode = s.teleconverterMode && !lensLocalRoute,
+        teleconverterMagnification = s.teleconverterMagnification,
+    )
+}
+
+/** The 1/(35mm-equivalent focal) rule in ns for an EFFECTIVE focal; degenerate focal clamps to 1 s. */
+internal fun handheldShutterNs(effectiveEquivMm: Float): Long =
+    (1_000_000_000f / effectiveEquivMm.coerceAtLeast(1f)).toLong()
+
+/**
+ * The handheld rule at a nominal lens focal (native × teleconverter magnification) — the pre-caps
+ * fallback of [programHandheldShutterNs]. Pure for unit tests.
  */
 internal fun preferredProgramShutterNs(
     lensEquivMm: Float,
     teleconverterMode: Boolean,
     teleconverterMagnification: Float,
-): Long {
-    val eff = lensEquivMm * (if (teleconverterMode) teleconverterMagnification else 1f)
-    return (1_000_000_000f / eff.coerceAtLeast(1f)).toLong()
-}
+): Long = handheldShutterNs(lensEquivMm * (if (teleconverterMode) teleconverterMagnification else 1f))

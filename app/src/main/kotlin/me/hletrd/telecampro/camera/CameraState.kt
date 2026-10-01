@@ -1831,6 +1831,19 @@ data class CameraUiState(
     val teleconverterFocalMm: Float
         get() = effectiveFocalMm(teleconverterMagnification, teleconverterHostEquivMm)
 
+    /**
+     * The ONE effective 35 mm-equivalent focal length in force (AGG4-14) — what the OSD prints, and
+     * what the app-side PROGRAM line's handheld 1/focal rule and the focus-detail exposure gate
+     * use. Null until the opened camera's caps publish. See [effectiveEquivFocalMm].
+     */
+    val effectiveEquivFocalMm: Float?
+        get() = effectiveEquivFocalMm(
+            measuredEquivMm = caps?.equivalentFocalMm ?: 0f,
+            zoomRatio = controls.zoomRatio,
+            teleconverterMode = teleconverterMode,
+            teleconverterFocalMm = teleconverterFocalMm,
+        )
+
     /** The host-lens focal the converter multiplies — declared for a known phone, measured for OTHER. */
     val teleconverterHostEquivMm: Float
         get() = if (phoneModel == PhoneModel.OTHER && lensInventory.teleHostEquivMm > 0f) {
@@ -2025,3 +2038,25 @@ data class MotionInversionData(
  *   cannot separate defocus from haze, a fogged converter, or isotropic shake.
  */
 enum class FocusConfidenceSource { AF_LIMIT, FRAME_DETAIL }
+
+/**
+ * Effective 35 mm-equivalent focal length (mm) of the frame being made, or null with no measured
+ * lens yet: the converter focal times the TELE route's lens-local zoom, otherwise the OPENED
+ * camera's measured equivalent times the route's own zoom (main-relative on the logical camera,
+ * lens-local on a standalone/FRONT/EXTERNAL one — `caps.equivalentFocalMm` is that camera's base).
+ *
+ * The app had three focal truths before (AGG4-14): this one on the OSD and in EXIF, the PRESET's
+ * nominal 23/70/230 mm × converter with NO zoom in the program line, and the bare measured lens on
+ * FRONT. At TC local 4× the OSD read ~1200 mm while PROGRAM held 1/300 s — two stops slower than its
+ * own rule, at the app's main use case. One number now feeds all three.
+ */
+internal fun effectiveEquivFocalMm(
+    measuredEquivMm: Float,
+    zoomRatio: Float,
+    teleconverterMode: Boolean,
+    teleconverterFocalMm: Float,
+): Float? = when {
+    measuredEquivMm <= 0f -> null
+    teleconverterMode -> teleconverterFocalMm * zoomRatio.coerceAtLeast(1f)
+    else -> measuredEquivMm * zoomRatio.coerceAtLeast(0.01f)
+}

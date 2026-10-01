@@ -55,6 +55,7 @@ import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.effectiveEquivFocalMm
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.VideoCodec
@@ -862,21 +863,29 @@ internal fun localizedStatusBarFocalLabel(
 ): String {
     val teleLabel = stringResource(R.string.osd_tele)
     return remember(focalMm, zoomRatio, teleconverterMode, teleconverterFocalMm, teleLabel) {
-        // The afocal teleconverter multiplies the ~70 mm periscope into the selected converter's
-        // effective focal. Round to the nearest 10 mm so the readout says a clean "300 mm" rather
-        // than 296 mm. The localized suffix is part of the key: a runtime locale change must not
-        // retain the previous language's OSD from this performance cache.
-        val effectiveTeleFocal =
-            ((teleconverterFocalMm * zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
-        when {
-            focalMm <= 0f -> "--"
-            teleconverterMode -> "$effectiveTeleFocal mm $teleLabel"
-            // Seamless zoom: the logical camera's equivalent is the main lens and zoom is
-            // main-relative. FRONT reaches this branch with its own lens-local equivalent.
-            else -> "%.0f mm".format(Locale.US, focalMm * zoomRatio.coerceAtLeast(0.01f))
-        }
+        // The localized suffix is part of the key: a runtime locale change must not retain the
+        // previous language's OSD from this performance cache.
+        statusBarFocalLabel(
+            effectiveEquivFocalMm(focalMm, zoomRatio, teleconverterMode, teleconverterFocalMm),
+            teleconverterMode,
+            teleLabel,
+        )
     }
 }
+
+/**
+ * Formats the ONE effective focal ([effectiveEquivFocalMm]) — the same number the program line's
+ * handheld rule uses (AGG4-14). The afocal teleconverter multiplies the ~70 mm periscope into the
+ * selected converter's effective focal; that readout rounds to the nearest 10 mm so it says a clean
+ * "300 mm" rather than 296 mm. Seamless zoom: the logical camera's equivalent is the main lens and
+ * zoom is main-relative; FRONT reaches the plain branch with its own lens-local equivalent.
+ */
+internal fun statusBarFocalLabel(effectiveFocalMm: Float?, teleconverterMode: Boolean, teleLabel: String): String =
+    when {
+        effectiveFocalMm == null -> "--"
+        teleconverterMode -> "${(effectiveFocalMm / 10f).roundToInt() * 10} mm $teleLabel"
+        else -> "%.0f mm".format(Locale.US, effectiveFocalMm)
+    }
 
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
