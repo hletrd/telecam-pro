@@ -60,6 +60,7 @@ import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.HardwareKeyDiagnosticLogGate
+import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.processDiagnosticLogBudget
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraInputBlockOwner
@@ -511,6 +512,20 @@ class MainActivity : ComponentActivity() {
                                     action = PendingAudioAction.START_RECORDING,
                                     block = vm::onToggleRecording,
                                 )
+                            }
+
+                            override fun onRecallMemorySlot(slot: MemorySlot) {
+                                vm.onRecallMemorySlot(slot)
+                                // A recalled bank's audio setting is the operator's own saved choice,
+                                // exactly like flipping the toggle: a stale denial reason must not let
+                                // a later microphone grant force audio back ON over a bank saved
+                                // deliberately silent (tracer T9 / AGG-37). Only an applied recall
+                                // counts; a refused or empty recall never publishes the slot as active.
+                                if (vm.state.value.activeMemorySlot == slot) {
+                                    permissionPreferences.edit(commit = true) {
+                                        putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false)
+                                    }
+                                }
                             }
 
                             override fun onToggleRecordAudio(enabled: Boolean) {
