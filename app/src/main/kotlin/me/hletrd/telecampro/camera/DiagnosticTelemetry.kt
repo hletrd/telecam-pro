@@ -46,31 +46,59 @@ internal fun reservedDiagnosticAllowed(
     budget: ProcessDiagnosticLogBudget = processReservedDiagnosticLogBudget,
 ): Boolean = budget.tryAcquire()
 
-/** Every production warning/error crosses the finite reserved owner before touching logcat. */
-internal object DiagnosticLog {
+/**
+ * The logcat doors over an explicit pair of owners. Production reaches them only through
+ * [DiagnosticLog], which binds the two PROCESS owners; a test binds fresh owners so it can assert
+ * exact admission counts instead of racing every other class that shares the sandbox's budgets.
+ */
+internal class DiagnosticLogDoors(
+    private val recurring: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
+    private val reserved: ProcessDiagnosticLogBudget = processReservedDiagnosticLogBudget,
+) {
     fun d(tag: String, message: String) {
-        if (recurringDiagnosticAllowed(debugEnabled = true)) android.util.Log.d(tag, message)
+        if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {
+            android.util.Log.d(tag, message)
+        }
     }
 
     fun i(tag: String, message: String) {
-        if (recurringDiagnosticAllowed(debugEnabled = true)) android.util.Log.i(tag, message)
+        if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {
+            android.util.Log.i(tag, message)
+        }
     }
 
     fun w(tag: String, message: String) {
-        if (reservedDiagnosticAllowed()) android.util.Log.w(tag, message)
+        if (reservedDiagnosticAllowed(reserved)) android.util.Log.w(tag, message)
     }
 
     fun w(tag: String, message: String, failure: Throwable?) {
-        if (reservedDiagnosticAllowed()) android.util.Log.w(tag, message, failure)
+        if (reservedDiagnosticAllowed(reserved)) android.util.Log.w(tag, message, failure)
     }
 
     fun e(tag: String, message: String) {
-        if (reservedDiagnosticAllowed()) android.util.Log.e(tag, message)
+        if (reservedDiagnosticAllowed(reserved)) android.util.Log.e(tag, message)
     }
 
     fun e(tag: String, message: String, failure: Throwable?) {
-        if (reservedDiagnosticAllowed()) android.util.Log.e(tag, message, failure)
+        if (reservedDiagnosticAllowed(reserved)) android.util.Log.e(tag, message, failure)
     }
+}
+
+/** Every production warning/error crosses the finite reserved owner before touching logcat. */
+internal object DiagnosticLog {
+    private val process = DiagnosticLogDoors()
+
+    fun d(tag: String, message: String) = process.d(tag, message)
+
+    fun i(tag: String, message: String) = process.i(tag, message)
+
+    fun w(tag: String, message: String) = process.w(tag, message)
+
+    fun w(tag: String, message: String, failure: Throwable?) = process.w(tag, message, failure)
+
+    fun e(tag: String, message: String) = process.e(tag, message)
+
+    fun e(tag: String, message: String, failure: Throwable?) = process.e(tag, message, failure)
 }
 
 /**
