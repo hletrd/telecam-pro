@@ -216,3 +216,64 @@ fun CameraStatusMessage.status(
         durationMs = duration,
     )
 }
+
+/**
+ * Status-plate arbitration rank (AGG4-65), lowest first. The plate used to be last-writer-wins: a
+ * 6 s retained-take instruction (the one line that tells the operator how to get a file back) or an
+ * error was replaced within milliseconds by "MR1 loaded" or a refusal, and never came back.
+ */
+internal enum class StatusPlateRank { PROGRESS, SUCCESS, INFO, WARNING, RETAINED_TAKE, ERROR }
+
+internal val CameraStatus.plateRank: StatusPlateRank
+    get() = when {
+        // A condition, not an event: it yields to every event and returns when that event expires.
+        lifecycle == CameraStatusLifecycle.PROGRESS -> StatusPlateRank.PROGRESS
+        severity == CameraStatusSeverity.ERROR -> StatusPlateRank.ERROR
+        message in RETAINED_TAKE_MESSAGES -> StatusPlateRank.RETAINED_TAKE
+        severity == CameraStatusSeverity.WARNING -> StatusPlateRank.WARNING
+        severity == CameraStatusSeverity.INFO -> StatusPlateRank.INFO
+        else -> StatusPlateRank.SUCCESS
+    }
+
+/**
+ * The one status plate: what is [shown], plus a PROGRESS condition [deferredProgress] waiting behind
+ * a higher-ranked event. Pure; the ViewModel owns the timers and the serialization.
+ */
+internal data class StatusPlate(val shown: CameraStatus?, val deferredProgress: CameraStatus? = null) {
+    /** [plate] after a publication, and whether [shown] changed (only then is a timer re-armed). */
+    data class Publication(val plate: StatusPlate, val shownChanged: Boolean)
+
+    /**
+     * An unexpired EVENT is replaced only by an incoming status of EQUAL or HIGHER rank; a lower
+     * event is dropped, and a lower PROGRESS waits behind it. An event that replaces a PROGRESS
+     * condition defers it, so the condition reappears when the event expires (unless its own end
+     * clears it first). `null` is an explicit clear of everything.
+     */
+    fun publish(incoming: CameraStatus?): Publication {
+        val current = shown
+        return when {
+            incoming == null -> Publication(StatusPlate(null), shownChanged = true)
+            current == null -> Publication(StatusPlate(incoming), shownChanged = true)
+            current.lifecycle == CameraStatusLifecycle.PROGRESS -> Publication(
+                StatusPlate(
+                    shown = incoming,
+                    deferredProgress = current.takeIf { incoming.lifecycle == CameraStatusLifecycle.EVENT },
+                ),
+                shownChanged = true,
+            )
+            incoming.plateRank >= current.plateRank ->
+                Publication(StatusPlate(incoming, deferredProgress), shownChanged = true)
+            incoming.lifecycle == CameraStatusLifecycle.PROGRESS ->
+                Publication(StatusPlate(current, deferredProgress = incoming), shownChanged = false)
+            else -> Publication(this, shownChanged = false)
+        }
+    }
+
+    /** The timer for [expired] fired: a deferred condition takes the plate if [expired] still has it. */
+    fun expire(expired: CameraStatus): StatusPlate =
+        if (shown == expired) StatusPlate(deferredProgress) else this
+
+    /** The progress condition ended (Ready, rollback, pause): drop it whether shown or deferred. */
+    fun clearProgress(): StatusPlate =
+        StatusPlate(shown?.takeUnless { it.lifecycle == CameraStatusLifecycle.PROGRESS })
+}

@@ -931,6 +931,30 @@ class CameraViewModelRobolectricTest {
         )
     }
 
+    // AGG4-65: the plate is priority-aware. "MR1 loaded" must not wipe a 6 s retained-take
+    // instruction, and a progress condition published meanwhile waits and then takes the plate.
+    @Test fun `status plate keeps a retained-take line over lower statuses`() {
+        val (v, e) = createViewModel()
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        v.onAppStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
+        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+        assertEquals(retained, v.state.value.status)
+        idleFor(6_000)
+        assertEquals(CameraStatusMessage.CAMERA_RECONFIGURING, v.state.value.status?.message)
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            ),
+        )
+        idleFor(0)
+        assertNull(v.state.value.status)
+    }
+
     @Test fun `camera condition progress waits for Ready not a timer`() {
         val (v, e) = createViewModel()
         val conditions = listOf(

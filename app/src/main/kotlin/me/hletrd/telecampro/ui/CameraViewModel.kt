@@ -34,6 +34,7 @@ import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.StatusPlate
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.AudioDenialReasonStore
@@ -760,6 +761,9 @@ class CameraViewModel private constructor(
     // substitution. Not-Ready publications leave it alone, so a reopen of the same session shape
     // does not re-announce; a Ready that is not DNG-only re-arms it (AGG4-67).
     private var readyDngOnlyAnnounced = false
+    // A PROGRESS status waiting behind a higher-ranked event on the plate (AGG4-65). Guarded by the
+    // camera-ready publication gate's status monitor, like every other plate write.
+    private var deferredProgressStatus: CameraStatus? = null
     // The ONE owner of the audio-denial reason (AGG4-49): the memory-bank store reads it here, so a
     // bank's provenance never depends on which UI layer happened to reach this door.
     private val audioDenialReason = AudioDenialReasonStore(app)
@@ -1563,6 +1567,9 @@ class CameraViewModel private constructor(
         // the request against the live caps once the camera opens and falls back to auto if the
         // size is no longer offered (lens change, aspect mismatch with openGate).
         cameraReadyPublicationGate.serializedStatus { statusOwner ->
+            // The recall's own status competes for the plate like any other (AGG4-65): "MR1 loaded"
+            // must not wipe a retained-take instruction or an error that is still being read.
+            val statusPublication = arbitrateStatus(status)
             _state.update {
                 it.copy(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
@@ -1628,10 +1635,10 @@ class CameraViewModel private constructor(
                 preserveLensSelection = if (honorPreserveOptions) e.preserveLensSelection else it.preserveLensSelection,
                 preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
                 activeMemorySlot = activeSlot,
-                status = status,
+                status = if (statusPublication.shownChanged) statusPublication.plate.shown else it.status,
                 )
             }
-            armStatusTimer(status, statusOwner)
+            if (statusPublication.shownChanged) armStatusTimer(statusPublication.plate.shown, statusOwner)
         }
         mainHandler.removeCallbacks(levelTicker)
         if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
@@ -1798,9 +1805,22 @@ class CameraViewModel private constructor(
 
     private fun publishStatus(status: CameraStatus?) {
         cameraReadyPublicationGate.serializedStatus { statusOwner ->
-            _state.update { it.copy(status = status) }
-            armStatusTimer(status, statusOwner)
+            val publication = arbitrateStatus(status)
+            if (publication.shownChanged) {
+                _state.update { it.copy(status = publication.plate.shown) }
+                armStatusTimer(publication.plate.shown, statusOwner)
+            }
         }
+    }
+
+    /**
+     * Priority-aware plate arbitration (AGG4-65): see [StatusPlate.publish]. Must run under the
+     * gate's status monitor, like every plate write; it records the deferred progress condition.
+     */
+    private fun arbitrateStatus(status: CameraStatus?): StatusPlate.Publication {
+        val publication = StatusPlate(_state.value.status, deferredProgressStatus).publish(status)
+        deferredProgressStatus = publication.plate.deferredProgress
+        return publication
     }
 
     private fun showStatus(message: CameraStatusMessage, vararg arguments: CameraStatusArgument) =
@@ -1819,8 +1839,13 @@ class CameraViewModel private constructor(
         status?.durationMs?.let { durationMs ->
             val runnable = Runnable {
                 cameraReadyPublicationGate.serialized {
-                    if (statusSequence == sequence) _state.update { current ->
-                        if (current.status == status) current.copy(status = null) else current
+                    if (statusSequence == sequence) {
+                        // A progress condition that waited behind this event takes the plate back.
+                        val next = StatusPlate(_state.value.status, deferredProgressStatus).expire(status)
+                        deferredProgressStatus = next.deferredProgress
+                        _state.update { current ->
+                            if (current.status == status) current.copy(status = next.shown) else current
+                        }
                     }
                 }
             }
@@ -1836,6 +1861,8 @@ class CameraViewModel private constructor(
      */
     private fun clearProgressStatus(readyPublication: CameraReadyPublication? = null) {
         val clear: () -> Unit = clear@{
+            // The condition is over whether it is on the plate or waiting behind an event.
+            deferredProgressStatus = null
             if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) return@clear
             _state.update { current ->
                 val status = current.status
