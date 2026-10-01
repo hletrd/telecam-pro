@@ -623,11 +623,6 @@ class CameraController internal constructor(
      * Each [onConfigureFailed] advances [configAttempt] and reconfigures; once the ladder is
      * exhausted the failure is surfaced through [onError].
      */
-    // WrongConstant suppressed for the session type only: TC mode passes the STOCK APP's vendor
-    // operation_mode (0x80b4, captured from CamX configure_streams — sensor mode 48, the 300 mm TC
-    // OIS profile), which lint cannot know. The HAL rejecting it lands in onConfigureFailed and the
-    // existing fallback ladder proceeds with SESSION_REGULAR semantics.
-    @android.annotation.SuppressLint("WrongConstant")
     private fun configureSession(onReady: Ready, onError: ErrorCb) {
         val camera = device ?: return onError.onError(IllegalStateException("camera device unavailable"))
         val preview = glSurface ?: return onError.onError(IllegalStateException("preview surface unavailable"))
@@ -751,14 +746,10 @@ class CameraController internal constructor(
             })
         }
 
-        val sessionConfig = SessionConfiguration(
-            // TC mode: pass the stock app's TC operation_mode (0x80b4) as the sessionType — captured
-            // via CamX `configure_streams() operation_mode: 0x80b4` on the stock app (→ sensor mode 48,
-            // the 300mm TC OIS profile). Falls back via onConfigureFailed if the framework/HAL rejects it.
-            if (plan.useVendorOperationMode) 0x80b4 else SessionConfiguration.SESSION_REGULAR,
-            configs,
-            executor,
-            object : CameraCaptureSession.StateCallback() {
+        val sessionConfig = regularOrVendorSessionConfiguration(
+            vendorOperationMode = plan.useVendorOperationMode,
+            outputs = configs,
+            callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
@@ -862,6 +853,27 @@ class CameraController internal constructor(
             )
         }
     }
+
+    /**
+     * The regular-ladder [SessionConfiguration], with the WrongConstant suppression scoped to the
+     * one value it is justified for (AGG4-81): TC mode passes the STOCK APP's vendor operation_mode
+     * ([VENDOR_TC_SESSION_TYPE], captured from CamX `configure_streams() operation_mode: 0x80b4` —
+     * sensor mode 48, the 300 mm TC OIS profile), which lint cannot know. The HAL rejecting it
+     * lands in onConfigureFailed and the existing fallback ladder proceeds with SESSION_REGULAR
+     * semantics. It used to sit on the whole configureSession ladder, hiding any other mis-typed
+     * IntDef constant there (templates, output configs, dynamic-range profiles) from lint.
+     */
+    @android.annotation.SuppressLint("WrongConstant")
+    private fun regularOrVendorSessionConfiguration(
+        vendorOperationMode: Boolean,
+        outputs: List<OutputConfiguration>,
+        callback: CameraCaptureSession.StateCallback,
+    ): SessionConfiguration = SessionConfiguration(
+        if (vendorOperationMode) VENDOR_TC_SESSION_TYPE else SessionConfiguration.SESSION_REGULAR,
+        outputs,
+        executor,
+        callback,
+    )
 
     /**
      * Builds a [CameraConstrainedHighSpeedCaptureSession] targeting only the GL input surface at
@@ -2477,6 +2489,8 @@ class CameraController internal constructor(
         // native acquisition; it is never interpreted as permission to reopen over the old graph.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
+        // The stock app's TC operation_mode, passed as a vendor SessionConfiguration session type.
+        const val VENDOR_TC_SESSION_TYPE = 0x80b4
     }
 }
 
