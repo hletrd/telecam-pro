@@ -242,17 +242,22 @@ class SettingsStore(
                 afLock = safeBoolean("${prefix}afLock", d.afLock),
                 exposureMode = enumOr(safeString("${prefix}exposureMode", null), d.exposureMode),
                 iso = safeInt("${prefix}iso", d.iso).coerceIn(MIN_PERSISTED_ISO, MAX_PERSISTED_ISO),
-                exposureTimeNs = safeLong("${prefix}exposureTimeNs", d.exposureTimeNs),
+                // Bounded like ISO/EV above: a zero/negative or absurd persisted exposure fed
+                // withShutterMode and previewExposureTrade before any caps clamp (on a route
+                // without manual sensor the clamp never runs at all, AGG-33).
+                exposureTimeNs = safeLong("${prefix}exposureTimeNs", d.exposureTimeNs)
+                    .coerceIn(MIN_PERSISTED_EXPOSURE_NS, MAX_PERSISTED_EXPOSURE_NS),
                 shutterMode = enumOr(safeString("${prefix}shutterMode", null), d.shutterMode),
                 shutterAngle = safeFloat("${prefix}shutterAngle", d.shutterAngle).coerceIn(1f, 360f),
                 exposureCompensation = safeInt("${prefix}exposureCompensation", d.exposureCompensation)
                     .coerceIn(MIN_PERSISTED_EV_INDEX, MAX_PERSISTED_EV_INDEX),
                 aeLock = safeBoolean("${prefix}aeLock", d.aeLock),
                 antibanding = enumOr(safeString("${prefix}antibanding", null), d.antibanding),
-                fps = safeInt("${prefix}fps", d.fps),
+                fps = safeInt("${prefix}fps", d.fps).coerceIn(MIN_PERSISTED_FPS, MAX_PERSISTED_FPS),
                 exposureStep = enumOr(safeString("${prefix}exposureStep", null), d.exposureStep),
                 wbMode = enumOr(safeString("${prefix}wbMode", null), d.wbMode),
-                wbKelvin = safeInt("${prefix}wbKelvin", d.wbKelvin),
+                wbKelvin = safeInt("${prefix}wbKelvin", d.wbKelvin)
+                    .coerceIn(MIN_PERSISTED_WB_KELVIN, MAX_PERSISTED_WB_KELVIN),
                 wbTint = safeInt("${prefix}wbTint", d.wbTint),
                 awbLock = safeBoolean("${prefix}awbLock", d.awbLock),
                 meteringMode = enumOr(safeString("${prefix}meteringMode", null), d.meteringMode),
@@ -473,6 +478,15 @@ class SettingsStore(
         // Camera2 guarantees white-balance gains in 1..3; retain generous device-specific samples
         // while bounding corrupted preferences before RggbChannelVector/request construction.
         const val MAX_PERSISTED_WB_GAIN = 32f
+        // Generous outer bounds only; the selected route's advertised range (and PMA110's 4 s still
+        // ceiling) still clamps at the capability seam.
+        const val MIN_PERSISTED_EXPOSURE_NS = 1L
+        const val MAX_PERSISTED_EXPOSURE_NS = 60_000_000_000L
+        const val MIN_PERSISTED_FPS = 1
+        const val MAX_PERSISTED_FPS = 240
+        // The Kelvin ruler's own range (ProSheet / ManualDials).
+        const val MIN_PERSISTED_WB_KELVIN = 2000
+        const val MAX_PERSISTED_WB_KELVIN = 10000
         fun presetPrefix(slot: MemorySlot): String = "preset_${slot.name}_"
     }
 }

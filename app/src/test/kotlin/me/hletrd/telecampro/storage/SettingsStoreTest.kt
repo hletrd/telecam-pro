@@ -174,6 +174,23 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun corruptExposureFpsAndKelvinAreBoundedAtLoad() {
+        // AGG-33: like ISO/EV/focus, these raw numbers reach exposure math before any caps clamp.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putLong("exposureTimeNs", -5L)
+            .putInt("fps", 0)
+            .putInt("wbKelvin", 99_999)
+            .commit()
+        val controls = SettingsStore(prefs).load()?.controls
+
+        assertEquals(1L, controls?.exposureTimeNs)
+        assertEquals(1, controls?.fps)
+        assertEquals(10000, controls?.wbKelvin)
+    }
+
+    @Test
     fun aBlobWithoutAPhoneKeyRestoresTheCallersSeedNotTheFindX9Ultra() {
         // A blob or MR bank written before the phone key existed must not replace the OTHER seed
         // on foreign hardware with the Find X9 Ultra + Hasselblad 300 mm kit (AGG-35).
