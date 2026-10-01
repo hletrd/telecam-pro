@@ -887,8 +887,11 @@ class ConsolidatedHostGateTest(unittest.TestCase):
 
         def remove_authoritative_command(root: Path) -> None:
             completed = []
-            pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})-rpf-cycle(\d+)\.md$")
-            for path in (root / "docs/plans").glob("*.md"):
+            pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})-rp[fl]-cycle(\d+)\.md$")
+            for path in [
+                *(root / "docs/plans").glob("*.md"),
+                *(root / "docs/plans/archive").glob("*.md"),
+            ]:
                 text = path.read_text(encoding="utf-8")
                 match = pattern.fullmatch(path.name)
                 if match and re.search(r"^Status:\s*complete\b", text, re.M):
@@ -934,6 +937,22 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
                 self.assertIn(newer, result.stdout)
+
+    def test_archived_and_rpl_completed_plans_count_as_history(self) -> None:
+        def add_archived_rpl_plan(root: Path) -> None:
+            (root / "docs/plans/archive/2099-01-01-rpl-cycle1.md").write_text(
+                "Status: complete\n",
+                encoding="utf-8",
+            )
+
+        result, _ = run_documentation_gate_from_committed_export(add_archived_rpl_plan)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "FAIL  latest completed implementation plan names the authoritative host gate",
+            result.stdout,
+        )
+        self.assertIn("2099-01-01-rpl-cycle1.md", result.stdout)
 
     def test_incomplete_newer_plan_does_not_replace_completed_evidence(self) -> None:
         def add_incomplete_plan(root: Path) -> None:
