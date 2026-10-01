@@ -801,6 +801,10 @@ These files are intentionally gitignored and stay only on the local machine:
 > `keytool -list -keystore telecampro-upload.jks -alias telecampro` — the certificate SHA-256 must
 > match whatever this sheet records as the upload certificate, or the wrong keystore is in place.
 
+Generate each new store/key secret rather than choosing it, for example with
+`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`; that output clears the floor the
+helper, the immutable wrapper, and the Gradle release gate all enforce.
+
 After the separately approved rotation/reset is complete, add these **non-secret** fields to the
 gitignored `keystore.properties`: `uploadKeyRotationApproved=true` and
 `uploadKeyCertificateSha256=<the new 64-hex public certificate SHA-256>`. The helper verifies that
@@ -820,8 +824,9 @@ python3 tools/run_scoped_signed_release.py --check-prerequisites
 release_root="app/build/immutable-release/$(git rev-parse --short=12 HEAD)-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
 # The decrypted payload travels only through this pipe. The short-lived helper validates the exact
 # storePassword/keyPassword field set and the machine-checkable generated-secret floor (20+
-# characters, at least three character classes, no surrounding whitespace/repetition/sequences;
-# this rejects obvious weak shapes but does not claim to prove randomness), verifies the certificate with
+# characters, at least three character classes, at least twelve distinct characters, no surrounding
+# whitespace, no run of four identical characters, no whole-value repeating block, no alphabetic or
+# numeric walk; this rejects obvious weak shapes but does not claim to prove randomness), verifies the certificate with
 # keytool's -storepass:env form (the VALUE never enters argv), runs the immutable wrapper, and clears
 # its child environment on every success/failure terminal. It writes no transient secret file and
 # cannot export anything into this caller shell.

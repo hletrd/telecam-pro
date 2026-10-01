@@ -60,6 +60,12 @@ def is_blocked_upload_certificate(value: str) -> bool:
 MIN_STRONG_PASSWORD_LENGTH = 20
 MIN_STRONG_PASSWORD_CLASSES = 3
 MAX_MONOTONIC_RUN = 5
+# SEC4-5 / AGG4-42: length + classes + "not one repeated character" still accepted 18 x `a` + `A1`,
+# `Aa1` x 7, and a dictionary word bracketing a digit walk. Generated output (for example
+# `secrets.token_urlsafe(32)`, 43 characters over a 64-symbol alphabet) clears all three structural
+# rules below with overwhelming probability; a human-memorable shape does not.
+MIN_DISTINCT_CHARACTERS = 12
+MAX_REPEAT_RUN = 3
 
 
 def _has_monotonic_run(value: str) -> bool:
@@ -91,6 +97,27 @@ def _has_monotonic_run(value: str) -> bool:
     return False
 
 
+def _has_long_repeat_run(value: str) -> bool:
+    """True when one character repeats more than MAX_REPEAT_RUN times in a row."""
+    run = 0
+    previous: str | None = None
+    for character in value:
+        run = run + 1 if character == previous else 1
+        if run > MAX_REPEAT_RUN:
+            return True
+        previous = character
+    return False
+
+
+def _has_short_period(value: str) -> bool:
+    """True when the whole value repeats a block of at most half its length (`Aa1Aa1...`)."""
+    length = len(value)
+    for period in range(1, length // 2 + 1):
+        if all(value[index] == value[index + period] for index in range(length - period)):
+            return True
+    return False
+
+
 def meets_generated_secret_floor(value: str) -> bool:
     """True only for a generated-looking secret; the answer never says WHY a value failed."""
     if len(value) < MIN_STRONG_PASSWORD_LENGTH or value != value.strip():
@@ -103,6 +130,8 @@ def meets_generated_secret_floor(value: str) -> bool:
     )
     return (
         sum(classes) >= MIN_STRONG_PASSWORD_CLASSES
-        and len(set(value)) > 1
+        and len(set(value)) >= MIN_DISTINCT_CHARACTERS
+        and not _has_long_repeat_run(value)
+        and not _has_short_period(value)
         and not _has_monotonic_run(value)
     )

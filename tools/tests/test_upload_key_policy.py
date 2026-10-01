@@ -66,6 +66,42 @@ class GeneratedSecretFloorTest(unittest.TestCase):
             with self.subTest(strong=strong):
                 self.assertTrue(policy.meets_generated_secret_floor(strong))
 
+    def test_low_entropy_shapes_fail(self) -> None:
+        # SEC4-5 / AGG4-42: each of these passed the length + class + "not one character" floor.
+        for weak in (
+            "a" * 18 + "A1",  # long repeat run, 3 distinct characters
+            "Aa1" * 7,  # whole-value period 3
+            "Password1234Password",  # dictionary word around a short walk: 11 distinct
+            "Xq7-Xq7-Xq7-Xq7-Xq7-",  # period 4, would otherwise clear every other rule
+            "Zk4!mR9#vT2$wQ8%nnnnB",  # one run of four
+        ):
+            with self.subTest(weak=weak):
+                self.assertFalse(policy.meets_generated_secret_floor(weak))
+        # Each structural rule on its own: a value that clears everything but that rule.
+        self.assertTrue(policy.meets_generated_secret_floor("Zk4!mR9#vT2$wQ8%nnnB"))
+        self.assertFalse(policy._has_short_period("Zk4!mR9#vT2$wQ8%nnnB"))
+        self.assertTrue(policy._has_short_period("Xq7-Xq7-Xq7-Xq7-Xq7-"))
+        self.assertTrue(policy._has_long_repeat_run("abbbbc"))
+        self.assertFalse(policy._has_long_repeat_run("abbbc"))
+        self.assertEqual(12, policy.MIN_DISTINCT_CHARACTERS)
+        self.assertFalse(policy.meets_generated_secret_floor("Aa1-Bb2-Cc3-Aa1-Bb2-C"))  # 10 distinct
+
+    def test_documented_generator_output_clears_the_floor(self) -> None:
+        # docs/play-console-submit.md tells the owner to generate each secret with
+        # `secrets.token_urlsafe(32)`: 43 characters over [A-Za-z0-9_-]. Seeded so the test is
+        # deterministic; the structural rules must not reject generated output except by rare
+        # chance (a draw with fewer than three classes or a 6-step walk), never systematically.
+        import random
+        import string
+
+        alphabet = string.ascii_letters + string.digits + "-_"
+        generator = random.Random(20261002)
+        samples = ["".join(generator.choice(alphabet) for _ in range(43)) for _ in range(2000)]
+        rejected = [value for value in samples if not policy.meets_generated_secret_floor(value)]
+        self.assertLess(len(rejected), 5)
+        docs = (REPO_ROOT / "docs/play-console-submit.md").read_text(encoding="utf-8")
+        self.assertIn("secrets.token_urlsafe(32)", docs)
+
     def test_both_wrappers_use_the_policy_module_rule(self) -> None:
         for name in ("build_immutable_release.py", "run_scoped_signed_release.py"):
             text = (REPO_ROOT / "tools" / name).read_text(encoding="utf-8")
