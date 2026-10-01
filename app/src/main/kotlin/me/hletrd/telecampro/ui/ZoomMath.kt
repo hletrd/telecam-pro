@@ -24,9 +24,9 @@ internal data class ZoomBounds(val lower: Float, val upper: Float)
  * round numbers on the kit optic; the caps-measured 69.4 mm would read 59.5× at the 60× ceiling),
  * other routes use openedLensEquiv ÷ mainEquiv (≈3.0× at the 3× tele's native position). The HUD
  * pill and the Fn/My-Menu ZOOM value MUST both read through this — the Fn tile used to show the raw
- * lens-local ratio ("2.3×") while the pill showed "30.0×" for the identical physical state. (The
- * Shooting-tab slider and Zoom ruler are EDIT surfaces on the lens-local scale outside TELE and
- * deliberately keep their own base.)
+ * lens-local ratio ("2.3×") while the pill showed "30.0×" for the identical physical state. The
+ * Quick Zoom ruler reads and drags on this scale too ([zoomRulerScale], AGG4-73): it opens directly
+ * under the ZOOM chip, and a "1.0×" ruler under a "3.0×" chip was two magnifications for one framing.
  *
  * [teleconverterMagnification] is the SELECTED converter's magnification (CameraUiState.
  * teleconverterMagnification). It is an explicit parameter, never a global read, so this whole file
@@ -46,6 +46,46 @@ internal fun zoomDisplayMultiplier(
     activeRoute?.lensLocalZoom == true || frontFacing -> 1f
     teleconverter -> teleDisplayBase(teleconverterMagnification)
     else -> (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
+}
+
+/**
+ * The Quick Zoom ruler's mapping between its displayed main-relative scale and the LENS-LOCAL ratio
+ * the engine owns (AGG4-73). [base] is [zoomDisplayMultiplier] — the SAME value the ZOOM Fn chip and
+ * the HUD pill read through — so on every rear standalone route (all of Video, Photo with DNG on
+ * PMA110) the ruler says "3.0×" on the 70 mm lens where it used to say "1.0×". Only the converter
+ * branch is capped at [TELE_MAX_DISPLAY_ZOOM] (that cap is on TOTAL magnification); a drag still
+ * writes `display / base` back on the lens-local scale.
+ */
+internal data class ZoomRulerScale(
+    val lo: Float,
+    val hi: Float,
+    val base: Float,
+    private val lowerLocal: Float,
+) {
+    val enabled: Boolean get() = hi > lo
+
+    fun display(localZoomRatio: Float): Float = localZoomRatio * base
+
+    fun fraction(localZoomRatio: Float): Float =
+        if (hi <= lo) 0f else ((display(localZoomRatio) - lo) / (hi - lo)).coerceIn(0f, 1f)
+
+    fun localFor(fraction: Float): Float = ((lo + fraction * (hi - lo)) / base).coerceIn(lowerLocal, hi / base)
+}
+
+internal fun zoomRulerScale(
+    lowerLocal: Float,
+    upperLocal: Float,
+    displayMultiplier: Float,
+    teleconverter: Boolean,
+): ZoomRulerScale {
+    val base = displayMultiplier.takeIf { it.isFinite() && it > 0f } ?: 1f
+    val hi = upperLocal * base
+    return ZoomRulerScale(
+        lo = lowerLocal * base,
+        hi = if (teleconverter) minOf(hi, TELE_MAX_DISPLAY_ZOOM) else hi,
+        base = base,
+        lowerLocal = lowerLocal,
+    )
 }
 
 /** Camera-style zoom typography shared by every read-only zoom surface. */

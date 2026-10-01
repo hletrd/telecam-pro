@@ -84,4 +84,23 @@ class DialStopsTest {
             assertTrue("all within bounds (step=$step)", stops.all { it in 125_000L..1_000_000_000L })
         }
     }
+
+    // AGG4-75: candidates beyond the old 50/25600 ladder ends snapped onto the ends and were
+    // de-duplicated away — a 102400 sensor jumped 25600 → 102400 with 32000…80000 unreachable.
+    @Test
+    fun `isoStops keeps conventional thirds past the old ladder ends`() {
+        val stops = isoStops(25, 102400, 1f / 3f).toList()
+        assertEquals(
+            listOf(25, 32, 40, 50, 64, 80, 100),
+            stops.take(7),
+        )
+        assertEquals(
+            listOf(20000, 25600, 32000, 40000, 51200, 64000, 80000, 102400),
+            stops.takeLast(8),
+        )
+        assertEquals(
+            listOf(25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 102400),
+            isoStops(25, 102400, 1f).toList(),
+        )
+    }
 }

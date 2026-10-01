@@ -115,6 +115,8 @@ import me.hletrd.telecampro.ui.FnEntryAnchor
 import me.hletrd.telecampro.ui.fnEntryAnchor
 import me.hletrd.telecampro.ui.formatDisplayZoom
 import me.hletrd.telecampro.ui.formatZoomMultiplier
+import me.hletrd.telecampro.ui.zoomRulerScale
+import me.hletrd.telecampro.ui.zoomDisplayMultiplier
 import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.hudGlyph
@@ -293,7 +295,14 @@ fun ManualDialCluster(
                         controls = controls,
                         caps = caps,
                         teleconverter = state.teleconverterMode,
-                        teleconverterMagnification = state.teleconverterMagnification,
+                        // The SAME multiplier the ZOOM chip above it and the HUD pill read (AGG4-73).
+                        displayMultiplier = zoomDisplayMultiplier(
+                            teleconverter = state.teleconverterMode,
+                            teleconverterMagnification = state.teleconverterMagnification,
+                            equivalentFocalMm = caps?.equivalentFocalMm,
+                            frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
+                            activeRoute = state.activeCameraRoute,
+                        ),
                         onZoomRatio = actions::onZoomRatio,
                     )
                     null -> Unit
@@ -1097,10 +1106,15 @@ private fun ManualControls.effectiveExposureNsForDisplay(): Long =
 // body shows). AGG3-7/CR-12: snapping each `100·2^(k·stepEv)` candidate to 2 significant figures
 // instead of this table produced non-standard values a photographer never sees on a body — 130,
 // 630, 1300, 5100, 8100 — contradicting the very comment that used to sit here. Mirrors the
-// NICE_SHUTTER_DENOM nearest-match pattern in ProControls.kt.
+// NICE_SHUTTER_DENOM nearest-match pattern in ProControls.kt. The ladder spans 25–102400 (AGG4-75):
+// when it ended at 50/25600, every candidate beyond an end snapped onto that end and was
+// de-duplicated away, so a sensor advertising 102400 offered 25600 then a one-to-two-stop jump to
+// its raw upper bound, with 32000/40000/51200 unreachable. Candidates inside 50–25600 are unchanged.
 private val STANDARD_ISO_LADDER = intArrayOf(
+    25, 32, 40,
     50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
     2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600,
+    32000, 40000, 51200, 64000, 80000, 102400,
 )
 
 /** ISO values [stepEv] EV apart across [[lower], [upper]], anchored at 100, each snapped to the
@@ -1234,41 +1248,29 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
     }
 }
 
-// No defaults on the converter pair: ZoomMath states the invariant for exactly this value — the
-// magnification is an explicit parameter, never a global read, "so a caller can never silently
-// display the kit optic's scale while a different converter is mounted". A default reading
-// TELECONVERTER_MAGNIFICATION is a ready-made way back to the bug 4328fb5/2ea5227 fixed.
+// No default on the display multiplier: ZoomMath states the invariant for exactly this value — the
+// converter magnification behind it is an explicit parameter, never a global read, "so a caller can
+// never silently display the kit optic's scale while a different converter is mounted".
 @Composable
 private fun ZoomRuler(
     controls: ManualControls,
     caps: CameraCaps?,
     teleconverter: Boolean,
-    teleconverterMagnification: Float,
+    displayMultiplier: Float,
     onZoomRatio: (Float) -> Unit,
 ) {
-    // TELE reads and drags on the converter-equivalent scale (13–60× on the kit optic); the callback
-    // still writes the LENS-LOCAL ratio the engine owns. Other modes are 1:1.
-    val base = if (teleconverter) {
-        me.hletrd.telecampro.camera.teleDisplayBase(teleconverterMagnification)
-    } else {
-        1f
-    }
+    // Reads and drags on the main-relative DISPLAY scale every other zoom surface uses (13–60× under
+    // the kit converter, ~3× on the standalone 70 mm lens); the callback still writes the LENS-LOCAL
+    // ratio the engine owns. See [zoomRulerScale].
     val range = caps?.zoomRatioRange ?: Range(1f, 1f)
-    val lo = range.lower * base
-    val hi = if (teleconverter) {
-        minOf(range.upper * base, me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM)
-    } else {
-        range.upper
-    }
-    val display = controls.zoomRatio * base
-    val fraction = if (hi <= lo) 0f else ((display - lo) / (hi - lo)).coerceIn(0f, 1f)
-    val readout = formatZoomMultiplier(display)
+    val scale = zoomRulerScale(range.lower, range.upper, displayMultiplier, teleconverter)
+    val readout = formatZoomMultiplier(scale.display(controls.zoomRatio))
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         RulerReadout(readout)
         RulerSlider(
-            fraction = fraction,
-            onFractionChange = { f -> onZoomRatio(((lo + f * (hi - lo)) / base).coerceIn(range.lower, hi / base)) },
-            enabled = hi > lo,
+            fraction = scale.fraction(controls.zoomRatio),
+            onFractionChange = { f -> onZoomRatio(scale.localFor(f)) },
+            enabled = scale.enabled,
             semanticLabel = stringResource(R.string.label_zoom),
             valueDescription = readout,
             totalUnits = 120,
