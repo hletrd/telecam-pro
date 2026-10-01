@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import unittest
+import zipfile
 from pathlib import Path
 
 from tools import upload_key_policy as policy
@@ -124,13 +126,73 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         return self.gradle[start : self.gradle.index(")", start)]
 
     def test_every_release_package_and_sign_task_is_gated(self) -> None:
-        tasks = set(re.findall(r'"((?:package|sign)Release[A-Za-z]*)"', self.release_signing_task_set()))
+        tasks = set(re.findall(r'"([A-Za-z]+Release[A-Za-z]*)"', self.release_signing_task_set()))
         self.assertEqual(
-            {"packageRelease", "packageReleaseBundle", "packageReleaseUniversalApk", "signReleaseBundle"},
+            {
+                "packageRelease",
+                "packageReleaseBundle",
+                "packageReleaseUniversalApk",
+                "signReleaseBundle",
+                # SEC4-1 / AGG4-39: AGP's bundle-to-APK signer and its extractor.
+                "makeApkFromBundleForRelease",
+                "extractApksFromBundleForRelease",
+            },
             tasks,
         )
         self.assertIn("tasks.matching { it.name in releaseSigningTasks }.configureEach {", self.block)
         self.assertIn("doFirst {", self.block)
+
+    # Release APK/bundle task-name prefixes AGP registers that are reviewed as NOT signing, with why.
+    NON_SIGNING_APK_TASK_PREFIXES = {
+        # ApkZipPackagingTask re-zips packageRelease's output, which is already gated and signed.
+        "zipApksFor": "re-zips the gated packageRelease output",
+        # A method name inside PackageForHostTest, not a task registration.
+        "getApkFor": "not a task name",
+    }
+
+    def agp_jar(self) -> Path | None:
+        catalog = (REPO_ROOT / "gradle/libs.versions.toml").read_text(encoding="utf-8")
+        version = re.search(r'(?m)^agp = "([^"]+)"$', catalog)
+        self.assertIsNotNone(version)
+        gradle_home = Path(os.environ.get("GRADLE_USER_HOME") or Path.home() / ".gradle")
+        jars = sorted(
+            gradle_home.glob(
+                f"caches/modules-2/files-2.1/com.android.tools.build/gradle/{version.group(1)}/*/"
+                f"gradle-{version.group(1)}.jar"
+            )
+        )
+        return jars[0] if jars else None
+
+    def test_every_agp_release_apk_or_bundle_task_prefix_is_gated_or_reviewed(self) -> None:
+        # SEC4-1: the gate is a NAME set, so pin it against the task names the pinned AGP registers.
+        # The name prefixes are string constants in each task's CreationAction class.
+        jar = self.agp_jar()
+        if jar is None:
+            self.skipTest("the pinned AGP jar is not in the Gradle cache (run any Gradle build first)")
+        prefixes: set[str] = set()
+        with zipfile.ZipFile(jar) as archive:
+            for name in archive.namelist():
+                if name.endswith(".class") and "CreationAction" in name:
+                    prefixes.update(
+                        match.decode("ascii")
+                        for match in re.findall(
+                            rb"[a-z][A-Za-z]*(?:Apk|Apks|Bundle)[A-Za-z]*For", archive.read(name)
+                        )
+                    )
+        self.assertIn("makeApkFromBundleFor", prefixes)
+        gated = self.release_signing_task_set()
+        unreviewed = sorted(
+            prefix
+            for prefix in prefixes
+            if f'"{prefix}Release"' not in gated and prefix not in self.NON_SIGNING_APK_TASK_PREFIXES
+        )
+        self.assertEqual([], unreviewed)
+
+    def test_gate_inputs_carry_the_alias_and_store_path(self) -> None:
+        # SEC4-1: an alias switch inside the same keystore must re-execute every gated task.
+        self.assertIn("val signingAlias = releaseKeyAlias!!", self.block)
+        self.assertIn("val signingStorePath = releaseStoreFile!!", self.block)
+        self.assertIn("|$signingAlias|$signingStorePath\",", self.block)
 
     def test_gradle_reads_the_shared_deny_list_and_verifies_in_process(self) -> None:
         self.assertIn('rootProject.file("tools/blocked-upload-certificates.txt")', self.block)

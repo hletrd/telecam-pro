@@ -880,11 +880,20 @@ dependencies {
 // signed output can never satisfy a run that carries injected signing.
 val injectedSigningPropertyNames: List<String> =
     providers.gradlePropertiesPrefixedBy("android.injected.signing.").get().keys.sorted()
+// SEC4-1 / AGG4-39: AGP 9.4.1 also registers the bundle-to-APK pair for every app variant —
+// `makeApkFromBundleForRelease` (BundleToApkTask: bundletool build-apks WITH the variant's signing
+// config) and `extractApksFromBundleForRelease` (ExtractApksTask: unpacks those signed APKs for the
+// IDE's deploy-from-bundle path). Neither was gated, so re-pointing keyAlias inside an approved
+// keystore signed an APK set with a blocked key while every gated task stayed UP-TO-DATE.
+// tools/tests/test_upload_key_policy.py reads the AGP jar and fails when a release APK/bundle task
+// prefix appears that is neither listed here nor reviewed as non-signing.
 val releaseSigningTasks = setOf(
     "packageRelease",
     "packageReleaseBundle",
     "packageReleaseUniversalApk",
     "signReleaseBundle",
+    "makeApkFromBundleForRelease",
+    "extractApksFromBundleForRelease",
 )
 tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" || it.name == "assembleRelease" }
     .configureEach {
@@ -941,7 +950,8 @@ if (hasReleaseSigning) {
         ?.map { it.substringBefore('#').trim() }
         ?.filter { it.isNotEmpty() }
         ?.toSet()
-    val signingStoreFile = rootProject.file(releaseStoreFile!!)
+    val signingStorePath = releaseStoreFile!!
+    val signingStoreFile = rootProject.file(signingStorePath)
     val signingAlias = releaseKeyAlias!!
     val signingStorePassword = releaseStorePassword!!
     // SEC4-2 / AGG4-38: the floor applies to the EFFECTIVE values AGP signs with — storePassword and
@@ -957,10 +967,13 @@ if (hasReleaseSigning) {
         // the gate). Without this, a signed output produced before the gate existed was reported as
         // a successful build afterwards.
         // The floor verdicts (SEC4-2) ride along so a weakened secret also re-executes the gate.
+        // SEC4-1 / AGG4-39: so do the alias and the store path (both non-secret). Re-pointing
+        // keyAlias at another alias inside the SAME keystore changed none of the other inputs, so a
+        // gated task stayed UP-TO-DATE and its doFirst never ran while a downstream signer used it.
         inputs.property(
             "uploadKeyApprovalState",
             "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}|$injectedNames|" +
-                "$storePasswordMeetsFloor|$keyPasswordMeetsFloor",
+                "$storePasswordMeetsFloor|$keyPasswordMeetsFloor|$signingAlias|$signingStorePath",
         )
         inputs.file(signingStoreFile).withPropertyName("uploadKeystore").withPathSensitivity(PathSensitivity.NONE)
         doFirst {
