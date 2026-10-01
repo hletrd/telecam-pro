@@ -133,7 +133,7 @@ class OpticsRouteInputTransactionRobolectricTest {
         setBoolean(camera, "started", true)
         val texture = android.graphics.SurfaceTexture(0)
         val input = android.view.Surface(texture)
-        val gl = (field(camera, "glOwners") as me.hletrd.telecampro.gl.AtomicOwnerSlot<*>).current()!!
+        val gl = (field(camera, "glOwners") as me.hletrd.telecampro.gl.AtomicOwnerSlot<*>).current()
         gl.javaClass.getDeclaredField("inputSurface").apply { isAccessible = true }.set(gl, input)
         val statuses = mutableListOf<CameraStatusMessage>()
         camera.onStatus = { it?.message?.let(statuses::add) }
