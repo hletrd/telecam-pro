@@ -1819,6 +1819,45 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotEqual(tracked.returncode, 0, tracked.stdout + tracked.stderr)
         self.assertIn("tracked-note.md", tracked.stdout)
 
+    def test_committed_export_rejects_doc_scoping_and_symbol_regressions(self) -> None:
+        # AGG4-53 / AGG4-56 / AGG4-60: each regression is the exact pre-fix text.
+        for relative, current, stale, rule in (
+            (
+                "docs/ARCHITECTURE.md",
+                "`gl.setFrontMirrorConvention(front, streamPreMirrored)`",
+                "`gl.setFrontStreamPreMirrored`",
+                "architecture DeviceProfile table cites only seams that exist in source",
+            ),
+            (
+                "docs/ARCHITECTURE.md",
+                "`CameraEngine.rawForcesStandalone`",
+                "`CameraCaps.rawForcesStandalone`",
+                "architecture DeviceProfile table cites only seams that exist in source",
+            ),
+            (
+                "README.md",
+                "On the Find X9 Ultra, wanting RAW",
+                "Wanting RAW",
+                "README and CLAUDE scope the RAW law",
+            ),
+            (
+                "CLAUDE.md",
+                "used by exactly two draws",
+                "with exactly one caller",
+                "README and CLAUDE scope the RAW law",
+            ),
+        ):
+            with self.subTest(relative=relative, stale=stale):
+                def regress(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(regress)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"FAIL  {rule}", result.stdout)
+
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:
             path = root / "docs/assets/play/screenshots/tablet/asset-validity.json"

@@ -712,12 +712,12 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 
 | Field | PMA110 | GENERIC | Seam that reads it |
 |---|---|---|---|
-| `frontStreamPreMirrored` | `true` | `false` | `FrontMirrorConvention` (preview/encoder/analysis draw mirror and tap display axis), pushed by `CameraEngine` as `gl.setFrontStreamPreMirrored`; metering un-flips on every front route regardless |
+| `frontStreamPreMirrored` | `true` | `false` | `FrontMirrorConvention` (preview/encoder/analysis draw mirror and tap display axis), pushed by `CameraEngine.applyStabilization` as `gl.setFrontMirrorConvention(front, streamPreMirrored)`; metering un-flips on every front route regardless |
 | `vendorTcSessionType` | `true` | `false` | `CameraController` `sessionAttemptPlan` / `maxSessionAttempt` (the 0x80b4 TC session type rungs) |
 | `stillExposureCeilingNs` | `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) | `null` (trust the advertised range) | `CaptureCapabilities` caps seam, fed from `CameraEngine` caps publication |
 | `vendorOplusRequestHints` | `true` | `false` | `CameraController` `applyVideoStab` / `applyTeleconverterHints` and the zoom fast path (`com.oplus.*` request keys) |
 | `logicalStillRequiresYuv` | `true` | `false` | `resolveMustUseYuvStill` → `sessionAttemptPlan` (YUV still on the logical rear route; FRONT's YUV lane stays an optimisation) |
-| `rawRequiresStandalone` | `true` | `false` | `sessionAttemptPlan` `rawStandaloneOnly`, `standaloneRouteWanted` (engine `resolveNonTeleId` and the UI's `CameraCaps.rawForcesStandalone`) |
+| `rawRequiresStandalone` | `true` | `false` | `sessionAttemptPlan` `rawStandaloneOnly`, `standaloneRouteWanted` (engine `resolveNonTeleId`; every UI route decision reads `CameraEngine.rawForcesStandalone` via `CameraViewModel.standaloneRouteFor`, while `CameraUiState.rawForcesStandalone` is display copy only, PMA110 default until the first inventory) |
 
 ---
 
@@ -1194,7 +1194,8 @@ discardRejectedOutput(context, uri)
 // Durable DISCARD + delete for a rejected output; unresolved double-failures are process-bounded
 cleanupOrphanedPendingBatch(context, cursor)
 // → one bounded page + RecoveryReport; ADOPT valid, DELETE rejected/proven-invalid, re-assert
-// IS_PENDING=1 on a KEPT row so MediaProvider re-arms its pending expiry (PENDING DEVICE)
+// IS_PENDING=1 on a KEPT row so MediaProvider re-arms its pending expiry (PENDING DEVICE:
+// docs/FIELD_CHECKS.md E4)
 latestOwnCapture(context) → RestoredCapture
 // Bounded Images + Video scan, followed by an exact-family query when identity is proven
 ```
@@ -1253,8 +1254,9 @@ The fixed settings panel has nine left-rail tabs:
    and AWB lock. EV remains on the quick Fn surface.
 4. **Focus** — AF/MF mode, tap-AF spot size/lock, and peaking level/color. Manual focus distance
    remains on the quick Fn dial rather than this tab.
-5. **Lens** — device-enumerated lens presets (0.6x/1x/3x/10x on PMA110), TELE mode,
-   stabilization mode, and OIS.
+5. **Lens** — device-enumerated lens presets (0.6x/1x/3x/10x on PMA110), TELE mode, the phone +
+   teleconverter declaration (two dropdowns, the converter list narrowed to that phone, plus the
+   custom magnification field and converter-host captions), stabilization mode, and OIS.
 6. **Video** — codec, transfer, resolution, FPS, bitrate, Open Gate, and audio.
 7. **Image** — edge sharpness, noise reduction, and color-effect processing.
 8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, punch-in, and Loupe Overview.

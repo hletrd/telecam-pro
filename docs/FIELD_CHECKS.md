@@ -1,15 +1,17 @@
 # Field checks
 
-The verifications that need the phone in your hands. Everything checkable over ADB is already done —
-these are the ones that need a real scene, real light, the physical converter, or your eyes.
+The verifications that need a device in your hands, plus the device checks a host test cannot
+close. This ledger is exhaustive: every open device claim in `CLAUDE.md` or `docs/ARCHITECTURE.md`
+has an entry here, including the two (D2, E4) that are checkable over ADB but have not been run.
 
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-08-25):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · E1 ☐ · E2 ☐ · E3 ☐.
-Seven remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐.
+Nine remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
 front route, **A5** needs a sustained front pseudo-ZSL soak, **D1** needs an off-axis sound source,
-and **E1/E2/E3** need real MediaProvider ownership, system-consent, and reset/reindex behavior. B1 closed the rotation
+**D2** needs REC takes on the TB336ZU tablet, and **E1/E2/E3/E4** need real MediaProvider ownership,
+system-consent, reset/reindex, and pending-expiry behavior. B1 closed the rotation
 work end to end; C1 confirmed the afocal
 correction against real converter glass. C3 is closed as an honest no-observable-difference result,
 not proof of a distinct teleconverter OIS profile.
@@ -231,6 +233,23 @@ Parameter acceptance is verified; the acoustic effect has never been heard.
 **Pass:** the off-axis source is more suppressed with it on. If indistinguishable, record that — the
 feature would then be advertising something it doesn't deliver here.
 
+### D2. TB336ZU REC audio under the token-scoped recorder door — ◯ OPEN 2026-10-02
+
+The silent-clip race on the MediaTek tablet (the audio worker reaching `AudioRecord.startRecording`
+before the Engine publishes the pending token) was device-closed for the FIRST fix, which admitted
+the pending token's owner: five of five takes carried AAC. The current door (`4e57fff2`) admits the
+pending token's own workers by TOKEN instead, and that change is host-tested only.
+
+- On a Lenovo TB336ZU, install the exact immutable debug APK and grant CAMERA and RECORD_AUDIO.
+- In VIDEO with audio on, record five takes of about 5 s each, starting each from a cold Video entry
+  (the slow first encoder swap is what exposes the race).
+- Pull each clip and inspect its tracks (`ffprobe` or `MediaExtractor`), and keep the logcat for each
+  take (`AudioRecord` set/openRecord/start rows).
+
+**Pass:** five of five clips carry an AAC track with non-silent audio, and every take's logcat shows
+`AudioRecord` reaching `start`. A clip with `set/openRecord` but no `start` is this race, not a mic
+fault. Record device build, APK/source identity, and per-take track lists.
+
 ---
 
 ## E. MediaProvider provenance — disposable test media
@@ -298,6 +317,23 @@ the stable exact-row control retries and clears only after provider absence is a
 device/build, provider package/version before and after, whether URI reuse actually occurred, and
 the immutable APK/source identity. “No URI reuse observed” is an honest inconclusive result, not a
 claim that the guard is unnecessary.
+
+### E4. Pending-row `DATE_EXPIRES` re-arm on a kept row — ◯ OPEN 2026-10-02
+
+Launch recovery re-writes `IS_PENDING = 1` on a row it KEEPS pending (`reassertPending`) so that
+MediaProvider re-arms the pending row's `DATE_EXPIRES`; otherwise idle maintenance deletes a retained
+take about a week after insert. The host test proves only that a kept row receives the update; the
+expiry effect is MediaProvider behaviour.
+
+- Create one disposable retained pending row the documented way (a take whose recovery verdict is
+  indeterminate), and record its URI, `date_expires`, display name, and `relative_path` with
+  `adb shell content query --uri <uri> --projection _id:date_expires:_display_name:relative_path`.
+- Relaunch the app so launch recovery keeps the row, then query the same columns again.
+
+**Pass:** `date_expires` moves later after the relaunch and the row is still present and pending.
+Record any display-name change the provider makes on that update too (the update is not
+side-effect-free). An unchanged `date_expires` means the re-arm does not hold on that build and the
+retained-row lifetime is still about one week.
 
 ---
 

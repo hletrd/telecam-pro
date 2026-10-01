@@ -2292,6 +2292,45 @@ check(
     "architecture documents every DeviceProfile field with its PMA110 and GENERIC values",
     f"fields={device_profile_fields}",
 )
+# DOC4-3 / REG4-7 (AGG4-56): the table above cited `gl.setFrontStreamPreMirrored` and
+# `CameraCaps.rawForcesStandalone`, neither of which exists; the field-row check could not notice.
+# Every `owner.member` seam the table cites must resolve to a declaration in that owner's source.
+SEAM_OWNER_SOURCES = {
+    "gl": "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
+    "CameraEngine": "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+    "CameraUiState": "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt",
+    "CameraCaps": "app/src/main/kotlin/me/hletrd/telecampro/camera/CaptureCapabilities.kt",
+    "CameraViewModel": "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt",
+    "DeviceProfile": "app/src/main/kotlin/me/hletrd/telecampro/camera/DeviceProfile.kt",
+}
+device_profile_table = architecture[
+    architecture.index("## DeviceProfile Quirk Flags"):
+    architecture.index("\n---", architecture.index("## DeviceProfile Quirk Flags"))
+]
+cited_seams = re.findall(r"`(\w+)\.(\w+)(?:\([^`]*\))?`", device_profile_table)
+unresolved_seams = [
+    f"{owner}.{member}"
+    for owner, member in cited_seams
+    if owner in SEAM_OWNER_SOURCES
+    and re.search(
+        rf"\b(?:fun|val|var)\s+{re.escape(member)}\b", read(SEAM_OWNER_SOURCES[owner])
+    ) is None
+]
+check(
+    bool(cited_seams) and not unresolved_seams,
+    "architecture DeviceProfile table cites only seams that exist in source",
+    ", ".join(unresolved_seams),
+)
+# DOC4-1 (AGG4-53): the public README stated the PMA110 RAW-routing law and "not by model name" as
+# universal; VER4-7 (AGG4-60): CLAUDE.md said the per-draw rotation override had exactly one caller.
+check(
+    "On the Find X9 Ultra, wanting RAW" in read("README.md")
+    and "Wanting RAW is what routes photo onto\n  a standalone camera" not in read("README.md")
+    and "`camera/DeviceProfile.kt`" in read("README.md")
+    and "with exactly one caller" not in claude
+    and "used by exactly two draws" in claude,
+    "README and CLAUDE scope the RAW law, the model-string seam, and the rotation-override callers",
+)
 check(
     "Photo, TC off, RAW/DNG wanted" in architecture
     and "Standalone rear lens" in architecture

@@ -66,7 +66,7 @@ deprecated APIs, latest stable everything.
 | Kotlin | 2.4.20 | Compose compiler plugin version; AGP supplies Kotlin Android support |
 | Gradle | 9.8.0 | wrapper |
 | Compose BOM | 2026.09.00 | Material3 |
-| compileSdk / targetSdk / minSdk | 37 / 36 / **33** | compileSdk 37 required by lifecycle 2.11.0; minSdk 33 since the 2026-08-01 multi-device decision — this row said 36 for two days while the constraint bullet above said 33 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / **33** | compileSdk 37 required by androidx core/core-ktx 1.19.x and the lifecycle 2.11.0 compose artifacts (`lifecycle-runtime-compose`, `lifecycle-viewmodel-compose`); minSdk 33 since the 2026-08-01 multi-device decision — this row said 36 for two days while the constraint bullet above said 33 |
 | JDK | 21 (aarch64) | Homebrew `openjdk@21` |
 | heifwriter | 1.1.0 | latest STABLE (the earlier "no stable 1.1.0 exists" note was wrong) |
 
@@ -263,7 +263,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `rotationOverrideDeg` (0 on the portrait-locked phone), and the framing hint takes that same term
   to match (a hint that kept the afocal rotation inside a box that declined it would land
   point-mirrored). Rotation is otherwise renderer STATE shared by every draw role, so this override
-  is an explicit per-call opt-in with exactly one caller — never make it a settable field.
+  is an explicit per-call opt-in used by exactly two draws — the main preview (content + window term,
+  only when the window is rotated) and this overview (window term only) — never a settable field.
   Device-verified by A/B: the overview's
   vertical gradient inverted (top-brighter −7.3 → bottom-brighter +10.4) while the main view's was
   unchanged (+0.9 → +0.5). **HONESTY LIMIT:** the genuinely upright version is the second-stream
@@ -583,7 +584,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
     **U+2192**, not the U+25B8 triangle it shipped with: **none of the three bundled Inter faces
     (`app/src/main/res/font/`) carries U+25B8**, so that glyph fell back to a system typeface inside
     one OSD tag. Every NON-HANGUL symbol in a user-facing literal must stay inside those faces —
-    the covered set in use is `§ © ° · ± × γ — … → ∞ ≈ ’ ↑ ↓`. Hangul is the deliberate exception: no
+    the symbols user-facing literals use today (scanned 2026-10-02 over `values*/strings.xml` and
+    Kotlin string literals) are `© ° · ± × — … → ∞ ’ ↑ ↓`; `§ γ ≈` are also in the faces but appear
+    only in comments and docs. Hangul is the deliberate exception: no
     bundled Inter face carries it, so every `values-ko` string renders in the system face by design
     (EN+KO is mandatory above); do not strip Korean or bundle a CJK font to "fix" that.
   - **Deliberate design facts** (each cost a wrong turn to find): curvature, not gradient — a ramp
@@ -973,7 +976,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   reject ANY caller while a token was pending, so the worker exited silently with two tracks still
   expected and the 1 s muxer rendezvous degraded the take to a SILENT clip. Five of five takes
   carried AAC under the first (owner-admitting, 0ab5c1ba) fix; the current token-scoped door
-  (4e57fff2) is host-tested only and PENDING DEVICE on TB336ZU. A silent clip with `AudioRecord: set/openRecord` but no `start` in
+  (4e57fff2) is host-tested only and PENDING DEVICE on TB336ZU (`docs/FIELD_CHECKS.md` D2). A silent clip with `AudioRecord: set/openRecord` but no `start` in
   logcat is this race, not a mic fault.
 - **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
   partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;

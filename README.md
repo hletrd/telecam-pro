@@ -51,8 +51,10 @@ shooting needs.
   cannot apply is not offered.
 
 **Capture**
-- HEIF, JPEG and RAW (DNG), selectable separately or together. Wanting RAW is what routes photo onto
-  a standalone camera, so DNG is offered on any rear lens that advertises it — not TELE only.
+- HEIF, JPEG and RAW (DNG), selectable separately or together. On the Find X9 Ultra, wanting RAW
+  moves photo onto a standalone camera (that HAL cannot carry RAW on its logical camera), so DNG is
+  offered on any rear lens that advertises it — not TELE only. Elsewhere DNG stays on the seamless
+  camera when that camera advertises RAW.
 - Video: HEVC/AVC up to 4K UHD, 24/25/30/60 fps plus NTSC drop-frame, bitrate presets to ~99 Mbps at 4K30,
   Open Gate 4:3, AAC 48 kHz stereo.
 - Colour profiles for HLG, S-Log3, S-Log3.Cine and LogC3 — see the honesty note below.
@@ -98,7 +100,9 @@ device with both preview and record templates.
 ## Device support
 
 Requires **Android 13 (API 33)** or newer. Hardware is resolved by enumerating Camera2 capabilities rather
-than by model name, so the app adapts to whatever lenses and controls a phone advertises.
+than by model name, so the app adapts to whatever lenses and controls a phone advertises. The one
+exception is deliberate: HAL workarounds measured on the Find X9 Ultra are keyed to its model in a
+single place (`camera/DeviceProfile.kt`), and every other device takes the capability-driven path.
 
 Development and device verification happen on the **OPPO Find X9 Ultra**, which is also where the
 HAL workarounds in [`CLAUDE.md`](CLAUDE.md) were measured. Other devices are supported on a
