@@ -39,7 +39,13 @@ def run_documentation_gate_from_committed_export(
     *,
     interpreter_args: tuple[str, ...] = (),
     environment: dict[str, str] | None = None,
+    untracked: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], tuple[str, ...]]:
+    """Runs check_docs on a committed export of HEAD plus the overlays below.
+
+    With [untracked], the files are written into the committed STAGING work tree after the commit
+    and the gate runs there (a real git work tree), proving untracked notes cannot change it.
+    """
     def extract(payload: bytes, destination: Path) -> None:
         destination.mkdir()
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
@@ -129,9 +135,15 @@ def run_documentation_gate_from_committed_export(
         private_docs_present = tuple(
             relative for relative in PRIVATE_EXPORT_DOCS if (exported / relative).exists()
         )
+        gate_root = exported
+        if untracked is not None:
+            for relative, text in untracked.items():
+                (staging / relative).parent.mkdir(parents=True, exist_ok=True)
+                (staging / relative).write_text(text, encoding="utf-8")
+            gate_root = staging
         result = subprocess.run(
             [sys.executable, *interpreter_args, "tools/check_docs.py"],
-            cwd=exported,
+            cwd=gate_root,
             env=environment,
             capture_output=True,
             text=True,
@@ -1696,6 +1708,26 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     "FAIL  tracked docs state no password length, character class, or delivery channel",
                     result.stdout,
                 )
+
+    def test_untracked_review_notes_cannot_change_the_password_property_verdict(self) -> None:
+        # DOC3-1: reviewer notes under .context/ are gitignored scratch; only tracked docs publish.
+        note = "Apply the rule: its password is 6 digits long and was sent over chat.\n"
+        result, _ = run_documentation_gate_from_committed_export(
+            untracked={".context/reviews/untracked-note.md": note},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "ok    tracked docs state no password length, character class, or delivery channel",
+            result.stdout,
+        )
+
+        def track(root: Path) -> None:
+            (root / ".context/reviews").mkdir(parents=True, exist_ok=True)
+            (root / ".context/reviews/tracked-note.md").write_text(note, encoding="utf-8")
+
+        tracked, _ = run_documentation_gate_from_committed_export(track)
+        self.assertNotEqual(tracked.returncode, 0, tracked.stdout + tracked.stderr)
+        self.assertIn("tracked-note.md", tracked.stdout)
 
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:

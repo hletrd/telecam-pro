@@ -19,6 +19,7 @@ import json
 import pathlib
 import re
 import struct
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zlib
@@ -1539,10 +1540,32 @@ def password_property_findings(text: str) -> list[str]:
     return findings
 
 
+def tracked_markdown(prefixes: tuple[str, ...]) -> list[str] | None:
+    """Tracked `*.md` under [prefixes], or None outside a git work tree (a committed export)."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", *prefixes],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [rel for rel in listed.decode("utf-8").split("\0") if rel.endswith(".md")]
+
+
 def password_property_scan_paths() -> list[str]:
     paths = [*COMMITTED_AUTHORITY_DOCS, "PRIVACY.md", "keystore.properties.example"]
-    for pattern in ("docs/**/*.md", ".context/**/*.md"):
-        paths.extend(str(path.relative_to(ROOT)) for path in sorted(ROOT.glob(pattern)))
+    # The rule polices what the repository PUBLISHES. In a work tree that is exactly the tracked set:
+    # globbing the disk also read gitignored, untracked reviewer notes under .context/, so a
+    # security review describing a password policy turned the host gate red (RPL cycle 3, DOC3-1).
+    # A committed export has no .git; everything in it was tracked, so the glob is exact there.
+    tracked = tracked_markdown(("docs", ".context"))
+    if tracked is None:
+        for pattern in ("docs/**/*.md", ".context/**/*.md"):
+            paths.extend(str(path.relative_to(ROOT)) for path in sorted(ROOT.glob(pattern)))
+    else:
+        paths.extend(tracked)
     return sorted({rel for rel in paths if rel not in PRIVATE_DOCS and (ROOT / rel).is_file()})
 
 
