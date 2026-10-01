@@ -170,6 +170,39 @@ class UploadKeyGateTest(unittest.TestCase):
             )
             self.assertEqual(1, len(run.calls))
 
+    def test_prerequisite_alias_follows_gradle_precedence(self) -> None:
+        # SEC3-5: with keyAlias=A in the file and TELECAMPRO_KEY_ALIAS=B in the environment, Gradle
+        # signs with A, so the pre-check (used directly by the scoped helper) must verify A.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_properties(root, approved=True, alias="file-alias")
+            conflicting = {release.KEY_ALIAS_ENV: "env-alias"}
+            self.assertEqual(
+                "file-alias", release.load_upload_key_prerequisite(root, conflicting).alias,
+            )
+            run = Recorder()
+            release.verify_upload_key_certificate(
+                root, release.load_upload_key_prerequisite(root, conflicting),
+                {**self.environment(), release.STORE_PASSWORD_ENV: FILE_PASSWORD}, run,
+            )
+            command = run.calls[0][0]
+            self.assertEqual("file-alias", command[command.index("-alias") + 1])
+
+            write_properties(root, approved=True, alias=None)
+            self.assertEqual("env-alias", release.load_upload_key_prerequisite(root, conflicting).alias)
+            write_properties(root, approved=True, alias="CHANGE_ME")
+            self.assertEqual("env-alias", release.load_upload_key_prerequisite(root, conflicting).alias)
+            with self.assertRaisesRegex(release.UploadKeyGateError, "keyAlias is missing or ambiguous"):
+                release.load_upload_key_prerequisite(root, {})
+
+            properties = root / "keystore.properties"
+            properties.write_text(
+                properties.read_text(encoding="utf-8") + "keyAlias=one\nkeyAlias=two\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(release.UploadKeyGateError, "keyAlias is missing or ambiguous"):
+                release.load_upload_key_prerequisite(root, conflicting)
+
     def test_certificate_mismatch_or_keytool_failure_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

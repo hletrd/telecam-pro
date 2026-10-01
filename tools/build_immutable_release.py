@@ -621,9 +621,15 @@ def load_upload_key_prerequisite(
     except (OSError, RuntimeError, UnicodeError) as error:
         raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
     fingerprint = approved_upload_certificate_from_entries(entries)
-    alias = environment.get(KEY_ALIAS_ENV, "").strip()
-    if not alias:
-        alias = _single_property(entries, "keyAlias")
+    # SEC3-5 / AGG3-35: resolve the alias with GRADLE's precedence (`signingValue`: the properties
+    # file wins over TELECAMPRO_KEY_ALIAS). Env-first made the scoped helper prove alias B's
+    # certificate while Gradle signed with the file's alias A; only the inner gates caught it. A
+    # repeated keyAlias stays refused as ambiguous rather than silently taking the last one.
+    if sum(1 for key, _ in entries if key == "keyAlias") > 1:
+        raise UploadKeyGateError("release signing prerequisite keyAlias is missing or ambiguous")
+    alias = _gradle_signing_value(entries, "keyAlias", environment, KEY_ALIAS_ENV)
+    if alias is None:
+        raise UploadKeyGateError("release signing prerequisite keyAlias is missing or ambiguous")
     if any(ord(character) < 0x20 for character in alias):
         raise UploadKeyGateError("release upload alias is invalid")
     return UploadKeyPrerequisite(
