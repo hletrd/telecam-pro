@@ -159,6 +159,19 @@ class UploadKeyGateTest(unittest.TestCase):
                 self.assertEqual([], run.calls)
                 self.assertNotIn(weak, str(caught.exception))
 
+    def test_missing_approval_is_reported_before_the_password_policy(self) -> None:
+        # MRG3-4: an unapproved key must hear "approval" first, not a policy it cannot yet act on.
+        weak = "weak-store-pw"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_properties(root, approved=False, password=weak)
+            run = Recorder()
+            with self.assertRaises(release.UploadKeyGateError) as caught:
+                release.require_approved_upload_key(root, SIGNING_TASKS, self.environment(), run)
+            self.assertNotIn("strong-key policy", str(caught.exception))
+            self.assertNotIn(weak, str(caught.exception))
+            self.assertEqual([], run.calls)
+
     def test_strong_file_key_password_wins_over_a_weak_environment_one(self) -> None:
         # Gradle's signingValue: keystore.properties wins, so the env value is not what signs.
         with tempfile.TemporaryDirectory() as temp:

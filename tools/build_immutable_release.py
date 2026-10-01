@@ -761,13 +761,16 @@ def require_approved_upload_key(
     key_password = (
         _gradle_signing_value(entries, "keyPassword", environment, KEY_PASSWORD_ENV) or password
     )
-    if not meets_generated_secret_floor(password):
-        raise UploadKeyGateError("release store password does not meet the strong-key policy")
-    if not meets_generated_secret_floor(key_password):
-        raise UploadKeyGateError("release key password does not meet the strong-key policy")
     gate_environment[STORE_PASSWORD_ENV] = password
     try:
+        # Approval and the approved fingerprint are checked first, so an operator without an approved
+        # rotation is told THAT before the password policy (MRG3-4); the floor still runs before
+        # keytool ever receives the password.
         prerequisite = load_upload_key_prerequisite(root, gate_environment)
+        if not meets_generated_secret_floor(password):
+            raise UploadKeyGateError("release store password does not meet the strong-key policy")
+        if not meets_generated_secret_floor(key_password):
+            raise UploadKeyGateError("release key password does not meet the strong-key policy")
         verify_upload_key_certificate(root, prerequisite, gate_environment, run)
     finally:
         gate_environment.pop(STORE_PASSWORD_ENV, None)
