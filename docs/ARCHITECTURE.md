@@ -403,7 +403,14 @@ Accessed from GL + audio/video threads:
   bounded standby-mic handoff and MediaCodec/MediaMuxer/AudioRecord construction, rechecking exact
   session/process ownership at every edge. Recorder ownership is published atomically against camera
   failure and irreversible quarantine. A stop arriving mid-admission is latched and consumed when the
-  attempt publishes or refuses, never raced against an unpublished owner. Publication precedes the asynchronous encoder handoff; EGL prepares a
+  attempt publishes or refuses, never raced against an unpublished owner. The recorder's OWN
+  workers (audio `startRecording`, muxer `start`) enter the native gate by TOKEN through
+  `runRecorderWorkerNative(token)`, admitted iff that exact token is pending or active: setup runs
+  under the pending token, and the audio worker can reach `startRecording` before the Engine
+  publishes it (TB336ZU, slow first encoder swap), which used to strand a two-track muxer and save a
+  silent clip. The owner-keyed door still refuses every caller while ANY token is pending, because
+  the owner is the whole Engine and admitting it would re-admit that Engine's GL/EGL and Camera2
+  acquisitions mid-setup (the 0ab5c1ba regression 4e57fff2 reverted). Publication precedes the asynchronous encoder handoff; EGL prepares a
   candidate surface privately, then installs its in-memory ownership through the process lease or
   destroys the revoked candidate. UI remains in a stoppable
   `isRecordingStarting` state until the first
@@ -879,7 +886,7 @@ unused.
 |---|---|---|---|---|---|
 | HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR | MP4 | Primary HW encoder. Non-SDR video first requests an HLG10 Camera2 source; release EGL remains 8-bit. Main/Main10 names the encoded output, not every upstream stage. |
 | AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; forces GL SDR (no HLG/Log); HW. |
-| APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — MediaMuxer rejects APV-in-MP4 (breaks the encoder mid-drain). |
+| APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
 **Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
 them. Native vendor log is inert for third-party Camera2; Auto HDR and in-sensor zoom were removed after

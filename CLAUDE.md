@@ -148,7 +148,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the trade is structural, not a limitation — `tenBitSessionWanted(videoMode, transfer) = videoMode
   && transfer != SDR` (`CameraState.kt`) feeds `wantHlg`/`tenBitVideoOnly`
   (`CameraController.kt`), whose ladder rung configures HLG10 with **no still readers at all**.
-  That is exactly what the UI means by `"10-bit video · stills off"`, and it is why
+  That is exactly what the UI means by `"10-bit video · stills off"` — on the ladder's attempt 0
+  only: if that rung fails, attempt 1 is HLG10 WITH the processed still reader (no RAW), so a session
+  landing there is 10-bit with stills, and attempt 2 drops HLG (8-bit). It is also why
   `acceptedOpticsAuxState` must not normalize `photoFormats` in a still-less session (see the DNG
   route-input entry — a trip through log video otherwise wrote an empty format set over the
   operator's selection).
@@ -403,7 +405,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   byte snapshot, and callback authority are owned by one GL generation; stop retires that owner before
   shutdown, so old work cannot publish or clear a replacement generation's busy gate.
 - **Session fallback ladder** in `CameraController.configureSession`: non-TELE is full → drop RAW →
-  drop HLG → preview-only. TELE tries vendor full/degraded plans, then regular full/degraded plans,
+  drop HLG → preview-only. A 10-bit VIDEO request prepends its own attempt 0 (HLG10, no still
+  readers) and then continues on the ordinary ladder from rung 1, so attempt 1 is HLG10 + the
+  processed still reader (`SessionFallbackLadderTest`; changing it needs a PMA110 measurement). TELE tries vendor full/degraded plans, then regular full/degraded plans,
   and reserves both preview-only variants for last. Keep it; different capability combos fail on this HAL.
   When hi-res is wanted (capability-gated; dormant on PMA110) the ladder PREPENDS a hi-res rung:
   attempt 0 is the full plan's hi-res variant with RAW forced off, and every later attempt maps
@@ -483,7 +487,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   aperture). Camera2 has no shutter-/ISO-priority AND no min-shutter hint, so `camera/AutoExposure.kt`
   closes the loop off the GL preview luma: SHUTTER drives ISO, ISO drives exposure time, and **photo
   PROGRAM runs a real program line** (`driveProgram`): shutter held at the handheld 1/(effective focal)
-  rule (≈1/300 s with the TC), ISO carries exposure, shutter slides (≤1 stop/tick,
+  rule (≈1/300 s with the TC), ISO carries exposure, shutter slides (≤0.35 stop/tick,
   brightness-neutral) only when ISO clamps — down to a 1/10 s ceiling in the dark, faster at base ISO
   in the bright. `ManualControls.programAppSide` (recomputed on mode/flash/exposure-mode changes) keeps
   video-P and AUTO/ON-flash-P on the HAL AE (flash metering needs AE ON). The GL luma readback is
@@ -714,8 +718,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.
   Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
   `c2.android.av1.encoder` — too slow/low-res to ship). **APV** (`VideoCodec.APV`, HW
-  `c2.qti.apv.encoder`) is defined but **intentionally EXCLUDED**: Android's MediaMuxer (API 36) rejects
-  APV in an MP4 container (device-verified — it errors the encoder mid-drain). Resolutions come from
+  `c2.qti.apv.encoder`) is defined but **intentionally EXCLUDED**: on PMA110 (ColorOS, API 36) muxing
+  APV into MP4 errored the encoder mid-drain (device-verified). That is a DEVICE/firmware observation,
+  not a platform rule — the official MediaMuxer reference lists APV-in-MP4 as supported from SDK 36 —
+  so the exclusion stays, and re-enabling APV on any device needs a measurement first. Resolutions come from
   the selected camera's `StreamConfigurationMap`, with the shipping selector capped at 3840 pixels
   wide; PMA110 tops out at 4K UHD in the UI. Standard and NTSC drop-frame rates are gated against the
   selected size. High-speed 120 fps is excluded because its constrained session crashes this HAL.
@@ -949,7 +955,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   encoder's first swap is slow (two of three takes on that MediaTek tablet); the gate used to
   reject ANY caller while a token was pending, so the worker exited silently with two tracks still
   expected and the 1 s muxer rendezvous degraded the take to a SILENT clip. Five of five takes
-  carry AAC after the fix; a silent clip with `AudioRecord: set/openRecord` but no `start` in
+  carried AAC under the first (owner-admitting, 0ab5c1ba) fix; the current token-scoped door
+  (4e57fff2) is host-tested only and PENDING DEVICE on TB336ZU. A silent clip with `AudioRecord: set/openRecord` but no `start` in
   logcat is this race, not a mic fault.
 - **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
   partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;
@@ -1025,7 +1032,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   A `muxer.stop()` throw over a degraded, sample-less audio track is tolerated
   (`muxerStopFailureIsTerminal`) so a mic dropped in the add-track window cannot delete a good
   take. Only a negative read after stop is treated as normal end-of-stream. The STANDBY meter classifies
-  reads through the same `AudioReadPolicy`: zero retries, a negative read ends that AudioRecord
+  reads through the same `AudioReadPolicy`: a zero-byte read retries, a negative read ends that AudioRecord
   generation (release exactly once — `n <= 0 → continue` used to hot-spin the meter thread forever
   on a dead route), then a bounded backed-off recreation (≤3 generations, reset by any successful
   PCM read) re-arms only while the standby intent still wants a meter.

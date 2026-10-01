@@ -1029,6 +1029,9 @@ internal fun recordingEncoderAdmission(
  * Which of these are actually offered is decided at runtime from [android.media.MediaCodecList]
  * (see [me.hletrd.telecampro.video.EncoderCaps]).
  */
+// APV is defined but never admitted (VideoRecorder refuses it): on PMA110 APV-in-MP4 errored the
+// encoder mid-drain. The platform documents APV-in-MP4 from SDK 36, so that is a device
+// observation; re-enable only with a measurement on the target device.
 enum class VideoCodec { HEVC, AVC, APV }
 
 /**
