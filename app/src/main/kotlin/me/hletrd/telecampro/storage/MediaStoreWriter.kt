@@ -1125,6 +1125,36 @@ object MediaStoreWriter {
         false
     }
 
+    /**
+     * AGG3-4 (CRIT3-2, DES3-2): re-writes `IS_PENDING = 1` on a row launch recovery KEEPS pending.
+     * MediaProvider stamps a pending row's `DATE_EXPIRES` (about a week out) at insert and its idle
+     * maintenance deletes expired pending rows; nothing else in this app ever touches a retained
+     * row again, so "retained for the next start" silently became "expired" for any row recovery
+     * could not judge. A pending-flag update from the owner is what MediaProvider re-arms that
+     * expiry from, so each launch that keeps a row buys it another full window.
+     *
+     * PENDING DEVICE: the exact `DATE_EXPIRES` effect of this update is MediaProvider behaviour
+     * and is not host-provable; the host test pins only that a kept row receives the update and a
+     * published or deleted row does not. One attempt, best-effort (the row stays pending and is
+     * re-judged next launch either way); a failure spends one change-gated reserved warning row.
+     */
+    internal fun reassertPending(
+        context: Context,
+        uri: Uri,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): Boolean {
+        val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 1) }
+        val update = runCatching { context.contentResolver.update(uri, values, null, null) }
+        if ((update.getOrNull() ?: 0) > 0) {
+            storageWarningGate.clear("reassert pending|$uri")
+            return true
+        }
+        val failure = update.exceptionOrNull()
+            ?: IllegalStateException("IS_PENDING=1 update matched ${update.getOrNull()} rows")
+        warnStorageOnce("reassert pending", uri, "pending expiry re-arm failed for $uri", failure, warn)
+        return false
+    }
+
     private const val PUBLISH_ATTEMPTS = 3
     private val processWarn: (String, Throwable?) -> Unit = { message, failure ->
         DiagnosticLog.w(TAG, message, failure)
@@ -1437,7 +1467,14 @@ object MediaStoreWriter {
                                     else RecoveryEvent.DELETE_FAILED,
                                 )
                             }
-                            OrphanDisposition.KEEP_PENDING -> report = report.record(RecoveryEvent.RETAINED)
+                            OrphanDisposition.KEEP_PENDING -> {
+                                // A DISCARD row is the DISCARD stage's to delete; re-arming its
+                                // expiry would only delay a delete the user already asked for.
+                                if (journalState != PendingJournalState.DISCARD) {
+                                    reassertPending(context, uri)
+                                }
+                                report = report.record(RecoveryEvent.RETAINED)
+                            }
                         }
                     }
                 }
