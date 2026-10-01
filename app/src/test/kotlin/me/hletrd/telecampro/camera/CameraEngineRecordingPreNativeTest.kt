@@ -500,6 +500,40 @@ class CameraEngineRecordingPreNativeTest {
         assertEquals(1, statuses.count { it == CameraStatusMessage.CAMERA_RECONFIGURING })
     }
 
+    // AGG4-29: a refused standby-mic claim retires the attempt WITH a status, like every sibling.
+    @Test
+    fun `refused microphone claim reports microphone busy`() {
+        val micClaims = AtomicInteger()
+        val statuses = CopyOnWriteArrayList<CameraStatusMessage>()
+        val results = CopyOnWriteArrayList<Boolean>()
+        val done = CountDownLatch(1)
+        val engine = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/mic-refused") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> micClaims.incrementAndGet(); false },
+            ),
+        )
+        engine.onStatus = { it?.message?.let(statuses::add) }
+        // An earlier owner's unfinished claim: the engine's own claim is refused.
+        val standby = field(engine, "standbyAudioController") as StandbyAudioController
+        assertTrue(standby.beginRecording().admitted)
+
+        try {
+            engine.startRecording(recordAudio = true) { result ->
+                results += result
+                done.countDown()
+            }
+
+            assertTrue(done.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            assertEquals(listOf(false), results.toList())
+            assertEquals("the refusal never reaches the post-claim path", 0, micClaims.get())
+            assertEquals(1, statuses.count { it == CameraStatusMessage.MICROPHONE_BUSY })
+        } finally {
+            standby.abortRecording()
+        }
+    }
+
     @Test
     fun `two post-mic refusals release process mic and callback owners exactly once`() {
         val micClaims = AtomicInteger()

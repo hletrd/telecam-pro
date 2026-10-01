@@ -6323,6 +6323,11 @@ class CameraEngine internal constructor(
             val audioClaim = standbyAudioController.beginRecording()
             if (!audioClaim.admitted) {
                 retirePendingRecordingRow(pending, recordingCaptureId, "mic-claim-refused")
+                // Every sibling refusal on this path names itself; a silent one cleared the
+                // optimistic "starting" state and the REC press appeared to do nothing (AGG4-29).
+                // The claim is held by an earlier, unfinished recording owner: the microphone is
+                // busy, exactly the release-timeout sibling's status.
+                onStatus?.invoke(CameraStatusMessage.MICROPHONE_BUSY.status())
                 false
             } else {
                 try {
