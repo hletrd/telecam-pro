@@ -1598,6 +1598,9 @@ class CameraViewModel private constructor(
         }
         mainHandler.removeCallbacks(levelTicker)
         if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
+        // The one exit every APPLIED load reaches (refusals return above), so recallMemorySlot can
+        // tell an applied recall from a refused one without a post-hoc state comparison (AGG2-26).
+        appliedLoadCount++
         // NOTE deliberately NO refreshProgramAppSide() here: the flag is already derived into
         // cSynced above, and calling the refresher would route the recalled packet back through
         // updateControls' whole-packet normalization against the outgoing route's caps (the
@@ -3567,6 +3570,21 @@ class CameraViewModel private constructor(
             CameraStatusMessage.MEMORY_SLOT_SAVED,
             CameraStatusArgument.Text(slot.name),
         )
+    }
+
+    // Main-confined count of loads that reached applyLoaded's applied exit (see recallMemorySlot).
+    private var appliedLoadCount = 0L
+
+    /**
+     * [onRecallMemorySlot] that also answers whether the recall APPLIED. The Activity needs that
+     * truth for the audio-denial reason ([me.hletrd.telecampro.audioDenialReasonClearedByRecall]);
+     * the old `activeMemorySlot == slot` check after the fact was also true for a REFUSED re-recall of
+     * the slot that was already active (AGG2-26).
+     */
+    fun recallMemorySlot(slot: MemorySlot): Boolean {
+        val before = appliedLoadCount
+        onRecallMemorySlot(slot)
+        return appliedLoadCount != before
     }
 
     override fun onRecallMemorySlot(slot: MemorySlot) {

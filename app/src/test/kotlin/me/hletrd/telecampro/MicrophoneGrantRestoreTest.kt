@@ -81,4 +81,15 @@ class MicrophoneGrantRestoreTest {
             ),
         )
     }
+
+    // AGG2-26 / TE2-8: only an APPLIED recall of a bank that WANTS audio clears the denial reason.
+    @Test
+    fun `recall clears the denial reason only when an applied bank wants audio`() {
+        assertTrue(audioDenialReasonClearedByRecall(recallApplied = true, recalledRecordAudio = true))
+        // A silent bank may have been saved while denied: keep the reason so a grant still restores.
+        assertFalse(audioDenialReasonClearedByRecall(recallApplied = true, recalledRecordAudio = false))
+        // Refused recall (REC active, empty slot, rejected optics) changes nothing.
+        assertFalse(audioDenialReasonClearedByRecall(recallApplied = false, recalledRecordAudio = true))
+        assertFalse(audioDenialReasonClearedByRecall(recallApplied = false, recalledRecordAudio = false))
+    }
 }

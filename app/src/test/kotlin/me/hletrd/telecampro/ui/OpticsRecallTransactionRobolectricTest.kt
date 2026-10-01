@@ -24,6 +24,7 @@ import me.hletrd.telecampro.storage.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -197,6 +198,25 @@ class OpticsRecallTransactionRobolectricTest {
             0.001f,
         )
         assertEquals(300f, vm.state.value.memorySlotPresentations[MemorySlot.MR1]?.focalMm ?: 0f, 0.001f)
+    }
+
+    // AGG2-26: the Activity keys the audio-denial reason on the recall's own applied answer; the
+    // post-hoc `activeMemorySlot == slot` check was true for a refused re-recall of the same slot.
+    @Test
+    fun `recallMemorySlot answers applied only for a recall that applied`() {
+        saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+
+        assertTrue(vm.recallMemorySlot(MemorySlot.MR1))
+        assertEquals(MemorySlot.MR1, vm.state.value.activeMemorySlot)
+
+        setRecordingState(vm, true)
+        assertFalse(vm.recallMemorySlot(MemorySlot.MR1))
+        assertEquals(MemorySlot.MR1, vm.state.value.activeMemorySlot)
+
+        setRecordingState(vm, false)
+        assertFalse(vm.recallMemorySlot(MemorySlot.MR2))
     }
 
     @Test

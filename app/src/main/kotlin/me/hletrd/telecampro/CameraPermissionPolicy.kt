@@ -98,6 +98,22 @@ internal fun audioRestoredByMicrophoneGrant(
     hasMicrophonePermission: Boolean,
 ): Boolean = audioDisabledByDenial && !recordAudio && hasMicrophonePermission
 
+/**
+ * Whether an MR recall clears the audio-denial reason ([audioRestoredByMicrophoneGrant]'s input).
+ *
+ * A bank stores only `recordAudio`, with no provenance, so `false` in a bank may be deliberate
+ * silence OR the denial-disabled state it happened to be saved in. Clearing the reason on EVERY
+ * recall re-created the self-locking silent-audio state the reason exists to prevent: a bank saved
+ * while denied came back silent, and a later grant could no longer restore audio (AGG2-26). Only a
+ * recall that actually APPLIED a bank that WANTS audio settles the question — audio is on, so no
+ * stale denial may outlive it. A refused recall (REC active, empty slot, rejected optics), even of
+ * the slot already active, changes nothing.
+ */
+internal fun audioDenialReasonClearedByRecall(
+    recallApplied: Boolean,
+    recalledRecordAudio: Boolean,
+): Boolean = recallApplied && recalledRecordAudio
+
 
 /**
  * Whether a hardware full-key press should silently drop audio and record video-only.

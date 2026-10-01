@@ -515,13 +515,15 @@ class MainActivity : ComponentActivity() {
                             }
 
                             override fun onRecallMemorySlot(slot: MemorySlot) {
-                                vm.onRecallMemorySlot(slot)
-                                // A recalled bank's audio setting is the operator's own saved choice,
-                                // exactly like flipping the toggle: a stale denial reason must not let
-                                // a later microphone grant force audio back ON over a bank saved
-                                // deliberately silent (tracer T9 / AGG-37). Only an applied recall
-                                // counts; a refused or empty recall never publishes the slot as active.
-                                if (vm.state.value.activeMemorySlot == slot) {
+                                val applied = vm.recallMemorySlot(slot)
+                                // A bank stores recordAudio with no provenance, so only an APPLIED
+                                // recall of a bank that WANTS audio may clear the denial reason.
+                                // Clearing it on every recall (tracer T9 / AGG-37) made a bank saved
+                                // while denied come back silent for good — a later grant could no
+                                // longer restore audio (AGG2-26). `applied` is the recall's own
+                                // answer: the post-hoc activeMemorySlot check was also true for a
+                                // refused re-recall of the slot already active.
+                                if (audioDenialReasonClearedByRecall(applied, vm.state.value.recordAudio)) {
                                     permissionPreferences.edit(commit = true) {
                                         putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false)
                                     }
