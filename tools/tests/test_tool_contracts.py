@@ -586,8 +586,8 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         fixtures = (
             (
                 "docs/ARCHITECTURE.md",
+                "AGP 9.4.1",
                 "AGP 9.3.2",
-                "AGP 9.3.1",
                 "FAIL  all active AGP references match the version catalog",
             ),
             (

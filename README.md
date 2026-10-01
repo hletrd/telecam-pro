@@ -145,7 +145,7 @@ requirement only; the runtime target stays API 36 and the install floor is API 3
 
 | Component | Version |
 |---|---|
-| AGP | 9.3.2 |
+| AGP | 9.4.1 |
 | Gradle | 9.8.0 |
 | Kotlin / Compose compiler | 2.4.10 |
 | Compose BOM | 2026.08.00 |
