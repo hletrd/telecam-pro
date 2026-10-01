@@ -186,7 +186,7 @@ All 42 commits are GPG-signed (`%G? = G`), and none carries an attribution trail
   `verify_host.py` without `--release` (it needs local signing credentials), so the documented
   release path (`verify_host.py --release`, `build_immutable_release.py`) never ran against the real
   `keystore.properties`. If the currently approved key's passwords predate the generated-secret
-  helper (for example a manually set ≥20-character two-class password), legitimate releases now stop
+  helper (for example a manually chosen password that the floor would now reject), legitimate releases now stop
   with "release store password does not meet the strong-key policy", and the only remedy is a key
   rotation, which is an owner decision (AGG-67).
 - Fix: before the next release cut, the maintainer runs `python3 tools/verify_host.py --release`
