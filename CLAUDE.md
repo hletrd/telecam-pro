@@ -935,9 +935,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   handoff and codec/muxer construction. A stop arriving anywhere mid-admission is LATCHED by
   `RecordingAdmissionLatch.requestStop()` and consumed exactly once by
   `RecordingAdmissionLatch.completeAdmission()` when admission publishes or refuses — never raced
-  against an unpublished owner. **The PENDING token's own workers are admitted through the
-  general native gate by OWNER, exactly as an active token's are (device-found on TB336ZU
-  2026-09-09).** Recorder setup runs under the pending token and spawns the audio-encode worker,
+  against an unpublished owner. **The PENDING token's own workers are admitted by TOKEN, exactly as
+  an active token's are (device-found on TB336ZU 2026-09-09; scoped to the token 2026-10-02).**
+  They enter through `runRecorderWorkerNative(token)`, never the owner-keyed door: the owner is the
+  whole Engine, so the first fix (admit the pending token's OWNER) also re-admitted that Engine's own
+  GL/EGL and Camera2 acquisitions mid-setup. The owner-keyed door refuses every caller while any
+  token is pending. Recorder setup runs under the pending token and spawns the audio-encode worker,
   which reaches `AudioRecord.startRecording` before the Engine publishes the token whenever the
   encoder's first swap is slow (two of three takes on that MediaTek tablet); the gate used to
   reject ANY caller while a token was pending, so the worker exited silently with two tracks still

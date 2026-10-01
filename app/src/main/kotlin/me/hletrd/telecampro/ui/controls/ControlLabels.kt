@@ -266,7 +266,7 @@ internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
 /**
  * Names the lens a teleconverter will ACTUALLY clamp onto. The resolver
  * (`CameraSelector2.pickBest` via `cachedIdForFocal`) is an UNBANDED closest-match, so keying this
- * caption on the inventory's ±35% optical band alone could say "main lens" while the converter was
+ * caption on the inventory's ×1.35-ratio optical band alone could say "main lens" while the converter was
  * resolved onto, say, a 50 mm lens that is neither (verification 2026-08-02). When the host is not
  * the 3x lens, name it by its measured focal instead of guessing which preset it belongs to.
  */
