@@ -139,6 +139,41 @@ class OpticsRouteInputTransactionRobolectricTest {
         setBoolean(camera, "started", false)
     }
 
+    @Test
+    fun `rollback keeps a video size picked while the door was in flight`() {
+        val camera = acceptedPma110Engine()
+        camera.setCameraOverride("2")
+        val picked = android.util.Size(1920, 1080)
+        assertTrue(camera.setVideoResolution(picked))
+
+        forceOwnedRollback(camera)
+
+        assertEquals("a size is a request, not a route input", picked, camera.currentRequestedVideoSize())
+    }
+
+    @Test
+    fun `rollback reverts the recall's own video size request`() {
+        val camera = acceptedPma110Engine()
+        val declaration = field(camera, "teleconverterDeclaration") as TeleconverterDeclaration
+        camera.setResolvedOptics(
+            enabledVideo = false,
+            resolvedLens = LensChoice.MAIN,
+            resolvedTeleconverter = false,
+            resolvedDeclaration = declaration,
+            resolvedControls = ManualControls(),
+            resolvedPhotoExposureTimeNs = ManualControls().exposureTimeNs,
+            recalledVideoSize = android.util.Size(3840, 2160),
+            resolvedTransfer = ColorTransfer.SDR,
+            resolvedVideoCodec = VideoCodec.HEVC,
+            resolvedVideoEncoderCandidates = emptyList(),
+            resolvedRawWanted = false,
+        )
+
+        forceOwnedRollback(camera)
+
+        assertEquals(null, camera.currentRequestedVideoSize())
+    }
+
     // ---- fixtures ----
 
     private fun acceptedPma110Engine(): CameraEngine {

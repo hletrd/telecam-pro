@@ -948,7 +948,10 @@ class CameraViewModel private constructor(
                 // restored its value — the next TC-off then showed the preset while the wire
                 // restored the retained framing (verification S4).
                 preTeleUnifiedZoom = rollback.preTeleUnifiedZoom
-                requestedVideoResolution = rollback.requestedVideoSize
+                // Read the engine's request NOW, not the frozen packet: a pick made on this main
+                // queue after the rollback committed is a newer direct write the engine kept, and
+                // the packet would revert only the mirror (and then persist it) (AGG2-7).
+                requestedVideoResolution = engine.currentRequestedVideoSize()
                 _state.update {
                     it.copy(
                         mode = rollback.mode,

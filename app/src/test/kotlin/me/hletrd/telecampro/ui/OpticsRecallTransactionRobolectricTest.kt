@@ -257,6 +257,27 @@ class OpticsRecallTransactionRobolectricTest {
     }
 
     @Test
+    fun `rollback mirror keeps a video size picked after the rollback committed`() {
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        engine.setCameraOverride("2")
+        val attempt = currentRollbackAttempt(engine)
+        // The rollback commits and queues its UI mirror; the operator's pick lands on the main
+        // queue before that mirror runs (AGG2-7).
+        invokeRollback(engine, attempt)
+        val picked = android.util.Size(1920, 1080)
+        vm.onVideoResolution(picked)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val mirrored = CameraViewModel::class.java.getDeclaredField("requestedVideoResolution")
+            .apply { isAccessible = true }
+            .get(vm)
+        assertEquals(picked, mirrored)
+        assertEquals(picked, engine.currentRequestedVideoSize())
+    }
+
+    @Test
     fun `superseded rollback cannot replace a newer recalled declaration`() {
         saveTelePreset(MemorySlot.MR2, PhoneModel.VIVO_X300_ULTRA, TeleconverterProfile.ZEISS_200_X300)
         saveTelePreset(MemorySlot.MR3, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)

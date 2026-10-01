@@ -69,4 +69,10 @@ class RouteInputRollbackTest {
         assertNull(restorable(current = 7L, matches = false))
         assertNull(restorable(current = 8L, preflight = 8L, paused = true))
     }
+
+    @Test
+    fun `a newer transaction-less write survives an older rollback`() {
+        assertEquals("1080p", keepNewerDirectWrite(current = "1080p", baseline = "4K", directWriteSinceBaseline = true))
+        assertEquals("4K", keepNewerDirectWrite(current = "1080p", baseline = "4K", directWriteSinceBaseline = false))
+    }
 }

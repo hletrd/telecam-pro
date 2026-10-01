@@ -378,6 +378,12 @@ class CameraEngine internal constructor(
     // chosen, auto-derive. Kept separate from videoSize so reopen paths can re-validate it against
     // each lens's caps instead of blindly re-deriving the largest size over the user's choice.
     @Volatile private var requestedVideoSize: Size? = null
+    // Bumped by every interactive size pick ([setVideoResolution]), which owns no optics
+    // transaction. Same rule as rawWantedDirectWrites: an older door's rollback must not revert a
+    // pick made while it was in flight (RPL cycle 2, AGG2-7). The size is a REQUEST, never a route
+    // input — chooseVideoSize re-validates it against whatever route opens — so a newer pick is
+    // always safe to keep.
+    @Volatile private var requestedVideoSizeDirectWrites = 0L
     // What the camera preview stream (the GL SurfaceTexture) is actually sized to. In VIDEO mode it
     // must equal [videoSize] (the SurfaceTexture feeds the encoder, and the HAL fixes the stream size
     // at session config). In PHOTO mode it is the largest 4:3 stream instead, so the viewfinder shows
@@ -655,6 +661,7 @@ class CameraEngine internal constructor(
         val caps: CameraCaps?,
         val videoSize: Size,
         val requestedVideoSize: Size?,
+        val requestedVideoSizeDirectWrites: Long,
         val previewStreamSize: Size,
         val preTeleUnifiedZoom: Float,
         val ready: Boolean,
@@ -752,6 +759,7 @@ class CameraEngine internal constructor(
         caps = caps,
         videoSize = videoSize,
         requestedVideoSize = requestedVideoSize,
+        requestedVideoSizeDirectWrites = requestedVideoSizeDirectWrites,
         previewStreamSize = previewStreamSize,
         preTeleUnifiedZoom = preTeleUnifiedZoom,
         ready = cameraReady,
@@ -1029,7 +1037,14 @@ class CameraEngine internal constructor(
         selection = before.selection
         caps = before.caps
         videoSize = before.videoSize
-        requestedVideoSize = restored.requestedVideoSize
+        // A pick made while this door was in flight survives; only the transaction's own write
+        // (a recall's recalledVideoSize) rolls back with it (AGG2-7). The VM mirrors the published
+        // value below, so its request and the persisted size follow without a VM-side rule.
+        requestedVideoSize = keepNewerDirectWrite(
+            current = requestedVideoSize,
+            baseline = restored.requestedVideoSize,
+            directWriteSinceBaseline = requestedVideoSizeDirectWrites != before.requestedVideoSizeDirectWrites,
+        )
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
         // A direct DNG write survives only while it does not move the RESTORED route. "Direct" was
@@ -1068,7 +1083,7 @@ class CameraEngine internal constructor(
             generation = transaction.generation,
             videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
             rawWanted = rawWanted,
-            requestedVideoSize = restored.requestedVideoSize,
+            requestedVideoSize = requestedVideoSize,
         )
         val restoredSessionGeneration = rollbackRestorableSessionGeneration(
             beforeReady = before.ready,
@@ -3749,6 +3764,12 @@ class CameraEngine internal constructor(
      * that wrote the field outside any transaction is exactly the transaction-less shortcut that can
      * pair an outgoing caps snapshot with a newer optics generation — do not reintroduce one.
      */
+    /**
+     * The operator's live recording-size REQUEST (not the delivered [videoSize]). The ViewModel's
+     * rollback mirror reads it on the main queue, after every interactive pick that preceded it.
+     */
+    internal fun currentRequestedVideoSize(): Size? = requestedVideoSize
+
     fun setVideoResolution(s: Size): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
         if (offered != null && s !in offered) {
@@ -3759,7 +3780,10 @@ class CameraEngine internal constructor(
         // the largest size over it — chooseVideoSize honors this request whenever the current lens
         // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
         // flip or a lens without that mode).
-        requestedVideoSize = s
+        synchronized(this) {
+            requestedVideoSize = s
+            requestedVideoSizeDirectWrites++
+        }
         if (videoSize == s) return true
         applyVideoSize(s)
         return true
@@ -8460,6 +8484,10 @@ internal fun dngIntentChangesRearRoute(
 ): Boolean = !teleconverter &&
     standaloneRouteWanted(video, from, rawForcesStandalone) !=
     standaloneRouteWanted(video, to, rawForcesStandalone)
+
+/** A rollback keeps a write that owned no transaction and happened after its baseline. */
+internal fun <T> keepNewerDirectWrite(current: T, baseline: T, directWriteSinceBaseline: Boolean): T =
+    if (directWriteSinceBaseline) current else baseline
 
 /**
  * The DNG intent a rollback restores. A newer DIRECT write (one that owned no transaction) is an
