@@ -492,6 +492,16 @@ class StillSizePickerTest {
         assertNull(pickStillSize(emptyList(), 3264, 2448))
     }
 
+    // AGG4-24: the YUV still size (FRONT and LOGICAL stills, deep-ZSL gate) takes the same rule.
+    @Test
+    fun `a YUV list with a larger square keeps the native 4-3 still`() {
+        val frontYuv = listOf(3000 to 3000, 3264 to 2448, 1920 to 1080, 640 to 480)
+        assertEquals(3264 to 2448, pickStillSize(frontYuv, 3264, 2448))
+        // PMA110 logical YUV: the physical sub-camera's 4096x3072 stays excluded by the array cap.
+        val logicalYuv = listOf(4096 to 3072, 4080 to 3064, 4000 to 3000, 1920 to 1080)
+        assertEquals(4080 to 3064, pickStillSize(logicalYuv, 4080, 3064))
+    }
+
     @Test
     fun `when everything exceeds the array the largest is still offered`() {
         val all = listOf(8000 to 6000, 4000 to 3000)

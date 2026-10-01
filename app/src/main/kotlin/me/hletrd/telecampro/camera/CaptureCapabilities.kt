@@ -339,10 +339,16 @@ data class CameraCaps(
             val hiResJpeg = maxResJpeg ?: vendorHiResJpeg
 
             val yuvCandidates = map?.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
-            val yuvSize = yuvCandidates
-                .filter { activeArray == null || (it.width <= activeArray.width() && it.height <= activeArray.height()) }
-                .maxByOrNull { it.width.toLong() * it.height }
-                ?: yuvCandidates.maxByOrNull { it.width.toLong() * it.height }
+            // The SAME aspect-first rule the JPEG size above takes (AGG4-24). YUV feeds every FRONT
+            // still, every LOGICAL-route still, and the deep-ZSL frame-duration gate; largest-by-
+            // area let an advertised square size with more pixels than the 4:3 one win, saving
+            // square stills that drop the field the finder showed. Array cap and largest-by-area
+            // fallback are unchanged inside pickStillSize.
+            val yuvSize = pickStillSize(
+                yuvCandidates.map { it.width to it.height },
+                activeArray?.width() ?: 0,
+                activeArray?.height() ?: 0,
+            )?.let { (w, h) -> Size(w, h) }
             // SurfaceTexture output sizes (the recording/preview path). Split by aspect: 16:9 for
             // standard video, 4:3 for Open Gate (full sensor readout). Both largest-first, ≤8K wide.
             val stSizes = (map?.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray())
