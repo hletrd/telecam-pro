@@ -55,6 +55,8 @@ import me.hletrd.telecampro.camera.ExposureStep
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.effectiveExposureNs
 import me.hletrd.telecampro.camera.withShutterMode
+import me.hletrd.telecampro.camera.withShutterModeTakingOwnership
+import me.hletrd.telecampro.camera.exposureModeHandoff
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.BuildConfig
@@ -1394,12 +1396,18 @@ class CameraViewModel private constructor(
             zoomRatio = restoredOptics.zoomRatio,
             exposureTimeNs = restoredExposure.activeExposureTimeNs,
             programAppSide = wantAppSideProgram,
-            shutterMode = if (wantAppSideProgram && c.exposureMode == ExposureMode.PROGRAM) {
-                ShutterMode.SPEED
+        ).let {
+            // A loop-owned shutter (app-side P, ISO priority) cannot be an ANGLE: the loop writes
+            // exposureTimeNs, which an angle derivation overrides. A persisted ISO+ANGLE packet used to
+            // restore straight into that frozen state (AGG-8); the carry keeps the applied exposure.
+            if ((wantAppSideProgram && c.exposureMode == ExposureMode.PROGRAM) ||
+                c.exposureMode == ExposureMode.ISO
+            ) {
+                it.withShutterMode(ShutterMode.SPEED)
             } else {
-                c.shutterMode
-            },
-        ).normalizedForCaptureMode(e.mode)
+                it
+            }
+        }.normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
         val restoredVideoCandidates = if (inventoryLoaded) {
             encoderInventory.candidatesFor(safeCodec, safeTransfer)
@@ -1772,7 +1780,13 @@ class CameraViewModel private constructor(
     fun onAppStatus(message: CameraStatusMessage) = showStatus(message)
 
     /** Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a smooth handoff. */
-    private fun refreshProgramAppSide() {
+    /**
+     * [seedFromLive] is true only when the exposure being replaced was the HAL AE's: then the live
+     * result values ARE that exposure. Coming from S/ISO/M (or app-side P) the live values are the
+     * preview's TRADED wire (exposure capped, ISO raised, residual as GL gain), so seeding from them
+     * started the program line up to ~1.6 stops off the exposure the operator just had (AGG-10).
+     */
+    private fun refreshProgramAppSide(seedFromLive: Boolean = true) {
         val live = _state.value
         val want = programShouldRunAppSide(live.mode, live.controls.exposureMode, live.controls.flash)
         if (live.controls.programAppSide == want) return
@@ -1780,11 +1794,15 @@ class CameraViewModel private constructor(
             if (want && it.exposureMode == ExposureMode.PROGRAM) {
                 // HAL AE → app-side handoff: seed from the AE's last resolved values so exposure
                 // doesn't jump, and force SPEED so the loop's exposureTimeNs is what the request uses.
-                it.copy(
+                val speed = it.withShutterMode(ShutterMode.SPEED)
+                speed.copy(
                     programAppSide = true,
-                    shutterMode = ShutterMode.SPEED,
-                    iso = live.liveIso ?: it.iso,
-                    exposureTimeNs = live.liveExposureNs ?: it.exposureTimeNs,
+                    iso = if (seedFromLive) live.liveIso ?: speed.iso else speed.iso,
+                    exposureTimeNs = if (seedFromLive) {
+                        live.liveExposureNs ?: speed.exposureTimeNs
+                    } else {
+                        speed.exposureTimeNs
+                    },
                 )
             } else {
                 it.copy(programAppSide = want)
@@ -1987,26 +2005,31 @@ class CameraViewModel private constructor(
     override fun onExposureCompensation(ev: Int) = updateControls(FnSlot.EV) { it.copy(exposureCompensation = ev) }
     override fun onExposureMode(mode: ExposureMode) {
         val live = _state.value
+        // Captured BEFORE the update: whether the outgoing exposure was owned by the HAL AE decides
+        // which values are the honest handoff seed (see exposureModeHandoff).
+        val outgoingHalAe = live.controls.autoExposure
         updateControls(FnSlot.EXPOSURE_MODE) {
-            // ISO priority auto-drives the shutter as a plain exposure time, so force SPEED — an ANGLE
-            // derivation would override the value the AE loop writes into exposureTimeNs.
-            val shutterMode = if (mode == ExposureMode.ISO) ShutterMode.SPEED else it.shutterMode
-            // Smooth handoff out of PROGRAM: seed the now-user-owned ISO/shutter from the HAL AE's last
-            // resolved values so S/ISO/M start correctly exposed instead of jumping to stale defaults.
-            val fromProgram = it.exposureMode == ExposureMode.PROGRAM
-            val iso = if (fromProgram) (live.liveIso ?: it.iso) else it.iso
-            val exp = if (fromProgram) (live.liveExposureNs ?: it.exposureTimeNs) else it.exposureTimeNs
-            it.copy(exposureMode = mode, shutterMode = shutterMode, iso = iso, exposureTimeNs = exp)
+            it.exposureModeHandoff(mode, live.liveIso, live.liveExposureNs)
         }
         // Entering/leaving PROGRAM may flip the app-side flag (photo P is app-side, video P is HAL).
-        refreshProgramAppSide()
+        refreshProgramAppSide(seedFromLive = outgoingHalAe)
     }
     // (onToggleAutoExposure was removed: dead API surface — every caller sets ExposureMode directly.)
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls(persist = true) { it.copy(antibanding = mode) }
     // (onFps was removed: dead API surface — controls.fps is always driven by onVideoFrameRate.)
     // Unit switch only: the carried value is the exposure the old unit was applying (pure, tested).
-    override fun onShutterMode(mode: ShutterMode) = updateControls(FnSlot.SHUTTER) { it.withShutterMode(mode) }
+    // A shutter ANGLE is a user-owned shutter: in PROGRAM / ISO priority the AE loop writes
+    // exposureTimeNs, which an ANGLE derivation silently overrides, so the loop's shutter axis froze
+    // while the OSD still said P or ISO (AGG-8). Taking the unit therefore takes the shutter, exactly
+    // like turning the angle dial does (onShutterAngle).
+    override fun onShutterMode(mode: ShutterMode) {
+        val live = _state.value
+        updateControls(FnSlot.SHUTTER) {
+            it.withShutterModeTakingOwnership(mode, live.liveIso, live.liveExposureNs)
+        }
+        refreshProgramAppSide()
+    }
     override fun onShutterAngle(angle: Float) {
         updateControls(FnSlot.SHUTTER) {
             val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode

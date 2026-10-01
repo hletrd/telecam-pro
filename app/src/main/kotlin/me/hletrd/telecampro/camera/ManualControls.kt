@@ -469,6 +469,53 @@ fun ManualControls.withShutterMode(mode: ShutterMode): ManualControls {
     }
 }
 
+/**
+ * One exposure-mode handoff. Two seeds were wrong before (RPL cycle 1):
+ *
+ * - Only an outgoing HAL-AE PROGRAM ([ManualControls.autoExposure]) may seed from the live result
+ *   values: those ARE its exposure. App-side P, S, ISO and M publish the preview's TRADED wire values
+ *   (exposure capped at 1/30–1/15 s, ISO raised, residual left as GL gain), so seeding M from them
+ *   made the first M still up to ~1.6 stops darker than the P shot just before it (AGG-10). Those
+ *   modes already hold their own intended still exposure in iso/exposureTimeNs.
+ * - Entering ISO priority forces SPEED because the loop writes exposureTimeNs; the unit switch now
+ *   CARRIES the applied exposure instead of reviving a stale speed left behind by an ANGLE session
+ *   (an old 1/16000 s seeded the loop ~8 stops dark, AGG-9).
+ */
+fun ManualControls.exposureModeHandoff(
+    mode: ExposureMode,
+    liveIso: Int?,
+    liveExposureNs: Long?,
+): ManualControls {
+    val unit = if (mode == ExposureMode.ISO) withShutterMode(ShutterMode.SPEED) else this
+    val seeded = if (autoExposure) {
+        unit.copy(iso = liveIso ?: unit.iso, exposureTimeNs = liveExposureNs ?: unit.exposureTimeNs)
+    } else {
+        unit
+    }
+    return seeded.copy(exposureMode = mode)
+}
+
+/**
+ * The shutter UNIT toggle. An ANGLE is a user-owned shutter, so choosing it in PROGRAM or ISO
+ * priority takes the shutter exactly like turning the angle dial does: escalate to MANUAL with the
+ * handoff seed, then convert. Left in P/ISO, the AE loop kept writing exposureTimeNs, which the angle
+ * derivation ignores, and auto exposure silently froze under an OSD that still said P/ISO (AGG-8).
+ */
+fun ManualControls.withShutterModeTakingOwnership(
+    mode: ShutterMode,
+    liveIso: Int? = null,
+    liveExposureNs: Long? = null,
+): ManualControls {
+    val owner = if (mode == ShutterMode.ANGLE &&
+        (exposureMode == ExposureMode.PROGRAM || autoShutterDriven)
+    ) {
+        exposureModeHandoff(ExposureMode.MANUAL, liveIso, liveExposureNs)
+    } else {
+        this
+    }
+    return owner.withShutterMode(mode)
+}
+
 /** The exact app-owned exposure placed on a request after applying the advertised sensor range. */
 internal fun ManualControls.clampedEffectiveExposureNs(minNs: Long?, maxNs: Long?): Long {
     return clampExposureNs(effectiveExposureNs(), minNs, maxNs)
