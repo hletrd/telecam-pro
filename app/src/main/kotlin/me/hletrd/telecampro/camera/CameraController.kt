@@ -2737,15 +2737,19 @@ internal fun sessionAttemptPlan(
     /** [DeviceProfile.rawRequiresStandalone] — true keeps the PMA110 standalone-only RAW law. */
     rawStandaloneOnly: Boolean = true,
 ): SessionAttemptPlan {
-    // 10-bit EXPERIMENT rung (debug-gated upstream). HLG10 + full-res JPEG + RAW together CRASH
-    // this HAL — a crash, not a config rejection, so the fallback ladder below cannot rescue it.
-    // The only safe way to ask for 10 bits is therefore to drop both still readers in the same
-    // breath, which costs the in-REC snapshot while it is active. Attempt 0 only: later attempts
-    // are the ORDINARY ladder from its rung 1 — not an 8-bit restart, as this comment used to claim
-    // (verifier V4): rung 1 is the historical "drop RAW" rung, HLG10 + the processed still reader
-    // with no RAW (two of the three crash members; the crash needs all three), rung 2 drops HLG, and
-    // rung 3 is preview-only. Pinned by SessionFallbackLadderTest; changing it needs a PMA110
-    // measurement of HLG10+still without RAW first.
+    // The SHIPPING non-SDR video rung (`tenBitSessionWanted(videoMode, transfer)` upstream — this
+    // said "10-bit EXPERIMENT rung (debug-gated upstream)" long after it shipped, AGG3-50). HLG10 +
+    // full-res JPEG + RAW together CRASH this HAL — a crash, not a config rejection, so the
+    // fallback ladder below cannot rescue it. The only safe way to ask for 10 bits is therefore to
+    // drop both still readers in the same breath, which costs the in-REC snapshot while it is
+    // active. Attempt 0 only: later attempts are the ORDINARY ladder from its rung 1 — not an 8-bit
+    // restart, as this comment used to claim (verifier V4): rung 1 is the historical "drop RAW"
+    // rung, HLG10 + the processed still reader with no RAW (two of the three crash members; the
+    // crash needs all three), rung 2 drops HLG, and rung 3 is preview-only. RAW is excluded from
+    // EVERY rung of a 10-bit request by the `useRaw` term below: the TELE table returns to stream
+    // plan 0 (HLG + JPEG + RAW) at its regular-full rung, which would otherwise rebuild exactly the
+    // crash combination on a converter route (AGG3-2). Pinned by SessionFallbackLadderTest;
+    // changing it needs a PMA110 measurement of HLG10+still without RAW first.
     if (tenBitVideoOnly && attempt == 0) {
         return SessionAttemptPlan(
             useHlg = true,
@@ -2792,7 +2796,9 @@ internal fun sessionAttemptPlan(
     // device-specific: the front route keeps its processed still readers (deep YUV → shallow YUV →
     // HAL-JPEG), but RAW on FRONT has never been measured on any device, so it stays excluded
     // (paired with `rawSelectable`'s `!frontFacing`) until it is.
-    useRaw = streamAttempt < 1 && supportsRaw && !hiRes && !frontRoute &&
+    // `!tenBitVideoOnly`: see the 10-bit rung above — a 10-bit request never carries RAW on ANY
+    // rung, including the TELE table's regular-full rung (stream plan 0 again at ladder rung 3).
+    useRaw = streamAttempt < 1 && supportsRaw && !hiRes && !frontRoute && !tenBitVideoOnly &&
         (!rawStandaloneOnly || (standalone && !logicalMultiCamera)),
     useVendorOperationMode = vendorMode,
     useHiResStill = hiRes,
@@ -2816,11 +2822,6 @@ internal fun sessionAttemptPlan(
 }
 
 /**
- * Exhaustion boundary matching [sessionAttemptPlan]'s table: the hi-res rung is PREPENDED, so a
- * hi-res-wanting configure sequence owns one extra attempt — a fixed bound would cut the
- * preview-only last resort off the end of the shifted ladder.
- */
-/**
  * Whether the full-res YUV still reader may ride the REPEATING request. Camera2 bounds a repeating
  * request by the SLOWEST attached stream's advertised minimum frame duration, so a reader the device
  * serves slowly would cap the default photo viewfinder — the pseudo-ZSL ring buys 0 ms shutter lag,
@@ -2843,6 +2844,11 @@ internal fun deepZslReaderEnabled(
 /** Floor for the viewfinder while the ZSL reader streams; below this the ring is not worth it. */
 internal const val ZSL_STREAM_MIN_FPS = 24L
 
+/**
+ * Exhaustion boundary matching [sessionAttemptPlan]'s table: the hi-res rung is PREPENDED, so a
+ * hi-res-wanting configure sequence owns one extra attempt — a fixed bound would cut the
+ * preview-only last resort off the end of the shifted ladder.
+ */
 internal fun maxSessionAttempt(teleconverterMode: Boolean, wantHiRes: Boolean): Int =
     (if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT) +
         (if (wantHiRes) 1 else 0)

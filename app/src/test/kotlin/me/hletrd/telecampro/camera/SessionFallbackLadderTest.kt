@@ -428,6 +428,35 @@ class SessionFallbackLadderTest {
     }
 
     @Test
+    fun `a ten bit request never carries RAW on any rung of either ladder`() {
+        // AGG3-2: the TELE table returns to stream plan 0 (HLG + JPEG + RAW) at its regular-full
+        // rung, so a 10-bit converter request used to rebuild the HLG10 + still + RAW combination
+        // that CRASHES this HAL (not a configure rejection the ladder could step past).
+        for (tele in listOf(false, true)) {
+            for (hiRes in listOf(false, true)) {
+                for (attempt in 0..maxSessionAttempt(teleconverterMode = tele, wantHiRes = hiRes)) {
+                    val plan = sessionAttemptPlan(
+                        attempt = attempt,
+                        wantHlg = true,
+                        supportsRaw = true,
+                        standalone = true,
+                        teleconverterMode = tele,
+                        wantHiRes = hiRes,
+                        tenBitVideoOnly = true,
+                        rawStandaloneOnly = false,
+                    )
+                    val where = "tele=$tele hiRes=$hiRes attempt=$attempt"
+                    assertFalse("RAW on a 10-bit rung: $where", plan.useRaw)
+                    assertFalse(
+                        "HLG + still + RAW crash combination: $where",
+                        plan.useHlg && plan.useJpeg && plan.useRaw,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `accepted hi-res truth requires the processed reader`() {
         assertTrue(
             acceptedPhotoSessionOutputs(
