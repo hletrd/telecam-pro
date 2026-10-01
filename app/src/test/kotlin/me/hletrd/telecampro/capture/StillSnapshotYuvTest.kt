@@ -2,11 +2,35 @@ package me.hletrd.telecampro.capture
 
 import java.nio.ByteBuffer
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class StillSnapshotYuvTest {
     private val y = YuvPlaneData(ByteBuffer.wrap(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)), rowStride = 4, pixelStride = 1)
     private val expected = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8, 30, 10, 40, 20)
+
+    // AGG3-62 / FD3-3: the ~19 MB NV21 copy is dropped on a FAILED encode too, not only on success.
+    @Test
+    fun nv21Snapshot_dropsPixelsOnFailureAndSuccess() {
+        var encodes = 0
+        val failing = StillSnapshot.Nv21(ByteArray(12), 4, 2, compress = { _, _, _, _ -> encodes++; false })
+        assertThrows(IllegalStateException::class.java) { failing.jpegBytes() }
+        val second = assertThrows(IllegalStateException::class.java) { failing.jpegBytes() }
+        assertEquals("StillSnapshot.jpegBytes is single-use", second.message)
+        assertEquals(1, encodes)
+
+        val throwing = StillSnapshot.Nv21(ByteArray(12), 4, 2, compress = { _, _, _, _ -> error("encoder died") })
+        assertThrows(IllegalStateException::class.java) { throwing.jpegBytes() }
+        assertEquals(
+            "StillSnapshot.jpegBytes is single-use",
+            assertThrows(IllegalStateException::class.java) { throwing.jpegBytes() }.message,
+        )
+
+        val ok = StillSnapshot.Nv21(ByteArray(12), 4, 2, compress = { _, _, _, out -> out.write(byteArrayOf(9)); true })
+        assertArrayEquals(byteArrayOf(9), ok.jpegBytes())
+        assertThrows(IllegalStateException::class.java) { ok.jpegBytes() }
+    }
 
     @Test
     fun planarPlanes_packAsNv21() {

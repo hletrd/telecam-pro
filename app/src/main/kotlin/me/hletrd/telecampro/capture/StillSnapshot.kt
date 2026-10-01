@@ -36,18 +36,28 @@ sealed class StillSnapshot {
         override fun jpegBytes(): ByteArray = bytes
     }
 
-    private class Nv21(nv21: ByteArray, private val width: Int, private val height: Int) : StillSnapshot() {
+    internal class Nv21(
+        nv21: ByteArray,
+        private val width: Int,
+        private val height: Int,
+        // Host-test seam only; production always compresses through YuvImage.
+        private val compress: (ByteArray, Int, Int, ByteArrayOutputStream) -> Boolean = { pixels, w, h, out ->
+            YuvImage(pixels, ImageFormat.NV21, w, h, null)
+                .compressToJpeg(Rect(0, 0, w, h), INTERMEDIATE_QUALITY, out)
+        },
+    ) : StillSnapshot() {
         private var pixels: ByteArray? = nv21
 
         override fun jpegBytes(): ByteArray {
             val nv21 = checkNotNull(pixels) { "StillSnapshot.jpegBytes is single-use" }
+            // Dropped on EVERY exit (AGG3-62 / FD3-3): a failed compress used to keep the ~19 MB
+            // copy reachable for as long as the failing io lambda held this snapshot, and the call
+            // is single-use either way — a retry would only fail the same pixels again.
+            pixels = null
             // width*height (~12.5 MB) start size: a 12.5 MP q97 JPEG typically lands 6–12 MB, so
             // the earlier width*height/2 guaranteed at least one internal array doubling + copy.
             val out = ByteArrayOutputStream(width * height)
-            val ok = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                .compressToJpeg(Rect(0, 0, width, height), INTERMEDIATE_QUALITY, out)
-            check(ok) { "YUV→JPEG compress failed" }
-            pixels = null
+            check(compress(nv21, width, height, out)) { "YUV→JPEG compress failed" }
             return out.toByteArray()
         }
     }
