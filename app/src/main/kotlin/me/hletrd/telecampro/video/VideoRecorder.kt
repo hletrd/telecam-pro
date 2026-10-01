@@ -2333,24 +2333,6 @@ internal fun transitionMuxerStart(
 }
 
 /**
- * Pure gate for stop()'s muxer.stop() failure handling (TR4-2). A stop() throw normally means the
- * container was not finalized and the clip must be failed/deleted. The ONE tolerated combination is
- * a mid-REC audio degrade whose track never received a sample ([audioDegradedMidRec] true,
- * [wroteAudioSample] false) while the video track is complete ([wroteVideoSample] true) —
- * MediaMuxer.stop() may throw over the registered-but-empty audio track even though the video
- * track is playable. There the failure is NOT terminal: stop() proceeds to the publish gate, so a
- * dropped mic in the add-track→first-sample window cannot delete a clean take. Every other
- * combination (no video sample, no degrade, or audio samples actually muxed) stays terminal.
- */
-/**
- * The stop() save gate, extracted pure (TEST4-5/P4.7): a recording is PUBLISHED only when the
- * muxer started, at least one video sample was muxed, no VIDEO-side failure latched, and the
- * pending uri still exists. A tolerated muxer-stop failure additionally requires PASSED structural
- * validation; FAILED or SKIPPED cannot publish. In particular a start immediately followed
- * by a stop (the same-executor-tick case the admission latch serializes) has no muxed video sample
- * yet, so the half-created pending file is DELETED, never published to the gallery.
- */
-/**
  * Cancels the video-startup deadline and retires its executor WITHOUT interrupting (AGG2-24 /
  * PERF2-9). The deadline's own expiry runs ON that executor's thread and reaches here through
  * `recordFailure`; the former `shutdownNow()` therefore interrupted the very thread that was about
@@ -2367,6 +2349,14 @@ internal fun retireStartupDeadline(
     executor.shutdown()
 }
 
+/**
+ * The stop() save gate, extracted pure (TEST4-5/P4.7): a recording is PUBLISHED only when the
+ * muxer started, at least one video sample was muxed, no VIDEO-side failure latched, and the
+ * pending uri still exists. A tolerated muxer-stop failure additionally requires PASSED structural
+ * validation; FAILED or SKIPPED cannot publish. In particular a start immediately followed
+ * by a stop (the same-executor-tick case the admission latch serializes) has no muxed video sample
+ * yet, so the half-created pending file is DELETED, never published to the gallery.
+ */
 internal fun shouldPublishRecording(
     muxerStarted: Boolean,
     wroteVideoSample: Boolean,
@@ -2381,8 +2371,9 @@ internal fun shouldPublishRecording(
         finalizedValidation == FinalizedRecordingValidation.PASSED)
 
 /**
- * [INDETERMINATE] is the reopen that proved nothing (provider open or extractor threw): neither
- * publishable nor deletable, so the stop tail retains the private row for launch recovery.
+ * [INDETERMINATE] is the reopen that proved nothing (the provider open failed): neither
+ * publishable nor deletable, so the stop tail retains the private row for launch recovery. An
+ * extractor throw on an opened file after the tolerated muxer.stop() throw is FAILED (AGG3-6).
  */
 internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED, INDETERMINATE }
 
@@ -2398,6 +2389,16 @@ internal fun nativeGraphDispositionForDrainState(
     NativeGraphDisposition.RELEASED
 }
 
+/**
+ * Pure gate for stop()'s muxer.stop() failure handling (TR4-2). A stop() throw normally means the
+ * container was not finalized and the clip must be failed/deleted. The ONE tolerated combination is
+ * a mid-REC audio degrade whose track never received a sample ([audioDegradedMidRec] true,
+ * [wroteAudioSample] false) while the video track is complete ([wroteVideoSample] true) —
+ * MediaMuxer.stop() may throw over the registered-but-empty audio track even though the video
+ * track is playable. There the failure is NOT terminal: stop() proceeds to the publish gate, so a
+ * dropped mic in the add-track→first-sample window cannot delete a clean take. Every other
+ * combination (no video sample, no degrade, or audio samples actually muxed) stays terminal.
+ */
 internal fun muxerStopFailureIsTerminal(
     wroteVideoSample: Boolean,
     audioDegradedMidRec: Boolean,
