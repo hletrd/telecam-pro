@@ -134,6 +134,20 @@ class FinderGeometryTest {
     }
 
     @Test
+    fun `hit geometry follows the same measured bottom clearance as the drawn box`() {
+        // AGG-55: the drawn overview sits above the measured chrome; the hit box must move with it.
+        val clearance = 400f
+        val drawn = finderRect(boxWidth = 1080f, boxHeight = 1440f, bottomClearance = clearance)
+        val drawnTop = 1440f - drawn.y - drawn.height
+        val drawnBottom = drawnTop + drawn.height
+        val inside = drawn.x + drawn.width / 2f
+
+        assertTrue(finderContainsTopLeftPoint(inside, drawnTop + 1f, 1080f, 1440f, bottomClearance = clearance))
+        // Just below the drawn box is the live preview: a tap there must focus, not be swallowed.
+        assertFalse(finderContainsTopLeftPoint(inside, drawnBottom + 2f, 1080f, 1440f, bottomClearance = clearance))
+    }
+
+    @Test
     fun `the overview clears the bottom chrome in 4-3 and 16-9 alike`() {
         // Device-measured on a 1440-wide phone: the 4:3 preview occupies screen y 510-2430 and the
         // 16:9 one 304-2864 — the taller aspect grows in BOTH directions, so its bottom edge is only

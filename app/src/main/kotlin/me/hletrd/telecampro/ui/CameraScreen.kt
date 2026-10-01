@@ -890,6 +890,7 @@ fun CameraScreen(
                                             pointY = down.position.y,
                                             boxWidth = w,
                                             boxHeight = h,
+                                            bottomClearance = h * finderBottomClearanceFraction,
                                         )
                                     ) {
                                         currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)

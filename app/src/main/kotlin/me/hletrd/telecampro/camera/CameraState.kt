@@ -803,9 +803,15 @@ fun finderContainsTopLeftPoint(
     pointY: Float,
     boxWidth: Float,
     boxHeight: Float,
+    /**
+     * The SAME measured bottom-chrome clearance the GL scissor and the Compose border use. Omitting
+     * it hit-tested a box lower than the drawn one wherever the measured clearance exceeds the
+     * fraction floor, swallowing focus taps just below the visible overview (AGG-55).
+     */
+    bottomClearance: Float = Float.NaN,
 ): Boolean {
     if (boxWidth <= 0f || boxHeight <= 0f) return false
-    val rect = finderRect(boxWidth, boxHeight)
+    val rect = finderRect(boxWidth, boxHeight, bottomClearance = bottomClearance)
     val top = boxHeight - rect.y - rect.height
     return pointX >= rect.x && pointX <= rect.x + rect.width &&
         pointY >= top && pointY <= top + rect.height
