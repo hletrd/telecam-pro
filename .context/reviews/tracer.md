@@ -1,294 +1,255 @@
-# Tracer review: causal flow tracing (2026-09-30)
+# Tracer review: RPL cycle 2 (2026-10-02)
 
-Scope: the six requested flows, traced through the actual code (MainActivity → CameraViewModel →
-CameraEngine → CameraController/GlPipeline/VideoRecorder/StillCapturePipeline/MediaStoreWriter).
-I checked every candidate against CLAUDE.md, so none of the findings below are settled owner
-decisions. This was a read-only pass: nothing was built and nothing was run on a device.
+Scope: causal tracing of the cycle-1 changes (`git log ba5b16e7..HEAD`) through every caller, plus
+the standing flows: optics transactions/rollback, settings restore → engine, Ready publication,
+capture → MediaStore → review, REC admission/stop latch, zoom coalescing/scale, and the DNG route
+input. Read-only pass: nothing was built, run, or tried on a device. Owner decisions (ZSL dark
+refusal, FocusDetail threshold, declined CameraUnit SDK, proprietary HDR) were not reopened.
 
-Status legend: **confirmed** means the code path was read end to end and the failure follows
-from it directly. **likely** means the path is read but one runtime condition is assumed.
-**needs-manual-validation** means the finding depends on device timing or HAL behavior.
+Status legend: **confirmed** = path read end to end, and the failure follows directly from it.
+**likely** = path read, but it needs one runtime condition (usually an optics rollback) that I
+could not force on the host. **needs-manual-validation** = depends on device timing or provider
+behavior.
 
----
+## Cycle-1 changes traced and found sound
 
-## Flow 1: settings restore on cold launch
+These were checked against every caller. No defect found:
 
-**Traced path.** `CameraViewModel.init` runs `seedPhoneModel()` and then
-`restoreSettingsIfEnabled()`, which calls `applyLoaded(honorPreserveOptions=true)` (`CameraViewModel.kt:1243`).
-That function runs `restoredOptics(...)` (`ZoomMath.kt:372`) and then
-`engine.setResolvedOptics(mode, lens, TC, declaration, controls, photoExposure, recalledVideoSize,
-transfer, codec, candidates)` (`CameraEngine.kt:2683`). The engine has not started yet, so it
-publishes fields only. After that come the non-transaction setters: aspect, hi-res, open gate, fps,
-the renderer assists, and `setRawWanted(safeFormats.dngRaw)` (`:1461`). Last,
-`loadEncoderInventoryAsync()` calls `applyEncoderInventory`, which runs `setVideoPipeline` and
-`setRawWanted` again (`:2626`).
-
-Every route input does reach the engine: DNG, hi-res, aspect, fps, transfer, codec, converter,
-lens, and TELE. Facing is never persisted. `saveSettingsIfEnabled` substitutes the pre-front rear
-snapshot while FRONT. The encoder-inventory race is handled by the `pending*UntilInventory` fields.
-
-### T1. Restoring a DNG Photo setup drops the lens band (High, confirmed)
-- **Where:** `ZoomMath.kt:398-401` (the `restoredOptics` PHOTO branch), called from `CameraViewModel.kt:1328`.
-- **Why:** The PHOTO branch always treats the saved `zoomRatio` as **unified** and derives the lens
-  with `LensChoice.forZoom(unified)`. It never asks `standaloneRouteWanted(false, dngRaw,
-  rawForcesStandalone)`. With DNG on (PMA110: `rawRequiresStandalone`), Photo sits on a standalone
-  lens and the saved ratio is **lens-local**. The `preserveChangedOptics` branch (`:1311-1325`)
-  already handles this correctly. The ordinary branch, which covers the default launch and every
-  MR recall, does not.
-- **Failure:**
-  - Photo + DNG + 3× lens stores (lens = TELE3X, zoom = 1.0 local). After a relaunch or MR recall it
-    comes back as lens = `forZoom(1.0)` = MAIN, zoom 1.0. `resolveNonTeleId(MAIN)` then opens the
-    standalone **main** lens, so the operator's 70 mm framing becomes 23 mm.
-  - Local 2.0 on the 3× lens (6× unified) restores as 2× on the main lens.
-  - The ultrawide with DNG restores as main 1×.
-  - This is the same bug class as the "zoom scale follows the ROUTE, not the mode" bullet, on a
-    seventh site that bullet does not list.
-- **Fix:** Pass `photoStandalone = standaloneRouteWanted(false, e.dngRaw, rawForcesStandalone)` into
-  `restoredOptics`. When it is true, keep `requestedLens` and clamp the zoom as lens-local
-  (1..MAX_VIDEO_LOCAL_ZOOM), exactly like the VIDEO branch. Add a test for
-  `restoredOptics(PHOTO, TELE3X, dng standalone, 1.0)` → `TELE3X/1.0`.
-
-### T2. The persisted/MR `videoResolution` is the engine's fallback choice, not the operator's request (Medium, likely)
-- **Where:**
-  - `CameraViewModel.kt:801-806`: `onVideoSizeChosen` writes the engine's *chosen* size into
-    `state.videoResolution`.
-  - `CameraViewModel.kt:1586`: `currentExtras` persists that value.
-  - `CameraEngine.kt:2742`: restore writes it into `requestedVideoSize`.
-  - `CameraEngine.kt:7664-7671`: `chooseVideoSize` falls back to `auto` when the request is not offered.
-- **Why:** The engine keeps the operator's pick (`requestedVideoSize`) apart from what it could
-  deliver on the current route/aspect (`videoSize`). The VM collapses both into one field and
-  persists the delivered value.
-- **Failure:** The operator picks 1080p, then enables Open Gate. The engine chooses 2560×1920 and
-  the VM shows and persists that. After a background kill and relaunch, `requestedVideoSize` is
-  2560×1920. When Open Gate is turned off, that size is not in the 16:9 list, so `auto` picks 4K UHD.
-  The 1080p pick is silently lost. The same thing happens through a lens/front route that lacks the
-  requested size, and through MR save/recall. Within one process the engine still holds the right
-  request, so the bug only shows up across persistence. That makes it hard to notice.
-- **Fix:** Mirror the *requested* size separately in the VM. Update it only in `onVideoResolution`
-  and restore, and persist that value. Keep `videoResolution` as the display-only delivered size.
+- **`remapRouteScaleOptics` + `onSetPhotoFormats` door (99e7af87, 40145fbf).** Both directions
+  round-trip with `unifiedZoomOf`/`localZoomOf` on PMA110's four optical presets. Ultrawide 0.6 maps
+  to local 1.0, 20× maps to TELE10X local 2.0, and TELE10X local 10 clamps to 20× (the HAL range
+  limit, not a bug). Glide, ease, trailing flush and quiet landing are invalidated after the engine
+  push, on the same main turn. `s.controls` already holds every throttled control value, because
+  `updateControls` writes `_state` synchronously, so `cancelPendingControls` loses nothing the
+  packet does not carry.
+- **`restoredOptics(photoStandalone)` (89bb7aab).** `applyLoaded` derives the restored scale from
+  the restored `dngRaw`, which is the same packet that saved the zoom. `currentExtras` saves the
+  pending formats together with the state zoom, and both are written together in `onSetPhotoFormats`.
+- **`lensBandFollowsZoom` (AGG-3).** All three band re-derivation sites now ask one predicate, and
+  it is evaluated inside the terminal mutation.
+- **Front trip vs DNG.** `preFrontRearUnifiedZoom` is unified, and both the engine
+  (`CameraEngine.kt:3907`) and the VM (`CameraViewModel.kt:2933`) convert it with the *current* DNG
+  answer when leaving FRONT. A DNG choice made while FRONT therefore exits onto the correct scale.
+  (`rawSelectable` disables the chip on FRONT anyway.)
+- **Recall with a Photo DNG flip.** `setResolvedOptics` (T1) followed by `setRawWanted` (T2):
+  T2 supersedes T1, both share the not-Ready baseline, and a T2 rollback restores route, scale and
+  DNG together.
+- **Token-scoped recorder worker door (4e57fff2).** `publishAdmission` (`CameraEngine.kt:~6378`)
+  runs before the encoder EGL attach. That attach (`GlPipeline.kt:747`, owner-keyed) therefore sees
+  an ACTIVE token with the same owner and is admitted. Only the audio worker and the muxer start run
+  under the pending token, and they now use `runRecorderWorkerNative`. Preview, EGL and Camera2
+  acquisitions refused during a pending setup go back to the pre-0ab5c1ba replay path. No deadlock.
+- **Exposure handoffs (1e79810e).** `exposureModeHandoff` seeds from live values only when the
+  outgoing P was HAL-AE, and `refreshProgramAppSide(seedFromLive = outgoingHalAe)` agrees with it.
+  M→P, flash OFF↔AUTO, ISO+ANGLE and app-side-P→ANGLE all land on the intended still exposure.
+- **Tri-state video validation (1edb68c6), recovery progress (a1fee383), prior-family tombstone
+  (fc8a458c), lazy characteristics (1c5a0060), HEIF EXIF best-effort (d062927a), nativelog
+  (d255afbc), bounded settings (8780b494; the Kelvin bounds match the ruler's 2000–10000).**
+  - The media-page continuation is bounded. A failing Images query with an advancing Video cursor
+    keeps going only until Video completes, then `nextCursor == cursor` stops it.
+  - None of these changes is destructive.
+- **Recall audio decorator (fe7d0578).** `applyLoaded` sets `activeMemorySlot` synchronously, so
+  the post-call check sees an applied recall. Its only caller is the ProSheet.
 
 ---
 
-## Flow 2: Photo↔Video and lens/TC/front/DNG doors
-
-**Traced path.** `onModeChange` → `remapModeOptics` (ZoomMath) → `invalidateOpticsDerivedState`
-and `clearTapFocusUi` → `engine.setVideoMode`, which runs `beginOpticsTransaction` →
-`setupExecutor` → reconfigure or fast-path `commitFastPathOrReconfigure`.
-
-`onLens` and `onToggleTeleconverter` go to `engine.setLens` → `resolveLensOpticsIntent` /
-`resolveTeleZoomTransition`. `onToggleFrontCamera` goes to `engine.setFrontCamera`, using the
-unified pre-front snapshot and `rearReturnZoom`. Rollback runs `commitOpticsRollbackLocked` →
-`onOpticsRollback`, which mirrors mode, lens, TC, facing, route, controls, declaration and preTele.
-
-On these five doors, zoom-scale conversion, `ZoomGlideState` invalidation, tap-AF retirement
-(engine `retireTapFocusLocked` plus the VM mirror) and the finder/punch-in resolve are consistent.
-**The DNG toggle is the exception.** It is documented as a route input, yet it is not handled as
-an optics-remap door.
-
-### T3. Toggling DNG in Photo changes the route and the zoom scale, but never converts the zoom (High, confirmed)
-- **Where:** `CameraViewModel.kt:2370-2390` (`onSetPhotoFormats`) and `CameraEngine.kt:3959-3981` (`setRawWanted`).
-- **Why:**
-  - `setRawWanted` opens an optics transaction that sets only `overrideId = pin`, then reconfigures.
-  - `controls.zoomRatio` and `lensChoice` are carried across unchanged, even though the route moves
-    logical (unified scale) ↔ standalone (lens-local scale).
-  - `reconcileControlsWithCaps` (`:560-595`) only clamps to the caps range.
-  - `onSetPhotoFormats` also does none of the remap-door hygiene: no zoom rewrite, no
-    `invalidateOpticsDerivedState()`, no `cancelPendingControls`, no synchronous `pushTeleFinder`.
-- **Failure (PMA110, Photo, TC off):**
-  - **DNG ON at unified 3.0:** lens = TELE3X band, so `resolveNonTeleId(TELE3X)` opens standalone
-    70 mm at local 3.0. The operator sees a sudden 3× digital crop on the 70 mm lens. The OSD
-    `unifiedZoom` reads 9× / ~208 mm. These are exactly the "208 mm / 9.1×" symptoms that CLAUDE.md
-    records as fixed for the *lens tap*; this is the same bug reached through the format chip.
-  - At unified 5× the result is 15× local-read.
-  - **DNG OFF on the 3× lens (local 1.0):** logical at unified 1.0, then `forZoom(1.0)` = MAIN. The
-    framing jumps 3× → 1×.
-  - Other effects:
-    - A pending coalesced control packet or a hardware-key glide target set in the old scale keeps
-      driving the old number.
-    - The focus-confidence evidence from the old route is not invalidated.
-    - The GL Loupe Overview gate, which depends on `rawWanted` through `unifiedZoomOf`, stays stale
-      until `applyStabilization` runs after the reopen.
-- **Fix:** Treat the DNG flip as an optics door in both VM and engine, like `resolveTeleZoomTransition`:
-  - Compute `unified = unifiedZoomOf(lens, zoom, oldStandalone, optical)`.
-  - Rewrite zoom to `localZoomOf(unified)` (→ standalone) or `unified` (→ logical), and the lens to
-    the band inside the same `beginOpticsTransaction` publication and the matching VM `_state` write.
-  - Call `invalidateOpticsDerivedState()` and `cancelPendingControls()` in `onSetPhotoFormats` when
-    `standaloneRouteWanted` changes, and `pushTeleFinder()` in `setRawWanted`.
-  - Only act when the standalone answer actually flips (TC and FRONT are unaffected).
-
-### T4. The same-route fast-path terminal mutations re-derive the lens band while ignoring DNG (Medium, likely)
-- **Where:** `CameraEngine.kt:2665-2667` (`setVideoMode` fast path) and `CameraEngine.kt:2818-2820`
-  (`setResolvedOptics` fast path). Both use
-  `if (!video && !TC && route == BACK) lensChoice = LensChoice.forZoom(controls.zoomRatio)`.
-- **Why:** These are the two surviving sites of the pre-2026-08-04 predicate. The caps-install seam
-  (`:589`), the VM zoom path (`CameraViewModel.kt:2181`) and `reconcileZoomToCaps` (`:2968`) were
-  all corrected to `!standaloneRouteWanted(video, rawWanted, …)`.
-- **Failure:** With DNG on, a Video→Photo flip that keeps the same standalone camera and the same
-  stream size takes the fast path (for example Open Gate 4:3 on a lens whose photo field matches).
-  So does an MR recall of a DNG Photo preset onto the same standalone camera. In both cases the
-  lens-local ratio is read as unified: local 1.0 on the 70 mm lens becomes `lensChoice = MAIN`. The
-  next bare reopen, `resolveNonTeleId(MAIN)`, then moves the session to the main lens. The rail also
-  highlights 1× while the focal readout says 69 mm, which is the 2026-08-04 symptom again.
-- **Fix:** Use the same `!standaloneRouteWanted(videoMode, rawWanted, rawRequiresStandalone)` guard at
-  both sites. Better still, route all four sites through one helper.
-
-### T5. `rawWanted` is not part of the optics snapshot, so a failed DNG reopen or a failed MR recall leaves DNG on over a logical session (Medium, likely)
-- **Where:** `CameraEngine.kt:724-748` (`currentOpticsSnapshot`, which has no `rawWanted`),
-  `:940-1000` (`commitOpticsRollbackLocked`), and `:3959-3981`. On the VM side:
-  `CameraViewModel.kt:915-960` (rollback mirror, no `photoFormats`) and `OpticsConstraints.kt:68-69`
-  (Ready keeps `dngRaw` by design).
-- **Why:** Rollback restores `overrideId` to the previous route. That is the logical id, because
-  `setRawWanted` gets there through `reconfigureCamera`, whose `selectCurrentLens`/`cachedCaps` can
-  roll back with `CAMERA_UNAVAILABLE_CAMERA_UNCHANGED`, or the preview-unavailable branch. But
-  `rawWanted = true` survives the rollback. `applyLoaded` has the same problem: `setRawWanted` runs
-  after `setResolvedOptics`, so an async rollback of the recall restores optics but not the DNG
-  input.
-- **Failure:**
-  - The chip shows DNG on and the VM keeps `dngRaw = true`, as designed, but the session is logical
-    with `raw = false`.
-  - Every shutter press writes only HEIF/JPEG and posts `RAW_UNAVAILABLE`.
-  - Every later bare reopen (aspect, hi-res, 10-bit) reuses `overrideId` = logical.
-  - Re-tapping DNG on is a no-op because of the `rawWanted == enabled` gate. The operator has to
-    toggle it off and on again to recover.
-- **Fix:** Add `rawWanted` to `OpticsSnapshot`/`OpticsIntentState`. On rollback, restore it and
-  publish it in `OpticsRollbackPublication`, and have the VM mirror `photoFormats.dngRaw`. Otherwise,
-  on a rollback of a `setRawWanted` transaction, clear `overrideId` so the next reopen re-resolves.
-
-### T6. `setRawWanted` while `started && paused` leaves a stale cached route that `resume()` reuses (Low, needs-manual-validation)
-- **Where:** `CameraEngine.kt:3968`, where `if (!started || paused) return` runs after `rawWanted`
-  is mutated. `resume()` at `:7373-7379` reopens with `currentOpticsReconfiguration().overrideId`,
-  which is the last accepted id.
-- **Why:** The early return is correct only for `!started`, where the first configure resolves from
-  `rawWanted`. When `started && paused`, `overrideId` still caches the pre-pause camera. That is
-  exactly bug #2 in the CLAUDE.md DNG bullet.
-- **Failure:** This needs a `setRawWanted` that actually changes the answer while backgrounded. The
-  known trigger is a late `applyEncoderInventory` post after a fast background, but today that is a
-  no-op because `normalizedForEncoder` never touches `dngRaw`. Any future background-time route
-  input (a settings import, an intent) would reopen the wrong route permanently.
-- **Fix:** When `paused` and started, set `overrideId = userCameraPin` under the monitor before
-  returning, so `resume()` re-resolves.
-
-### T7. `setRawWanted` on the FRONT route runs a full front reopen for nothing (Low, confirmed)
-- **Where:** `CameraEngine.kt:3959-3981`. `standaloneRouteWanted` ignores facing, so the answer flips
-  and `reconfigureCamera(null, …)` runs. `selectCurrentLens()` then returns `cachedFront()`, the
-  same camera.
-- **Failure:** Tapping the DNG chip while FRONT causes a visible black dip (close/open of the same
-  front camera) with no route change.
-- **Fix:** Skip the transaction when `activeCameraRoute != BACK`. The field update alone is enough,
-  because leaving FRONT re-resolves through `resolveNonTeleId`.
-
----
-
-## Flow 3: shutter → still → save → review → delete
+## TR2-1. A rollback keeps a later direct DNG write even when that write flips the restored route (Medium, likely; regression from 3ec126e1)
 
 **Traced path.**
-- The VM `onCapturePhoto` → `dispatchPhotoShutter` → `fireShutterWithFeedback` → `engine.capturePhoto`.
-- The engine checks `stillOutputAdmission`, then `currentAcceptedCameraSession()` (which gates on
-  `cameraReady && !paused && controller && sessionGeneration`), then `formats.normalizedFor(accepted.outputs)`.
-- Next come the drive branches (SINGLE, BURST, AEB, TIMELAPSE) → `dispatchStillCapture` →
-  controller → `StillCapturePipeline` → `MediaStoreWriter` (REGISTERED → COMPLETE → publish).
-- Callbacks `onMediaSaved`/`onRawSaved` → `recordCaptureOutput` → `CaptureOutputTracker.record`
-  (synchronized, capture-id ordered) → review.
-- Delete: `captureOutputs.beginDelete` (freeze + tombstone) → `engine.markCaptureDeleted` → dispatcher
-  → `deleteUntrackedFamilySiblings` + `deleteKnownOutput` → survivor restore.
+1. `CameraViewModel.applyLoaded` (MR recall or settings restore, started) calls
+   `engine.setResolvedOptics(enabledVideo = true, …)` at `CameraViewModel.kt:1429`. This opens
+   transaction T1. Its baseline B is the last-Ready snapshot: Photo, logical,
+   `rawWanted = false`, `rawWantedDirectWrites = n`.
+2. `videoMode = true` is published inside T1's monitor (`CameraEngine.kt:2737`).
+3. `engine.setRawWanted(safeFormats.dngRaw = true)` runs at `CameraViewModel.kt:1492`. In Video,
+   `standaloneRouteWanted` is true either way, so `routeFlips == false`. The direct branch at
+   `CameraEngine.kt:4005-4014` sets `rawWanted = true` and `rawWantedDirectWrites = n+1`.
+4. T1 fails. Possible causes: `id == null` → `CAMERA_UNAVAILABLE_RECALL_UNCHANGED`
+   (`:2795`), the `selectCurrentLens`/`cachedCaps` failure in `reconfigureCamera` (`:4145`, `:4159`),
+   or the recorder branch.
+5. `commitOpticsRollbackLocked` (`CameraEngine.kt:1011`) runs. The counter differs from B's, so
+   `rawWanted` stays `true`. Mode, lens, controls and `overrideId` all go back to B (Photo,
+   logical, unified zoom). `restoreSession` is true (B was Ready on the same controller), so the
+   logical Photo session is retained as-is.
+6. The publication carries `rawWanted = true` (`:1032`). The VM mirror (`CameraViewModel.kt:973`)
+   sets `photoFormats.dngRaw = true`.
 
-Ownership, tombstoning and survivor restore look consistent. BURST/AEB re-check
-`acceptedSessionIsCurrent` on every link.
+**Hypotheses considered.**
+- *(a) The counter protects only a route-neutral later choice.* That is the intent of 3ec126e1
+  ("a DNG toggle that did not move the route"). But "did not move the route" is judged in the mode
+  current *at write time* (Video). The rollback then restores a *different* mode (Photo), where the
+  same value does move the route. **Accepted.**
+- *(b) The chip could not be tapped in Video while T1 is pending.* That is true for the interactive
+  chip: `rawSelectable` uses the previous session's outputs. It does not matter for the recall path,
+  because `applyLoaded` always calls `setRawWanted` right after `setResolvedOptics`, so no user
+  timing is involved. **Rejected as a mitigation.**
+- *(c) A later Ready would repair it.* It does not. Ready normalization deliberately keeps `dngRaw`
+  (`OpticsConstraints.kt:68-69`). Bare reopens reuse `overrideId` = logical, and re-tapping DNG ON
+  is refused by the `rawWanted == enabled` gate. **Rejected.**
 
-### T8. A running timelapse keeps the formats frozen at its start, while DNG/format toggles mid-run take effect on the route (Low-Medium, confirmed)
-- **Where:** `CameraEngine.kt:4840` (`startTimelapse(formats)`) and `:4966`
-  (`requestedFormats.normalizedFor(accepted.outputs)` per tick). `CameraViewModel.kt:2370`
-  (`onSetPhotoFormats` only calls `cancelCountdown()`, and neither `stopTimelapse` nor the engine
-  re-reads the formats).
-- **Failure:** In a run started with HEIF only, turning DNG on moves the route to a standalone lens,
-  so seamless zoom is lost, yet no DNG is ever written. The chip says DNG. In a run started with DNG,
-  turning DNG off returns the route to logical, so ticks silently drop DNG. There is no status in
-  either direction. HEIF↔JPEG changes are ignored for the rest of the run.
-- **Fix:** Either stop the run on any format change (same idiom as a mode flip) or read the live
-  formats per tick through an engine-held `@Volatile` selection.
+**Failure.** This is the AGG-4 state that cycle 1 set out to remove. The UI chip reads DNG on, the
+engine wants RAW, and the session is logical with `raw = false`.
+- Every shutter writes HEIF/JPEG only and posts RAW_UNAVAILABLE.
+- The VM reads the restored *unified* zoom through `unifiedZoomOf(standaloneRoute = true)`, so the
+  OSD and focal readout show e.g. 3.0 × 3 = 9× / ~208 mm, the 2026-08-04 symptom.
+
+The mirror case (baseline Photo with DNG on, a standalone TELE3X at local 1.0, recall of a Video
+bank with `dngRaw = false`) is worse:
+- The restored standalone session keeps RAW, but `rawWanted = false`.
+- The lens-local 1.0 is read as unified, so `lensBandFollowsZoom` re-derives the band to MAIN and
+  the rail shows 1× / 23 mm on the 70 mm lens.
+- The next DNG ON then runs `remapRouteScaleOptics(toStandalone)` on that "unified" 1.0, which
+  moves the session to the main lens.
+
+Before 3ec126e1 this path restored `before.rawWanted`, which was consistent with the restored route.
+
+**Fix.** In `commitOpticsRollbackLocked`, keep a later direct write only when it is route-neutral
+*for the restored packet*:
+
+```kotlin
+val law = activeDeviceProfile().rawRequiresStandalone   // after activeCameraRoute is restored
+val keepLater = rawWantedDirectWrites != before.rawWantedDirectWrites &&
+    (restored.route != CameraRoute.BACK || restored.teleconverter ||
+        standaloneRouteWanted(before.videoMode, rawWanted, law) ==
+            standaloneRouteWanted(before.videoMode, before.rawWanted, law))
+if (!keepLater) rawWanted = before.rawWanted
+```
+
+Publish the value actually kept, as the code does today. Also count a direct write only when it is
+route-neutral in **every** mode, or fold `rawWanted` into the `setResolvedOptics` packet (the
+AGG-49 note) so recall stops writing DNG outside its own transaction.
+
+**Test gap.** No engine-level test covers `setRawWanted`'s transaction, the counter, or the rollback
+(`OpticsTransitionPolicyTest` covers pure helpers only). Add a fake-engine rollback test:
+recall Video + `dngRaw` flip → rollback → assert `rawWanted == before.rawWanted`.
+
+---
+
+## TR2-2. Toggling DNG with TELE on runs a full close/reopen of the same camera (Low, confirmed; T7 fix incomplete)
+
+**Path.**
+1. Photo with TC on: `onSetPhotoFormats` computes `fromStandalone != toStandalone`, because
+   `standaloneRouteWanted` ignores TC.
+2. `remapRouteScaleOptics` returns identity (the `teleconverter` early return), but `routeOptics` is
+   non-null.
+3. `setRawWanted` sees `routeFlips && started && BACK`, so it calls `beginOpticsTransaction` and
+   then `reconfigureCamera(pin)` (`CameraEngine.kt:4043-4053`).
+
+**Why it is pointless.** `selectCurrentLens` resolves standalone 4 either way. The RAW reader does
+not depend on `rawWanted` at all: `sessionAttemptPlan` (`CameraController.kt:2665`) keys only on
+`supportsRaw`/`standalone`, and `rawWanted` appears in the engine only in route resolution.
+
+**Failure.** Each DNG tap at 300 mm costs:
+- a Not-Ready dip, a full HAL close/open of camera 4, and loss of the 0x80b4 TC session in between;
+- tap-AF retirement (`retireTapFocusLocked`) on both sides;
+- a VM `cancelPendingControls`, which drops a ruler value still inside its 40 ms throttle window.
+
+The route does not change. 3ec126e1 and 99e7af87 exempted FRONT/EXTERNAL for exactly this reason
+but missed TC. This predates cycle 1.
+
+**Fix.** In `setRawWanted`, treat `teleconverterMode` like a non-BACK route and do a direct write
+(counted, since it is route-neutral while TC holds). Likewise, have `onSetPhotoFormats` compute
+`routeOptics = null` when `s.teleconverterMode`, so it skips `cancelPendingControls`/`clearTapFocusUi`.
 
 ---
 
-## Flow 4: REC start → admission → first swap → stop/pause/background mid-admission
+## TR2-3. The rollback mirror leaves `pendingPhotoFormatsUntilInventory` stale; the inventory then re-applies the rolled-back DNG without the zoom remap (Low, likely)
 
-**Traced path.** The VM optimistically sets `isRecording && isRecordingStarting` (a generation token),
-then calls `engine.startRecording`. After that:
-- `RecordingAdmissionLatch.tryBeginAdmission` and the topology lease.
-- The `recorderExecutor` runs `beginRecordingAllocation`, which takes a frozen
-  `currentRecordingAdmissionSnapshot` (size, fps, codec, transfer, candidates, and an `isCurrent`
-  that includes `!paused`), registers the family, and arms the process pre-native allocator with a
-  deadline.
-- A claimed row goes to `continueRecordingAfterAllocation`, then the standby mic claim, then
-  `startRecordingClaimed` (≤400 ms release wait), then native setup, publication, and the first real
-  encoder swap → `onRecordingStarted`.
-- Stop is latched by `requestStop`/`completeAdmission`. Pause runs `retirePreNativeRecordingAllocation`
-  plus the recorder claim, and the VM bumps `recordingAttemptGeneration`. Camera faults claim the
-  recorder before `onRecordingTerminated`.
+**Path.**
+1. Before the encoder inventory lands, `onSetPhotoFormats` sets
+   `pendingPhotoFormatsUntilInventory = formats` (`CameraViewModel.kt:2428`). Say `dngRaw = true`,
+   remapped, in transaction T.
+2. T rolls back. The engine restores `rawWanted = false` and the mirror sets `photoFormats.dngRaw =
+   false` at `:973`, with unified controls. The pending field is not touched.
+3. `applyEncoderInventory` (`:2689-2715`) reads `requestedFormats = pending` (dngRaw = true) and
+   calls `engine.setRawWanted(true)` **with no resolved optics**. `routeFlips` is true, so it opens a
+   transaction carrying the *unified* ratio onto a standalone lens. That is AGG-1 again: unified 3.0
+   becomes a 3× crop on 70 mm, 9× / ~208 mm.
+4. Separately, `currentExtras` (`:1582`) persists the pending `dngRaw = true` next to the
+   rolled-back unified zoom. The next launch's `restoredOptics(photoStandalone = true)` then reads
+   that unified ratio as lens-local.
 
-**No new defect found.** Every async edge I followed is generation-owned or latched. A candidate
-race does exist: a stale `onRecordingTerminated` post landing after a user stop+restart. It needs
-two taps inside one main-queue hop while `recorderTeardownInFlight` already refuses the restart, so
-I rate it **Low / needs-manual-validation** and leave it out of the count.
+**Precondition.** A DNG transaction that rolls back inside the async `EncoderCaps.load()` window at
+cold start. The window is narrow, but nothing else closes it.
 
----
-
-## Flow 5: background/foreground during capture, recording and session config
-
-**Traced path.**
-- **onStop:** `MainActivity.onStop` releases any held key edges, then `vm.onStop` (clears progress,
-  countdown, REC UI, tickers, `invalidateOpticsDerivedState`, tap focus; saves settings; disables the
-  standby mic), then `engine.pause`. `engine.pause` sets `paused`, revokes the startup trace, retires
-  the pre-native REC attempt, cancels cold-start retry, disables standby, invalidates Ready (which
-  cancels DNG pre-allocations), stops timelapse, finalizes the recorder off main, stops the gyro, and
-  closes the controller on `setupExecutor`.
-- **onStart:** `vm.onStart` → `engine.resume`, which re-resolves from the current desired fields.
-
-Setup tasks re-check `paused` after every Binder phase. Nothing new beyond T6.
+**Fix.** In the rollback mirror, also rewrite
+`pendingPhotoFormatsUntilInventory = pending?.copy(dngRaw = rollback.rawWanted)`. Also make
+`applyEncoderInventory` go through the same remap door when the DNG answer differs from the
+engine's (or have `setRawWanted` refuse a route flip without a resolved packet when started).
 
 ---
 
-## Flow 6: permissions (camera, mic, visual media)
+## TR2-4. `setVideoResolution` writes `requestedVideoSize` outside any transaction, so an older rollback reverts it; b476d1dd now persists that revert (Low, likely; same class as 3ec126e1)
 
-**Traced path.**
-- **Camera:** a `RequestMultiplePermissions` launch at first composition →
-  `recordCameraPermissionResult` → `refreshPermissionState` (also run on `onResume`).
-- **Mic:** `permissionAwareActions` → `requestMicrophoneThen` (rationale → launcher) → grant/decline.
-  `declineMicrophone` sets `AUDIO_OFF_BY_DENIAL` and, for START_RECORDING, still records.
-  `refreshPermissionState` → `audioRestoredByMicrophoneGrant`.
-- **Visual media:** a contextual launch at an empty-gallery tap → `onGalleryAccessRequested`.
+**Path.**
+1. In Photo, `onVideoResolution` → `engine.setVideoResolution` (`CameraEngine.kt:3692-3704`) sets
+   `requestedVideoSize = s` directly. There is no reopen in Photo and no counter.
+2. An older in-flight lens/TC transaction rolls back. `commitOpticsRollbackLocked` restores
+   `requestedVideoSize = restored.requestedVideoSize` (`:1008`) and publishes it.
+3. The new VM mirror `requestedVideoResolution = rollback.requestedVideoSize`
+   (`CameraViewModel.kt:951`) overwrites the operator's pick, and `currentExtras` persists the
+   reverted request.
 
-### T9. MR recall/restore can set `recordAudio` without touching `AUDIO_OFF_BY_DENIAL`, so a later grant overrides a recalled deliberate silence (Low, likely)
-- **Where:** `CameraViewModel.kt:1504` (`recordAudio = e.recordAudio` in `applyLoaded`) and
-  `MainActivity.kt:961-969`.
-- **Why:** The denial-reason flag is cleared only through the Activity's
-  `onToggleRecordAudio(false)` decorator. After a denial the flag is true. The operator then recalls
-  an MR bank saved with audio deliberately OFF, so `recordAudio` stays false and the flag stays true.
-  On a later grant, audio is forced back ON and a status line says so. That overrides the preset's
-  choice.
-- **Fix:** Clear `AUDIO_OFF_BY_DENIAL` whenever a recall/restore publishes `recordAudio` (VM callback
-  → Activity), or move the flag into the VM next to `recordAudio`.
+**Failure.** A resolution picked while a lens switch is still in flight is silently lost if that
+switch fails. Before b476d1dd the engine reverted it too, so this is not new loss. The difference
+now is that the persisted request mirrors exactly the rollback. Rare: it needs a failing optics
+transaction plus a menu pick inside its window.
+
+**Fix.** Give `requestedVideoSize` the same direct-write treatment as DNG: a counter in the
+snapshot, and restore only when no direct write happened. Or make `setVideoResolution` (Photo
+branch) begin its own transaction, as recall already does.
 
 ---
+
+## TR2-5. New reserved-budget warnings are per event and not change-gated, so a persistent storage fault drains the 120-row lifetime budget (Low, needs-manual-validation)
+
+**Path.** f41b1ae3 and d062927a added unconditional `DiagnosticLog.w` rows at:
+- `MediaStoreWriter.openParcelFd`/`openOutputStream` (`MediaStoreWriter.kt:1021-1029`);
+- publish exhaustion (`:1080`);
+- `StillCapturePipeline.writeProcessedHeif`'s EXIF payload failure (`StillCapturePipeline.kt:255`),
+  which logs on *every* shot, not "once" as the commit message says;
+- the still snapshot/encode failures in `CameraEngine`.
+
+All of them spend the process-lifetime `RESERVED_DIAGNOSTIC_ROW_BUDGET = 120`
+(`DiagnosticTelemetry.kt:32`). The lifetime cap itself is deferred AGG-27.
+
+**Failure.** Some conditions persist across shots: a full cache dir (EXIF seed temp file), or a
+provider that refuses opens. Under those, a timelapse at 1 s or a couple of bursts spends the whole
+budget in about two minutes. After that, every camera-fault, recorder and storage warning in the
+process is dropped, which is the starvation that 98164b9e fixed for identity reads one commit
+earlier. VideoRecorder's "no output descriptor" row also double-counts with `openParcelFd`'s own row.
+
+**Fix.** Route these through the same per-(site, reason) change gate as `PendingDiscardJournal`'s
+identity warnings, or gate them once per process per site with a counter that appears in the next
+emitted row.
+
+---
+
+## Hypotheses checked and rejected
+
+- **VM/engine `rawForcesStandalone` divergence.** The VM mirrors a route-dependent value
+  (`activeDeviceProfile()` turns GENERIC on EXTERNAL) that is republished only on inventory
+  publications. On PMA110, EXTERNAL needs `!back`, which never happens. On GENERIC devices both
+  values are false. Not reachable today.
+- **The token door starving encoder EGL.** Rejected; see the sound list above (publication precedes
+  the attach).
+- **The paused `setRawWanted` branch is not counted as a direct write.** Rejected: the rollback then
+  restores `rawWanted` *and* `overrideId` together, which is route-consistent. Its only caller today
+  is the no-op inventory re-push.
+- **The recovery continuation could loop forever.** Rejected: it advances only on a cursor change,
+  and the cursor is finite.
 
 ## Summary
 
-Total: **9 findings**.
-
-| # | Finding | Confidence | Status |
+| # | Finding | Severity | Status |
 |---|---|---|---|
-| T1 | `restoredOptics` drops the lens band for DNG Photo | High | confirmed |
-| T2 | The persisted video resolution is the engine's fallback, not the operator's request | Medium | likely |
-| T3 | The DNG toggle changes route and scale but never converts zoom or runs door hygiene | High | confirmed |
-| T4 | The fast-path `forZoom` re-derivation ignores DNG (2 sites) | Medium | likely |
-| T5 | `rawWanted` is missing from the optics rollback snapshot | Medium | likely |
-| T6 | `setRawWanted` while paused leaves `overrideId` stale for `resume()` | Low | needs-manual-validation |
-| T7 | The DNG toggle on FRONT runs a pointless full reopen | Low | confirmed |
-| T8 | A timelapse run ignores mid-run format/DNG changes | Low-Medium | confirmed |
-| T9 | Recall doesn't clear `AUDIO_OFF_BY_DENIAL` | Low | likely |
+| TR2-1 | Rollback keeps a later direct DNG write that flips the restored route (recall of a Video bank with a different DNG) | Medium | likely (regression from 3ec126e1) |
+| TR2-2 | A DNG toggle with TELE on runs a pointless full reopen of camera 4 | Low | confirmed (pre-existing; T7 fix incomplete) |
+| TR2-3 | The rollback mirror leaves pending inventory formats stale; inventory re-applies DNG without remap and persists a scale mismatch | Low | likely |
+| TR2-4 | `requestedVideoSize` direct write is reverted by an older rollback, and the revert is now persisted | Low | likely |
+| TR2-5 | New reserved warnings are not change-gated and can drain the 120-row lifetime budget | Low | needs-manual-validation |
 
-**Common root cause:** T1, T3, T4, T5 and T7 all come from one design gap. DNG is documented as a
-ROUTE INPUT, but in code it is still handled as a format option. It has no zoom-scale conversion,
-no rollback membership, no remap-door hygiene, and no route-aware lens-band derivation at the
-remaining fast-path sites. Closing it once, by giving the DNG flip the same `beginOpticsTransaction`
-packet shape as a TELE on/off (including a rewrite of `lensChoice` and `zoomRatio`), fixes all five.
-All of these need on-device confirmation on the PMA110 before they are claimed fixed.
+Common thread: TR2-1, TR2-3 and TR2-4 are all "a field written outside the optics transaction, then
+reconciled by a rollback." The structural fix is AGG-49: every route-relevant input (DNG,
+recording size) either rides its own transaction or is part of the recall packet. All camera-path
+items need PMA110 confirmation with an injected recall failure.

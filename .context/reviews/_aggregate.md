@@ -1,179 +1,113 @@
-# Aggregate review — RPL cycle 1 (2026-10-02, HEAD ba5b16e7)
+# RPL cycle 2 aggregate review — 2026-10-02 (HEAD e5729ffd)
 
-Sources (per-agent files kept as-is for provenance): architect, code-reviewer, critic, debugger,
-designer, document-specialist, perf-reviewer, security-reviewer, test-engineer, tracer, verifier
-(all dated 2026-09-30, from the interrupted first attempt of this cycle and re-used after a
-completeness check), plus fd-code-reviewer and qa-adversary (run 2026-10-02).
+Sources: `code-reviewer.md` (CR2), `critic.md` (CRIT2), `tracer.md` (TR2), `verifier.md` (VER2),
+`debugger.md` (DBG2), `architect.md` (ARCH2), `perf-reviewer.md` (PERF2), `security-reviewer.md`
+(SEC2), `test-engineer.md` (TE2), `document-specialist.md` (DOC2), `designer.md` (DES2),
+`fd-code-reviewer.md` (FD2). Cycle-1 reviews are archived in `archive-rpl-cycle1-2026-10-02/`.
+Items are deduplicated; the highest severity/confidence among agreeing agents is kept, and
+cross-agent agreement is listed (more agents → higher signal). Nothing is device-verified; every
+camera/GL/audio item is PENDING DEVICE per CLAUDE.md.
 
-Severity/confidence below is the HIGHEST any agent assigned to a duplicate. "Agents" lists every
-agent that independently flagged the item (multi-agent = higher signal). Nothing here is
-device-verified; every camera/GL/HAL item stays PENDING DEVICE until measured on PMA110.
+## AGENT FAILURES
 
-## A. Correctness — DNG is a route input but is not handled as an optics door (5 agents)
+- **qa-adversary**: the first run (qa-adversary agent type) returned nothing. The single foreground
+  re-run (general-purpose, told to write its file) also ended without writing
+  `qa-adversary.md`. Its host-gate log (`scratchpad/verify_c2.log`, 833 lines) shows
+  `tools/verify_host.py` completing every step through the final `git diff --check` (Gradle BUILD
+  SUCCESSFUL, tools/coverage/device-tests unittest suites, `check_docs.py` 188 checks / 0 failed);
+  the adversarial QA section was never produced. Gate status is re-established by the orchestrator
+  during PROMPT 3.
+- **fd-code-reviewer**: the first run returned nothing; the re-run succeeded (no high-confidence
+  findings; one below-threshold note FD2-N1, merged into AGG2-2).
+
+## A. Correctness — optics / DNG route door
 
 | ID | Finding | Sev / Conf | Agents |
 |---|---|---|---|
-| AGG-1 | DNG toggle flips logical↔standalone (zoom scale) without converting `zoomRatio`/lens; 3× becomes 9× (DNG on) or 1× (DNG off); no `invalidateOpticsDerivedState`/`cancelPendingControls` (`CameraViewModel.onSetPhotoFormats`, `CameraEngine.setRawWanted`) | High / High | code-reviewer CR-1, architect A1, tracer T3 |
-| AGG-2 | `restoredOptics` PHOTO branch ignores the DNG standalone route: restore/MR recall reads a lens-local ratio as unified and drops the lens band (`ZoomMath.kt:372-402`) | High / High | code-reviewer CR-2, tracer T1, verifier V1 |
-| AGG-3 | Engine same-camera fast paths (`setVideoMode`, `setResolvedOptics` terminal mutations) still use `!video` instead of `!standaloneRouteWanted(...)` before `LensChoice.forZoom` (`CameraEngine.kt:2665`, `:2818`) | High / High | verifier V2, tracer T4 |
-| AGG-4 | `rawWanted` is outside `OpticsSnapshot`/rollback/recall packet; a failed DNG reopen leaves DNG on over a logical session and blocks re-selection; recall is split into two transactions | Medium / Medium | architect A2, tracer T5, perf P11 (not volatile) |
-| AGG-5 | `setRawWanted` while started+paused leaves stale `overrideId` for `resume()` | Low / Low | tracer T6 (verifier: unreachable today) |
-| AGG-6 | `setRawWanted` on FRONT runs a pointless full reopen | Low / High | tracer T7 |
-| AGG-7 | Timelapse keeps start-time formats while DNG toggles move the route mid-run | Low-Med / High | tracer T8 |
+| AGG2-1 | 3ec126e1 rollback keeps a "direct" DNG write that flips the RESTORED route (e.g. failed recall of a Video+DNG bank from Photo/DNG-off): DNG lit over a logical session, band predicate reads unified zoom as lens-local (`CameraEngine.kt:1011`, `:4003-4015`) | Medium / High | CR2-5, CRIT2-1, TR2-1, VER2-2, DBG2-1, ARCH2-1, PERF2-2 (7 agents) |
+| AGG2-2 | Recall/restore is split into `setResolvedOptics` then `setRawWanted`: the fast-path terminal re-bands lens-local zoom before the DNG transaction (wrong lens), and a T2 failure rolls back to a mixed-scale packet (`CameraViewModel.kt:1429,1492`; `CameraEngine.kt:2792,2835-2841`) | Medium / Medium | CR2-6, VER2-1, ARCH2-3, FD2-N1 (was AGG-49) |
+| AGG2-3 | A synchronously rejected DNG pre-allocation runs `onDone` AND returns `false`, so timelapse schedules every tick twice (2^n growth) and AEB resets controls mid-bracket (`CameraEngine.kt:4822, 4967-5059`; `DngPreCaptureAllocation.kt:120-161`) | High / High | CR2-1 |
+| AGG2-4 | Post-invalidate preflight failure in `reconfigureCamera` (selection/caps null) rolls back with a moved session generation → old controller keeps streaming but Ready is never restored; shutter/REC dead until another door (`CameraEngine.kt:4108,4136-4160,1035`) | High / High | CR2-2 |
+| AGG2-5 | FRONT with retained TELE: snapshot `3·z` converts back with the 10× base once `3z ≥ 10`; saved/stored TELE zoom 4.0 becomes 1.2 (`CameraViewModel.kt:2789-2800`) | Med-High / High | CR2-3 |
+| AGG2-6 | AGG-36 fix still persists the delivered video size when the operator never picked one (`CameraViewModel.kt:1623`) | Medium / High | CR2-4, DBG2-3 |
+| AGG2-7 | `setVideoResolution` writes `requestedVideoSize` outside any transaction; an older rollback reverts the later pick and b476d1dd now persists the revert (`CameraEngine.kt:974,1008,3692-3706`; `CameraViewModel.kt:951`) | Low-Med / Medium | CRIT2-3, TR2-4, CR2-18 |
+| AGG2-8 | Pre-inventory format tap normalizes HEIF→JPEG before storing the pending request; persisted for good (`CameraViewModel.kt:2427-2428`) | Low-Med / High | CR2-9, VER2-4 |
+| AGG2-9 | Rollback DNG mirror misses `pendingPhotoFormatsUntilInventory`; inventory replays the rolled-back DNG without remap (`CameraViewModel.kt:973-977,2695`) | Low / Medium | CRIT2-6, TR2-3, DBG2-2 |
+| AGG2-10 | DNG toggle with TELE on runs a full same-camera reopen (`CameraEngine.kt:3997-4006`) | Low / High | CR2-11, TR2-2, CRIT2-4 |
+| AGG2-11 | VM DNG door decides "route flips" from a state copy of the RAW law (default true) and applies remap side effects (tap-focus clear, invalidations) even when the engine does not reopen (`CameraViewModel.kt:2436-2475`) | Low / Medium | VER2-5, CRIT2-5, CRIT2-4 |
+| AGG2-12 | `onCameraOverride` publishes the override even when the engine refuses mid-REC (`CameraViewModel.kt:3420-3429`) | Low / High | CR2-12 |
+| AGG2-13 | Recall exposure clamp treats outgoing caps as authoritative across a DNG route flip (`CameraViewModel.kt:1367-1382`) | Low / Medium | CRIT2-8 |
+| AGG2-14 | Dual-open candidate install lacks the in-monitor `paused` recheck → camera can open after `onStop` (`CameraEngine.kt:4177-4198`) | Low-Med / Medium | PERF2-3 |
+| AGG2-15 | `onCleared` purges main callbacks before detaching engine callbacks; `recordTicker` can repost forever (`CameraViewModel.kt:4155-4160, 232-243`) | Low / Medium | PERF2-4 |
 
 ## B. Correctness — exposure
 
 | ID | Finding | Sev / Conf | Agents |
 |---|---|---|---|
-| AGG-8 | ANGLE shutter reachable in ISO priority / app-side P (Fn toggle, `onShutterMode`, `applyLoaded` for ISO); AE loop writes to the ignored `exposureTimeNs` | Med-High / High | code-reviewer CR-3, critic CR-3 |
-| AGG-9 | Entering ISO from M+ANGLE seeds the loop from a stale `exposureTimeNs` instead of the effective angle exposure | Low / High | critic CR-4 |
-| AGG-10 | P→S/ISO/M handoff seeds from traded preview wire values even when P was app-side | Medium / High | code-reviewer CR-4 |
-| AGG-11 | 10-bit HLG video preview/meter/zebra read HLG code values as SDR; app-side video AE mis-exposes | Med-High / Medium | code-reviewer CR-5 |
-| AGG-12 | AEL hardware binding is a silent no-op in app-side modes | Medium / High | code-reviewer CR-6 |
-| AGG-13 | App-side AE loop keeps running during a manual AEB bracket | Medium / Medium | code-reviewer CR-7 |
-| AGG-14 | App-side P 1/focal rule ignores digital zoom and the declared host focal | Low-Med / High | code-reviewer CR-12 |
-| AGG-15 | Angle clamp silently moves a long Photo exposure by up to ~6 stops on the unit toggle | Low / High | critic CR-7 |
+| AGG2-16 | App-side P seeded from a long M exposure clamps to 1/10 s without ISO compensation (−5 stops for 4 s) (`AutoExposure.kt:125-152`) | Medium / High | CR2-7 |
+| AGG2-17 | ISO / shutter / angle dial doors leave HAL-AE P with the stale other axis (`CameraViewModel.kt:2007-2056`) | Medium / Medium | CR2-8 |
 
-## C. Correctness — capture, storage, recording (data loss / diagnosability)
+## C. Correctness — capture, storage, recording, controller
 
 | ID | Finding | Sev / Conf | Agents |
 |---|---|---|---|
-| AGG-16 | Degraded-audio stop path deletes a good video take when the readable-track probe throws transiently (`MediaStoreWriter.hasReadableVideoTrack`) | Medium / Medium | debugger D4 |
-| AGG-17 | Launch recovery stops at the first persistently failing media row; later pages and the DISCARD stage never run | Medium / Medium | code-reviewer CR-11 |
-| AGG-18 | Deleting a restored, fully owned prior-process family tombstones the synthetic prior id and blocks every later gallery restore | Medium / Med-High | code-reviewer CR-10 |
-| AGG-19 | A null `rawChars` (transient characteristics failure at open) fails every still for the controller's lifetime | Medium / Medium | debugger D7 |
-| AGG-20 | `VideoRecorder.start` discards the encoder/muxer setup exception (no release log) | High / High | debugger D1 |
-| AGG-21 | Every audio degrade-to-silent edge is unlogged in release | High / High | debugger D2 |
-| AGG-22 | `openParcelFd`/`openOutputStream` swallow provider exceptions (still/video saves fail with no log) | High / High | debugger D3 |
-| AGG-23 | `publish` drops every `update()` failure cause | Medium / Medium | debugger D5, critic CR-5 |
-| AGG-24 | Still snapshot/encode failure has no log | Medium / High | debugger D6 |
-| AGG-25 | Remaining silent exits on the identity/registration path | Low / High | critic CR-5 |
-| AGG-26 | New identity-read warnings are per-retry and drain the 120-row reserved budget | Medium / High | critic CR-2, test-engineer note |
-| AGG-27 | Diagnostic budget is process-LIFETIME on every device | Medium / Medium | architect A5 |
-| AGG-28 | Pending-token admission widened to the whole Engine owner (GL/Camera2 now admitted during REC setup) | Medium / Medium | critic CR-1, critic CR-8 (test gap) |
-| AGG-29 | `tryComplete` may deliver `onPhoto` then `onError`; a throwing `onError` escapes onto the camera thread | Low / Low | debugger D8 |
-| AGG-30 | `runCatching { Thread.sleep }` clears the interrupt flag in retry loops | Low / Low | debugger D9 |
-| AGG-31 | `DngWriteResult.Failed` reports a complete, recoverable DNG as "save failed" | Low / Low | debugger D10 |
-| AGG-32 | SettingsStore ignores the `commit()` result | Low / Low | debugger D11 |
-| AGG-33 | Persisted `exposureTimeNs`/`fps`/`wbKelvin` restored unbounded | Low / Low | debugger D12 |
-| AGG-34 | Settings save before encoder inventory loads persists degraded formats/transfer | Low / Medium | code-reviewer CR-14 |
-| AGG-35 | Missing `phoneModel` key restores FIND_X9_ULTRA on unknown hardware | Low / Medium | code-reviewer CR-17, verifier V6 |
-| AGG-36 | Persisted/MR `videoResolution` is the engine's fallback, not the operator's request | Medium / Medium | tracer T2 |
-| AGG-37 | MR recall/restore doesn't clear `AUDIO_OFF_BY_DENIAL` | Low / Medium | tracer T9 |
-| AGG-38 | A full identity-recovery owner closes all capture with a generic failure message | Low / Medium | critic CR-6 |
-| AGG-39 | Audio/video PTS on two clocks; dropped mic samples shift audio early | Medium / Medium | code-reviewer CR-8, perf P6 |
-| AGG-40 | Offered frame rates are not gated on the selected size or codec | Medium / High (code) | code-reviewer CR-9 |
-| AGG-41 | EXIF build failure aborts the whole HEIF save | Low / Medium | code-reviewer CR-16 |
-| AGG-42 | Drain loops have no self-deadline after stop; missing EOS escalates to quarantine | Medium / Medium | perf P7 |
-| AGG-43 | Stop/failure paths take `muxerLock` unbounded | Low / Medium | perf P9 |
+| AGG2-18 | Live finalized-video probe maps an extractor throw after open to INVALID → delete; launch recovery keeps the same bytes (`MediaStoreWriter.kt:2579-2601`) | Medium / High | CR2-10, CRIT2-2, PERF2-1, DBG2-4, TE2-12 |
+| AGG2-19 | Metering regions silently dropped while `rawChars` is null; lazy retry only in `tryComplete` (and that retry is a Binder call per shot) (`CameraController.kt:1308,2266`) | Low / High | CR2-14, CRIT2-7, PERF2-5 |
+| AGG2-20 | ZSL ring not flushed on the `setPinAutoFps` streaming-off edge (`CameraController.kt:1870-1895`) | Low / Medium | CR2-13 |
+| AGG2-21 | Launch recovery: a persistently failing collection query is retried on every page (3× each) and starves DISCARD / risks the 120 s deadline (`MediaStoreWriter.kt:1414`) | Low-Med / Medium | CR2-17, PERF2-6 |
+| AGG2-22 | Null processed-still decode fails the shot with no log (`StillCapturePipeline.kt:192`) | Low / High | DBG2-5 |
+| AGG2-23 | Analysis/AE callback exceptions swallowed per frame with no trace (`GlPipeline.kt:1550-1556`) | Low / Medium | DBG2-6 |
+| AGG2-24 | Startup-deadline task `shutdownNow()`s its own thread before `onFailure` (`VideoRecorder.kt:1022-1055`) | Low / High (latent) | PERF2-9 |
+| AGG2-25 | Standby meter `check`/`checkNotNull` on a plain thread crash the process (`StandbyAudioController.kt:543,631-655`) | Low / Medium | PERF2-10 |
+| AGG2-26 | Recall clears `AUDIO_OFF_BY_DENIAL_KEY` unconditionally (and on a refused re-recall), re-creating the self-locking silent-audio state (`MainActivity.kt:517-528`) | Medium / High | VER2-3, TE2-8 |
+| AGG2-27 | `photoExposureTimeNs` (upper) and `wbTint` restored unbounded (`SettingsStore.kt:261,303-304`) | Low-Med / Medium | TE2-7 |
+| AGG2-28 | ZSL admission ignores manual focus distance / WB (`ZslAdmission.kt:56-101`) | Medium / Medium | CR2-15 |
+| AGG2-29 | Reserved 120-row budget: new per-event warnings (open failures, recovery rows) not change-gated (`MediaStoreWriter.kt:1080,1414`) | Low-Med / Medium | CR2-16, TR2-5, ARCH2-7, SEC2-5 |
+| AGG2-30 | YUV still size picked by area without the aspect rule (`CaptureCapabilities.kt:341-345`) | Low / Low | CR2-19 |
+| AGG2-31 | Loupe hint clamp ≠ draw clamp (`GlPipeline.kt:1134`) | Low / High (cosmetic) | CR2-20 |
+| AGG2-32 | Focus-evidence epoch sampled at callback, not readback; non-volatile (`CameraViewModel.kt:1051-1070`) | Low / Medium | PERF2-7 |
+| AGG2-33 | Frame-notification coalescing may keep a standing SurfaceTexture backlog (`FrameNotificationCoalescer.kt:21-40`) | Medium / Low | PERF2-8 |
+| AGG2-34 | Presentation reducer invokes listeners under its lock (`RecordingStorageDispatcher.kt:171-177`) | Low / Low | PERF2-11 |
+| AGG2-35 | "10-bit video · stills off" caption keyed on `videoMode` only; false on 8-bit fallback rungs (`ProControls.kt:1134-1141`) | Low / Medium | VER2-6 |
 
-## D. Session ladder / route consistency
+Cycle-1 AGG-29/30/31/32 re-validated by DBG2: all still OPEN.
+
+## D. Security / release tooling
 
 | ID | Finding | Sev / Conf | Agents |
 |---|---|---|---|
-| AGG-44 | After the 10-bit still-less rung fails, attempt 1 is HLG+JPEG, not the "ordinary 8-bit ladder" the comment promises | Medium / Medium | verifier V4 |
-| AGG-45 | Debug `nativelog` flag arms the still-less HLG session in PHOTO, contradicting its KDoc | Low / High | verifier V5 |
-| AGG-46 | FRONT has facing special cases for RAW and the Loupe Overview that CLAUDE.md says do not exist; rationale stale | Medium / High (mismatch) | verifier V3 |
-| AGG-47 | The two model seams disagree on CPH2841 (detectPhone = X9 Ultra, DeviceProfile = GENERIC) | Medium / Medium | architect A3 |
-| AGG-48 | DeviceProfile resolved twice; UI mirror reads a live getter rather than the published route | Medium (design) / Low | architect A4 |
-| AGG-49 | 14 optics doors re-implement the scale-transition checklist by hand | Medium (design) | architect A7 |
-| AGG-50 | Cold-start route resolution runs off `setupExecutor` (GL/timelapse thread) → duplicate optics transaction | Medium / Medium | perf P1 |
-| AGG-51 | `gyro.start()` on the GL thread can undo `pause()`'s `gyro.stop()` | Medium / Medium | perf P2 |
-| AGG-52 | `applyResolvedCameraRoute` RMW of `controls` outside the Engine monitor | Medium / Medium | perf P8 |
-| AGG-53 | `GlPipeline.thread/handler` plain fields read cross-thread | Low / Low | perf P12 |
-| AGG-54 | Window rotation stale on a direct 90↔270 flip (large screens) | Low-Med / Medium | code-reviewer CR-13 |
-| AGG-55 | Loupe Overview tap-exclusion rect ignores the measured bottom clearance | Low / High | code-reviewer CR-15 |
+| AGG2-36 | Tracked public doc states the upload-key password's properties (`docs/play-console-submit.md:22,790-792`) | Medium / High | SEC2-1 |
+| AGG2-37 | Upload-key gate self-attested, no blocked-cert deny-list, plain Gradle still signs, checker pins the blocked cert (`tools/build_immutable_release.py:524-706`, `tools/check_release_artifact.py:45-47`, `app/build.gradle.kts`) | Medium / High | SEC2-2, CRIT2-10 |
+| AGG2-38 | Signing passwords reach the Gradle daemon env; hi-res passthrough EXIF unaudited; wrapper JAR not refreshed | Low / Info | SEC2-3, SEC2-4, SEC2-6 |
 
-## E. Performance / UI
+## E. Architecture
 
 | ID | Finding | Sev / Conf | Agents |
 |---|---|---|---|
-| AGG-56 | Orientation animation recomposes the whole `CameraScreen` per frame | Medium / High | perf P3 |
-| AGG-57 | 10 Hz level ticker and REC audio levels recompose open modal sheets | Medium / High | perf P4 |
-| AGG-58 | Review pinch/pan recomposes the whole review overlay per touch event | Medium / Med-High | perf P5 |
-| AGG-59 | Scope DrawScope allocations per redraw | Low / High | perf P10 |
-| AGG-60 | Per-read allocations / zero-read spin in audio loops | Low / Medium | perf P13 |
-| AGG-61 | `LatestHeavyWorkLane` class is test-only | Low (hygiene) | perf P14 |
-| AGG-62 | Settings tab-rail labels break mid-word at large font scale | Medium / Medium | designer DSN-R1-01 |
-| AGG-63 | Status plate auto-dismiss ignores the accessibility timeout | Medium / Medium | designer DSN-R1-02 |
-| AGG-64 | Critical status plate has no horizontal margin | Low / Medium | designer DSN-R1-03 |
-| AGG-65 | Zebra/false-colour use Rec.2020 luma weights on BT.709 input | Low / Medium | code-reviewer CR-18 |
-| AGG-66 | `onAspectRatio` has no `rejectIfRecording` despite the stated contract | Low / High | code-reviewer CR-18 |
+| AGG2-39 | Recall = one optics transaction + ~25 trailing setters; async rollback restores only optics → half-applied, persisted hybrid marked active | Medium / High | ARCH2-2 |
+| AGG2-40 | VM mirrors of engine route facts start from different defaults; lens-band predicate inlined at four VM sites; persisted zoom has no scale tag | Low-Med / Medium | ARCH2-4, ARCH2-5, ARCH2-6 |
 
-## F. Security / release tooling
+## F. Tests and gate
 
-| ID | Finding | Sev / Conf | Agents |
-|---|---|---|---|
-| AGG-67 | Upload-key custody weak (owner action; details withheld from tracked files) | High / High | security SEC-01 |
-| AGG-68 | Rotation gate enforced by only one of two release entry points | Medium / High | security SEC-02 |
-| AGG-69 | Internal reviews/plans committed to the public repo despite `.gitignore` | Medium / High | security SEC-03 |
-| AGG-70 | Scoped-secret stdin credentials silently overridden by `keystore.properties` | Low / Medium | security SEC-04 |
-| AGG-71 | Release artifact checker doesn't assert debuggable/exported/backup posture | Low / High | security SEC-05 |
-| AGG-72 | Checksum-only dependency verification | Low / High | security SEC-06 |
-| AGG-73 | Debug exported components rely on DUMP; comments call it signature-only | Low / High | security SEC-07 |
-| AGG-74 | LAN/Tailscale addresses in tracked tooling | Low / High | security SEC-08 |
-| AGG-75 | Content URIs in release warning logs | Info | security SEC-09 |
-| AGG-76 | Legacy `adb tcpip 5555` on the fleet | Info / Medium | security SEC-10 |
-| AGG-77 | `verify_host.py` doesn't check JDK version/keytool; `adb_proxy.py` leaks fds | Low / High | code-reviewer CR-18 |
-| AGG-78 | Discard identity includes `DATE_TAKEN`, possibly rewritten by scan | Low / needs-device | code-reviewer CR-18 |
+TE2-1 (DNG door has no engine/VM test), TE2-2 (`StorageFailureDiagnosticsTest` vacuous/racy),
+TE2-3 (Partition-A residual line ranges stale and unchecked), TE2-4 (exposure-handoff VM wiring
+untested), TE2-5 (aspect mid-REC refusal untested), TE2-6 (requested size/pending inventory paths),
+TE2-8 (recall denial flag untested), TE2-9 (lazy characteristics retry untested), TE2-10 (TB336ZU
+guard wiring), TE2-11, TE2-13, TE2-14; AGG-85..92 re-validated (AGG-85 partial, rest open).
 
-## G. Tests
+## G. Docs
 
-| ID | Finding | Sev / Conf | Agents |
-|---|---|---|---|
-| AGG-79 | `LatestHeavyWorkLaneTest` retry must finish within real 100 ms + unchecked cast | Medium (flaky) | test-engineer TE-1 |
-| AGG-80 | Ownerless delete tests use a 250 ms wall-clock budget | Medium (flaky) | TE-2 |
-| AGG-81 | `DiagnosticLogTest` order-dependent / vacuous once budget is spent | Medium | TE-3 |
-| AGG-82 | `PendingAllocationIdentityRecoveryTest` plain list sink on a process signal | Medium (flaky) | TE-4 |
-| AGG-83 | No per-test/suite timeout; untimed joins hang the gate | Medium | TE-5 |
-| AGG-84 | Encoder `MediaFormat` builders never exercised (PQ-tag trap unguarded) | Medium | TE-6 |
-| AGG-85 | 2eb57e4e diagnostics untested | Low-Med | TE-7 |
-| AGG-86 | Pure exposure math outside the coverage gate | Low-Med | TE-8 |
-| AGG-87 | `DigitalGainTest` tautological | Low | TE-9 |
-| AGG-88 | `StartupTraceTest` restores a different seam; one tautological test | Low | TE-10 |
-| AGG-89 | Process singletons not asserted idle after tests | Low | TE-11 |
-| AGG-90 | Negative waits prove little under load | Low | TE-12 |
-| AGG-91 | `tap_af_aim.py` untested; stale first 3A reading | Low | TE-13 |
-| AGG-92 | `release_permissions.py` sdk-23 path untested | Low | TE-14 |
+DOC2-1 (CLAUDE.md "≤1 stop per tick" vs code ±0.35), DOC2-2 (APV exclusion stated as a platform
+rule; official MediaMuxer docs list APV-in-MP4 from SDK 36 — the device-verified failure stands),
+DOC2-3 (robolectric.properties comment), DOC2-4 (private TESTING.md), DOC2-5 (verification
+metadata keeps superseded pins), DOC2-6 (docs gate pins only AGP/BOM), DOC2-7 (ARCHITECTURE.md lacks
+the token door), DOC2-8 ("zero retries" wording), DOC2-9 (release gate presented as routine);
+VER2-7 (CLAUDE.md ladder bullet omits the 10-bit rung); CRIT2-9 (device evidence predates the
+token-door code; P3.4/P3.5 not marked PENDING DEVICE). Toolchain pins are current per registries.
 
-## H. Documentation drift
+## H. UI/UX
 
-| ID | Finding | Sev / Conf | Agents |
-|---|---|---|---|
-| AGG-93 | `setFrontStreamPreMirrored` does not exist (it is `setFrontMirrorConvention`); "becomes a DeviceProfile flag" already happened | Medium / High | document-specialist DS-1 |
-| AGG-94 | `statusDisplayDurationMs` no longer exists | Low / High | DS-2 |
-| AGG-95 | Glyph-coverage rule contradicts EN+KO (Inter carries no Hangul) | Medium / High | DS-3 |
-| AGG-96 | Toolchain pins behind latest stable (AGP 9.4.1, Kotlin 2.4.20, BOM 2026.09.00, Gradle 9.8.0, core-ktx 1.19.1, Robolectric 4.17) | Medium / High | DS-4 |
-| AGG-97 | Dead English `focusConfidenceLabel` is what the tests pin | Low / High | DS-5 |
-| AGG-98 | Latent English fallbacks on localized UI paths | Low / Medium | DS-6 |
-| AGG-99 | Privacy contact address looks like a placeholder | Info | DS-7 |
-| AGG-100 | Documented timings are unnamed literals | Info | DS-8 |
-| AGG-101 | Lens-match tolerance is ×1.35 log-symmetric, not "±35%" | Low / High | verifier V7 |
-| AGG-102 | Stale comments: `seedPhoneModel` KDoc, "ONE Build.MODEL read", "DNG only in TELE" | Low / High | verifier V8, architect A6 |
-| AGG-103 | `driveProgram` doc says "one stop" per tick, code is ±0.35 | Low / High | code-reviewer CR-18 |
-
-## I. Gate / QA (qa-adversary, fd-code-reviewer)
-
-| ID | Finding | Sev / Conf | Agents |
-|---|---|---|---|
-| AGG-104 | `muxer!!.addTrack` vs `muxer?.writeSampleData` + unconditional `wroteAudioSample = true` in the drain loops (`VideoRecorder.kt:587, :859, :874`) | Low / Low | qa-adversary F1 |
-| AGG-105 | Lint warnings: 2 version-currency (= AGG-96), 5 `ModifierParameter` (`CameraScreen.kt:1693, 3161, 3248`, `ManualDials.kt:222, 332`), 1 `UsableSpace` (`MediaReview.kt:456`), 1 `UseKtx` (`PendingDiscardJournal.kt:575`) | Low (warnings) | qa-adversary |
-
-Gate baseline at HEAD `ba5b16e7` (qa-adversary): `python3 tools/verify_host.py` PASS — 2271/2271
-unit tests, lint 0 errors / 9 warnings, Partition A 99.84%, Python suites 347/347, check_docs 188/188.
-
-fd-code-reviewer found no additional finding at confidence >= 80 and independently confirmed AGG-2.
-
-## Cross-agent agreement (highest signal)
-- DNG-as-route-input cluster AGG-1..AGG-4: code-reviewer, architect, tracer, verifier, fd-code-reviewer.
-- ANGLE shutter in loop-owned modes AGG-8: code-reviewer, critic.
-- Silent failure diagnostics AGG-20..AGG-26: debugger, critic, test-engineer.
-- A/V clock AGG-39: code-reviewer, perf-reviewer.
-- Phone-model fallback AGG-35: code-reviewer, verifier.
-
-## AGENT FAILURES
-None. The interrupted first attempt never received fd-code-reviewer or qa-adversary; both were
-re-run on 2026-10-02 and returned. The 11 other per-agent files were re-used after checking that
-each was complete (summary/count section present) and dated 2026-09-30.
-
-Total distinct findings: 105.
+DES2-1 (KO Delete button TalkBack name is a question), DES2-2 ("Will retry" promises an in-session
+retry that only happens at next launch), DES2-3 (statuses drawn under open review), DES2-4..6
+(AGG-62..64 still open), DES2-7 (KO picker parts of speech), DES2-8 (read-only rows two TalkBack
+stops), DES2-9 (DISP node renames on toggle).

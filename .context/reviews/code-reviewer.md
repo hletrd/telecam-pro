@@ -1,333 +1,323 @@
-# Code-reviewer report: logic correctness (2026-09-30)
+# Code-reviewer — RPL cycle 2 (2026-10-02, HEAD e5729ffd)
 
-Scope: read-only review of `app/src/main/kotlin/**`, `app/src/test/**` (coverage cross-checks) and `tools/*.py`.
-Primary deep focus: `ui/CameraViewModel.kt`, `camera/CameraState.kt`, `camera/ManualControls.kt`,
-`camera/CaptureCapabilities.kt`, `camera/Teleconverter.kt`, `camera/AutoExposure.kt`,
-`storage/SettingsStore.kt`, `ui/controls/*.kt`, and `ui/ZoomMath.kt` (the restore/remap math those files call).
-Secondary sweep: storage/capture, video/audio, GL shaders, and UI/activity. Every finding below was checked
-against the code path, not against comments.
+Lane: code quality, logic bugs, SOLID, maintainability. Read-only. Scope: all `app/src/main/**/*.kt`
+(105 files / 60k lines; split across four parallel read passes — VM/UI/settings, CameraEngine,
+controller/capture/GL, storage/video/recovery — then every finding below re-traced by hand at the
+cited lines), plus the cycle-1 diff `ba5b16e7..HEAD` (20 main files, +850/-168).
 
-Settled owner decisions from CLAUDE.md are **not** reported: ZSL dark refusal, the FocusDetail threshold, the
-declined CameraUnit SDK, no proprietary HDR, no APV/AV1, and the Loupe Overview's afocal omission.
+Owner decisions NOT re-raised: ZSL dark refusal, FocusDetail threshold, CameraUnit SDK, proprietary
+HDR, orientation-moves-no-control. Nothing here is device-verified; camera/GL items are PENDING
+DEVICE per CLAUDE.md.
 
-Inventory: 125 main Kotlin files (~59k LOC; the largest are CameraEngine 8.6k, CameraViewModel 4.5k,
-CameraScreen 3.4k, MediaStoreWriter 3.0k and CameraController 2.8k), 252 unit/Robolectric test files, and 12
-Python/shell tools (plus 8 test modules). Strings: 496 English names and 478 Korean ones. Every translatable
-name has a `values-ko` entry, and printf argument sets match across all pairs (checked by script).
+## Cycle-1 fix verification
 
-Status values used below: **confirmed** means the code path was traced end to end. **likely** means it is
-strongly supported by the code, but runtime/HAL behaviour is involved. **needs-manual-validation** means it
-depends on device or platform behaviour.
+Checked correct: `remapRouteScaleOptics` + its `onSetPhotoFormats` wiring (both directions; no-op on
+TC / lens-local route / unchanged answer); `restoredOptics(photoStandalone)` + the single
+`restoredRouteStandalone` in `applyLoaded`; `lensBandFollowsZoom` at all three band sites
+(`CameraEngine.kt:589, :2684, :2837`); `exposureModeHandoff`/`withShutterModeTakingOwnership`;
+`onAspectRatio` rejectIfRecording; rollback DNG chip mirror; `currentExtras` pending codec/transfer;
+lazy `rawChars` retry in `tryComplete`; HEIF EXIF best-effort; tri-state open-failure retention;
+recovery progress past an exhausted page; prior-family tombstone; change-gated identity warnings;
+drain idiom / `wroteAudioSample`; token-scoped recorder worker door; `nativelog` no longer arming
+the still-less session.
 
----
+Incomplete or regressed: AGG-36 (CR2-4), AGG-4 / 3ec126e1 rollback rule (CR2-5), AGG-4 recall split
+(CR2-6), AGG-10 amplifies a latent loop clamp (CR2-7), AGG-10 not applied to three dial doors
+(CR2-8), AGG-34 not applied to the format door (CR2-9), AGG-16 only half-closed (CR2-10), AGG-19
+lazy retry not applied to metering (CR2-14), AGG-17 continuation drains the reserved log budget
+(CR2-16).
 
-## Findings (ranked by severity)
+## Findings
 
-### CR-1 [HIGH] Toggling DNG moves Photo between the logical and standalone route without converting zoom to the new scale
-- **Where:** `ui/CameraViewModel.kt:2370-2390` (`onSetPhotoFormats`) and `camera/CameraEngine.kt:3959-3982`
-  (`setRawWanted` → `reconfigureCamera(pin, transaction)`).
-- **Why:** on PMA110, wanting DNG is a route input (`standaloneRouteWanted`). On the logical route `zoomRatio`
-  is unified (main-relative); on a standalone route it is lens-local. `setRawWanted` opens a new optics
-  transaction but never converts `controls.zoomRatio`, and `onSetPhotoFormats` only pushes the flag and writes
-  `photoFormats`.
-  - Neither the caps seam (`reconcileControlsWithCaps` / `normalizeControlsForRoute`, which only clamps) nor the
-    ViewModel's `reconcileZoomToCaps` converts it either.
-  - Every other scale door does convert: `onLens`, `onModeChange` (`remapModeOptics`), the TC door
-    (`resolveTeleZoomTransition`) and the front door (`rearReturnZoom`). This is the one door that doesn't.
-- **Failure scenarios:**
-  - **DNG on:** Photo, tap the 3× chip. State is `lens=TELE3X`, wire zoom 3.0 unified. Enable DNG. The session
-    reopens on the standalone 70 mm lens with wire zoom 3.0, now read as lens-local. Framing jumps to 9× (OSD
-    ~210 mm), and `unifiedZoom` reports 9×. At a 5× pinch it becomes 15×; at 10× it clamps to the 70 mm lens's
-    ceiling.
-  - **DNG off:** the reverse happens. Standalone TELE at local 1.0 returns to the logical camera at unified
-    1.0, silently jumping from 3× to 1×. `reconcileZoomToCaps` then re-bands `lens` to MAIN.
-- **Fix:** treat the DNG toggle as a zoom-scale remap door. Inside the `setRawWanted` transaction, when
-  `standaloneRouteWanted` flips, rewrite `controls.zoomRatio`:
-  - toward standalone: `localZoomOf(unifiedZoom, optical)`, with the lens set from `LensChoice.forZoom(unified)`;
-  - toward logical: `unifiedZoomOf(lens, local, standaloneRoute = true, optical)`.
+### CR2-1 — A rejected DNG pre-allocation runs the timelapse / AEB continuation TWICE (High / High, confirmed)
 
-  Mirror the same rewrite in `onSetPhotoFormats`, and call `invalidateOpticsDerivedState()` and
-  `clearTapFocusUi()` like every other remap door. Add an `OpticsTransitionPolicyTest` case for both directions.
-- **Confidence:** High. **Status:** confirmed in code. Device check pending: tap 3×, toggle DNG, read OSD focal.
+- Where: `camera/CameraEngine.kt:4822` (`return owner.start() == ACCEPTED`) with
+  `camera/DngPreCaptureAllocation.kt:120-121, :159-161` and the callers at
+  `CameraEngine.kt:5045-5059` (timelapse) and `:4967-4975`, `:4996-5004` (AEB).
+- Why: when `ProcessPreNativeMediaAllocator::dispatch` returns OVERFLOW/SHUTDOWN (or the deadline
+  `arm()` fails, which calls `onTimeout` → `attempt.retire`), `attempt.retire { onFailure(null) }`
+  runs synchronously → `onRetired` → `settleBeforeCamera()` → `settleRegisteredStillShot(...)` →
+  `onDone?.invoke()`. `dispatchStillCapture` then ALSO returns `false`, and every chain caller treats
+  `false` as "onDone will never run".
+- Failure scenario (timelapse, DNG on): the shared 2-worker / 4-slot pre-native allocator is full
+  (a MediaProvider stall with recording/DNG allocations in flight). Each tick: `onDone` schedules
+  tick N+1, then `if (!dispatched) schedule(...)` schedules it again. Only the newest future is kept
+  in `timelapseFuture`, so `stopTimelapse` cancels one of them; the others survive (their
+  `timelapseRun.owns(generation)` check stops them only after stop). While the run is live the
+  scheduled-task count doubles per interval (2^n), each tick re-registering a capture family and
+  re-hitting the saturated allocator. AEB: `onDone = { fire(i + 1) }` advances the bracket inside the
+  dispatch, then the outer `if (!dispatched) ctrl.updateControls(controls)` resets the preview to the
+  base controls in the middle of the next bracket step.
+- Fix: make the contract single-terminal. Either `dispatchStillCapture` returns `true` once
+  `settleRegisteredStillShot` has run (onDone owns the continuation), or the pre-camera settle path
+  suppresses `onDone` when the dispatch is rejected synchronously (pass a flag into
+  `settleBeforeCamera`). Add a test with a fake allocator returning OVERFLOW asserting exactly one
+  continuation per tick.
 
-### CR-2 [HIGH] Restore and MR recall rebuild a DNG Photo framing as if it were unified zoom, losing lens and zoom
-- **Where:** `ui/ZoomMath.kt:372-402` (`restoredOptics`, PHOTO branch) called from `ui/CameraViewModel.kt:1328-1334`.
-  The engine takes `restoredLens` from it at `:1407-1418`.
-- **Why:** for a non-TELE Photo packet, `restoredOptics` always runs
-  `LensChoice.forZoom(savedZoom.coerceIn(0.6, 20))` and ignores `e.lens`. A packet saved while DNG was on
-  (a standalone Photo route) stores a lens-local ratio, so the persisted lens is thrown away and the band is
-  derived from a local number.
-  - `applyLoaded`'s own `preserveChangedOptics` branch (`:1297-1311`) does compute a standalone local ratio
-    correctly, then hands it to the same function, which misreads it again.
-- **Failure scenario:** DNG on, 3× lens, local zoom 1.0 (or 2.0, i.e. 6× framing), then relaunch or recall
-  that MR bank. `restoredOptics` returns `lens = forZoom(1.0) = MAIN`, so `setResolvedOptics` opens the main
-  standalone lens at 1× (or 2×). The saved framing is lost on every launch for DNG shooters.
-- **Fix:** pass the target route into `restoredOptics` (`standaloneRouteWanted(mode == VIDEO, dngRaw,
-  rawForcesStandalone)`). When standalone, keep `requestedLens` and clamp local zoom to `[1, MAX_VIDEO_LOCAL_ZOOM]`,
-  exactly like the VIDEO branch. Add a `ZoomMathTest` case (PHOTO + standalone + `TELE3X`, local 1.0 →
-  `TELE3X`, 1.0).
-- **Confidence:** High. **Status:** confirmed. There is no test for this case; `ZoomMathTest:125-156` covers
-  only the logical and video branches.
+### CR2-2 — A preflight failure inside `reconfigureCamera` leaves a streaming camera permanently Not-Ready (High / High in code, needs-manual-validation for frequency)
 
-### CR-3 [MEDIUM-HIGH] ANGLE shutter unit is reachable in ISO priority and app-side PROGRAM, where the AE loop's shutter writes are ignored
-- **Where:**
-  - `ui/controls/FnQuickActions.kt:112-114`: the Fn SHUTTER quick action toggles SPEED↔ANGLE whenever
-    `shutterDialEnabled`, i.e. whenever manual AE exists, in **any** exposure mode.
-  - `ui/CameraViewModel.kt:1997`: `onShutterMode` has no exposure-mode guard.
-  - `:1976-1991`: `onExposureMode` forces SPEED only when entering ISO, not PROGRAM.
-  - `:1368-1380`: `applyLoaded` forces SPEED only for app-side PROGRAM, not ISO.
-  - `camera/AutoExposure.kt:109-151` and `ui/CameraViewModel.kt:3970-3993` are the loop that writes into the
-    ignored field.
-- **Why:** `effectiveExposureNs()` ignores `exposureTimeNs` in ANGLE mode (`ManualControls.kt:441-446`). The
-  ISO-priority loop and the app-side program line both drive exposure by writing `exposureTimeNs`.
-- **Failure scenarios:**
-  - **ISO priority:** tap the Fn SHUTTER tile. `withShutterMode(ANGLE)` succeeds. `driveShutterNs` now
-    re-emits the same `newNs` on every ~6 Hz tick (another `updateControls` and sensor fast-path submit each
-    time), but the wire exposure never moves, so ISO priority stops auto-exposing entirely.
-  - **App-side PROGRAM:** from M with an angle set, switch to P. The shutter stays fixed at angle/fps (1/60 s
-    at 180°/30p) regardless of the 1/focal rule. `driveProgram` computes `isoStops = corr - shutterStops`
-    assuming a shutter move that never lands, so ISO lags by up to 0.35 stop per tick. In the dark, once ISO
-    clamps, the overflow "slower shutter" is dropped and the photo underexposes.
-  - **Restore:** a persisted ISO+ANGLE blob restores straight into this state.
-- **Fix:** keep ANGLE only where the user owns the shutter (SHUTTER or MANUAL).
-  - In `onShutterMode`, refuse ANGLE (or no-op) when `autoShutterDriven || exposureMode == PROGRAM`.
-  - Gate the Fn SHUTTER quick action the same way (as `ShutterRuler` already does with `enabled`).
-  - Force SPEED in `onExposureMode` for PROGRAM too, and in `applyLoaded` for ISO.
-  - Or normalize it once: `normalizedFor` could coerce `shutterMode = SPEED` whenever the loop owns the shutter.
-- **Confidence:** High. **Status:** confirmed.
+- Where: `camera/CameraEngine.kt:4108` (`invalidateCameraReady()` bumps `cameraSessionGeneration`,
+  `:541-557`) followed by the post-invalidate rollback branches at `:4136-4146`
+  (`selectCurrentLens() == null`) and `:4148-4160` (`cachedCaps(...) == null`); rollback gate at
+  `:1035-1036` (`restoreSession` requires `before.sessionGeneration == cameraSessionGeneration.get()`).
+- Why: these branches run with the OLD controller still open and streaming (selection/caps are read
+  "BEFORE closing"), but the session generation has already moved, so `commitOpticsRollbackLocked`
+  always takes the Not-Ready `else` branch (`:1056-1066`): `acceptedCameraSession = null`,
+  `cameraReady = false`. Nothing re-commits Ready afterwards — the old controller's `onReady` already
+  fired, and `handlePreviewReady` needs an accepted session. The pre-invalidate GL branch (`:4093-4106`)
+  restores correctly; only the post-invalidate ones are broken.
+- Failure scenario: tap a lens / toggle DNG / change aspect while `getCameraCharacteristics` hits a
+  transient failure (the same resume race CLAUDE.md documents for `openCamera`). Status says
+  "camera unchanged", the preview keeps running, but shutter and REC stay disabled until the
+  operator happens to trigger another optics change or a pause/resume. The cycle-1 AGG-4 rollback
+  of `setRawWanted` inherits this.
+- Fix: move `invalidateCameraReady()` after the selection/caps preflight (just before the close), or
+  record the generation `invalidateCameraReady` produced and let the rollback restore Ready when the
+  current generation equals it and `controller === before.readyController` (camera-error
+  invalidations bump again and stay non-restorable). Add a test with a null `selectCurrentLens`.
 
-### CR-4 [MEDIUM] P→S/ISO/M handoff seeds from the preview's traded wire values, not the still exposure P intended
-- **Where:** `ui/CameraViewModel.kt:1976-1991` (`onExposureMode`, `fromProgram` branch) and
-  `camera/CameraController.kt:1097-1106`. That controller code publishes
-  `SENSOR_SENSITIVITY`/`SENSOR_EXPOSURE_TIME` from the repeating result in every mode.
-- **Why:** photo P is app-side by default. Its intended still exposure lives in `controls.iso` and
-  `controls.exposureTimeNs`, and the loop keeps both fresh. The repeating request carries the
-  `previewExposureTrade` result instead: exposure capped at 1/30 s (PROGRAM neutral cap) or 1/15 s, ISO
-  raised, and the residual left as GL digital gain. `liveIso`/`liveExposureNs` are those traded wire values,
-  sampled every tenth frame.
-- **Failure scenario:** dim scene, P settled at 1/10 s ISO 6400 (max), so the preview wire is about 1/30 s ISO
-  6400 with ×3 GL gain. Switch to M. M is seeded with 1/30 s ISO 6400, and the first M still is about 1.6 stops
-  darker than the P shot just before it. S/ISO inherit the same wrong seed, and the loop then has to walk back.
-- **Fix:** seed from `live*` only when the outgoing P was HAL-AE (`!it.programAppSide`). Otherwise keep
-  `it.iso` and `it.exposureTimeNs`.
-- **Confidence:** High. **Status:** confirmed in code.
+### CR2-3 — Saving / storing an MR bank while FRONT with a retained TELE converts TELE zoom with the wrong base (Medium-High / High, confirmed)
 
-### CR-5 [MEDIUM-HIGH] 10-bit HLG video: preview, zebra/false-colour and the app-side AE meter all read raw HLG code values as SDR
-- **Where:** `gl/GlPipeline.kt:1041` (`previewTransfer` is null unless log and not assist) and
-  `:1309-1315` / `:1814` (`analysisReadbackTransfer` is always null). In `gl/Shaders.kt:209-229`, transfer
-  code 0 never consults `uSourceHlg`, and `dgain()` applies BT.1886 math to the sampled values.
-- **Why:** in a 10-bit session (`tenBitSessionWanted`: VIDEO and transfer ≠ SDR), `sourceHlg = 1` and the
-  preview stream is HLG-encoded. Only the encode branches (1/2/4/5) linearise through `sourceLinear()`.
-  Display, meter, zebra, false colour, peaking, and the AE/scope readback all run in the HLG code domain.
-- **Failure scenarios:**
-  - Video S/ISO priority with HLG: 18% grey is about HLG code 0.39 rather than SDR about 0.46, so the app-side
-    loop (target 0.45) drives the scene brighter than intended, and that lands in the file.
-  - HLG diffuse white sits at 0.75, so the IRE70/85/95 zebra presets mean something different.
-  - With Gamma Display Assist on a log profile, the "normal display-referred image" is actually HLG codes.
-- **Fix:** when `uSourceHlg == 1`, form the display, meter and dgain signal from
-  `pow(min(sourceLinear(c), 1.0), 1/2.4)`, i.e. convert back to the BT.1886 display domain. Do the same in the
-  analysis readback so metering is transfer-independent, as the comments already promise.
-- **Confidence:** Medium-High. **Status:** likely; confirm on device with an 18% card, S-priority HLG against
-  SDR.
+- Where: `ui/CameraViewModel.kt:2789-2800` (`retainedRearZoomRatio`), snapshot at `:2902-2911`,
+  used at `:1650-1652` (settings save) and by `onStoreMemorySlot`.
+- Why: the snapshot is `unifiedZoomOf(TELE3X, z, standalone=true)` = `3·z` (base from the LENS).
+  The save converts back with `localZoomOf(3z, optical)` whose base is `opticalBaseFor(3z)` — the
+  10× lens once `3z >= 10`. The pair round-trips only while `z < 3.33`.
+- Failure scenario (PMA110, Hasselblad kit): TELE at lens-local 4.0 (~52× total) → flip to FRONT →
+  background (or store M1). Persisted: `teleconverter=true`, zoom `12/10 = 1.2`. Relaunch / recall
+  lands at ~16× instead of ~52×. Same mismatch for any standalone (VIDEO / DNG) 3× lens zoomed past
+  3.33×.
+- Fix: when the target is TELE, divide by the host lens base
+  (`opticalBaseFor(TELE3X.zoomPreset, optical).zoomPreset`), or snapshot the lens + lens-local ratio
+  at FRONT entry and persist those verbatim. Add a round-trip test for TELE local 4.0.
 
-### CR-6 [MEDIUM] AE Lock (including the AEL hardware binding) is a silent no-op in every app-side exposure mode, the default Photo mode included
-- **Where:**
-  - `ui/CameraViewModel.kt:3192-3205`: `HardwareKeyAction.AEL -> onToggleAeLock(active)`.
-  - `camera/ManualControls.kt:263-265`: `aeLock` is normalized to false unless HAL-AE PROGRAM.
-  - `ui/CameraViewModel.kt:3944-3996` and `:1052-1059`: `applyAutoExposure` never checks a lock.
-- **Why:** the UI toggle is correctly disabled (`ControlAvailability.aeLockEnabled`), but the reassignable
-  AEL key binding is not. In photo P (app-side), S and ISO, pressing AEL writes `aeLock = true`, normalization
-  strips it, and the loop keeps metering.
-- **Failure scenario:** a Sony-habit user assigns the half-press key to AEL, meters a subject in photo P,
-  recomposes, and the exposure follows the new framing anyway.
-- **Fix:** add an app-side lock. Keep a ViewModel flag set by the AEL action (and allow the toggle in app-side
-  modes) that makes `applyAutoExposure` return early. Alternatively, refuse AEL in `hardwareActionAdmitted`
-  with a status message. Don't route it through `aeLock`, which is HAL-only.
-- **Confidence:** High. **Status:** confirmed.
+### CR2-4 — AGG-36 fix still persists the DELIVERED size for an operator who never picked one (Medium / High, confirmed)
 
-### CR-7 [MEDIUM] The app-side AE loop keeps running during a manual (AE-OFF) AEB bracket, so the bracket drifts mid-sequence
-- **Where:** `ui/CameraViewModel.kt:1052-1059` and `:3944-3996`, which have no capture/bracket gate;
-  `camera/CameraEngine.kt:4876-4906` (`captureAeb` manual branch: `manualAebStepControls(controls, steps[i])`
-  reads the **live** `controls` on each fire).
-- **Why:** in P (app-side), S and ISO, `!original.autoExposure` takes the time-bracket branch. Each step puts a
-  ×¼ or ×4 exposure on the repeating request. The loop meters that brightened or darkened preview (GL gain
-  simulates it) and rewrites `iso` (S/P) or exposure (ISO) through `engine.setControls`. The next bracket frame
-  is then built from the loop-modified controls.
-- **Failure scenario:** S-priority AEB. After the +2 EV step's preview, the loop lowers ISO by up to about 0.3
-  stop per tick, so later frames carry a different ISO. The bracket is no longer ±2 EV about one base, and the
-  restore at the end is moved by the loop as well.
-- **Fix:** freeze the loop while a still chain is in flight (the engine already knows: a publish/`pending`
-  flag, or a "sequence active" callback to the ViewModel). Alternatively, snapshot `original` and build every
-  step from it instead of from live `controls`.
-- **Confidence:** Medium. **Status:** likely (depends on how many loop ticks fit inside a bracket).
+- Where: `ui/CameraViewModel.kt:1623`
+  (`(requestedVideoResolution ?: s.videoResolution)`), contract at `storage/SettingsStore.kt:87-90`
+  (`"" = never chosen -> auto-pick the largest`).
+- Why: `requestedVideoResolution` is null until the operator picks, and the fallback writes the
+  engine's delivered size — exactly the value AGG-36 said must not be persisted. `""` can no longer be
+  written by any path.
+- Failure scenario: never-picked user turns Open Gate on (delivered 2560×1920) or records on a route
+  whose top size is 1080p, then backgrounds. Next launch `applyLoaded` (`:1446`) makes that the
+  REQUEST and the engine honours it on the main lens: the user is pinned to 1080p / 2560×1920 with no
+  action of their own, and every MR bank inherits it.
+- Fix: persist `requestedVideoResolution?.let { "${it.width}x${it.height}" } ?: ""`.
 
-### CR-8 [MEDIUM] Recorded audio starts earlier than video, with no alignment, so every take has an A/V offset
-- **Where:** `video/VideoRecorder.kt:795` (`audioPtsUs(totalSamples)` counts from the first PCM read after
-  `startRecording()`) and `gl/GlPipeline.kt:1250-1252` (video PTS 0 is the first **encoder swap**).
-- **Why:** audio and video each start at PTS 0 from unrelated wall-clock instants. The audio worker starts
-  during recorder setup, before the encoder's first real-frame swap, which CLAUDE.md says can be slow
-  (TB336ZU). Nothing uses `AudioRecord.getTimestamp` or trims early audio.
-  - Also, while the audio thread blocks in `awaitMuxerStart()` (`:935-984`, up to the video startup
-    deadline), it stops reading, so the about 40-85 ms AudioRecord buffer can overrun. Sample-count PTS then
-    silently closes that gap.
-- **Failure scenario:** a clap on camera is heard later than it is seen, by the gap between audio start and
-  the first encoder frame (hundreds of ms on slow encoders).
-- **Fix:** put both tracks on one monotonic timebase. Derive audio PTS from
-  `AudioRecord.getTimestamp(TIMEBASE_MONOTONIC)` and subtract the same base as video, or drop PCM captured
-  before the first video frame. Keep reading while waiting on the muxer rendezvous (buffer encoded AAC instead).
-- **Confidence:** Medium. **Status:** needs-manual-validation (clap test, frame-accurate).
+### CR2-5 — The 3ec126e1 rollback rule keeps a DNG write that changes the meaning of the RESTORED route (Medium / Medium, confirmed logic)
 
-### CR-9 [MEDIUM] Offered frame rates are not gated on the selected video size or codec
-- **Where:** `camera/CameraState.kt:1078-1110` (`VideoFrameRate.availableFor`).
-- **Why:** apart from the 8K ≤30 fps cap, a rate is offered whenever any fixed `[fps,fps]` AE range exists.
-  `size` only feeds the 8K check; `codec` and `highSpeedMaxFps` are unused. It never consults
-  `StreamConfigurationMap.getOutputMinFrameDuration(SurfaceTexture, size)` or the encoder's
-  `VideoCapabilities.areSizeAndRateSupported`. CLAUDE.md claims these rates are gated against the selected size.
-- **Failure scenario:** on a device where 4K or Open Gate 4:3 has a 33 ms minimum frame duration, 60/59.94p
-  is still offered. The HAL delivers about 30 fps, the muxer is told 60, and the "60p" file is 30p with
-  duplicated or timed-stretched frames.
-- **Fix:** add a `minFrameDurationNs(size) <= 1e9 / fps` filter (carry the duration per size in `CameraCaps`),
-  and optionally the encoder capability check keyed on `codec`.
-- **Confidence:** High that the code is ungated; the impact on PMA110 depends on its stream map.
-  **Status:** confirmed (code) / needs-manual-validation (PMA110 impact).
+- Where: `camera/CameraEngine.kt:1011` (`if (rawWantedDirectWrites == before.rawWantedDirectWrites)
+  rawWanted = before.rawWanted`) with the direct-write branch at `:4006-4015`.
+- Why: a write is classed "direct" when it does not flip the route in the mode current AT WRITE TIME
+  (VIDEO, FRONT/EXTERNAL, pre-start). A rollback can restore a different mode/route in which the kept
+  value DOES flip the route.
+- Failure scenario: Photo, DNG off, logical camera. Recall an MR bank that is Video + DNG on:
+  `setResolvedOptics(video)` opens T; `applyLoaded` then calls `setRawWanted(true)` with
+  `videoMode == true` → direct write, counter++. T fails (e.g. `id == null` at `:2794`). Rollback
+  restores Photo + logical `overrideId` + the Ready logical session but keeps `rawWanted = true` and
+  publishes it to the VM (chip on). Every shot drops DNG with RAW_UNAVAILABLE, and
+  `lensBandFollowsZoom`/`unifiedZoom` now read the unified wire value as lens-local — the
+  "permanent divergence" shape of CLAUDE.md DNG bug #2 (it only clears when the operator toggles DNG
+  off and on).
+- Fix: keep the later value only if
+  `standaloneRouteWanted(restoredVideo, rawWanted, law) == standaloneRouteWanted(restoredVideo,
+  before.rawWanted, law)` for the restored BACK route; otherwise restore `before.rawWanted` (or
+  publish Not-Ready with `overrideId = userPin` so the route re-resolves).
 
-### CR-10 [MEDIUM] Deleting a restored, fully owned family tombstones the synthetic prior-process id, blocking every later gallery restore
-- **Where:** `ui/CaptureOutputTracker.kt:263-270` (tombstone added for `CAPTURE_FAMILY`) and `:93`
-  (`seedPriorCapture` refuses while `PRIOR_PROCESS_CAPTURE_ID in tombstones`). The id is
-  `Int.MIN_VALUE` (`:445`).
-- **Why:** `PRIOR_PROCESS_CAPTURE_ID` is a reusable slot, not a live capture, so no late sibling callback can
-  arrive for it. The file-only path deliberately avoids tombstoning it (see the comment at `:258-262`); the
-  family path does not.
-- **Failure scenario:** launch, the prior capture restores, the user deletes it, and `lastMediaUri` becomes
-  null. Tapping the empty gallery runs `restoreLatestPublishedCapture` and finds the next-older family, but
-  `seedPriorCapture` returns false. The thumbnail stays empty for the rest of the process, until more than
-  `maxTombstones` newer deletes evict the entry.
-- **Fix:** don't tombstone `PRIOR_PROCESS_CAPTURE_ID`, and instead protect against resurrecting the
-  just-deleted family by URI (the deleted outputs are already known). Or clear that tombstone on a seed whose
-  family key differs. Add a tracker test: delete a seeded family, then seed a different family, expect true.
-- **Confidence:** Medium-High. **Status:** likely (there is no test covering re-seed after delete).
+### CR2-6 — MR/settings recall of a DNG photo bank can re-band the lens-local zoom before the DNG transaction supersedes it (Medium / Low-Medium, needs-manual-validation)
 
-### CR-11 [MEDIUM] Launch media recovery stops at the first persistently failing row outside the DISCARD stage
-- **Where:** `storage/MediaStoreWriter.kt:1243-1253` (preflight) and `:1287-1398` (media pages), where
-  `continueAfterFailureExhaustion` defaults to false (`:2325`). Only the DISCARD stage sets it (`:1272`).
-  The early return is at `camera/LaunchMediaRecoveryCoordinator.kt:266-269`.
-- **Why:** a single row that keeps failing (`DELETE_FAILED`/`PUBLISH_FAILED`/`UNAVAILABLE`), or a
-  deleted-family marker, exhausts the retry budget. Recovery then returns without advancing the cursor, so
-  later Images/Video pages and the whole DISCARD stage never run, on every launch.
-- **Fix:** set `continueAfterFailureExhaustion = true` for media and preflight batches. The failed row is
-  already retained, and the cursor is already able to advance.
-- **Confidence:** Medium. **Status:** likely (it depends on which failures set `retryRequired`).
+- Where: `ui/CameraViewModel.kt:1492` (`engine.setRawWanted(safeFormats.dngRaw)` AFTER
+  `setResolvedOptics`), `camera/CameraEngine.kt:2785-2845` (fast-path terminal mutation runs on
+  `setupExecutor`, `lensBandFollowsZoom` reads the still-old `rawWanted = false`).
+- Why: `restoredOptics(photoStandalone = true)` hands the engine a lens-local ratio (e.g. TELE3X
+  @ 1.0). `setResolvedOptics` publishes it while the engine still believes the route is logical; if
+  `setupExecutor` reaches the same-camera fast path before main reaches `setRawWanted`, the terminal
+  mutation sets `lensChoice = LensChoice.forZoom(1.0) = MAIN`. `setRawWanted(true)` then opens its
+  transaction WITHOUT a resolved lens and keeps `MAIN`, reopening the standalone MAIN lens at 1.0
+  instead of the 70 mm lens. The cycle-1 plan logged the split as structural (AGG-49); this is its
+  concrete failure.
+- Fix: carry `rawWanted` inside `setResolvedOptics`'s packet (publish it in the same
+  `beginOpticsTransaction` block and let `resolveNonTeleId`/the fast-path predicate see it), and drop
+  the trailing `setRawWanted` from `applyLoaded`.
 
-### CR-12 [LOW-MEDIUM] The app-side P program line ignores digital zoom and the declared host focal
-- **Where:** `ui/CameraViewModel.kt:1784-1799` and `:4531-4538` (`preferredProgramShutterNs`).
-- **Why:** the 1/focal rule uses `s.lens.targetEquivMm × (TC ? magnification : 1)`, a fixed 70 mm band
-  focal, and ignores the zoom ratio. It also uses 70 mm for vivo/OTHER hosts instead of
-  `teleconverterHostEquivMm`.
-- **Failure scenario:** TELE with the Explorer at local 5× digital (about 1500 mm). P holds about 1/300 s,
-  which is 2.3 stops too slow for the handheld rule this line exists to enforce, so shots at the app's
-  headline use case blur.
-- **Fix:** use the effective focal, `unifiedZoom × MAIN.targetEquivMm` off-TELE, or
-  `teleconverterFocalMm × localZoom` in TELE.
-- **Confidence:** High on the math. **Status:** confirmed; product intent to confirm.
+### CR2-7 — Entering app-side P from a long manual exposure cuts it to 1/10 s with no ISO compensation (Medium / High, confirmed math)
 
-### CR-13 [LOW-MEDIUM] Window rotation goes stale on a direct 90°↔270° landscape flip (large screens only)
-- **Where:** `ui/CameraScreen.kt:581-597`. The value is `remember(LocalConfiguration.current)` over
-  `display.rotation`, with `configChanges="orientation|screenSize|…"` in the manifest (`AndroidManifest.xml:72`).
-  There is no `DisplayListener` anywhere.
-- **Why:** a 180° flip changes no public `Configuration` field, so there is no recomposition and
-  `onWindowRotationChanged` never fires.
-- **Failure scenario:** on an sw600dp tablet window, the preview draws upside down and tap-AF mapping is
-  point-mirrored after the flip. The phone path (portrait-locked) is unaffected.
-- **Fix:** observe `DisplayManager.DisplayListener.onDisplayChanged` in a `DisposableEffect`.
-- **Confidence:** Medium. **Status:** needs-manual-validation (TB336ZU).
+- Where: `camera/AutoExposure.kt:125-152` (`newNs.coerceIn(expMinNs, slowCapNs)` after ISO was
+  computed for only a ±0.35-stop shutter move), seeded by `refreshProgramAppSide(seedFromLive =
+  false)` (`ui/CameraViewModel.kt:2032`).
+- Why: when `currentNs > slowCapNs` (100 ms), the final clamp silently removes
+  `log2(currentNs/slowCapNs) − 0.35` stops. Before AGG-10 the seed was the live traded preview
+  (≤ 1/15 s), so this was rarely hit; the AGG-10 fix now seeds the program line from the M exposure
+  itself.
+- Failure scenario: Photo M at 4 s / ISO 400 → switch to P. Tick 1: 3.1 s → clamped 0.1 s (−5 stops)
+  while ISO rises ~0.35 stop + correction → preview and the next shot ~4.6 stops dark; recovery takes
+  several ticks.
+- Fix: clamp `currentNs` into `[expMinNs, slowCapNs]` first and add `log2(currentNs / clamped)` to
+  `isoStops` (overflow then flows through the existing ISO-max branch). Unit test: 4 s seed keeps
+  brightness within one tick.
 
-### CR-14 [LOW] A settings save before the encoder inventory loads persists the degraded formats and transfer
-- **Where:** `ui/CameraViewModel.kt:1545-1603` (`currentExtras` reads `s.photoFormats` and `s.transfer`)
-  against `:1276-1290`. Before inventory, state holds HEIF→JPEG-promoted formats and SDR, and the real intent
-  is parked in `pending*UntilInventory`.
-- **Failure scenario:** background, or trigger any immediate `saveSettingsIfEnabled` door (lens, mode, TC),
-  inside the async `EncoderCaps.load()` window on a cold start. The HEIF or HLG/log choice is permanently
-  rewritten to JPEG or SDR.
-- **Fix:** in `currentExtras`, prefer `pendingPhotoFormatsUntilInventory`, `pendingTransferUntilInventory` and
-  `pendingCodecUntilInventory` when `!encoderInventoryLoaded`.
-- **Confidence:** Medium. **Status:** confirmed path, narrow window.
+### CR2-8 — ISO / shutter / angle dial doors leave HAL-AE PROGRAM without the live seed (Medium / Medium, likely)
 
-### CR-15 [LOW] The Loupe Overview tap-exclusion rect ignores the measured bottom clearance the drawn box uses
-- **Where:** `camera/CameraState.kt:801-812` (`finderContainsTopLeftPoint` → `finderRect(boxWidth,
-  boxHeight)` with the default `NaN` clearance) against `ui/CameraScreen.kt:1000-1004` and
-  `gl/GlPipeline.kt:862`, which pass `bottomClearance`.
-- **Failure scenario:** on large screens, where measured clearance exceeds the fraction floor, taps in the
-  band just below the drawn overview are swallowed and produce no focus. This contradicts the "one geometry
-  rule" docstring.
-- **Fix:** thread `bottomClearance` into `finderContainsTopLeftPoint`, or drop the redundant check (the
-  overlay already consumes its own pointer).
-- **Confidence:** High on the mismatch. **Status:** confirmed.
+- Where: `ui/CameraViewModel.kt:2007-2020` (`onIso`, `onShutterNs`), `:2050-2056`
+  (`onShutterAngle`).
+- Why: cycle 1 made `onExposureMode` and `onShutterMode(ANGLE)` seed from `liveIso/liveExposureNs`
+  when the outgoing exposure was HAL-AE (video P, flash-metered photo P). These three doors also
+  escalate PROGRAM → MANUAL but copy only the dialled value, keeping the other axis stale.
+- Failure scenario: Video P, HAL settled at ISO 1600 / 1/30 s; drag the ISO ruler to 1600 → MANUAL
+  with `exposureTimeNs` still at its stale stored value (e.g. 1/125 s) → ~2 stops darker. Angle dial:
+  stale ISO.
+- Fix: when `it.autoExposure`, start from `it.exposureModeHandoff(MANUAL, live.liveIso,
+  live.liveExposureNs)` and then apply the dialled field; reuse one helper for all four doors.
 
-### CR-16 [LOW] An EXIF build failure aborts the whole HEIF save
-- **Where:** `capture/StillCapturePipeline.kt:~251`. `buildHeifExifData` (a cache temp file, a 1×1 encode,
-  and an ExifInterface save) runs outside any `runCatching`, while the JPEG and passthrough lanes treat EXIF as
-  best-effort.
-- **Failure scenario:** a full cache or an I/O hiccup reports `HEIF_SAVE_FAILED` and loses the frame.
-- **Fix:** `runCatching { … }.getOrNull()`, then write the HEIF without EXIF.
-- **Confidence:** Medium. **Status:** likely.
+### CR2-9 — A format tap before the encoder inventory lands permanently converts HEIF to JPEG (Low-Medium / High, confirmed)
 
-### CR-17 [LOW] Missing `phoneModel` key restores `FIND_X9_ULTRA` instead of the seeded or detected phone
-- **Where:** `storage/SettingsStore.kt:61` and `:270` (`enumOr(…, ed.phoneModel)`, where the default is
-  `DEFAULT_PHONE_MODEL`); `ui/CameraViewModel.kt:2655-2676` seeds OTHER on unknown hardware, but the restore
-  overwrites it.
-- **Failure scenario:** a blob written before the key existed, or with the key corrupted, restores
-  "Phone: OPPO Find X9 Ultra" plus the Hasselblad kit on a non-OPPO device. That is the exact falsehood the
-  2026-08-02 OTHER seeding removed.
-- **Fix:** have the load fallback use the ViewModel's detected-or-OTHER phone. Pass it in, or leave the field
-  nullable and resolve it in `applyLoaded`.
-- **Confidence:** Medium. **Status:** confirmed path; realistic only for corrupted or very old blobs.
+- Where: `ui/CameraViewModel.kt:2427-2428`; `heifAvailable` defaults false (`camera/CameraState.kt:1649`).
+- Why: `normalizedForEncoder(false)` promotes HEIF→JPEG BEFORE the value is stored in
+  `pendingPhotoFormatsUntilInventory`. `onTransfer` (`:2408`) correctly stores the raw request; the
+  format door stores the degraded one. The chip also builds the new set from the already-degraded
+  state.
+- Failure scenario: cold launch with HEIF+DNG saved; toggle DNG off before `EncoderCaps.load`
+  finishes → pending = JPEG → `applyEncoderInventory` adopts it and the AGG-34 `currentExtras` path
+  persists it. HEIF is gone for good.
+- Fix: while `!encoderInventoryLoaded`, apply the toggled axis to the pending request (not to the
+  degraded state) and store it un-normalized, mirroring `onTransfer`.
 
-### CR-18 [LOW] Smaller correctness and doc drift
-- **`driveProgram` doc drift:** the doc says the shutter moves "at most one stop" per tick
-  (`camera/AutoExposure.kt:104-106`), but the clamp is ±0.35 stop (`:129`). Behaviour is fine; the comment is
-  wrong.
-- **Zebra/false-colour luma weights:** `gl/Shaders.kt:95` uses Rec.2020 luma weights, but zebra, false colour
-  and peaking see BT.709 SDR input (the meter is display-referred). Saturated reds and blues get mis-weighted
-  against the thresholds. Use Rec.709 weights (0.2126/0.7152/0.0722) for `meter`.
-- **Aspect-ratio recording gate:** `ui/CameraViewModel.kt:2401-2406` (`onAspectRatio`) has no
-  `rejectIfRecording`, yet the `ControlCycles.kt:225-227` comment states both actions reject mid-REC. It is
-  harmless while ASPECT is Photo-only, but the stated contract is false. Add the guard or fix the comment.
-- **`verify_host.py`:** `tools/verify_host.py:33-35` checks only `java` and `jarsigner`, but the error message
-  demands keytool and "JDK 21", and there is no version check. A JDK 17 on `PATH` passes preflight and fails
-  later inside Gradle.
-- **`adb_proxy.py`:** `tools/adb_proxy.py:20-34` shuts sockets down but never `close()`s them, so each
-  connection leaks two fds in a long-running proxy.
-- **Discard identity (needs-manual-validation):** `storage/PendingDiscardJournal.kt:73-79` includes
-  `DATE_TAKEN` in the frozen identity. If MediaProvider rewrites it from EXIF or MP4 on scan-at-close,
-  `discardPendingOutput` goes UNRESOLVED for a sibling that finishes after a family delete. Verify by reading a
-  row before and after a HEIF write.
+### CR2-10 — Live video validation still deletes a take on a parse throw that launch recovery would keep (Low-Medium / Medium, likely)
 
----
+- Where: `storage/MediaStoreWriter.kt:2590-2596` (`catch → onParseFailure; INVALID`), consumed by the
+  stop tail at `video/VideoRecorder.kt:1972-1978`; recovery uses `pendingProbeOutcome` (`:2255`)
+  which maps any throw to INDETERMINATE.
+- Why: AGG-16 was closed only for provider OPEN failure. A transient `IOException` from
+  `MediaExtractor.setDataSource` on a successfully opened FUSE fd (e.g. during a media scan) is
+  classified INVALID → FAILED → delete, while the same bytes after a kill would be retained and
+  probed by recovery. The live path is the stricter one in the destructive direction.
+- Fix: return INDETERMINATE for `IOException`/`SecurityException`; keep INVALID only for "parsed,
+  no `video/` track" (and optionally `IllegalArgumentException` = unrecognized container).
 
-## Final sweep: checked and found clean
-- **SettingsStore:** save/load key symmetry covers all 79 data keys (script-checked; preset metadata keys are read separately). Legacy `LOG`→`SLOG3_CINE` and `fnSlots` are
-  migrated, per-field defensive readers are in place, and the converter is reconciled on load.
-- **Teleconverter:** kit magnification derives from each kit's own host. `defaultConverterFor` depends on
-  declaration order, which a test pins. `reconcileConverter` and `normalizeMagnification` bounds match the
-  slider range.
-- **ManualControls:** `normalizedFor` flash/Program routing, `previewExposureTrade` (brightness-neutral ISO
-  trade, gain = want/wire, clamps), `withShutterMode` round-trip, `captureWatchdogTimeoutMs` saturation,
-  `kelvinTintToRggbGainValues` sign and normalisation, and `sensorFrameDurationNs`/`sensorRequestTiming`.
-- **CaptureCapabilities:** still-exposure ceiling clamp, `pickStillSize` aspect-first selection,
-  `pickVendorHiResSize`, `fixedFpsBounds`/`autoFpsBounds`, video-stab fallback, and the identity-keyed
-  `controlCapabilities` cache (thread-safe by identity check).
-- **CameraState:** `unifiedZoomOf`/`localZoomOf` round-trip, `resolveTeleZoomTransition`, `rearReturnZoom`,
-  `lensInventoryOf` mutual-nearest matching, `PhotoFormats.normalizedFor`, and `videoBitRate`.
-- **ui/controls:** `nextAvailable`, `quickFnEnabled` REC gates (apart from CR-18's aspect note), `isoStops`
-  and `shutterStops` ladders, `formatShutterSpeed` edge cases, and `FocusMapping`.
-- **Strings:** Korean parity is complete, format arguments match, and there are no hardcoded user-facing
-  English literals in Compose (the sweep found only exempt OSD abbreviations).
-- **Colour maths:** S-Log3 and LogC3 EI800 constants, the HLG OETF and its inverse, and every gamut matrix
-  were recomputed from published primaries and match to 1e-9.
+### CR2-11 — DNG toggle with TELE on does a needless full reopen (Low / High, confirmed)
 
-## Top 5 by severity
-1. **CR-1:** the DNG toggle reopens a different zoom scale without conversion (3× becomes 9×, or 3× becomes 1×).
-2. **CR-2:** restore and MR recall lose a DNG Photo framing (the lens is re-derived from a lens-local ratio).
-3. **CR-3:** ANGLE shutter in ISO/app-side P freezes the AE loop's shutter axis.
-4. **CR-5:** 10-bit HLG video displays and meters raw HLG codes as SDR (app-side video AE mis-exposes).
-5. **CR-4:** P→S/ISO/M handoff seeds from traded preview values, not P's still exposure.
+- Where: `camera/CameraEngine.kt:3997-3999, :4006` (`routeFlips` ignores `teleconverterMode`);
+  RAW reader plan at `camera/CameraController.kt:2735` is route-based, not `rawWanted`-based.
+- Why: with TELE on, Photo is already on standalone 3×; the VM remap already treats it as no change.
+  The engine still closes/reopens the same id + TC session → black dip per toggle.
+- Fix: `routeFlips = !teleconverterMode && standaloneRouteWanted(...) != standaloneRouteWanted(...)`.
+
+### CR2-12 — `onCameraOverride` publishes the override even when the engine refuses mid-REC (Low / High, confirmed)
+
+- Where: `ui/CameraViewModel.kt:3420-3429`; engine refusal with status only at
+  `camera/CameraEngine.kt:4060`.
+- Why/scenario: during REC tap "Reset" on the Camera ID row: VM sets `cameraOverrideId = null`,
+  invalidates zoom/tap state; the engine pin stays. The row disappears while the pin is live.
+- Fix: `if (rejectIfRecording()) return` at the top (or have the engine return Boolean).
+
+### CR2-13 — ZSL ring is not flushed when `setPinAutoFps` turns streaming off (Low / Medium, likely)
+
+- Where: `camera/CameraController.kt:1870-1895`; contrast `setZslServePossible` (`:1496-1497`).
+- Why/scenario: FRONT Photo→Video keeps the controller; `zslStreamingActive()` turns false but up to
+  three full-res YUV images (~3×19 MB) stay acquired for the whole video session, leaving the in-REC
+  snapshot reader with fewer free buffers.
+- Fix: capture `zslStreamingActive()` before updating `pinAutoFps` and `zslRingFlush()` on a
+  true→false edge.
+
+### CR2-14 — Metering regions silently dropped while `rawChars` is null (Low / Medium, confirmed)
+
+- Where: `camera/CameraController.kt:1308` (`rawChars?.get(...) ?: return`).
+- Why: the cycle-1 lazy re-read (AGG-19) runs only in `tryComplete`. After a failed open-time read
+  every tap-AF/AE request ships without regions while `setMeteringPoint` reports ACCEPTED.
+- Fix: `(rawChars ?: readRawCharacteristics()?.also { rawChars = it })` here too (the once-per-
+  controller log guard keeps it quota-safe).
+
+### CR2-15 — Pseudo-ZSL admission ignores manual focus distance and white balance (Medium / Medium, likely)
+
+- Where: `camera/ZslAdmission.kt:56-101`, used at `camera/CameraController.kt:1596-1631`.
+- Why: admission matches exposure/ISO/zoom/flash/age/gesture only; ring frames may be 400 ms old.
+  This is NOT the owner-decided dark refusal (exposure tolerance stays as is) — it is a missing axis.
+- Failure scenario: logical photo route, bright light, MF ruler drag (or Kelvin drag) then shutter
+  ~200 ms later → a frame at the previous lens position / WB gains is served as "the requested
+  still"; at long focal lengths a visibly missed focus.
+- Fix: in MANUAL focus compare the frame result's `LENS_FOCUS_DISTANCE` (tight epsilon) and refuse on
+  a WB mode/Kelvin change (or stamp frames with a controls generation and require equality).
+
+### CR2-16 — Launch recovery can spend the reserved 120-row warning budget (Low-Medium / Medium, likely)
+
+- Where: `storage/MediaStoreWriter.kt:1080` (per-row publish-exhaustion warning, not change-gated),
+  `:1414` (recovery now continues across pages, AGG-17), `storage/PendingDiscardJournal.kt` ~`:578`
+  (identity gate per URI).
+- Why/scenario: ~40 rows whose `IS_PENDING=0` update keeps throwing × up to 3 page attempts, or ~120
+  DISCARD URIs on an unmounted card → one cold start drains the reserved owner; every later camera
+  fault / save failure warning in that process is dropped (the AGG-26 class through a new door).
+- Fix: log once per recovery run with a count, or gate the exhaustion row per (URI, failure class).
+
+### CR2-17 — A persistently failing collection query still starves the DISCARD stage (Low / Medium, confirmed)
+
+- Where: `storage/MediaStoreWriter.kt:1414` (`continueAfterFailureExhaustion = nextCursor != cursor`),
+  `camera/LaunchMediaRecoveryCoordinator.kt:263-268`.
+- Why: if the Images or Video query itself throws, the cursor never advances, recovery returns
+  EXHAUSTED, and DISCARD never runs — on every launch while the query fails.
+- Fix: after retries on a non-advancing page, mark that collection complete for this run and proceed
+  to DISCARD (the next launch retries the query anyway).
+
+### CR2-18 — Rollback overwrites a resolution picked while the reopen was in flight (Low / Low, needs-manual-validation)
+
+- Where: `ui/CameraViewModel.kt:951` mirrors the unconditional engine restore
+  `camera/CameraEngine.kt:1007-1008`.
+- Why/scenario: Video, tap the 10× lens; while reconfiguring pick 1080p (only REC blocks
+  `onVideoResolution`); the reopen fails → engine and `requestedVideoResolution` return to 4K, the
+  operator's newer pick is lost. Same "older transaction wins" shape 3ec126e1 fixed for DNG.
+- Fix: a direct-write counter for the size request (as for `rawWanted`), or refuse
+  `onVideoResolution` while an optics transaction is pending.
+
+### CR2-19 — YUV still size chosen by area, without the aspect rule the JPEG path got (Low / Low, needs-manual-validation)
+
+- Where: `camera/CaptureCapabilities.kt:341-345` vs `pickStillSize` (`:653-670`).
+- Why: the TB331FC square-JPEG fix prefers the native aspect; the YUV lane (FRONT rungs 0-1, logical
+  rear) still takes the largest area, so a device advertising a larger off-aspect YUV size gets
+  off-aspect stills.
+- Fix: route YUV candidates through `pickStillSize(yuvCandidates, arrayW, arrayH)`.
+
+### CR2-20 — Loupe framing hint and draw clamp the zoom compensation differently (Low / High, cosmetic)
+
+- Where: `gl/GlPipeline.kt:1134-1135` (`coerceAtLeast(0.01f)`) vs `:1050` / `FlipRenderer.kt:369`
+  (`coerceAtLeast(1f)`).
+- Fix: apply `coerceAtLeast(1f)` to the hint ratio so both derive from the same value.
+
+## Final sweep (commonly missed)
+
+- `SettingsStore` bounds (AGG-33) skipped `photoExposureTimeNs` (only `coerceAtLeast(1L)`) and
+  `wbTint`; low impact.
+- `setRawWanted`'s FRONT direct-write branch writes VM controls into the engine; unreachable from UI
+  today (`rawSelectable` disables the chip on FRONT) — keep it that way or skip the controls write.
+- A rollback leaves `pendingPhotoFormatsUntilInventory` untouched, so a pre-inventory DNG rollback is
+  re-applied by `applyEncoderInventory` via `setRawWanted(true)` without a scale remap (pairs with
+  CR2-9).
+- `DriveMode.SINGLE` in `capturePhoto`: on `dispatched.isFailure` the caller releases
+  `snapshotLease` that `dispatchStillCapture` may already have released on an internal early path —
+  verify `Lease.release()` is idempotent (it appears to be; not reported).
+
+## Summary
+
+| ID | Sev / Conf | One line | Where |
+|---|---|---|---|
+| CR2-1 | High / High | Rejected DNG pre-allocation runs timelapse/AEB continuation twice | `CameraEngine.kt:4822, :5045-5059` |
+| CR2-2 | High / High | Post-invalidate preflight failure in reconfigure → camera Not-Ready forever | `CameraEngine.kt:4108, :4136-4160, :1035` |
+| CR2-3 | Med-High / High | FRONT-retained TELE zoom saved with wrong base (4.0 → 1.2) | `CameraViewModel.kt:2789-2800` |
+| CR2-4 | Medium / High | AGG-36 fix still persists delivered video size for never-picked users | `CameraViewModel.kt:1623` |
+| CR2-5 | Medium / Medium | Rollback keeps a "direct" DNG write that flips the restored route | `CameraEngine.kt:1011, :4006` |
+| CR2-6 | Medium / Low-Med | DNG bank recall: fast path re-bands lens-local zoom before setRawWanted | `CameraViewModel.kt:1492`, `CameraEngine.kt:2837` |
+| CR2-7 | Medium / High | App-side P seeded from long M exposure clamps −5 stops uncompensated | `AutoExposure.kt:125-152` |
+| CR2-8 | Medium / Medium | ISO/shutter/angle dials leave HAL-AE P with stale other axis | `CameraViewModel.kt:2007-2020, :2050` |
+| CR2-9 | Low-Med / High | Pre-inventory format tap persists HEIF→JPEG | `CameraViewModel.kt:2427-2428` |
+| CR2-10 | Low-Med / Medium | Live video parse throw → delete; recovery would retain | `MediaStoreWriter.kt:2590-2596` |
+| CR2-11 | Low / High | DNG toggle in TELE reopens the same camera | `CameraEngine.kt:3997-4006` |
+| CR2-12 | Low / High | onCameraOverride updates UI when engine refuses mid-REC | `CameraViewModel.kt:3420-3429` |
+| CR2-13 | Low / Medium | ZSL ring not flushed on setPinAutoFps streaming-off edge | `CameraController.kt:1870-1895` |
+| CR2-14 | Low / Medium | Metering regions dropped while rawChars null | `CameraController.kt:1308` |
+| CR2-15 | Medium / Medium | ZSL admission ignores MF distance and WB | `ZslAdmission.kt:56-101` |
+| CR2-16 | Low-Med / Medium | Recovery per-row warnings drain reserved log budget | `MediaStoreWriter.kt:1080, :1414` |
+| CR2-17 | Low / Medium | Failing collection query starves DISCARD stage | `MediaStoreWriter.kt:1414` |
+| CR2-18 | Low / Low | Rollback overwrites an in-flight resolution pick | `CameraViewModel.kt:951` |
+| CR2-19 | Low / Low | YUV still size by area, no aspect rule | `CaptureCapabilities.kt:341-345` |
+| CR2-20 | Low / High | Loupe hint clamp ≠ draw clamp | `GlPipeline.kt:1134` |
+
+Total: 20 findings (2 High, 7 Medium/Med-High, 11 Low/Low-Med).

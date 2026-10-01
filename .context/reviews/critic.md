@@ -1,191 +1,237 @@
-# Critic review — recent change surface (2026-09-30)
+# Critic review — RPL cycle 2 (2026-10-02)
 
-Scope: `git log -60` with a close read of the four most recent functional fixes, which are the
-riskiest. They are 6b2f07dd (union-volume identity), 2eb57e4e (silent insert exits),
-0ab5c1ba (pending-token audio admission) and f67023d5 (shutter unit switch). Also read: their
-tests, the sibling code paths, and the cycle-57 fixes (1ed6d1b6, b73dc0d0, 4979a09a, ed7a6ad3)
-where they overlap. Settled owner decisions in CLAUDE.md were not relitigated.
+Scope: the 51 commits `ba5b16e7..HEAD` (RPL cycle 1), checked against `CLAUDE.md`,
+`docs/ARCHITECTURE.md`, `docs/plans/2026-10-02-rpl-cycle1.md` and the archived cycle-1 aggregate,
+plus the code those commits touch (`CameraEngine` optics doors and rollback, `CameraViewModel` DNG,
+exposure and restore paths, `VideoRecorder` storage tail and admission gate, `MediaStoreWriter`
+probes, `CaptureOutputTracker`, `CameraController`, `SettingsStore`, release tooling).
 
-Verification run (read-only, no source edits):
-`./gradlew :app:testDebugUnitTest --tests CameraEngineRecordingPreNativeTest --tests PendingTokenNativeStartTest --tests ShutterModeConversionTest --tests MediaStorePendingDiscardIdentityReaderTest`
-exited 0.
+This was a read-only review. I did not build anything or touch a device. Owner decisions were
+treated as settled and are not reopened here: ZSL dark refusal, the FocusDetail threshold, the
+declined CameraUnit SDK, proprietary HDR formats, and "orientation moves no control".
 
-Findings: **8** (0 High severity, 4 Medium, 4 Low).
-
----
-
-## CR-1 — Pending-token owner widening admits the WHOLE Engine, not just the recorder's audio worker (Medium, confidence Medium, status: likely / needs-manual-validation)
-
-- `app/src/main/kotlin/me/hletrd/telecampro/video/VideoRecorder.kt:1252` (`runNativeWithResult`), `:1279-1281` (`foreignRecorderHoldsAdmissionLocked`), `:1294` (`runNativeWithPublication`)
-- Owner identity: `app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt:245` (`processNativeOwner = Any()`), which is passed to:
-  - the REC token: `CameraEngine.kt:5822` (`snapshotAdmission(processNativeOwner)`)
-  - the recorder workers: `VideoRecorder.kt:753` and `:919` (`processAdmissionToken?.owner`)
-  - **every GL generation and preview-output EGL acquisition**: `CameraEngine.kt:248/254` → `GlPipeline.kt:321, 369, 747`
-  - **every Camera2 open and session acquisition**: `CameraEngine.kt:2417, 4187` → `CameraController.kt:330, 350, 438, 836, 901`
-
-**Why.** The fix admits "a pending token's own owner". The audio worker, the GL pipeline and the
-Camera2 controller all share one owner object, so while REC setup is pending the atomic gate now
-also admits that Engine's own GL/EGL and Camera2 native acquisitions. The removed comment said
-explicitly that "General GL/Camera2 acquisition must wait for that setup to publish or retire".
-Only the advisory, non-atomic `nativeAcquisitionMayProceed()` (`CameraEngine.kt:6899-6907`) still
-refuses on `setupPending`. That leaves two inconsistencies:
-- The advisory check reports "blocked" while the atomic gate reports "admitted".
-- The check→native-entry race that the atomic gate existed to close (`convergeRetainedSurfaceAfterNativeRefusal` → `awaitRecorderSetupReplay`, `CameraEngine.kt:7005-7020`) can no longer fire for the same Engine during pending.
-
-**Failure scenario.** The advisory check passes. The same Engine then snapshots a REC token
-(shutter pressed), and a preview-surface bind or GL restart enters `runNativeAcquisition`. Before
-this change it was refused and replayed after publication. Now it runs concurrently with MediaCodec
-setup and the encoder's first swap. The frozen REC packet is rechecked at publication, so the likely
-result is a spurious REC failure or a re-bind, not corruption. It still runs a path the design says
-must not run. `CameraEngineRecordingPreNativeTest.kt:798` ("same Engine preview bind pending race
-rebinds active graph after publication") still passes. However, its injected same-owner token no
-longer produces the atomic refusal it was written for, so any second bind now has to come from
-elsewhere, and the test may pass vacuously. Needs a check that the refusal is actually observed.
-
-**Fix.** Scope the exception to the token, not the owner. Route the audio worker's
-`startRecording` through the token-scoped door that already exists (`admissionGate.runPendingNative(token, …)`,
-`VideoRecorder.kt:1619`), or give recorder workers a distinct owner derived from the token. Then
-restore `pendingToken != null` refusal for every other caller. Add a gate test in which a GL-style
-caller with the same Engine owner is still REJECTED while pending. Tighten the CLAUDE.md wording
-("admitted … by OWNER") to say whose workers are admitted.
-
-## CR-2 — New identity-read warnings are per-retry and drain the 120-row reserved log budget (Medium, confidence High, status: confirmed by code reading)
-
-- `app/src/main/kotlin/me/hletrd/telecampro/storage/PendingDiscardJournal.kt:636-644` (`unavailable()`/`ambiguous()`), `:627-629`, `:685-688` (`missing()`)
-- Retry driver: `MediaStoreWriter.kt:236-249` (owner of up to 32 claims), `:66-67` (250 ms initial delay, 30 s maximum, retried with no end)
-- Budget: `camera/DiagnosticTelemetry.kt:32-36` (`RESERVED_DIAGNOSTIC_ROW_BUDGET = 120` for the whole process lifetime; `DiagnosticLog.w/e`)
-
-**Why.** Each call to `MediaStorePendingDiscardIdentityReader.read()` that ends as
-Unavailable or Ambiguous now spends one reserved row. That reader runs:
-- on every retry of every parked identity-recovery claim, with exponential backoff capped at 30 s
-- on launch recovery of each journaled row
-- inside `mark()`
-
-The rows are neither change-gated nor summarized. CLAUDE.md requires "Any new per-frame or
-per-tick log must be change-gated or thresholded". A retry loop is a tick.
-
-**Failure scenario.** A row stays Unavailable. Causes include an unmounted SD volume, a provider
-timeout, or a future OEM provider quirk of the same class as the one just fixed. One stuck claim
-spends about 8 rows in the first minute, then 2 per minute, and uses up the budget in about an hour.
-With the 32-claim owner full (the tablet failure mode before the fix), it takes about a minute. After
-that, every `DiagnosticLog.w/e` in the process is silently dropped for the rest of its life. That
-includes camera-fault, recorder-failure and still-save errors (`StillCapturePipeline.kt:182-235`
-goes through the same facade). The diagnostic that "finally located" this defect would hide the
-next one.
-
-**Fix.** Log the first read failure per URI/claim and then only when the reason changes (or emit a
-constant-memory summary like `FrameGapAccumulator`). Also log once when a claim terminates. Add a
-test that N retries of one Unavailable URI spend at most 1–2 reserved rows.
-
-## CR-3 — Fn "Shutter" toggle can enter ANGLE in ISO-priority/PROGRAM and freeze the AE loop's shutter axis (Medium, confidence Medium, status: likely)
-
-- `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:1997` (`onShutterMode` → `withShutterMode`) compared with `:1998-2003` (`onShutterAngle`, which escalates PROGRAM/`autoShutterDriven` to MANUAL)
-- `ui/controls/FnQuickActions.kt:112-114` (toggle is gated only by `shutterDialEnabled = manualAeAvailable`, `ControlAvailability.kt:135`)
-- `camera/ManualControls.kt:441-446` (`effectiveExposureNs` ignores `exposureTimeNs` in ANGLE); `AutoExposure.kt:178-190` (ISO + angle has no carrier)
-
-**Why.** f67023d5 fixed the value that gets carried across the unit switch, but not the mode
-invariant. `onShutterMode(ANGLE)` does not escalate the exposure mode the way `onShutterAngle`
-does. `onExposureMode` also forces SPEED on entering ISO (`:1981`) because "an ANGLE derivation
-would override the value the AE loop writes into exposureTimeNs". The Fn toggle reaches exactly
-that state.
-
-**Failure scenario.** In ISO priority, the user taps the Fn Shutter tile. Controls become ISO +
-ANGLE. The loop keeps writing `exposureTimeNs`, which is ignored on the wire, so exposure stops
-tracking the scene while the OSD still says ISO priority. In photo app-side PROGRAM, the program
-line's time axis freezes at the carried angle in the same way.
-
-**Fix.** In `onShutterMode`, apply the same escalation as `onShutterAngle` (PROGRAM or
-`autoShutterDriven` → MANUAL), or refuse ANGLE while `autoShutterDriven`. Add a ViewModel-level
-test. The current tests exercise only the pure `withShutterMode`, not the handler wiring.
-
-## CR-4 — Sibling of f67023d5: entering ISO from a MANUAL+ANGLE state revives a stale `exposureTimeNs` (Low, confidence High, status: confirmed by code reading)
-
-- `app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt:1981-1987`
-
-**Why.** `shutterMode` is forced to SPEED, but `exp` is taken from `it.exposureTimeNs` unless the
-previous mode was PROGRAM. This is the same bug class the commit fixed: the mode flag flips and a
-stale value from the other unit comes back into use.
-
-**Failure scenario.** The user is in M with a 180° angle at 30p (1/60 s), and an old speed of
-1/16000 s is still stored. Switching to ISO priority seeds the loop at 1/16000 s. The preview goes
-about 8 stops dark, and the loop needs several seconds to converge. A still taken in that window is
-badly underexposed.
-
-**Fix.** Seed with `it.effectiveExposureNs()`, for example by applying
-`withShutterMode(ShutterMode.SPEED)` before the copy.
-
-## CR-5 — Silent-exit logging (2eb57e4e) is incomplete on the same save path (Low, confidence High, status: confirmed)
-
-CLAUDE.md now states that "every silent exit on the insert / registration / identity path logs a
-reserved diagnostic row" and that a save failing with no app log "is the signature of THIS class".
-Remaining silent exits on the same path:
-- `storage/PendingDiscardJournal.kt:44-49`: a family-identity mismatch on a Present read becomes `Uncertain` with no reason. Only the generic "creation-time identity uncertain" line appears.
-- `storage/MediaStoreWriter.kt:1882-1890` (`pendingRegistrationDisposition`): the exceptions from `register`, `delete` and `rowExists` are swallowed. Only the disposition is logged, not why registration failed.
-- `storage/MediaStoreWriter.kt:1052-1068` (publish `IS_PENDING=0`): update exceptions are swallowed on every attempt. A publish failure shows the "retained for recovery" copy with no cause in logcat.
-- `storage/PendingDiscardJournal.kt:69-78` (`mark`): returns null with no reason on a mismatch.
-
-**Fix.** Log once per URI with the throwable at each of these exits, keeping the CR-2 budget
-discipline. Or reword the CLAUDE.md claim to match what is actually covered.
-
-## CR-6 — A full identity-recovery owner closes all capture with only a generic failure message (Low, confidence Medium, status: confirmed by code reading; UX)
-
-- `camera/CameraEngine.kt:5739-5743` (REC refused with generic `RECORDING_FAILED`); `:5128-5133` (still admission false)
-- `storage/MediaStoreWriter.kt:1011-1012`
-
-**Why.** The root cause on the tablets is fixed. The design still turns any future
-identity-Unavailable class into "every photo and video fails for this process", and the user sees
-only a generic "Recording failed" or save-failed message. That is how the tablet defect was first
-misfiled as a camera bug.
-
-**Fix.** Add a distinct status for storage-recovery backlog closure. Keep it quiet and OSD-grade,
-in line with UX policy (for example "Storage busy — saves paused"). Consider a bounded
-recover-on-resume attempt.
-
-## CR-7 — Angle clamp silently changes exposure by large amounts in Photo mode (Low, confidence High, status: confirmed; UX)
-
-- `camera/ManualControls.kt:456-471`
-
-**Why.** The Speed/Angle switch is offered in Photo mode (`shutterDialEnabled` is not gated to
-Video). Photo shutters run up to 4 s, and `fps` is the video rate. Toggling SPEED 2 s → ANGLE clamps
-to 360° = 1/30 s: a silent change of about 6 stops. The commit message claims "a round trip returns
-the same exposure", but that holds only inside the 1°..360° band. The test (`ShutterModeConversionTest.kt:60`)
-uses an in-band value.
-
-**Fix.** Either offer ANGLE only in Video mode (the cine convention), or refuse or flag the switch
-when the carried exposure is out of band. Correct the round-trip claim.
-
-## CR-8 — Test for the pending-owner fix does not pin the non-audio boundary (Low, confidence High, status: confirmed)
-
-- `app/src/test/kotlin/me/hletrd/telecampro/video/PendingTokenNativeStartTest.kt`
-
-The test covers three cases: the same owner is admitted, and foreign or anonymous owners are
-refused. It does not model the production fact that the "same owner" is also the Engine's GL and
-Camera2 owner (see CR-1). As written, it cannot catch the widening. Add a case in which a
-second same-owner caller representing GL/Camera2 must be refused while pending, or restructure per
-the CR-1 fix.
+Verdict on cycle 1: most fixes are correct and narrowly scoped. Phase-1 PMA110 behavior is
+unchanged except at the intended DNG-door seams. Two fixes are incomplete in the destructive or
+divergent direction (CRIT2-1, CRIT2-2). One fix carries an older bug class into persistence
+(CRIT2-3). Several "device-verified" claims now rest on code that changed after the verification
+(CRIT2-9).
 
 ---
 
-## Checked and judged correct
+## CRIT2-1 — Optics rollback keeps a newer DNG direct write even when it changes the RESTORED route's answer
 
-- **6b2f07dd union → primary resolution.** This is the only `getVolumeName` /
-  `getExternalVolumeNames` site in `app/src/main` (grep), so no sibling missed it. The PMA110 path is
-  byte-identical, because concrete names pass through `resolveVolumeName` unchanged. The row
-  `VOLUME_NAME` confirmation fails closed as Ambiguous. The Robolectric test drives the real reader
-  against a fake provider, including absence keyed to the resolved volume.
-- **2eb57e4e insert logging.** It correctly separates an insert that threw from one that returned
-  null, and reservations are still cancelled on both image and video paths.
-- **ba5b16e7.** A genuine flake fix: it uses a thread-safe list and awaits the third event.
-- **Log facade.** Remaining raw `Log.*` call sites are either `DiagnosticLog as Log` aliases
-  (`VideoRecorder`, `StillCapturePipeline`, `VendorTagInspector`) or explicitly budgeted
-  (`MainActivity.kt:753-762` BtnDbg).
+- **Where:** `camera/CameraEngine.kt:1011`
+  (`if (rawWantedDirectWrites == before.rawWantedDirectWrites) rawWanted = before.rawWanted`).
+  Direct-write branch: `camera/CameraEngine.kt:4005-4013`. Introduced by 3ec126e1.
+- **Why:** the counter answers only one question: did a direct write happen? It does not check
+  whether that write is route-neutral under the packet being restored. A direct write is
+  route-neutral under the *desired* packet, for example a Video, EXTERNAL or not-started desired
+  state. Rollback then restores a *different* packet (BACK Photo), and in that packet
+  `standaloneRouteWanted(false, rawWanted, law)` does depend on DNG.
+- **Failure scenario:** baseline is BACK Photo, DNG off, logical camera. The operator starts a door
+  to the EXTERNAL route. The chip stays selectable there because `rawSelectable` only excludes FRONT
+  and video/hi-res. The operator toggles DNG on, which is a direct write (route != BACK), so the
+  counter becomes 1. The external open fails, and rollback restores BACK Photo on the logical
+  session (`restoreSession == true`) while keeping `rawWanted = true`. This is the exact AGG-4
+  state cycle 1 set out to remove:
+  - The engine wants RAW over a logical session that has no RAW reader.
+  - `lensBandFollowsZoom` and `standaloneRouteWanted` now read the restored unified ratio as
+    lens-local.
+  - The VM mirrors `dngRaw = true` (`ui/CameraViewModel.kt:973-977`).
+  - `setRawWanted`'s change gate (`if (rawWanted == enabled) return`) refuses to repair it. The
+    shutter writes no DNG, and the zoom band and readout misread the scale until the operator
+    toggles DNG off and on again.
+  - If `restoreSession` is false, the recovery reopen resolves a standalone lens but carries the
+    restored *unified* zoom: the original AGG-1 "3× becomes a 9× crop" bug.
+- **Reachability (honest):** the chip disables itself on FRONT and in non-Ready Video. That makes
+  the scenario 3ec126e1 was written for (Video/FRONT toggles during an in-flight door) mostly
+  UI-unreachable. The EXTERNAL door path is reachable, and so is any future non-UI caller. 3ec126e1
+  therefore traded a mostly-unreachable revert for a reachable route divergence in the same space.
+- **Fix:** in `commitOpticsRollbackLocked`, keep the newer value only when it is route-neutral for
+  the restored packet. Restore `before.rawWanted` (and publish it) whenever
+  `restored.route == BACK && standaloneRouteWanted(restored.mode == VIDEO, rawWanted, law) !=
+  standaloneRouteWanted(restored.mode == VIDEO, before.rawWanted, law)`. Add a unit test: baseline
+  Photo/BACK/DNG off, direct write DNG on under an EXTERNAL or Video desired packet, rollback. The
+  test should assert `rawWanted == false` and that the publication carries false.
+- **Confidence:** Medium (logic confirmed by reading; reachability is narrow). **Status:** likely.
 
-## Other perspectives (brief)
+## CRIT2-2 — The live finalized-video probe is still stricter than launch recovery in the destructive direction
 
-- **Play release.** The latest plan (`docs/plans/2026-08-27-rpf-cycle57.md`) is still marked
-  "blocked — release bundle requires authorized local signing credentials". It is not an app defect,
-  but it is the gating item for shipping.
-- **Maintainer.** Admission ownership is now expressed in three places that must agree:
-  advisory `generalNativeAcquisitionState`, the atomic gate, and token-scoped `runPendingNative`.
-  0ab5c1ba changed one of them. A single predicate shared by all three would have made CR-1 a compile
-  or test failure instead of a review finding.
+- **Where:** `storage/MediaStoreWriter.kt:2579-2601` (`classifyFinalizedVideoTrack`: an extractor
+  exception means `INVALID`) compared with `storage/MediaStoreWriter.kt:1657-1675` plus `:2255-2261`
+  (recovery: `probeFinalizedVideo` throws, and `pendingProbeOutcome` maps the throw to
+  `INDETERMINATE`, which keeps the row). Consumer: `video/VideoRecorder.kt:1966-1993`.
+- **Why:** 1edb68c6 states that the live path "must not be the stricter one in the DESTRUCTIVE
+  direction". It aligned only the *open* failure. A `MediaExtractor.setDataSource` or
+  `getTrackFormat` exception after a successful open is still `INVALID` on the live path, and the
+  stop tail then deletes the take. Launch recovery classifies the identical exception as
+  `INDETERMINATE` and keeps the row.
+- **Failure scenario:** the tolerated empty-audio stop (`muxer.stop()` throws over a sample-less AAC
+  track) reaches the live reopen. The extractor throws an `IOException`, either transiently (fd/IO
+  hiccup) or because of a container quirk that recovery would also refuse to judge. The live tail
+  deletes a take that a relaunch would have kept pending. The opposite drift also exists: a
+  genuinely unparseable container is deleted live but sits `REGISTERED` forever in recovery,
+  occupying the finite recovery capacity.
+- **Fix:** use one classifier for both paths. Either route recovery's VIDEO probe through
+  `classifyFinalizedVideoTrack`, or make the live parse failure `INDETERMINATE`, which matches the
+  documented rule that "an unknown answer never destroys user media". Pin the parse-failure case in
+  the storage-tail test. The current test only distinguishes open from no-track.
+- **Confidence:** High (code). **Status:** confirmed (by reading).
+
+## CRIT2-3 — The rollback restores the requested video size over a later operator pick, and cycle 1 now persists the revert
+
+- **Where:** `camera/CameraEngine.kt:974,1008` (the rollback restores `before.requestedVideoSize`),
+  `camera/CameraEngine.kt:3692-3706` (`setVideoResolution` writes `requestedVideoSize` with no
+  transaction and no write counter, and in Photo mode it does not reopen),
+  `ui/CameraViewModel.kt:951` (b476d1dd mirrors the rollback into `requestedVideoResolution`), and
+  `:1623` (that value is what gets saved).
+- **Why:** this is the bug class 3ec126e1 fixed for DNG. A non-transactional operator write that
+  lands while an older optics transaction is in flight is reverted when that transaction rolls back.
+  Before b476d1dd the revert was engine-internal. It is now mirrored and persisted, so the picked
+  size is lost across relaunch.
+- **Failure scenario:** in Photo, a lens or TC door is in flight. The operator opens the video size
+  picker and picks 1080p. The engine sets `requestedVideoSize`, applies the size without a reopen,
+  and the VM stores `requestedVideoResolution = 1080p`. The door fails, rollback restores 4K, the VM
+  mirror overwrites it, and the debounced save persists 4K.
+- **Fix:** apply the same "newer write survives" rule as DNG, using a write counter captured in the
+  snapshot. Size is not a route input, so it can be kept unconditionally once a newer write exists.
+- **Confidence:** Medium. **Status:** likely. Needs a host test of the rollback ordering.
+
+## CRIT2-4 — The VM DNG door does remap side effects even when the engine does not reopen
+
+- **Where:** `ui/CameraViewModel.kt:2436-2475`.
+- **Why:** `routeOptics` is non-null whenever the VM's standalone answer flips. That includes
+  EXTERNAL (`lensLocalRoute` is true, so the remap is a no-op) and TC. Either way, the VM runs
+  `cancelPendingControls()`, `invalidateOpticsDerivedState()` and `clearTapFocusUi()`.
+  - **EXTERNAL:** `setRawWanted` only records the field (`route != BACK`) and nothing reopens. The
+    engine's tap-focus owner (`tapFocusOwner`, bound to the accepted session) therefore keeps the
+    `AF_MODE_AUTO` hold on the wire, while the UI drops `tapPoint`/`tapFocusHeld`. The OSD says
+    nothing is held while the lens is locked.
+  - **TC (BACK):** the route answer "flips" even though `cachedIdForFocal(TELE3X)` returns the
+    same camera. The engine performs a full same-id reopen, which costs a black dip and drops tap
+    focus, purely because of the DNG chip. This reopen predates cycle 1, but cycle 1 is where the
+    door was formalized.
+- **Fix:** gate the VM side effects on the same condition the engine uses to reopen:
+  `route == BACK && started && flips`. In the engine, skip the reconfigure when the resolved camera
+  id is unchanged (TC or a user pin) and only publish `rawWanted`.
+- **Confidence:** Medium. **Status:** likely (EXTERNAL needs a manual check; TC reopen confirmed by
+  reading).
+
+## CRIT2-5 — The VM decides the DNG zoom remap with a state copy of the RAW law that defaults to PMA110's answer
+
+- **Where:** `ui/CameraViewModel.kt:2436-2446` uses `s.rawForcesStandalone`. The default is `true`
+  (`camera/CameraState.kt:1658`), and it is published only by `onCameraRouteInventory` (`:774`) and
+  `applyEncoderInventory` (`:2725`). The engine uses `activeDeviceProfile().rawRequiresStandalone`,
+  which is `false` on GENERIC (`camera/DeviceProfile.kt:79`).
+- **Failure scenario:** on a GENERIC device, a DNG toggle before route inventory publishes makes the
+  VM remap lens and zoom (unified 3.0 becomes `TELE3X` at local 1.0). The engine sees
+  `routeFlips == false`, so it records only the field and ignores the resolved packet. The VM now
+  shows a lens-local packet over the logical session, and the next throttled control apply pushes
+  zoom 1.0 to the logical camera, snapping it to 1×. `applyLoaded` already avoids this by reading
+  `engine.rawForcesStandalone` directly (`:1324`).
+- **Fix:** use `engine.rawForcesStandalone` here, or better, have `setRawWanted` compute the remap
+  itself from the engine's own `rawWanted` and law. Then the VM and engine cannot disagree about
+  whether the door moved.
+- **Confidence:** Medium (narrow window, non-PMA110 only). **Status:** likely.
+
+## CRIT2-6 — The rollback DNG mirror misses the pre-inventory pending formats
+
+- **Where:** `ui/CameraViewModel.kt:973-977` (rollback updates `photoFormats` only), `:1582-1584`
+  (`currentExtras` persists `pendingPhotoFormatsUntilInventory` while inventory is pending), and
+  `:2695,2715` (`applyEncoderInventory` replays the pending formats into `setRawWanted`).
+- **Failure scenario:** a DNG door rolls back during the cold-start window before the encoder
+  inventory lands. The UI chip reverts, but the pending copy still says DNG on. Any save persists
+  DNG on (this is the AGG-34 path), and when the inventory lands, `setRawWanted(true)` re-flips the
+  route that rollback just restored.
+- **Fix:** when inventory is pending, also set `pendingPhotoFormatsUntilInventory =
+  pending.copy(dngRaw = rollback.rawWanted)` in the rollback handler.
+- **Confidence:** Medium. **Status:** likely (needs a VM test).
+
+## CRIT2-7 — The characteristics retry (AGG-19) covers stills but not metering regions
+
+- **Where:** `camera/CameraController.kt:1308`. `applyMetering` still reads
+  `rawChars?.get(SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return`. The lazy retry exists only in
+  `tryComplete` (`:2266`).
+- **Failure scenario:** the transient open-time read failure that 1c5a0060 targets also makes every
+  tap-AF, AE region and spot/center metering request silently omit its regions. The tap reticle
+  appears, but the HAL never receives a region. This lasts until the first still re-reads the
+  characteristics.
+- **Fix:** route `applyMetering` through the same `rawChars ?: readRawCharacteristics()` helper,
+  ideally a single `chars()` accessor.
+- **Confidence:** High (code). **Status:** confirmed (by reading). Low severity.
+
+## CRIT2-8 — The recall exposure clamp ignores DNG as a route input
+
+- **Where:** `ui/CameraViewModel.kt:1367-1382`. `restoredRouteUsesCurrentCaps` compares mode, lens,
+  TC, override and facing, but not the DNG route answer.
+- **Failure scenario:** recalling a Photo/DNG-on bank on the same lens band from a Photo/DNG-off
+  (logical) state treats the outgoing logical camera's caps as authoritative. The saved photo
+  exposure is then clamped against camera 0's range before the standalone route's caps exist. The
+  code comment itself forbids this ("Outgoing caps are not authoritative across mode/lens
+  recalls"). The real impact depends on how far the two ranges differ on PMA110 (both share the
+  4 s ceiling), so this may be invisible there and wider on GENERIC devices.
+- **Fix:** add `currentStandalone` and `targetStandalone` to `restoredRouteUsesCurrentCaps`, and
+  return false when they differ.
+- **Confidence:** Medium. **Status:** needs-manual-validation (range delta on device).
+
+## CRIT2-9 — Device evidence now predates the code it vouches for, and the progress log does not flag it
+
+- **Where:** `video/VideoRecorder.kt:1242-1314` (4e57fff2) and `CLAUDE.md` "five of five takes carry
+  AAC". The plan log lines 167-176 do not mark lane B items PENDING DEVICE.
+- **Why:** the TB336ZU 5/5 AAC result was measured with 0ab5c1ba's semantics, in which the pending
+  token's *owner* was admitted. Under that rule, the same Engine's GL/EGL and Camera2 acquisitions
+  were also admitted during pending setup. 4e57fff2 restores the pre-0ab5c1ba refusal for those
+  and admits only the token's workers. The design reasoning is sound, but two things are
+  unverified:
+  - Whether anything on the MediaTek path relied on Engine-owned acquisitions during pending setup,
+    such as a preview rebind or an encoder-candidate bind outside `runPendingNative`.
+  - Whether the audio worker still always reaches `startRecording` through the token door.
+  
+  The progress log marks only Phase 1 and 2 camera/GL items PENDING DEVICE. Lane B items, including
+  the token door (P3.5) and the characteristics retry (P3.4), are recorded as done with no device
+  caveat. That breaks the plan's own rule ("every such item stays PENDING DEVICE").
+- **Fix:** mark P3.5 PENDING DEVICE (TB336ZU: 5 takes with a slow first swap, checking AAC presence
+  and `AudioRecord start` in logcat) and P3.4 PENDING DEVICE. Until then, re-qualify the CLAUDE.md
+  sentence as evidence for 0ab5c1ba, not for the current door.
+- **Confidence:** High (process). **Status:** confirmed.
+
+## CRIT2-10 — The upload-key gate is self-attested and does not refuse the known blocked certificate
+
+- **Where:** `tools/build_immutable_release.py:524-660`. Approval and fingerprint are both read from
+  the same `keystore.properties`. `tools/check_release_artifact.py:45-47` still pins the blocked
+  key's certificate as the EXPECTED signer.
+- **Why:** writing `uploadKeyRotationApproved=true` plus the current (blocked) key's SHA-256 into the
+  local properties passes the gate, and the artifact checker then *requires* the blocked
+  certificate. After a real rotation, the checker fails every correctly signed bundle. The plan
+  already lists the checker pin as a "SEC-02 tail"; the gate half is new.
+- **Fix:** add an explicit denylist entry for the blocked fingerprint in the gate. Make the checker
+  read the approved fingerprint from the same source the gate verified.
+- **Confidence:** High (code). **Status:** confirmed. Low severity (owner-controlled tooling).
+
+---
+
+## Claims in the cycle-1 log that I checked and accept
+
+- **AGG-1/2/3 (89bb7aab, 99e7af87):** scale conversion in both directions, the restore lens-local
+  branch, and the single `lensBandFollowsZoom` predicate are correct. The recall split (setResolvedOptics
+  then setRawWanted) is safe because the second transaction supersedes the first before its
+  `setupExecutor` task runs, and the recalled controls are already in the target scale.
+- **AGG-8/9/10 (1e79810e):** handoff seeding is correct. The ISO+ANGLE restore carries the applied
+  exposure. App-side P hands over its own still exposure.
+- **AGG-16/17/18 (1edb68c6, a1fee383, fc8a458c):** open-failure retention (see CRIT2-2 for the
+  parse gap). The cursor-advance condition cannot loop. The prior-family output denylist is bounded
+  and cleared for survivors.
+- **AGG-26 (98164b9e):** the LRU-bounded gate is correct. A reason that flaps between two values
+  still spends one row per flip, which is acceptable.
+- **AGG-45 (d255afbc), AGG-55 (87932ced), AGG-66 (81a0b55a), AGG-33 (8780b494), AGG-34/35
+  (7c76e7bc):** correct as written.
+
+## Final sweep notes (no separate finding)
+
+- fe7d0578 clears the audio-denial flag when `activeMemorySlot == slot` after the call. A refused
+  re-recall of an already-active slot would also pass this check. It is harmless unless a denial can
+  occur without clearing `activeMemorySlot`. Not verified, so not filed.
+- PMA110 byte-identity: the only intentional PMA110 behavior changes are the DNG door (remap plus
+  transaction), exposure handoffs, aspect refusal mid-REC, and the debug-only nativelog session
+  change. I found no unintended PMA110 path change, apart from CRIT2-4's TC reopen, which predates
+  cycle 1.
