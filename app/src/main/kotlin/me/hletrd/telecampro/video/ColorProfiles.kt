@@ -21,8 +21,10 @@ import me.hletrd.telecampro.camera.VideoCodec
  *   by the source-aware GL shader before the selected HLG/log curve is applied. The release EGL
  *   render target remains 8-bit; Main10 here describes the encoded output profile, not recovered
  *   highlight latitude, scene-referred log, or an end-to-end 10-bit processing claim.
- * - AVC: H.264 High profile, 8-bit SDR (BT.709). No HDR/log support; the engine forces SDR
- *        transfer when AVC is selected.
+ * - AVC: H.264 High profile, 8-bit SDR (BT.709). No HDR/log support. The ENGINE does not coerce
+ *        the transfer: the ViewModel normalizes it per codec (`ColorTransfer.normalizedForEncoder`)
+ *        at every door (restore, recall, live selection), and the recorder REFUSES a mismatched packet
+ *        (`encoderSelectionAdmitsTransfer`). A new codec-selection door must normalize too.
  */
 object ColorProfiles {
     const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC

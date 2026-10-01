@@ -11,13 +11,14 @@
 4. [Threading Model](#threading-model)
 5. [180° Flip + Rotation Pipeline](#180-flip--rotation-pipeline)
 6. [Camera Selection & HAL Workarounds](#camera-selection--hal-workarounds)
-7. [Zoom & the Hybrid Camera Routes (2026-07-14)](#zoom--the-hybrid-camera-routes-2026-07-14)
-8. [Stabilization and Orientation](#stabilization-and-orientation)
-9. [Color & Video Pipeline](#color--video-pipeline)
-10. [Capture & Storage](#capture--storage)
-11. [Pro Controls Surface](#pro-controls-surface)
-12. [Build & Toolchain](#build--toolchain)
-13. [See Also](#see-also)
+7. [DeviceProfile Quirk Flags](#deviceprofile-quirk-flags)
+8. [Zoom & the Hybrid Camera Routes (2026-07-14)](#zoom--the-hybrid-camera-routes-2026-07-14)
+9. [Stabilization and Orientation](#stabilization-and-orientation)
+10. [Color & Video Pipeline](#color--video-pipeline)
+11. [Capture & Storage](#capture--storage)
+12. [Pro Controls Surface](#pro-controls-surface)
+13. [Build & Toolchain](#build--toolchain)
+14. [See Also](#see-also)
 
 ---
 
@@ -607,9 +608,11 @@ meter all read the SIMULATED still exposure) → honestly darker. Files, the enc
 STILL request never see the gain, and once the residual saturates at ×16 the app-side AE loop
 freezes its UPWARD motion (`previewBrightnessSimulationSaturated`) because the metered frame can no
 longer represent the intent. S/ISO/M previews are therefore brightness-accurate up to that bound but
-deliberately NOT noise/motion-blur-WYSIWYG (the alternative is a sub-1 fps viewfinder). The 4 s ceiling was
-bisected on the standalone TELE camera only and is applied to EVERY route as a conservative
-assumption. The standalone TELE bisect is the only direct device evidence: the logical-camera route
+deliberately NOT noise/motion-blur-WYSIWYG (the alternative is a sub-1 fps viewfinder). The 4 s ceiling is
+a PMA110 PROFILE value (`DeviceProfile.stillExposureCeilingNs`): it was bisected on the standalone
+TELE camera only and, on PMA110, is applied to EVERY route as a conservative assumption. GENERIC
+devices (and EXTERNAL routes on any handset) carry a null ceiling and trust the advertised exposure
+range. The standalone TELE bisect is the only direct device evidence: the PMA110 logical-camera route
 remains conservatively clamped but unmeasured. No logical-camera bisect is scheduled in the
 exhaustive committed `docs/FIELD_CHECKS.md` ledger; do not describe this cross-route policy as direct
 device proof. The optional private `docs/BACKLOG.md`, when present, may carry maintainer history.
@@ -627,8 +630,12 @@ full-resolution still readers crashes this HAL. Photo and SDR video use the stan
 `hlgConfigured` records accepted session truth after fallback, and GL uses that truth to select the
 HLG or BT.1886 source decode; requested transfer alone is not enough to describe the incoming buffer.
 
-- A logical photo session uses preview + `YUV_420_888` processed stills. It never requests RAW because
-  RAW and the logical-camera still configuration destabilize this HAL.
+- On PMA110 a logical photo session uses preview + `YUV_420_888` processed stills
+  (`DeviceProfile.logicalStillRequiresYuv`) and never requests RAW
+  (`DeviceProfile.rawRequiresStandalone`), because the HAL JPEG blob and RAW on the logical-camera
+  still configuration destabilize this HAL. Under the GENERIC profile the YUV lane is an
+  optimisation the ladder may abandon for HAL JPEG, and RAW stays on the logical route when it is
+  advertised there.
 - A standalone rear-photo session starts with preview + HAL JPEG and adds RAW whenever DNG intent
   selected that route and the camera advertises it; DNG is not TELE-only. Fallback drops RAW before
   dropping the processed-still stream,
@@ -691,6 +698,24 @@ FOCUSED on device.
 
 ---
 
+## DeviceProfile Quirk Flags
+
+`camera/DeviceProfile.kt`: `DeviceProfile.resolve(Build.MODEL)` returns `PMA110` for that model and
+`GENERIC` for every other handset; `deviceProfileForRoute` gives EXTERNAL routes `GENERIC` even on
+PMA110. Each PMA110 value is a MEASURED HAL deviation; GENERIC is Android-as-specified. Statements elsewhere in this document and
+in CLAUDE.md about these behaviours describe the PMA110 profile unless they say otherwise.
+
+| Field | PMA110 | GENERIC | Seam that reads it |
+|---|---|---|---|
+| `frontStreamPreMirrored` | `true` | `false` | `FrontMirrorConvention` (preview/encoder/analysis draw mirror and tap display axis), pushed by `CameraEngine` as `gl.setFrontStreamPreMirrored`; metering un-flips on every front route regardless |
+| `vendorTcSessionType` | `true` | `false` | `CameraController` `sessionAttemptPlan` / `maxSessionAttempt` (the 0x80b4 TC session type rungs) |
+| `stillExposureCeilingNs` | `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) | `null` (trust the advertised range) | `CaptureCapabilities` caps seam, fed from `CameraEngine` caps publication |
+| `vendorOplusRequestHints` | `true` | `false` | `CameraController` `applyVideoStab` / `applyTeleconverterHints` and the zoom fast path (`com.oplus.*` request keys) |
+| `logicalStillRequiresYuv` | `true` | `false` | `resolveMustUseYuvStill` → `sessionAttemptPlan` (YUV still on the logical rear route; FRONT's YUV lane stays an optimisation) |
+| `rawRequiresStandalone` | `true` | `false` | `sessionAttemptPlan` `rawStandaloneOnly`, `standaloneRouteWanted` (engine `resolveNonTeleId` and the UI's `CameraCaps.rawForcesStandalone`) |
+
+---
+
 ## Zoom & the Hybrid Camera Routes (2026-07-14)
 
 Which camera is open depends on the resolved route inputs — including RAW intent — not merely mode
@@ -699,7 +724,7 @@ or the visible lens choice (`CameraEngine.resolveNonTeleId`):
 | State | Camera | Zoom semantics |
 |---|---|---|
 | Photo, TC off, processed only | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets; chip highlight follows `LensChoice.forZoom`. |
-| Photo, TC off, RAW/DNG wanted | **Standalone rear lens** matching the selected band | Lens-local zoom; wanting RAW is a route input because the logical path cannot safely carry it. DNG is not TELE-only. Lens changes reopen and route-scale conversion follows the standalone home. |
+| Photo, TC off, RAW/DNG wanted | **Standalone rear lens** matching the selected band (PMA110 profile; GENERIC stays on the logical camera) | Lens-local zoom; on PMA110 wanting RAW is a route input because the logical path cannot safely carry it (`DeviceProfile.rawRequiresStandalone`). DNG is not TELE-only. Lens changes reopen and route-scale conversion follows the standalone home. A GENERIC device keeps DNG on the seamless logical camera with unified zoom. |
 | Video, TC off | **Standalone lens** matching the band | Lens-local 1–10× digital; lens changes reopen. The logical camera's EIS (Standard AND Active) leaks its uncorrected warp margin (~6% of width) into the stream — preview AND recorded file — so video must not live there. |
 | TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG is offered only when that standalone session advertises RAW. |
 | FRONT (any mode) | **Front camera** (`pickFront`, expected id 1 — never hardcoded) | Lens-local zoom; one camera in both modes. Entering forces TC off and rear recalls exit FRONT. `FrontMirrorConvention` derives preview/file/metering roles from the route's `DeviceProfile`: PMA110 pre-mirror and GENERIC unmirrored paths each keep selfie preview plus true-scene files. |

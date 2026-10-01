@@ -171,10 +171,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
   0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
   ~5 s after the shot (`CAMERA_ERROR(3)`, no image ever arrives). Gated to standalone selections
-  only (`sessionAttemptPlan` `!logicalMultiCamera`).
+  only (`sessionAttemptPlan` `!logicalMultiCamera`) by the PMA110 profile's
+  `DeviceProfile.rawRequiresStandalone`; GENERIC keeps RAW on the logical route when advertised there
+  (table in `docs/ARCHITECTURE.md` § DeviceProfile Quirk Flags).
 - **DNG is therefore a ROUTE INPUT, not a save option — and that makes it four different bugs
-  (all device-fixed 2026-07-29).** Wanting RAW is what MOVES photo off the logical seamless camera
-  onto a standalone lens, so DNG is available on EVERY lens, not only TELE. Consequences that each
+  (all device-fixed 2026-07-29).** On the PMA110 profile (`rawRequiresStandalone`), wanting RAW is
+  what MOVES photo off the logical seamless camera onto a standalone lens, so DNG is available on
+  EVERY lens, not only TELE; a GENERIC device keeps DNG on the seamless logical camera. Consequences that each
   cost a real defect:
   1. **Restore must push it.** `engine.setRawWanted` used to be called only from the live toggle, so
      a persisted DNG selection was silently inert on every launch — sheet showed DNG on, session came
@@ -184,9 +187,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      which caches the id the LAST ACCEPTED session resolved to. After a Video→Photo trip that is the
      LOGICAL camera, so the reopen rebuilt the one route that cannot carry RAW — and because
      `setRawWanted` change-gates on `rawWanted`, the divergence was PERMANENT (no later toggle could
-     recover it). `setRawWanted` begins its own optics transaction with `overrideId = userCameraPin`.
-     It is the ONLY reopen whose route ANSWER changes — hi-res, aspect, fps and transfer all keep the
-     same camera — so it alone needs this.
+     recover it). `setRawWanted` begins its own optics transaction with `overrideId = userCameraPin`
+     — but ONLY when the route answer actually flips (`dngIntentChangesRearRoute`). TELE (whose
+     standalone session carries RAW by route), Video, FRONT/EXTERNAL, pre-start, and non-RAW-law
+     (GENERIC) devices take direct writes, and a later rollback preserves a newer direct write
+     instead of restoring its baseline unless keeping it would move the restored rear route
+     (`rollbackRawWanted`). Reinstating the reopen there brings back a black dip per toggle. It is the ONLY reopen whose route ANSWER changes — hi-res,
+     aspect, fps and transfer all keep the same camera — so it alone needs this.
   3. **The chip is gated by `rawSelectable`, neither session truth nor bare capability.** Session
      truth made it unreachable (disabled because RAW was absent, absent because it could not be
      enabled); bare capability left it live in a 10-bit VIDEO session that drops both still readers by
@@ -212,7 +219,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   file-only delete copy. A late sibling of an id that the tracker's own bounded trim evicts DURING
   its `record()` is TRACK_ONLY, never the review owner — an evicted family would publish a review
   URI that can't be pinned and would degrade delete to file-only.
-- **Stills on the LOGICAL camera are YUV, not HAL JPEG (2026-07-14).** gralloc rejects the ~42 MB
+- **Stills on the LOGICAL camera are YUV, not HAL JPEG (2026-07-14; PMA110 profile
+  `logicalStillRequiresYuv` — on GENERIC the YUV lane is an optimisation the ladder may drop for HAL
+  JPEG).** gralloc rejects the ~42 MB
   JPEG blob allocation on the plain logical session (`SnapAlloc: ValidateDescriptor invalid` — the
   image never arrives and the shot wedges `pending`), at BOTH 4096×3072 and the logical array's own
   4080×3064. `StillSnapshot` repacks YUV_420_888→NV21 on the camera thread and JPEG-encodes lazily
@@ -362,8 +371,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   never reached the file. (2) With the repeating
   stream safely short, a STILL request above 4 s STILL errors the device the same way — the
   advertised exposure upper (≥20 s) is a lie; 2/3.2/4 s complete with correct EXIF, 5/6.3 s are
-  reproducibly fatal. `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) clamps the advertised range at the
-  CAPS seam so the shutter ruler, request clamps, AEB brackets, and the still watchdog all stay
+  reproducibly fatal. On the PMA110 profile (`DeviceProfile.stillExposureCeilingNs`; GENERIC and
+  EXTERNAL routes trust the advertised range) `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) clamps the
+  advertised range at the CAPS seam so the shutter ruler, request clamps, AEB brackets, and the still watchdog all stay
   truthful; an over-ceiling persisted value captures at a clamped, EXIF-honest 4.0 s.
 - **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
@@ -573,7 +583,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
     **U+2192**, not the U+25B8 triangle it shipped with: **none of the three bundled Inter faces
     (`app/src/main/res/font/`) carries U+25B8**, so that glyph fell back to a system typeface inside
     one OSD tag. Every NON-HANGUL symbol in a user-facing literal must stay inside those faces —
-    the covered set in use is `§ © ° · ± × γ — … → ∞ ≈`. Hangul is the deliberate exception: no
+    the covered set in use is `§ © ° · ± × γ — … → ∞ ≈ ’ ↑ ↓`. Hangul is the deliberate exception: no
     bundled Inter face carries it, so every `values-ko` string renders in the system face by design
     (EN+KO is mandatory above); do not strip Korean or bundle a CJK font to "fix" that.
   - **Deliberate design facts** (each cost a wrong turn to find): curvature, not gradient — a ramp
@@ -700,7 +710,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the stream's own. So the PREVIEW draw adds NO mirror (the pre-mirrored stream IS the
   selfie-mirror view), the ENCODER/ANALYSIS draws apply the x-inversion (`gl/texCoordQuad` →
   `mirrorX`) to write the TRUE scene into files, stills are untouched HAL buffers (correct either
-  way), and tap-AF needs NO un-flip (displayed x == texture x; `mapTapFocusGeometry(mirrorX=false)`).
+  way), and the loupe/TEXTURE tap mapping needs NO un-flip (displayed x == texture x;
+  `mapTapFocusGeometry(mirrorX=false)`), while the AE/AF METERING point IS un-flipped on EVERY front
+  route (`meteringMirrorX` — the active array holds the true scene, so without it front tap-AF
+  metered the horizontally opposite point). Both come from `FrontMirrorConvention` +
+  `DeviceProfile.frontStreamPreMirrored`.
   Pushed as route state by `applyStabilization` via
   `GlPipeline.setFrontMirrorConvention(front, streamPreMirrored)` (roles in `FrontMirrorConvention.kt`).
   Since the 2026-08-01 multi-device decision this inversion IS the `DeviceProfile.frontStreamPreMirrored`
@@ -805,8 +819,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   SessionConfiguration sessionType on the standalone 3× camera configures a FULL session
   (fallback=0, stills+RAW alive, HEIC/DNG/4K-HEVC all verified, ois=1/vstab=2, clean 0x0 return
   on TELE off) — no AUTH_CODE needed. Lint WrongConstant is suppressed on configureSession with
-  justification. UNVERIFIED: whether the OIS profile actually differs at 300 mm (needs a physical
-  shake A/B with the converter mounted); result metadata reads identically either way.
+  justification. Operator handheld A/B with the converter mounted (2026-07-28, `docs/FIELD_CHECKS.md`
+  C3, closed) found no observable difference, so a distinct 300 mm OIS profile is not demonstrated;
+  result metadata reads identically either way.
 - **200MP remosaic is NOT exposed to third-party Camera2 (probed 2026-07-22).** `dumpsys
   media.camera` (116k lines, full characteristics for all 7 HAL devices): every camera's
   `pixelArraySize`/`activeArraySize` IS the binned ~12.5 MP readout (4080×3064 / 4096×3072), the

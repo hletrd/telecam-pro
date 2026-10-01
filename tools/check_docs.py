@@ -2176,6 +2176,18 @@ check(
     and "scheduleRouteInventoryRetry()" in camera_engine,
     "route authorities distinguish pre-open attempt from bounded convergence",
 )
+# DOC3-2 / AGG3-47: the PMA110 quirks were described as universal while five of six profile fields
+# were documented nowhere. Every DeviceProfile field must have a row in the architecture table.
+device_profile_source = read("app/src/main/kotlin/me/hletrd/telecampro/camera/DeviceProfile.kt")
+device_profile_fields = re.findall(r"^\s+val (\w+): ", device_profile_source, re.M)
+check(
+    len(device_profile_fields) >= 6
+    and "## DeviceProfile Quirk Flags" in architecture
+    and all(f"| `{field}` |" in architecture for field in device_profile_fields)
+    and "a PMA110 PROFILE value (`DeviceProfile.stillExposureCeilingNs`)" in architecture,
+    "architecture documents every DeviceProfile field with its PMA110 and GENERIC values",
+    f"fields={device_profile_fields}",
+)
 check(
     "Photo, TC off, RAW/DNG wanted" in architecture
     and "Standalone rear lens" in architecture
