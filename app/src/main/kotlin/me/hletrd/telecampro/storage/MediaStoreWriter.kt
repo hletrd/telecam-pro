@@ -1390,6 +1390,10 @@ object MediaStoreWriter {
                         if (journalState == PendingJournalState.UNAVAILABLE) {
                             // SQLite failure is not absence. Do not probe, adopt, delete, or publish
                             // while exact delete authority is unknowable; retry this same cursor.
+                            // The row is still kept, and whether a later launch adopts it is just as
+                            // unknowable — so it re-arms its expiry like any adoptable kept row
+                            // (AGG4-5): a journal outage must not let the provider expire a take.
+                            reassertPending(context, uri)
                             report = report
                                 .record(RecoveryEvent.QUERY_FAILED)
                                 .record(RecoveryEvent.RETAINED)
@@ -1422,9 +1426,13 @@ object MediaStoreWriter {
                         }
                         when (orphanDisposition(journalState, probeOutcome.probe, familyDeleted)) {
                             OrphanDisposition.ADOPT -> {
+                                val published = publish(context, uri, discardJournal)
+                                // A structurally adoptable take whose publish keeps failing stays
+                                // pending; without the re-arm it reached MediaProvider's expiry —
+                                // the very loss AGG3-4 closed for every other kept row (AGG4-5).
+                                if (!published) reassertPending(context, uri)
                                 report = report.record(
-                                    if (publish(context, uri, discardJournal)) RecoveryEvent.ADOPTED
-                                    else RecoveryEvent.PUBLISH_FAILED,
+                                    if (published) RecoveryEvent.ADOPTED else RecoveryEvent.PUBLISH_FAILED,
                                 )
                             }
                             OrphanDisposition.DELETE -> {

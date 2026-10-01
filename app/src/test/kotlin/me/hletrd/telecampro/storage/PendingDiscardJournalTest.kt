@@ -759,7 +759,8 @@ class PendingDiscardJournalTest {
             )
         }
 
-        assertEquals(0, provider.updateCalls)
+        // AGG4-5: each attempt re-arms the kept row's expiry (IS_PENDING = 1) and never publishes.
+        assertEquals(listOf(1, 1), provider.pendingValues)
         assertEquals(0, provider.openCalls)
         assertEquals(0, completion.report.adopted)
         assertEquals(2, completion.report.retained)
@@ -939,10 +940,12 @@ class PendingDiscardJournalTest {
     ) : ContentProvider() {
         var updateCalls = 0
         var openCalls = 0
+        val pendingValues = mutableListOf<Int>()
 
         fun resetCounters() {
             updateCalls = 0
             openCalls = 0
+            pendingValues.clear()
         }
 
         override fun onCreate(): Boolean = true
@@ -983,6 +986,7 @@ class PendingDiscardJournalTest {
             selectionArgs: Array<out String>?,
         ): Int {
             updateCalls += 1
+            values?.getAsInteger(MediaStore.MediaColumns.IS_PENDING)?.let(pendingValues::add)
             return 1
         }
 

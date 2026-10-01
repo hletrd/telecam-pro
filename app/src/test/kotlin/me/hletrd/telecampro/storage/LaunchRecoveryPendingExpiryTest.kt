@@ -86,6 +86,39 @@ class LaunchRecoveryPendingExpiryTest {
     }
 
     @Test
+    fun `an adoptable row whose publish keeps failing re-arms its expiry`() {
+        // AGG4-5: ADOPT whose IS_PENDING=0 update fails leaves the row pending; it used to skip the
+        // re-arm and reach MediaProvider's expiry.
+        val suffix = UUID.randomUUID().toString()
+        val authority = "recovery-expiry-publish-$suffix"
+        val imageBase = Uri.parse("content://$authority/images")
+        val provider = RecordingProvider(imageBase, mapOf(ADOPTED to Row("image/jpeg", 16L)))
+        provider.refusePublish += ADOPTED
+        provider.attachInfo(context, ProviderInfo().apply { this.authority = authority })
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = "recovery-expiry-publish-$suffix.db",
+            legacyPreferences = context.getSharedPreferences("recovery-expiry-publish-$suffix", Context.MODE_PRIVATE),
+        )
+        assertTrue(MediaStoreWriter.markWriteComplete(context, Uri.parse("$imageBase/$ADOPTED")).durable)
+
+        val batch = MediaStoreWriter.cleanupOrphanedPendingBatch(
+            context = context,
+            cursor = OrphanRecoveryCursor(preflightComplete = true)
+                .withAfterId(OrphanRecoveryCollection.VIDEO, OrphanRecoveryCursor.COLLECTION_COMPLETE),
+            discardJournal = journal,
+            targets = listOf(OrphanRecoveryTarget(imageBase, OrphanRecoveryCollection.IMAGES)),
+        )
+
+        assertEquals(0, batch.report.adopted)
+        assertEquals(1, batch.report.retained)
+        assertEquals(setOf(RecoveryFailureClass.PUBLISH), batch.report.failureClasses)
+        // Three refused publish attempts, then exactly one expiry re-arm.
+        assertEquals(listOf(0, 0, 0, 1), provider.pendingWrites[ADOPTED])
+    }
+
+    @Test
     fun `a failed re-assert is reported once per uri and cause and never throws`() {
         val suffix = UUID.randomUUID().toString()
         val authority = "recovery-expiry-fail-$suffix"
@@ -116,6 +149,7 @@ class LaunchRecoveryPendingExpiryTest {
     ) : ContentProvider() {
         val rows = initialRows.toSortedMap()
         val pendingWrites = mutableMapOf<Long, MutableList<Int>>()
+        val refusePublish = mutableSetOf<Long>()
 
         override fun onCreate(): Boolean = true
 
@@ -166,10 +200,9 @@ class LaunchRecoveryPendingExpiryTest {
         ): Int {
             val id = uri.lastPathSegment?.toLongOrNull() ?: return 0
             if (id !in rows) return 0
-            values?.getAsInteger(MediaStore.MediaColumns.IS_PENDING)?.let {
-                pendingWrites.getOrPut(id) { mutableListOf() } += it
-            }
-            return 1
+            val pending = values?.getAsInteger(MediaStore.MediaColumns.IS_PENDING)
+            pending?.let { pendingWrites.getOrPut(id) { mutableListOf() } += it }
+            return if (pending == 0 && id in refusePublish) 0 else 1
         }
 
         override fun getType(uri: Uri): String? = rows[uri.lastPathSegment?.toLongOrNull()]?.mime
