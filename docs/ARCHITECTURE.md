@@ -1162,8 +1162,9 @@ delete(context, uri)
 // Removes an incomplete/proven-invalid entry, then clears confirmed deletion from the journal
 discardRejectedOutput(context, uri)
 // Durable DISCARD + delete for a rejected output; unresolved double-failures are process-bounded
-cleanupOrphanedPending(context)
-// → RecoveryReport; family/discard batches are bounded, ADOPT valid, DELETE rejected/proven-invalid
+cleanupOrphanedPendingBatch(context, cursor)
+// → one bounded page + RecoveryReport; ADOPT valid, DELETE rejected/proven-invalid, re-assert
+// IS_PENDING=1 on a KEPT row so MediaProvider re-arms its pending expiry (PENDING DEVICE)
 latestOwnCapture(context) → RestoredCapture
 // Bounded Images + Video scan, followed by an exact-family query when identity is proven
 ```
@@ -1171,7 +1172,9 @@ latestOwnCapture(context) → RestoredCapture
 Canonical names also stamp `DATE_TAKEN` from admission time. Relaunch recovery probes JPEG, video,
 DNG, and HEIF terminal structure while the row is still private. HEIF proof walks bounded top-level
 ISO-BMFF headers and requires `ftyp`, one bounded `meta`, a matching primary item in supported
-`pitm`/`iloc`, and every explicit nonzero extent wholly inside an `mdat` payload. Unknown versions,
+`pitm`/`iloc`, and every explicit nonzero extent wholly inside an `mdat` payload; for the gridded
+layout `MPEG4Writer` writes for every app still, a construction-1 primary wholly inside `idat` plus
+every construction-0 item wholly inside `mdat`. Unknown versions,
 external references, unbounded boxes, and parser-limit cases remain pending; malformed/missing/
 out-of-range required metadata is invalid. A `COMPLETE` journal record always authorizes adoption; legacy or
 `REGISTERED` rows are adopted only when structurally valid, deleted only when definitively invalid,

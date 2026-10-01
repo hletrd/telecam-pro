@@ -1068,7 +1068,7 @@ object MediaStoreWriter {
      *
      * Retries a transient resolver failure a few times with a short backoff (CRIT4-5): a complete
      * artifact must not be stranded pending — and later deleted by the next launch's
-     * [cleanupOrphanedPending] sweep — over a one-off provider hiccup. Callers run on background
+     * [cleanupOrphanedPendingBatch] sweep — over a one-off provider hiccup. Callers run on background
      * executors (ioExecutor / recorderExecutor), so the bounded sleep never blocks the UI. A
      * persistent failure still returns false; launch recovery returns an observable report and
      * retries complete or structurally proven rows instead of silently deleting them.
@@ -1272,42 +1272,8 @@ object MediaStoreWriter {
      * Recovers our own prior-process pending entries under DCIM/[subDir]. A complete take is adopted
      * by publishing it; only a proven incomplete artifact is deleted. Indeterminate rows remain
      * pending for a later launch rather than risking silent data loss. Best-effort; never throws.
+     * One bounded page per call; `executeLaunchMediaRecovery` owns the cursor loop and retry budget.
      */
-    internal fun cleanupOrphanedPending(
-        context: Context,
-        subDirs: List<String> = CAPTURE_SUBDIRS,
-    ): RecoveryReport {
-        val discardJournal = PendingDiscardJournal(context)
-        var cursor = OrphanRecoveryCursor()
-        var cumulative = RecoveryReport()
-        var progressedFailures = emptySet<RecoveryFailureClass>()
-        var hasMore: Boolean
-        do {
-            val batch = cleanupOrphanedPendingBatch(
-                context,
-                cursor,
-                subDirs = subDirs,
-                discardJournal = discardJournal,
-            )
-            cumulative = cumulative.foldRecoveryAttempt(batch.report)
-            if (batch.report.retryRequired) {
-                if (!batch.continueAfterFailureExhaustion) return cumulative
-                progressedFailures += batch.report.failureClasses
-                // No retry budget here: a failure is exhausted at once, so continue from the
-                // exhausted cursor (a failed collection query is skipped for the rest of the run).
-                cursor = batch.exhaustedCursor
-            } else {
-                cursor = batch.nextCursor
-            }
-            hasMore = batch.hasMore
-        } while (hasMore)
-        return if (progressedFailures.isEmpty()) {
-            cumulative
-        } else {
-            cumulative.copy(failureClasses = progressedFailures)
-        }
-    }
-
     internal fun cleanupOrphanedPendingBatch(
         context: Context,
         cursor: OrphanRecoveryCursor = OrphanRecoveryCursor(),
