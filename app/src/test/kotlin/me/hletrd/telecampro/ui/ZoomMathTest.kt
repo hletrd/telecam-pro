@@ -408,6 +408,38 @@ class ZoomMathTest {
         assertEquals(4_000_000_000L, restored.photoExposureTimeNs)
     }
 
+    // AGG2-13: DNG is a route input — a Photo/DNG bank recalled over the logical camera targets a
+    // standalone lens whose caps are not the live ones, and standalone Photo is per-lens.
+    @Test fun `DNG standalone answer gates the recall caps like mode and lens`() {
+        fun uses(
+            currentStandalone: Boolean,
+            targetStandalone: Boolean,
+            currentLens: LensChoice = LensChoice.TELE3X,
+            targetLens: LensChoice = LensChoice.TELE3X,
+        ) = restoredRouteUsesCurrentCaps(
+            cameraReady = true,
+            currentMode = CaptureMode.PHOTO,
+            currentLens = currentLens,
+            currentTeleconverter = false,
+            currentOverrideId = null,
+            targetMode = CaptureMode.PHOTO,
+            targetLens = targetLens,
+            targetTeleconverter = false,
+            currentStandalone = currentStandalone,
+            targetStandalone = targetStandalone,
+        )
+        assertFalse(uses(currentStandalone = false, targetStandalone = true))
+        assertFalse(uses(currentStandalone = true, targetStandalone = false))
+        assertTrue(uses(currentStandalone = true, targetStandalone = true))
+        assertFalse(
+            uses(currentStandalone = true, targetStandalone = true, currentLens = LensChoice.MAIN),
+        )
+        // The logical seamless camera still lends its caps across lens bands.
+        assertTrue(
+            uses(currentStandalone = false, targetStandalone = false, currentLens = LensChoice.MAIN),
+        )
+    }
+
     @Test fun `debug camera override never lends caps to an automatic MR route`() {
         assertFalse(
             restoredRouteUsesCurrentCaps(

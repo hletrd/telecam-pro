@@ -249,6 +249,15 @@ internal fun restoredRouteUsesCurrentCaps(
     targetLens: LensChoice,
     targetTeleconverter: Boolean,
     currentFrontFacing: Boolean = false,
+    /**
+     * The standalone answer ([me.hletrd.telecampro.camera.standaloneRouteWanted]) of the accepted
+     * session and of the recalled target. DNG is a ROUTE input: a Photo/DNG bank recalled from a
+     * Photo/DNG-off state lands on a standalone lens, not on the logical camera whose caps are live,
+     * so the outgoing range is not authoritative there (AGG2-13). A standalone PHOTO route is also
+     * per-lens, exactly like Video, so the lens must match too.
+     */
+    currentStandalone: Boolean = false,
+    targetStandalone: Boolean = false,
 ): Boolean {
     // A recall always targets a REAR route (facing is never persisted, and setResolvedOptics exits
     // FRONT). While FRONT the current mode/lens fields can coincidentally equal the target's, but
@@ -256,11 +265,13 @@ internal fun restoredRouteUsesCurrentCaps(
     if (currentFrontFacing) return false
     if (
         !cameraReady || currentOverrideId != null || currentMode != targetMode ||
-        currentTeleconverter != targetTeleconverter
+        currentTeleconverter != targetTeleconverter || currentStandalone != targetStandalone
     ) {
         return false
     }
-    return targetTeleconverter || targetMode == CaptureMode.PHOTO || currentLens == targetLens
+    return targetTeleconverter ||
+        (targetMode == CaptureMode.PHOTO && !targetStandalone) ||
+        currentLens == targetLens
 }
 
 /** Preserves an inactive Photo shutter until authoritative Photo-route caps can validate it. */

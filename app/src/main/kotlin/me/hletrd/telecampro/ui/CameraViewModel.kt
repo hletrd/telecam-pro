@@ -1388,6 +1388,14 @@ class CameraViewModel private constructor(
             targetLens = restoredLens,
             targetTeleconverter = restoredTeleconverter,
             currentFrontFacing = currentState.facing == CameraFacing.FRONT,
+            // DNG is a route input too (AGG2-13). TC is already standalone, so it counts as such on
+            // both sides and a DNG difference under TC never discards the same camera's caps.
+            currentStandalone = currentState.teleconverterMode || standaloneRouteWanted(
+                currentState.mode == CaptureMode.VIDEO,
+                currentState.photoFormats.dngRaw,
+                engine.rawForcesStandalone,
+            ),
+            targetStandalone = restoredTeleconverter || restoredRouteStandalone,
         )
         val lastCapsExp = currentState.caps
             ?.takeIf { currentCapsDescribeTarget }
