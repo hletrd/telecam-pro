@@ -54,6 +54,8 @@ class SettingsStoreTest {
     private class FakePrefs(
         private val store: MutableMap<String, Any?> = mutableMapOf(),
     ) : SharedPreferences {
+        /** False simulates a disk-full/I/O commit: nothing is written and commit() reports it. */
+        var commitSucceeds: Boolean = true
         var commitCount: Int = 0
             private set
         var applyCount: Int = 0
@@ -84,6 +86,7 @@ class SettingsStoreTest {
             store = store,
             onCommit = { commitCount++ },
             onApply = { applyCount++ },
+            commitSucceeds = { commitSucceeds },
         )
         override fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
         override fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
@@ -93,6 +96,7 @@ class SettingsStoreTest {
         private val store: MutableMap<String, Any?>,
         private val onCommit: () -> Unit,
         private val onApply: () -> Unit,
+        private val commitSucceeds: () -> Boolean = { true },
     ) : SharedPreferences.Editor {
         private val staged = mutableMapOf<String, Any?>()
         private val removed = mutableSetOf<String>()
@@ -106,7 +110,12 @@ class SettingsStoreTest {
         override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor = apply { staged[key!!] = value }
         override fun remove(key: String?): SharedPreferences.Editor = apply { removed += key!! }
         override fun clear(): SharedPreferences.Editor = apply { clearAll = true }
-        override fun commit(): Boolean { onCommit(); flush(); return true }
+        override fun commit(): Boolean {
+            onCommit()
+            if (!commitSucceeds()) return false
+            flush()
+            return true
+        }
         override fun apply() { onApply(); flush() }
 
         private fun flush() {
@@ -188,6 +197,28 @@ class SettingsStoreTest {
         assertEquals(1L, controls?.exposureTimeNs)
         assertEquals(1, controls?.fps)
         assertEquals(10000, controls?.wbKelvin)
+    }
+
+    @Test
+    fun aFailedCommitIsReportedOnceAndReturnedToTheCaller() {
+        // AGG-32: commit()'s Boolean was dropped, so a full disk lost every save silently.
+        val prefs = FakePrefs()
+        val reports = mutableListOf<String>()
+        val store = SettingsStore(prefs, onCommitFailure = { reports += it })
+
+        assertTrue(store.save(nonDefaultControls, ExtraSettings()))
+        assertTrue(reports.isEmpty())
+
+        prefs.commitSucceeds = false
+        assertFalse(store.save(nonDefaultControls, ExtraSettings()))
+        assertFalse(store.savePreset(MemorySlot.MR1, nonDefaultControls, ExtraSettings(), "n", "s"))
+        assertFalse(store.saveGeneratedPreset(MemorySlot.MR2, nonDefaultControls, ExtraSettings()))
+        store.rememberEnabled = false
+        // Quota-safe: one report per store however many saves fail.
+        assertEquals(listOf("settings"), reports)
+
+        prefs.commitSucceeds = true
+        assertTrue(store.savePreset(MemorySlot.MR1, nonDefaultControls, ExtraSettings(), "n", "s"))
     }
 
     @Test

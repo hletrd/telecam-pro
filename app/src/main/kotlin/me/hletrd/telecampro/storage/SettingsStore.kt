@@ -2,7 +2,8 @@ package me.hletrd.telecampro.storage
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.core.content.edit
+import java.util.concurrent.atomic.AtomicBoolean
+import me.hletrd.telecampro.camera.DiagnosticLog
 import me.hletrd.telecampro.camera.AfSpotSize
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AudioScene
@@ -117,6 +118,17 @@ data class ExtraSettings(
 class SettingsStore(
     private val prefs: SharedPreferences,
     /**
+     * Reached at most ONCE per store (AGG-32): a `commit()` that returns false (ENOSPC, I/O error)
+     * used to be dropped, so the synchronous-commit design that exists to survive a swipe-kill lost
+     * the change silently — an MR bank shown as saved this session was gone on relaunch. Once,
+     * because saves fire on every user action and a full disk would otherwise spend the reserved
+     * row budget one save at a time. Declared BEFORE [missingPhoneModel] so existing trailing-lambda
+     * call sites (`SettingsStore(prefs) { seed }`) keep binding the phone seed.
+     */
+    private val onCommitFailure: (String) -> Unit = { what ->
+        DiagnosticLog.w("SettingsStore", "settings commit returned false ($what); change not durable")
+    },
+    /**
      * The phone a blob WITHOUT a phone key restores to: the caller's detected-or-OTHER seed. The
      * field default is the Find X9 Ultra, so a blob or MR bank written before the key existed (or
      * with it corrupted) replaced the OTHER seed on foreign hardware and showed a Lenovo owner the
@@ -125,35 +137,49 @@ class SettingsStore(
      */
     private val missingPhoneModel: () -> PhoneModel = { DEFAULT_PHONE_MODEL },
 ) {
+    private val commitFailureReported = AtomicBoolean(false)
+
+    /** One synchronous commit whose result is observed; true when durable. */
+    private inline fun commitEdit(what: String, block: SharedPreferences.Editor.() -> Unit): Boolean {
+        val durable = prefs.edit().apply(block).commit()
+        if (!durable && commitFailureReported.compareAndSet(false, true)) {
+            runCatching { onCommitFailure(what) }
+        }
+        return durable
+    }
 
     // The SharedPreferences seam exists so the persistence contract is unit-testable with an
     // in-memory fake (the real app uses the Context-backed secondary constructor below).
     constructor(
         context: Context,
         missingPhoneModel: () -> PhoneModel = { DEFAULT_PHONE_MODEL },
-    ) : this(context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE), missingPhoneModel)
+    ) : this(
+        prefs = context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE),
+        missingPhoneModel = missingPhoneModel,
+    )
 
     // Default ON: photographers expect their setup to survive an app restart out of the box.
     var rememberEnabled: Boolean
         get() = prefs.getBoolean(K_REMEMBER, true)
         // This gate is itself part of the durable settings contract. In particular, disabling it
         // does not trigger save(), so apply() here could resurrect the old true value after a kill.
-        set(value) { prefs.edit(commit = true) { putBoolean(K_REMEMBER, value) } }
+        set(value) { commitEdit("remember") { putBoolean(K_REMEMBER, value) } }
 
-    fun save(c: ManualControls, e: ExtraSettings) {
+    /** True when the commit was durable (AGG-32); callers that cannot act on it may ignore it. */
+    fun save(c: ManualControls, e: ExtraSettings): Boolean {
         // commit (synchronous), NOT apply: saves fire on user actions (e.g. a mode switch) and the
         // very next thing the user may do is swipe-kill the app — apply()'s async disk write dies
         // with the process and the change is silently lost ("last mode not remembered" bug). The
         // file is tiny; the write is a few ms.
-        prefs.edit(commit = true) { putLoaded("", c, e); putBoolean(K_HAS, true) }
+        return commitEdit("settings") { putLoaded("", c, e); putBoolean(K_HAS, true) }
     }
 
     /** Returns the persisted state, or null if nothing was ever saved. Never throws. */
     fun load(): Loaded? = loadWithPrefix("", K_HAS)
 
-    fun savePreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings, name: String, summary: String) {
+    fun savePreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings, name: String, summary: String): Boolean {
         val prefix = presetPrefix(slot)
-        prefs.edit(commit = true) {
+        return commitEdit("preset ${slot.name}") {
             putLoaded(prefix, c, e)
             putString("${prefix}name", name)
             putString("${prefix}summary", summary)
@@ -167,10 +193,10 @@ class SettingsStore(
      * Existing explicit presentation is left untouched so a future/user-authored name survives an
      * ordinary overwrite of the bank.
      */
-    fun saveGeneratedPreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings) {
+    fun saveGeneratedPreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings): Boolean {
         val prefix = presetPrefix(slot)
         val hasCustomPresentation = prefs.getBoolean("${prefix}customPresentation", false)
-        prefs.edit(commit = true) {
+        return commitEdit("preset ${slot.name}") {
             putLoaded(prefix, c, e)
             if (!hasCustomPresentation) {
                 // Pre-marker releases stored generated English prose in these keys. It was never
