@@ -67,6 +67,15 @@ class RearReturnZoomTest {
     }
 
     @Test
+    fun logicalReturnReBandsTheLensWhileAStandaloneReturnKeepsIt() {
+        // AGG4-23: unified 1.8 on the logical route is the MAIN band, whatever the stale lens was.
+        assertEquals(LensChoice.MAIN, rearReturnLens(false, 1.8f, LensChoice.ULTRAWIDE))
+        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(false, 0.6f, LensChoice.TELE3X))
+        // A standalone route reopens the lens itself; its zoom is lens-local and says nothing.
+        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(true, 3f, LensChoice.ULTRAWIDE))
+    }
+
+    @Test
     fun fallbackPresetIsConvertedForTheTargetRoute() {
         // A recall or settings restore exits front atomically, without going through the flip.
         assertEquals(3f, rearReturnZoom(false, Float.NaN, 3f, pma110Optical), 0f)

@@ -623,6 +623,22 @@ fun rearReturnZoom(
     return (unified / opticalBaseFor(lensPreset, opticalPresets).zoomPreset).coerceAtLeast(1f)
 }
 
+/**
+ * The lens band the rear route resumes with when leaving FRONT (AGG4-23).
+ *
+ * On the LOGICAL photo route the band is derived from the unified zoom, so it must be re-banded
+ * from the zoom [rearReturnZoom] just returned: entering FRONT from an ultra-wide standalone
+ * Video at local 3.0 and leaving into Photo returns unified 1.8, and keeping `ULTRAWIDE` left the
+ * rail highlighting UW and the app-side Program handheld rule reading the UW focal until a later
+ * caps reconcile happened to re-band it. On a standalone route the band IS the lens the route
+ * reopens, so it is kept. Engine and ViewModel both call this, so the two sides cannot disagree.
+ */
+fun rearReturnLens(
+    targetStandaloneRoute: Boolean,
+    returnedZoom: Float,
+    currentLens: LensChoice,
+): LensChoice = if (targetStandaloneRoute) currentLens else LensChoice.forZoom(returnedZoom)
+
 fun teleFinderResolved(
     enabled: Boolean,
     teleconverter: Boolean,

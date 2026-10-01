@@ -4084,6 +4084,9 @@ class CameraEngine internal constructor(
             }
             setActiveCameraRoute(targetRoute)
             if (targetRoute != CameraRoute.BACK) teleconverterMode = false
+            val targetStandaloneRoute = standaloneRouteWanted(
+                videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+            )
             controls = controls.copy(
                 zoomRatio = if (enabled) {
                     1f
@@ -4091,15 +4094,18 @@ class CameraEngine internal constructor(
                     1f
                 } else {
                     rearReturnZoom(
-                        targetStandaloneRoute = standaloneRouteWanted(
-                            videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
-                        ),
+                        targetStandaloneRoute = targetStandaloneRoute,
                         preFrontUnifiedZoom = preFrontRearUnifiedZoom,
                         lensPreset = lensChoice.zoomPreset,
                         opticalPresets = acceptedOpticalPresets,
                     )
                 },
             )
+            // Leaving onto the logical route re-bands from the zoom just returned (AGG4-23); TC is
+            // always off here (forced off on entry, refused while FRONT).
+            if (targetRoute == CameraRoute.BACK) {
+                lensChoice = rearReturnLens(targetStandaloneRoute, controls.zoomRatio, lensChoice)
+            }
             // A front trip drops the pre-TELE return framing: the snapshot is an absolute ratio in
             // a rear scale, and TELE does not survive the trip (leaving FRONT lands on the plain
             // rear home, TC off), so a stale restore target must not linger.

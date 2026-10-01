@@ -118,6 +118,7 @@ import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
 import me.hletrd.telecampro.camera.processDiagnosticLogBudget
+import me.hletrd.telecampro.camera.rearReturnLens
 import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.focus.FocusMapping
 import me.hletrd.telecampro.focus.MACRO_HOLD_MS
@@ -2986,25 +2987,32 @@ class CameraViewModel private constructor(
                     activeMemorySlot = null,
                 )
             } else {
+                val targetStandaloneRoute = standaloneRouteFor(it)
+                // Mirrors the engine transaction: restore the framing held before the front trip,
+                // NOT the lens preset — once TELE has been used the preset is 3x for the rest of
+                // the session, so the preset fallback zoomed the operator in on every flip back
+                // (user-reported).
+                val returnedZoom = if (it.cameraRoutes.back) {
+                    rearReturnZoom(
+                        targetStandaloneRoute = targetStandaloneRoute,
+                        preFrontUnifiedZoom = preFrontRearUnifiedZoom,
+                        lensPreset = it.lens.zoomPreset,
+                        opticalPresets = it.lensInventory.optical,
+                    )
+                } else {
+                    1f
+                }
                 it.copy(
                     facing = CameraFacing.BACK,
                     activeCameraRoute = if (it.cameraRoutes.back) CameraRoute.BACK else CameraRoute.EXTERNAL,
-                    controls = it.controls.copy(
-                        // Mirrors the engine transaction: restore the framing held before the front
-                        // trip, NOT the lens preset — once TELE has been used the preset is 3x for
-                        // the rest of the session, so the preset fallback zoomed the operator in on
-                        // every flip back (user-reported).
-                        zoomRatio = if (it.cameraRoutes.back) {
-                            rearReturnZoom(
-                                targetStandaloneRoute = standaloneRouteFor(it),
-                                preFrontUnifiedZoom = preFrontRearUnifiedZoom,
-                                lensPreset = it.lens.zoomPreset,
-                                opticalPresets = it.lensInventory.optical,
-                            )
-                        } else {
-                            1f
-                        },
-                    ),
+                    // Same re-band as the engine (AGG4-23): a logical return reads its band from
+                    // the returned unified zoom, never the stale pre-front lens.
+                    lens = if (it.cameraRoutes.back) {
+                        rearReturnLens(targetStandaloneRoute, returnedZoom, it.lens)
+                    } else {
+                        it.lens
+                    },
+                    controls = it.controls.copy(zoomRatio = returnedZoom),
                     activeMemorySlot = null,
                 )
             }

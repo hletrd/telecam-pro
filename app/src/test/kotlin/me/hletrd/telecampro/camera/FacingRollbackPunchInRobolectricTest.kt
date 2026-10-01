@@ -70,6 +70,42 @@ class FacingRollbackPunchInRobolectricTest {
     }
 
     /**
+     * AGG4-23, engine half: entered FRONT from an ultra-wide standalone Video at local 3.0 (unified
+     * 1.8), switched to Photo while FRONT, then left onto the LOGICAL route. The band must follow the
+     * returned unified zoom (MAIN), not stay on the stale ULTRAWIDE.
+     */
+    @Test
+    fun `leaving front onto the logical route re-bands the lens from the returned zoom`() {
+        val camera = acceptedRoute(CameraRoute.BACK)
+        setBoolean(camera, "videoMode", true)
+        setField(camera, "lensChoice", LensChoice.ULTRAWIDE)
+        setField(camera, "acceptedOpticalPresets", LensChoice.entries.toSet())
+        setField(camera, "controls", ManualControls(zoomRatio = 3f))
+
+        camera.setFrontCamera(true)
+        setBoolean(camera, "videoMode", false)
+        camera.setFrontCamera(false)
+
+        assertEquals(1.8f, (field(camera, "controls") as ManualControls).zoomRatio, 1e-4f)
+        assertEquals(LensChoice.MAIN, field(camera, "lensChoice"))
+    }
+
+    @Test
+    fun `leaving front onto a standalone route keeps the lens it reopens`() {
+        val camera = acceptedRoute(CameraRoute.BACK)
+        setBoolean(camera, "videoMode", true)
+        setField(camera, "lensChoice", LensChoice.ULTRAWIDE)
+        setField(camera, "acceptedOpticalPresets", LensChoice.entries.toSet())
+        setField(camera, "controls", ManualControls(zoomRatio = 3f))
+
+        camera.setFrontCamera(true)
+        camera.setFrontCamera(false)
+
+        assertEquals(3f, (field(camera, "controls") as ManualControls).zoomRatio, 1e-4f)
+        assertEquals(LensChoice.ULTRAWIDE, field(camera, "lensChoice"))
+    }
+
+    /**
      * AGG3-7, wiring half: a bare-reopen token ([currentOpticsReconfiguration], snapshotted after
      * the door's own write) whose preflight fails must publish Not-Ready, never re-accept the
      * outgoing controller under its own preflight invalidation. Since AGG4-2 such a token is routed
