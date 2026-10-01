@@ -273,6 +273,93 @@ class CaptureOutputTrackerTest {
     }
 
     @Test
+    fun deletedPriorFamily_doesNotBlockRestoringADifferentFamily() {
+        // The synthetic prior-process id used to be tombstoned by a whole-family delete, and every
+        // later seed was then refused: after deleting the restored capture, an empty-gallery tap
+        // found the next-older family but the thumbnail stayed empty for the rest of the process.
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        assertTrue(
+            tracker.seedPriorCapture(
+                listOf(
+                    PriorCaptureOutput("newest.heic", CaptureOutputKind.DISPLAYABLE),
+                    PriorCaptureOutput("newest.dng", CaptureOutputKind.RAW),
+                ),
+                preferredOutput = "newest.heic",
+            ),
+        )
+        assertEquals(setOf("newest.heic", "newest.dng"), tracker.takeForDelete("newest.heic"))
+
+        assertTrue(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("older.heic", CaptureOutputKind.DISPLAYABLE)),
+                preferredOutput = "older.heic",
+            ),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("older.heic"))
+    }
+
+    @Test
+    fun deletedPriorFamily_refusesReseedingItsJustDeletedOutputs() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.seedPriorCapture(
+            listOf(
+                PriorCaptureOutput("gone.heic", CaptureOutputKind.DISPLAYABLE),
+                PriorCaptureOutput("gone.dng", CaptureOutputKind.RAW),
+            ),
+            preferredOutput = "gone.heic",
+        )
+        tracker.takeForDelete("gone.heic")
+
+        // A stale restore that raced the asynchronous delete must not resurrect the family, by
+        // either of its outputs.
+        assertFalse(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("gone.heic", CaptureOutputKind.DISPLAYABLE)),
+                preferredOutput = "gone.heic",
+            ),
+        )
+        assertFalse(
+            tracker.seedPriorCapture(
+                listOf(
+                    PriorCaptureOutput("other.heic", CaptureOutputKind.DISPLAYABLE),
+                    PriorCaptureOutput("gone.dng", CaptureOutputKind.RAW),
+                ),
+                preferredOutput = "other.heic",
+            ),
+        )
+        assertFalse(tracker.isCurrentReviewOutput("gone.heic"))
+    }
+
+    @Test
+    fun partiallyDeletedPriorFamily_survivorMayBeRestoredAgain() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.seedPriorCapture(
+            listOf(
+                PriorCaptureOutput("kept.heic", CaptureOutputKind.DISPLAYABLE),
+                PriorCaptureOutput("gone.dng", CaptureOutputKind.RAW),
+            ),
+            preferredOutput = "kept.heic",
+        )
+        val plan = tracker.beginDelete("kept.heic")
+        tracker.restoreDeleteSurvivors(plan, survivors = setOf("kept.heic"))
+
+        // The resolver confirmed kept.heic survived, so a later restore may surface it again; the
+        // output that really was deleted stays refused.
+        assertTrue(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("kept.heic", CaptureOutputKind.DISPLAYABLE)),
+                preferredOutput = "kept.heic",
+            ),
+        )
+        assertFalse(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("gone.dng", CaptureOutputKind.RAW)),
+                preferredOutput = "gone.dng",
+            ),
+        )
+    }
+
+    @Test
     fun firstLiveCapture_alwaysSupersedesPriorProcessSeed() {
         val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
         tracker.seedPriorCapture(

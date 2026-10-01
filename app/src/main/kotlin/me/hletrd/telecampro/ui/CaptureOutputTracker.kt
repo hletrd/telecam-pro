@@ -73,6 +73,13 @@ internal class CaptureOutputTracker<T>(
     private val familyByCapture = HashMap<Int, CaptureFamilyKey>()
     private val liveStillFamilies = HashSet<Int>()
     private val tombstones = LinkedHashSet<Int>()
+    /**
+     * Outputs of whole-family-deleted PRIOR-PROCESS seeds, bounded oldest-first. The synthetic
+     * prior id is a reusable slot with no live callbacks, so it is never tombstoned (that refused
+     * every later restore for the rest of the process); this set refuses only re-seeding a family
+     * that still names one of the just-deleted outputs (a stale restore racing the async delete).
+     */
+    private val deletedPriorOutputs = LinkedHashSet<T>()
     private var reviewCaptureId: Int? = null
     private var reviewOutput: T? = null
     private var reviewKind: CaptureOutputKind? = null
@@ -90,9 +97,9 @@ internal class CaptureOutputTracker<T>(
         deleteScope: MediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
         familyKey: CaptureFamilyKey? = null,
     ): Boolean {
-        if (PRIOR_PROCESS_CAPTURE_ID in tombstones) return false
         val distinct = LinkedHashMap<T, PriorCaptureOutput<T>>()
         outputs.forEach { seeded -> distinct.putIfAbsent(seeded.output, seeded) }
+        if (distinct.keys.any(deletedPriorOutputs::contains)) return false
         val preferredKind = distinct[preferredOutput]?.kind ?: return false
 
         val accepted = distinct.filterKeys { output ->
@@ -259,9 +266,20 @@ internal class CaptureOutputTracker<T>(
         // A file-only restored row has no live callback family to suppress, and its unselected
         // siblings deliberately remain on disk. Do not tombstone the synthetic prior-process id:
         // doing so would prevent a later gallery refresh from surfacing one of those remaining files.
-        // Live and fully-owned family deletes retain the existing late-sibling tombstone contract.
+        // The same holds for a fully-owned PRIOR family: the synthetic id is a reusable slot that no
+        // late callback can ever target, and tombstoning it refused every later restore for the
+        // rest of the process. Only the exact deleted outputs are remembered against re-seeding.
+        // Live family deletes retain the existing late-sibling tombstone contract.
         val planCaptureId = captureId.takeIf { deleteScope == MediaDeleteScope.CAPTURE_FAMILY }
-        if (planCaptureId != null) {
+        if (planCaptureId == PRIOR_PROCESS_CAPTURE_ID) {
+            (tracked + output).forEach { deleted ->
+                deletedPriorOutputs.remove(deleted)
+                deletedPriorOutputs.add(deleted)
+            }
+            while (deletedPriorOutputs.size > MAX_DELETED_PRIOR_OUTPUTS) {
+                deletedPriorOutputs.remove(deletedPriorOutputs.first())
+            }
+        } else if (planCaptureId != null) {
             tombstones.remove(captureId)
             tombstones.add(captureId)
             while (tombstones.size > maxTombstones.coerceAtLeast(1)) {
@@ -333,6 +351,8 @@ internal class CaptureOutputTracker<T>(
         // in review ownership instead of making the gallery appear empty while files remain.
         val retained = plan.preservedOutputs.toCollection(linkedSetOf())
         plan.outputs.filterTo(retained) { it in survivors }
+        // A resolver-confirmed survivor was not deleted, so a later restore may surface it again.
+        deletedPriorOutputs.removeAll(retained)
         if (retained.isEmpty()) return null
         val captureId = plan.captureId
         if (captureId == null) {
@@ -443,6 +463,9 @@ internal class CaptureOutputTracker<T>(
     private companion object {
         /** All live engine capture ids are non-negative, so even capture 0 supersedes this seed. */
         const val PRIOR_PROCESS_CAPTURE_ID = Int.MIN_VALUE
+
+        /** A prior family is at most HEIF+JPEG+DNG; this remembers many deletes in O(1) memory. */
+        const val MAX_DELETED_PRIOR_OUTPUTS = 64
     }
 }
 
