@@ -207,6 +207,18 @@ class CameraViewModelRobolectricTest {
         assertEquals(LensChoice.TELE3X, v.state.value.lens)
     }
 
+    // AGG2-12: the engine refuses a mid-REC camera override; the UI must not publish it anyway.
+    @Test fun `camera override refuses while recording and keeps the live pin`() {
+        val (v, _) = createViewModel()
+        setState(v) { it.copy(cameraOverrideId = "4") }
+        setRecordingPresentation(v, recording = true, starting = false)
+
+        v.onCameraOverride(null)
+
+        assertEquals("4", v.state.value.cameraOverrideId)
+        assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+    }
+
     // ---- Construction / init contract ----
 
     @Test fun `AndroidViewModelFactory retains the public Application constructor`() {

@@ -3462,6 +3462,10 @@ class CameraViewModel private constructor(
     }
 
     override fun onCameraOverride(id: String?) {
+        // The engine refuses a mid-REC override (it would reconfigure under the encoder) with only
+        // a status; publishing the id anyway hid the Camera ID row while the old pin stayed live,
+        // and dropped zoom/tap state for a reopen that never happened (AGG2-12).
+        if (rejectIfRecording()) return
         cancelCountdown()
         drainPendingControls()
         // A camera-id override reopens onto a different route (different zoom scale): abandon any
