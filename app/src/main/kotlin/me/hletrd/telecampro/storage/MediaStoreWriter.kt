@@ -1128,17 +1128,27 @@ object MediaStoreWriter {
     }
 
     /**
-     * AGG3-4 (CRIT3-2, DES3-2): re-writes `IS_PENDING = 1` on a row launch recovery KEEPS pending.
+     * AGG3-4 (CRIT3-2, DES3-2): re-writes `IS_PENDING = 1` on a row launch recovery KEEPS pending
+     * and a later launch can still adopt ([keptRowReassertsPending], AGG4-4/AGG4-5).
      * MediaProvider stamps a pending row's `DATE_EXPIRES` (about a week out) at insert and its idle
      * maintenance deletes expired pending rows; nothing else in this app ever touches a retained
      * row again, so "retained for the next start" silently became "expired" for any row recovery
      * could not judge. A pending-flag update from the owner is what MediaProvider re-arms that
-     * expiry from, so each launch that keeps a row buys it another full window.
+     * expiry from, so each launch that keeps such a row buys it another full window.
      *
-     * PENDING DEVICE: the exact `DATE_EXPIRES` effect of this update is MediaProvider behaviour
-     * and is not host-provable; the host test pins only that a kept row receives the update and a
-     * published or deleted row does not. One attempt, best-effort (the row stays pending and is
-     * re-judged next launch either way); a failure spends one change-gated reserved warning row.
+     * The update also RENAMES the backing file (AGG4-58 / DOC4-5, AOSP mainline MediaProvider):
+     * `IS_PENDING` and `DATE_EXPIRES` are placement columns, so `FileUtils.computeDateExpires`
+     * recomputes the expiry and `FileUtils.computeDataFromValues` rebuilds the on-disk name as
+     * `.pending-<newDateExpires>-<DISPLAY_NAME>`, changing `_data` (and the modified generation) on
+     * every re-arm. `DISPLAY_NAME`, `RELATIVE_PATH`, the row id, and `GENERATION_ADDED` survive,
+     * which is why [PendingDiscardIdentity] freezes exactly those: the destructive identity must
+     * NEVER include `_data` or `GENERATION_MODIFIED`, or the first re-arm would silently strip every
+     * kept row of its exact discard authority.
+     *
+     * PENDING DEVICE: the AOSP source settles the expiry and rename for mainline MediaProvider, but
+     * OEM provider forks are unverified; the host test pins only which kept rows receive the update.
+     * One attempt, best-effort (the row stays pending and is re-judged next launch either way); a
+     * failure spends one change-gated reserved warning row.
      */
     internal fun reassertPending(
         context: Context,
@@ -2432,16 +2442,18 @@ internal fun markCompletionWithRetry(
     return CompletionMarkResult(durable = false, attempts = maxAttempts)
 }
 
+/** Pause before the single confirming re-parse of a muxer-stop-threw take ([classifyFinalizedVideoTrack]). */
+private const val FINALIZED_VIDEO_PARSE_RETRY_MS = 250L
+
 /**
  * Retry backoff that keeps the interrupt contract (AGG-30 / D9). `runCatching { Thread.sleep() }`
  * caught the InterruptedException and thereby CLEARED the thread's interrupt status, so a
  * `shutdownNow()` on these executors could not stop a retry loop mid-backoff: it went on doing
  * provider/SQLite work after its owner was retired. This restores the flag and returns false so the
  * caller can stop retrying, matching `CameraTeardownTerminal` / `RecordingTeardownCoordinator`.
+ * (Launch recovery also uses it, but defensively only: nothing currently interrupts that daemon —
+ * see `executeLaunchMediaRecovery`, AGG4-57.)
  */
-/** Pause before the single confirming re-parse of a muxer-stop-threw take ([classifyFinalizedVideoTrack]). */
-private const val FINALIZED_VIDEO_PARSE_RETRY_MS = 250L
-
 internal fun sleepPreservingInterrupt(ms: Long): Boolean = try {
     Thread.sleep(ms)
     true

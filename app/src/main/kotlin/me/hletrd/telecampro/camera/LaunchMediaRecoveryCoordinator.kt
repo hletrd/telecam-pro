@@ -245,8 +245,12 @@ internal const val PROCESS_LAUNCH_MEDIA_RECOVERY_DEADLINE_MS = 120_000L
  * Pages clean work to completion while bounding retries of a failing durable provider operation.
  *
  * [backoff] answers false when its wait was INTERRUPTED (`sleepPreservingInterrupt`, AGG3-30): the
- * owner was retired mid-backoff, so the run stops at once with the rows it could not settle left for
- * the next launch, instead of resuming provider/SQLite work on a thread its owner asked to stop.
+ * run then stops at once with the rows it could not settle left for the next launch. This is
+ * DEFENSIVE ONLY (AGG4-57): no current caller interrupts the recovery thread. It is
+ * [ProcessLaunchMediaRecovery]'s single daemon executor, which is never `shutdownNow()`; the deadline
+ * only exhausts the run and cancels its future without interrupting, and Engine retirement can
+ * neither stop nor interrupt an in-flight scan. A retired owner therefore does NOT stop recovery —
+ * it runs to completion or to the process deadline. Design an explicit stop if that is ever wanted.
  */
 internal fun executeLaunchMediaRecovery(
     maxFailureAttempts: Int,

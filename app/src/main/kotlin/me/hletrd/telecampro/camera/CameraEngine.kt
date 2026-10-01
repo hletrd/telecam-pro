@@ -7598,9 +7598,10 @@ class CameraEngine internal constructor(
             recover = {
                 executeLaunchMediaRecovery(
                     maxFailureAttempts = MAX_MEDIA_RECOVERY_ATTEMPTS,
-                    // Not `runCatching { Thread.sleep() }`: that swallowed the interrupt and
-                    // cleared its flag, so a retired owner's recovery kept doing provider work
-                    // (AGG3-30, same contract as the MediaStoreWriter retry loops).
+                    // Not `runCatching { Thread.sleep() }`, which swallowed an interrupt and cleared
+                    // its flag (AGG3-30, same contract as the MediaStoreWriter retry loops). Defensive
+                    // only: no current caller interrupts this daemon, so a retired owner does NOT
+                    // stop recovery (AGG4-57; see executeLaunchMediaRecovery).
                     backoff = { attempt ->
                         sleepPreservingInterrupt(MEDIA_RECOVERY_RETRY_BACKOFF_MS * attempt)
                     },
