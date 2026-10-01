@@ -271,7 +271,16 @@ internal class StillCapturePipeline(
         // cache or an I/O hiccup used to abort the whole save (HEIF_SAVE_FAILED, frame lost). The
         // pixels are already rotated, so a HEIF without EXIF is still an upright, valid photo.
         val exifData = bestEffortHeifExif(
-            build = { buildHeifExifData(exifShot, rotated.width, rotated.height) },
+            build = {
+                composeStillExifApp1(
+                    context.cacheDir,
+                    exifShot,
+                    rotated.width,
+                    rotated.height,
+                    RotationMath.ORIENTATION_NORMAL,
+                    sourceExifApp1 = null,
+                )
+            },
             onFailure = { failure ->
                 Log.w("StillCapturePipeline", "HEIF EXIF payload failed; saving without EXIF", failure)
             },
@@ -309,8 +318,54 @@ internal class StillCapturePipeline(
     /**
      * JPEG re-encode of the SAME rotated bitmap the HEIF got, so the two frame identically.
      * Same publish-or-delete policy as [writeProcessedHeif].
+     *
+     * `Bitmap.compress` strips all metadata, so the EXIF goes back in — but into the ENCODED
+     * BUFFER, before the pending row sees a byte (AGG4-6 / AGG3-24): see [exifSplicePlan] for why the
+     * old in-place `saveAttributes()` rewrite of the row could leave a corrupt file recovery adopts.
+     * The APP1 comes from the very composer the HEIF lane uses, so both formats carry one tag set.
      */
     private fun writeProcessedJpeg(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
+        val encodedStream = java.io.ByteArrayOutputStream()
+        if (!rotated.compress(Bitmap.CompressFormat.JPEG, spec.jpegQuality, encodedStream)) {
+            Log.e("StillCapturePipeline", "JPEG encode returned false (${rotated.width}x${rotated.height})")
+            emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
+            return
+        }
+        val encoded = encodedStream.toByteArray()
+        val exifPayload = bestEffortHeifExif(
+            build = {
+                composeStillExifApp1(
+                    context.cacheDir,
+                    exifShot,
+                    rotated.width,
+                    rotated.height,
+                    RotationMath.ORIENTATION_NORMAL,
+                    sourceExifApp1 = null,
+                )
+            },
+            onFailure = { failure ->
+                Log.w("StillCapturePipeline", "JPEG EXIF payload failed; saving without EXIF", failure)
+            },
+        )
+        writeSingleJpeg(encoded, exifPayload, spec)
+    }
+
+    /**
+     * The one write both JPEG lanes share: allocate, write [encoded] with [exifPayload] spliced in
+     * (or verbatim when there is none / it cannot be spliced — logged, never a lost image), mark
+     * COMPLETE, publish. The row is opened for writing exactly once and never reopened "rw".
+     */
+    private fun writeSingleJpeg(encoded: ByteArray, exifPayload: ByteArray?, spec: ShotSpec) {
+        val plan = exifPayload?.let { payload ->
+            exifSplicePlan(encoded)?.takeIf { isSpliceableExifPayload(payload) }
+                ?: run {
+                    Log.w(
+                        "StillCapturePipeline",
+                        "JPEG EXIF splice refused (${encoded.size} B image, ${payload.size} B APP1); saving without EXIF",
+                    )
+                    null
+                }
+        }
         val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("jpg"),
@@ -318,10 +373,14 @@ internal class StillCapturePipeline(
         )
         if (allocation == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
         val u = allocation.uri
-        val quality = spec.jpegQuality
         val wrote = runCatching {
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
-                rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                if (plan != null) {
+                    writeJpegWithExifApp1(out, encoded, plan, exifPayload)
+                } else {
+                    out.write(encoded)
+                }
+                true
             } ?: false
         }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
         if (!wrote) {
@@ -329,9 +388,6 @@ internal class StillCapturePipeline(
             emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
             return
         }
-        // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
-        // (best-effort — a failed EXIF write must never lose the image itself).
-        runCatching { writeJpegExif(u, exifShot) }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         completeStillPublication(
             kind = "JPEG",
@@ -344,41 +400,34 @@ internal class StillCapturePipeline(
 
     /**
      * Hi-res JPEG lane: the HAL bytes go to disk verbatim (no decode, no crop, no pixel rotate),
-     * then EXIF is stamped with TAG_ORIENTATION carrying the full capture rotation — the DNG
-     * approach, because at ~200MP the ordinary pixel-upright pass is a guaranteed OOM. Same
-     * publish-or-delete policy as [writeProcessedJpeg].
+     * with an EXIF APP1 carrying TAG_ORIENTATION for the full capture rotation — the DNG approach,
+     * because at ~200MP the ordinary pixel-upright pass is a guaranteed OOM. The HAL's own EXIF is
+     * the composer's seed, so its tags survive under ours exactly as the old in-place
+     * `saveAttributes()` merge kept them — but the merged APP1 is spliced in before the single write
+     * (AGG4-6). Same publish-or-delete policy as [writeProcessedJpeg].
      */
     private fun writePassthroughJpeg(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
-        val allocation = MediaStoreWriter.createPendingImageAllocation(
-            context,
-            spec.familyKey.displayName("jpg"),
-            "image/jpeg",
-        )
-        if (allocation == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
-        val u = allocation.uri
-        val wrote = runCatching {
-            MediaStoreWriter.openOutputStream(context, u)?.use { out ->
-                out.write(bytes)
-                true
-            } ?: false
-        }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
-        if (!wrote) {
-            discardRejectedOutput(allocation)
-            emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
-            return
-        }
-        // Best-effort like the processed lane — a failed EXIF write must never lose the image. The
+        // Best-effort like the processed lane — a failed EXIF build must never lose the image. The
         // orientation tag is the one exception a viewer NEEDS for uprightness, but a passthrough
-        // with EXIF missing still beats a deleted take.
-        runCatching { writeJpegExif(u, exifShot, exifOrientationFor(spec.rotationDegrees)) }
-        val completion = MediaStoreWriter.markWriteComplete(context, u)
-        completeStillPublication(
-            kind = "JPEG",
-            output = allocation,
-            captureId = spec.captureId,
-            markerDurable = completion.durable,
-            effects = publicationEffects(spec.familyKey),
+        // with EXIF missing still beats a deleted take, and the miss now leaves a log row.
+        val exifPayload = bestEffortHeifExif(
+            build = {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                composeStillExifApp1(
+                    context.cacheDir,
+                    exifShot,
+                    bounds.outWidth,
+                    bounds.outHeight,
+                    exifOrientationFor(spec.rotationDegrees),
+                    sourceExifApp1 = extractExifApp1(bytes),
+                )
+            },
+            onFailure = { failure ->
+                Log.w("StillCapturePipeline", "passthrough JPEG EXIF payload failed; saving without EXIF", failure)
+            },
         )
+        writeSingleJpeg(bytes, exifPayload, spec)
     }
 
     /**
@@ -466,60 +515,6 @@ internal class StillCapturePipeline(
         emitRetained = emitPublishRetained,
         emitStatus = emitStatus,
     )
-
-    private fun writeJpegExif(
-        uri: android.net.Uri,
-        shot: ExifShot,
-        // NORMAL for the processed lane (pixels are rotated upright before encode); the hi-res
-        // passthrough lane overrides with the capture rotation's tag, DNG-style.
-        orientation: Int = RotationMath.ORIENTATION_NORMAL,
-    ) {
-        MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->
-            val exif = androidx.exifinterface.media.ExifInterface(pfd.fileDescriptor)
-            applyExifAttributes(exif, shot)
-            exif.setAttribute(
-                androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
-                orientation.toString(),
-            )
-            exif.saveAttributes()
-        }
-    }
-
-    private fun buildHeifExifData(shot: ExifShot, width: Int, height: Int): ByteArray {
-        val temp = File.createTempFile("heif-exif-", ".jpg", context.cacheDir)
-        return try {
-            val seed = createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-            try {
-                FileOutputStream(temp).use { out ->
-                    check(seed.compress(Bitmap.CompressFormat.JPEG, 90, out)) { "EXIF seed encode failed" }
-                }
-            } finally {
-                seed.recycle()
-            }
-            val exif = androidx.exifinterface.media.ExifInterface(temp)
-            applyExifAttributes(exif, shot)
-            // ExifInterface learned ImageWidth/ImageLength from the 1x1 JPEG seed above. If those
-            // values ride into the HEIF unchanged, MediaStore indexes a valid full-resolution HEIF
-            // as 1x1. Replace both primary and compressed-image dimension pairs with the already
-            // cropped/rotated bitmap's true encoded size before extracting the APP1 payload.
-            heifExifDimensionAttributes(width, height).forEach { (tag, value) ->
-                exif.setAttribute(tag, value)
-            }
-            exif.saveAttributes()
-            extractExifApp1(temp.readBytes()) ?: error("EXIF APP1 payload missing")
-        } finally {
-            // App-private cache scratch only; failure to remove it is harmless and never touches
-            // user media. The normal output remains in MediaStore's pending lifecycle.
-            runCatching { temp.delete() }
-        }
-    }
-
-    private fun applyExifAttributes(
-        exif: androidx.exifinterface.media.ExifInterface,
-        shot: ExifShot,
-    ) {
-        exifAttributeList(shot).forEach { (tag, value) -> exif.setAttribute(tag, value) }
-    }
 
     /** Maps a clockwise rotation (0/90/180/270) to the matching EXIF/TIFF orientation tag for DNG. */
     private fun exifOrientationFor(degrees: Int): Int = RotationMath.exifOrientationFor(degrees)
@@ -722,6 +717,52 @@ internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = bui
     // the stock app's market name here was both wrong off-device and wrong in principle.
     shot.deviceMake?.let { add(androidx.exifinterface.media.ExifInterface.TAG_MAKE to it) }
     shot.deviceModel?.let { add(androidx.exifinterface.media.ExifInterface.TAG_MODEL to it) }
+}
+
+/**
+ * The ONE EXIF APP1 composer for every processed still (HEIF payload and both JPEG lanes), so ISO /
+ * exposure / 35 mm focal / make / model stay in parity across formats by construction.
+ *
+ * ExifInterface can only SERIALIZE through a file, so the attributes are applied to a cache-only
+ * scratch JPEG and its APP1 body is extracted; no user media is ever opened here. The scratch is a
+ * 1×1 seed, optionally carrying [sourceExifApp1] (the hi-res passthrough lane's HAL EXIF) so the
+ * source's own tags survive underneath [exifAttributeList]. [orientation] is applied last, and the
+ * seed's 1×1 dimensions are replaced with the real [width]×[height] ([heifExifDimensionAttributes])
+ * — otherwise MediaStore indexes a full-resolution still as 1×1.
+ */
+internal fun composeStillExifApp1(
+    cacheDir: File,
+    shot: ExifShot,
+    width: Int,
+    height: Int,
+    orientation: Int,
+    sourceExifApp1: ByteArray?,
+): ByteArray {
+    val dimensions = heifExifDimensionAttributes(width, height)
+    val seedStream = java.io.ByteArrayOutputStream()
+    val seedBitmap = createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+    try {
+        check(seedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, seedStream)) { "EXIF seed encode failed" }
+    } finally {
+        seedBitmap.recycle()
+    }
+    val seed = sourceExifApp1?.let { source ->
+        spliceExifApp1(seedStream.toByteArray(), source) ?: error("source EXIF APP1 cannot seed the composer")
+    } ?: seedStream.toByteArray()
+    val temp = File.createTempFile("still-exif-", ".jpg", cacheDir)
+    return try {
+        FileOutputStream(temp).use { it.write(seed) }
+        val exif = androidx.exifinterface.media.ExifInterface(temp)
+        exifAttributeList(shot).forEach { (tag, value) -> exif.setAttribute(tag, value) }
+        exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, orientation.toString())
+        dimensions.forEach { (tag, value) -> exif.setAttribute(tag, value) }
+        exif.saveAttributes()
+        extractExifApp1(temp.readBytes()) ?: error("EXIF APP1 payload missing")
+    } finally {
+        // App-private cache scratch only; failure to remove it is harmless and never touches
+        // user media.
+        runCatching { temp.delete() }
+    }
 }
 
 /**

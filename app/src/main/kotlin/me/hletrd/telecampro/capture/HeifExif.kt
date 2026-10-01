@@ -69,4 +69,94 @@ internal fun heifExifDimensionAttributes(
     )
 }
 
-private val EXIF_SIGNATURE = byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)
+/**
+ * Byte ranges of [jpeg] that follow the spliced APP1, or null when the header cannot be walked.
+ *
+ * AGG4-6 / AGG3-24: the JPEG lanes used to write the encoded bytes to the pending row and then let
+ * `ExifInterface.saveAttributes()` rewrite that same row in place from offset 0. The rewrite is
+ * longer than the original (it gains APP1) and does not truncate, so a kill mid-rewrite left a new
+ * header over the old bytes shifted by the APP1 length — still ending `FF D9`, which launch
+ * recovery's tail probe adopts as VALID. The EXIF segment is therefore spliced into the encoded
+ * buffer BEFORE the single write, and no byte of the pending row is ever rewritten.
+ *
+ * The plan keeps every header segment except existing `Exif` APP1s (the replacement already
+ * carries whatever of them the composer chose to preserve), then everything from SOS to the end
+ * verbatim. A missing SOI, a segment that overruns, or an EOI before any SOS is null — the caller
+ * then writes the encoded bytes WITHOUT EXIF rather than guess at a structure it could not read.
+ */
+internal fun exifSplicePlan(jpeg: ByteArray): List<IntRange>? {
+    if (jpeg.size < 4 || jpeg[0] != 0xff.toByte() || jpeg[1] != 0xd8.toByte()) return null
+    val kept = mutableListOf<IntRange>()
+    var keptStart = 2
+    var offset = 2
+    while (offset + 2 <= jpeg.size) {
+        if (jpeg[offset] != 0xff.toByte()) return null
+        val marker = jpeg[offset + 1].toInt() and 0xff
+        when {
+            // Fill byte: stays inside the current kept run; the real marker follows it.
+            marker == 0xff -> offset += 1
+            marker == 0xda -> {
+                kept += keptStart until jpeg.size
+                return kept.filterNot { it.isEmpty() }
+            }
+            // EOI before any scan, or a stuffed byte where a header marker must be: not a walkable
+            // header, so no EXIF rather than a guessed splice.
+            marker == 0xd9 || marker == 0x00 -> return null
+            marker == 0x01 || marker in 0xd0..0xd7 -> offset += 2
+            else -> {
+                if (offset + 4 > jpeg.size) return null
+                val segmentLength = ((jpeg[offset + 2].toInt() and 0xff) shl 8) or
+                    (jpeg[offset + 3].toInt() and 0xff)
+                if (segmentLength < 2) return null
+                val end = offset + 2 + segmentLength
+                if (end > jpeg.size) return null
+                val payloadStart = offset + 4
+                val exif = marker == 0xe1 && end - payloadStart >= EXIF_SIGNATURE.size &&
+                    EXIF_SIGNATURE.indices.all { index -> jpeg[payloadStart + index] == EXIF_SIGNATURE[index] }
+                if (exif) {
+                    kept += keptStart until offset
+                    keptStart = end
+                }
+                offset = end
+            }
+        }
+    }
+    return null
+}
+
+/** True when [payload] is an `Exif\0\0` APP1 body that fits one JPEG segment. */
+internal fun isSpliceableExifPayload(payload: ByteArray): Boolean =
+    payload.size + 2 <= MAX_JPEG_SEGMENT_LENGTH &&
+        payload.size >= EXIF_SIGNATURE.size &&
+        EXIF_SIGNATURE.indices.all { index -> payload[index] == EXIF_SIGNATURE[index] }
+
+/**
+ * Writes SOI, one APP1 carrying [payload], then [plan]'s ranges of [jpeg] — the whole file in one
+ * pass, so the destination is written exactly once (see [exifSplicePlan]).
+ */
+internal fun writeJpegWithExifApp1(
+    out: java.io.OutputStream,
+    jpeg: ByteArray,
+    plan: List<IntRange>,
+    payload: ByteArray,
+) {
+    require(isSpliceableExifPayload(payload)) { "not a spliceable EXIF APP1 payload" }
+    val segmentLength = payload.size + 2
+    out.write(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xe1.toByte()))
+    out.write(byteArrayOf((segmentLength ushr 8).toByte(), segmentLength.toByte()))
+    out.write(payload)
+    plan.forEach { range -> out.write(jpeg, range.first, range.last - range.first + 1) }
+}
+
+/** In-memory [writeJpegWithExifApp1]; null when [jpeg] or [payload] cannot be spliced. */
+internal fun spliceExifApp1(jpeg: ByteArray, payload: ByteArray): ByteArray? {
+    if (!isSpliceableExifPayload(payload)) return null
+    val plan = exifSplicePlan(jpeg) ?: return null
+    return java.io.ByteArrayOutputStream(jpeg.size + payload.size + 4)
+        .also { writeJpegWithExifApp1(it, jpeg, plan, payload) }
+        .toByteArray()
+}
+
+private const val MAX_JPEG_SEGMENT_LENGTH = 0xffff
+
+private val EXIF_SIGNATURE =byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)
