@@ -404,16 +404,19 @@ internal fun remapModeOptics(
     lens: LensChoice,
     teleconverter: Boolean,
     controls: ManualControls,
-    frontFacing: Boolean = false,
-    lensLocalRoute: Boolean = frontFacing,
+    // No defaults on the route/scale inputs below (AGG5-50 / AR5-4, the AGG4-47 rule): each default
+    // was the PMA110 or fix-off answer, so an omitted argument compiled into the pre-fix bug —
+    // `optical = entries` divides by a lens a one-camera tablet does not have.
+    frontFacing: Boolean,
+    lensLocalRoute: Boolean,
     /**
      * True when the PHOTO side is also pinned to a standalone lens — i.e. DNG is on. Then both modes
      * already store a lens-local ratio and there is nothing to remap; converting anyway rewrote the
      * framing on every mode flip.
      */
-    photoIsStandalone: Boolean = false,
+    photoIsStandalone: Boolean,
     /** Optical presets, so the conversion divides by the lens the route reaches (one-camera safe). */
-    optical: Set<LensChoice> = LensChoice.entries.toSet(),
+    optical: Set<LensChoice>,
 ): ModeOptics {
     // PROGRAM is app-owned in Photo but normally HAL-owned in Video. Clear the Photo-derived flag
     // on an actual Video entry; route capability normalization may re-enable it later when a sparse
@@ -467,7 +470,8 @@ internal fun remapRouteScaleOptics(
     toStandalone: Boolean,
     teleconverter: Boolean,
     lensLocalRoute: Boolean,
-    optical: Set<LensChoice> = LensChoice.entries.toSet(),
+    // No default (AGG5-50): see [remapModeOptics].
+    optical: Set<LensChoice>,
 ): ModeOptics {
     if (fromStandalone == toStandalone || teleconverter || lensLocalRoute) return ModeOptics(lens, controls)
     return if (toStandalone) {
@@ -555,9 +559,10 @@ internal fun restoredOptics(
      * seamless camera on PMA110, see [me.hletrd.telecampro.camera.standaloneRouteWanted]). There the
      * persisted ratio is LENS-LOCAL, exactly like VIDEO, so it must neither be read as unified nor
      * re-banded through `forZoom`: a 3× lens at local 1.0 came back as the 1× main lens on every
-     * launch and every MR recall while DNG was on (RPL cycle 1, AGG-2).
+     * launch and every MR recall while DNG was on (RPL cycle 1, AGG-2). No default (AGG5-50): the
+     * `false` default WAS that bug for any caller that forgot it.
      */
-    photoStandalone: Boolean = false,
+    photoStandalone: Boolean,
 ): RestoredOptics {
     val lensLocal = mode == CaptureMode.VIDEO || photoStandalone
     val safeZoom = savedZoomRatio.takeIf { it.isFinite() } ?: when {

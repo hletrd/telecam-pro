@@ -25,7 +25,7 @@ class TeleFinderVisibilityTest {
                         assertEquals(
                             "enabled=$enabled tc=$tc video=$video aspect=$aspect",
                             expected,
-                            teleFinderResolved(enabled, tc, video, aspect),
+                            teleFinderResolved(enabled, tc, video, aspect, zoomRatio = 1f),
                         )
                     }
     }
@@ -41,19 +41,19 @@ class TeleFinderVisibilityTest {
                 for (video in booleanArrayOf(true, false))
                     for (aspect in AspectRatio.entries)
                         for (punchIn in booleanArrayOf(true, false)) {
-                            val glStyle = teleFinderResolved(enabled, tc, video, aspect) && punchIn
+                            val glStyle = teleFinderResolved(enabled, tc, video, aspect, zoomRatio = 1f) && punchIn
                             assertEquals(
                                 "enabled=$enabled tc=$tc video=$video aspect=$aspect punchIn=$punchIn",
                                 glStyle,
-                                teleFinderVisible(enabled, tc, video, aspect, punchIn),
+                                teleFinderVisible(enabled, tc, video, aspect, punchIn, zoomRatio = 1f),
                             )
                         }
     }
 
     @Test
     fun `loupe off hides the finder even fully resolved`() {
-        assertTrue(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = true))
-        assertFalse(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = false))
+        assertTrue(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 1f))
+        assertFalse(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = false, zoomRatio = 1f))
     }
 
     @Test
@@ -61,8 +61,8 @@ class TeleFinderVisibilityTest {
         // The gate deliberately has NO facing axis: entering FRONT forces teleconverterMode=false
         // in the same optics transaction and the TC toggle refuses while FRONT, so tc=false IS the
         // front truth — even a stale enabled toggle with the loupe up cannot draw the PIP there.
-        assertFalse(teleFinderResolved(true, false, false, AspectRatio.W4_3))
-        assertFalse(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true))
+        assertFalse(teleFinderResolved(true, false, false, AspectRatio.W4_3, zoomRatio = 1f))
+        assertFalse(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 1f))
     }
 
     @Test
@@ -75,7 +75,7 @@ class TeleFinderVisibilityTest {
         for (aspect in AspectRatio.entries) {
             assertTrue(
                 "video finder must not depend on the still aspect ($aspect)",
-                teleFinderVisible(true, true, true, aspect, punchIn = true),
+                teleFinderVisible(true, true, true, aspect, punchIn = true, zoomRatio = 1f),
             )
         }
     }
@@ -83,7 +83,7 @@ class TeleFinderVisibilityTest {
     @Test
     fun `video still obeys the loupe and magnification gates`() {
         // Allowing video must not weaken the two gates that make the same-stream overview honest.
-        assertFalse("no punch-in", teleFinderVisible(true, true, true, AspectRatio.W16_9, punchIn = false))
+        assertFalse("no punch-in", teleFinderVisible(true, true, true, AspectRatio.W16_9, punchIn = false, zoomRatio = 1f))
         assertFalse(
             "below the zoom floor without a converter",
             teleFinderVisible(true, false, true, AspectRatio.W16_9, punchIn = true, zoomRatio = 2.9f),

@@ -50,6 +50,9 @@ class ZoomMathTest {
             teleconverter = false,
             controls = ManualControls(zoomRatio = 2f),
             lensLocalRoute = true,
+            frontFacing = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
         assertEquals(LensChoice.TELE3X, modeFlip.lens)
         assertEquals(2f, modeFlip.controls.zoomRatio, 0f)
@@ -113,7 +116,7 @@ class ZoomMathTest {
     }
 
     @Test fun `photo restore keeps unified framing and derives lens band`() {
-        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, false, TELECONVERTER_MAGNIFICATION, 10.5f)
+        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, false, TELECONVERTER_MAGNIFICATION, 10.5f, photoStandalone = false)
         assertEquals(LensChoice.TELE10X, restored.lens)
         assertEquals(10.5f, restored.zoomRatio, 0f)
     }
@@ -151,11 +154,13 @@ class ZoomMathTest {
             toStandalone = true,
             teleconverter = false,
             lensLocalRoute = false,
+            optical = LensChoice.entries.toSet(),
         )
         assertEquals(LensChoice.TELE3X, optics.lens)
         assertEquals(1f, optics.controls.zoomRatio, 0.001f)
         val sixX = remapRouteScaleOptics(
             LensChoice.TELE3X, ManualControls(zoomRatio = 6f), false, true, false, false,
+            optical = LensChoice.entries.toSet(),
         )
         assertEquals(LensChoice.TELE3X, sixX.lens)
         assertEquals(2f, sixX.controls.zoomRatio, 0.001f)
@@ -169,6 +174,7 @@ class ZoomMathTest {
             toStandalone = false,
             teleconverter = false,
             lensLocalRoute = false,
+            optical = LensChoice.entries.toSet(),
         )
         assertEquals(LensChoice.TELE3X, optics.lens)
         assertEquals(LensChoice.TELE3X.zoomPreset, optics.controls.zoomRatio, 0.001f)
@@ -176,19 +182,19 @@ class ZoomMathTest {
 
     @Test fun `route scale remap is inert when the route answer or a local route does not change`() {
         val controls = ManualControls(zoomRatio = 3f)
-        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, true, true, false, false).controls)
-        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, true, false).controls)
-        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, false, true).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, true, true, false, false, optical = LensChoice.entries.toSet()).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, true, false, optical = LensChoice.entries.toSet()).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, false, true, optical = LensChoice.entries.toSet()).controls)
     }
 
     @Test fun `video restore keeps selected lens and local zoom`() {
-        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 2.25f)
+        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 2.25f, photoStandalone = false)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertEquals(2.25f, restored.zoomRatio, 0f)
     }
 
     @Test fun `video restore clamps legacy local zoom to 10x`() {
-        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 20f)
+        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, 20f, photoStandalone = false)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertEquals(10f, restored.zoomRatio, 0f)
     }
@@ -196,18 +202,18 @@ class ZoomMathTest {
     @Test fun `non-finite restore falls back to a valid mode representation`() {
         assertEquals(
             1f,
-            restoredOptics(CaptureMode.VIDEO, LensChoice.TELE10X, false, TELECONVERTER_MAGNIFICATION, Float.NaN).zoomRatio,
+            restoredOptics(CaptureMode.VIDEO, LensChoice.TELE10X, false, TELECONVERTER_MAGNIFICATION, Float.NaN, photoStandalone = false).zoomRatio,
             0f,
         )
         assertEquals(
             LensChoice.TELE3X.zoomPreset,
-            restoredOptics(CaptureMode.PHOTO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, Float.POSITIVE_INFINITY).zoomRatio,
+            restoredOptics(CaptureMode.PHOTO, LensChoice.TELE3X, false, TELECONVERTER_MAGNIFICATION, Float.POSITIVE_INFINITY, photoStandalone = false).zoomRatio,
             0f,
         )
     }
 
     @Test fun `tele restore clamps local zoom to converter display ceiling`() {
-        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, TELECONVERTER_MAGNIFICATION, 9f)
+        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, TELECONVERTER_MAGNIFICATION, 9f, photoStandalone = false)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertTrue(restored.teleconverter)
         assertEquals(60f, restored.zoomRatio * kitBase, 0.001f)
@@ -220,6 +226,10 @@ class ZoomMathTest {
             lens = LensChoice.MAIN,
             teleconverter = false,
             controls = ManualControls(zoomRatio = 10f),
+            frontFacing = false,
+            lensLocalRoute = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
 
         assertEquals(LensChoice.TELE10X, remapped.lens)
@@ -233,6 +243,10 @@ class ZoomMathTest {
             lens = LensChoice.TELE10X,
             teleconverter = false,
             controls = ManualControls(zoomRatio = 2f),
+            frontFacing = false,
+            lensLocalRoute = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
 
         assertEquals(LensChoice.TELE10X, remapped.lens)
@@ -247,6 +261,10 @@ class ZoomMathTest {
             lens = LensChoice.TELE3X,
             teleconverter = true,
             controls = controls,
+            frontFacing = false,
+            lensLocalRoute = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
 
         assertEquals(LensChoice.TELE3X, remapped.lens)
@@ -265,6 +283,10 @@ class ZoomMathTest {
                 fps = 30,
                 zoomRatio = 2.5f,
             ),
+            frontFacing = false,
+            lensLocalRoute = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
 
         assertEquals(LensChoice.TELE3X, remapped.lens)
@@ -291,6 +313,10 @@ class ZoomMathTest {
             lens = LensChoice.TELE3X,
             teleconverter = true,
             controls = entering.controls,
+            frontFacing = false,
+            lensLocalRoute = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
         assertEquals(33_333_333L, video.controls.exposureTimeNs)
 
@@ -306,6 +332,10 @@ class ZoomMathTest {
             lens = LensChoice.TELE3X,
             teleconverter = true,
             controls = leaving.controls,
+            frontFacing = false,
+            lensLocalRoute = false,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
 
         assertEquals(500_000_000L, photo.controls.exposureTimeNs)
@@ -493,6 +523,9 @@ class ZoomMathTest {
             teleconverter = false,
             controls = ManualControls(zoomRatio = 5f),
             frontFacing = true,
+            lensLocalRoute = true,
+            photoIsStandalone = false,
+            optical = LensChoice.entries.toSet(),
         )
         assertEquals(LensChoice.MAIN, optics.lens)
         assertEquals(5f, optics.controls.zoomRatio, 0f)
@@ -586,12 +619,12 @@ class ZoomMathTest {
     fun `tele restore clamps against the converter being restored with it`() {
         // 9x local is legal under a weak converter but past the total cap under the kit optic — the
         // restore must clamp against the magnification arriving in the SAME packet, not a constant.
-        val weak = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, 2f, 9f)
+        val weak = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, 2f, 9f, photoStandalone = false)
         assertEquals(9f, weak.zoomRatio, 0.001f)
         assertTrue(9f * teleDisplayBase(2f) < TELE_MAX_DISPLAY_ZOOM)
         assertEquals(
             60f,
-            restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, TELECONVERTER_MAGNIFICATION, 9f)
+            restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, TELECONVERTER_MAGNIFICATION, 9f, photoStandalone = false)
                 .zoomRatio * kitBase,
             0.001f,
         )

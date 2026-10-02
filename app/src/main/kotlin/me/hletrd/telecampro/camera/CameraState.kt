@@ -666,7 +666,9 @@ fun teleFinderResolved(
     teleconverter: Boolean,
     videoMode: Boolean,
     aspect: AspectRatio,
-    zoomRatio: Float = 1f,
+    // The UNIFIED (main-relative) zoom — see [unifiedZoom]. No default (AGG5-50 / AR5-4): `1f` is
+    // below [FINDER_MIN_ZOOM], so an omitted argument compiled into a gate that never opens off TELE.
+    zoomRatio: Float,
 ): Boolean = enabled && (teleconverter || zoomRatio >= FINDER_MIN_ZOOM) &&
     // VIDEO now qualifies too (user-asked 2026-07-29). It was excluded because the gate keyed off
     // the 4:3 STILL aspect, so a photo setting made the overlay appear and vanish mid-clip with no
@@ -689,7 +691,7 @@ fun teleFinderVisible(
     videoMode: Boolean,
     aspect: AspectRatio,
     punchIn: Boolean,
-    zoomRatio: Float = 1f,
+    zoomRatio: Float,
 ): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect, zoomRatio) && punchIn
 
 /**
