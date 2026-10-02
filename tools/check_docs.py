@@ -1604,10 +1604,13 @@ PASSWORD_PROPERTY_PATTERNS = (
 
 
 # SEC4-3 / AGG4-40: a tracked TEST FIXTURE once restated the blocked key's real password property,
-# in a file type this rule never read. Text sources outside markdown are scanned too now; a fixture
-# that must spell out a property to prove the rule fires may do so only in an allowlisted test file,
-# only with synthetic values, and only in a sentence that carries the marker below.
-SCANNED_TEXT_SUFFIXES = (".md", ".py", ".kts", ".txt", ".toml", ".properties.example")
+# in a file type this rule never read. SR5-4 / RG5-14 (AGG5-18): the fix widened a SUFFIX allowlist
+# and so still skipped `.kt` KDoc, `strings.xml`, the Pages privacy policy (`.html`), `.yml`, `.sh`,
+# `.json`, `.properties` and markdown outside docs/.context — the same "file type this rule never
+# read" premise. Every published file that decodes as UTF-8 text is scanned now; binaries are
+# skipped by a NUL-byte/decode check, never by name. A fixture that must spell out a property to
+# prove the rule fires may do so only in an allowlisted test file, only with synthetic values, and
+# only in a sentence that carries the marker below.
 SYNTHETIC_FIXTURE_MARKER = "SYNTHETIC-FIXTURE"
 SYNTHETIC_FIXTURE_FILES = frozenset({"tools/tests/test_tool_contracts.py"})
 RULE_SOURCE = "tools/check_docs.py"
@@ -1685,30 +1688,40 @@ def globbed_files(prefixes: tuple[str, ...]) -> list[str]:
     return found
 
 
+def published_text(rel: str) -> str | None:
+    """The file's UTF-8 text, or None for a binary (a NUL byte or an undecodable payload)."""
+    try:
+        payload = (ROOT / rel).read_bytes()
+    except OSError:
+        return None
+    if b"\0" in payload:
+        return None
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def password_property_scan_paths() -> list[str]:
     paths = [*COMMITTED_AUTHORITY_DOCS, "PRIVACY.md", "keystore.properties.example"]
     # The rule polices what the repository PUBLISHES: tracked plus not-yet-added, non-ignored files
     # (see published_files). A committed export has no .git; everything in it was tracked, so the
-    # glob is exact there.
-    markdown_prefixes = ("docs", ".context")
-    listed = published_files(markdown_prefixes)
-    candidates = globbed_files(markdown_prefixes) if listed is None else listed
-    paths.extend(rel for rel in candidates if rel.endswith(".md"))
-    # SEC4-3: tracked text sources anywhere in the tree, not only markdown under docs/.
-    listed_text = published_files((".",))
-    text_candidates = globbed_files((".",)) if listed_text is None else listed_text
-    paths.extend(
-        rel for rel in text_candidates
-        if rel.endswith(SCANNED_TEXT_SUFFIXES) and not rel.endswith(".md")
-    )
+    # glob is exact there. Every published path is a candidate; binaries drop out in the scan.
+    listed = published_files((".",))
+    paths.extend(globbed_files((".",)) if listed is None else listed)
     return sorted({rel for rel in paths if rel not in PRIVATE_DOCS and (ROOT / rel).is_file()})
 
 
+password_property_texts = (
+    (rel, text)
+    for rel in password_property_scan_paths()
+    if (text := published_text(rel)) is not None
+)
 password_property_hits = [
     f"{rel}: {finding}"
-    for rel in password_property_scan_paths()
+    for rel, text in password_property_texts
     for finding in password_property_findings(
-        RULE_REGION.sub(" ", read(rel)) if rel == RULE_SOURCE else read(rel),
+        RULE_REGION.sub(" ", text) if rel == RULE_SOURCE else text,
         synthetic_fixture_file=rel in SYNTHETIC_FIXTURE_FILES,
     )
 ]
