@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -133,7 +134,15 @@ class DiagnosticLogTest {
         // spent, the production doors can only add at most one row per call and never pass a cap.
         val tag = uniqueTag("process")
         DiagnosticLog.d(tag, "recurring debug row")
+        DiagnosticLog.evidence(tag, "evidence row")
         DiagnosticLog.w(tag, "reserved warning row")
+        // The GL FrameGap summary takes the defaulted process owners; a release build (debug off)
+        // must never spend a row from either of them.
+        val sharedBefore = processDiagnosticLogBudget.usedRows()
+        val evidenceBefore = processEvidenceDiagnosticLogBudget.usedRows()
+        assertFalse(evidenceDiagnosticAllowed(debugEnabled = false))
+        assertEquals(sharedBefore, processDiagnosticLogBudget.usedRows())
+        assertEquals(evidenceBefore, processEvidenceDiagnosticLogBudget.usedRows())
 
         assertTrue(processDiagnosticLogBudget.usedRows() <= RECURRING_DIAGNOSTIC_ROW_BUDGET)
         assertTrue(processReservedDiagnosticLogBudget.usedRows() <= RESERVED_DIAGNOSTIC_ROW_BUDGET)
@@ -142,7 +151,7 @@ class DiagnosticLogTest {
                 COLOR_OS_PROCESS_LOG_ROW_LIMIT,
         )
         // A row of THIS tag reaches logcat at most once per door call.
-        assertTrue(ShadowLog.getLogsForTag(tag).size <= 2)
+        assertTrue(ShadowLog.getLogsForTag(tag).size <= 3)
     }
 
     private fun uniqueTag(suffix: String) = "DiagnosticLogTest.$suffix.${System.nanoTime()}"
