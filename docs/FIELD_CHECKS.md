@@ -251,9 +251,20 @@ in-aspect size, or a logical list without 4080×3064, is a fail that reopens DB5
 
 Cycle 5 (plan A1.1/A1.2) moves the GL re-seed and the lens-inventory enqueue ahead of the `paused`
 gate in the cold-start input-ready callback, gates only route resolve and reconfiguration on
-`paused`, and re-binds the live preview surface on resume when the GL owner has no input surface
-yet. Host tests drive both interleavings; whether a real launch can land in that window is a device
-question.
+`paused`, and re-binds the retained preview surface on resume (`resumePreviewRebindWanted`) on
+either of two independent triggers:
+
+1. **No GL input surface yet** (AGG5-1): the pause landed inside the cold-start window. This is the
+   half the steps below exercise.
+2. **The preview has not presented a real frame** (`previewReady == false`, AGG5-26): a pause
+   dropped a preview-recovery rebind that was in flight. This also means a terminally exhausted
+   preview, whose `previewReady` stays false, now re-binds on every resume. Neither can be provoked
+   on demand on PMA110, because both need a preview EGL failure first. **This half is host-only**
+   (as F7/F8 are): host tests drive the interleaving, and no device step is owed for it.
+
+The ordinary foreground return has an input surface and a presented preview, so it re-binds
+nothing and stays byte-identical. Host tests drive both interleavings; whether a real launch can
+land in the trigger-1 window is a device question.
 
 - Force-stop the app. Launch it and press Home (or lock the screen) within roughly half a second,
   before the viewfinder appears. Return to the app. Repeat five times, varying the delay.
