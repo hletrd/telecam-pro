@@ -100,9 +100,11 @@ device with both preview and record templates.
 ## Device support
 
 Requires **Android 13 (API 33)** or newer. Hardware is resolved by enumerating Camera2 capabilities rather
-than by model name, so the app adapts to whatever lenses and controls a phone advertises. The one
-exception is deliberate: HAL workarounds measured on the Find X9 Ultra are keyed to its model in a
-single place (`camera/DeviceProfile.kt`), and every other device takes the capability-driven path.
+than by model name, so the app adapts to whatever lenses and controls a phone advertises. Two uses of
+the model name are deliberate. HAL workarounds measured on the Find X9 Ultra are keyed to its model in
+a single place (`camera/DeviceProfile.kt`), and every other device takes the capability-driven path.
+Separately, the model only preselects the Lens tab's phone dropdown (a declaration you can change);
+it never selects a camera route or a capability.
 
 Development and device verification happen on the **OPPO Find X9 Ultra**, which is also where the
 HAL workarounds in [`CLAUDE.md`](CLAUDE.md) were measured. Other devices are supported on a
