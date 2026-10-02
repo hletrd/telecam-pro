@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * retire the durable family marker early), and the next BURST/AEB shot fired while this one still
  * held its full processed snapshot. Once onPhoto was entered, its own finally owns every lane it did
  * not hand off, so [claimErrorTerminal] refuses.
+ *
+ * The two mechanisms overlap on purpose. The Engine's onPhoto now catches every `Throwable` itself,
+ * so the controller's `catch → onError` is reached after delivery only if that catch or its finally
+ * throws; the [claimErrorTerminal] refusal is defence in depth behind the catch, and each one is
+ * pinned on its own by `CameraEngineStillSaveLanesTest`.
  */
 internal class StillSaveLanes(
     wantsProcessed: Boolean,
