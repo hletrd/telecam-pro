@@ -822,6 +822,9 @@ class CameraViewModel private constructor(
      * - [aeLockPrior]: the operator's value under a momentary AEL hold the recall cancelled. The
      *   rollback restored the HELD `aeLock = true`, the release then restored nothing, and a
      *   momentary press became a persisted latched lock (the AGG4-74 defect via the rollback door).
+     *
+     * [generation] is what `setResolvedOptics` returned — the transaction it BEGAN (MRG5-6), never a
+     * later re-read another intent could already have bumped.
      */
     private data class RecallRollbackRestore(
         val generation: Long,
@@ -1619,7 +1622,7 @@ class CameraViewModel private constructor(
         // Converter declaration, resolution, and hidden Photo exposure join ONE optics transaction.
         // A synchronous REC refusal mutates none of them; an asynchronous failure restores the
         // complete phone/profile/custom/host packet from the generation-owned baseline.
-        val opticsAccepted = engine.setResolvedOptics(
+        val opticsGeneration = engine.setResolvedOptics(
             enabledVideo = e.mode == CaptureMode.VIDEO,
             resolvedLens = restoredLens,
             resolvedTeleconverter = restoredTeleconverter,
@@ -1637,7 +1640,7 @@ class CameraViewModel private constructor(
             // engine resolve the route before the DNG intent arrived (RPL cycle 2, AGG2-2).
             resolvedRawWanted = safeFormats.dngRaw,
         )
-        if (!opticsAccepted) {
+        if (opticsGeneration == null) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
             return
         }
@@ -1674,7 +1677,7 @@ class CameraViewModel private constructor(
         val cancelledAeLockPrior = momentaryAeLock.cancel()
         momentaryPunchIn.cancel()
         recallRollbackRestore = RecallRollbackRestore(
-            generation = engine.currentOpticsGeneration(),
+            generation = opticsGeneration,
             armed = armedPending,
             prior = priorPending,
             aeLockPrior = cancelledAeLockPrior,

@@ -2738,11 +2738,7 @@ class CameraEngine internal constructor(
     fun isOpticsGenerationCurrent(generation: Long): Boolean =
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
 
-    /**
-     * The optics intent generation as of now — read by a ViewModel door right after it began a
-     * transaction, so its own off-engine rollback state can be keyed to exactly that transaction's
-     * [OpticsRollbackPublication.generation] (AGG5-23 / AGG5-24). Read-only.
-     */
+    /** The optics intent generation as of now. Read-only; doors key rollback state on their own. */
     fun currentOpticsGeneration(): Long = opticsIntentGeneration.get()
 
     /** Rechecks only the independent codec/candidate/transfer publication after a main-queue hop. */
@@ -2919,7 +2915,12 @@ class CameraEngine internal constructor(
         }
     }
 
-    /** Applies settings/MR optics as one transaction so mode and lens cannot supersede each other. */
+    /**
+     * Applies settings/MR optics as one transaction so mode and lens cannot supersede each other.
+     * Returns the optics generation that transaction BEGAN, or null when the door refused
+     * synchronously (MRG5-6): the caller keys its own off-engine rollback state on exactly this
+     * value, not on a later re-read that another intent could already have bumped.
+     */
     fun setResolvedOptics(
         enabledVideo: Boolean,
         resolvedLens: LensChoice,
@@ -2943,8 +2944,8 @@ class CameraEngine internal constructor(
          * the rollback snapshot all see one coherent value.
          */
         resolvedRawWanted: Boolean,
-    ): Boolean {
-        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
+    ): Long? {
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return null }
         val declaration = teleconverterDeclaration(
             phone = resolvedDeclaration.phone,
             profile = resolvedDeclaration.profile,
@@ -2961,7 +2962,7 @@ class CameraEngine internal constructor(
         } else {
             resolvedControls
         }
-        val route = recalledCameraRoute(cameraRouteInventory, activeCameraRoute) ?: return false
+        val route = recalledCameraRoute(cameraRouteInventory, activeCameraRoute) ?: return null
         val routeTeleconverter = resolvedTeleconverter && route == CameraRoute.BACK
         val routeControls = if (route.lensLocalZoom) resolvedControls.copy(zoomRatio = resolvedControls.zoomRatio.coerceAtLeast(1f)) else resolvedControls
         val modeControls = modeIntent.copy(zoomRatio = routeControls.zoomRatio).normalizedForCaptureMode(
@@ -3008,7 +3009,7 @@ class CameraEngine internal constructor(
         val modeGeneration = modeIntentGeneration.incrementAndGet()
         val lensGeneration = lensIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabledVideo, transaction.generation)
-        if (!started) return true
+        if (!started) return transaction.generation
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
                 modeIntentGeneration.get() != modeGeneration ||
@@ -3073,7 +3074,7 @@ class CameraEngine internal constructor(
                 )
             }
         }
-        return true
+        return transaction.generation
     }
 
     /**

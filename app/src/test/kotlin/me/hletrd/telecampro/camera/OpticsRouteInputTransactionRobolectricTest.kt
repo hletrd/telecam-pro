@@ -6,6 +6,7 @@ import me.hletrd.telecampro.ui.RobolectricEglSentinels
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -387,21 +388,24 @@ class OpticsRouteInputTransactionRobolectricTest {
         video: Boolean = false,
     ) {
         val declaration = field(camera, "teleconverterDeclaration") as TeleconverterDeclaration
-        assertTrue(
-            camera.setResolvedOptics(
-                enabledVideo = video,
-                resolvedLens = lens,
-                resolvedTeleconverter = false,
-                resolvedDeclaration = declaration,
-                resolvedControls = ManualControls(zoomRatio = zoom),
-                resolvedPhotoExposureTimeNs = ManualControls().exposureTimeNs,
-                recalledVideoSize = null,
-                resolvedTransfer = ColorTransfer.SDR,
-                resolvedVideoCodec = VideoCodec.HEVC,
-                resolvedVideoEncoderCandidates = emptyList(),
-                resolvedRawWanted = rawWanted,
-            ),
+        val before = (field(camera, "opticsIntentGeneration") as java.util.concurrent.atomic.AtomicLong).get()
+        val began = camera.setResolvedOptics(
+            enabledVideo = video,
+            resolvedLens = lens,
+            resolvedTeleconverter = false,
+            resolvedDeclaration = declaration,
+            resolvedControls = ManualControls(zoomRatio = zoom),
+            resolvedPhotoExposureTimeNs = ManualControls().exposureTimeNs,
+            recalledVideoSize = null,
+            resolvedTransfer = ColorTransfer.SDR,
+            resolvedVideoCodec = VideoCodec.HEVC,
+            resolvedVideoEncoderCandidates = emptyList(),
+            resolvedRawWanted = rawWanted,
         )
+        // MRG5-6: the door returns the generation it BEGAN, which the VM keys its rollback state on.
+        assertNotNull(began)
+        assertTrue(checkNotNull(began) > before)
+        assertEquals(began, (field(camera, "opticsIntentGeneration") as java.util.concurrent.atomic.AtomicLong).get())
     }
 
     private fun lensBandFollowsZoom(camera: CameraEngine): Boolean =
