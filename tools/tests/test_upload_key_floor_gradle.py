@@ -42,6 +42,21 @@ NAMED_VECTORS = {
     "Key-password-with-Entropy-8!": True,
     "Zk4!mR9#vT2$wQ8%nnnB": True,
     "Zyxwv-Q7!kP3#mR9$tW2u": True,  # a walk of five is allowed
+    # MRG4-7: outside ASCII. Thirteen code points are too short even though they are 23 UTF-16
+    # units (the old Kotlin port counted units and accepted this).
+    "Ab1\U0001D400\U0001D401\U0001D402\U0001D403\U0001D404\U0001D405\U0001D406\U0001D407"
+    "\U0001D408\U0001D409": False,
+    "Zk4!mR9#vT2$wQ8%nnnB\U0001F600": True,
+    # Superscripts are not ASCII digits on either side: lower + symbol is only two classes (the old
+    # Python floor counted `²` as a digit and accepted it).
+    "qwmzrtkpxvbn!\u00b2\u00b3\u00b9\u2074\u2075\u2076\u2077\u2078": False,
+    # Python's isspace() edges, including the ones the JVM's trim() treats differently.
+    "Zk4!mR9#vT2$wQ8%nnnB\u00a0": False,
+    "\u0085Zk4!mR9#vT2$wQ8%nnnB": False,
+    "Zk4!mR9#vT2$wQ8%nnnB\u3000": False,
+    # Only ASCII letters walk: a Kelvin sign and `\u017f` (long s) casefold to k / s in Python.
+    "Zq9!hij\u212alm-Q7#pX3$wR": True,
+    "Zq9!pqr\u017ftu-Q7#kX3$wR": True,
 }
 
 

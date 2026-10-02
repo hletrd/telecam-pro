@@ -410,11 +410,28 @@ val uploadKeyMaxMonotonicRun = 5
 val uploadKeyMinDistinctCharacters = 12
 val uploadKeyMaxRepeatRun = 3
 
-fun uploadKeyHasMonotonicRun(value: String): Boolean {
+// MRG4-7: value-for-value equal to the Python floor OUTSIDE ASCII too. Every count runs over CODE
+// POINTS (a String's length and toSet() count UTF-16 units, so one non-BMP character counted as two
+// characters and two "distinct" surrogates), and every class test is ASCII-only on both sides
+// (Kotlin's isDigit/isLetterOrDigit/lowercase and Python's isdigit/isalnum/casefold disagree on
+// superscripts, `ß`, the Kelvin sign, ...). Any non-ASCII code point counts as a symbol. The edge
+// whitespace is Python's `str.isspace()` set, spelled out identically in tools/upload_key_policy.py.
+val uploadKeyEdgeWhitespace: Set<Int> =
+    (0x09..0x0D).toSet() + (0x1C..0x20) + setOf(0x85, 0xA0, 0x1680) + (0x2000..0x200A) +
+        setOf(0x2028, 0x2029, 0x202F, 0x205F, 0x3000)
+
+fun uploadKeyAsciiLower(codePoint: Int): Boolean = codePoint in 'a'.code..'z'.code
+fun uploadKeyAsciiUpper(codePoint: Int): Boolean = codePoint in 'A'.code..'Z'.code
+fun uploadKeyAsciiDigit(codePoint: Int): Boolean = codePoint in '0'.code..'9'.code
+fun uploadKeyAsciiLetter(codePoint: Int): Boolean = uploadKeyAsciiLower(codePoint) || uploadKeyAsciiUpper(codePoint)
+
+fun uploadKeyHasMonotonicRun(codePoints: IntArray): Boolean {
     var run = 1
     var direction = 0
-    var previous: Char? = null
-    for (character in value.lowercase()) {
+    var previous: Int? = null
+    for (raw in codePoints) {
+        // ASCII-only lowering, exactly like the Python `_ascii_lower`.
+        val character = if (uploadKeyAsciiUpper(raw)) raw + 32 else raw
         val prior = previous
         val comparable = prior != null && (
             (uploadKeyAsciiLetter(prior) && uploadKeyAsciiLetter(character)) ||
@@ -424,7 +441,7 @@ fun uploadKeyHasMonotonicRun(value: String): Boolean {
             run = 1
             direction = 0
         } else {
-            val step = character.code - prior!!.code
+            val step = character - prior!!
             if (step == 1 || step == -1) {
                 if (step == direction) {
                     run += 1
@@ -443,13 +460,10 @@ fun uploadKeyHasMonotonicRun(value: String): Boolean {
     return false
 }
 
-fun uploadKeyAsciiLetter(character: Char): Boolean = character in 'a'..'z' || character in 'A'..'Z'
-fun uploadKeyAsciiDigit(character: Char): Boolean = character in '0'..'9'
-
-fun uploadKeyHasLongRepeatRun(value: String): Boolean {
+fun uploadKeyHasLongRepeatRun(codePoints: IntArray): Boolean {
     var run = 0
-    var previous: Char? = null
-    for (character in value) {
+    var previous: Int? = null
+    for (character in codePoints) {
         run = if (character == previous) run + 1 else 1
         if (run > uploadKeyMaxRepeatRun) return true
         previous = character
@@ -457,24 +471,30 @@ fun uploadKeyHasLongRepeatRun(value: String): Boolean {
     return false
 }
 
-fun uploadKeyHasShortPeriod(value: String): Boolean =
-    (1..value.length / 2).any { period ->
-        (0 until value.length - period).all { index -> value[index] == value[index + period] }
+fun uploadKeyHasShortPeriod(codePoints: IntArray): Boolean =
+    (1..codePoints.size / 2).any { period ->
+        (0 until codePoints.size - period).all { index -> codePoints[index] == codePoints[index + period] }
     }
 
 fun meetsGeneratedSecretFloor(value: String): Boolean {
-    if (value.length < uploadKeyMinStrongPasswordLength || value != value.trim()) return false
+    val codePoints = value.codePoints().toArray()
+    if (codePoints.size < uploadKeyMinStrongPasswordLength ||
+        codePoints.first() in uploadKeyEdgeWhitespace ||
+        codePoints.last() in uploadKeyEdgeWhitespace
+    ) {
+        return false
+    }
     val classes = listOf(
-        value.any { it.isLowerCase() },
-        value.any { it.isUpperCase() },
-        value.any { it.isDigit() },
-        value.any { !it.isLetterOrDigit() },
+        codePoints.any(::uploadKeyAsciiLower),
+        codePoints.any(::uploadKeyAsciiUpper),
+        codePoints.any(::uploadKeyAsciiDigit),
+        codePoints.any { !uploadKeyAsciiLetter(it) && !uploadKeyAsciiDigit(it) },
     ).count { it }
     return classes >= uploadKeyMinStrongPasswordClasses &&
-        value.toSet().size >= uploadKeyMinDistinctCharacters &&
-        !uploadKeyHasLongRepeatRun(value) &&
-        !uploadKeyHasShortPeriod(value) &&
-        !uploadKeyHasMonotonicRun(value)
+        codePoints.toSet().size >= uploadKeyMinDistinctCharacters &&
+        !uploadKeyHasLongRepeatRun(codePoints) &&
+        !uploadKeyHasShortPeriod(codePoints) &&
+        !uploadKeyHasMonotonicRun(codePoints)
 }
 
 // Executable tools-suite seam for the floor above, shaped like `verifyCleanReleaseGitFixture`: it

@@ -71,12 +71,32 @@ MIN_DISTINCT_CHARACTERS = 12
 MAX_REPEAT_RUN = 3
 
 
+# MRG4-7: every class test is ASCII-only, and every count is over code points, so the Kotlin port in
+# app/build.gradle.kts gives the same answer value for value outside ASCII too. Python's own
+# islower/isupper/isdigit/isalnum/casefold are Unicode-wide (a superscript `²` is a "digit", `ß`
+# casefolds to `ss`) and the JVM's equivalents disagree with them, so neither side uses them. Any
+# non-ASCII code point therefore counts as a symbol. The whitespace a value may not start or end with
+# is Python's own `str.isspace()` set, spelled out so the Kotlin twin carries the identical list.
+_ASCII_LOWER = frozenset("abcdefghijklmnopqrstuvwxyz")
+_ASCII_UPPER = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_ASCII_DIGIT = frozenset("0123456789")
+EDGE_WHITESPACE_CODE_POINTS = (
+    *range(0x09, 0x0E), *range(0x1C, 0x21), 0x85, 0xA0, 0x1680, *range(0x2000, 0x200B),
+    0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+)
+_EDGE_WHITESPACE = "".join(map(chr, EDGE_WHITESPACE_CODE_POINTS))
+
+
+def _ascii_lower(value: str) -> str:
+    return "".join(chr(ord(character) + 32) if character in _ASCII_UPPER else character for character in value)
+
+
 def _has_monotonic_run(value: str) -> bool:
     """Reject human-memorable alphabetic/numeric walks without claiming entropy proof."""
     run = 1
     direction = 0
     previous: str | None = None
-    for character in value.casefold():
+    for character in _ascii_lower(value):
         if previous is None or not (
             (previous.isascii() and previous.isalpha() and character.isascii() and character.isalpha())
             or (previous.isascii() and previous.isdigit() and character.isascii() and character.isdigit())
@@ -123,13 +143,16 @@ def _has_short_period(value: str) -> bool:
 
 def meets_generated_secret_floor(value: str) -> bool:
     """True only for a generated-looking secret; the answer never says WHY a value failed."""
-    if len(value) < MIN_STRONG_PASSWORD_LENGTH or value != value.strip():
+    if len(value) < MIN_STRONG_PASSWORD_LENGTH or value != value.strip(_EDGE_WHITESPACE):
         return False
     classes = (
-        any(character.islower() for character in value),
-        any(character.isupper() for character in value),
-        any(character.isdigit() for character in value),
-        any(not character.isalnum() for character in value),
+        any(character in _ASCII_LOWER for character in value),
+        any(character in _ASCII_UPPER for character in value),
+        any(character in _ASCII_DIGIT for character in value),
+        any(
+            character not in _ASCII_LOWER and character not in _ASCII_UPPER and character not in _ASCII_DIGIT
+            for character in value
+        ),
     )
     return (
         sum(classes) >= MIN_STRONG_PASSWORD_CLASSES
