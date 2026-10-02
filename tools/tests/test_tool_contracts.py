@@ -1843,6 +1843,21 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             ("tools/extra_release_helper.py", f"# {unmarked}\n"),
             ("gradle/extra.toml", f"# {unmarked}\n"),
             ("app/extra.gradle.kts", f"// {unmarked}\n"),
+            # SR5-4 / RG5-14 (AGG5-18): every published UTF-8 text file, not a suffix allowlist.
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/LeakFixture.kt",
+                f"package me.hletrd.telecampro\n\n// {unmarked}\ninternal val leakFixture = 1\n",
+            ),
+            ("privacy-policy/leak.html", f"<html><body><p>{unmarked}</p></body></html>\n"),
+            (
+                "app/src/main/res/values/leak_strings.xml",
+                f'<resources><!-- {unmarked} --></resources>\n',
+            ),
+            ("tools/leak.sh", f"#!/bin/sh\n# {unmarked}\n"),
+            ("tools/leak.json", f'{{"note": "{unmarked}"}}\n'),
+            ("tools/leak.yml", f"note: {unmarked}\n"),
+            ("tools/leak.properties", f"# {unmarked}\n"),
+            ("tools/NOTES.md", f"{unmarked}\n"),
             # The marker exempts nothing outside the allowlisted fixture file.
             ("tools/tests/test_other_fixture.py", f'LEAK = "{leak}"\n'),
         ):
@@ -1855,6 +1870,19 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(f"FAIL  {self.PASSWORD_RULE}", result.stdout)
                 self.assertIn(relative, result.stdout)
+
+    def test_binary_files_are_skipped_by_content_not_by_name(self) -> None:
+        # AGG5-18: the scan decides "text" by content. A NUL-bearing payload that happens to contain
+        # a matching sentence is a binary and is skipped without crashing the gate.
+        leak = self.SYNTHETIC_PASSWORD_LEAKS[0].replace("SYNTHETIC-FIXTURE: ", "")
+
+        def add(root: Path) -> None:
+            (root / "tools/blob.txt").write_bytes(b"\x00\x01" + leak.encode("utf-8") + b"\xff\xfe")
+
+        result, _ = run_documentation_gate_from_committed_export(add)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("tools/blob.txt", result.stdout)
+        self.assertIn(f"ok    {self.PASSWORD_RULE}", result.stdout)
 
     def test_new_unstaged_files_are_scanned_but_ignored_ones_are_not(self) -> None:
         # REG4-3 / DBG4-4: the pre-commit gate must see a published file the author has not added
