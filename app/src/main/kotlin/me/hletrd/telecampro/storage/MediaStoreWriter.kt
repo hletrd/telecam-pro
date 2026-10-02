@@ -1428,10 +1428,16 @@ object MediaStoreWriter {
                             journalState == PendingJournalState.DISCARD ->
                                 PendingProbeOutcome(PendingProbe.INDETERMINATE)
                             // A durable COMPLETE marker is the adoption proof for a row with bytes; a
-                            // COMPLETE row the provider reports EMPTY is probed first, so an empty
-                            // or unreadable file is never published on the marker alone.
+                            // COMPLETE row the provider reports EMPTY is judged on its opened
+                            // descriptor's real length instead, so an empty or unreadable file is never
+                            // published on the marker alone. It is NOT sent through the format probe
+                            // (AGG5-7): the only doubt is the provider's metadata, never the bytes the
+                            // marker already vouches for, and an undecidable-but-complete layout must
+                            // not let the app's weakest evidence overrule its strongest.
                             journalState == PendingJournalState.COMPLETE && sizeBytes > 0L ->
                                 PendingProbeOutcome(PendingProbe.VALID)
+                            journalState == PendingJournalState.COMPLETE ->
+                                pendingProbeOutcome { completeMarkerLengthVerdict(descriptorLength(context, uri)) }
                             else -> probePendingMedia(
                                 context = context,
                                 uri = uri,
@@ -1874,6 +1880,10 @@ object MediaStoreWriter {
             }
         }
     }
+
+    /** fstat of the opened row; a provider/open failure throws (a transient probe failure). */
+    private fun descriptorLength(context: Context, uri: Uri): Long =
+        openReadableParcelFd(context, uri).use { it.statSize }
 
     /** A queried row that cannot be reopened is a provider/probe error, not quiet indeterminacy. */
     private fun openReadableParcelFd(context: Context, uri: Uri): ParcelFileDescriptor =
@@ -2914,6 +2924,20 @@ private const val MAX_MP4_TOP_LEVEL_BOXES = 4_096
 internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
 
 /**
+ * AGG5-7: a durable COMPLETE row whose provider SIZE reads <= 0 is decided on the opened
+ * descriptor's real length ([android.os.ParcelFileDescriptor.getStatSize]). Positive bytes adopt on
+ * the marker, exactly as before AGG4-28; a zero-length file is INVALID (kept by [orphanDisposition],
+ * never deleted on the marker, never re-armed — there is nothing to recover); a negative stat says
+ * the provider handed back something that is not a sized regular file, which proves nothing about
+ * the bytes, so it throws and [pendingProbeOutcome] records a transient failure that re-arms.
+ */
+internal fun completeMarkerLengthVerdict(statSize: Long): PendingProbe = when {
+    statSize > 0L -> PendingProbe.VALID
+    statSize == 0L -> PendingProbe.INVALID
+    else -> throw IOException("COMPLETE descriptor has no stat size")
+}
+
+/**
  * Which KEPT rows re-arm MediaProvider's pending expiry ([MediaStoreWriter.reassertPending]).
  *
  * AGG4-4 (CRIT4-1, DBG4-2): re-arming every kept row made the never-judgeable ones immortal — a
@@ -2922,15 +2946,22 @@ internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
  * (open/read/extractor threw — [PendingProbeOutcome.failed], e.g. a busy provider, or a
  * fail-closed take whose COMPLETE marker never landed and whose bytes were unreachable). A row whose
  * bytes WERE read and whose verdict is a constant of those bytes — an unknown MIME with no
- * conservative probe, an undecidable HEIF layout, a probed non-VALID zero-size COMPLETE row — is
- * kept but NOT re-armed: the next launch would reach the same answer, so MediaProvider's expiry is
- * its terminal, exactly as before AGG3-4. A DISCARD row belongs to the DISCARD stage; re-arming it
- * would only delay a delete the user already asked for.
+ * conservative probe, an undecidable HEIF layout — is kept but NOT re-armed: the next launch would
+ * reach the same answer, so MediaProvider's expiry is its terminal, exactly as before AGG3-4.
+ *
+ * A COMPLETE row is the exception (AGG5-7): its marker is the app's own durable proof that the
+ * output was fully closed, so a kept COMPLETE row always re-arms unless its descriptor proved the
+ * file EMPTY ([completeMarkerLengthVerdict] INVALID) — a zero-byte file holds nothing to lose, and
+ * re-arming it would only make an empty hidden row immortal. A DISCARD row belongs to the DISCARD
+ * stage; re-arming it would only delay a delete the user already asked for.
  */
 internal fun keptRowReassertsPending(
     journalState: PendingJournalState,
     probeOutcome: PendingProbeOutcome,
-): Boolean = journalState != PendingJournalState.DISCARD && probeOutcome.failed
+): Boolean = journalState != PendingJournalState.DISCARD && (
+    probeOutcome.failed ||
+        (journalState == PendingJournalState.COMPLETE && probeOutcome.probe != PendingProbe.INVALID)
+    )
 
 /** Pure conservative launch-recovery decision; an unknown answer never destroys user media. */
 internal fun orphanDisposition(
@@ -2944,9 +2975,9 @@ internal fun orphanDisposition(
     journalState == PendingJournalState.DISCARD -> OrphanDisposition.KEEP_PENDING
     journalState == PendingJournalState.UNAVAILABLE -> OrphanDisposition.KEEP_PENDING
     familyDeleted -> OrphanDisposition.DELETE
-    // The caller certifies every positive-SIZE COMPLETE row as VALID; only a provider-EMPTY COMPLETE
-    // row is actually probed (AGG4-28), and one that is not proven VALID is kept, never deleted on a
-    // probe and never published on the marker alone.
+    // The caller certifies every positive-SIZE COMPLETE row as VALID; a provider-EMPTY COMPLETE row
+    // is VALID only when its opened descriptor has bytes (AGG4-28, AGG5-7). One that is not proven
+    // VALID is kept, never deleted on a probe and never published on the marker alone.
     journalState == PendingJournalState.COMPLETE ->
         if (probe == PendingProbe.VALID) OrphanDisposition.ADOPT else OrphanDisposition.KEEP_PENDING
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT

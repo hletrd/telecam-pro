@@ -57,6 +57,10 @@ class LaunchRecoveryPendingExpiryTest {
             EMPTY_COMPLETE to Row("image/jpeg", 0L, bytes = ByteArray(0)),
             // A durable COMPLETE marker adopts: published with IS_PENDING = 0.
             ADOPTED to Row("image/jpeg", 16L),
+            // AGG5-7: a COMPLETE marker over a stale provider SIZE of 0 whose descriptor HAS bytes is
+            // adopted on the marker — the HEIF format probe would call this layout INDETERMINATE, and
+            // that used to keep the take hidden, un-re-armed, until MediaProvider expired it.
+            STALE_COMPLETE to Row("image/heic", 0L, bytes = UNDECIDABLE_HEIF),
             // A durable DISCARD marker belongs to the DISCARD stage: kept, but not re-armed.
             DISCARDED to Row("image/webp", 16L),
         )
@@ -70,6 +74,7 @@ class LaunchRecoveryPendingExpiryTest {
         )
         assertTrue(MediaStoreWriter.markWriteComplete(context, Uri.parse("$imageBase/$ADOPTED")).durable)
         assertTrue(MediaStoreWriter.markWriteComplete(context, Uri.parse("$imageBase/$EMPTY_COMPLETE")).durable)
+        assertTrue(MediaStoreWriter.markWriteComplete(context, Uri.parse("$imageBase/$STALE_COMPLETE")).durable)
         // The legacy preference DISCARD value: exact-identity SQLite marks need a provider
         // identity reader, and both spellings resolve to the same PendingJournalState.DISCARD.
         assertTrue(
@@ -86,7 +91,15 @@ class LaunchRecoveryPendingExpiryTest {
             targets = listOf(OrphanRecoveryTarget(imageBase, OrphanRecoveryCollection.IMAGES)),
         )
 
-        assertEquals(2, batch.report.adopted)
+        assertEquals(
+            "fixture precondition: the format probe alone cannot decide this file",
+            PendingProbe.INDETERMINATE,
+            probeHeifIsoBmff(UNDECIDABLE_HEIF.size.toLong()) { offset, count ->
+                UNDECIDABLE_HEIF.copyOfRange(offset.toInt(), minOf(UNDECIDABLE_HEIF.size, offset.toInt() + count))
+            },
+        )
+        assertEquals(3, batch.report.adopted)
+        assertEquals(listOf(0), provider.pendingWrites[STALE_COMPLETE])
         assertEquals(1, batch.report.deleted)
         assertEquals(4, batch.report.retained)
         assertEquals(listOf(1), provider.pendingWrites[TRANSIENT])
@@ -242,6 +255,17 @@ class LaunchRecoveryPendingExpiryTest {
         const val TRANSIENT = 5L
         const val STALE_SIZE = 6L
         const val EMPTY_COMPLETE = 7L
+        const val STALE_COMPLETE = 8L
+
+        /** `ftyp heic` + a version-1 `meta` (an unsupported variant) + `mdat`: real, undecidable bytes. */
+        val UNDECIDABLE_HEIF = box("ftyp", "heic".toByteArray() + ByteArray(4)) +
+            box("meta", byteArrayOf(1, 0, 0, 0)) +
+            box("mdat", ByteArray(4) { 7 })
+
+        private fun box(type: String, payload: ByteArray): ByteArray {
+            val size = 8 + payload.size
+            return byteArrayOf(0, 0, (size ushr 8).toByte(), size.toByte()) + type.toByteArray() + payload
+        }
         val WHOLE_JPEG = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte())
     }
 }

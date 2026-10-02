@@ -1195,10 +1195,13 @@ discardRejectedOutput(context, uri)
 cleanupOrphanedPendingBatch(context, cursor)
 // → one bounded page + RecoveryReport; ADOPT valid, DELETE rejected/proven-invalid, KEEP the rest.
 // Re-arm is BOUNDED to rows a later launch can still adopt: a kept non-DISCARD row whose probe
-// could not run (keptRowReassertsPending), an adoptable row whose publish failed, or a row whose
+// could not run (keptRowReassertsPending), a kept durable-COMPLETE row whose descriptor is not
+// proven empty, an adoptable row whose publish failed, or a row whose
 // journal state was unreadable re-asserts IS_PENDING=1 so MediaProvider re-arms its pending
 // expiry; a row whose bytes were read to a constant verdict (unknown MIME, undecidable HEIF
-// layout) is kept but left to MediaProvider's expiry. The update renames the backing file to .pending-<expiry>-<name>, so
+// layout) is kept but left to MediaProvider's expiry. A COMPLETE row with a stale provider SIZE
+// <= 0 is decided on its opened descriptor's real length (bytes adopt on the marker), never on
+// the format probe. The update renames the backing file to .pending-<expiry>-<name>, so
 // the frozen discard identity never includes _data or GENERATION_MODIFIED (PENDING DEVICE:
 // docs/FIELD_CHECKS.md E4)
 latestOwnCapture(context) → RestoredCapture

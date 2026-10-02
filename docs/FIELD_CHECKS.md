@@ -351,8 +351,8 @@ claim that the guard is unnecessary.
 
 Launch recovery re-writes `IS_PENDING = 1` (`reassertPending`) on a row it KEEPS pending only when
 a later launch can still adopt it: a kept non-DISCARD row whose probe could not run this launch
-(`keptRowReassertsPending`), an adoptable row whose publish failed, or a row whose journal state was
-unreadable. MediaProvider then re-arms the pending row's `DATE_EXPIRES`; otherwise idle
+(`keptRowReassertsPending`), a kept durable-`COMPLETE` row whose descriptor is not proven empty, an
+adoptable row whose publish failed, or a row whose journal state was unreadable. MediaProvider then re-arms the pending row's `DATE_EXPIRES`; otherwise idle
 maintenance deletes a retained take about a week after insert. A row whose bytes were read to a
 constant verdict (an unknown MIME, an undecidable HEIF layout) is kept but deliberately NOT
 re-armed, so MediaProvider's expiry stays its terminal. The host test proves only which kept rows

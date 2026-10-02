@@ -268,12 +268,38 @@ class OrphanSweepTest {
         listOf(
             PendingJournalState.UNKNOWN,
             PendingJournalState.REGISTERED,
-            PendingJournalState.COMPLETE,
         ).forEach { journal ->
             assertTrue("$journal", keptRowReassertsPending(journal, transient))
             assertFalse("$journal", keptRowReassertsPending(journal, undecidable))
         }
         assertFalse(keptRowReassertsPending(PendingJournalState.DISCARD, transient))
         assertFalse(keptRowReassertsPending(PendingJournalState.DISCARD, undecidable))
+    }
+
+    @Test
+    fun `a kept COMPLETE row always re-arms unless its descriptor proved it empty`() {
+        // AGG5-7: the COMPLETE marker is the app's durable proof the output was closed, so only a
+        // provably EMPTY file is left to MediaProvider's expiry.
+        val complete = PendingJournalState.COMPLETE
+        assertTrue(keptRowReassertsPending(complete, PendingProbeOutcome(PendingProbe.INDETERMINATE, failed = true)))
+        assertTrue(keptRowReassertsPending(complete, PendingProbeOutcome(PendingProbe.INDETERMINATE)))
+        assertFalse(keptRowReassertsPending(complete, PendingProbeOutcome(PendingProbe.INVALID)))
+    }
+
+    @Test
+    fun `a provider-empty COMPLETE row is decided on the descriptor length`() {
+        assertEquals(PendingProbe.VALID, completeMarkerLengthVerdict(1L))
+        assertEquals(PendingProbe.INVALID, completeMarkerLengthVerdict(0L))
+        val unsized = pendingProbeOutcome { completeMarkerLengthVerdict(-1L) }
+        assertTrue("an unsized descriptor proves nothing", unsized.failed)
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.COMPLETE, completeMarkerLengthVerdict(4_096L)),
+        )
+        assertEquals(
+            "a COMPLETE row is never deleted on its length",
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.COMPLETE, completeMarkerLengthVerdict(0L)),
+        )
     }
 }
