@@ -271,6 +271,15 @@ either of two independent triggers:
    retires `starting` under one monitor, so a resume is never refused in the first place; nothing is
    replayed. This needs a background AND a return inside the cold-start window, which the
    fast-return attempts below aim for.
+4. **Which path opens the camera after a return inside the GL input window** (cycle 6 plan
+   A1.3/A1.4/A1.5, with the MRG6-1 follow-up). The route now resolves before the paused lens
+   enumeration, the input-ready open adopts the live trace owner, and resume skips its own reopen
+   while that open is still queued behind it; once the queued open dequeues it clears the claim, so
+   a pause that made it refuse cannot also turn resume away. A wrong claim shows as a black
+   viewfinder; a missing one shows as a second open of the same camera id.
+
+For trigger 4, also keep the system camera-service lines (`logcat -b all | grep -E
+"CameraService::connect|StartupTrace|cold start"`).
 
 The ordinary foreground return has an input surface and a presented preview, so it re-binds
 nothing and stays byte-identical. Host tests drive both interleavings; whether a real launch can
@@ -284,8 +293,10 @@ land in the trigger-1 window is a device question.
 - Keep the debug logcat for each attempt (`CameraController`, `Session configured`, `StartupTrace`).
 
 **Pass:** every return shows a live, upright preview within a couple of seconds, with no black
-viewfinder that needs a second background/foreground to recover, and no crash. Record the delay
-and outcome of each attempt.
+viewfinder that needs a second background/foreground to recover, and no crash. For trigger 4, each
+foreground shows exactly one `CameraService::connect` for the opened camera id (no same-id dual
+open), and the `cold start (ms since resume)` line appears once per foreground with a single
+`onOpened` mark. Record the delay and outcome of each attempt.
 
 ### A10. Zoom readout follows the route's own scale — ◯ OPEN 2026-10-02
 
