@@ -1060,6 +1060,23 @@ class CameraViewModelRobolectricTest {
         assertNull("the condition does not come back after Ready", v.state.value.status)
     }
 
+    // AGG6-37: production clears a condition through the pure, tested StatusPlate.clearProgress().
+    // The inline copy it replaced kept a covered event behind a cleared shown condition.
+    @Test fun `clearing progress goes through the plate transition`() {
+        val (v, _) = createViewModel()
+        val starting = CameraStatusMessage.STARTING_CAMERA.status()
+        ViewModelTestAccess.state(v).value = v.state.value.copy(status = starting, cameraCondition = starting.message)
+        ViewModelTestAccess.setField(
+            v,
+            "deferredStatusEvent",
+            me.hletrd.telecampro.camera.DeferredStatusEvent(CameraStatusMessage.VIDEO_SAVE_DELAYED.status(), 1_000L),
+        )
+        ViewModelTestAccess.invoke(v, "clearProgressStatus", null)
+        assertNull(v.state.value.status)
+        assertNull(v.state.value.cameraCondition)
+        assertNull(ViewModelTestAccess.field(v, "deferredStatusEvent"))
+    }
+
     // AGG6-9: "Camera reconfiguring…" is read from Ready truth. An ordinary reopen publishes no
     // condition, so keyed on one the Output row said nothing during the DNG/aspect/fps/lens reopen it
     // was written for; the cold start and the terminal "reopen the app" are not a reopen.

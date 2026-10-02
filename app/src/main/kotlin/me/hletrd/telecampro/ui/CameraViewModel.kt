@@ -35,7 +35,6 @@ import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.recalledCameraRoute
 import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
-import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.StatusPlate
 import me.hletrd.telecampro.camera.DeferredStatusEvent
@@ -2149,25 +2148,25 @@ class CameraViewModel private constructor(
      * be swallowed by a late arrival of the event this clears on.
      */
     private fun clearProgressStatus(readyPublication: CameraReadyPublication? = null) {
-        val clear: () -> Unit = clear@{
-            // The condition is over whether it is on the plate or waiting behind an event.
-            deferredProgressStatus = null
-            if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) {
-                _state.update { it.copy(cameraCondition = null) }
-                return@clear
+        val clear: () -> Unit = {
+            // The condition is over whether it is on the plate or waiting behind an event. Through
+            // the pure, tested plate transition (AGG6-37): this used to re-implement it inline, so
+            // the tests proved one copy while another shipped.
+            val before = currentStatusPlate()
+            val next = before.clearProgress()
+            recordStatusPlate(next)
+            val shownCleared = next.shown != before.shown
+            _state.update {
+                it.copy(
+                    status = if (shownCleared) next.shown else it.status,
+                    cameraCondition = next.condition?.message,
+                )
             }
-            shownStatusExpiresAtMs = null
-            _state.update { current ->
-                val status = current.status
-                if (status?.lifecycle == CameraStatusLifecycle.PROGRESS) {
-                    current.copy(status = null, cameraCondition = null)
-                } else {
-                    current.copy(cameraCondition = null)
-                }
+            if (shownCleared) {
+                statusSequence++
+                clearStatusRunnable?.let(mainHandler::removeCallbacks)
+                clearStatusRunnable = null
             }
-            statusSequence++
-            clearStatusRunnable?.let(mainHandler::removeCallbacks)
-            clearStatusRunnable = null
         }
         if (readyPublication == null) {
             cameraReadyPublicationGate.serialized(clear)
@@ -4159,7 +4158,7 @@ class CameraViewModel private constructor(
     private var appliedAudioOffByDenial: Boolean? = null
 
     /** What an APPLIED MR recall restored, for the audio-denial reason (AGG3-8). */
-    data class AppliedMemoryRecall(val recordAudio: Boolean, val recordAudioOffByDenial: Boolean?)
+    internal data class AppliedMemoryRecall(val recordAudio: Boolean, val recordAudioOffByDenial: Boolean?)
 
     // The last recall's applied answer, captured BEFORE the grant reconciliation can change audio.
     private var lastAppliedRecall: AppliedMemoryRecall? = null
@@ -4168,8 +4167,12 @@ class CameraViewModel private constructor(
      * [onRecallMemorySlot] that also answers whether the recall APPLIED, and with what audio
      * provenance; null when refused. The old `activeMemorySlot == slot` check after the fact was also
      * true for a REFUSED re-recall of the slot that was already active (AGG2-26).
+     *
+     * A host-test seam only (AGG6-37): since AGG5-22 moved the audio provenance into
+     * [onRecallMemorySlot] itself, production reaches every recall through that door, so this is
+     * module-internal rather than public API that nothing ships through.
      */
-    fun recallMemorySlot(slot: MemorySlot): AppliedMemoryRecall? {
+    internal fun recallMemorySlot(slot: MemorySlot): AppliedMemoryRecall? {
         lastAppliedRecall = null
         onRecallMemorySlot(slot)
         return lastAppliedRecall
