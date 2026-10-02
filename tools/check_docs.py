@@ -113,6 +113,12 @@ GATE_CALL_NAMES = {
         "processReservedDiagnosticLogBudget.tryAcquire",
     ),
 }
+# MRG6-10: a gate call inside a lambda in the condition counts only when that lambda belongs to one
+# of these named admission helpers. The scan cannot tell whether an arbitrary lambda runs at all,
+# so `if (anyHelper { recurringDiagnosticAllowed(…) })` used to pass. `CapabilityDumpRows.admit` and
+# `.admitTruncationNote` call the gate inside their own share, which is what makes them admissible;
+# a new helper must earn its place here by the same contract.
+GATE_LAMBDA_HELPERS = ("admit", "admitTruncationNote")
 
 
 def kotlin_code_only(source: str) -> str:
@@ -233,9 +239,37 @@ def _admits(condition: str, gates: tuple[str, ...]) -> bool:
         pattern = r"(?<![\w.!])(?:[\w.]+\.)?" + re.escape(gate) + r"\s*\("
         for match in re.finditer(pattern, condition):
             prefix = condition[:match.start()].rstrip()
-            if not prefix.endswith("!"):
+            if not prefix.endswith("!") and _gate_lambda_admissible(condition, match.start()):
                 return True
     return False
+
+
+def _gate_lambda_admissible(condition: str, gate_start: int) -> bool:
+    """False when the gate call sits in a lambda that is not a [GATE_LAMBDA_HELPERS] argument."""
+    depth = 0
+    for position in range(gate_start - 1, -1, -1):
+        char = condition[position]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            if depth == 0:
+                head = condition[:position].rstrip()
+                if head.endswith(")"):
+                    open_index = _matching_open(condition, len(head) - 1, "(", ")")
+                    callee = condition[:open_index].rstrip() if open_index is not None else ""
+                    # `if (…) {` / `when (…) {` is a control block; `helper(args) {` is a call
+                    # whose trailing lambda is judged by the helper's name.
+                    if re.search(r"\b(?:if|when|for|while|catch)$", callee):
+                        continue
+                    head = callee
+                # A control-flow block (`else {`, `when … -> {`, `try {`) is not a lambda either:
+                # keep looking outward for one.
+                elif head.endswith("->") or re.search(r"\b(?:else|try|finally|do)$", head):
+                    continue
+                helper = re.search(r"([\w.]+)$", head)
+                return helper is not None and helper.group(1).rsplit(".", 1)[-1] in GATE_LAMBDA_HELPERS
+            depth -= 1
+    return True
 
 
 def _if_condition_before(code: str, end: int) -> str | None:

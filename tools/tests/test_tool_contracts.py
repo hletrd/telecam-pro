@@ -1762,6 +1762,41 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_admits_a_gate_lambda_only_through_named_helpers(self) -> None:
+        # MRG6-10: the scan cannot tell whether an arbitrary lambda runs, so a gate call inside one
+        # proves nothing. Only the allowlisted CapabilityDumpRows helpers (`admit`,
+        # `admitTruncationNote`) call the gate inside their own share; any other lambda fails.
+        inspector = "app/src/main/kotlin/me/hletrd/telecampro/camera/VendorTagInspector.kt"
+        fixtures = (
+            (
+                "        if (rows.admit { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) android.util.Log.i(",
+                "        if (anyHelper { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) android.util.Log.i(",
+            ),
+            (
+                "        if (rows.admit { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) android.util.Log.i(",
+                "        if (anyHelper(rows) { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) android.util.Log.i(",
+            ),
+            (
+                "            if (rows.admitTruncationNote { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) {",
+                "            if (listOf(rows).any { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) {",
+            ),
+        )
+        for current, stale in fixtures:
+            with self.subTest(stale=stale):
+                def mutate(root: Path) -> None:
+                    path = root / inspector
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  every production debug log site has an executable quota classification",
+                    result.stdout,
+                )
+
     def test_committed_export_rejects_a_double_charged_gated_debug_row(self) -> None:
         # AGG5-9: a pre-gated row routed back through the `DiagnosticLog as Log` door is charged
         # twice. Reverting any one of the single-charge sites must fail the gate.
