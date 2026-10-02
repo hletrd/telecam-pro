@@ -432,6 +432,19 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
         self.assertIn('run(["./gradlew", *default_gradle_tasks(clean)], env)', source)
 
+    def test_gate_ends_with_a_terminal_release_lint_verdict(self) -> None:
+        # RG5-15 / TE5-20 (AGG5-19): a dirty-tree run must not read as "release lint green".
+        verify_host = load_verify_host()
+        self.assertEqual("release lint: SKIPPED (dirty tree)", verify_host.release_lint_summary(False))
+        self.assertEqual("release lint: RAN (:app:lintRelease)", verify_host.release_lint_summary(True))
+        source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
+        main_body = source[source.index("def main() -> int:"):]
+        # The verdict is the LAST thing main prints, after every gate step has passed.
+        self.assertIn(
+            "    print(release_lint_summary(clean), flush=True)\n    return 0\n",
+            main_body,
+        )
+
     def test_diff_gate_rejects_staged_and_unstaged_whitespace_errors(self) -> None:
         command = load_verify_host().repository_diff_check_command()
         self.assertEqual(command, ["git", "diff", "--check", "HEAD", "--"])

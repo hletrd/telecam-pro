@@ -127,6 +127,15 @@ def default_gradle_tasks(clean: bool) -> list[str]:
     return [*DEFAULT_GRADLE_TASKS, *((RELEASE_LINT_TASK,) if clean else ())]
 
 
+# RG5-15 / TE5-20 (AGG5-19): the dirty-tree skip used to be one NOTE at the TOP of a long log and an
+# exit code of 0, so a green mid-cycle run read as "release lint green". The gate now ends with one
+# terminal summary line a ledger can cite verbatim, and "SKIPPED" is the only word it uses for it.
+def release_lint_summary(clean: bool) -> str:
+    if clean:
+        return f"release lint: RAN ({RELEASE_LINT_TASK})"
+    return "release lint: SKIPPED (dirty tree)"
+
+
 def repository_diff_check_command() -> list[str]:
     """Check the complete HEAD patch, including index and unstaged worktree changes."""
     return ["git", "diff", "--check", "HEAD", "--"]
@@ -181,6 +190,7 @@ def main() -> int:
             ],
             env,
         )
+    print(release_lint_summary(clean), flush=True)
     return 0
 
 

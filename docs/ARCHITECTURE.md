@@ -1354,8 +1354,10 @@ interpolated shipping GLSL ES program with the stable Android Emulator package's
 stage-interface failures. Its `:app:assembleDebugAndroidTest` phase compiles
 and packages the instrumented source set; it does not run those tests or prove device behavior.
 On a clean committed tree it also runs `:app:lintRelease` (no signing material needed); on a dirty
-tree it prints that release lint was not run, because every release entry point requires
-`verifyCleanReleaseGit`. Kotlin compiler warnings are fatal (`allWarningsAsErrors`), so a cached
+tree it cannot, because every release entry point requires `verifyCleanReleaseGit`. Either way the
+gate's LAST line is a terminal verdict — `release lint: RAN (:app:lintRelease)` or
+`release lint: SKIPPED (dirty tree)` — so a green dirty-tree run cannot be cited as release-lint
+evidence. Kotlin compiler warnings are fatal (`allWarningsAsErrors`), so a cached
 compile cannot hide one.
 Individual Gradle tasks are focused developer subsets, not a repository-wide green result.
 
