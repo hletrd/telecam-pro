@@ -9,13 +9,13 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Build
-import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.util.Size
+import me.hletrd.telecampro.BuildConfig
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Debug-only camera capability logger. It records camera characteristics plus available
- * capture-request and session keys to Logcat under tag [TAG].
+ * Debug-only camera capability logger. It records each camera's facing, focal lengths, sensor size
+ * and physical ids, plus the read-only concurrent/physical finder probes, to Logcat under [TAG].
  *
  * Run `adb logcat -s TeleCamProVendor` while the app is open to confirm which Camera2 capabilities are
  * available on the device.
@@ -25,7 +25,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 120-row RESERVED warning/error owner, and a debug soak with a few Engine re-creations could leave
  * no room for the real onError/configure/teardown warnings that owner exists to keep. The facts
  * cannot change inside a process, so the first dump is the only one worth its rows; it now spends
- * the recurring information owner like every other repeatable diagnostic.
+ * the recurring information owner like every other repeatable diagnostic — but only within a fixed
+ * [CAPABILITY_DUMP_ROW_SHARE] of it, camera facts first, and the process claim is kept only once a
+ * row was actually admitted (AGG6-21, [CapabilityDumpRows]).
  */
 object VendorTagInspector {
     const val TAG = "TeleCamProVendor"
@@ -43,23 +45,43 @@ object VendorTagInspector {
     private val PIP_BASELINE_SIZE = Size(640, 480)
     private val PIP_PRIMARY_SIZE = Size(1920, 1440)
 
+    // The dump in flight; only the one setupExecutor task that won [claimDump] touches it.
+    private var rows = CapabilityDumpRows()
+
+    /** The ONE emission point: charged against the shared owner inside the dump's share only. */
+    private fun log(message: String) {
+        if (rows.admit { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) android.util.Log.i(TAG, message)
+    }
+
     fun logAll(manager: CameraManager) {
         if (!claimDump()) return
-        runCatching {
-            val concurrentSets = manager.concurrentCameraIds
-                .map { it.sorted() }
-                .sortedBy { it.joinToString(",") }
-            Log.i(TAG, "Concurrent camera sets=$concurrentSets")
-            runCatching { logWideFinderSupport(manager, concurrentSets) }
-                .onFailure { Log.i(TAG, "ConcurrentProbe result=ERROR ${it.javaClass.simpleName}: ${it.message}") }
-            runCatching { logLogicalPhysicalFinderSupport(manager) }
-                .onFailure { Log.i(TAG, "PhysicalProbe result=ERROR ${it.javaClass.simpleName}: ${it.message}") }
-            for (id in manager.cameraIdList) {
-                logCamera(manager, id)
-                val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
-                for (pid in chars.physicalCameraIds) logCamera(manager, pid, parent = id)
+        rows = CapabilityDumpRows()
+        try {
+            runCatching {
+                // Camera facts first: they are what the dump is read for, so a capped share spends
+                // its rows on them before the speculative finder probes.
+                val ids = manager.cameraIdList
+                for (id in ids) {
+                    logCamera(manager, id)
+                    val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
+                    // A physical id that is ALSO a standalone id already has its own row.
+                    for (pid in chars.physicalCameraIds) if (pid !in ids) logCamera(manager, pid, parent = id)
+                }
+                val concurrentSets = manager.concurrentCameraIds
+                    .map { it.sorted() }
+                    .sortedBy { it.joinToString(",") }
+                log("Concurrent camera sets=$concurrentSets")
+                runCatching { logWideFinderSupport(manager, concurrentSets) }
+                    .onFailure { log("ConcurrentProbe result=ERROR ${it.javaClass.simpleName}: ${it.message}") }
+                runCatching { logLogicalPhysicalFinderSupport(manager) }
+                    .onFailure { log("PhysicalProbe result=ERROR ${it.javaClass.simpleName}: ${it.message}") }
+            }.onFailure { log("logAll failed: ${it.message}") }
+            if (rows.admitTruncationNote { recurringDiagnosticAllowed(BuildConfig.DEBUG) }) {
+                android.util.Log.i(TAG, "capability dump truncated at its $CAPABILITY_DUMP_ROW_SHARE-row share")
             }
-        }.onFailure { Log.i(TAG, "logAll failed: ${it.message}") }
+        } finally {
+            rows.settleClaim(processDumpClaimed)
+        }
     }
 
     /**
@@ -76,19 +98,19 @@ object VendorTagInspector {
         // diagnostics on an older device (minSdk 33, multi-device) simply skip — nothing runtime
         // depends on the probe result.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            Log.i(TAG, "ConcurrentProbe result=SKIP_API_${Build.VERSION.SDK_INT}")
+            log("ConcurrentProbe result=SKIP_API_${Build.VERSION.SDK_INT}")
             return
         }
         val ids = manager.cameraIdList.toSet()
         if (WIDE_CAMERA_ID !in ids) {
-            Log.i(TAG, "ConcurrentProbe wide=$WIDE_CAMERA_ID result=MISSING_CAMERA")
+            log("ConcurrentProbe wide=$WIDE_CAMERA_ID result=MISSING_CAMERA")
             return
         }
         PIP_ACTIVE_CAMERA_IDS.filter { it in ids }.forEach { activeId ->
             val advertised = concurrentSets.any { WIDE_CAMERA_ID in it && activeId in it }
             logConcurrentMandatoryPrivateStreams(manager, activeId)
             if (!advertised) {
-                Log.i(TAG, "ConcurrentProbe pair=$WIDE_CAMERA_ID+$activeId result=NOT_ADVERTISED")
+                log("ConcurrentProbe pair=$WIDE_CAMERA_ID+$activeId result=NOT_ADVERTISED")
                 return@forEach
             }
             listOf(
@@ -99,8 +121,7 @@ object VendorTagInspector {
                 val activeAvailable = supportsPrivateSize(manager, activeId, activeSize)
                 val wideAvailable = supportsPrivateSize(manager, WIDE_CAMERA_ID, wideSize)
                 if (!activeAvailable || !wideAvailable) {
-                    Log.i(
-                        TAG,
+                    log(
                         "ConcurrentProbe pair=$WIDE_CAMERA_ID+$activeId profile=$profile " +
                             "active=${activeSize.width}x${activeSize.height} " +
                             "pip=${wideSize.width}x${wideSize.height} advertised=true " +
@@ -114,8 +135,7 @@ object VendorTagInspector {
                 )
                 runCatching { manager.isConcurrentSessionConfigurationSupported(sessions) }
                     .onSuccess { supported ->
-                        Log.i(
-                            TAG,
+                        log(
                             "ConcurrentProbe pair=$WIDE_CAMERA_ID+$activeId profile=$profile " +
                                 "active=${activeSize.width}x${activeSize.height} " +
                                 "pip=${wideSize.width}x${wideSize.height} advertised=true " +
@@ -123,8 +143,7 @@ object VendorTagInspector {
                         )
                     }
                     .onFailure { error ->
-                        Log.i(
-                            TAG,
+                        log(
                             "ConcurrentProbe pair=$WIDE_CAMERA_ID+$activeId profile=$profile " +
                                 "result=ERROR ${error.javaClass.simpleName}: ${error.message}",
                         )
@@ -145,12 +164,12 @@ object VendorTagInspector {
         // CameraDeviceSetup + the output-only SessionConfiguration ctor are API 35+ (see
         // logWideFinderSupport); skip the probe below that.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            Log.i(TAG, "PhysicalProbe result=SKIP_API_${Build.VERSION.SDK_INT}")
+            log("PhysicalProbe result=SKIP_API_${Build.VERSION.SDK_INT}")
             return
         }
         val ids = manager.cameraIdList.toSet()
         if (LOGICAL_CAMERA_ID !in ids) {
-            Log.i(TAG, "PhysicalProbe logical=$LOGICAL_CAMERA_ID result=MISSING_CAMERA")
+            log("PhysicalProbe logical=$LOGICAL_CAMERA_ID result=MISSING_CAMERA")
             return
         }
         val logicalChars = manager.getCameraCharacteristics(LOGICAL_CAMERA_ID)
@@ -165,27 +184,25 @@ object VendorTagInspector {
         val setupSupported = runCatching {
             manager.isCameraDeviceSetupSupported(LOGICAL_CAMERA_ID)
         }.getOrElse { error ->
-            Log.i(
-                TAG,
+            log(
                 "PhysicalProbe logical=$LOGICAL_CAMERA_ID logicalMulti=$logicalMultiCamera " +
                     "queryVersion=$queryVersion result=ERROR ${error.javaClass.simpleName}: ${error.message}",
             )
             return
         }
-        Log.i(
-            TAG,
+        log(
             "PhysicalProbe logical=$LOGICAL_CAMERA_ID physicalIds=${physicalIds.sorted()} " +
                 "logicalMulti=$logicalMultiCamera queryVersion=$queryVersion setup=$setupSupported",
         )
         if (!logicalMultiCamera || !setupSupported) {
-            Log.i(TAG, "PhysicalProbe logical=$LOGICAL_CAMERA_ID result=QUERY_UNAVAILABLE")
+            log("PhysicalProbe logical=$LOGICAL_CAMERA_ID result=QUERY_UNAVAILABLE")
             return
         }
 
         val setup = manager.getCameraDeviceSetup(LOGICAL_CAMERA_ID)
         PIP_PHYSICAL_TELE_IDS.forEach { teleId ->
             if (WIDE_CAMERA_ID !in physicalIds || teleId !in physicalIds) {
-                Log.i(TAG, "PhysicalProbe pair=$WIDE_CAMERA_ID+$teleId result=NOT_LOGICAL_PHYSICAL_PAIR")
+                log("PhysicalProbe pair=$WIDE_CAMERA_ID+$teleId result=NOT_LOGICAL_PHYSICAL_PAIR")
                 return@forEach
             }
             listOf(
@@ -196,8 +213,7 @@ object VendorTagInspector {
                 val teleAvailable = supportsPrivateSize(manager, teleId, teleSize)
                 val wideAvailable = supportsPrivateSize(manager, WIDE_CAMERA_ID, wideSize)
                 if (!teleAvailable || !wideAvailable) {
-                    Log.i(
-                        TAG,
+                    log(
                         "PhysicalProbe pair=$WIDE_CAMERA_ID+$teleId profile=$profile " +
                             "tele=${teleSize.width}x${teleSize.height} " +
                             "pip=${wideSize.width}x${wideSize.height} sizes=false " +
@@ -214,16 +230,14 @@ object VendorTagInspector {
                 )
                 runCatching { setup.isSessionConfigurationSupported(session) }
                     .onSuccess { supported ->
-                        Log.i(
-                            TAG,
+                        log(
                             "PhysicalProbe pair=$WIDE_CAMERA_ID+$teleId profile=$profile " +
                                 "tele=${teleSize.width}x${teleSize.height} " +
                                 "pip=${wideSize.width}x${wideSize.height} query=$supported",
                         )
                     }
                     .onFailure { error ->
-                        Log.i(
-                            TAG,
+                        log(
                             "PhysicalProbe pair=$WIDE_CAMERA_ID+$teleId profile=$profile " +
                                 "result=ERROR ${error.javaClass.simpleName}: ${error.message}",
                         )
@@ -262,7 +276,7 @@ object VendorTagInspector {
             .distinct()
             .sortedWith(compareBy<Size> { it.width }.thenBy { it.height })
             .joinToString { "${it.width}x${it.height}" }
-        Log.i(TAG, "ConcurrentMandatory camera=$cameraId private=[$privateSizes]")
+        log("ConcurrentMandatory camera=$cameraId private=[$privateSizes]")
     }
 
     private fun logCamera(manager: CameraManager, id: String, parent: String? = null) {
@@ -271,8 +285,7 @@ object VendorTagInspector {
         val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.toList()
         val size = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
         val header = if (parent == null) "Camera $id" else "Camera $id (physical of $parent)"
-        Log.i(TAG, "== $header facing=$facing focalsMm=$focals sensorMm=$size ==")
-
-        Log.i(TAG, "   physicalIds=${chars.physicalCameraIds}")
+        // One row per camera (it was two): the dump's rows are a fixed share of the shared owner.
+        log("== $header facing=$facing focalsMm=$focals sensorMm=$size physicalIds=${chars.physicalCameraIds} ==")
     }
 }

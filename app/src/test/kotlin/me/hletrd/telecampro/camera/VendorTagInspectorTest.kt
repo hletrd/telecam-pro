@@ -42,4 +42,43 @@ class VendorTagInspectorTest {
         assertEquals(afterFirst, rows.size)
         assertTrue(rows.none { it.type >= Log.WARN })
     }
+
+    // AGG6-21: the dump spends at most its fixed share of the shared owner, keeps one slot for an
+    // honest truncation note, and charges nothing beyond it.
+    @Test
+    fun `a capped dump spends only its share and notes the truncation`() {
+        val shared = ProcessDiagnosticLogBudget(SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        val rows = CapabilityDumpRows(maxRows = 4)
+        val admitted = (1..10).count { rows.admit { recurringDiagnosticAllowed(true, shared) } }
+        assertEquals(3, admitted)
+        assertTrue(rows.truncated)
+        assertTrue(rows.admitTruncationNote { recurringDiagnosticAllowed(true, shared) })
+        assertFalse(rows.admitTruncationNote { recurringDiagnosticAllowed(true, shared) })
+        assertEquals(4, rows.emitted)
+        assertEquals(4, shared.usedRows())
+        assertEquals(20, CAPABILITY_DUMP_ROW_SHARE)
+    }
+
+    @Test
+    fun `a dump refused by the shared owner keeps no claim and charges nothing more`() {
+        val exhausted = ProcessDiagnosticLogBudget(1).also { assertTrue(it.tryAcquire()) }
+        val claim = AtomicBoolean(false)
+        assertTrue(VendorTagInspector.claimDump(claim))
+        val rows = CapabilityDumpRows()
+        var consulted = 0
+        assertFalse(rows.admit { consulted++; recurringDiagnosticAllowed(true, exhausted) })
+        assertFalse(rows.admit { consulted++; true })
+        assertEquals(1, consulted)
+        assertFalse(rows.truncated)
+        assertFalse(rows.admitTruncationNote { true })
+        rows.settleClaim(claim)
+        // The claim is returned: a later Engine start may still take the dump.
+        assertTrue(VendorTagInspector.claimDump(claim))
+
+        // A dump that admitted a row keeps its claim for the process.
+        val kept = CapabilityDumpRows()
+        assertTrue(kept.admit { true })
+        kept.settleClaim(claim)
+        assertFalse(VendorTagInspector.claimDump(claim))
+    }
 }

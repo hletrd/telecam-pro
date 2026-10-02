@@ -155,6 +155,55 @@ internal object DiagnosticLog {
     fun e(tag: String, message: String, failure: Throwable?) = process.e(tag, message, failure)
 }
 
+/** The most shared recurring rows the once-per-process debug capability dump may spend (AGG6-21). */
+internal const val CAPABILITY_DUMP_ROW_SHARE = 20
+
+/**
+ * Row admission for the once-per-process debug capability dump (AGG6-21). The dump cost ~38 shared
+ * rows on PMA110 ~5 s into every debug process — ~23% of the 168 the soak producers were budgeted
+ * against — and its claim latched BEFORE any row was admitted, so a dump that met an exhausted
+ * budget was lost for the process. Each row now crosses the shared owner only inside a fixed
+ * [maxRows] share: content takes at most `maxRows - 1`, and the last slot is kept for one
+ * truncation note so a capped dump never reads as "that capability is absent". The first refusal by
+ * the shared owner closes the dump (that owner never refills). [settleClaim] returns the process
+ * claim when not a single row was admitted, so a later Engine start can still take the dump.
+ */
+internal class CapabilityDumpRows(private val maxRows: Int = CAPABILITY_DUMP_ROW_SHARE) {
+    var emitted = 0
+        private set
+    var truncated = false
+        private set
+    private var refused = false
+
+    init {
+        require(maxRows >= 2)
+    }
+
+    /** One content row; [shared] is the recurring gate, consulted (and charged) only within the share. */
+    fun admit(shared: () -> Boolean): Boolean {
+        val admitted = admitWithin(maxRows - 1, shared)
+        if (!admitted && !refused) truncated = true
+        return admitted
+    }
+
+    /** The single truncation note, in the slot content can never take. */
+    fun admitTruncationNote(shared: () -> Boolean): Boolean = truncated && admitWithin(maxRows, shared)
+
+    fun settleClaim(claim: java.util.concurrent.atomic.AtomicBoolean) {
+        if (emitted == 0) claim.set(false)
+    }
+
+    private fun admitWithin(limit: Int, shared: () -> Boolean): Boolean {
+        if (refused || emitted >= limit) return false
+        if (!shared()) {
+            refused = true
+            return false
+        }
+        emitted++
+        return true
+    }
+}
+
 /**
  * Tap-focus diagnostics are action-repeatable, so only a real scan/reset edge may spend one row.
  * Empty clear calls remain silent and neither edge can bypass the process recurring-row ceiling.
