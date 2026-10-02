@@ -105,4 +105,4 @@ evidence.
 
 - `fd-code-reviewer` (feature-dev subagent) and `qa-adversary` (first launch) stalled without returning,
   as in cycles 1, 2 and 4. Re-run once: fd as a general-purpose agent writing its own file; QA gate run
-  directly by the orchestrator (`qa-adversary.md`). Results appended below when available.
+  directly by the orchestrator (`qa-adversary.md`). fd rerun returned FD5-1/FD5-2 (folded into AGG5-71 and AGG5-34). QA gate: exit 0, 2507 tests, lint 0 errors / 1 deferred warning, release lint skipped on the dirty tree (QA5-1 = AGG5-19).
