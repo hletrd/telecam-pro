@@ -3024,16 +3024,16 @@ internal fun meteringRect(
 internal fun stillCompletionMissingCharacteristics(wantRaw: Boolean, charsPresent: Boolean): Boolean =
     wantRaw && !charsPresent
 
-/**
- * The AF override for one request, read entirely from that request's control packet (AGG5-29):
- * the repeating paths pass the live controls, a still passes its frozen shutter-time packet.
- */
 /** The two live AF override inputs, frozen with a still's controls at the press (AGG5-29). */
 internal data class StillAfInputs(val touchAfActive: Boolean, val lastFocusDistance: Float)
 
 /** Everything a still's request reads that the operator can change after the press. */
 internal data class StillShotFreeze(val controls: ManualControls, val af: StillAfInputs)
 
+/**
+ * The AF override for one request, read entirely from that request's control packet (AGG5-29):
+ * the repeating paths pass the live controls, a still passes its frozen shutter-time packet.
+ */
 internal fun afOverrideForRequest(
     requestControls: ManualControls,
     touchAfActive: Boolean,

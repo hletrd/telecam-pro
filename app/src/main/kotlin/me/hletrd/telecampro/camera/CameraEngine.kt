@@ -9054,12 +9054,6 @@ internal fun resumePreviewRebindWanted(inputSurfacePresent: Boolean, previewRead
     !inputSurfacePresent || !previewReady
 
 /**
- * The status for a REC start refused at the standby-microphone hand-off (AGG5-66). The claim and
- * its release wait guard the ONE mic owner, and an audio-off take opens no AudioRecord: what
- * actually refused it is the earlier recording owner still holding that claim, so it must not
- * blame a microphone the take never asked for.
- */
-/**
  * EXIF ExposureBias, in EV-step units, from whichever owner actually applied it (AGG5-46).
  *
  * Under admitted manual AE (every AE-OFF mode, including app-side photo PROGRAM — the PMA110
@@ -9080,6 +9074,12 @@ internal fun exifExposureBiasSteps(
     else -> intentSteps
 }
 
+/**
+ * The status for a REC start refused at the standby-microphone hand-off (AGG5-66). The claim and
+ * its release wait guard the ONE mic owner, and an audio-off take opens no AudioRecord: what
+ * actually refused it is the earlier recording owner still holding that claim, so it must not
+ * blame a microphone the take never asked for.
+ */
 internal fun recordingClaimRefusalStatus(recordAudio: Boolean): CameraStatusMessage =
     if (recordAudio) CameraStatusMessage.MICROPHONE_BUSY else CameraStatusMessage.FINISHING_PREVIOUS_CLIP
 

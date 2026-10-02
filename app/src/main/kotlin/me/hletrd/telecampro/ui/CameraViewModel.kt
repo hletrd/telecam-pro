@@ -2693,6 +2693,27 @@ class CameraViewModel private constructor(
     }
 
     /**
+     * Main-thread half of a setup-thread route fold (AGG6-12), exactly once per
+     * [CameraUiState.routeFoldEpoch]. The fold resets zoom onto the new route's scale on the setup
+     * thread; until this runs, main still holds values in the OLD scale. A queued 16 ms flush, ease
+     * tick or pinch compounded from the old pending ratio and wrote it to the NEW route, and the 40 ms
+     * throttled controls packet pushed the old zoom wholesale. So every main entry that reads or
+     * submits those values settles first, and the fold's own post is then a no-op. Unlike the
+     * synchronous doors, this one also ENDS an Engine zoom interaction it cancels: the route change
+     * has already happened, so there is no outgoing controller to spare, and a posted invalidation
+     * that removed `zoomInteractionEnd` without telling the Engine left its boost and HAL-submit
+     * suppression on until the next zoom input.
+     */
+    private fun settleRouteFold() {
+        val epoch = _state.value.routeFoldEpoch
+        if (epoch == settledRouteFoldEpoch) return
+        settledRouteFoldEpoch = epoch
+        cancelPendingControls()
+        if (zoomGlide.interacting) engine.setZoomInteraction(false)
+        invalidateOpticsDerivedState()
+    }
+
+    /**
      * One-shot teardown of every piece of ROUTE-SCOPED derived state, called from EVERY optics-SCALE
      * remap door (mode / lens / TC / MR-recall / rollback / camera-override) AND onStop.
      *
@@ -2720,27 +2741,6 @@ class CameraViewModel private constructor(
      * `commitRetainedOpticsControls`, which folds exact controls and boost removal into its one
      * camera-thread request update. `resume()` covers an onStop-mid-gesture lifecycle return.
      */
-    /**
-     * Main-thread half of a setup-thread route fold (AGG6-12), exactly once per
-     * [CameraUiState.routeFoldEpoch]. The fold resets zoom onto the new route's scale on the setup
-     * thread; until this runs, main still holds values in the OLD scale. A queued 16 ms flush, ease
-     * tick or pinch compounded from the old pending ratio and wrote it to the NEW route, and the 40 ms
-     * throttled controls packet pushed the old zoom wholesale. So every main entry that reads or
-     * submits those values settles first, and the fold's own post is then a no-op. Unlike the
-     * synchronous doors, this one also ENDS an Engine zoom interaction it cancels: the route change
-     * has already happened, so there is no outgoing controller to spare, and a posted invalidation
-     * that removed `zoomInteractionEnd` without telling the Engine left its boost and HAL-submit
-     * suppression on until the next zoom input.
-     */
-    private fun settleRouteFold() {
-        val epoch = _state.value.routeFoldEpoch
-        if (epoch == settledRouteFoldEpoch) return
-        settledRouteFoldEpoch = epoch
-        cancelPendingControls()
-        if (zoomGlide.interacting) engine.setZoomInteraction(false)
-        invalidateOpticsDerivedState()
-    }
-
     private fun invalidateOpticsDerivedState() {
         zoomGlide.invalidateForRemap()
         mainHandler.removeCallbacks(zoomEaseTicker)
