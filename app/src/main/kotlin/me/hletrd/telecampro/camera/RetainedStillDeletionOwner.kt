@@ -53,7 +53,12 @@ internal class RetainedStillDeletionOwner<T>(
     // Engine release. The map is hard-bounded; overflow remains protected by the durable family
     // journal and closes new capture admission until tracked retries make room.
     private val unresolvedDiscards = LinkedHashMap<T, Int>()
-    private var deletionJournalUnavailable = false
+    // Captures whose durable family marker failed while a producer could still emit a sibling
+    // (AGG5-2). This used to be one Engine-lifetime Boolean: a single failed marker (a full disk
+    // while the user deletes to free space) refused every later still until process death, even
+    // though the reason — an unowned late tail — ends the moment that capture's producers are
+    // terminal. Per-id, it clears at that edge or when a later durable marker succeeds.
+    private val nonDurableLiveDeletions = LinkedHashSet<Int>()
 
     init {
         require(maxTombstones > 0)
@@ -102,16 +107,22 @@ internal class RetainedStillDeletionOwner<T>(
         if (captureId !in tombstones) return@synchronized
         if (durable) {
             durableDeletedCaptures.add(captureId)
-        } else {
+            nonDurableLiveDeletions.remove(captureId)
+        } else if (captureId !in producerTerminalCaptures) {
             // A failed durability boundary cannot be papered over by evicting its in-memory owner.
-            // Close still admission until process recovery rather than accepting an unowned tail.
-            deletionJournalUnavailable = true
+            // Close still admission while THIS capture can still produce an unowned tail; a capture
+            // whose producers are already terminal has no tail left to own, so nothing closes. An
+            // unregistered (evicted) id cannot prove terminality and stays fail-closed until its
+            // producer edge arrives.
+            nonDurableLiveDeletions.add(captureId)
         }
         trimTombstonesLocked(captureId)
     }
 
     /** Records that Camera2 plus every HEIF/JPEG/DNG save lane for this capture is terminal. */
     fun markCaptureProducersTerminal(captureId: Int): CaptureFamilyKey? = synchronized(lock) {
+        // No later sibling can appear, so a failed marker for this id no longer guards anything.
+        nonDurableLiveDeletions.remove(captureId)
         if (captureId !in familiesByCapture) return@synchronized null
         producerTerminalCaptures.add(captureId)
         familiesByCapture[captureId].takeIf { captureId in durableDeletedCaptures }
@@ -242,7 +253,7 @@ internal class RetainedStillDeletionOwner<T>(
 
     /** False is a bounded, fail-closed admission signal for the Engine shutter boundary. */
     fun canAdmitCapture(): Boolean = synchronized(lock) {
-        !deletionJournalUnavailable && unresolvedDiscards.size < maxUnresolvedDiscards
+        nonDurableLiveDeletions.isEmpty() && unresolvedDiscards.size < maxUnresolvedDiscards
     }
 
     /** One bounded retry pass, used at Engine release and available to recovery orchestration. */

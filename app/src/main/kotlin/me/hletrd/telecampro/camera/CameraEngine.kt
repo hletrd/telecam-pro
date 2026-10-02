@@ -5679,7 +5679,7 @@ class CameraEngine internal constructor(
                 "CaptureFamily: settled stem=$stem outputs=$outputs",
             )
         }
-        retainedStillDeletionOwner.markCaptureProducersTerminal(registered.spec.captureId)
+        markStillProducersTerminal(registered.spec.captureId)
         registered.producerLease.close()
         scheduleDeletedFamilyRetirement(
             registered.spec.familyKey,
@@ -5743,9 +5743,22 @@ class CameraEngine internal constructor(
             onCaptureFamilyRegistered?.invoke(captureId, spec.familyKey, true)
             RegisteredStillShot(spec, producerLease)
         } catch (failure: Throwable) {
-            retainedStillDeletionOwner.markCaptureProducersTerminal(captureId)
+            markStillProducersTerminal(captureId)
             producerLease.close()
             throw failure
+        }
+    }
+
+    /**
+     * The producer-terminal edge for one still capture. It may reopen still admission that a failed
+     * durable delete marker closed for exactly this capture (AGG5-2), so it republishes when it does;
+     * the ordinary path (admission already open) publishes nothing.
+     */
+    private fun markStillProducersTerminal(captureId: Int) {
+        val wasAdmitting = retainedStillDeletionOwner.canAdmitCapture()
+        retainedStillDeletionOwner.markCaptureProducersTerminal(captureId)
+        if (!wasAdmitting && retainedStillDeletionOwner.canAdmitCapture()) {
+            runCatching { publishProcessStillAdmission() }
         }
     }
 

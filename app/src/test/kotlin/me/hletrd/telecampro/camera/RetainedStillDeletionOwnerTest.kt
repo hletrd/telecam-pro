@@ -407,4 +407,60 @@ class RetainedStillDeletionOwnerTest {
         owner.completeDeletionDurability(77, durable = true)
         assertTrue(owner.canAdmitCapture())
     }
+
+    /** AGG5-2: a failed marker closes admission only while that capture can still produce. */
+    @Test
+    fun `failed durability before producers are terminal closes admission until that edge`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_501L, 501L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        owner.registerCaptureFamily(501, family)
+
+        owner.markCaptureDeleted(501)
+        assertFalse("a live producer could still emit an unowned sibling", owner.canAdmitCapture())
+
+        owner.markCaptureProducersTerminal(501)
+        assertTrue("no tail can arrive any more: the shutter reopens", owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `failed durability after producers are terminal leaves admission open`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_502L, 502L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        owner.registerCaptureFamily(502, family)
+        owner.markCaptureProducersTerminal(502)
+
+        owner.markCaptureDeleted(502)
+
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `a later durable marker reopens admission a failed one closed`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_503L, 503L)
+        val other = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_504L, 504L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+        owner.registerCaptureFamily(503, family)
+        owner.registerCaptureFamily(504, other)
+        owner.markCaptureDeletedInMemory(503)
+        owner.markCaptureDeletedInMemory(504)
+        owner.completeDeletionDurability(503, durable = false)
+        owner.completeDeletionDurability(504, durable = false)
+        assertFalse(owner.canAdmitCapture())
+
+        owner.completeDeletionDurability(503, durable = true)
+        assertFalse("504 still guards a live producer", owner.canAdmitCapture())
+        owner.markCaptureProducersTerminal(504)
+        assertTrue(owner.canAdmitCapture())
+    }
 }
