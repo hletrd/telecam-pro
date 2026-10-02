@@ -1,214 +1,222 @@
-# Document-specialist review: RPL cycle 4 (HEAD 14767b0a)
+# Document-specialist review: RPL cycle 5 (HEAD ea7d4374)
 
 Angle: doc/code mismatches across CLAUDE.md, docs/ARCHITECTURE.md, docs/FIELD_CHECKS.md, README.md,
-docs/play-*.md, KDoc, string resources, the build config, and the version pins. Cycle-3 doc edits
-(`git diff e3a2bdd4..HEAD -- CLAUDE.md docs README.md`) were re-checked line by line against code.
-Every finding below was checked against the on-disk files at HEAD.
+docs/play-*.md (tracked and local-private), docs/TESTING.md, KDoc, string resources, the build config,
+and version pins. Cycle-4 doc edits (`git diff 887d39fb..HEAD -- CLAUDE.md README.md docs/`) were
+re-checked line by line against code at HEAD. Tracked items from
+`docs/plans/2026-10-02-rpl-cycle4.md` are cited, not re-reported as new.
 
 ## Baseline checks that came back clean
 
-- **Version pins are all at the latest stable release** (registry queries made 2026-10-02):
-  AGP 9.4.1, Kotlin / Compose compiler 2.4.20 (2.5.0-Beta1 is the only newer one, and it is not
-  stable), Gradle 9.8.0 (services.gradle.org `current`), Compose BOM 2026.09.00, core-ktx 1.19.1,
+- **Version pins are the latest stable** (registry queries 2026-10-02: Google Maven
+  `maven-metadata.xml`, Maven Central, services.gradle.org `current`). AGP 9.4.1, Kotlin / Compose
+  compiler 2.4.20, Gradle 9.8.0 (wrapper + sha256), Compose BOM 2026.09.00, core-ktx 1.19.1,
   activity-compose 1.13.0, lifecycle 2.11.0, coroutines 1.11.0, heifwriter 1.1.0, exifinterface
   1.4.2, profileinstaller 1.4.1, androidx.test core/runner 1.7.0, ext-junit 1.3.0, Robolectric 4.17,
-  junit 4.13.2. Build Tools 37.0.0 is now stable, but 36.0.0 is the default in AGP 9.4.1
-  (`ToolsRevisionUtils` in builder-9.4.1.jar), so README/ARCHITECTURE "36.0.0 (the AGP 9.4 default)"
-  is correct. CLAUDE.md, README, and ARCHITECTURE toolchain tables all match
-  `gradle/libs.versions.toml`, the wrapper (9.8.0), and `app/build.gradle.kts` (37/36/33, JDK 21).
-- **Strings:** 483 translatable EN keys, 483 KO, none missing or extra. Placeholder differences only
-  come from EN-only plural quantities. No literal in `values*/strings.xml` or in any Kotlin string
-  literal uses a glyph outside the shared cmap of the three bundled Inter faces (checked with
-  fontTools).
-- **Manifest vs Data Safety/PRIVACY:** the declared permissions match (CAMERA, RECORD_AUDIO, the
-  READ_MEDIA trio). INTERNET and ACCESS_NETWORK_STATE are `tools:node="remove"`. The only other
-  merged entry is androidx.core's signature-level `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which
-  is not a runtime/data permission.
-- **Platform claims checked against primary sources:** `SystemBarStyle.dark` → light icons (matches
-  `MainActivity.kt:209-213`). For MediaStore `DATE_EXPIRES` on pending rows, AOSP mainline
-  `FileUtils.computeDateExpires` sets now + `DEFAULT_DURATION_PENDING` (7 days) whenever
-  `IS_PENDING=1` appears in insert or update values (`MediaProvider` insert path and update path
-  both call it). See DOC4-5 for a side effect the docs omit.
-- **Constants quoted in CLAUDE.md** match the code: 1/15 s fluidity cap, 500 ms safe cap, 4 s still
-  ceiling, ×16 gain, FINDER_MIN_ZOOM 3, 60× cap, 200 ms submit interval, 8 s watchdog floor and DNG
-  allocation deadline, ZSL 1/6 stop, 2 %, 400 ms, depth 3, AE 0.30/1.20 stops, log budgets 180/120/300,
-  FrameGap 200 ms / 15 s, worker/backlog counts 2+2, 2+8, 2+4, settings debounce 500 ms, and gravity
-  thresholds 4.9/2.5.
-- `python3 tools/check_docs.py`: 190 checks, 0 failed. The cycle-3 AGG3-37 fix holds.
-- Every cycle-3 CLAUDE.md symbol exists and behaves as written: `dngIntentChangesRearRoute`,
-  `rollbackRawWanted`, `CameraUiState.effectivePhotoFormats`, `meteringMirrorX`,
-  `FrontMirrorConvention`, `cleanupOrphanedPendingBatch`, `deviceProfileForRoute`,
-  `resolveMustUseYuvStill`, `rawStandaloneOnly`, `runRecorderWorkerNative(token)`, and the
-  DeviceProfile field readers. The ARCHITECTURE identifier in DOC4-3 is the one that does not exist.
+  and junit 4.13.2. Nothing is outdated, so there are no Low "bump" findings this cycle.
+- **The on-disk CLAUDE.md / README / ARCHITECTURE toolchain tables match** `libs.versions.toml`,
+  the wrapper, and `app/build.gradle.kts` (37 / 36 / 33, JDK 21).
+- **The new CLAUDE.md compileSdk rationale is verified from AAR metadata.** `core-1.19.1.aar` and
+  `lifecycle-runtime-compose-android-2.11.0.aar` both declare `minCompileSdk=37`, while
+  `activity-1.13.0` declares 36 and `lifecycle-runtime-android-2.11.0` declares 34. That matches
+  `CLAUDE.md:69` exactly.
+- **Robolectric 4.17 supports SDK 37.** Its release notes say "supports SDK 37", which matches the
+  `libs.versions.toml` comment.
+- **Strings:** 505 EN entries, 487 translatable, 487 KO. None are missing or extra, and the
+  placeholders match per key. No new hardcoded user-facing Kotlin literal was added in cycle 4.
+  `ExposureMeterSpeech` and the reconfiguring caption use resources that have KO entries.
+- **`python3 tools/check_docs.py`: 194 checks, 0 failed**, and the stacked-KDoc scan is enforcing.
+- **Every cycle-4 doc symbol exists and behaves as written:**
+  - `StatusPlate`, `StatusPlateRank`, `deferredProgress`, and `CAMERA_CONDITION_ENDING_MESSAGES`.
+    The rank order PROGRESS < SUCCESS < INFO < WARNING < RETAINED_TAKE < ERROR matches
+    `CameraStatus.kt:266`, and the reducer at `:296-318` matches CLAUDE.md's description.
+  - `composeStillExifApp1` (`StillCapturePipeline.kt:732`) and `keptRowReassertsPending`
+    (`MediaStoreWriter.kt:2922`).
+  - `CameraViewModel.standaloneRouteFor`, and `gl.setFrontMirrorConvention` (`GlPipeline.kt:560`;
+    DOC4-3 is fixed).
+  - `MomentaryHold.kt`, `ExposureMeterSpeech.kt`, `PhotoFormatChips.kt` (`withEdit` is imported from
+    `camera/`), `RulerAccessibility.kt` (`totalUnits - 1`), and `AudioDenialReason.kt`.
+  - FIELD_CHECKS D2, E4, A6, and F1 exist, and the dashboard counts ten open items correctly.
+- **README DOC4-1 fix is in place** (`README.md:54-57`, `:100-103`).
+- **Play policy.** targetSdk 36 meets the Google Play requirement that new apps and updates target
+  API 36 from 2026-08-31 (Play Console Help, "Target API level requirements").
+- **Deprecated-API audit at compileSdk 37 is enforced by the build.** `allWarningsAsErrors.set(true)`
+  is at `app/build.gradle.kts:765`, so a Kotlin deprecation warning fails compilation.
 
 ## Findings
 
-### DOC4-1: README still states the PMA110 RAW-routing law, and "not by model name", as universal
+### DS5-1: FIELD_CHECKS claims to be exhaustive, but eight cycle-4 PENDING DEVICE changes have no entry
 - Severity: Medium. Confidence: High. Status: Confirmed.
-- Doc:
-  - `README.md:54-55` says "Wanting RAW is what routes photo onto a standalone camera, so DNG is
-    offered on any rear lens that advertises it".
-  - `README.md:100-101` says "Hardware is resolved by enumerating Camera2 capabilities rather than by
-    model name".
-- Code:
-  - `camera/DeviceProfile.kt:83-84` resolves `PMA110` vs `GENERIC` from `Build.MODEL`.
-  - `GENERIC.rawRequiresStandalone = false` feeds `standaloneRouteWanted(..., rawForcesStandalone)`
-    (`CameraState.kt:537-543`; engine `CameraEngine.kt:612, 4085, 4111`), so on every non-PMA110
-    device DNG stays on the seamless logical camera.
-- Why: cycle 3 (AGG3-47, commit 3d0946ab) scoped this law to the PMA110 profile in CLAUDE.md and
-  ARCHITECTURE, but did not touch README, the public, Play-linked front page. ARCHITECTURE's blanket
-  qualifier ("statements elsewhere in this document and in CLAUDE.md … describe the PMA110 profile",
-  `docs/ARCHITECTURE.md:703-704`) does not cover README. ARCHITECTURE's own overview `:27`, journey
-  step `:247`, and Stills paragraph `:847` are covered by that qualifier, but they still read as
-  universal when quoted alone.
-- Consequence: the public description of route behaviour is wrong on every device the app was
-  opened up to on 2026-08-01. The "not by model name" sentence denies the sanctioned model-string
-  seam that CLAUDE.md documents.
-- Fix: README:54 should say "On the Find X9 Ultra, wanting RAW moves photo onto a standalone camera
-  (that HAL cannot carry RAW on its logical camera); elsewhere DNG stays on the seamless camera when
-  advertised". README:100 should add "…; measured HAL workarounds for the Find X9 Ultra are keyed to
-  its model in one place (`DeviceProfile`)". Optionally add "(PMA110)" at ARCHITECTURE `:27/:247/:847`.
+- What the docs say:
+  - `docs/FIELD_CHECKS.md:3-7` says the ledger "is exhaustive". It also says a change whose device
+    effect has no field procedure is listed in section F, "so its absence from the open list is a
+    recorded fact rather than an omission."
+  - `docs/ARCHITECTURE.md` calls it the exhaustive committed ledger.
+- The cycle-4 plan's progress log (`docs/plans/2026-10-02-rpl-cycle4.md`, merged `verify_host` entry)
+  lists these as PENDING DEVICE: A.2, A.3, A.10, A.12, A.17, A.18, A.20, A.22, B.1, B.2/B.3, and B.4.
+- Only A.20 (→ A6), A.22 (→ F1), and B.2/B.3 (→ E4) have entries. There is no open entry and no
+  section-F row for the rest:
+  - A.2: bare-reopen preflight retry.
+  - A.3: a recall whose video size differs takes `reconfigureCamera`.
+  - A.10: lens re-band on leaving FRONT.
+  - A.12: an EV-only delta under app-side AE is a wire NO_OP.
+  - A.17: YUV still size is aspect-first (`CaptureCapabilities.kt:341-351`; every FRONT and
+    LOGICAL still).
+  - A.18: the inventory fold keeps zoom.
+  - B.1: live muxer-stop tail with the moov walk.
+  - B.4: JPEG EXIF splice.
+- B.4 is the sharpest case. `CLAUDE.md:1066-1076` states as fact that ISO / exposure / 35 mm focal /
+  make / model "stay in parity across both processed formats", and the plan says the device EXIF
+  readback is pending. A6 reads EXIF from one TELE still, but it does not say which format, and it
+  does not cover the processed-JPEG or passthrough splice lane.
+- Failure scenario:
+  - A clean clone (no private BACKLOG) has no committed record that these need closing before the
+    v1.0.2 re-cut.
+  - A.17 changes the saved frame size on every LOGICAL/FRONT still for any device whose largest YUV
+    size is not 4:3. A regression there ships unverified while the ledger says nothing is pending.
+- Fix:
+  - Add open entries for at least B.4 (pull one JPEG + HEIF pair from the same shot and diff the
+    EXIF tags; also check one passthrough JPEG where hi-res exists) and B.1 (a clip with a dropped
+    mic in the add-track window plays and is published).
+  - For A.17, record that PMA110's chosen YUV size is unchanged (`dumpsys` YUV list against
+    `pickStillSize`).
+  - Add F-section HOST-ONLY rows, with a reason, for items that have no practical device procedure
+    (A.2, A.3, A.10, A.12, A.18).
+  - Alternatively, narrow the "exhaustive" wording.
+- PMA110 behaviour change: none (docs only).
 
-### DOC4-2: `standaloneRouteWanted`'s KDoc is detached 120 lines away and still claims the law is universal
-- Severity: Low-Medium. Confidence: High. Status: Confirmed.
-- Doc: `camera/CameraState.kt:416-429` ("Whether the rear PHOTO route must pin a STANDALONE lens … RAW
-  cannot come off it … Every physical camera on this device…") sits directly above ANOTHER KDoc
-  (`:430`, the optical-base helper). The function it describes is at `:537`.
-- Code: `CameraState.kt:537-543`. Its parameter comment says the opposite of the detached KDoc ("A
-  spec device carries RAW on the logical route").
-- Why / consequence: Dokka and IDE hover show nothing (or the wrong text) for the central
-  route-question function. A reader who finds the prose believes the PMA110 law is universal. This
-  is the same drift class as DOC4-1, in the code authority itself.
-- Fix: move the block onto `standaloneRouteWanted` and qualify it ("On the PMA110 profile
-  (`rawRequiresStandalone`)…; GENERIC keeps RAW on the logical camera; VIDEO's pin is the universal
-  EIS decision").
-
-### DOC4-3: ARCHITECTURE's new DeviceProfile table names a method that does not exist
+### DS5-2: `FinalizedRecordingValidation` KDoc still states the pre-AGG4-3 rule
 - Severity: Low. Confidence: High. Status: Confirmed.
-- Doc: `docs/ARCHITECTURE.md:710` ("pushed by `CameraEngine` as `gl.setFrontStreamPreMirrored`").
-  This was introduced by cycle-3 commit 3d0946ab.
-- Code: no `setFrontStreamPreMirrored` exists anywhere. The push is
-  `gl.setFrontMirrorConvention(front, streamPreMirrored)` in `CameraEngine.applyStabilization`
-  (`CameraEngine.kt:2019-2022` → `GlPipeline.kt:546`). CLAUDE.md's Front bullet already names it
-  correctly.
-- Consequence: a grep-driven reader finds nothing. The table row is the cycle-3 "authority" for this
-  flag.
-- Fix: replace it with `gl.setFrontMirrorConvention(front, streamPreMirrored)` from
-  `applyStabilization`.
+- What the doc says: `video/VideoRecorder.kt:2381-2385` says "[INDETERMINATE] is the reopen that
+  proved nothing (the provider open failed) … An extractor throw on an opened file after the tolerated
+  muxer.stop() throw is FAILED (AGG3-6)."
+- What the code does:
+  - `completeFrozenRecordingStorage` (`:1980-1988`) maps `PendingProbe.INDETERMINATE` to INDETERMINATE.
+  - `classifyFinalizedVideoTrack` (`storage/MediaStoreWriter.kt:2736-2790`) returns INDETERMINATE for
+    an extractor throw unless a fresh-descriptor re-parse also throws AND the top-level walk proves
+    `moov` absent. Its own KDoc says this corrects AGG3-6.
+  - So INDETERMINATE now also covers "opened, but the extractor threw without proof", and FAILED
+    needs the walk's proof.
+- Why it matters: the enum is where a reader learns the stop-tail contract. The stale sentence
+  describes the destructive behaviour B.1 removed. Someone "restoring" it would bring back the delete
+  of a playable take.
+- Fix: reword the KDoc to say INDETERMINATE covers both an open failure and an extractor throw
+  without a proven-absent `moov`, and FAILED means the walk proved `moov` absent (AGG4-3, correcting
+  AGG3-6).
+- PMA110 behaviour change: none.
 
-### DOC4-4: Two "PENDING DEVICE" claims are missing from the FIELD_CHECKS ledger that says it is complete
-- Severity: Medium. Confidence: High. Status: Confirmed.
-- Doc:
-  - `docs/FIELD_CHECKS.md:3` says "Everything checkable over ADB is already done", and its status
-    line counts seven open items.
-  - `docs/ARCHITECTURE.md:617` calls FIELD_CHECKS "the exhaustive committed … ledger".
-  - Two commits in this review window leave device verification open:
-    - `CLAUDE.md:974-976`: the token-scoped recorder door (4e57fff2) "is host-tested only and
-      PENDING DEVICE on TB336ZU". Only the earlier owner-admitting fix had the 5/5 AAC device
-      evidence.
-    - `docs/ARCHITECTURE.md:1192` and the `MediaStoreWriter.kt:1135-1137` KDoc: `reassertPending`
-      re-arming the pending expiry is "PENDING DEVICE".
-- Why: neither item has an entry in FIELD_CHECKS (sections A–E), and both can be checked over ADB:
-  a recorded clip's AAC track on TB336ZU, and `content query` of `date_expires` before and after a
-  relaunch. That contradicts the ledger's own "everything checkable over ADB is done" claim.
-- Consequence: a clean clone (where the private BACKLOG is absent) has no committed record that
-  these need closing before the v1.0.2 re-cut. The audio item is a user-visible regression risk
-  (a silent clip on the MediaTek tablet).
-- Fix: add FIELD_CHECKS entries (for example A6 "TB336ZU REC audio under the token door" and E4
-  "pending-row DATE_EXPIRES re-arm") with pass criteria, update the status line count, or soften
-  `:3`.
-
-### DOC4-5: The `reassertPending` contract omits that MediaProvider renames the file on that update
-- Severity: Low. Confidence: Medium-High (AOSP mainline source; OEM forks unverified).
-  Status: Needs-manual-validation.
-- Doc: `MediaStoreWriter.kt:1129-1138` KDoc and `docs/ARCHITECTURE.md:1190-1192` describe the
-  update only as re-arming `DATE_EXPIRES`.
-- Platform source:
-  - `IS_PENDING` and `DATE_EXPIRES` are both in `MediaProvider.sPlacementColumns`, and update
-    movement defaults to allowed for non-self callers (`allowMovement = !isCallingPackageSelf()`).
-  - `FileUtils.computeDataFromValues` rebuilds the on-disk name as
-    `.pending-<newDateExpires>-<displayName>`.
-  - So each relaunch that keeps a row also RENAMES the backing file and changes `_data`.
-    `DISPLAY_NAME` and `RELATIVE_PATH`, which `PendingDiscardIdentity` freezes, are preserved, so the
-    identity check should survive.
-- Consequence: the "PENDING DEVICE" caveat is stronger than needed for the expiry itself (AOSP
-  confirms it), while the rename side effect is undocumented. Anyone later adding `_data` or
-  generation-modified to the identity will silently break discard authority.
-- Fix: cite `FileUtils.computeDateExpires` / `computeDataFromValues` in the KDoc, note the rename and
-  that identity must not include `_data`/`GENERATION_MODIFIED`, and keep the device check for OEM
-  provider forks (see DOC4-4).
-
-### DOC4-6: Stacked KDoc pairs: 21 mid-file declarations still have their docs detached
-- Severity: Low. Confidence: High. Status: Confirmed (scripted scan: one `/** */` block immediately
-  followed by another, with no declaration between).
-- AGG3-56 fixed three sites, but the same defect class persists. Each first block below documents a
-  symbol that sits elsewhere, and Dokka attaches only the second block:
-  - `CameraController.kt:528` (zoom fast path), `:1253` (`applyMeteringRegions`), `:2650`
-    (`sessionAttemptPlan`'s core), `:2692` (`CameraPolicyBlockedException` prose).
-  - `CameraEngine.kt:1340`, `:3463` (session invalidate/claim), `:8672`, `:8785`.
-  - `CaptureCapabilities.kt:630`, `ManualControls.kt:1126` (flash AE modes),
-    `MediaStoreWriter.kt:2400` (`sleepPreservingInterrupt`, separated by an unrelated const KDoc).
-  - `CameraState.kt:387` (finder gate), `:416` (DOC4-2), `:836` (`LensChoice`), `:1226` (HEIF
-    availability).
-  - `FlipRenderer.kt:561` (cover scale), `GlPipeline.kt:608` (Loupe Overview setter),
-    `FocusDetail.kt:153`.
-  - `CameraScreenPolicy.kt:79` (no declaration at all; see DOC4-7), `Overlays.kt:685` (TopStatus
-    OSD), `ControlCycles.kt:164`.
-- Consequence: the HAL-quirk rationale CLAUDE.md says to keep ("don't delete a comment that explains
-  a workaround") is attached to the wrong symbols, or to none. Several of these are the hot-path files.
-- Fix: re-home each block onto its declaration. Add the same stacked-KDoc scan to `check_docs.py`
-  so the class cannot recur.
-
-### DOC4-7: KDoc links point at symbols that were renamed or removed
+### DS5-3: Dead KDoc link to `StillCapturePipeline.applyExifAttributes`, which no longer exists
 - Severity: Low. Confidence: High. Status: Confirmed.
-- `CameraScreenPolicy.kt:81` `[CAMERA_STARTING_STATUS]`: no such symbol (the status is now
-  `CameraStatusLifecycle.PROGRESS`, `CameraStatus.kt:76-197`). The whole 79-90 block documents no
-  declaration.
-- `CameraScreenPolicy.kt:686` `[railChipStateDescription]`: renamed to `railChipState` (`:703`).
-- `CameraController.kt:2722` `[me.hletrd.telecampro.camera.cameraPolicyBlockConfirmed]`: no such
-  function. The confirmation is `CameraEngine.cameraOpWithheld()` (`:3478`) plus the AppOps
-  predicate below it.
-- `CameraState.kt:1564` `[macroCloserLensLabel]`: the field is `macroCloserLens` (`:1567`).
-- Consequence: dead links in the ownership and accessibility docs. The policy-block one is the
-  safety argument for not accusing the user's device.
-- Fix: retarget the four links, and delete or attach the orphan PROGRESS block.
+- What the doc says: `capture/StillCapturePipeline.kt:632` says "[StillCapturePipeline.applyExifAttributes]
+  replays it verbatim."
+- What the code does: no `applyExifAttributes` exists anywhere. Since B.4 the replay is
+  `composeStillExifApp1` (`:752`, `exifAttributeList(shot).forEach { exif.setAttribute(...) }`).
+- Why check_docs missed it: its dead-link sweep (M.9) evidently does not resolve qualified
+  `Class.member` links. A scripted scan of cycle-4-changed files found this as the only true dead
+  qualified link. The rest were platform classes or parameter names.
+- Fix:
+  - Retarget the link to `[composeStillExifApp1]`.
+  - Optionally have check_docs resolve the member part of qualified KDoc links against declared
+    names in `app/src/main`.
 
-### DOC4-8: The CLAUDE.md toolchain row credits lifecycle alone with forcing compileSdk 37
-- Severity: Low. Confidence: High. Status: Confirmed (AAR `aar-metadata.properties` from the Gradle
-  cache).
-- Doc: `CLAUDE.md:69` says "compileSdk 37 required by lifecycle 2.11.0".
-- Evidence:
-  - The lifecycle 2.11.0 runtime/runtime-ktx/viewmodel AARs declare `minCompileSdk=34`. Only
-    `lifecycle-viewmodel-compose` and `lifecycle-runtime-compose` declare 37.
-  - `androidx.core:core` / `core-ktx` 1.19.1 also declare `minCompileSdk=37` and
-    `minAndroidGradlePluginVersion=9.1.0`.
-- Consequence: someone downgrading lifecycle to escape compileSdk 37 would still be blocked by core.
-  The row explains the constraint incompletely.
-- Fix: "compileSdk 37 required by core/core-ktx 1.19.x and lifecycle-viewmodel-compose 2.11.0".
-
-### DOC4-9: CLAUDE.md's "covered set in use" lists glyphs no user-facing literal uses
+### DS5-4: README calls the DeviceProfile seam "the one exception" to model-name resolution, but CLAUDE.md sanctions two
 - Severity: Low. Confidence: High. Status: Confirmed.
-- Doc: `CLAUDE.md:586` lists `§ © ° · ± × γ — … → ∞ ≈ ’ ↑ ↓`.
-- Code: a scan of every `values*/strings.xml` and every Kotlin string literal finds `© ° · ± × — ’ …
-  ↑ → ↓ ∞`. `§`, `γ`, and `≈` occur only in comments and docs now. All glyphs are inside the shared
-  Inter cmap, so there is no rendering defect.
-- Fix: drop "in use", or trim the list to the scanned set. Better, let `check_docs.py` derive it.
+- What the doc says: `README.md:100-103` says "The one exception is deliberate: HAL workarounds …
+  are keyed to its model in a single place (`camera/DeviceProfile.kt`)."
+- What the code does:
+  - `camera/Teleconverter.kt` `detectPhone` also keys off `Build.MODEL`
+    (`ui/CameraViewModel.kt:402`), and it preselects the phone dropdown and the converter kit.
+  - CLAUDE.md (teleconverter rule 3 and the multi-device bullet) names both seams as sanctioned.
+- Why it matters: this is the public front page. The sentence is accurate only for "HAL
+  workarounds", but "the one exception" reads as the only model-string use.
+- Fix: add a sentence such as "…; separately, the phone model only preselects the Lens tab's phone
+  dropdown (a declaration the user can change), and never selects a camera route."
 
-### DOC4-10: ARCHITECTURE's Lens-tab description omits the phone/converter declaration
-- Severity: Low. Confidence: High. Status: Confirmed.
-- Doc: `docs/ARCHITECTURE.md:1251-1252` lists the Lens tab as presets, TELE, stabilization, and OIS.
-- Code: `ProSheet.kt` `LensTab` (`:1217+`) also renders the phone dropdown
-  (`phone_detected_summary`), the converter dropdown (`label_teleconverter`), the magnification
-  field, and the converter-host captions. That matches `CLAUDE.md:621` ("asked as two dropdowns in
-  the Lens tab").
-- Fix: add "phone + teleconverter declaration (and custom magnification)" to item 5.
+### DS5-5: Local Play listing still carries the universal RAW-routing claim and pre-cycle release notes
+- Severity: Low. Confidence: High. Status: Confirmed. The file is gitignored (`.gitignore:66`
+  `/docs/*.md`), so this affects only the maintainer's copy.
+- What the doc says:
+  - `docs/play-store-listing.md:116` (EN) says DNG works "on any rear lens advertising RAW".
+  - `:248` (KO) says "RAW는 지원한다고 알리는 후면 렌즈라면 어디서나".
+- What the code does: on `DeviceProfile.GENERIC`, `rawRequiresStandalone = false`, so
+  `standaloneRouteWanted` (`CameraState.kt:550-556`) keeps DNG on the logical camera. A physical
+  lens's RAW is unreachable there. This is the drift DOC4-1 fixed in README but not in the store
+  copy.
+- Second issue in the same file: the v1.0.2 release notes (`:31-56`) were last edited 2026-08-24
+  (file mtime). Since then, user-visible behaviour has changed:
+  - Processed JPEGs now carry EXIF written in a single pass.
+  - Status messages are priority-arbitrated.
+  - The ISO ruler extends to 102400 and down to 25.
+  - The P-mode shutter follows zoom (A.20).
+  - Momentary AEL/punch-in holds now restore the prior state (A.24).
+- Fix:
+  - Mirror README's scoped wording in both languages.
+  - Re-review the v1.0.2 notes against the commits since 2026-08-24 before the re-cut.
 
-## Cycle-3 doc-edit verification summary
+### DS5-6: ARCHITECTURE says MemoryBankAudioProvenance owns bank provenance; production code does not use that path (already tracked)
+- Severity: Info. Confidence: High. Status: Confirmed. Already tracked as the cycle-4 "later cycle"
+  deslop note.
+- What the docs say: the ARCHITECTURE `AudioDenialReason.kt` row lists "bank provenance" under
+  `MemoryBankAudioProvenance`.
+- What the code does:
+  - `bankAudioOffByDenialNow` (`AudioDenialReason.kt:53`) has no production caller.
+  - `CameraViewModel.onStoreMemorySlot` (`:3634-3640`) calls `bankAudioOffByDenial(...)` directly
+    with its own `AudioDenialReasonStore(app)` instance (`:769`).
+  - MainActivity has a second instance (`MainActivity.kt:1051`). Both target the same prefs file, so
+    behaviour is correct.
+- Why it matters: the doc row and the KDoc ("ONE owner … shared by the Activity … and the
+  ViewModel") describe a structure the code does not have.
+- Fix: whichever way the tracked deslop item resolves, update the ARCHITECTURE row in the same
+  change.
 
-- Accurate: the CLAUDE.md DNG items 2 and 4 (route-flip gating, direct writes, rollback keep rule,
-  and render-time `effectivePhotoFormats`), the TC OIS closure text, the front metering un-flip, the
-  4 s ceiling scoping, the YUV qualifier, and the glyph-list addition. Also accurate: ARCHITECTURE's
-  DeviceProfile table values and readers (apart from DOC4-3), the `cleanupOrphanedPendingBatch` API
-  line, and the HEIF gridded-layout proof text.
-- Inaccurate or incomplete: DOC4-3 (nonexistent method in the new table) and DOC4-1/DOC4-2 (the
-  scoping did not reach README or the function's own KDoc).
+### DS5-7: targetSdk 36 while API 37 is stable has no recorded reason
+- Severity: Info. Confidence: High. Status: Confirmed.
+- What the docs and build say:
+  - `app/build.gradle.kts:609-610` says "Runtime target stays Android 16 (API 36)" but gives no
+    reason.
+  - CLAUDE.md's toolchain row gives none either, while the global rule is "latest stable
+    everything".
+- Policy context: Play policy is met (API 36 is required from 2026-08-31). Moving to API 37 is a
+  behaviour-change migration and would need device validation, which is the legitimate reason.
+- Fix: one clause in the CLAUDE.md row, for example "targetSdk 37 waits for an on-device Android 17
+  behaviour-change pass; Play requires 36 since 2026-08-31".
+
+### DS5-8: CLAUDE.md's gate comment omits two new default-gate behaviours
+- Severity: Info. Confidence: High. Status: Confirmed.
+- What CLAUDE.md says: the build-loop comment (`CLAUDE.md:~96`) lists the host gate as
+  "Android + coverage + Python tools/harness/docs".
+- What the gate does:
+  - Since C.12/C.13, `tools/verify_host.py:100-110, 160-170` also runs `:app:lintRelease` on a clean
+    tree and prints a NOTE on a dirty one.
+  - Kotlin warnings are fatal.
+- ARCHITECTURE `:1349-1352` documents both; CLAUDE.md, the self-contained fallback authority, does
+  not.
+- Fix: add "(+ `:app:lintRelease` on a clean tree; Kotlin warnings fatal)" to the comment.
+
+## Final sweep (commonly missed)
+
+- **Glyph coverage.** No new symbol was added in cycle-4 literals beyond CLAUDE.md's
+  scanned set (`© ° · ± × — … → ∞ ’ ↑ ↓`).
+- **Commit/plan IDs cited in CLAUDE.md exist in history:** 4e57fff2, 0ab5c1ba, 2b4bc55, and c27744c.
+- **`docs/play-console-submit.md` cycle-4 edits** describe the floor the helper enforces
+  (`tools/upload_key_policy.py`). I did not restate its shape here.
+- **`device-tests/` is tracked**, so `verify_host.py`'s `unittest discover -s device-tests/tests`
+  works in a clean clone.
+- **The `.context/reviews/*.md` deletions in the working tree** are the cycle-4 archive move.
+  This review recreates only this file.
+
+## Files covered
+
+CLAUDE.md, README.md, docs/ARCHITECTURE.md, docs/FIELD_CHECKS.md, docs/play-console-submit.md,
+docs/play-store-listing.md (local), docs/plans/2026-10-02-rpl-cycle4.md,
+.context/reviews/archive-rpl-cycle4-2026-10-02/document-specialist.md, gradle/libs.versions.toml,
+gradle/wrapper/gradle-wrapper.properties, app/build.gradle.kts (sdk/version/warnings blocks),
+app/src/main/res/values{,-ko}/strings.xml, tools/verify_host.py, tools/upload_key_policy.py,
+tools/check_docs.py (run), camera/CameraStatus.kt, camera/AutoExposure.kt, camera/CameraState.kt
+(effectiveEquivFocalMm, standaloneRouteWanted), camera/CaptureCapabilities.kt (YUV size),
+capture/StillCapturePipeline.kt, capture/HeifExif.kt, storage/MediaStoreWriter.kt
+(classifyFinalizedVideoTrack, finalizedVideoTrackProbe, reassert KDocs), video/VideoRecorder.kt
+(stop tail, validation enum), video/AudioReadPolicy.kt, AudioDenialReason.kt, MainActivity.kt
+(provenance wiring), ui/CameraViewModel.kt (status plate, memory-bank store),
+ui/ExposureMeterSpeech.kt, ui/controls/PhotoFormatChips.kt, ui/controls/RulerAccessibility.kt, plus
+a scripted KDoc-link scan of every Kotlin file changed in 887d39fb..HEAD.

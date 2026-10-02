@@ -1,220 +1,225 @@
-# Architect review: RPL cycle 4 (HEAD 14767b0a)
+# Architect review — RPL cycle 5
 
-Angle: duplicated sources of truth between the ViewModel, the Engine, the controller, and the
-capability layer; seams that bypass the optics-transaction model; model-string and profile seams;
-singleton and god-object pressure. I read the cycle-3 aggregate, `architect.md`, and the cycle 1–3
-plans first. AGG3-11/12/14/15/16/22 (rollback-publication ownership, `RouteInputs` stamping) are
-still scheduled for later cycles, and I found no new evidence on them, so they are not repeated
-here. Every finding below is new.
+Scope: coupling and layering, duplicated sources of truth (VM vs Engine predicates), ownership and
+generation consistency, model-string branching outside the two sanctioned seams, god-object growth,
+and missing single seams that cause real divergence. Baseline: `ea7d4374` (after the cycle-4 merge
+and deslop). I read CLAUDE.md, the cycle-4 plan (`docs/plans/2026-10-02-rpl-cycle4.md`, including its
+"later cycle", "carried" and "Deferred" lists) and the archived cycle-4 architect review. Items those
+lists already track (AGG4-12/13/17/19/27/33, the AGG3/AGG2/AGG carried sets, MRG4-5, and the
+`MemoryBankAudioProvenance` deslop note) are not reported again here.
 
-Model-string sweep: `Build.MODEL` is read at `camera/DeviceProfile.kt:84` (seam 2),
-`camera/Teleconverter.kt:41` (`detectPhone`, seam 1), `ui/CameraViewModel.kt:393` (feeds
-`detectPhone` only), `camera/CameraEngine.kt:1272` and `camera/CameraController.kt:67` (both call
-`DeviceProfile.resolve`), and `CameraEngine.kt:8001-8009` (EXIF make/model labels, which the
-CLAUDE.md DeviceExifLabels bullet allows). No capability, route, or request decision branches on a
-model string outside the two seams. ARCH4-5 covers the one structural weakness I found here: the
-profile is resolved twice and memoized in a cache whose key does not include it.
+Summary: 0 Critical, 0 High, 0 Medium, 2 Low, 3 Info.
 
-Layering sweep: no file under `ui/` other than `CameraViewModel.kt`, and not `MainActivity.kt`,
-references `CameraEngine`, `CameraController`, `GlPipeline`, `MediaStoreWriter`, or
-`SettingsStore`. The UI→VM→Engine direction holds. One exception is by design: the Activity owns
-the audio-denial provenance in its own preferences (see the final sweep).
+The cycle-4 VM/Engine fixes I traced hold up: A.7 rear-only refusal, A.10 `rearReturnLens`, A.18
+route-inventory fold, A.19 pre-inventory optical set, A.20 one effective focal, A.24 momentary holds,
+and the A.2/MRG4-2/3 bare-retry disposition. I found no new model-string branching. The two findings
+below are what is left of the "two copies of one fact" bug class on the zoom/lens axis.
+
+---
 
 ## Findings
 
-### ARCH4-1: The app-side PROGRAM line and the focus-detail exposure gate use a third focal-length value that ignores zoom. At telephoto digital zoom, the "handheld-safe" shutter is several times too slow
+### AR5-1: The Engine's lens band never follows a seamless zoom, so every rollback publishes a stale band to the VM, and the band predicate exists in three hand-written copies
 
-- Severity: Medium. Confidence: High (code). Status: Confirmed (code). The blur effect needs a
-  device shot to confirm.
-- Where: `ui/CameraViewModel.kt:1872-1887` (`preferredProgramShutterNs(s)` takes
-  `s.lens.targetEquivMm`, the PRESET's nominal 23/70/230 mm, times the converter magnification; it
-  never multiplies by `controls.zoomRatio`); `ui/CameraViewModel.kt:4722-4729` (KDoc: "the
-  1/(35mm-equivalent focal) rule at the effective focal length"); consumers at
-  `ui/CameraViewModel.kt:4167` (`AutoExposure.driveProgram`) and `:578` (`handheldShutterNs` for
-  `frameDefocusCandidate`). The OSD computes the effective focal a different way, at
-  `ui/overlays/Overlays.kt:864-876`: `teleconverterFocalMm × zoomRatio` for TELE and
-  `caps.equivalentFocalMm × zoomRatio` otherwise. EXIF uses `effectiveFocalMm`
-  (`camera/Teleconverter.kt:223`) together with the measured host focal.
-- Why: the app now has three focal truths. They are the OSD/EXIF effective focal (measured lens ×
-  converter × zoom), the program line (preset nominal × converter, no zoom), and the FRONT/EXTERNAL
-  branch (measured `caps.equivalentFocalMm`, no zoom). CLAUDE.md describes PROGRAM as "shutter held
-  at the handheld 1/(effective focal) rule". The OSD the operator reads states a focal length that
-  the exposure loop does not use.
-- Failure scenario: PMA110 with TC on, local zoom 4.0×. The OSD reads about 1200 mm
-  (300 × 4). The program line holds 1/300 s, four times (two stops) slower than its own rule, and
-  this is the app's main use case: handheld at the long end. The same thing happens on the logical
-  route at unified 9.5×: the band is still TELE3X (70 mm nominal), so the shutter is 1/70 s while
-  the OSD shows about 220 mm. On an OTHER-phone tablet with a generic 1.5× converter, the program
-  uses 70 × 1.5 = 105 mm while the OSD and EXIF say 39 mm, so the error goes the other way and
-  costs ISO for nothing. The focus-detail "16× the handheld rule" exposure gate moves by the same
-  factor, so it admits shake-prone frames at high zoom.
-- Fix: derive one `effectiveEquivFocalMm(state)` value, the same value `Overlays.kt` displays
-  (measured `caps.equivalentFocalMm` or `teleconverterFocalMm`, times the route's zoom on its own
-  scale), and pass it to `preferredProgramShutterNs`, `frameDefocusCandidate`, and the OSD. Pin it
-  with a table test: {logical 9.5×, TC local 4×, DNG-standalone 3×, FRONT 2×, OTHER+1.5×} must give
-  the OSD mm and the program 1/mm from the same number. PMA110 behavior changes by design, so this
-  is a deliberate exposure change and needs an owner nod plus a device A/B.
+- Severity: Low · Confidence: High · Status: Confirmed (code path); visible symptom needs device validation
+- Cites:
+  - `camera/CameraEngine.kt:4764-4810` (`setZoomRatio`): writes `controls.zoomRatio` and never re-bands `lensChoice`.
+  - `camera/CameraEngine.kt:4842-4863` (`commitZoomForBoost`): same, never re-bands.
+  - `camera/CameraEngine.kt:600, 2848, 3017`: the only zoom-derived re-band sites. They run at caps
+    install and door commit, never on a pinch.
+  - `camera/CameraEngine.kt:605-614` (`lensBandFollowsZoom`): a private engine copy of the predicate.
+  - `ui/CameraViewModel.kt:2334-2343` (`flushZoom`) and `ui/CameraViewModel.kt:3194-3200`
+    (`reconcileZoomToCaps`): the two VM copies, written inline as
+    `!teleconverterMode && activeCameraRoute == BACK && !standaloneRouteFor(s)`.
+  - `camera/CameraEngine.kt:759-764` (`currentOpticsSnapshot`): `lens = lensChoice` becomes the
+    rollback baseline.
+  - `ui/CameraViewModel.kt:999-1003`: the rollback publication writes `lens = rollback.lens` into UI
+    state.
+- Why it matters: on the logical photo route the VM re-bands `lens` from the unified zoom on every
+  flush (`flushZoom`). The Engine only writes the ratio, so after a pinch from 1× to 5× the VM holds
+  `TELE3X` and the Engine still holds `MAIN`. Most doors hide this because they carry the VM's lens
+  into the Engine transaction (`setVideoMode(resolvedLens)`, the DNG remap packet,
+  `setResolvedOptics`). On the logical route `unifiedZoomOf` and `resolveNonTeleId` also ignore the
+  lens. But `OpticsSnapshot.lens` is the stale engine value, and every `rollbackOptics` publishes it
+  back to the VM.
+- Failure scenario (PMA110):
+  1. In Photo, pinch to 5× without backgrounding the app. The VM holds `TELE3X`; the Engine holds
+     `MAIN`.
+  2. Run any door that rolls back. Examples: Video with the standalone lens unavailable
+     (`CAMERA_UNAVAILABLE_MODE_UNCHANGED`), TC with the 3× lens unavailable
+     (`TELE_LENS_UNAVAILABLE_UNCHANGED`), a recording that wins the race against a mode/lens door
+     (`STOP_RECORDING_*_UNCHANGED`), or a failed DNG reopen.
+  3. The rollback publishes `lens = MAIN, zoom = 5.0`. The rail and lens caption now highlight 1×
+     while the frame is at 5×. This lasts until the next zoom movement re-bands it.
 
-### ARCH4-2: Video frame rates are offered and pinned without any per-size check. The "gated against the selected size" contract exists only in documentation
+  A second path is latent today. If DNG were toggled while FRONT, `onSetPhotoFormats` passes no
+  remap packet (`dngDoorRemapsZoomScale` is false on lens-local routes). On leaving FRONT the Engine
+  would then compute `rearReturnZoom(..., lensPreset = MAIN.zoomPreset)` = 5.0 on the main standalone
+  lens, while the VM computes 5/3 = 1.67 on `TELE3X`. That is a real wire/UI zoom split, and the
+  next `updateControls` would jump the frame to 1.67× on the main lens. It is unreachable from the UI
+  right now only because `rawSelectable(frontFacing = true)` disables the DNG chip
+  (`camera/OpticsConstraints.kt:97-103`, `ui/controls/PhotoFormatChips.kt:76-84`). Any future
+  DNG-capable front route or a new DNG entry point would expose it.
+- Suggested fix:
+  - Hoist the predicate into one pure top-level function in `CameraState.kt`:
+    `lensBandFollowsZoom(video, teleconverter, route, rawWanted, rawForcesStandalone)`.
+  - Call it from the Engine's three re-band sites and the two VM sites.
+  - Inside the existing monitor in `setZoomRatio` and `commitZoomForBoost`, add
+    `if (lensBandFollowsZoom(...)) lensChoice = LensChoice.forZoom(z)`.
+  - Host test: drive `setZoomRatio(5f)` on a logical-route engine, then a failing door. The rollback
+    publication must carry `TELE3X`. Also add a table test that the VM and Engine predicates agree
+    over (mode × DNG × law × TC × route).
+- PMA110 behaviour change: no wire change. On the logical route the Engine lens feeds only
+  rollback/snapshot publication and lens-ignoring conversions; standalone routes do not re-band.
+  Only the rail after a rollback changes, and it becomes correct.
 
-- Severity: Medium (GENERIC devices); Low on PMA110 until measured. Confidence: Medium-High.
-  Status: Confirmed (code). Needs-manual-validation for the per-device effect.
-- Where: `camera/CameraState.kt:1099-1124` (`VideoFrameRate.availableFor`: `normalFps` is
-  `caps.availableFps`, and `size` is used only for the `height >= 4320` rule;
-  `codec` is accepted and then ignored); `camera/CaptureCapabilities.kt:238-239`
-  (`availableFps` = fixed `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`, which is size-independent);
-  `:351-358` (video sizes filtered by aspect only); `getOutputMinFrameDuration` is queried only for
-  the ZSL YUV reader (`:438-442`); `camera/ManualControls.kt:1059` pins `fixedFpsRange(c.fps)`;
-  `ui/CameraViewModel.kt:3086-3092` (`reconcileFrameRate`, the VM's only gate);
-  `camera/CameraEngine.kt:3391-3395` (`setVideoFrameRate` does no validation of its own). The
-  contract this breaks is in `CLAUDE.md:742` ("Standard and NTSC drop-frame rates are gated
-  against the selected size").
-- Why: a target-FPS range says what AE may run at. It does not say what a given stream size can
-  deliver; that is `StreamConfigurationMap.getOutputMinFrameDuration(SurfaceTexture/PRIVATE, size)`.
-  The VM's rate list and the engine's request pin both trust the AE list. The encoder is never
-  asked either (`VideoCapabilities.areSizeAndRateSupported`), even though `availableFor` takes the
-  codec as if it did.
-- Failure scenario: on a GENERIC device whose AE list includes `[60,60]` (common for 1080p60) but
-  whose 3840×2160 PRIVATE min frame duration is 33.3 ms, 4K + 60 fps can be selected. The request
-  pins `[60,60]`. Camera2 clamps the frame duration to the stream minimum and delivers 30 fps. The
-  encoder is configured for 60 (`KEY_FRAME_RATE`, bitrate from `videoBitRate(…, 60, …)`), so the
-  operator gets a clip labelled and bit-budgeted as 60 fps that holds 30 real frames per second.
-  This is the same class as the documented "29.97 selection produced a real 25 fps file" defect,
-  in a new place. AVC at 4K60 on encoders that do not support it would also fail only at
-  configure time, after REC is pressed.
-- Fix: carry `minFrameDurationNs` per video size in `CameraCaps`, read once at the caps seam
-  (`getOutputMinFrameDuration(SurfaceTexture::class.java, size)`). `availableFor` then admits
-  `r.fps` only when `1e9 / minFrameDuration >= r.fps` (allowing for drop-frame rounding) and the
-  selected codec's `VideoCapabilities` accept size × rate. Make the engine apply the same predicate
-  in `setVideoFrameRate` and after `applyVideoSize`, so a route-driven size re-pick cannot leave an
-  unachievable rate pinned. Add a pure-core table test, and record the PMA110 4K/60 answer as a
-  field check.
+### AR5-2: "Unified zoom" has two formulas, the UI's and the Engine's, which disagree on lens-local routes and read two different copies of the RAW law
 
-### ARCH4-3: Every non-forced route-inventory republish resets the VM's FRONT/EXTERNAL zoom to 1× without touching the Engine. A FRONT zoom silently diverges from the wire after every background→foreground return
+- Severity: Low · Confidence: High · Status: Confirmed (code); visible effect masked today
+- Cites:
+  - `camera/CameraState.kt:590-602` (`CameraUiState.unifiedZoom`): short-circuits lens-local routes
+    (FRONT/EXTERNAL) to the raw ratio, and reads `state.rawForcesStandalone`. That field defaults to
+    `true`, the PMA110 law, until the first route-inventory publication
+    (`camera/CameraState.kt:1771-1777`).
+  - `camera/CameraEngine.kt:7824-7838` (`pushTeleFinder`): calls
+    `unifiedZoomOf(lensChoice, zoom, standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone), acceptedOpticalPresets)`
+    with NO lens-local short-circuit. It reads the live law and the Engine's lens.
+  - Consumers of the UI form: `ui/CameraScreen.kt:774-781`, `ui/overlays/Overlays.kt:723-730, 1088-1095`.
+    The Engine form feeds the GL `teleFinderResolved` flag.
+- Why it matters: CLAUDE.md says the finder gate is "ONE shared unit-tested predicate … resolved in
+  one place". The predicate is shared, but its zoom INPUT is computed by two different functions.
+  On FRONT or EXTERNAL in VIDEO, `standaloneRouteWanted` is true, so the Engine multiplies the
+  front/external lens-local ratio by the retained REAR band's optical base. With a retained `TELE3X`
+  band, a FRONT local 1.0 becomes 3.0 and GL resolves the overview ON while the UI gate says OFF.
+  - FRONT: masked because `pushPunchIn` suppresses the loupe there (`camera/CameraEngine.kt:7781-7785`).
+  - EXTERNAL: masked in practice because the optical set is normally empty there (base falls back
+    to MAIN). The pre-inventory window is the exception, since `acceptedOpticalPresets` is seeded
+    to `LensInventory.ALL.optical` (A.19).
+  - GENERIC devices before the first route inventory: the UI form assumes the PMA110 RAW law and
+    the Engine form does not, so a restored DNG selection reads the logical ratio as lens-local in
+    the UI only.
+  - Under TC, neither form includes the converter in its standalone argument. That is consistent
+    between the two forms and covered by the predicate's own `teleconverter ||` term.
+- Failure scenario: any future change that lets punch-in run on FRONT or EXTERNAL, or a converter
+  plus EXTERNAL combination, makes the GL overview draw with no Compose border or OSD tag (or the
+  reverse). That is the same symptom class as the 2026-08-04 "transparent rectangle" report.
+- Suggested fix: one pure `routeUnifiedZoom(route, lens, zoomRatio, videoMode, rawWanted, rawForcesStandalone, optical)`
+  that applies the `lensLocalZoom` short-circuit. `CameraUiState.unifiedZoom` and `pushTeleFinder`
+  both call it. The UI should read the RAW law from one place: either always `state.rawForcesStandalone`,
+  or have the VM's `standaloneRouteFor` read the state copy rather than `engine.rawForcesStandalone`.
+  Host table test: both call sites agree for every (route × mode × DNG × law × band).
+- PMA110 behaviour change: none on BACK. On FRONT/EXTERNAL the GL flag changes only where it is
+  currently masked.
 
-- Severity: Low-Medium. Confidence: Medium. Status: Likely (code). A Robolectric test or device
-  check would settle it.
-- Where: `camera/CameraEngine.kt:1477-1479` (`resolveInitialCameraRouteAvailability`: when the
-  inventory is already resolved and `!force`, it only republishes `(inventory, activeCameraRoute)`);
-  this runs on every resume (`:7573`, after `pause` nulls the controller at `:7486`) and on every
-  GL-generation start (`:1927`); `ui/CameraViewModel.kt:776-784` → `cameraRoutePublishedState`
-  (`:4398-4414`), which sets `controls.zoomRatio = 1f` whenever `activeRoute.lensLocalZoom`; the
-  Engine's `controls` keep the operator's zoom, and the following `reconfigureCamera` reopens with
-  it. Caps reconcile (`:3165-3168`) pushes to the Engine only when the normalized controls differ
-  from the VM's (already reset) value, so nothing converges.
-- Why: the inventory callback is a discovery publication, but the VM fold treats it as a route
-  transition and applies the transition's zoom side effect. On the Engine side, the same side
-  effect lives in `applyResolvedCameraRoute` (`:1437-1455`), which runs only on the resolving
-  path. A second variant of the problem: on the forced, complete, no-topology-change path
-  (`:1547-1553`, for example a route-inventory retry that completes after a partial first read),
-  `applyResolvedCameraRoute(FRONT)` writes `controls.zoomRatio = 1f`, `overrideId = null`, and
-  `userCameraPin = null` straight into the Engine. This happens outside any optics transaction and
-  without a request rebuild, so the Engine field says 1× while the wire still carries the old zoom
-  until the next rebuild. That breaks the "every optics change owns a generation" rule.
-- Failure scenario: FRONT, pinch to 2×, press Home, return. The OSD and the zoom readout show 1×.
-  The preview is still at 2× because the Engine reopened with its own `controls`. The next pinch
-  compounds from the VM's 1× base (`currentZoomBase`) and the framing jumps from 2× to about 1.1×.
-  A still taken before any gesture is framed at 2× and recorded in the UI as 1×.
-- Fix: make the inventory fold pure discovery. `cameraRoutePublishedState` should update
-  `cameraRoutes`, `activeCameraRoute`, and `facing` only, and reset zoom/TC only when
-  `activeRoute != current.activeCameraRoute`. In the Engine, run `applyResolvedCameraRoute`'s
-  optics side effects only through `convergeAfterRouteTopologyChange`'s transaction, or only when
-  the route actually changes. Test: publish the same `(inventory, FRONT)` twice with zoom 2× and
-  assert that the VM zoom equals the Engine zoom.
+### AR5-3 (Info): God-object growth continued through cycle 4
 
-### ARCH4-4: The rear-only optics refusal is a "shared decision", but the VM and the Engine feed it different inputs. On EXTERNAL with a back camera present, the VM publishes an optimistic lens/TC change that the Engine refuses
+- Severity: Info · Confidence: High · Status: Confirmed
+- Line counts, `887d39fb` to `ea7d4374`:
 
-- Severity: Low (narrow reachability). Confidence: High (code). Status: Confirmed (code).
-- Where: `ui/CameraViewModel.kt:1824-1828` (`frontFacing = facing == FRONT || !cameraRoutes.back`)
-  vs `camera/CameraEngine.kt:3862-3866` (`frontFacing = activeCameraRoute != CameraRoute.BACK`);
-  `camera/CameraState.kt:36-37` (`CameraRoute.EXTERNAL.facing == BACK`); the comment at
-  `CameraEngine.kt:3858-3860` claims the two "cannot drift" because they share the predicate.
-- Why: sharing the predicate's body does not help when the arguments come from different state.
-  When the active route is EXTERNAL and `cameraRoutes.back` is true, the VM passes `false`
-  (`facing` is BACK and a back route exists) and the Engine passes `true`. This state is reachable:
-  `cameraRouteTopologyDecision` keeps a still-valid EXTERNAL route when a later complete inventory
-  adds BACK (`CameraSelector2.kt:209-217`), for example after a partial first enumeration on a
-  device with a USB camera attached.
-- Failure scenario: the operator taps 3× or TC. The VM publishes the new lens, the remapped zoom,
-  and `teleconverterMode`, then persists them. The Engine shows "Switch to the rear camera first"
-  and returns before `beginOpticsTransaction`, so no rollback publication corrects the VM. The OSD
-  shows the TELE converter focal on an external webcam, and the next settings save writes TC=on.
-- Fix: both sides pass `activeCameraRoute != CameraRoute.BACK`. The VM reads its own
-  `state.activeCameraRoute`, which the inventory fold already maintains. Add one test that runs the
-  VM gate and the Engine gate on the same `(route, inventory)` table.
+  | File | Before | After | Change |
+  |---|---|---|---|
+  | `camera/CameraEngine.kt` | 8935 | 9142 | +207 |
+  | `ui/CameraViewModel.kt` | 4729 | 4877 | +148 |
+  | `storage/MediaStoreWriter.kt` | 3350 | 3550 | +200 |
+  | `camera/CameraController.kt` | 2962 | 3014 | +52 |
 
-### ARCH4-5: The DeviceProfile is resolved independently by the Engine and by each controller, and is memoized route-dependently in an id-keyed, process-lifetime caps cache
+- Most of the additions are correct fixes. Several of them are, however, a third or fourth
+  restatement of a predicate that already exists. Examples are AR5-1's band predicate, and the
+  EXIF effective-focal formula in `exifShotOf` (`camera/CameraEngine.kt:8100-8106`), which restates
+  `effectiveEquivFocalMm` (`camera/CameraState.kt:2062-2071`) inline instead of calling it. The
+  AGG4-14 KDoc says "One number now feeds all three", but the EXIF number is still a separate copy.
+  Today they agree numerically: the same terms, plus the result zoom.
+- The VM still performs provider mutations directly (`MediaStoreWriter.deleteKnownOutput`,
+  `deleteUntrackedFamilySiblings`, `discardPendingOutput` at `ui/CameraViewModel.kt:4061-4071, 4170`)
+  while the Engine owns the family tombstone. This is the existing design and is not a defect. It is
+  the main reason storage ownership is split across the UI/engine layer boundary.
+- Suggested direction (later cycle): extract the zoom/lens scale seam (`unifiedZoomOf`, band
+  predicate, rear return, remap functions) into one `RouteScale` module that both the VM and Engine
+  call. Make `exifShotOf` call `effectiveEquivFocalMm`.
 
-- Severity: Low. Confidence: Medium (the structure is confirmed; reachability on PMA110 is narrow).
-  Status: Confirmed (structure). Needs-manual-validation (reachability).
-- Where: `camera/CameraEngine.kt:1272-1275` (`deviceProfile` plus `activeDeviceProfile()`, which
-  depends on the mutable `activeCameraRoute`); `:1277-1293` (`capsCache.getOrPut("$logical:$physical")`
-  reads `stillExposureCeilingNs = activeDeviceProfile()…` at first read and keeps it until a
-  topology change); `:1355-1373` (`publishLensInventoryOnce` reads the BACK home caps whenever
-  `cameraRouteInventory.back`, whatever the active route is); `camera/CameraController.kt:67-73`
-  (each controller calls `DeviceProfile.resolve(Build.MODEL)` again and is switched to GENERIC
-  by a mutator, `useGenericDeviceProfile()`, at `CameraEngine.kt:2373-2375`).
-- Why: there are two owners of one fact. The controller decides the RAW law, YUV-still law, vendor
-  TC session type, and oplus hints from its own copy. The Engine decides route, zoom scale, and the
-  still ceiling from `activeDeviceProfile()`. They agree today only because `wireController` reads
-  `activeCameraRoute` at construction. Separately, a value derived from the ROUTE is cached under a
-  key derived from the CAMERA ID. If PMA110's logical back caps are first read while the route is
-  EXTERNAL (the ARCH4-4 topology state, during the once-only lens-inventory publication), they are
-  cached without the 4 s ceiling for the life of the process. A later BACK still at 5–6 s is
-  exactly the shot CLAUDE.md records as fatal (`CAMERA_ERROR(3)`). In the other direction, an
-  external camera read while BACK is active inherits PMA110's 4 s ceiling, which is harmless but
-  untruthful.
-- Fix: decide the profile per camera id, not per active route. "External" is a property of the
-  id (`LENS_FACING_EXTERNAL` in its characteristics). Compute `profileFor(id)` once on
-  `setupExecutor`, and pass the resolved profile into `CameraController`'s constructor (remove the
-  `var` and the mutator). If route-dependence must stay, include the profile in the cache key.
+### AR5-4 (Info): Fix-off defaults survive on route/scale seams that AGG4-47 did not cover
 
-## Final sweep
+- Severity: Info · Confidence: High · Status: Confirmed (no current caller omits them)
+- Cites:
+  - `ui/ZoomMath.kt:387-399` `remapModeOptics(frontFacing = false, lensLocalRoute = frontFacing, photoIsStandalone = false, optical = LensChoice.entries.toSet())`
+  - `ui/ZoomMath.kt:476-484` `remapRouteScaleOptics(optical = LensChoice.entries.toSet())`
+  - `ui/ZoomMath.kt:521-533` `restoredOptics(photoStandalone = false)`
+  - `camera/CameraState.kt:664-693` `teleFinderResolved/teleFinderVisible(zoomRatio = 1f)`
+  - `camera/Teleconverter.kt:149-153` `teleconverterDeclaration(measuredOtherHostEquivMm = 70)`
+- Why it matters: each default is the PMA110 or "fix-off" answer. AGG4-47 removed exactly this
+  pattern from `standaloneRouteWanted`, `hlgSessionAccepted` and `chars(shot)`, because an omitted
+  argument compiles into the pre-fix bug. For example, `optical = entries` divides by a lens a
+  one-camera tablet does not have, which is the TB336ZU 27 mm vs 81 mm class of defect. Every
+  production caller passes these arguments today (`ui/CameraViewModel.kt:2462-2472, 2575-2582, 1408`),
+  so this is latent.
+- Suggested fix: remove the defaults and let the compiler enforce the arguments, as AGG4-47 did.
 
-- **Root pattern (cycle 4):** each finding is a second derivation of something that already has an
-  owner. ARCH4-1 re-derives the focal (the OSD/EXIF effective focal is the owner). ARCH4-2
-  re-derives the deliverable frame rate (the stream configuration map is the owner). ARCH4-3 lets a
-  discovery publication re-apply transition side effects (the optics transaction is the owner).
-  ARCH4-4 feeds a shared predicate with a parallel input (the active route is the owner). ARCH4-5
-  re-resolves the profile per object (the camera id is the owner). This continues cycle 3's
-  "per-field rule" pattern, now outside the rollback code.
-- **God-object pressure:** `CameraEngine.kt` is 8935 lines (8611 before RPL cycle 1), with 87
-  `@Volatile` fields, about 126 mutable fields, and 90 non-private functions.
-  `CameraViewModel.kt` is 4729 lines (4538 before), with 51 mutable fields and 97 distinct
-  `engine.*` members used. Every RPL fix so far has added a field, a counter, or a helper to one of
-  these two files. Route/optics state (`rawWanted`, `requestedVideoSize`, `preTeleUnifiedZoom`,
-  declaration, route, zoom, and the direct-write counters) is the obvious first extraction: an
-  `OpticsState` owner with the writer-stamp design already scheduled as AGG3-11/12. Without that
-  extraction, ARCH4-3's "side effect outside a transaction" class will keep reappearing.
-- **Audio-denial provenance split:** `recordAudio` lives in VM/SettingsStore. Its denial reason
-  lives in the Activity's permission preferences (`MainActivity.kt:517-563`, three duplicated
-  hardware-key blocks at `:718-745`, `:815-834`, `:859-875`). The VM's own `onStoreMemorySlot`
-  default (`ui/CameraViewModel.kt:3532`, `audioOffByDenial = null`) is reached only if a caller
-  bypasses the Activity wrapper. I found no such caller today (`CameraScreen` and ProSheet go
-  through `actions`), so this is not a finding. Any new in-VM REC/audio path would skip the policy
-  without notice. Moving the denial bit into `CameraUiState` and SettingsStore would make that
-  impossible.
-- **Process-global owners** (`Process*Owner`, `ProcessProcessedSnapshotBudget`,
-  `DebugCameraControlMailbox`, `DiagnosticLog`, `StartupTrace`): I checked them for per-Engine state.
-  Each one is either explicitly multi-generation (leases, subscriptions) or debug-only. None is new.
-- **Checked, not findings:** the AGG3-13 helper (`standaloneRouteFor`) is now used at every VM
-  route site, and the only remaining `CameraUiState.rawForcesStandalone` writer is the inventory
-  fold (display only). Accepted-HLG truth (`PhotoSessionOutputs.hlg`, `rendererAssists.setSourceHlg`
-  inside `commitOpticsReady`) has one owner. The rollback-restore Ready path re-uses the same
-  controller, so `sourceHlg` cannot go stale there.
+### AR5-5 (Info): `onPhoneModel`/converter declaration refuse on FRONT through the rear-optics door
+
+- Severity: Info · Confidence: Medium · Status: Confirmed (behaviour); design question
+- Cites: `ui/CameraViewModel.kt:2699, 2712, 2724` call `rejectBackOnlyOpticsDoor()` for the phone,
+  profile and custom magnification. `ui/CameraViewModel.kt:1899-1909` is that function.
+- Why it matters: the converter DECLARATION is a persisted Setup fact, not a route change. Refusing
+  it with "Switch to rear first" while the Lens tab is open on FRONT/EXTERNAL is consistent between
+  the VM and Engine (no divergence). It does, however, couple a settings edit to the live route.
+  This is not a bug. It is recorded so a future "declaration while FRONT" request does not
+  reintroduce an optimistic VM write the Engine then refuses (the AGG4-16 shape).
+
+---
+
+## Already tracked (not re-reported)
+
+- AGG4-17 (DeviceProfile resolved independently in Engine and Controller). Still true at
+  `camera/CameraEngine.kt:1336` and `camera/CameraController.kt:67`. No new evidence.
+- AGG4-13 (per-size FPS gate). `reconcileFrameRate` still reads `s.caps`, which can be the outgoing
+  route's caps during a reopen (`ui/CameraViewModel.kt:3160-3166`). Same item, no new failure seen.
+- MRG4-5 (program target moving during a gesture). The handheld target now tracks zoom by design
+  (A.20).
+
+## Final sweep (commonly-missed checks)
+
+- **Model strings.** `Build.MODEL` is read in `DeviceProfile.resolve` (Engine:1336, Controller:67),
+  `detectPhone` (VM:402-409), and EXIF identity labels (`exifShotOf`, which labels and does not
+  branch). No capability, route, or request decision branches on a model string. Clean.
+- **Layering.** `ui/` does not import `CameraController`, `GlPipeline`, or `VideoRecorder`, and no
+  `camera/gl/video/storage/capture` file imports `ui.*`. The only cross-layer reach is the VM's use
+  of `MediaStoreWriter` (AR5-3).
+- **Rear-only refusal (A.7).** The VM and Engine now both feed `activeCameraRoute`. One residual: the
+  VM gates on `isRecording` while the Engine gates on `recorder != null`. The VM is stricter during
+  admission (optimistic `isRecording = true`). After a stop latched mid-admission, the Engine briefly
+  holds a published recorder while the VM reads false. A lens tap in that window gets an Engine
+  `STOP_RECORDING_FIRST` with the VM's optimistic lens already published and no rollback. The window
+  is milliseconds, so I am not raising a finding; noted for whoever touches `RecordingAdmissionLatch`.
+- **Momentary holds and the focus-ruler loupe assist.** I traced both orders (hold, then ruler; and
+  ruler, then hold). The assist only engages when `!state.punchIn` (`ui/controls/ManualDials.kt:257-264`),
+  so the two snapshots never capture each other's transient value. No defect.
+- **Route-inventory fold (A.18).** The VM's `routeChanged` compares against its own
+  `activeCameraRoute`, and the Engine compares against its own. Both are written synchronously by
+  the same doors, so they cannot disagree on a republish.
+- **EXIF vs OSD focal.** Numerically identical today (AR5-3 notes the duplicated formula).
+- **Converter declaration seed.** The Engine starts from `FIND_X9_ULTRA`, and the VM re-pushes
+  `detectPhone ?: OTHER` during construction (`seedPhoneModel`, VM:2871-2895) before start. No stale
+  window.
 
 ## Files examined
 
-`camera/CameraEngine.kt` (route inventory and topology 1340-1650, profile/caps cache 1265-1300,
-Ready/rollback 540-1160, preview health 2225-2330, wireController 2365-2400, lens door 3850-3880,
-frame rate 3385-3420, setRawWanted 4098-4140, resume/pause 7440-7580, chooseVideoSize 7887-7930),
-`camera/CameraController.kt` (profile 60-80, session plan 2750-2830), `camera/DeviceProfile.kt`,
-`camera/CameraState.kt` (CameraRoute, back-optics refusal, `standaloneRouteWanted`,
-`VideoFrameRate`), `camera/CaptureCapabilities.kt` (fps and size reads), `camera/CameraSelector2.kt`
-(topology decision), `camera/OpticsConstraints.kt`, `camera/ProcessedSnapshotBudget.kt`,
-`ui/CameraViewModel.kt` (inventory fold, zoom, program line, caps reconcile, frame-rate reconcile,
-front toggle, hardware actions, recording, MR store), `ui/ZoomMath.kt`,
-`ui/overlays/Overlays.kt` (focal OSD), `ui/controls/ProSheet.kt` (format chips), `MainActivity.kt`
-(actions wrapper, key paths, audio provenance), `storage/SettingsStore.kt` (`ExtraSettings`),
-`DebugCameraControlCommand.kt`; `CLAUDE.md`, `docs/ARCHITECTURE.md` (frame rates), the cycle-3
-aggregate, the architect review, and the plans for cycles 1–3.
+- `camera/CameraEngine.kt`: optics transactions, `setLens`, `setFrontCamera`, `setRawWanted`,
+  `setVideoMode`, `setZoomRatio`/`commitZoomForBoost`/`setZoomInteraction`, `pushTeleFinder`,
+  `pushPunchIn`, `applyResolvedCameraRoute`, `resolveNonTeleId`, `selectCurrentLens`,
+  `handlePreflightFailure`, `exifShotOf`, `stopRecording`, recorder admission publish,
+  `resolveLensOpticsIntent`.
+- `camera/CameraState.kt`: `unifiedZoomOf`, `localZoomOf`, `resolveTeleZoomTransition`,
+  `standaloneRouteWanted`, `rearReturnZoom`/`rearReturnLens`, `teleFinderResolved`/`Visible`,
+  `hiResAdmitted`, `LensChoice.forZoom`, `CameraUiState` derived focal/zoom properties,
+  `effectiveEquivFocalMm`.
+- `camera/OpticsConstraints.kt`, `camera/ControlAvailability.kt`, `camera/DeviceProfile.kt`,
+  `camera/Teleconverter.kt`, `camera/CaptureCapabilities.kt` (focal derivation),
+  `camera/DeviceExifLabels.kt`.
+- `ui/CameraViewModel.kt`: optics doors, `flushZoom`, `applyZoomRatio`, `onHardwareZoomStep`,
+  `reconcileZoomToCaps`, rollback publication, `applyLoaded`, `onSetPhotoFormats`,
+  `applyEncoderInventory`, momentary holds, `onAutoPunchIn`, delete paths,
+  `programHandheldShutterNs`, `cameraRoutePublishedState`.
+- `ui/ZoomMath.kt`, `ui/MomentaryHold.kt`, `ui/controls/PhotoFormatChips.kt`,
+  `ui/controls/ProSheet.kt` (format row), `ui/controls/ManualDials.kt` (ZoomRuler, loupe assist),
+  `ui/CameraScreen.kt` and `ui/overlays/Overlays.kt` (finder gate consumers).
+- Cycle-4 diffs: `69d58550`, `54c90d3a`, `992ec720`, `597c40df`, `6e75d245`, `b1f7869e`.

@@ -1,306 +1,132 @@
-# RPL cycle 4 — verifier (VER4), HEAD 14767b0a, 2026-10-02
+# RPL cycle 5 — verifier review (VF5)
 
-Scope: evidence check of the concrete claims in `CLAUDE.md` "Hard-won device facts" and
-`docs/ARCHITECTURE.md` against the code, after the cycle-3 merge (58eb4f10..6ec34b3d plus the
-merge-review fixes). Read-only; no Gradle run. Items already in
-`.context/reviews/archive-rpl-cycle3-2026-10-02/_aggregate.md` (AGG3-*) or the cycle-1/2/3 plans
-are excluded. Owner decisions (ZSL dark refusal, FocusDetail threshold, CameraUnit SDK,
-proprietary HDR, orientation moves no control, shader code numbering) are not relitigated.
+Role: evidence-based check of stated behaviour (CLAUDE.md "Hard-won device facts", docs/ARCHITECTURE.md)
+against code at HEAD `ea7d4374`, plus a spot-check of every `[x]` item in
+`docs/plans/2026-10-02-rpl-cycle4.md`. Read-only; no Gradle run.
 
-Method: direct reads for optics, zoom, settings, permission, EXIF, logging and ladder claims; three
-read-only sub-lanes (recording/mic, storage/DNG, GL/Ready) whose findings I re-verified at the
-cited lines before including them here.
+Note: the CLAUDE.md copy injected into agent context is OLDER than the file on disk (e.g. it still
+says "≤1 stop/tick", "±35%", "Normalization now runs only when the session has a still target").
+Every claim below was checked against the ON-DISK CLAUDE.md, which already corrects those three.
+
+## Summary
+
+| Severity | Count |
+|---|---|
+| Critical | 0 |
+| High | 0 |
+| Medium | 1 |
+| Low | 3 |
+| Info | 4 |
+
+Cycle-4 plan: 58 `[x]` items checked against production code — 55 Implemented, 3 Partial-by-wording
+(A.21, B.11, C.13; all within the plan's own "or record why not" / "move/justify" latitude, A.21's
+dead helper already tracked as a later-cycle deslop note). None Missing, none Contradicting.
 
 ## Findings
 
-### VER4-1: A complete DNG from a HEIF/JPEG+DNG shot is withheld from the gallery when its processed sibling was never queued
+### VF5-1 — Recurring diagnostic rows are charged TWICE; the "one 180-row door" is effectively ~90 and silently drops FrameGap/startup evidence (CODE bug vs doc)
+- Severity: Medium (evidence integrity: can turn a field check into a false pass) · Confidence: High · Status: Confirmed (code), DEBUG-only
+- Citations:
+  - `camera/DiagnosticTelemetry.kt:58-68` — `DiagnosticLogDoors.d/i` call `recurringDiagnosticAllowed(..., recurring)` → `budget.tryAcquire()`.
+  - `camera/DiagnosticTelemetry.kt:94-108` — `DiagnosticLog` binds that door; files import it as `Log` (`CameraController.kt:23`, `CameraEngine.kt:12`, `ui/CameraViewModel.kt:12`, `video/VideoRecorder.kt:15`, `camera/StandbyAudioController.kt:12`, `camera/StartupTrace.kt:4`).
+  - Callers that ALREADY acquired a row and then call the aliased `Log.i` (second acquire): `CameraController.kt:576-578` (ZoomTrace), `:1207-1209` (3A), `:1219-1220` (Touch AF), `:758,765,895,1087,1548,1611,1632,1652,1671,1693,1698,2174,2191,2296`; `CameraEngine.kt:885-886,1456,1919,2187,2292,3447`; `ui/CameraViewModel.kt:597-599` (FocusConfidence), `:700-704` (MotionInversion), `:727-729`; `VideoRecorder.kt:776-777`; `StandbyAudioController.kt:464-467`. (Sites that use raw `android.util.Log.i` after the gate — `CameraEngine.kt:4967,5631,5768,6788,7441,7499`, `GlPipeline.kt:567,909`, `FlipRenderer.kt:342`, `CameraViewModel.kt:1161`, `MainActivity.kt:781` — are charged once, correctly.)
+- Why: CLAUDE.md (log-quota bullet) states Capture-family, ZSL, standby, hardware, zoom, motion, focus-confidence, Touch-AF, 3A, session/recording rows "and those [FrameGap] summaries share one 180-row process admission door". In code ~28 producers spend 2 rows per emitted line. Additionally, when exactly one row remains, the outer `tryAcquire()` takes it and the inner door refuses, so the row is spent and nothing is logged. `FrameGap` (`GlPipeline.kt:902-908`) and `StartupTrace.finish` (`StartupTrace.kt:37,86`, via `DiagnosticLog.i`) draw from the same recurring pool, contradicting the KDoc at `DiagnosticTelemetry.kt:8-11` ("startup, frame-gap, recovery, and fault rows always retain an explicit reserve").
+- Failure scenario: the A5 ten-minute soak alone emits 41 3A rows (CLAUDE.md) = 82 budget units; add ZoomTrace/Motion/FocusConfidence during the FIELD_CHECKS F1/A6 pinch protocol (`docs/FIELD_CHECKS.md:150-160`) and the 180 pool is exhausted early. The terminal `FrameGap` summary is then silently not printed, and "no FrameGap rows" reads as "no ≥200 ms gaps" — a false PASS for MRG4-5. A later resume's cold-start line is likewise lost.
+- Fix (host-testable): pick ONE charging point. Either (a) callers that pre-gate call `android.util.Log.i` directly (as the CameraEngine/GlPipeline sites already do), or (b) remove the explicit `processDiagnosticLogBudget.tryAcquire()` / `recurringDiagnosticAllowed` from those call sites and keep the debug check only. Add a test that drives one gated emission through `DiagnosticLogDoors` with a fresh budget and asserts `usedRows() == 1`. Optionally give FrameGap/StartupTrace their own small reserved slice (or the reserved 120 owner) so the KDoc's "explicit reserve" becomes true. PMA110 behaviour: none (DEBUG logging only).
 
-- **Claim** (CLAUDE.md, DNG publication): "mixed-output tails queue only a lightweight transfer
-  behind their processed sibling's terminal on `ioExecutor`, then publish on that same process
-  owner. Capacity overflow, facade shutdown, transfer rejection, or marker exhaustion settles the
-  live capture family…". Also the review claim: "A newer RAW-only success replaces an older
-  thumbnail with a truthful DNG metadata placeholder."
-- **Evidence**
-  - `camera/CameraEngine.kt:5745-5790`: `processedQueued` becomes true only when
-    `StillSnapshot.from(jpeg)` succeeded and `ioExecutor.execute` accepted the task. It stays false
-    when `jpeg == null`, the snapshot copy fails (OOM, repack failure), or dispatch is rejected.
-  - `camera/StillPublicationDispatcher.kt:28-32`: `dngPublicationTransfer` returns
-    `AFTER_PROCESSED` whenever `formats.wantsProcessedStill`, without asking whether a sibling exists.
-  - `camera/StillPublicationDispatcher.kt:66-76`: `enqueueAfterProcessed = { processedQueued && … }`
-    returns false, so `onTransferRejected` runs.
-  - The engine wires that to `retainCompletedDngForRecovery` (`CameraEngine.kt:5705-5714`): the row
-    stays private and the status is the retained-take copy.
-- **Why it diverges**: "transfer rejection" in the claim means the ordered lane refused the task.
-  Here there is no sibling to wait behind. The DNG is complete, its COMPLETE marker is durable, and
-  the process owner has capacity, yet the shot takes the overflow path.
-- **Failure scenario**
-  1. HEIF+DNG is on (the common Pro setting) and the processed half fails, e.g. the ~19 MB snapshot
-     copy throws under memory pressure.
-  2. The operator sees "Photo save failed" and then the retained-take copy.
-  3. A valid DNG never reaches the gallery or review.
-  4. It surfaces only after a full process restart; see AGG3-5 for why that restart is required.
-- **Fix**: in `transferCompletedDngFromCameraCallback`, route `processedQueued == false` through
-  the DIRECT branch (`dispatchToProcessOwner`), and keep `retainForRecovery` for a real
-  `enqueueOrdered` rejection. Add a host test for mixed formats with `processedQueued = false`;
-  the seam is already pure.
-- Confidence High · **Confirmed** (code) · Severity **Medium**
+### VF5-2 — FocusConfidence trace heartbeat is 15 s / 3 s change floor, not "2 s heartbeat" (DOC drift)
+- Severity: Low · Confidence: High · Status: Confirmed
+- Citations: `CLAUDE.md:1168` ("`FocusConfidence` trace (change-gated + 2 s heartbeat)"); code `ui/CameraViewModel.kt:557` `DiagnosticChangeLogGate<Any?>()` with defaults `DIAGNOSTIC_CHANGE_MIN_INTERVAL_MS = 3_000L`, `DIAGNOSTIC_HEARTBEAT_MS = 15_000L` (`camera/DiagnosticTelemetry.kt:368-369`, gate logic `:216-225`).
+- Why/scenario: an on-device checker waiting for a 2 s heartbeat to confirm the detector is alive will see nothing for up to 15 s, and changes faster than 3 s are coalesced — misread as a silent/refused detector.
+- Fix: update the CLAUDE.md sentence to "change-gated (≥3 s between changes) + 15 s heartbeat". No code change.
 
-### VER4-2: AGG3-7's fix leaves a bare-reopen door Not-Ready indefinitely over a still-streaming controller, with "camera unchanged" copy and no retry
+### VF5-3 — FrameGap threshold is strict `> 200 ms`; docs say it "still catches the ~180 ms setRepeatingRequest stalls" and FIELD_CHECKS pass criteria count "≥200 ms" gaps (DOC drift / instrumentation gap)
+- Severity: Low · Confidence: Medium · Status: Needs device validation
+- Citations: `camera/DiagnosticTelemetry.kt:140` (`gap.takeIf { it > frameGapThresholdMs }`), `:173`, `:371` (`PREVIEW_FRAME_GAP_THRESHOLD_MS = 200L`); `CLAUDE.md:1161-1165`; `CLAUDE.md:310-313` (stall measured "170–250 ms"); `docs/FIELD_CHECKS.md:141-143,157-158`; comment `gl/GlPipeline.kt:958-964`.
+- Why: a stall of 170–200 ms (the low half of the measured swap-stall band, which the F1/MRG4-5 check exists to detect — "each re-center is a sensor fast-path submit that this HAL pays for with a ~180 ms repeating-request swap") produces an inter-frame gap that may land at or under 200 ms and is never counted. "≥200 ms" in FIELD_CHECKS also disagrees with the strict `>` in code at exactly 200.
+- Fix: either reword CLAUDE.md/FIELD_CHECKS to "catches stalls whose producer gap exceeds 200 ms (the upper part of the 170–250 ms swap band)" and use "> 200 ms" consistently, or (if the MRG4-5 check needs it) lower the threshold for a dedicated debug-only check window. Do not change the steady-state threshold without re-checking the quota math in VF5-1.
 
-- **Claims**
-  - CLAUDE.md: "transient preflight failure uses the bounded retry gate while the preview surface
-    remains live".
-  - "A rejected same-route terminal commit converges through reconfiguration only while its
-    optics intent is still current".
-  - The `CAMERA_UNAVAILABLE_CAMERA_UNCHANGED` status itself ("Camera unavailable; camera unchanged").
-- **Evidence**
-  - `camera/CameraEngine.kt:4232` invalidates Ready before preflight.
-  - When `selectCurrentLens()` or `cachedCaps()` returns null on a running camera
-    (`recoverColdPreflight == false`), `CameraEngine.kt:4269-4291` calls
-    `rollbackOpticsAfterPreflight`.
-  - For a `currentOpticsReconfiguration()` token (`:961-970`, `baselinePrecedesMutation = false`),
-    `preflightRestorableSessionGeneration` returns null (`:8562-8565`, commit c5bfd1c8). That makes
-    `commitOpticsRollbackLocked` take the Not-Ready branch (`:1143-1153`): the session generation
-    is bumped, `cameraReady = false`, `acceptedCameraSession = null`.
-  - The controller was never closed, because preflight runs before the close.
-  - No cold-start retry is scheduled (`scheduleColdStartRetry` is only for
-    `startup || controller == null`).
-  - Nothing else re-drives the session: `rollbackOptics` publishes the status and returns.
-- **Why it diverges**: before cycle 2 this exact state was AGG2-4. Cycle 2 fixed it by
-  re-accepting the outgoing controller; AGG3-7 correctly stopped that for bare doors (their
-  `before` is post-mutation) but put nothing in its place.
-  - The bare door's new field (stab, aspect, hi-res, high-speed fps, video size) stays written in
-    the engine while the streaming session does not carry it.
-  - The app sits Not-Ready over a live, moving preview until some unrelated door, a pause/resume,
-    or a camera error reopens it.
-- **Failure scenario**
-  1. The operator toggles stabilization (or aspect, or open gate).
-  2. A Binder or CameraService hiccup makes `getCameraCharacteristics` fail once.
-  3. The preview keeps running and the status says "camera unchanged".
-  4. Every shutter/REC press answers `CAMERA_RECONFIGURING` (`CameraEngine.kt:4996`) until the
-     operator backgrounds the app.
-- **Fix** (either):
-  - Give bare doors a pre-mutation baseline: route them through `beginOpticsTransaction`, so the
-    cycle-2 restore is valid for them too.
-  - Or, for the non-restorable preflight branch on a live controller, schedule one bounded
-    `reopenForSession()` retry through the existing retry gate instead of publishing a terminal
-    Not-Ready.
-  - Either way, add a test that a bare-door preflight failure ends Ready, or in a scheduled retry,
-    never in a parked Not-Ready.
-- Confidence Medium · **Likely** (code path certain; the trigger needs a transient
-  characteristics or selection failure on a running camera) · Severity **Medium**
+### VF5-4 — CLAUDE.md teleconverter section announces "Five rules" and lists six (DOC drift)
+- Severity: Info · Confidence: High · Status: Confirmed
+- Citation: `CLAUDE.md:640` vs items 1–6 at `:641-683`.
+- Fix: "Six rules hold this together".
 
-### VER4-3: The texture-acquisition failure branch does not orphan a preview EGL surface whose detach failed; recovery re-binds the poisoned surface
+### VF5-5 — AutoExposure comment says the deadband is "~1/12 stop"; the constant is 0.05 stop (~1/20) (comment drift)
+- Severity: Info · Confidence: High · Status: Confirmed
+- Citations: `camera/AutoExposure.kt:31-32` vs `:47` `DEADBAND_STOPS = 0.05f`.
+- Fix: correct the comment (do not retune the constant — steady-state smoothness is user-tuned).
 
-- **Claim** (CLAUDE.md, preview EGL health): "A draw/swap failure whose preview DETACH also fails
-  applies the acquisition branch's containment: fail an active encoder owner, orphan the poisoned
-  preview EGL surface …, and abandon the frame — never retain a poisoned owner for ordinary
-  same-surface retries".
-- **Evidence**
-  - The acquisition branch is `gl/GlPipeline.kt:980-993`. When `makeCurrent` or
-    `updateTexImage` fails under `FrameAcquisitionOwner.PREVIEW`, it fails the signal and runs
-    `runCatching { clearPreviewOutput(core) }`. If that detach fails, it only fails the encoder.
-  - `previewEgl`, `previewSurface` and `previewSignal` are reset by `clearPreviewOutput`
-    (`:500-510`) only after a successful detach. They are never reset here, and nothing is put in
-    `orphanedEglOutputs`.
-  - The draw/swap branch (`:1209-1234`) does the full orphan-and-reset, and its comment claims "Same
-    containment policy as the texture-acquisition branch above". The model branch is the one that
-    lacks it.
-  - The same-surface early return in `applyPreviewOutput` (`:419-427`) then installs a fresh
-    pending signal on the still-bound poisoned surface.
-- **Failure scenario**
-  1. `makeCurrent(preview)` throws, and the detach throws as well.
-  2. `CameraEngine.handlePreviewFailure` retries `bindPreviewSurface` with the same surface and size.
-  3. That reaches the early return. Every later real frame again selects
-     `FrameAcquisitionOwner.PREVIEW` and fails.
-  4. All three recovery attempts are burned on the same EGLSurface, ending at
-     PREVIEW_UNAVAILABLE_REOPEN.
-  5. Because the preview stays "available", the encoder can never become the acquisition owner, so
-     a REC started then cannot reach its first swap.
-  6. This lasts until TextureView hands over a new surface.
-- **Fix**: factor the `:1224-1233` block (retain in `orphanedEglOutputs`, clear
-  `previewEgl`/`previewSurface`, cancel and null `previewSignal`, return) into one helper. Call it
-  from the acquisition branch's `detachFailure != null` case and from the encoder-restore branch.
-  Add a host test with failing `makeCurrent` and failing detach, asserting that the next bind
-  creates a new EGLSurface.
-- Confidence High (code) · **Confirmed** in code; the EGL fault injection is
-  Needs-manual-validation · Severity **Low-Medium**
+### VF5-6 — `DiagnosticTelemetry.kt` KDoc promises a reserve for startup/frame-gap rows that the code does not provide (comment drift; companion to VF5-1)
+- Severity: Info · Confidence: High · Status: Confirmed
+- Citations: `camera/DiagnosticTelemetry.kt:8-11`; StartupTrace and FrameGap both spend from `processDiagnosticLogBudget` (180), not `processReservedDiagnosticLogBudget` (120, warnings/errors only).
+- Fix: fold into VF5-1 (either give them a reserve or say they share the recurring pool, as CLAUDE.md does).
 
-### VER4-4: Launch recovery's JPEG probe (trailing EOI only) can adopt a JPEG whose in-place EXIF rewrite was interrupted
+### VF5-7 — Standby meter: a zero-length `AudioRecord.read` is an unbounded `continue` (no backoff) (Info, not a doc mismatch)
+- Severity: Info · Confidence: Low · Status: Needs device validation
+- Citations: `video/AudioReadPolicy.kt:15-20` (`byteCount == 0 -> Retry`); `camera/StandbyAudioController.kt:753-758` (`AudioReadOutcome.Retry -> continue`).
+- Why: CLAUDE.md's "zero retries" rule is about NEGATIVE reads and is honoured. A blocking `read` returning 0 repeatedly (legal per the API, rare in practice) would spin the meter thread while ownership is held. No observed instance.
+- Fix (optional): count consecutive zero reads and treat N in a row as TERMINAL_READ, or sleep briefly on Retry. PMA110 unchanged in practice.
 
-- **Claim** (CLAUDE.md, pending rows): "Relaunch recovery may then adopt JPEG/DNG/video/HEIF only
-  after the format's structural probe proves it complete".
-- **Evidence**
-  - `storage/MediaStoreWriter.kt:1791-1807`: `probeCompleteJpeg` tests only that the last two bytes
-    are `FF D9`.
-  - The JPEG lanes write the compressed bytes and then re-stamp EXIF in place while the row is still
-    REGISTERED (`capture/StillCapturePipeline.kt:320-330, 370-375`, then `writeJpegExif` at
-    `:470-486`, which opens `"rw"` and calls `ExifInterface.saveAttributes()`). That rewrite starts
-    at offset 0 and makes the file longer (APP1 is inserted).
-  - `orphanDisposition` maps VALID to ADOPT (`MediaStoreWriter.kt:2744`).
-- **Why it diverges**: a process death mid-rewrite (a swipe-kill right after the shutter) leaves a
-  new header plus shifted data followed by the old, unshifted tail. That tail still ends `FF D9`,
-  so a corrupt image probes VALID and is published.
-- **Distinct from AGG3-24**: that item is the live-path cost and partial-failure publish. This is
-  the recovery-adoption truth claim.
-- **Fix**: splice APP1 into the encoded buffer before any byte reaches the row (the AGG3-24
-  direction, which removes the window), or walk the segments SOI → … → SOS → EOI and require
-  consistent segment lengths.
-- Confidence Medium · **Needs-manual-validation** (the FD-mode rewrite order inside androidx
-  `ExifInterface`) · Severity **Medium**
+### VF5-8 — Lens-match tolerance wording now correct on disk; injected copy stale (Info)
+- On-disk `CLAUDE.md:613-614` correctly says "×1.35 ratio … +35 % / −25.9 %" matching `camera/CameraState.kt:926,951`. Only the stale agent-context copy says "±35%". No action beyond keeping the disk file authoritative.
 
-### VER4-5: B.3's expiry re-arm skips two branches that also leave the row pending
+## Claims verified as MATCHING code (no finding)
 
-- **Claim** (cycle-3 plan B.3 / AGG3-4 fix): "When launch recovery keeps a row pending, re-assert
-  `IS_PENDING = 1`".
-- **Evidence**
-  - `MediaStoreWriter.kt:1388-1396`: a journal `UNAVAILABLE` row does `continue` before any re-arm.
-  - `:1422-1427`: ADOPT whose `publish()` fails records `PUBLISH_FAILED` and leaves the row
-    pending, with no `reassertPending`.
-- **Failure scenario**: a structurally valid take whose publish keeps failing across launches
-  (provider policy throw, volume busy) is never re-armed and reaches the provider's pending expiry.
-  That is the loss AGG3-4 was meant to close.
-- **Fix**: call `reassertPending` on the `PUBLISH_FAILED` and UNAVAILABLE paths too. Extend the
-  fake-resolver test.
-- Confidence High (code path); the expiry effect is Needs-device · **Confirmed** · Severity **Low**
+- Zoom scale follows route: `unifiedZoomOf`/`localZoomOf` (`camera/CameraState.kt:448-461`) keyed on `standaloneRouteWanted(video, raw, rawForcesStandalone) = video || (raw && law)` (`:547-556`), no default on the law arg (AGG4-47).
+- Preview exposure cap: `previewExposureTrade` (`camera/ManualControls.kt:400-439`) caps at `min(PREVIEW_FLUIDITY_MAX_EXPOSURE_NS = 66_666_667, PREVIEW_SAFE_MAX_EXPOSURE_NS = 500 ms)` unconditionally, residual gain ≤ `PREVIEW_MAX_DIGITAL_GAIN = 16f` (`:325,340,341`).
+- Still ceiling: `HAL_SAFE_MAX_STILL_EXPOSURE_NS = 4 s` (`CaptureCapabilities.kt:20`) applied at the caps seam from `activeDeviceProfile().stillExposureCeilingNs` (`CameraEngine.kt:1344-1348`); PMA110 profile = 4 s, GENERIC = null (`DeviceProfile.kt:64-80`); external routes take GENERIC (`:88-89`).
+- Rotation: `previewRotationDegrees` = 180 in TELE else 0; `captureRotationDegrees` BACK = sensor + afocal − dev, FRONT = sensor + dev, EXTERNAL = sensor (`camera/RotationMath.kt:35,149-162`); `encoderSurfaceSize` swaps on 90/270 (`:213-219`).
+- ZSL admission: 1/6 stop on exposure AND ISO, zoom 2 %, age 0..400 ms, manual AE, processed-only, no RAW, flash OFF/TORCH, no gesture (`camera/ZslAdmission.kt:36-42,77-101`); SINGLE drive only and never in-REC (`CameraEngine.kt:5152-5161`).
+- Still watchdog: floor 8 s for HAL-AE; exposure ceil-to-ms + 8 s margin, saturating (`ManualControls.kt:583-607`); controller feeds the clamped exposure (`CameraController.kt:2058-2066`).
+- DNG route-input rules 1–4: restore/encoder paths push `setRawWanted` (`CameraViewModel.kt:2587,2841`); reopen only when `dngIntentChangesRearRoute`, transaction with `overrideId = userCameraPin`, paused path drops cached override (`CameraEngine.kt:4213-4292,8639-8647`); `rawSelectable` (`OpticsConstraints.kt:97-103`); `acceptedOpticsAuxState` never edits the request (`OpticsConstraints.kt:53-76`); RAW reader is route-carried, not intent-carried (`CameraController.kt:2864-2865`).
+- `tenBitSessionWanted` and the 10-bit attempt-0 rung with no still readers, then ordinary ladder from rung 1 (`CameraState.kt:573-574`, `CameraController.kt:2822-2832`).
+- Mic decline: START_RECORDING → audio off + record; denial reason written before `onToggleRecordAudio(false)`; operator silence clears the reason (`CameraPermissionPolicy.kt:38-99`, `MainActivity.kt:540-550,943-963`, `AudioDenialReason.kt`).
+- Settings: `SettingsStore.commitEdit` uses `.commit()` (`storage/SettingsStore.kt:150-156`); all other prefs writers use `edit(commit = true)`; save debounce 500 ms (`CameraViewModel.kt:4401`).
+- Controls throttle 40 ms with `applyScheduled` (`CameraViewModel.kt:319-329,4223-4225`); zoom flush 16 ms, quiet landing 250 ms, interaction end 700 ms (`:2281,2321,2323`); ease ticker 33 ms (`:469`).
+- Log quota constants 180/120/300 (`DiagnosticTelemetry.kt:31-33`); FrameGap 200 ms threshold, 15 s summary, 400/1000 ms buckets (`:159-200,371-372`) — see VF5-1/3 for the accounting defects.
+- Standby recreation ≤3 failed generations, reset on first PCM, 300 ms backoff (`StandbyAudioController.kt:752-756,857-872,912-913`; `AudioReadPolicy.kt:27-28`).
+- AE schedule 0.5×|e| in [0.30, 1.20], program shutter ±0.35/tick, 1/10 s ceiling (`AutoExposure.kt:43-51,124,137`).
+- Front pick: non-logical first, then largest array, then id (`CameraSelector2.kt:424-427`); tele pick closest-to-70 with standalone tie-break (`:344-364`).
+- Model-string seams: only `DeviceProfile.resolve` and `detectPhone`/`PhoneModel` (`DeviceProfile.kt:84`, `Teleconverter.kt:41`); `Build.MODEL` elsewhere only feeds those or EXIF labels.
+- Hardware keys 767 half-press, 781 quick, 769/782 (`MainActivity.kt:1025-1034`); quick button default SHUTTER (`CameraState.kt:1720`).
+- Portrait lock below sw600 (`ui/CameraScreenPolicy.kt:66`); preview recovery ≤3 (`CameraEngine.kt:8217`); DNG allocation 8 s (`DngPreCaptureAllocation.kt:260`); pre-native 2+4, still publication 2+2, rejected-output 2+8 (constants listed in their files).
+- `TerminalAcquisitionGate.isOpen` is a `@Volatile` read (`CameraEngine.kt:8903,8923`).
+- ZoomGlide invalidation on every remap door incl. converter declaration (`CameraViewModel.kt:2429-2436,2770-2775`; `ui/ZoomGlideState.kt:88-94`).
 
-### VER4-6: Recovery treats provider `SIZE <= 0` as structural INVALID before any probe or journal check
+## Cycle-4 plan spot-check (`docs/plans/2026-10-02-rpl-cycle4.md`)
 
-- **Claim**: same as VER4-4 ("adopt … only after the format's structural probe proves it
-  complete"; "deletes only proven-invalid unfinished output").
-- **Evidence**: `MediaStoreWriter.kt:1401-1403`. `sizeBytes <= 0L -> INVALID` is evaluated BEFORE
-  the `COMPLETE`/`DISCARD` journal arms and before `probePendingMedia`.
-  - For a REGISTERED row this deletes without opening the bytes.
-  - For a COMPLETE row, `orphanDisposition` still ADOPTs (`:2743`), so a zero-SIZE COMPLETE row is
-    published without any byte check.
-- **Why it diverges**: `SIZE` is provider metadata, not structural proof. Whether MediaProvider
-  keeps it current for a pending row after an abrupt process death is unverified.
-- **Fix**: when `SIZE <= 0`, open the descriptor and use the real length (`fstat`/`channel.size()`),
-  or return INDETERMINATE.
-- Confidence Low · **Needs-manual-validation** · Severity **Low**
+All `[x]` items located in production code at HEAD. Representative evidence (full table available on
+request): A.1 `CameraViewModel.kt:4164-4192` (no admission write); A.2 `CameraEngine.kt:1026-1070`
+BARE_RETRY → `scheduleColdStartRetry`, M.2 BLOCKED → `CAMERA_UNAVAILABLE_REOPEN`; A.3 `:3038-3042`;
+A.8 `CameraViewModel.kt:2369-2370`; A.12 `ManualControls.kt:717-745` + `CameraController.kt:1444-1448`
+(EV-only under admitted manual AE is NO_OP, and `applyExposure` writes no AE_EXPOSURE_COMPENSATION in
+that branch, `ManualControls.kt:1075-1085`); A.17 `CaptureCapabilities.kt:347`; A.18
+`CameraEngine.kt:1512-1515`, `CameraViewModel.kt:4526-4545`; A.19 `CameraEngine.kt:1414`; A.22
+`GlPipeline.kt:519,2073`; A.25 `CameraController.kt:866-877`; B.1/B.2/M.3 `MediaStoreWriter.kt:1462-1467,
+2749-2925`; B.4 `StillCapturePipeline.kt:313-392`; B.6 `:703` (`xxx`); B.8 `ProcessAdmissionSignal.kt:58-72`;
+B.9 `FamilyDeletionMarkerDispatcher.kt:163`; C.8 `RulerAccessibility.kt:13`; C.9 `CameraStatus.kt:266,295`;
+C.12 `app/build.gradle.kts:765`; C.13 `tools/verify_host.py:109-167`.
 
-### VER4-7: CLAUDE.md says the rotation override has "exactly one caller"; the code has two
+Partial-by-wording (no defect):
+- A.21: the Activity no longer supplies provenance; the ViewModel reads `AudioDenialReasonStore` itself
+  (`CameraViewModel.kt:769,3640`). `MemoryBankAudioProvenance.bankAudioOffByDenialNow` (`AudioDenialReason.kt:53`)
+  is production-dead — already tracked (plan "later cycle: deslop note").
+- B.11: suppression justified at the declaration (`VideoRecorder.kt:677-680`) pointing at the guard (`:365`), not moved.
+- C.13: `:app:lintRelease` runs only on a clean tree (`verify_host.py:109,126-127,159-167`); dirty-tree runs print a NOTE. Recorded rationale exists, as the plan allowed.
 
-- **Claim** (`CLAUDE.md:265-266`): "this override is an explicit per-call opt-in with exactly one
-  caller — never make it a settable field."
-- **Evidence**:
-  - The main preview draw passes `rotationOverrideDeg` (content rotation plus window term) at
-    `gl/GlPipeline.kt:1065-1069`.
-  - The Loupe Overview passes it at `:1123`.
-  - CLAUDE.md's own large-screen bullet ("The preview term rides `FlipRenderer.draw`'s per-call
-    `rotationOverrideDeg`") contradicts the "one caller" sentence.
-- **Failure scenario**: a maintainer enforcing "exactly one caller" removes the preview use. Moving
-  that term into `setRotationDegrees` reopens the cycle-4 overscan bug on sw600dp windows; dropping
-  it draws the field sideways.
-- **Fix**: say "two draws use it (preview: content + window term, only when the window is rotated;
-  overview: window term only)". Keep the rule "per-call only, never renderer state".
-- Confidence High · **Confirmed** · Severity **Low** (docs)
+## Final sweep / coverage
 
-### VER4-8: A failed JPEG EXIF re-stamp is silent; the HEIF lane logs the same failure
+Commonly-missed checks done: double-gated logging (found VF5-1), stale injected-vs-disk docs, strict vs
+inclusive thresholds (VF5-3), default arguments that silently select PMA110 law (`standaloneRouteWanted`
+has none; `CameraCaps.read`'s 4 s default is overridden by its only caller), model-string leaks, zero-length
+audio reads (VF5-7).
 
-- **Claim**: "every silent exit on the insert / registration / identity path logs a reserved
-  diagnostic row … A save that fails with no app log line is the signature of THIS class of defect".
-  Also the EXIF-parity claim ("ISO / exposure / 35mm focal / make / model … stay in parity across
-  both processed formats").
-- **Evidence**:
-  - `capture/StillCapturePipeline.kt` JPEG and passthrough lanes use a bare
-    `runCatching { writeJpegExif(...) }` with no `onFailure` (`~:323`, `~:372`).
-  - The HEIF lane reports through `bestEffortHeifExif`/`Log.w` (`:269-277`).
-- **Failure scenario**: a JPEG publishes without ISO, exposure, make/model, or (on the hi-res
-  passthrough lane) the orientation tag that its uprightness depends on, and logcat has no row.
-- **Fix**: add a reserved `Log.w` in `onFailure`, mirroring the HEIF lane.
-- Confidence High · **Confirmed** · Severity **Low**
-
-### VER4-9: `dd91413c` detached the KDoc of `sleepPreservingInterrupt` (new instance of the AGG3-56 pattern)
-
-- **Evidence**: `storage/MediaStoreWriter.kt:2398-2410`. The AGG-30 interrupt-contract KDoc now
-  sits on `FINALIZED_VIDEO_PARSE_RETRY_MS`'s KDoc and constant. `sleepPreservingInterrupt` itself
-  has no doc.
-- **Fix**: move the constant and its one-line KDoc above the AGG-30 block.
-- Confidence High · **Confirmed** · Severity **Low** (docs)
-
-### VER4-10: A refused microphone claim retires the REC attempt with no status
-
-- **Claim** (CLAUDE.md, REC): "Do not let camera errors leave phantom REC/audio/UI state". Every
-  sibling refusal in the start path reports a status (CAMERA_RECONFIGURING, MICROPHONE_BUSY,
-  UNSAFE_RECORDER_RESTART…).
-- **Evidence**: `camera/CameraEngine.kt:6256-6259`. When
-  `standbyAudioController.beginRecording()` is not admitted, the code calls
-  `retirePendingRecordingRow(…, "mic-claim-refused")` and returns `false` with no `onStatus`.
-- **Failure scenario**: reachable only through a claim that was never finished or aborted
-  (`StandbyMeterOwnership.beginRecording`). In that case a REC press clears its optimistic
-  "starting" state and appears to do nothing.
-- **Fix**: emit `MICROPHONE_BUSY` (or `RECORDING_FAILED`) there.
-- Confidence Medium · **Likely** · Severity **Low**
-
-### VER4-11: The frozen REC packet's diagnostic bitrate fallback reads the live codec
-
-- **Claim** (CLAUDE.md, REC): "That immutable packet is carried through GL/native recorder setup
-  rather than re-reading independently mutable fields".
-- **Evidence**: `camera/CameraEngine.kt:6464` sets `requestedBitRate = bitRateFor(size, rate)`.
-  `bitRateFor` (`:7944-7945`) reads the live `videoCodec` field.
-  - The real encoder lambda `attemptBitRate` (`:6465-6473`) uses the frozen `codec`.
-  - `requestedBitRate` feeds only the diagnostic fallback (`rec.configuredBitRate ?: requestedBitRate`).
-- **Impact**: wrong logged bitrate after a codec edit between admission and setup. The file is
-  unaffected.
-- **Fix**: pass the frozen codec, or inline `attemptBitRate(size.width, size.height)`.
-- Confidence High · **Confirmed** · Severity **Low** (diagnostic only)
-
-## Claims checked and upheld (selection)
-
-- Log quota: `RECURRING_DIAGNOSTIC_ROW_BUDGET = 180` + `RESERVED = 120` = 300. VideoRecorder,
-  StillCapturePipeline and VendorTagInspector alias `DiagnosticLog as Log`. The one raw
-  `android.util.Log.i("BtnDbg")` (`MainActivity.kt:796`) is DEBUG-gated, change-gated, and spends
-  `processDiagnosticLogBudget`. `PREVIEW_FRAME_GAP_THRESHOLD_MS = 200`, 3A 3 s/15 s pacing.
-- Constants: `HAL_SAFE_MAX_STILL_EXPOSURE_NS = 4 s`, `PREVIEW_FLUIDITY = 1/15 s`,
-  `PREVIEW_SAFE = 500 ms`, gain ≤16, AE step 0.30–1.20 with slope 0.5, ZSL 1/6 stop / 2 % / 400 ms /
-  depth 3, `TELE_MAX_DISPLAY_ZOOM = 60`, `FINDER_MIN_ZOOM = 3`, `FLAT_GRAVITY_THRESHOLD = 4.9` (≈½ g),
-  `LEVEL_GRAVITY_THRESHOLD = 2.5`, `MACRO_HOLD_MS = 700`, `FOCUS_DETAIL_MAX_AGE_MS = 1000`, lag 32.
-- Watchdog: HAL-auto 8 s floor; app-owned exposure is ceil-to-ms of the clamped value + 8 s, with
-  saturating arithmetic (`ManualControls.kt:591-609`, `CameraController.kt:2034-2043`).
-- Ladder: `useRaw … && !tenBitVideoOnly` on every rung (A.1 landed). `maxSessionAttempt` and the
-  plan both key the TC table on `teleconverterMode && deviceProfile.vendorTcSessionType`. YUV still
-  degradation is monotonic on `ladderAttempt`.
-- DNG route input: restore passes `resolvedRawWanted` inside `setResolvedOptics`. The
-  `rawSelectable` gate matches the documented formula. The caption keys on accepted `hlg` (A.6).
-- Zoom: 16 ms trailing flush, 250 ms quiet landing, 700 ms interaction end, 40 ms controls
-  throttle, 500 ms settings debounce. Caps reconciliation does not re-base a live gesture's pending
-  ratio. Remap doors go through `invalidateOpticsDerivedState`.
-- Settings: every SharedPreferences write uses `commit`; Remember defaults ON;
-  `preserveLensSelection`/`preserveTeleconverter` default ON; no facing is persisted.
-- Phone/converter: `phoneModelDetected` is re-derived on every phone write (rollback, restore,
-  picker); an unrecognised phone seeds OTHER; `ZEISS_200_X300` is declared before `ZEISS_400`;
-  model-string reads are confined to `detectPhone`, `DeviceProfile.resolve` and EXIF identity.
-- EXIF: make/model come from the build, a blank value omits the tag, an EXTERNAL route omits host
-  identity, and the lens model uses the measured equivalent with unknown tokens omitted.
-- Front: `pickFrontBest` prefers a plain id, then the largest array, then the id.
-- System bars use `SystemBarStyle.dark` for both bars; the portrait lock applies below sw600;
-  the tally uses the unscaled `RoundedCorner` radius and is hidden while REC is starting.
-- Hardware keys: 767 is the half-press, 781 the quick button with the denial-recorded audio drop,
-  and 168/169 (+769) are zoom steps.
-- Recording/mic (sub-lane): admission latch, frozen packet (except VER4-11), pre-native allocator
-  2+4 with an 8 s deadline, 400 ms handoff → MICROPHONE_BUSY, standby `MAX_RECREATES = 3` reset by
-  PCM, degrade-to-video-only, single input-Surface release, allocation-free gain with RMS on a
-  100 ms cadence, explicit `KEY_COLOR_TRANSFER`, HEVC/AVC only, 3840 cap, 120 fps excluded,
-  `pinAutoFps = videoMode`.
-- Storage (sub-lane): REGISTERED before bytes and COMPLETE before publish; fail-closed marker;
-  `external` union volume resolution with logging; DNG process owner 2+2, rejected-output owner 2+8,
-  8 s allocation deadline; review ownership by monotonic id with TRACK_ONLY on eviction; B.1 idat
-  probe, B.2 confirming re-parse.
-- GL/Ready (sub-lane): posts before `start()` are dropped and the start callback replays the full
-  `RendererAssists` snapshot; unbind→destroy; ≤3 preview retries; Ready only after a real-frame
-  swap; FBO ≤256; FrameGap counts real frames only with buckets; scissor disabled in `finally`;
-  monotonic Ready sequence rechecked in the VM reducer; StartupTrace owner and disarm; PROGRESS
-  statuses have no timer.
-- `TerminalAcquisitionGate.isOpen()` is a lock-free `@Volatile` read while `runIfOpen`/`close` stay
-  synchronized.
-
-## Final sweep: claims not verifiable statically
-
-Device-only claims were not re-measured: the ~180 ms swap stall, HAL false-lock, `flashState` lie,
-OIS profile, ColorOS quota window and cold-start budget. One minor wording mismatch is not a
-defect: the "39 mm" generic-1.5× example in CLAUDE.md holds for the Lens caption, but the OSD and
-EXIF round TELE focal to the nearest 10 mm (`Overlays.kt:866-869`, `CameraEngine.kt:8016-8017`),
-so both read 40 mm.
-
-**Totals**: 11 findings. Medium: VER4-1, VER4-2, VER4-4. Low-Medium: VER4-3. Low: VER4-5 to VER4-11.
+Files read/grepped: CLAUDE.md (on disk, §Hard-won device facts), docs/ARCHITECTURE.md (numeric claims),
+docs/FIELD_CHECKS.md (F1/A6), docs/plans/2026-10-02-rpl-cycle4.md; camera/{CameraEngine, CameraController,
+CameraState, CaptureCapabilities, DeviceProfile, ManualControls, AutoExposure, ZslAdmission, RotationMath,
+OpticsConstraints, DiagnosticTelemetry, StandbyAudioController, StartupTrace, CameraSelector2, Teleconverter,
+DngPreCaptureAllocation, StillPublicationDispatcher, FamilyDeletionMarkerDispatcher, VendorTagInspector}.kt;
+video/{AudioReadPolicy, VideoRecorder}.kt; gl/{GlPipeline, FlipRenderer, FocusDetail}.kt;
+focus/MacroProximity.kt; storage/{SettingsStore, MediaStoreWriter}.kt; ui/{CameraViewModel, ZoomGlideState,
+CameraScreenPolicy}.kt; MainActivity.kt; AudioDenialReason.kt; CameraPermissionPolicy.kt; stab/GyroEis.kt;
+plus cycle-4 implementing files via the plan spot-check.
