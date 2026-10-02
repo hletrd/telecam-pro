@@ -233,8 +233,26 @@ class VideoRecorder(private val context: Context) {
         val admittedCandidates = encoderCandidates
             .filter { encoderSelectionAdmitsTransfer(it, transfer) }
             .distinctBy { it.codecName }
-        val codec = admittedCandidates.firstOrNull()?.codec ?: return null
-        if (admittedCandidates.any { it.codec != codec }) return null
+        // Both refusals below used to return with NO app line, which the Engine turned into a bare
+        // RECORDING_FAILED — the "save fails with no app log line" signature (AGG5-31). One
+        // reserved row each names what was offered (e.g. HLG over a non-Main10 HEVC selection, or a
+        // stale encoder token).
+        val codec = admittedCandidates.firstOrNull()?.codec ?: run {
+            Log.w(
+                TAG,
+                "REC setup refused: no encoder candidate admits $transfer " +
+                    "(${encoderCandidates.size} offered: ${encoderCandidates.joinToString { it.codecName }})",
+            )
+            return null
+        }
+        if (admittedCandidates.any { it.codec != codec }) {
+            Log.w(
+                TAG,
+                "REC setup refused: mixed-codec candidates for $transfer " +
+                    "(${admittedCandidates.joinToString { "${it.codec}:${it.codecName}" }})",
+            )
+            return null
+        }
         this.uri = uri
         this.pendingAllocation = pendingAllocation
         this.audioGain = normalizeAudioGain(audioGain)
