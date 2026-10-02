@@ -126,6 +126,45 @@ class CameraEngineInterruptedColdStartTest {
         assertEquals(before, generation.get())
     }
 
+    // AGG6-20: the cold-start task's `paused` decision and its `starting` retirement are one monitor
+    // step. The test holds the Engine monitor while the setup thread is parked on it, then resumes:
+    // reading `paused` outside the monitor, the task had already decided to refuse, resume() was
+    // turned away by the still-set `starting`, and nothing ever started.
+    @Test
+    fun `a resume racing the cold-start pause check still starts`() {
+        val engine = engine()
+        retainSurface(engine)
+        val executor = getField(engine, "setupExecutor") as ExecutorService
+        val parked = java.util.concurrent.CountDownLatch(1)
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val setupThread = java.util.concurrent.atomic.AtomicReference<Thread>()
+        executor.execute {
+            setupThread.set(Thread.currentThread())
+            parked.countDown()
+            gate.await(5, TimeUnit.SECONDS)
+        }
+        assertTrue(parked.await(5, TimeUnit.SECONDS))
+        engine.onPreviewSurfaceAvailable(getField(engine, "previewSurface") as Surface, 1080, 1440)
+        assertTrue(getField(engine, "starting") as Boolean)
+        setField(engine, "paused", true)
+
+        synchronized(engine) {
+            gate.countDown()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (setupThread.get().state != Thread.State.BLOCKED) {
+                check(System.nanoTime() < deadline) { "setup task never reached the Engine monitor" }
+                Thread.yield()
+            }
+            engine.resume()
+        }
+        drainSetup(engine)
+
+        assertTrue(
+            "the start was dispatched by exactly one of the two racers",
+            (getField(engine, "started") as Boolean) || (getField(engine, "glInputPending") as Boolean),
+        )
+    }
+
     @Test
     fun `rebind predicate is false only for a live input with a presented preview`() {
         assertFalse(resumePreviewRebindWanted(inputSurfacePresent = true, previewReady = true))

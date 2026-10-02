@@ -1992,9 +1992,24 @@ class CameraEngine internal constructor(
         // newer generation.
         runCatching { setupExecutor.execute {
             val acquired = runCatching { terminalAcquisitionGate.runIfOpen {
-                if (paused || UnsafeRecorderQuarantine.isActive()) {
+                // Decide AND retire under the one monitor resume()'s dispatch check takes (AGG6-20).
+                // Read outside it, a resume() landing between `paused == true` and `starting = false`
+                // cleared `paused`, found `starting` still set, and declined to dispatch — and this
+                // task then retired the only start. Backgrounding keeps the TextureView surface, so no
+                // availability callback replays it: a black viewfinder until the next surface event.
+                // Under the monitor a resume either lands first (this task sees `paused == false` and
+                // proceeds, its own dispatch refused by `starting`) or after (it sees `starting ==
+                // false` and dispatches a fresh start).
+                val refused = synchronized(this) {
+                    if (paused || UnsafeRecorderQuarantine.isActive()) {
+                        starting = false
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (refused) {
                     startupTraceOwnership.revoke(startupTraceOwner)
-                    synchronized(this) { starting = false }
                     return@runIfOpen
                 }
                 // Shipping non-SDR video requests an HLG10 Camera2 source and drops both still
