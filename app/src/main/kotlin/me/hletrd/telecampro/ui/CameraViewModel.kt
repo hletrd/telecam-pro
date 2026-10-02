@@ -3855,12 +3855,12 @@ class CameraViewModel private constructor(
     // ---- Shutter ----
     /** Hardware full-press key: defaults to shutter/REC, but can be reassigned in Advanced. */
     fun onHardwareFullKey(active: Boolean) {
-        performHardwareAction(_state.value.volumeKeyAction, active)
+        performHardwareAction(_state.value.volumeKeyAction, active, HardwareKeySource.FULL_KEY)
     }
 
     /** The OPPO quick/action button (injected keycode 781) — its own reassignable binding. */
     fun onHardwareQuickButton(active: Boolean) {
-        performHardwareAction(_state.value.quickButtonAction, active)
+        performHardwareAction(_state.value.quickButtonAction, active, HardwareKeySource.QUICK_BUTTON)
     }
 
     /**
@@ -3882,10 +3882,10 @@ class CameraViewModel private constructor(
 
     override fun onHardwareHalfPress(active: Boolean) {
         _state.update { it.copy(halfPressActive = active) }
-        performHardwareAction(_state.value.halfPressAction, active)
+        performHardwareAction(_state.value.halfPressAction, active, HardwareKeySource.HALF_PRESS)
     }
 
-    private fun performHardwareAction(action: HardwareKeyAction, active: Boolean) {
+    private fun performHardwareAction(action: HardwareKeyAction, active: Boolean, key: HardwareKeySource) {
         if (!hardwareActionAdmitted(action, _state.value.primaryShutterEnabled)) return
         when (action) {
             HardwareKeyAction.SHUTTER -> if (active) {
@@ -3897,9 +3897,9 @@ class CameraViewModel private constructor(
             // a hold is not a setting change (no recent-slot, no MR clear, no save).
             HardwareKeyAction.AEL -> {
                 val target = if (active) {
-                    momentaryAeLock.press(_state.value.controls.aeLock)
+                    momentaryAeLock.press(_state.value.controls.aeLock, key)
                 } else {
-                    momentaryAeLock.release()
+                    momentaryAeLock.release(key)
                 }
                 target?.let(::applyMomentaryAeLock)
             }
@@ -3911,9 +3911,9 @@ class CameraViewModel private constructor(
                     // ruler's later close is a no-op and this release restores the operator value.
                     val operatorValue = if (autoPunchInActive) punchInBeforeAuto else _state.value.punchIn
                     autoPunchInActive = false
-                    momentaryPunchIn.press(operatorValue)
+                    momentaryPunchIn.press(operatorValue, key)
                 } else {
-                    momentaryPunchIn.release()
+                    momentaryPunchIn.release(key)
                 }
                 target?.let(::applyMomentaryPunchIn)
             }
@@ -4216,19 +4216,19 @@ class CameraViewModel private constructor(
     }
 
     override fun onVolumeKeyAction(action: HardwareKeyAction) {
-        endMomentaryHoldOnRebind(_state.value.volumeKeyAction, action)
+        endMomentaryHoldOnRebind(HardwareKeySource.FULL_KEY, _state.value.volumeKeyAction, action)
         _state.update { it.copy(volumeKeyAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 
     override fun onHalfPressAction(action: HardwareKeyAction) {
-        endMomentaryHoldOnRebind(_state.value.halfPressAction, action)
+        endMomentaryHoldOnRebind(HardwareKeySource.HALF_PRESS, _state.value.halfPressAction, action)
         _state.update { it.copy(halfPressAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 
     override fun onQuickButtonAction(action: HardwareKeyAction) {
-        endMomentaryHoldOnRebind(_state.value.quickButtonAction, action)
+        endMomentaryHoldOnRebind(HardwareKeySource.QUICK_BUTTON, _state.value.quickButtonAction, action)
         _state.update { it.copy(quickButtonAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
@@ -4237,13 +4237,15 @@ class CameraViewModel private constructor(
      * AGG5-65 / TE5-11: the release edge is dispatched by the action bound AT RELEASE TIME, so a key
      * rebound mid-hold sent its release to the new action and the old AEL / PUNCH_IN hold leaked —
      * applied until onStop, with the next press keeping the stale snapshot. Rebinding is an explicit
-     * operator act, so it ends the old action's hold here and restores the operator's value.
+     * operator act, so it ends the old action's hold here and restores the operator's value — but
+     * only [key]'s share of it (AGG6-29): another key bound to the same action and still held keeps
+     * the hold until its own release.
      */
-    private fun endMomentaryHoldOnRebind(old: HardwareKeyAction, new: HardwareKeyAction) {
+    private fun endMomentaryHoldOnRebind(key: HardwareKeySource, old: HardwareKeyAction, new: HardwareKeyAction) {
         if (old == new) return
         when (old) {
-            HardwareKeyAction.AEL -> momentaryAeLock.release()?.let(::applyMomentaryAeLock)
-            HardwareKeyAction.PUNCH_IN -> momentaryPunchIn.release()?.let(::applyMomentaryPunchIn)
+            HardwareKeyAction.AEL -> momentaryAeLock.release(key)?.let(::applyMomentaryAeLock)
+            HardwareKeyAction.PUNCH_IN -> momentaryPunchIn.release(key)?.let(::applyMomentaryPunchIn)
             else -> Unit
         }
     }
@@ -4866,8 +4868,8 @@ class CameraViewModel private constructor(
         // stay applied across the whole next foreground session (and its snapshot would later
         // overwrite whatever the operator set meanwhile). End each hold exactly as its release
         // would — restore the operator's own value — before the background save.
-        momentaryAeLock.release()?.let(::applyMomentaryAeLock)
-        momentaryPunchIn.release()?.let(::applyMomentaryPunchIn)
+        momentaryAeLock.releaseAll()?.let(::applyMomentaryAeLock)
+        momentaryPunchIn.releaseAll()?.let(::applyMomentaryPunchIn)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         standbyMeterEnabled = false
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded

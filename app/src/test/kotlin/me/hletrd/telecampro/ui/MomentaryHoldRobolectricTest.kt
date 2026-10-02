@@ -42,15 +42,16 @@ class MomentaryHoldRobolectricTest {
 
     @Test fun `pure hold snapshots once and restores exactly`() {
         val hold = MomentaryHold()
-        assertNull(hold.release())
-        assertTrue(hold.press(current = true))
-        assertTrue(hold.press(current = false)) // a repeat keeps the first snapshot
+        val key = HardwareKeySource.FULL_KEY
+        assertNull(hold.release(key))
+        assertTrue(hold.press(current = true, key = key))
+        assertTrue(hold.press(current = false, key = key)) // a repeat keeps the first snapshot
         assertTrue(hold.persistedValue(live = false))
-        assertEquals(true, hold.release())
+        assertEquals(true, hold.release(key))
         assertFalse(hold.persistedValue(live = false))
-        hold.press(current = false)
+        hold.press(current = false, key = key)
         hold.cancel()
-        assertNull(hold.release())
+        assertNull(hold.release(key))
     }
 
     @Test fun `a punch-in hold over a latched loupe leaves it on and persisted on`() {
@@ -125,6 +126,31 @@ class MomentaryHoldRobolectricTest {
         assertTrue(v.state.value.punchIn)
         v.onHardwareHalfPress(false)
         assertTrue("the release must not switch the recalled loupe off", v.state.value.punchIn)
+    }
+
+    // AGG6-29: two keys on one momentary action. Rebinding the volume key used to end the
+    // action-wide hold while the half-press was still under the operator's finger.
+    @Test fun `rebinding one key keeps another key's hold of the same action`() {
+        val v = vm()
+        v.onVolumeKeyAction(HardwareKeyAction.PUNCH_IN)
+        v.onHalfPressAction(HardwareKeyAction.PUNCH_IN)
+        idle(600)
+        v.onHardwareHalfPress(true)
+        assertTrue(v.state.value.punchIn)
+
+        v.onVolumeKeyAction(HardwareKeyAction.SHUTTER) // the volume key never held it
+        assertTrue("the half-press still holds the loupe", v.state.value.punchIn)
+        v.onHardwareHalfPress(false)
+        assertFalse("its own release restores the operator's value", v.state.value.punchIn)
+
+        // Both keys holding: the hold ends with the LAST release, and a rebind of one only drops it.
+        v.onVolumeKeyAction(HardwareKeyAction.PUNCH_IN)
+        v.onHardwareFullKey(true)
+        v.onHardwareHalfPress(true)
+        v.onHalfPressAction(HardwareKeyAction.SHUTTER)
+        assertTrue(v.state.value.punchIn)
+        v.onHardwareFullKey(false)
+        assertFalse(v.state.value.punchIn)
     }
 
     @Test fun `backgrounding ends a hold whose key-up never arrives`() {
