@@ -24,6 +24,7 @@ from build_immutable_release import (
     STORE_PASSWORD_ENV,
     UploadKeyGateError,
     UploadKeyPrerequisite,
+    keytool_environment,
     load_upload_key_prerequisite,
     verify_upload_key_certificate,
 )
@@ -79,15 +80,24 @@ def run_scoped_signed_release(
     child_environment: dict[str, str] | None = None
     try:
         prerequisite = load_upload_key_prerequisite(root, base_environment)
-        child_environment = dict(base_environment)
-        child_environment.pop(STORE_FILE_ENV, None)
+        # SR5-3 (AGG5-17): the secrets share this environment with keytool and the inner wrapper
+        # (the evidence boundary), so it is the sealed allowlist, never the caller's whole shell:
+        # an ambient JAVA_TOOL_OPTIONS agent would read the password inside keytool, and a
+        # PYTHONPATH sitecustomize could patch the wrapper's seal before it runs. The allowlist
+        # already omits TELECAMPRO_STORE_FILE.
+        child_environment = keytool_environment(base_environment)
         child_environment[STORE_PASSWORD_ENV] = credentials["storePassword"]
         child_environment[KEY_PASSWORD_ENV] = credentials["keyPassword"]
         child_environment[KEY_ALIAS_ENV] = prerequisite.alias
         verify_upload_key_certificate(root, prerequisite, child_environment, run)
 
+        # `-I -S`: isolated mode ignores every PYTHON* variable, the user site and the script
+        # directory on sys.path; `-S` also skips site-packages' sitecustomize. The wrapper imports
+        # only the standard library and its own tools directory, which it inserts itself.
         command = [
             sys.executable,
+            "-I",
+            "-S",
             str(root.resolve() / "tools" / "build_immutable_release.py"),
             "--root",
             str(root.resolve()),

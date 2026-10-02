@@ -80,7 +80,13 @@ class ScopedSignedReleaseTest(unittest.TestCase):
                 "storePassword": "Store-password-with-Entropy-7!",
                 "keyPassword": "Key-password-with-Entropy-8!",
             }
-            ambient = {"PATH": os.environ.get("PATH", ""), "JAVA_HOME": ""}
+            ambient = {
+                "PATH": os.environ.get("PATH", ""),
+                "JAVA_HOME": "",
+                "PYTHONPATH": "/x",
+                "MY_UNRELATED_TOKEN": "value",
+                scoped.STORE_FILE_ENV: "/outside/ambient-key.jks",
+            }
 
             def run(command, **kwargs):
                 calls.append((list(command), dict(kwargs["env"])))
@@ -106,6 +112,43 @@ class ScopedSignedReleaseTest(unittest.TestCase):
             self.assertIn("-storepass:env", calls[0][0])
             self.assertIn(scoped.STORE_PASSWORD_ENV, calls[0][0])
             self.assertEqual(2, len(calls))
+            # SR5-3 (AGG5-17): the inner wrapper is the evidence boundary; it runs isolated from
+            # PYTHON* variables and site customization, with the sealed allowlist only.
+            inner_command, inner_environment = calls[1]
+            self.assertEqual([sys.executable, "-I", "-S"], inner_command[:3])
+            for _, environment in calls:
+                self.assertNotIn("PYTHONPATH", environment)
+                self.assertNotIn("MY_UNRELATED_TOKEN", environment)
+                self.assertNotIn(scoped.STORE_FILE_ENV, environment)
+
+    def test_ambient_jvm_launcher_options_refuse_before_keytool(self) -> None:
+        certificate = b"public-certificate-der"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = self.fixture(Path(temp_dir), hashlib.sha256(certificate).hexdigest())
+            credentials = {
+                "storePassword": "Store-password-with-Entropy-7!",
+                "keyPassword": "Key-password-with-Entropy-8!",
+            }
+            calls: list[list[str]] = []
+
+            def run(command, **kwargs):
+                calls.append(list(command))
+                return subprocess.CompletedProcess(command, 0, stdout=certificate)
+
+            with self.assertRaisesRegex(scoped.ScopedReleaseError, "JAVA_TOOL_OPTIONS"):
+                scoped.run_scoped_signed_release(
+                    root=root,
+                    tasks=[":app:bundleRelease"],
+                    output=root / "out",
+                    credentials=credentials,
+                    base_environment={
+                        "PATH": os.environ.get("PATH", ""),
+                        "JAVA_TOOL_OPTIONS": "-javaagent:/tmp/agent.jar",
+                    },
+                    run=run,
+                )
+            self.assertEqual([], calls)
+            self.assertEqual({}, credentials)
 
     def test_keytool_failure_clears_mutable_credentials_and_never_runs_build(self) -> None:
         certificate = b"public-certificate-der"

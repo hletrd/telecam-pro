@@ -1393,9 +1393,15 @@ running as the same OS user.
 `TELECAMPRO_STORE_FILE` is cleared and unsupported; environment values remain valid only for
 alias/password fields, which cannot redirect Gradle to another file. The sealed Gradle child gets
 an ALLOWLISTED environment (no `GRADLE_OPTS`, `JAVA_TOOL_OPTIONS`, or `ORG_GRADLE_PROJECT_*`), the
-wrapper refuses a non-empty `$GRADLE_USER_HOME/init.d` and any user `gradle.properties` key beyond
-inert JVM/console settings, and it always passes `--no-build-cache --no-configuration-cache
---no-daemon`; `release-evidence.json` records that argv and the environment NAMES it passed. The
+wrapper refuses every auto-applied init-script source it does not control — a
+`$GRADLE_USER_HOME/init.gradle(.kts)`, a non-empty `$GRADLE_USER_HOME/init.d`, and a wrapper
+distribution `init.d` holding anything beyond the stock `readme.txt` — plus any user or distribution
+`gradle.properties` key beyond inert JVM/console settings, with `jvmargs` screened by a token-shape
+ALLOWLIST (heap/GC/encoding/locale/module opens; no `@argfile`, `-XX:On*`, boot class path, class
+loader, or heap dump). It always passes `--no-build-cache --no-configuration-cache --no-daemon`.
+keytool receives the same allowlisted environment and is refused outright while
+`JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`/`_JAVA_OPTIONS` is set; the scoped signing helper launches the
+inner wrapper as `python -I -S` with that allowlist; `release-evidence.json` records that argv and the environment NAMES it passed. The
 wrapper also re-applies the generated-secret floor to the frozen `keystore.properties` copy, and the
 Gradle release gate applies the same floor (a Kotlin port pinned by `check_docs.py`).
 

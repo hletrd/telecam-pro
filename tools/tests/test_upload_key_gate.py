@@ -117,6 +117,32 @@ class UploadKeyGateTest(unittest.TestCase):
             self.assertEqual(FILE_PASSWORD, child_environment[release.STORE_PASSWORD_ENV])
             self.assertEqual(ENV_PASSWORD, environment[release.STORE_PASSWORD_ENV])
 
+    def test_keytool_receives_only_the_sealed_allowlist(self) -> None:
+        # SR5-3 (AGG5-17): keytool holds the store password in-process; it must not inherit an
+        # ambient JVM agent channel or unrelated variables.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_properties(root, approved=True)
+            run = Recorder()
+            environment = {**self.environment(), "PYTHONPATH": "/x", "MY_UNRELATED_TOKEN": "value"}
+            release.require_approved_upload_key(root, SIGNING_TASKS, environment, run)
+            _, child_environment = run.calls[0]
+            self.assertNotIn("PYTHONPATH", child_environment)
+            self.assertNotIn("MY_UNRELATED_TOKEN", child_environment)
+
+            for name in release.JVM_LAUNCHER_INJECTION_ENVIRONMENT:
+                with self.subTest(name=name):
+                    run = Recorder()
+                    with self.assertRaisesRegex(release.UploadKeyGateError, name) as caught:
+                        release.require_approved_upload_key(
+                            root,
+                            SIGNING_TASKS,
+                            {**self.environment(), name: "-javaagent:/tmp/agent.jar"},
+                            run,
+                        )
+                    self.assertEqual([], run.calls)
+                    self.assertNotIn("/tmp/agent.jar", str(caught.exception))
+
     def test_environment_password_is_used_when_the_file_has_none(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

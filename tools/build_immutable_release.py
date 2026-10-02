@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -173,7 +174,46 @@ USER_GRADLE_PROPERTY_ALLOWLIST = frozenset({
     "systemProp.https.proxyPort",
     "systemProp.https.nonProxyHosts",
 })
-_JVM_ARGUMENT_INJECTION = re.compile(r"-javaagent|-agentpath|-agentlib|-Dorg\.gradle\.project\.|-Dandroid\.")
+# SR5-2 / RG5-13 (AGG5-16): the jvmargs screen is an ALLOWLIST of token shapes. The former denylist
+# (`-javaagent|-agentpath|-agentlib|-Dorg.gradle.project.|-Dandroid.`) passed `@argfile` (the launcher
+# expands it, so it can carry `-javaagent:` unseen), `-XX:OnOutOfMemoryError=`/`-XX:OnError=`,
+# `-Xbootclasspath/a:` and `-Djava.system.class.loader=` — every one runs code inside the JVM that
+# compiles or signs the release. Heap sizing, GC choice, encoding/locale and module opens are all an
+# ordinary developer setup needs; a heap-dump flag is NOT admitted, because a dump of the signing
+# JVM writes the store password to disk.
+_JVM_ARGUMENT_ALLOWED = (
+    re.compile(r"-Xm[sx][0-9]+[kKmMgG]?"),
+    re.compile(r"-Xss[0-9]+[kKmMgG]?"),
+    re.compile(r"-XX:(?:MaxMetaspaceSize|MetaspaceSize|ReservedCodeCacheSize)=[0-9]+[kKmMgG]?"),
+    re.compile(r"-XX:(?:MaxRAMPercentage|InitialRAMPercentage)=[0-9]+(?:\.[0-9]+)?"),
+    re.compile(
+        r"-XX:[+-](?:UseParallelGC|UseG1GC|UseSerialGC|UseZGC|ZGenerational"
+        r"|UseStringDeduplication|UseCompressedOops)"
+    ),
+    re.compile(r"-Dfile\.encoding=[A-Za-z0-9_.-]+"),
+    re.compile(r"-Duser\.(?:language|country|variant|region|timezone)=[A-Za-z0-9_/+-]*"),
+    re.compile(r"-Djava\.awt\.headless=(?:true|false)"),
+    re.compile(r"--add-(?:opens|exports)(?:=|\s+)[A-Za-z0-9_.]+/[A-Za-z0-9_.]+=[A-Za-z0-9_.,-]+"),
+)
+
+
+def jvm_arguments_admitted(value: str) -> bool:
+    """True only when every whitespace-separated jvmargs token has an allowlisted shape."""
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError:
+        return False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        # `--add-opens X/Y=Z` may arrive as two tokens.
+        if token in {"--add-opens", "--add-exports"} and index + 1 < len(tokens):
+            token = f"{token}={tokens[index + 1]}"
+            index += 1
+        if not any(pattern.fullmatch(token) for pattern in _JVM_ARGUMENT_ALLOWED):
+            return False
+        index += 1
+    return True
 
 
 def release_child_environment(environment: Mapping[str, str]) -> dict[str, str]:
@@ -198,18 +238,20 @@ def gradle_user_home(environment: Mapping[str, str]) -> pathlib.Path:
     return pathlib.Path(environment.get("HOME") or pathlib.Path.home()) / ".gradle"
 
 
-def require_sealed_gradle_user_home(environment: Mapping[str, str]) -> None:
-    """Refuse ambient build logic the sealed run would otherwise auto-apply (names only, no values)."""
-    home = gradle_user_home(environment)
-    init_directory = home / "init.d"
-    if init_directory.is_dir() and any(init_directory.iterdir()):
+def _require_inert_init_directory(init_directory: pathlib.Path, stock: frozenset[str]) -> None:
+    if init_directory.exists() and not init_directory.is_dir():
+        raise RuntimeError(f"refusing a sealed release build: {init_directory} is not a directory")
+    if not init_directory.is_dir():
+        return
+    foreign = sorted(entry.name for entry in init_directory.iterdir() if entry.name not in stock)
+    if foreign:
         raise RuntimeError(
             f"refusing a sealed release build: {init_directory} is not empty; Gradle would apply "
             "those init scripts as unsealed build logic"
         )
-    if init_directory.exists() and not init_directory.is_dir():
-        raise RuntimeError(f"refusing a sealed release build: {init_directory} is not a directory")
-    properties = home / "gradle.properties"
+
+
+def _require_inert_gradle_properties(properties: pathlib.Path) -> None:
     if not properties.exists():
         return
     try:
@@ -219,16 +261,93 @@ def require_sealed_gradle_user_home(environment: Mapping[str, str]) -> None:
     unexpected = sorted({key for key, _ in entries if key not in USER_GRADLE_PROPERTY_ALLOWLIST})
     injected = sorted({
         key for key, value in entries
-        if key.endswith("jvmargs") and _JVM_ARGUMENT_INJECTION.search(value)
+        if key.endswith("jvmargs") and not jvm_arguments_admitted(value)
     })
     if unexpected or injected:
         raise RuntimeError(
             f"refusing a sealed release build: {properties} sets keys a sealed build cannot carry: "
-            + ", ".join([*unexpected, *(f"{key} (agent or project property)" for key in injected)])
+            + ", ".join([*unexpected, *(f"{key} (non-allowlisted JVM argument)" for key in injected)])
             + ". Remove or comment out those keys (or point GRADLE_USER_HOME at a directory without "
             "them) for the release run; build caching, the configuration cache, and "
             "systemProp.http(s).proxyHost/proxyPort/nonProxyHosts may stay."
         )
+
+
+# SR5-1 / RG5-12 (AGG5-15): Gradle auto-applies FOUR init-script sources — `-I` (closed by SEC3-1),
+# `$GRADLE_USER_HOME/init.gradle(.kts)`, `$GRADLE_USER_HOME/init.d/*`, and the DISTRIBUTION's own
+# `init.d/*` — and reads the distribution's `gradle.properties` at the lowest precedence. Only the
+# third was refused, so the evidence's "sealed" claim exceeded what the wrapper controlled.
+USER_INIT_SCRIPTS = ("init.gradle", "init.gradle.kts")
+# The stock binary distribution ships exactly this one file in `init.d`.
+STOCK_DISTRIBUTION_INIT_ENTRIES = frozenset({"readme.txt"})
+
+
+def require_sealed_gradle_user_home(environment: Mapping[str, str]) -> None:
+    """Refuse ambient build logic the sealed run would otherwise auto-apply (names only, no values)."""
+    home = gradle_user_home(environment)
+    for name in USER_INIT_SCRIPTS:
+        script = home / name
+        if os.path.lexists(script):
+            raise RuntimeError(
+                f"refusing a sealed release build: {script} exists; Gradle would apply it as "
+                "unsealed build logic"
+            )
+    _require_inert_init_directory(home / "init.d", frozenset())
+    _require_inert_gradle_properties(home / "gradle.properties")
+
+
+def _base36(value: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        encoded = digits[remainder] + encoded
+    return encoded or "0"
+
+
+def wrapper_distribution_directory(
+    snapshot: pathlib.Path,
+    environment: Mapping[str, str],
+) -> pathlib.Path | None:
+    """The wrapper's unpack directory for the snapshot's `distributionUrl`, as Gradle names it.
+
+    Gradle's `PathAssembler` keys the directory on base-36 MD5 of the URL string. None when the
+    snapshot carries no wrapper properties (nothing for the wrapper to unpack).
+    """
+    properties = snapshot / "gradle/wrapper/gradle-wrapper.properties"
+    if not properties.is_file():
+        return None
+    try:
+        entries = dict(parse_java_properties(properties.read_bytes()))
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise RuntimeError("refusing a sealed release build: wrapper properties are unreadable") from error
+    url = entries.get("distributionUrl", "")
+    base_name = entries.get("distributionBase", "GRADLE_USER_HOME")
+    if not url:
+        raise RuntimeError("refusing a sealed release build: wrapper distributionUrl is missing")
+    if base_name == "GRADLE_USER_HOME":
+        base = gradle_user_home(environment)
+    elif base_name == "PROJECT":
+        base = snapshot
+    else:
+        raise RuntimeError("refusing a sealed release build: unknown wrapper distributionBase")
+    archive = url.rsplit("/", 1)[-1]
+    stem = archive[:-4] if archive.endswith(".zip") else archive
+    digest = int.from_bytes(hashlib.md5(url.encode("utf-8"), usedforsecurity=False).digest(), "big")
+    return base / entries.get("distributionPath", "wrapper/dists") / stem / _base36(digest)
+
+
+def require_sealed_gradle_distribution(
+    snapshot: pathlib.Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Refuse a modified unpacked distribution (its checksum is verified only on download)."""
+    distribution = wrapper_distribution_directory(snapshot, environment)
+    if distribution is None or not distribution.is_dir():
+        return  # Not unpacked yet: the wrapper downloads it and verifies distributionSha256Sum.
+    for installation in sorted(entry for entry in distribution.iterdir() if entry.is_dir()):
+        _require_inert_init_directory(installation / "init.d", STOCK_DISTRIBUTION_INIT_ENTRIES)
+        _require_inert_gradle_properties(installation / "gradle.properties")
 
 
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -848,6 +967,23 @@ def _gradle_signing_value(
     return from_environment or None
 
 
+# SR5-3 (AGG5-17): keytool holds the decrypted store password in-process, and every JDK launcher
+# honours these variables (`-javaagent:` included). They are REFUSED rather than silently dropped,
+# so an operator learns their shell carries a JVM agent instead of having it ignored once.
+JVM_LAUNCHER_INJECTION_ENVIRONMENT = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
+
+
+def keytool_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """The allowlisted environment keytool receives (the sealed Gradle child's allowlist)."""
+    present = [name for name in JVM_LAUNCHER_INJECTION_ENVIRONMENT if environment.get(name)]
+    if present:
+        raise UploadKeyGateError(
+            "refusing to verify the upload key while a JVM launcher option variable is set: "
+            + ", ".join(present)
+        )
+    return release_child_environment(environment)
+
+
 def require_approved_upload_key(
     root: pathlib.Path,
     tasks: Sequence[str],
@@ -862,7 +998,7 @@ def require_approved_upload_key(
         entries = parse_java_properties(read_regular_beneath(root, "keystore.properties")[0])
     except (OSError, RuntimeError, UnicodeError) as error:
         raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
-    gate_environment = dict(environment)
+    gate_environment = keytool_environment(environment)
     # Verify the SAME alias and store password Gradle will sign with.
     alias = _gradle_signing_value(entries, "keyAlias", environment, KEY_ALIAS_ENV)
     gate_environment.pop(KEY_ALIAS_ENV, None)
@@ -1008,6 +1144,7 @@ def build_immutable_release(
         local_inputs = copy_local_build_inputs(root, snapshot)
         seal = seal_release_snapshot(snapshot, (*expected, *local_inputs.sealed_paths))
         try:
+            require_sealed_gradle_distribution(snapshot, child_environment)
             # After the seal: the bytes checked here are the bytes the seal then keeps immutable.
             require_frozen_secret_floor(local_inputs.signing_properties, tasks, child_environment)
             if after_snapshot is not None:

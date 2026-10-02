@@ -1469,6 +1469,14 @@ check(
     # SEC4-4 / AGG4-41: allowlisted child environment, empty init.d, and the sealed fixed flags.
     and "environment = release_child_environment(os.environ)" in release_wrapper
     and "require_sealed_gradle_user_home(child_environment)" in release_wrapper
+    # AGG5-15/16/17: every init-script source, the distribution, a jvmargs allowlist, keytool env.
+    and 'USER_INIT_SCRIPTS = ("init.gradle", "init.gradle.kts")' in release_wrapper
+    and "require_sealed_gradle_distribution(snapshot, child_environment)" in release_wrapper
+    and "not jvm_arguments_admitted(value)" in release_wrapper
+    and "gate_environment = keytool_environment(environment)" in release_wrapper
+    and "child_environment = keytool_environment(base_environment)" in read(
+        "tools/run_scoped_signed_release.py"
+    )
     and 'SEALED_GRADLE_FLAGS = ("--no-build-cache", "--no-configuration-cache", "--no-daemon")'
     in release_wrapper
     and 'command = ["./gradlew", *SEALED_GRADLE_FLAGS, *tasks]' in release_wrapper

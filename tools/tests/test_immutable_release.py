@@ -549,7 +549,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 project_property,
                 "keys a sealed build cannot carry: foo.bar, systemProp.http.proxyPassword. Remove or comment out",
             ),
-            (agent_jvmargs, "org.gradle.jvmargs (agent or project property)"),
+            (agent_jvmargs, "org.gradle.jvmargs (non-allowlisted JVM argument)"),
         ):
             with self.subTest(case=setup.__name__):
                 commands, error = self.gradle_home_case(setup)
@@ -557,6 +557,106 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 self.assertIn(expected, str(error))
                 self.assertNotIn("/tmp/agent.jar", str(error))
                 self.assertEqual([], commands)
+
+    def test_sealed_run_refuses_user_init_gradle_scripts(self) -> None:
+        # SR5-1 / RG5-12 (AGG5-15): Gradle applies $GRADLE_USER_HOME/init.gradle(.kts) exactly like
+        # init.d/*, so a sealed build must refuse either name.
+        for name in ("init.gradle", "init.gradle.kts"):
+            with self.subTest(name=name):
+                def user_script(home: Path, name: str = name) -> None:
+                    (home / name).write_text("// unsealed\n", encoding="utf-8")
+
+                commands, error = self.gradle_home_case(user_script)
+                self.assertIsNotNone(error)
+                self.assertIn(f"{name} exists", str(error))
+                self.assertEqual([], commands)
+
+    def test_jvmargs_are_an_allowlist_of_token_shapes(self) -> None:
+        # SR5-2 / RG5-13 (AGG5-16): each of these returned False from the former denylist and runs
+        # code inside the JVM that compiles or signs the release.
+        for value in (
+            "-Xmx2g -Xbootclasspath/a:/x/e.jar -Djava.system.class.loader=E",
+            "-Xmx2g -XX:OnOutOfMemoryError=/x/e.sh",
+            "-Xmx2g -XX:OnError=/x/e.sh",
+            "-Xmx2g @/x/args.txt",
+            "-Djava.security.manager=E",
+            "--patch-module java.base=/x/p.jar",
+            "-XX:+HeapDumpOnOutOfMemoryError",
+            "-Duser.home=/x",
+            "-javaagent:/tmp/agent.jar",
+            "-Xmx2g 'unterminated",
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(release.jvm_arguments_admitted(value))
+        for value in (
+            "-Xmx2g -Dfile.encoding=UTF-8",
+            "-Xmx4096m -Xms512m -XX:MaxMetaspaceSize=1g -XX:+UseParallelGC",
+            "-Xss4m -Duser.language=en -Duser.country=US -Djava.awt.headless=true",
+            "--add-opens=java.base/java.util=ALL-UNNAMED",
+            "--add-opens java.base/java.lang=ALL-UNNAMED",
+            "",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(release.jvm_arguments_admitted(value))
+
+    def distribution_case(self, setup) -> BaseException | None:
+        """Runs the distribution screen against a fixture wrapper and a fake unpacked distribution."""
+        url = "https://services.gradle.org/distributions/gradle-9.8.0-bin.zip"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir) / "snapshot"
+            (snapshot / "gradle/wrapper").mkdir(parents=True)
+            (snapshot / "gradle/wrapper/gradle-wrapper.properties").write_text(
+                "distributionBase=GRADLE_USER_HOME\n"
+                "distributionPath=wrapper/dists\n"
+                f"distributionUrl={url.replace(':', chr(92) + ':', 1)}\n",
+                encoding="utf-8",
+            )
+            home = Path(temp_dir) / "gradle-home"
+            environment = {"GRADLE_USER_HOME": str(home)}
+            distribution = release.wrapper_distribution_directory(snapshot, environment)
+            # Gradle's PathAssembler name for this URL (base-36 MD5), as unpacked on a real machine.
+            self.assertEqual(
+                home / "wrapper/dists/gradle-9.8.0-bin/3m7h6ceboy5k31n8kzwzuxssm",
+                distribution,
+            )
+            installation = distribution / "gradle-9.8.0"
+            (installation / "init.d").mkdir(parents=True)
+            (installation / "init.d/readme.txt").write_text("stock\n", encoding="utf-8")
+            setup(installation)
+            try:
+                release.require_sealed_gradle_distribution(snapshot, environment)
+            except RuntimeError as error:
+                return error
+            return None
+
+    def test_sealed_run_refuses_a_modified_wrapper_distribution(self) -> None:
+        # SR5-1 (AGG5-15): $GRADLE_HOME/init.d and $GRADLE_HOME/gradle.properties also apply, and
+        # the distribution checksum is verified only on download.
+        def stock(_: Path) -> None:
+            pass
+
+        def distribution_script(installation: Path) -> None:
+            (installation / "init.d/inject.gradle").write_text("// unsealed\n", encoding="utf-8")
+
+        def distribution_property(installation: Path) -> None:
+            (installation / "gradle.properties").write_text("foo.bar=1\n", encoding="utf-8")
+
+        def distribution_jvmargs(installation: Path) -> None:
+            (installation / "gradle.properties").write_text(
+                "org.gradle.jvmargs=-Xmx2g -XX:OnError=/x/e.sh\n", encoding="utf-8"
+            )
+
+        self.assertIsNone(self.distribution_case(stock))
+        for setup, expected in (
+            (distribution_script, "init.d is not empty"),
+            (distribution_property, "keys a sealed build cannot carry: foo.bar"),
+            (distribution_jvmargs, "org.gradle.jvmargs (non-allowlisted JVM argument)"),
+        ):
+            with self.subTest(case=setup.__name__):
+                error = self.distribution_case(setup)
+                self.assertIsNotNone(error)
+                self.assertIn(expected, str(error))
+                self.assertNotIn("/x/e.sh", str(error))
 
     def test_sealed_run_passes_fixed_flags_with_an_inert_user_home(self) -> None:
         def inert(home: Path) -> None:
