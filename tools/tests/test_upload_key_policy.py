@@ -168,6 +168,11 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
         # The name prefixes are string constants in each task's CreationAction class.
         jar = self.agp_jar()
         if jar is None:
+            # TE5-17 (AGG5-67): under the host gate, Gradle has just run, so a missing jar means the
+            # cache layout, GRADLE_USER_HOME, or the AGP coordinates moved — exactly when this pin
+            # must not go quiet. Outside the gate (a bare unittest run) a skip stays honest.
+            if os.environ.get("TELECAM_HOST_GATE") == "1":
+                self.fail("the pinned AGP jar is not in the Gradle cache under the host gate")
             self.skipTest("the pinned AGP jar is not in the Gradle cache (run any Gradle build first)")
         prefixes: set[str] = set()
         with zipfile.ZipFile(jar) as archive:
@@ -180,6 +185,8 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
                         )
                     )
         self.assertIn("makeApkFromBundleFor", prefixes)
+        # A regex that drifted to matching almost nothing must not pass vacuously (AGP 9.4.1: 4).
+        self.assertGreaterEqual(len(prefixes), 3, sorted(prefixes))
         gated = self.release_signing_task_set()
         unreviewed = sorted(
             prefix
@@ -187,6 +194,12 @@ class GradleReleaseSigningRefusalTest(unittest.TestCase):
             if f'"{prefix}Release"' not in gated and prefix not in self.NON_SIGNING_APK_TASK_PREFIXES
         )
         self.assertEqual([], unreviewed)
+
+    def test_the_host_gate_arms_the_agp_pin_failure(self) -> None:
+        # TE5-17 (AGG5-67): the fail-instead-of-skip branch is live only if the gate sets the flag.
+        source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
+        self.assertIn('HOST_GATE_ENVIRONMENT = "TELECAM_HOST_GATE"', source)
+        self.assertIn('HOST_GATE_ENVIRONMENT: "1",', source)
 
     def test_gate_inputs_carry_the_alias_and_store_path(self) -> None:
         # SEC4-1: an alias switch inside the same keystore must re-execute every gated task.

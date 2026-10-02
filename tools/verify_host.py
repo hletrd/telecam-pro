@@ -107,6 +107,10 @@ DEFAULT_GRADLE_TASKS = (
 # by design (release source identity). The default gate therefore adds it whenever the tree is
 # clean, which is the state every commit-ready run is in, and says plainly when it could not.
 RELEASE_LINT_TASK = ":app:lintRelease"
+# TE5-17 (AGG5-67): set on every child of this gate. Tests whose evidence depends on artefacts the
+# gate's own Gradle run just produced (the pinned AGP jar) FAIL under it instead of skipping, so a
+# cache-layout change or an AGP bump cannot silently turn a security pin into a skip.
+HOST_GATE_ENVIRONMENT = "TELECAM_HOST_GATE"
 
 
 def worktree_is_clean(root: Path = ROOT) -> bool:
@@ -164,6 +168,7 @@ def main() -> int:
         **sdk_environment,
         "JAVA_HOME": str(home),
         "PATH": str(home / "bin") + os.pathsep + os.environ.get("PATH", ""),
+        HOST_GATE_ENVIRONMENT: "1",
     }
     clean = worktree_is_clean()
     if not clean:
