@@ -1,296 +1,281 @@
-# Security review: TeleCam Pro, RPL cycle 5 (security-reviewer, 2026-10-02, HEAD ea7d4374)
+# Security review: TeleCam Pro, RPL cycle 6 (security-reviewer, 2026-10-02, HEAD 30970c9e)
 
-Scope: OWASP Mobile Top 10 over the main and debug manifests, backup and data-extraction rules, the
-cycle-4 app diff (`887d39fb..HEAD`, 40 files under `app/src/main`), the Gradle release gate in
-`app/build.gradle.kts`, `gradle.properties`, the wrapper and version catalog, and all release and
-host tooling changed in cycle 4 (`build_immutable_release.py`, `run_scoped_signed_release.py`,
-`upload_key_policy.py`, `verify_host.py`, `check_docs.py` password rule). This was a read-only pass.
-I made no source edits, ran no Gradle, and opened no credential file. The only file check on build
-intermediates confirmed that no password KEYS are present in AGP's `signing_config_versions` JSON.
-No values were read.
+Agent: security-reviewer (SR6). Read-only pass. I made no source edits, ran no Gradle, and opened
+no credential file.
 
-Baseline: cycle-4 review `archive-rpl-cycle4-2026-10-02/security-reviewer.md` (SEC4-1..5 →
-AGG4-38..42) and plan `docs/plans/2026-10-02-rpl-cycle4.md` lane C (C.1-C.6, M.5, M.8). The
-cycle-4 security commits are `42f450d2`, `d0303120`, `248801fe`, `6d93afa6`, `c6598aae`,
-`9596c16a`, and `3521e6fc`. I re-checked each one for bypasses.
+Scope inventory (all examined):
 
-Not re-reported (owner decisions or already tracked): AGG-67 / AGG2-36 (key custody, the password in
-history), AGG-69, AGG3-33 (self-attested signer), AGG3-34 (configuration-cache capture), SEC2-3,
-SEC2-5, AGG4-44 (needs real `keystore.properties`), AGG4-52 (behavioural Gradle refusal run).
+- Manifests: `app/src/main/AndroidManifest.xml` and `app/src/debug/AndroidManifest.xml`, covering
+  exported components, permissions, network-permission removal, and backup flags.
+- Intents and receivers: `MainActivity.onNewIntent`, `ui/ExternalNavigation.kt`, and the debug
+  receivers in `ui/CameraViewModel.kt:1203-1237`.
+- MediaStore exposure: the restore and recovery query filters in `storage/MediaStoreWriter.kt` and
+  `storage/PendingDiscardJournal.kt`, plus URI and display-name logging.
+- EXIF privacy: `capture/StillCapturePipeline.kt` (all still lanes, including the cycle-5
+  `35ccc225` strip) and `capture/HeifExif.kt` (extract and splice).
+- Release tooling:
+  - `tools/build_immutable_release.py`, all of it, including the cycle-5 `8e65456f` seal changes;
+  - `tools/run_scoped_signed_release.py`, `upload_key_policy.py`, `verify_host.py` (`1839998d`),
+    `check_docs.py` (`7f47c8c6` secret-fact scan), `check_release_artifact.py`, and
+    `adb_proxy.py`;
+  - `gradle.properties`, `gradle/wrapper/gradle-wrapper.properties`, `.gitattributes`, and
+    `.gitignore`.
+- Subprocess and environment handling plus path handling, across `tools/*.py`.
 
-## Summary
+Baseline: cycle-5 `SR5-1..5` became AGG5-15/16/17/18/51 and were fixed in C.3, C.4, and B.9. I
+re-checked each fix for bypasses below. Not re-raised:
+
+- the leaked credential in history, which awaits the owner;
+- AGG-67, AGG-69, AGG3-33, AGG3-34, and AGG4-44;
+- every item the cycle-5 plan lists for a later cycle.
+
+## Cycle-5 fixes re-checked
+
+- **AGG5-15 (init scripts).** The fix holds for the channels it names. `require_sealed_gradle_user_home`
+  now refuses `init.gradle` and `init.gradle.kts`, and it uses `os.path.lexists`, so a dangling
+  symlink is refused too. `require_sealed_gradle_distribution` computes the wrapper unpack
+  directory with Gradle's base-36 MD5 of the URL. I checked it on this machine: the computed
+  `…/gradle-9.8.0-bin/3m7h6ceboy5k31n8kzwzuxssm` is the real directory, so the check does not
+  silently miss. The residuals are in SR6-2 (Kotlin daemon) and SR6-5 (distribution jars).
+- **AGG5-16 (jvmargs).** The allowlist holds:
+  - `shlex` tokenisation fails closed on a backslash or quote mismatch;
+  - the merged-token forms either fail `fullmatch` or are harmless;
+  - the `--add-opens` value class (`[A-Za-z0-9_.,-]`) cannot spell any `:`/`/`/`=` agent flag,
+    even if KGP split `kotlin.daemon.jvmargs` on commas.
+- **AGG5-17 (keytool and Python environment).** The fix holds:
+  - `keytool_environment` refuses `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, and `_JAVA_OPTIONS`;
+  - the scoped helper builds the inner environment from the allowlist, and the wrapper runs
+    `-I -S`;
+  - the three tool modules import only the standard library, so isolated mode does not break the
+    wrapper.
+
+  The git children are a separate channel (SR6-1).
+- **AGG5-18 (secret-fact scan).** It now scans every published file that decodes as UTF-8. No
+  tracked text file currently fails that decode, so nothing is skipped today (SR6-7 is latent).
+- **AGG5-51 (passthrough EXIF).** The success path blanks the listed tags. The fallback paths do
+  not strip anything (SR6-3).
+
+## Findings
 
 | ID | Severity | Confidence | Status | Title |
 |---|---|---|---|---|
-| SR5-1 | Low | High | Confirmed | The sealed-run init-script refusal checks only `$GRADLE_USER_HOME/init.d`. Gradle also auto-applies `$GRADLE_USER_HOME/init.gradle(.kts)` and the distribution's `$GRADLE_HOME/init.d`, and reads `$GRADLE_HOME/gradle.properties` |
-| SR5-2 | Low | High | Confirmed | The user `jvmargs` injection filter is a short denylist. `-Xbootclasspath/a:` + `-Djava.system.class.loader=`, `-XX:OnOutOfMemoryError=`, and `@argfile` all pass it and run code inside the sealed Gradle/Kotlin daemons |
-| SR5-3 | Low | High | Confirmed | The AGG4-41 environment allowlist covers only the inner Gradle child. The keytool child that receives the store password (`-storepass:env`) and both Python wrapper processes still inherit the full ambient environment (`JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS` agents, `PYTHONPATH` `sitecustomize`) |
-| SR5-4 | Low | High | Confirmed | The password-property scan (AGG4-40) adds `.py/.kts/.txt/.toml/.properties.example` but not the published `privacy-policy/index.html`, `_config.yml`, `.kt` (400 files), `.xml` resources, `.sh`, or `.json` |
-| SR5-5 | Info | Medium | Likely (dormant on PMA110) | The hi-res passthrough lane keeps the HAL's own EXIF under ours, with no explicit strip of GPS, serial, or maker-note tags. The "captures carry no GPS" claim was verified on HEIF only |
+| SR6-1 | Low | High | Confirmed (static) | The release export trusts ambient git config and environment. Filters, hooks, the attributes file, and `GIT_*` variables can alter the checked-out source, and `expected` is hashed from the altered disk, not from the commit's blobs |
+| SR6-2 | Low | Medium | Likely | `--no-daemon` does not cover the Kotlin compile daemon. The sealed release compiles through a shared, long-lived Kotlin daemon that an unsealed build may have started |
+| SR6-3 | Low | High | Confirmed (static); dormant on PMA110, live on hi-res-capable devices | The passthrough-JPEG privacy strip fails open. If EXIF composition fails or the splice is refused, the HAL bytes are written verbatim with the HAL APP1. Non-Exif APPn segments such as XMP are always kept |
+| SR6-4 | Low | Medium | Needs manual validation | The user `gradle.properties` allowlist admits `org.gradle.logging.level` with any value, including `debug`, during a run whose environment carries the signing values |
+| SR6-5 | Info | High | Confirmed | The distribution check covers `init.d` and `gradle.properties` only. The unpacked distribution's `lib/` jars are never re-verified after download, so the "sealed" evidence claim still exceeds what the wrapper controls |
+| SR6-6 | Info | Medium | Needs manual validation | No output-file check has proven that a saved DNG carries no serial or unique-id tag. The "no identifying metadata" claim was verified on HEIF only |
+| SR6-7 | Info | High | Confirmed (latent) | The secret-fact scan skips any published file that is not valid UTF-8, such as a Latin-1 `.properties` file or a stray byte, rather than scanning it lossily |
 
-Total: 5 (0 Critical, 0 High, 0 Medium, 4 Low, 1 Info). Every finding is in tooling or a dormant
-lane. None changes PMA110 runtime behaviour.
-
-### Cycle-4 fixes that hold (checked for bypasses)
-
-- **AGG4-38 / SEC4-2 (`d0303120`, `9596c16a`).**
-  - The Gradle gate computes `meetsGeneratedSecretFloor` for `storePassword` and the effective
-    `releaseKeyPassword` (`app/build.gradle.kts:404-498`, `:988-989`). Only the two booleans enter
-    the task input (`:1001-1005`) and the doFirst (`:1029-1034`), so no value reaches the
-    configuration-cache task graph beyond the pre-existing AGG3-34 capture.
-  - The floor runs after the approval and fingerprint checks and before `KeyStore.getInstance`, the
-    same order as the Python wrappers.
-  - The wrapper's TOCTOU is closed. `require_frozen_secret_floor` (`tools/build_immutable_release.py:918-944`)
-    parses the exact bytes `copy_local_build_inputs` wrote, and it runs after
-    `seal_release_snapshot`, so the bytes checked are the bytes kept immutable (`:1009-1012`).
-  - Python and Kotlin now agree outside ASCII. Both count code points, apply ASCII-only class
-    tests, and use the same edge-whitespace set.
-- **AGG4-42 / SEC4-5 (`42f450d2`).** The distinct-character (≥12), repeat-run (>3), and
-  short-period rules reject all three cycle-4 synthetic values on both sides. `_has_short_period`
-  and the Kotlin twin iterate over the same code-point sequence.
-- **AGG4-39 / SEC4-1 (`248801fe`).**
-  - `makeApkFromBundleForRelease` and `extractApksFromBundleForRelease` are now in
-    `releaseSigningTasks` (`app/build.gradle.kts:918-925`). That puts them under both the
-    upload-key gate and the injected-signing refusal.
-  - The gate input now carries the alias and the store path, so re-pointing `keyAlias` re-executes
-    every gated task.
-  - The recommended always-run dedicated task was not adopted. The remaining name-list risk is
-    covered by the AGP-jar prefix test.
-  - I confirmed in the AGP 9.4.1 jar that `SigningConfigWriterTask` and
-    `SigningConfigVersionsWriterTask` exist. The release `signing-config-versions.json` in
-    `app/build/intermediates` carries no password keys, and no `signing_config/` (password-bearing)
-    intermediate is produced for this app.
-- **AGG4-41 / SEC4-4 (`6d93afa6`, `3521e6fc`).**
-  - The child environment is allowlisted.
-  - `--no-build-cache --no-configuration-cache --no-daemon` are prepended by the wrapper.
-    `validate_gradle_tasks` still refuses any caller `-` element, so the caller cannot undo them.
-  - `require_sealed_gradle_user_home` uses the same `GRADLE_USER_HOME` the child receives.
-  - Argv and environment NAMES are recorded in evidence.
-  - `parse_java_properties` decodes `\uXXXX` escapes before the key allowlist and the jvmargs
-    regex, so an escaped key or agent flag cannot slip past.
-  - SR5-1, SR5-2, and SR5-3 are residual channels that this fix did not reach.
-- **AGG4-40 / AGG4-43 (`c6598aae`).** The fixtures are synthetic and carry `SYNTHETIC-FIXTURE`.
-  The marker exemption is confined to `tools/tests/test_tool_contracts.py`. The listing includes
-  non-ignored untracked files. The scan now reaches `.py`/`.kts`/`.txt`/`.toml`; SR5-4 covers the
-  suffixes it still misses. All five `PRIVATE_DOCS` paths are gitignored and untracked, so
-  skipping them hides nothing that is published today.
-- **`signing_capable` fails closed.** Every task except a `lint*` task is treated as signing, so a
-  wrapper invocation of `:app:makeApkFromBundleForRelease` still runs the Python approval and floor
-  gate.
+Total: 7 (0 Critical, 0 High, 0 Medium, 4 Low, 3 Info). None changes PMA110 runtime behaviour
+except SR6-3 on hi-res-capable devices.
 
 ---
 
-### SR5-1: Init-script and properties channels outside `$GRADLE_USER_HOME/init.d` are not refused
-
-- **Severity / Confidence / Status:** Low / High / Confirmed. The documentation was checked on
-  2026-10-02 at docs.gradle.org/current/userguide/init_scripts.html and build_environment.html.
-- **Where:**
-  - `tools/build_immutable_release.py:201-232` (`require_sealed_gradle_user_home`) inspects only
-    `home / "init.d"` and `home / "gradle.properties"`.
-  - Its test, `tools/tests/test_immutable_release.py:533-563`, covers only `init.d`.
-- **Why:** Gradle's documented init-script discovery has four sources, applied in this order:
-  1. the `-I` command-line option, closed by SEC3-1;
-  2. **`$GRADLE_USER_HOME/init.gradle(.kts)`**;
-  3. `$GRADLE_USER_HOME/init.d/*`;
-  4. **`$GRADLE_HOME/init.d/*`**.
-
-  For a wrapper build, `GRADLE_HOME` is the unpacked distribution under
-  `$GRADLE_USER_HOME/wrapper/dists/gradle-9.8.0-bin/<hash>/gradle-9.8.0/`. On this machine its
-  `init.d` directory exists. `distributionSha256Sum` is verified only on download, not on later
-  runs. Gradle also reads `$GRADLE_HOME/gradle.properties`, at the lowest precedence, which still
-  supplies any key the project file does not set.
-- **Failure scenario:** a same-user process, such as a compromised dev tool or editor plugin,
-  drops `~/.gradle/init.gradle.kts` or a script into the distribution's `init.d`. Either script
-  can, for example, add a doLast to `bundleRelease` that rewrites the signed AAB, or log signing
-  values. The wrapper refuses only `init.d`, so the "sealed" build runs it. The evidence then
-  claims `sealed-wrapper-export-v1` for outputs shaped by unsealed logic. The threat model is the
-  same as SEC4-4 (same-user write); this finding is about the evidence claim exceeding what the
-  wrapper controls.
-- **Fix:**
-  - Also refuse an existing `home / "init.gradle"` and `home / "init.gradle.kts"`.
-  - Resolve the wrapper distribution directory from the snapshot's
-    `gradle/wrapper/gradle-wrapper.properties`, using the same `distributionUrl` hash Gradle
-    computes. Refuse a non-empty `init.d` there. The stock distribution ships only a `readme.txt`,
-    so allowlist exactly that file.
-  - Apply the same key allowlist to `<dist>/gradle.properties`.
-  - A stronger option: run the sealed build with a fresh `GRADLE_USER_HOME` (a temp dir) plus a
-    read-only `--offline` dependency cache. That makes all of these channels moot and also
-    re-verifies the distribution checksum on unpack.
-  - Host tests: one fixture each for the user `init.gradle.kts`, the distribution `init.d` script,
-    and the distribution `gradle.properties` key.
-- **PMA110 impact:** none (tooling only).
-
-### SR5-2: The `jvmargs` code-injection filter is a denylist that common JVM options bypass
-
-- **Severity / Confidence / Status:** Low / High / Confirmed. I ran the shipped regex over
-  synthetic strings.
-- **Where:**
-  - `tools/build_immutable_release.py:177`:
-    `_JVM_ARGUMENT_INJECTION = -javaagent|-agentpath|-agentlib|-Dorg\.gradle\.project\.|-Dandroid\.`
-  - `:217-221`, which applies the filter to user `org.gradle.jvmargs` and `kotlin.daemon.jvmargs`.
-    Both keys are allowlisted at `:144`/`:149`.
-- **Why:** with `--no-daemon`, Gradle still forks a single-use daemon with `org.gradle.jvmargs`.
-  The user-home value overrides the project's `-Xmx2g -Dfile.encoding=UTF-8`. The Kotlin compile
-  daemon takes `kotlin.daemon.jvmargs` and produces the compiled bytes. Each of the following
-  returned `False` from the regex and runs arbitrary code at JVM start or on demand:
-  - `-Xbootclasspath/a:/x/e.jar -Djava.system.class.loader=E` replaces the system class loader;
-  - `-XX:OnOutOfMemoryError=/x/e.sh`;
-  - `@/x/args.txt`, a JVM argument file that can carry `-javaagent:` and so hides it from the
-    regex entirely.
-
-  `-Djava.security.manager=E` and `--patch-module` are similar.
-- **Failure scenario:** the same same-user threat as SR5-1, through a property key that the
-  wrapper explicitly admits and claims to have screened.
-- **Fix:**
-  - Invert the filter to an allowlist of token shapes: split on whitespace and accept only
-    `-Xmx<n>[kmg]`, `-Xms…`, `-Xss…`, `-XX:MaxMetaspaceSize=…`, `-XX:+UseParallelGC`-style boolean
-    GC flags, `-Dfile.encoding=…`, and `-Duser.*`. Refuse everything else, including any `@`
-    token.
-  - Test the three bypass strings above as refusals.
-- **PMA110 impact:** none.
-
-### SR5-3: The keytool child and both Python wrappers still inherit the full ambient environment
+### SR6-1: The release export runs git under ambient config and environment, and hashes the result instead of the commit
 
 - **Severity / Confidence / Status:** Low / High / Confirmed (static).
 - **Where:**
-  - `tools/build_immutable_release.py:1117`: `require_approved_upload_key(args.root, args.tasks,
-    os.environ)`. That function builds `gate_environment` from it and then calls
-    `verify_upload_key_certificate(..., gate_environment, run)` (`:881-891`). Lines `:781-795`
-    launch keytool with `env=environment` and `-storepass:env`.
-  - `tools/run_scoped_signed_release.py:82-98`:
-    - `child_environment = dict(base_environment)`, which is the full `os.environ`.
-    - The STDIN-only store and key passwords are added to it.
-    - That environment is passed to keytool and to the inner `sys.executable
-      build_immutable_release.py`.
-- **Why:** AGG4-41 allowlisted only the Gradle child, but it is not the only JVM that sees the
-  secret:
-  - keytool holds the decrypted store password in-process. `JAVA_TOOL_OPTIONS` and
-    `JDK_JAVA_OPTIONS` are honoured by every JDK launcher, keytool included, so an agent there
-    reads `TELECAMPRO_STORE_PASSWORD` from the environment or the `KeyStore` call.
-  - The inner Python wrapper, which is the evidence boundary, starts with the caller's
-    `PYTHONPATH`. A `sitecustomize.py` on it runs before `build_immutable_release` and can patch
-    `release_child_environment`, `require_sealed_gradle_user_home`, or the output freeze.
-  - The scoped helper's stated property is that no secret is written to a file, placed in argv, or
-    exported into the caller's shell. That property is weaker than it reads, because the secret
-    shares a process environment with arbitrary injected code.
-- **Failure scenario:** the scoped helper exists so the password never touches disk (it arrives on
-  STDIN). An ambient `JAVA_TOOL_OPTIONS=-javaagent:/x/a.jar` in the operator's shell, from a
-  profiler or a malicious dotfile, captures it inside keytool. A file-based attacker could not
-  have read it.
+  - `tools/build_immutable_release.py:561-575` (`export_commit`): `git clone --shared
+    --no-checkout` and `git checkout --detach` run with no `env=` and no `-c` overrides, so they
+    inherit the full ambient environment and the system, global, and template config.
+  - `:358-366` (`git_value`) and `:369-388` (`require_clean_commit`) also run with no `env=`.
+  - `:572-575`: `expected` is `sha256_regular_beneath(destination, …)` over the files as they sit
+    on disk after checkout.
+  - `:1083-1115` (`verify_export`) compares later bytes against that `expected`. Nothing compares
+    the checkout to the blob ids in `tree`.
+- **Why:** git runs user-configured code during clone and checkout:
+  - smudge, clean, and process filter drivers, selected through `core.attributesFile`, a template
+    `info/attributes`, or `$GIT_DIR/info/attributes`;
+  - the `post-checkout` hook, from `init.templateDir` or `core.hooksPath`;
+  - environment variables such as `GIT_CONFIG_COUNT/KEY_n/VALUE_n`, `GIT_CONFIG_PARAMETERS`,
+    `GIT_ALTERNATE_OBJECT_DIRECTORIES`, and `GIT_TEMPLATE_DIR`.
+
+  This machine already configures a global filter driver (`filter.lfs.*`), so the mechanism is
+  live, not hypothetical. The scoped helper's inner run gets an allowlisted environment, but
+  global config still applies through `HOME`. The direct `build_immutable_release.py` invocation
+  documented in CLAUDE.md inherits every `GIT_*` variable as well.
+- **Failure scenario:** the same same-user threat model as SR5-1/2/3.
+  1. Something adds `* filter=x` through `core.attributesFile`, plus a `filter.x.smudge` that
+     injects code into a `.kt` file and a matching `filter.x.clean` that strips it again.
+  2. The checkout writes the injected source, and `expected` hashes it.
+  3. The final `git status` in the snapshot passes the file through the clean filter and reports
+     it clean.
+  4. The evidence records the commit/tree ids of source the APK was not built from.
+
+  A `post-checkout` hook that edits files and sets `skip-worktree` reaches the same outcome.
 - **Fix:**
-  - Build the keytool environment from the same allowlist: reuse `release_child_environment`
-    plus the store-password variable, and refuse when `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, or
-    `_JAVA_OPTIONS` are set rather than silently dropping them.
-  - Have the scoped helper launch the inner wrapper as `sys.executable -I -S` (isolated mode
-    ignores `PYTHON*` variables and the user site), with an allowlisted environment.
-  - Unit tests: assert the `env=` passed to the fake `run` contains no `JAVA_TOOL_OPTIONS`/
-    `PYTHONPATH`, and that the inner command carries `-I`.
-- **PMA110 impact:** none.
+  - Run every git child with an isolated configuration:
+    - the allowlisted environment, with `GIT_*` removed;
+    - `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_ATTR_NOSYSTEM=1`;
+    - `-c core.hooksPath=/dev/null -c core.attributesFile=/dev/null -c core.fsmonitor=false`;
+    - `clone --template=` (empty).
+  - After checkout, verify each tracked file against the commit itself. Compute the git blob id of
+    the bytes on disk (`git hash-object --no-filters`, or `blob <len>\0` hashed in Python with the
+    repository's object format) and require it to equal the id from `git ls-tree -r -z <commit>`.
+  - The LFS-tracked Play screenshots stay pointer files under this scheme. They are not build
+    inputs.
+  - Host tests:
+    - a fixture `core.attributesFile` plus a smudge filter, refused or mismatched;
+    - a `post-checkout` hook template, inert;
+    - `GIT_CONFIG_COUNT` injection, ignored.
+- **PMA110 impact:** none (tooling).
 
-### SR5-4: The secret-fact scan still skips several published text types
+### SR6-2: The Kotlin compile daemon is reused across sealed and unsealed builds
 
-- **Severity / Confidence / Status:** Low / High / Confirmed.
-- **Where:** `tools/check_docs.py:1585`:
-  `SCANNED_TEXT_SUFFIXES = (".md", ".py", ".kts", ".txt", ".toml", ".properties.example")`.
-  `:1663-1679` uses it to filter `published_files((".",))`.
-- **Why:** the tracked tree also publishes:
-  - `privacy-policy/index.html`, the GitHub Pages privacy policy. It is the most public file in
-    the repository, and the closest in subject to signing and privacy prose;
-  - `_config.yml` (Pages);
-  - 400 `.kt` files, whose dense KDoc is where release and key history tends to be narrated;
-  - 14 `.xml` files, including `strings.xml` in both locales;
-  - `.sh` (2), `.json` (2), `.properties` (4), and `.pro` (1).
-
-  A future comment or page that restates the blocked key's password properties passes the gate.
-  This is the same class of gap that SEC4-3/AGG4-40 found for `.py`; the fix widened the suffix
-  set without making it exhaustive.
-- **Fix:**
-  - Scan every published file that decodes as UTF-8 text, skipping binaries by a NUL-byte or
-    decode check, instead of a suffix allowlist.
-  - Keep the `SYNTHETIC-FIXTURE` exemption confined to the one test file.
-  - Add a fixture `.kt` and a `.html` file that carry a synthetic violation, and assert both are
-    reported.
-- **PMA110 impact:** none.
-
-### SR5-5: The passthrough JPEG keeps the HAL's EXIF without an explicit privacy strip
-
-- **Severity / Confidence / Status:** Info / Medium / Likely. The lane is dormant on PMA110
-  because hi-res is capability-gated (CLAUDE.md 200 MP bullet).
+- **Severity / Confidence / Status:** Low / Medium / Likely.
+  - Gradle's `--no-daemon` governs the Gradle daemon only.
+  - KGP's default `kotlin.compiler.execution.strategy` is `daemon`, and nothing in
+    `gradle.properties`, `app/build.gradle.kts`, or `SEALED_GRADLE_FLAGS` overrides it. I grepped
+    all three.
+  - The Kotlin daemon run directory exists on this host
+    (`~/Library/Application Support/kotlin/daemon`).
+  - `archive-cycle2-2026-07-17/verifier.md:39` observed a separate Kotlin compile daemon running
+    beside Gradle daemons.
 - **Where:**
-  - `capture/StillCapturePipeline.kt:402-424` (`writePassthroughJpeg`) seeds the composer with
-    `extractExifApp1(bytes)`.
-  - `:732-764` (`composeStillExifApp1`) only ADDS `exifAttributeList`, orientation, and
-    dimensions over the source tags.
-  - `:776-797` (`composePassthroughExifApp1`) also keeps them. This is the cycle-4 AGG4-6 rework.
-    The behaviour pre-dates it, and the new splice keeps it by design.
-- **Why:** the app never sets `JPEG_GPS_LOCATION` (grep finds no `JPEG_GPS`/`setLocation`), so a
-  spec HAL writes no GPS IFD. However, a vendor HAL's own APP1 can carry other data the app does
-  not control:
-  - a `BodySerialNumber` or `ImageUniqueID`;
-  - a MakerNote with device identifiers;
-  - on a non-conforming HAL, cached GPS.
+  - `tools/build_immutable_release.py:152` sets
+    `SEALED_GRADLE_FLAGS = ("--no-build-cache", "--no-configuration-cache", "--no-daemon")`.
+  - Its own comment at `:149-151` says a reused daemon "carries JVM state (agents, system
+    properties) from whichever unsealed build started it".
+- **Why:**
+  - A Kotlin daemon is discovered through run files and reused by any later build whose compiler
+    classpath and memory request it satisfies.
+  - The `JAVA_TOOL_OPTIONS` agent or the `kotlin.daemon.jvmargs` that the sealed run now refuses is
+    part of the daemon's process state, not of its reuse key. A daemon started by an ordinary
+    unsealed `./gradlew assembleDebug` in a shell that carried such an agent stays resident and
+    then compiles the release's Kotlin into the signed APK.
+  - So the cycle-5 refusal of those channels at the sealed run's own launch is bypassed through
+    an earlier launch.
+- **Failure scenario:**
+  1. A developer shell with a profiler or injected `JAVA_TOOL_OPTIONS=-javaagent:…` runs a debug
+     build, which spawns a Kotlin daemon with the agent attached.
+  2. Within the daemon's idle window, the operator runs the sealed release from a clean shell. The
+     wrapper's environment and `jvmargs` refusals pass.
+  3. `compileReleaseKotlin` connects to the agent-carrying daemon.
+- **Fix:**
+  - Add `-Pkotlin.compiler.execution.strategy=in-process` to `SEALED_GRADLE_FLAGS`. The wrapper
+    owns that argv, and `validate_gradle_tasks` still forbids caller `-P`.
+  - Record it in the evidence `gradle_command`, as the existing flags are.
+  - Alternatively, give the sealed run a private `kotlin.daemon` run directory. In-process
+    compilation is simpler and makes `kotlin.daemon.jvmargs` moot.
+  - Add a host test that the flag is present.
+- **PMA110 impact:** none.
 
-  CLAUDE.md's "captures carry no GPS tags" claim was verified by parsing a HEIF. HEIF never takes
-  the HAL EXIF, so this lane is unverified. On a capable non-PMA110 device this could put a device
-  identifier into a user's shared photo, contrary to the app's no-location and Data Safety
-  posture.
-- **Fix:** in `composeStillExifApp1`, when `sourceExifApp1 != null`, blank the GPS tags
-  (`TAG_GPS_*`), `TAG_BODY_SERIAL_NUMBER`, `TAG_CAMERA_OWNER_NAME`, `TAG_IMAGE_UNIQUE_ID`, and
-  `TAG_MAKER_NOTE` before `saveAttributes()`. Add a JVM test that composes over a synthetic source
-  APP1 carrying a GPS IFD and a serial, and asserts both are absent from the result.
-- **PMA110 impact:** none (lane dormant; HEIF/JPEG/DNG lanes unchanged).
+### SR6-3: The passthrough-JPEG privacy strip fails open
 
----
+- **Severity / Confidence / Status:** Low / High / Confirmed (static).
+  - The lane is capability-gated and dormant on PMA110.
+  - It is live on any multi-device install whose camera advertises a hi-res size, which is the
+    multi-device decision of 2026-08-01.
+- **Where:**
+  - `app/src/main/kotlin/me/hletrd/telecampro/capture/StillCapturePipeline.kt:400-411`
+    (`writePassthroughJpeg`): `bestEffortHeifExif` turns any composition failure into
+    `exifPayload = null`.
+  - `:360-376` (`writeSingleJpeg`) leads into `writeJpegOnce`. With a null payload, or a payload
+    that cannot be spliced, `writeJpegOnce` writes `encoded` verbatim (`:789-815`).
+  - The verbatim bytes are the HAL JPEG, still carrying the HAL's own Exif APP1. The AGG5-51 strip
+    (`:743-746`, the list at `:866`) is applied only inside the successful composition.
+  - `composePassthroughExifApp1` (`:915-934`) ends with `compose(null)`. If that last tier throws,
+    the whole payload is null.
+  - Even on success, `exifSplicePlan`
+    (`app/src/main/kotlin/me/hletrd/telecampro/capture/HeifExif.kt:90-129`) drops only Exif APP1
+    segments and keeps every other APPn and COM segment verbatim. A vendor XMP APP1
+    (`http://ns.adobe.com/xap/1.0/`) can carry `exif:GPS*`, `aux:SerialNumber`, or
+    `xmpMM:DocumentID`.
+- **Why:**
+  - AGG5-51 exists because a vendor HAL APP1 may embed cached GPS, a body or lens serial, or a
+    MakerNote.
+  - The fix guarantees removal only when everything else succeeds. The failure modes are the
+    ordinary ones: a full cache dir for the scratch file, or an ExifInterface parse failure on a
+    vendor APP1. The latter is exactly the non-conforming HAL the strip targets.
+  - In both cases the output is the unstripped original.
+  - CLAUDE.md states that captures carry no GPS tags, and the privacy policy and Data Safety form
+    rest on that statement.
+- **Failure scenario:** a hi-res-capable non-PMA110 device with a HAL that writes cached GPS into
+  its JPEG APP1 has a nearly full cache partition. `File.createTempFile` throws, and the still is
+  published with the HAL's GPS directory and serial intact.
+- **Fix:**
+  - Make the strip a property of the bytes written, not of the composer. When the payload is null
+    or cannot be spliced, the passthrough lane writes the JPEG with every Exif APP1 removed: the
+    `exifSplicePlan` ranges with no payload inserted.
+  - Optionally insert a minimal orientation-only APP1 built purely, without ExifInterface. A
+    sideways image is an acceptable degradation; leaking location is not.
+  - Also drop XMP APP1 (and any APPn other than JFIF APP0, ICC APP2, and MPF APP2) from the kept
+    ranges in the passthrough lane.
+  - Host tests:
+    - a HAL APP1 with GPS plus a forced compose failure, so the output carries no `Exif\0\0`
+      segment;
+    - an XMP APP1 that is stripped.
+- **PMA110 impact:** none (lane dormant).
 
-## Final sweep (commonly missed items)
+### SR6-4: The user `gradle.properties` allowlist admits debug-level logging in the signing run
 
-- **Exported components:**
-  - Manifests are unchanged in cycle 4.
-  - Release exports only the launcher `MainActivity`.
-  - The debug exported activities require `android.permission.DUMP`, and the Compose test host
-    stays `exported=false`.
-  - There are no providers, services, manifest receivers, or FileProvider.
-  - Both dynamic debug receivers (`CameraViewModel.kt:1065-1081`) remain `RECEIVER_NOT_EXPORTED`
-    and DEBUG-gated.
-- **Network and privacy:** `INTERNET` and `ACCESS_NETWORK_STATE` are `tools:node="remove"`. There is
-  no location permission or code (see SR5-5 for the HAL-EXIF residue).
-- **Backup:** `allowBackup=false`, with `data_extraction_rules` and `backup_rules` unchanged.
-- **Temp files:** the new `still-exif-*.jpg` scratch files are created in app-private `cacheDir`
-  and deleted in `finally`. `LatestHeavyWorkLane` likewise uses the private cache. There is no
-  world-readable path.
-- **Logging:** new cycle-4 warnings go through `DiagnosticLog` (StillCapturePipeline aliases it as
-  `Log`). The one new URI-bearing warning (`finalized video container unreadable for $uri`) is in
-  the SEC2-5 class, already tracked.
-- **Gradle seams:**
-  - The `uploadKeyFloorFixtureVectors` / `verifyUploadKeySecretFloorFixture` seam reads and writes
-    paths named by Gradle properties. Under the sealed run those properties cannot be supplied:
-    argv `-P` is refused, `ORG_GRADLE_PROJECT_*` is dropped by the allowlist, and user
-    `gradle.properties` keys are allowlisted.
-  - In plain developer Gradle the seam is caller-controlled by definition. No issue.
-- **`verify_host.py` release lint (`0a22ffb2`):** `lintRelease` runs only on a clean tree and
-  touches no signing task. Configuration still evaluates signing values, which is the
-  pre-existing AGG3-34 capture.
-- **Supply chain:**
-  - The wrapper is pinned with `distributionSha256Sum` and `validateDistributionUrl=true` (but see
-    SR5-1: the checksum is not re-verified after unpack).
-  - `verification-metadata.xml` is tracked.
-  - Repositories are unchanged (`google`, `mavenCentral`, and `gradlePluginPortal` for plugins
-    only, with `FAIL_ON_PROJECT_REPOS`).
-- **Subprocess:** there is no `shell=True`, `eval`, or `pickle` in the changed tools. keytool still
-  receives the password only through `-storepass:env` (but see SR5-3).
-- **Secrets in tree:** no tracked keystore or credential files. The cycle-4 fixtures are synthetic.
+- **Severity / Confidence / Status:** Low / Medium / Needs manual validation.
+- **Where:**
+  - `tools/build_immutable_release.py:159` admits `org.gradle.logging.level` with any value.
+  - `run_checked` (`:352-355`) streams Gradle's console output straight to the terminal. The
+    environment it passes carries `TELECAMPRO_STORE_PASSWORD`, `TELECAMPRO_KEY_PASSWORD`, and
+    `TELECAMPRO_KEY_ALIAS`.
+- **Why:**
+  - Gradle's own documentation warns that the DEBUG log level can expose security-sensitive
+    information on the console.
+  - The sealed run otherwise treats the signing values as never printed. A `debug` level in the
+    user home's properties is ambient, persistent, and easy to leave set from an unrelated
+    debugging session.
+  - Scrollback, terminal logging, or a CI log then becomes a channel for those values.
+  - I did not run a debug-level release build, so whether this AGP/Gradle pair actually emits a
+    signing value at DEBUG is unproven.
+- **Failure scenario:** an operator set `org.gradle.logging.level=debug` weeks earlier and runs
+  the scoped signed release, and the console log is captured by `script`, tmux logging, or an
+  agent transcript.
+- **Fix:**
+  - Admit the key only with `quiet`, `warn`, or `lifecycle`.
+  - Or add an explicit `--info`/`--warn` level flag to `SEALED_GRADLE_FLAGS`. Command-line flags
+    win over properties.
+  - Host test: a `debug` value is refused.
+- **PMA110 impact:** none.
 
-## Files examined
+### SR6-5: Distribution `lib/` jars are not re-verified
 
-- `app/build.gradle.kts` (cycle-4 diff in full: `:399-517`, `:756-767`, `:906-1040`),
-  `gradle.properties`, `app/src/main/AndroidManifest.xml`, `app/src/debug/AndroidManifest.xml`.
-- `tools/build_immutable_release.py` (cycle-4 diff in full; `:119-232`, `:580-640`, `:759-944`,
-  `:995-1120`), `tools/upload_key_policy.py` (diff in full), `tools/run_scoped_signed_release.py`
-  (`:40-135`), `tools/verify_host.py` (diff), `tools/check_docs.py` (`:45-51`, `:1585-1695`), and
-  `tools/tests/test_immutable_release.py` (`:525-570`).
-- `capture/StillCapturePipeline.kt` (`:300-430`, `:715-800`), `ui/CameraViewModel.kt`
-  (`:1060-1085`), plus a risky-API and logging grep over the whole cycle-4 `app/src/main` diff.
-- AGP 9.4.1 jar class listing (`SigningConfigWriterTask`, `SigningConfigVersionsWriterTask`), and
-  key-name-only checks of `app/build/intermediates/signing_config_versions/*`.
-- `~/.gradle` layout listing (no `init.gradle*`, no user `init.d`; distribution `init.d` present).
-- Gradle docs: init-script discovery and `gradle.properties` locations (fetched 2026-10-02).
+- **Severity / Confidence / Status:** Info / High / Confirmed.
+- **Where:** `tools/build_immutable_release.py:340-349` checks only `init.d` and
+  `gradle.properties` in each unpacked installation.
+- **Why:** `distributionSha256Sum` is verified only on download. The same same-user writer that
+  SR5-1 considered can replace `gradle-core-*.jar` or a bundled plugin jar under
+  `wrapper/dists/…/lib/`, and every check passes.
+  - `gradle/verification-metadata.xml` covers resolved dependencies, not the distribution.
+- **Fix (pick one):**
+  - The cycle-5 "stronger option": run the sealed build with a fresh temporary
+    `GRADLE_USER_HOME`, so the wrapper re-downloads and re-verifies the distribution, while
+    dependency verification guards the module cache.
+  - Re-hash the original distribution zip, which is kept beside the unpack directory, against
+    `distributionSha256Sum` and compare the unpacked tree against the zip's entries.
+  - Or narrow the evidence wording so it does not claim the distribution is sealed.
+- **PMA110 impact:** none.
+
+### SR6-6: DNG identifying-tag absence is unverified on an output file
+
+- **Severity / Confidence / Status:** Info / Medium / Needs manual validation.
+- **Where:** `capture/StillCapturePipeline.kt` `saveDng` uses `DngCapture.writeDng` and
+  `DngCreator`. CLAUDE.md's "no GPS" proof parsed a HEIF only.
+- **Why:** `DngCreator` writes its own TIFF tags (Make, Model, UniqueCameraModel, and others)
+  from platform properties. Nobody has checked whether a camera-serial or unique-id tag lands in
+  a saved DNG on PMA110 or on the tablets. `setLocation` is never called, so GPS is not expected.
+- **Fix:** add a FIELD_CHECKS row: pull one DNG per device and list its TIFF/EXIF tags with
+  `exiftool -a -G1` (or the repository's TIFF parser). Record the absence of
+  `CameraSerialNumber`, `BodySerialNumber`, `ImageUniqueID`, and GPS.
+
+### SR6-7: The secret-fact scan skips non-UTF-8 published text
+
+- **Severity / Confidence / Status:** Info / High / Confirmed (latent). I ran the same decode over
+  every tracked file: none fails today.
+- **Where:** `tools/check_docs.py:1697-1708` (`published_text`) returns `None`, which means skip,
+  on a `UnicodeDecodeError`.
+- **Why:** this is a classification by content that fails open. A Latin-1 `.properties` file,
+  which is the Java default encoding for that format, or one stray non-UTF-8 byte in a markdown
+  file removes the whole file from the scan with no diagnostic.
+- **Fix:**
+  - Treat only a NUL-bearing payload as binary.
+  - Decode everything else with `errors="replace"`, which keeps every ASCII pattern matchable.
+  - Or fail the check on an undecodable published text file.
+  - Add a fixture test.

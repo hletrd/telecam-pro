@@ -1,125 +1,98 @@
-# FD5 — high-confidence bug finder (RPL cycle 5)
+# FD-CODE-REVIEWER: RPL cycle 6
 
-Role: report only Medium-or-higher-confidence issues that matter (correctness, crash, data loss,
-races). Scope: storage/MediaStoreWriter.kt, storage/PendingDiscardJournal.kt,
-storage/SettingsStore.kt, capture/StillCapturePipeline.kt (+ capture/HeifExif.kt, which cycle 4
-moved the JPEG EXIF splice into), video/VideoRecorder.kt, camera/StandbyAudioController.kt,
-camera/RecordingPreNativeAllocation.kt, camera/RetainedStill*.kt, ui/CaptureOutputTracker.kt,
-ui/review/MediaReview.kt, ui/review/LatestHeavyWorkLane.kt, storage/LatestCaptureReducer.kt.
+- Agent: fd-code-reviewer (feature-dev style, confidence-filtered: only issues at 80% confidence or higher)
+- HEAD: 30970c9e (cycle 5 = ea7d4374..30970c9e)
+- Scope inventory: every cycle-5 change in `capture/` (HeifExif, StillCapturePipeline), `storage/`
+  (MediaStoreWriter: AGG5-7 COMPLETE length verdict, AGG5-8 fresh-descriptor reparse, AGG5-27 queue
+  sizing, AGG5-71 JPEG structure probe), `video/` (VideoRecorder AGG5-3/AGG5-31, EncoderCaps AGG5-30),
+  `camera/CameraController.kt` (AGG5-28 buffer-lost/aborted, AGG5-29 frozen AF override, AGG5-41
+  processed-only chars, AGG5-50 no-default plan), plus the still-lane owners they feed:
+  RetainedStillDeletionOwner (AGG5-2), RecordingStorageDispatcher (AGG5-39), DngPreCaptureAllocation
+  (DB5-13/TE5-12), and the CameraEngine/CameraViewModel/CaptureOutputTracker call sites.
+- Checked and found sound: the EXIF splice with a `length` prefix, the lazy one-time EXIF compose, the
+  passthrough privacy strip, `failStill` (Surface identity holds because the request targets are
+  the same `ImageReader.getSurface()` objects), `stillCompletionMissingCharacteristics` against the
+  Engine's `checkNotNull(rawChars)`, `codecCleanupDecision`, the queue/permit match, the
+  `probeCompleteJpegStructure` marker grammar, the stale recording presentation, and the DNG
+  allocation cancel-after-arm.
 
-Method: I started from the cycle-4 diff (887d39fb..ea7d4374) for these files, because that is
-where new defects are most likely: the AGG4-6 single-write JPEG EXIF splice, the AGG4-3/AGG4-4
-moov-presence walk, the AGG4-28 SIZE-column removal, and the AGG4-4/AGG4-5 bounded re-arm. I then
-read the full pure ownership seams (CaptureOutputTracker, LatestCaptureReducer,
-RecordingPreNativeAllocation) and traced their state transitions by hand. I did not run Gradle, as
-the preamble instructs.
+## Findings
 
-Result: **no Critical, High, or Medium findings.** One Low finding has high confidence about the
-mechanism but a narrow window, on a lane that is dormant on PMA110. One Info item follows it.
+| ID | Severity | Confidence | Status | Summary | Cite |
+|---|---|---|---|---|---|
+| FD6-1 | Medium | High | confirmed | AGG5-30 is incomplete: an exhausted codec walk still hands `CodecInventory.EMPTY` to the ViewModel as authoritative. That consumes the pending-until-inventory intent and normalizes HEIF→JPEG and HLG/log→SDR, and the next save persists the change. The "next load walks again" retry never restores it | `video/EncoderCaps.kt:435-459`; `ui/CameraViewModel.kt:3043-3096, 1841-1849` |
+| FD6-2 | Medium | High (mechanism) / Medium (reach) | confirmed in code; reach needs manual validation | AGG5-2 fix: `producerTerminalIds` is a bounded set (32) used as proof that a capture's producers have finished. When an old capture is evicted from it, the capture reads as still live, so a failed delete marker for it closes still admission for the Engine's life, which is the defect AGG5-2 was meant to fix | `camera/RetainedStillDeletionOwner.kt:67, 114-124, 128-134` |
 
----
+## FD6-1: an exhausted encoder walk still overwrites the operator's HEIF and transfer choices
 
-## FD5-1 — JPEG recovery tail probe can adopt a header-only passthrough JPEG whose APP1 ends in the thumbnail's EOI
+**Where.** `CodecInventoryLoader.load()` (`video/EncoderCaps.kt:435-459`) returns `CodecInventory.EMPTY`
+without latching after `CODEC_SCAN_MAX_ATTEMPTS` failed walks. The only caller,
+`CameraViewModel.loadEncoderInventoryAsync` (`ui/CameraViewModel.kt:3043-3055`), passes that value
+straight to `applyEncoderInventory` (`:3057-3096`). That function:
 
-- Severity: **Low**. Confidence: **Medium**. Status: **Likely** (mechanism is confirmed from code;
-  the ExifInterface thumbnail placement needs a host fixture to pin).
-- Citations:
-  - `app/src/main/kotlin/me/hletrd/telecampro/capture/HeifExif.kt` `writeJpegWithExifApp1`: SOI +
-    APP1 marker/length, then `out.write(payload)`, then the plan ranges in separate writes.
-  - `app/src/main/kotlin/me/hletrd/telecampro/capture/StillCapturePipeline.kt`
-    `writePassthroughJpeg` → `composePassthroughExifApp1(extractExifApp1(bytes))`. Tier 1 seeds the
-    composer with the HAL EXIF, including its IFD1 JPEG thumbnail.
-  - `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:1832-1847`
-    `probeCompleteJpeg`: VALID iff the file is at least 4 bytes and its last two bytes are `FF D9`.
-- Why it matters: AGG4-6 exists because the tail-only probe adopts any file ending in `FF D9`. The
-  single-write splice fixed the in-place rewrite case, but it left one prefix that still ends in
-  `FF D9`. When ExifInterface re-serializes an APP1 that carries a thumbnail, it writes the
-  thumbnail JPEG bytes after the IFDs, at the end of the EXIF block. The composed passthrough
-  payload therefore ends in the thumbnail's own EOI. A process death after `out.write(payload)`
-  returns and before the first plan range lands leaves this file on disk: `FF D8 FF E1 <len> <EXIF
-  … thumbnail … FF D9>`. That is a JPEG with no SOF and no SOS.
-- Failure scenario: the hi-res passthrough lane is active on a capable device, and the
-  process is killed (swipe-kill, low-memory kill, or crash elsewhere) in the gap between the APP1
-  write and the body write. The row is still REGISTERED, so launch recovery probes it, sees the
-  `FF D9` tail, returns VALID, and ADOPTs it. The user's gallery then shows a broken JPEG, and the
-  real pixels are lost. The AGG4-6 comment ("no byte of the pending row is ever rewritten") implies
-  that a crashed JPEG can never be adopted, and this case contradicts it.
-- Why only Low: the window is between two `write` calls (the ~40 MB body write is long, but a kill
-  inside it ends on arbitrary entropy-coded bytes, which cannot form `FF D9`). The lane is
-  capability-gated and dormant on PMA110 (200 MP is not exposed). The processed lane's composer has
-  `sourceExifApp1 = null` and a 1×1 seed, so its payload carries no thumbnail. I did not find a
-  path for the processed lane to end in `FF D9`.
-- Suggested fix (host-testable, no PMA110 behavior change): make `probeCompleteJpeg` structural as
-  well as tail-based. Walk the header with the same segment walker as `exifSplicePlan` (or a
-  shared "reaches SOS" helper), and require that an SOS (`FF DA`) is reached before accepting the
-  `FF D9` tail. A host test can feed `SOI + APP1(payload ending FF D9)` and assert INVALID, and feed
-  a real encoded JPEG and assert VALID. The walk reads only header bytes, so the probe cost stays
-  bounded. Optionally, write the whole spliced file through one buffered stream to shrink the
-  window, but the probe change is the real fix.
-- PMA110 impact: none for live captures. Recovery would reject strictly more files, and only
-  header-only ones.
+- clears `pendingCodecUntilInventory`, `pendingTransferUntilInventory`, and
+  `pendingPhotoFormatsUntilInventory`;
+- normalizes `photoFormats` with `heifEncodeAvailable = false`, which turns HEIF into JPEG;
+- normalizes `transfer` with `tenBitEncodeAvailable = false`, which turns HLG/S-Log3/LogC3 into SDR;
+- publishes `encoderInventoryLoaded = true`.
 
-## FD5-2 (Info) — processed JPEG lane now holds roughly three copies of the encoded image
+Once `encoderInventoryLoaded` is true, `currentExtras()` (`:1841-1849`) stops preferring the pending
+request and persists `s.photoFormats` / `s.transfer`, the degraded values. This is the exact window
+AGG-34 closed for the pre-inventory placeholder.
 
-- Severity: **Info**. Confidence: High. Status: Confirmed.
-- Citation: `capture/StillCapturePipeline.kt` `writeProcessedJpeg`: `ByteArrayOutputStream()` with
-  no size hint, then `toByteArray()`.
-- Detail: the stream starts at 32 bytes and doubles as it grows, so at the end the backing array
-  can be up to about 2× the JPEG size, and `toByteArray()` adds another copy, all next to the live
-  rotated `Bitmap`. On PMA110 (about 12.5 MP, a few MB of JPEG) this is harmless. On a larger
-  processed frame it raises peak heap during bursts. This is not a correctness bug.
-- Suggested fix: presize the stream (for example `width * height / 4`), or splice from the stream's
-  internal buffer without the `toByteArray()` copy.
+**Why it matters.** The cycle-5 KDoc claims the failure leaves "no video/HEIF encoders until a later
+load", meaning the next ViewModel walks again. By then, the first background (or any immediate-save
+door such as a mode switch) has already committed JPEG/SDR to SharedPreferences. The later successful
+walk then restores those degraded values rather than the operator's HEIF + HLG/log selection. In the
+same ViewModel there is no retry at all.
 
----
+**Failure scenario.** Cold start during a mediaserver restart: all three walks throw. The VM applies
+EMPTY, the operator backgrounds the app, and the save writes `heif=false, jpeg=true, transfer=SDR`.
+Every later launch, with a healthy codec list, shoots JPEG and records SDR. The operator chose
+HEIF + S-Log3.Cine and never touched either.
 
-## Examined and found sound (no finding)
+**Fix.** Make the failure distinguishable from a real empty inventory, for example with a
+`load(): CodecInventory?` / `Result` that is null on exhaustion. On a failed load:
 
-- **exifSplicePlan / writeJpegWithExifApp1 / spliceExifApp1**: SOI handling, fill bytes (a kept
-  lone `FF` before a marker is a legal fill), TEM/RST, overrun and EOI-before-SOS refusal, removal
-  of multiple Exif APP1s, XMP APP1 preserved, 64 KiB segment cap. `exifApp1WithoutThumbnailIfd`
-  bounds-checks IFD0 and the link before zeroing.
-- **composePassthroughExifApp1 tiers**: a thrown tier falls through, an unspliceable payload falls
-  through, and the last tier's throw reaches `bestEffortHeifExif`. A failed bounds decode (−1 dims)
-  makes every tier throw on `require`, which means a logged save without EXIF and no lost image.
-- **classifyFinalizedVideoTrack**: the first descriptor is always closed before the retry. A fresh
-  reopen failure is INDETERMINATE. Only a proven-ABSENT walk after two parse throws is INVALID.
-- **probeMp4MoovPresence**: the MPEG4Writer `????` 32-bit and `????????` 64-bit mdat placeholders
-  either overrun (ABSENT) or walk into sample bytes, which ends ABSENT/UNKNOWN in practice. A
-  `moov` that overruns is ABSENT, and the 4096-box bound gives UNKNOWN. The tracked MRG4-4 residual
-  is unchanged.
-- **parcelFdMoovPresence**: `FileInputStream(FileDescriptor)` is not the fd owner on Android, and
-  its channel's close goes through the parent stream, so the walk does not close the
-  ParcelFileDescriptor the extractor used.
-- **orphanDisposition / keptRowReassertsPending**: a COMPLETE row is never deleted on a probe, a
-  provider-empty COMPLETE row is probed rather than published on the marker alone, DISCARD is never
-  re-armed, and an UNAVAILABLE journal re-arms without probing.
-- **CaptureOutputTracker**: record/trim eviction gives TRACK_ONLY, the pinned family is excluded
-  from the ordinary limit, the PRIOR slot is never tombstoned, `deletedPriorOutputs` is cleared for
-  confirmed survivors, FILE_ONLY preserved siblings come back, and a newer live capture keeps
-  review across a survivor restore.
-- **LatestCaptureReducer**: Proven groups key on the exact family, Legacy groups are one row each
-  (no proximity grouping), ranking is total, and FILE_ONLY applies whenever any family row is not
-  owned.
-- **RecordingPreNativeAllocation**: first-wins WAITING/ALLOCATED/CLAIMED/RETIRED transitions, a
-  late value is handed out exactly once, and cancellation attached after retirement fires
-  immediately. A throwing task is swallowed by `FutureTask`, but the armed deadline retires the
-  attempt (by design).
-- **SettingsStore**: every write goes through `commitEdit` (synchronous commit with an observed
-  result), and reads are `runCatching`-defaulted.
+- do not call `applyEncoderInventory`;
+- keep `encoderInventoryLoaded = false`, so the pending fields keep winning in `currentExtras()`;
+- reschedule `loadEncoderInventoryAsync` with a bounded backoff, or retry at the next `onStart`.
 
-## Final sweep (commonly missed)
+Add a VM test: a throwing scanner followed by a save must persist the restored HEIF/transfer request.
 
-I swept for the following and found no new defect: swallowed exceptions on the insert/identity
-path (cycle-4 code logs them), fd leaks on early returns (`use` everywhere in the new probes),
-interrupt-flag clearing (`sleepPreservingInterrupt` is used in the parse retry), lock-order
-inversions in RetainedStillDeletionOwner (each method takes only its single `lock`; publish runs
-outside it), and per-frame logging (none added).
+## FD6-2: `producerTerminalIds` eviction reopens the AGG5-2 process-lifetime admission close
 
-Coverage depth: full reads of CaptureOutputTracker, LatestCaptureReducer,
-RecordingPreNativeAllocation, the cycle-4 diffs of StillCapturePipeline/HeifExif/VideoRecorder/
-MediaStoreWriter, and the probe/recovery section of MediaStoreWriter. RetainedStillDeletionOwner
-and SettingsStore got a structural pass (lock and commit discipline). MediaReview,
-LatestHeavyWorkLane, StandbyAudioController, PendingDiscardJournal, and the rest of VideoRecorder
-were outside this 25-minute budget beyond the cycle-4 diff and were **not** deeply reviewed. Treat
-them as unreviewed by this lane.
+**Where.** `markCaptureProducersTerminal` (`camera/RetainedStillDeletionOwner.kt:128-134`) adds every
+finished still id to `producerTerminalIds` and trims it to `maxTombstones` (32,
+`CameraEngine.kt:8392`), dropping the oldest first. `completeDeletionDurability(id, durable = false)`
+(`:114-124`) adds the id to `nonDurableLiveDeletions` whenever `id !in producerTerminalIds`.
+`canAdmitCapture()` requires that set to be empty. The only thing that removes an id from it is a
+later `markCaptureProducersTerminal(id)` or a durable marker for the same id. A capture whose producers
+finished before it was evicted never gets another terminal edge.
+
+**Why it matters.** Membership in a bounded "terminal" set is used as proof that producers are still
+live, and eviction inverts that proof. The deleted capture produces no further output, yet still
+admission (shutter, BURST, AEB, timelapse) stays closed for the Engine's life. That is the AGG5-2
+symptom ("still capture dead until process restart") returning through a different door. MRG5-5
+covered only the family-registry eviction, not this set's own eviction.
+
+**Reachability.** `CaptureOutputTracker` holds a pinned review family outside its 8-entry ordinary
+history (`ui/CaptureOutputTracker.kt:213-221, 427-447`), and that id stays in `liveStillFamilies`.
+Opening review blocks *input* only: `onCameraInputBlockOwnerChange` (`ui/CameraViewModel.kt:4123-4139`)
+cancels a countdown but not a running timelapse. Steps:
+
+1. Start a 1 s timelapse.
+2. Open review on the newest frame.
+3. After 32 or more ticks (about 35 s), the reviewed id has been evicted from `producerTerminalIds`.
+4. Delete it while the family marker write fails. A full disk, which a long timelapse is the likeliest
+   way to reach, is the case AGG5-2 itself names.
+
+Result: the id lands in `nonDurableLiveDeletions` permanently. Device timing still needs manual
+validation; the code path does not.
+
+**Fix.** Invert the set so it is bounded by what is actually in flight. Track
+`liveProducerIds`: add in `registerCaptureFamily` (and wherever a still id is admitted), remove in
+`markCaptureProducersTerminal`. Then close only when `durable == false && id in liveProducerIds`. An
+evicted or unknown id is then correctly treated as terminal. Equivalently, keep a monotonic
+`oldestPossiblyLiveId` watermark. Add a unit test: 33 terminal ids, then a non-durable delete of the
+first, must leave `canAdmitCapture()` true.

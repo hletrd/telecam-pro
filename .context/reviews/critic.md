@@ -1,259 +1,297 @@
-# RPL cycle 5 — critic review (CT5-)
+# RPL cycle 6 — critic review
 
-Reviewer: critic (multi-perspective challenge of the cycle-4 change surface, 887d39fb..ea7d4374).
-Inputs: CLAUDE.md, docs/ARCHITECTURE.md, docs/plans/2026-10-02-rpl-cycle4.md (later-cycle,
-carried, and Deferred lists consulted so tracked items are not re-reported as new), and the main-source
-diffs of every cycle-4 `fix`/`perf`/`refactor` commit. Read-only; no Gradle run.
+- Agent: critic (CT6), RPL cycle 6
+- HEAD: `30970c9e` (cycle-5 range `ea7d4374..30970c9e`, 65 commits)
+- Angle: multi-perspective critique (user, operator, maintainer, Play reviewer): claims in code/docs not
+  backed by the implementation, cycle-5 fixes that are incomplete, half-closed invariants, user-visible
+  wrong behaviour.
 
-## Summary
+## Scope inventory
 
-| Severity | Count |
-|---|---|
-| Critical | 0 |
-| High | 0 |
-| Medium | 2 |
-| Low | 5 |
-| Info | 2 |
+Read: `CLAUDE.md`, the cycle-5 aggregate and plan, the shared brief. Examined every cycle-5 fix commit
+on the app side and the code each one touches, plus the docs that describe them:
 
-Most cycle-4 fixes do what their plan items say. I found no fix that only touches a test or a comment
-while claiming a behavior change. The two Medium findings come from cycle-4 storage changes that
-interact: MRG4-4 combined with AGG4-4 (bounded re-arm), and AGG4-28 combined with AGG4-4. Each can
-leave a complete take pending without re-arming it, so MediaProvider's expiry deletes it. That is the
-loss class AGG3-4 and AGG4-5 set out to close.
+- Engine/controller: `2d0855c6` (cold-start replay, `completeGlInputReady`, `resumePreviewRebindWanted`),
+  `8e329498` (bare door retry), `881e13af` (Ready-before-DNG-cancel, admission release order),
+  `daac4664` + `3d1bfe81` (`RetainedStillDeletionOwner` per-id latch + `producerTerminalIds`),
+  `3107c3f5` (chars read), `06057385` (frozen AF override), `64c20327` (buffer lost / sequence abort),
+  `2d452f23` (stale recording presentation), `88a1b928` + `009bf08f` (RAW-loss notice),
+  `3ebf8d4f` (BURST/AEB head).
+- ViewModel/UI: `7f260cc2` (`StatusPlate` responses/resolutions, `cameraCondition`),
+  `dd3edc64` + `3489859e` (stab/fps request split + rollback), `a15ba927` (recall audio provenance),
+  `4f605424` + `4635bee2` (recall rollback), `d535ed28` + `4e3c971d` (punch-in assist / hold rebind),
+  `63b8301d` (Output row caption), `14504891` + `665ab849` + `61c88986` (zoom display multiplier),
+  `ee60e694` (stop windows), `fdaadf32` (inventory route change).
+- Storage/video/log: `94984106`, `530ba47d`, `cda3d19a` (recovery probes), `ed385953` (EncoderCaps
+  latch), `715ccb0a` (evidence reserve), `adda4175`.
+- Docs: `docs/ARCHITECTURE.md` rows for `DiagnosticTelemetry.kt` and `PhotoFormatChips.kt`,
+  `docs/FIELD_CHECKS.md` FrameGap protocol, `CLAUDE.md` log-quota bullet.
+
+Final sweep: every caller of the new `requestedVideo*` fields, every publisher of the PROGRESS
+conditions `cameraCondition` keys on, every `DiagnosticLog.evidence` / `evidenceDiagnosticAllowed`
+user, and every `markCaptureDeleted` / `completeDeletionDurability` call site.
+
+Verified and found sound (no finding): AGG5-1/26 replay split, AGG5-25 disposition table, AGG5-5
+ordering, AGG5-28 identity check, AGG5-29, AGG5-39 stale presentation, AGG5-41, AGG5-45, AGG5-7,
+AGG5-8, AGG5-71, AGG5-32, AGG5-20 ownership transfer, the MRG5-1 latch, the MRG5-4 divisor band.
 
 ## Findings
 
-### CT5-1 — A moov-present take whose extractor throws once is no longer re-armed and can expire (MRG4-4 regression of AGG2-18)
+| ID | Sev | Conf | Status | Summary | Primary cite |
+|---|---|---|---|---|---|
+| CT6-1 | Medium | High | confirmed | AGG5-30 half-closed: an exhausted codec walk still returns EMPTY, the ViewModel applies it as device truth for its whole life, and HEIF→JPEG plus a log/HLG curve→SDR are persisted | `video/EncoderCaps.kt:123-150`; `ui/CameraViewModel.kt:3043-3093` |
+| CT6-2 | Medium | High | confirmed | AGG5-55 regression: ordinary reopens (DNG, aspect, fps, lens, mode) publish no PROGRESS condition, so the Output row now says nothing during exactly the reopen the caption was written for; rail chips still say "reconfiguring" for any not-Ready; ARCHITECTURE row is stale | `ui/controls/PhotoFormatChips.kt:101-103`; `ui/controls/ProSheet.kt:885`; `camera/CameraStatus.kt:289-295` |
+| CT6-3 | Low-Medium | Medium-High | confirmed (code) | The shutter refusal `CAMERA_RECONFIGURING` is a timer-less PROGRESS condition. After the terminal `*_REOPEN` error, a hardware-key press leaves "Camera reconfiguring…" on the plate indefinitely, and with AGG5-55 also lights the Output row in the terminal state that fix was meant to exclude | `camera/CameraEngine.kt:5202`; `camera/CameraStatus.kt:202-209` |
+| CT6-4 | Low-Medium | Medium-High | confirmed (code) | MRG5-8 half-closed: a recall rollback restores only the VM stab/fps requests. The Engine and the displayed state keep the bank's values, and a later caps reconcile then shows the prior stab while the Engine keeps the bank's | `ui/CameraViewModel.kt:1165-1176, 1728, 1748, 3427-3470` |
+| CT6-5 | Low | High | confirmed | The FrameGap evidence reserve does not back its claim. Periodic summaries the drained shared budget refuses still reset the accumulator, so the terminal line covers only the last window, or is absent at count 0 | `camera/DiagnosticTelemetry.kt:213-241`; `gl/GlPipeline.kt:902-920`; `docs/ARCHITECTURE.md:72` |
+| CT6-6 | Low | Medium | needs manual validation | AGG5-2 residual: `producerTerminalIds` is capped at 32. A failed delete marker for an older live capture whose terminal id was evicted closes still admission until the process dies | `camera/RetainedStillDeletionOwner.kt:112-135`; `camera/CameraEngine.kt:8392` |
 
-- Severity: Medium. Confidence: Medium. Status: Likely (the transient class is documented in-tree).
-  Whether the provider actually expires the row needs device validation (FIELD_CHECKS E4).
-- Cites: `app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt` `recoveryVideoVerdict`
-  (the `Mp4MoovPresence.PRESENT -> PendingProbe.INDETERMINATE` arm added by 93c43931);
-  `pendingProbeOutcome` (`failed = result.isFailure`, ~:2367); `keptRowReassertsPending`
-  (`journalState != DISCARD && probeOutcome.failed`); the recovery loop's `KEEP_PENDING` arm (~:1450).
-- Why: MRG4-4 calls "extractor threw, but the walk found a complete `moov`" a constant of the bytes.
-  The same file says otherwise. The `classifyFinalizedVideoTrack` KDoc (AGG2-18) says
-  `MediaExtractor.setDataSource` on a MediaProvider FUSE fd throws the same
-  `IOException("Failed to instantiate extractor")` for a transient provider/FUSE failure (media scan,
-  MediaProvider restart mid-read, revoked fd) as for a corrupt container. The walk runs afterwards and
-  uses a different read path (`FileChannel` positional reads on the same descriptor). When it succeeds,
-  that only shows the bytes were readable then. It says nothing about why the extractor failed a moment
-  earlier.
-  `recoveryVideoVerdict` now *returns* INDETERMINATE for this case instead of throwing. As a result
-  `probeOutcome.failed == false`, `keptRowReassertsPending` is false, and the row is kept with no
-  re-arm. The take is the best-formed one recovery ever sees (finalized `moov`), and it is now the
-  one left to run down its original `DATE_EXPIRES`.
-- Failure scenario: a clip whose `COMPLETE` commit failed (fail-closed retained take, REGISTERED;
-  the UI promised a recoverable take) or a crash after the muxer stopped. The next launch's recovery
-  runs while MediaProvider is busy (for example a post-boot media scan), and the extractor throws
-  once. The walk then finds `moov` and the row is kept without a re-arm. If no later launch happens
-  before the insert-time expiry, about a week after capture, or the same transient repeats on that
-  launch, idle maintenance deletes a playable take. The user never saw it, because pending rows are
-  hidden.
-- Suggested fix (host-testable): a deterministic verdict must come from an extractor result that
-  repeats. Before returning INDETERMINATE-not-failed, re-run `hasVideoTrack` once on a FRESH
-  descriptor, as `classifyFinalizedVideoTrack` already does for the live tail. Only a second throw
-  over a PRESENT walk is a byte constant. A simpler bound also works: keep re-arming
-  `PRESENT`-and-throw rows, but cap it with a per-row re-arm counter in the discard journal (for
-  example 3 launches). Then the immortal-row concern MRG4-4 addressed stays bounded without
-  converting a transient into a death sentence. Pure test: extractor throws on the first descriptor
-  and parses on the second; expect VALID/ADOPT.
-- PMA110 impact: changes only which kept rows get `IS_PENDING=1` re-written. Capture behavior is
-  unchanged.
+0 Critical, 0 High, 2 Medium, 2 Low-Medium, 2 Low.
 
-### CT5-2 — A durably COMPLETE row with provider SIZE <= 0 can now expire instead of being adopted (AGG4-28 + AGG4-4 interaction)
+---
 
-- Severity: Medium. Confidence: Medium. Status: Needs device validation (whether OEM MediaProvider
-  leaves SIZE at 0 for a pending row after process death is unverified, which the code comment itself
-  admits).
-- Cites: `MediaStoreWriter.kt` recovery loop
-  `journalState == PendingJournalState.COMPLETE && sizeBytes > 0L -> PendingProbeOutcome(VALID)`
-  (9344c2fa); `orphanDisposition` COMPLETE arm `if (probe == VALID) ADOPT else KEEP_PENDING`;
-  `keptRowReassertsPending` KDoc, which explicitly lists "a probed non-VALID zero-size COMPLETE row"
-  as kept but NOT re-armed.
-- Why: `COMPLETE` is the app's own durable proof that the encoder/muxer output was fully closed.
-  CLAUDE.md: "Recovery also adopts durable `COMPLETE` rows". Before cycle 4 a COMPLETE row was adopted
-  whatever its SIZE. Now provider SIZE <= 0 sends it through the format probe. Any deterministic
-  INDETERMINATE answer then leaves the take kept and never re-armed: a HEIF layout outside the probe's
-  supported `meta`/`pitm`/`iloc` variants, an unknown MIME, or the CT5-1 moov-present throw. The doubt
-  here is only provider metadata, not the bytes, so the app's strongest completeness evidence is
-  overridden by its weakest. CLAUDE.md's sentence about adopting durable COMPLETE rows is now only
-  conditionally true.
-- Failure scenario: suppose a provider that does not refresh SIZE for pending rows reports 0 for
-  every COMPLETE row. Then every COMPLETE HEIF/JPEG/DNG/MP4 depends on its structural probe. Any
-  undecidable-but-complete file expires silently about a week after capture.
-- Suggested fix: decide on the descriptor's real length (`statSize`, which the DNG probe already
-  reads) rather than provider SIZE. A COMPLETE row whose opened descriptor has a positive length is
-  adopted on the marker, as before. A COMPLETE row the probe keeps should always re-arm, since the
-  marker is a strong adoptability signal: change `keptRowReassertsPending` to
-  `journalState == COMPLETE || probeOutcome.failed` (minus DISCARD). Fake-resolver test: COMPLETE,
-  SIZE = 0, descriptor length > 0, HEIF probe INDETERMINATE; expect ADOPT, or at minimum a re-arm.
-- PMA110 impact: none on capture. Recovery only.
+## CT6-1 — An exhausted codec walk is applied as device truth and persisted (AGG5-30 half-closed)
 
-### CT5-3 — The AGG4-9 recall restore of denial-silenced audio switches off the lit memory slot and forces an immediate save
+**Severity** Medium. **Confidence** High. **Status** confirmed from code.
 
-- Severity: Low. Confidence: High. Status: Confirmed (code path).
-- Cites: `app/src/main/kotlin/me/hletrd/telecampro/AudioDenialReason.kt` `MemoryBankAudioProvenance.afterRecall`
-  → `restoreIfGranted(announce = false)` → `restoreAudio`;
-  `MainActivity.kt` `memoryBankAudioProvenance.restoreAudio = { vm.onToggleRecordAudio(true) ... }`;
-  `ui/CameraViewModel.kt:2624-2629`, `onToggleRecordAudio`:
-  `_state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }` plus `saveSettingsIfEnabled()`.
-- Why: A.4 (1218a635) reconciles the grant right after a recall. It does so through the operator's
-  ordinary audio toggle, which clears `activeMemorySlot`. Recalling a bank whose silence was a denial
-  consequence, while the microphone is now granted, therefore lights MRn and then switches it off in
-  the same call stack. The "MRn loaded" status is shown with no slot lit. Yet restoring audio is
-  exactly what the bank's provenance says the bank means. The host test uses a fake `restoreAudio`,
-  so it cannot see this. This is a user-visible behavior change introduced by the fix.
-- Failure scenario: bank stored after a mic denial, mic later granted in Settings, bank recalled.
-  The status says "MR1 loaded", MR1 is not marked active, and settings are saved synchronously on that
-  press.
-- Suggested fix: give the recall leg a non-clearing write. Add a VM method that sets
-  `recordAudio = true` and refreshes the standby meter while keeping `activeMemorySlot`. Use it for
-  `announce = false`, and keep `onToggleRecordAudio` for the resume/grant announcement leg.
-  Robolectric test: recall a denial-silent bank with permission granted; `activeMemorySlot == slot`
-  and `recordAudio == true`.
-- PMA110 impact: UI state only.
+**Cites:** `video/EncoderCaps.kt:123-150` (`CodecInventoryLoader.load`), `:155-175` (`EncoderCaps`);
+`ui/CameraViewModel.kt:3043-3056` (`loadEncoderInventoryAsync`), `:3058-3093`
+(`applyEncoderInventory`); `camera/CameraState.kt:1282-1299` (`normalizedForEncoder`).
 
-### CT5-4 — Recall-side audio provenance still lives only in the Activity wrapper, the failure class AGG4-49 fixed for the store side
+**Why it is a problem.** The AGG5-30 commit's own premise is that a `MediaCodecList` walk can throw
+transiently (mediaserver restart, Binder hiccup). The loader now declines to latch that failure: "a
+load that exhausts them returns EMPTY WITHOUT latching, so the next load (the next ViewModel) walks
+again". The only consumer, however, cannot tell EMPTY-because-failed from EMPTY-because-this-device-
+has-no-encoders:
 
-- Severity: Low. Confidence: High. Status: Confirmed (structure).
-- Cites: `ui/CameraViewModel.kt:3705` (`override fun onRecallMemorySlot`, public `CameraActions` entry);
-  `MainActivity.kt:521` (the wrapper that alone runs `memoryBankAudioProvenance.afterRecall`).
-- Why: AGG4-49's own rationale says that any caller reaching the ViewModel directly, or removal of a
-  "redundant" wrapper, silently reverts recall to the provenance-blind rule. Cycle 4 moved the store
-  side into the VM. The recall side still writes the denial reason, and reconciles the grant, only in
-  the Activity's `CameraActions` override. Any other `CameraActions` binding misses both, for example
-  a preview/test harness or a future Fn/hardware recall path that calls the VM. The production-dead
-  `MemoryBankAudioProvenance.bankAudioOffByDenialNow` is already tracked (cycle-4 "later cycle"
-  deslop note). The asymmetry is not tracked.
-- Suggested fix: move `afterRecall` into the VM's `onRecallMemorySlot`. The VM already owns an
-  `AudioDenialReasonStore`. Pass a permission-check lambda into the VM factory. Then delete the
-  Activity override, as was done for store.
+- `loadEncoderInventoryAsync` calls `EncoderCaps.load()` once, from `init` (line 1423), and posts the
+  result to `applyEncoderInventory` with no failure signal.
+- `applyEncoderInventory(EMPTY)` sets `encoderInventoryLoaded = true` and `heifAvailable = false`.
+  It also clears all three `pending*UntilInventory` requests and normalizes:
+  - `PhotoFormats.normalizedForEncoder(false)` turns the default HEIF into JPEG (`heif=false, jpeg=true`).
+  - `ColorTransfer.normalizedForEncoder(codec, tenBit=false)` turns an S-Log3/S-Log3.Cine/LogC3/HLG
+    request into SDR.
+  - `engine.setVideoPipeline(emptyCandidates, …)` arms REC with no encoder.
+- The pending requests that protected the operator's choice (the AGG2-8 discipline) are discarded,
+  and the normalized values are the new state that `currentExtras` persists on the next save or
+  background.
+- Nothing in this ViewModel's life loads again, so "the next load walks again" only helps after a
+  process relaunch. By then the HEIF→JPEG and log→SDR rewrite is already stored in prefs.
 
-### CT5-5 — EXIF ExposureBiasValue is read from a result key the app-side AE request never carries
+**Failure scenario.** Cold start while mediaserver is restarting. All three walks throw within ~750 ms.
+The operator's persisted HEIF+DNG / S-Log3 setup comes back as JPEG+DNG / SDR. Every video REC is
+refused with empty candidates for the rest of the process. After relaunch the walk succeeds, but the
+prefs already say JPEG/SDR, so the operator's choices are lost for good and the cause was logged once.
 
-- Severity: Low. Confidence: Medium. Status: Needs device validation (depends on whether the HAL echoes
-  the template default).
-- Cites: `camera/CameraEngine.kt` (~:8142) `evBiasStops = (result.get(CONTROL_AE_EXPOSURE_COMPENSATION) ?: c.exposureCompensation) * evStep`;
-  `camera/ManualControls.kt` (~:1076-1086) writes `CONTROL_AE_EXPOSURE_COMPENSATION` only in the HAL-AE branch;
-  cycle-4 `controlsApplyPlan` KDoc (cc23de76) states that under manual AE the key is never written.
-- Why: Under every AE-OFF mode, including app-side photo PROGRAM (the PMA110 default), EV only moves
-  the loop's target. A.12 confirms the wire never carries it. A capture result normally echoes the
-  request's value, which is the template default 0, not null. So the `?:` fallback to the operator's
-  EV never fires, and every app-side still records ExposureBias 0 whatever EV was dialed. This predates
-  cycle 4, but A.12 now documents the premise that makes it wrong.
-- Suggested fix: when `manualAeAdmitted(c, caps)` held for the shot, take EV from the frozen shot
-  controls instead of the result. Pure test on the ExifShot builder inputs.
-- PMA110 impact: EXIF metadata only, no pixels.
+**Suggested fix.** Make the loader's result three-valued, for example `CodecInventoryResult.Loaded(inv)`
+or `Failed`. On `Failed`, the ViewModel keeps `encoderInventoryLoaded = false` and keeps the
+`pending*UntilInventory` requests, so nothing is normalized or persisted. It then schedules a bounded
+re-load (on resume, or a few backed-off attempts), and REC/HEIF show a "temporarily unavailable"
+state instead of a structural one. Add a host test where `EncoderCaps` fails and then succeeds within
+one ViewModel, and assert that the persisted `ExtraSettings` keep HEIF and the log transfer.
 
-### CT5-6 — The Quick Zoom ruler now inherits the display multiplier's nominal 23 mm divisor
+---
 
-- Severity: Low. Confidence: Medium. Status: Likely (the display path is pure; tablet readout unverified).
-- Cites: `ui/ZoomMath.kt` `zoomDisplayMultiplier` (`equivalentFocalMm / LensChoice.MAIN.targetEquivMm`);
-  `zoomRulerScale` (6e75d245); `ui/controls/ManualDials.kt` ZoomRuler call site.
-- Why: A.23 aligns the ruler with the chip, which is right for PMA110. The shared multiplier divides
-  by the nominal PMA110 main focal (23 mm), not the measured main lens. On a standalone route of a
-  device whose main is 26–27 mm (TB336ZU/TB331FC per CLAUDE.md), the chip and now the ruler read
-  "1.1×"/"1.2×" at the main lens's native position, while the lens rail calls that lens "1×".
-  CLAUDE.md says the honest conversion divides by the optical lens the route reaches.
-  `unifiedZoomOf`/`localZoomOf` do that; this multiplier does not. Pre-existing for the chip (DES4-1).
-  Cycle 4 extended it to the edit surface, where a drag now writes `display / base` with the
-  nominal base.
-- Suggested fix: divide by `lensInventory`'s measured main equivalent when available, falling back
-  to the nominal one. Table test with a 26 mm main.
-- PMA110 impact: none (the measured main is about 23 mm).
+## CT6-2 — The Output row lost "Camera reconfiguring…" for ordinary reopens (AGG5-55 over-narrowed)
 
-### CT5-7 — The status plate can hold back an ASSERTIVE camera-error condition behind a lower-severity event
+**Severity** Medium. **Confidence** High. **Status** confirmed from code.
 
-- Severity: Low. Confidence: High. Status: Confirmed (pure reducer); the impact is a design question.
-- Cites: `camera/CameraStatus.kt` `plateRank` (`lifecycle == PROGRESS -> StatusPlateRank.PROGRESS` is
-  evaluated before severity) and `StatusPlate.publish` (an incoming PROGRESS under any unexpired event
-  becomes `deferredProgress`, `shownChanged = false`).
-- Why: `CAMERA_ERROR_RECOVERING`, `CAMERA_UNAVAILABLE_RETRYING` and `PREVIEW_UNAVAILABLE_RETRYING`
-  are severity ERROR with ASSERTIVE live priority, but lifecycle PROGRESS. So they rank lowest and
-  wait behind any unexpired event, even a 1.5 s SUCCESS ("MR1 loaded") or a 2.5 s INFO. TalkBack's
-  assertive announcement of a camera fault is delayed, and it is dropped entirely if Ready or a
-  condition-ending event arrives first. Before C.9 a newer status always took the plate. This is a
-  user-visible behavior change that the C.9 plan item (AGG4-65 was about events displacing errors)
-  did not discuss.
-- Suggested fix: rank a PROGRESS of ERROR severity at ERROR for arbitration purposes. It still has
-  no timer and is still cleared by Ready. Alternatively, let PROGRESS displace events below WARNING.
-  Reducer table test.
-- PMA110 impact: status presentation only.
+**Cites:** `ui/controls/PhotoFormatChips.kt:80, 101-103`; `ui/controls/ProSheet.kt:885`;
+`camera/CameraStatus.kt:289-295` (`CAMERA_REOPEN_CONDITION_MESSAGES`); `ui/CameraScreenPolicy.kt:690-697`
+(`railChipState`); `docs/ARCHITECTURE.md:150`.
 
-### CT5-8 — Info: the YUV aspect-first pick (A.17) uses exact equality against the active array, so it is a no-op on arrays that are not an exact ratio
+**Why it is a problem.** After `63b8301d`, the caption reads "Camera reconfiguring…" only when
+`state.cameraCondition` is one of `CAMERA_RECONFIGURING`, `CAMERA_UNAVAILABLE_RETRYING`,
+`CAMERA_ERROR_RECOVERING`, `PREVIEW_UNAVAILABLE_RETRYING`, or `PREVIEW_INTERRUPTED_RECOVERING`. Those
+conditions come from different places:
 
-- Severity: Info. Confidence: High. Status: Confirmed (pure).
-- Cites: `camera/CaptureCapabilities.kt:655-672` `pickStillSize`; the cycle-4 YUV call site (e9f39680).
-- Why: The "native" filter keeps only sizes whose ratio exactly equals the active array's. PMA110's
-  logical array 4080×3064 is not exactly 4:3, so unless 4080×3064 itself is an advertised YUV size,
-  `native` is empty and the pick falls back to largest-by-area, the AGG4-24 behavior. A device with a
-  square YUV size larger than its 4:3 sizes and an odd array (for example 4000×3002) keeps the square
-  still the fix targeted. For PMA110 this is good: behavior is likely byte-identical. It does mean the
-  fix is narrower than its commit message suggests.
-- Suggested fix (optional): also accept an exact 4:3 candidate when no array-exact one exists. Table
-  test with an odd array plus a larger square.
+- The four retry/recovery messages are published only by the retry, recovery, and preview-health
+  paths (`CameraEngine.kt:1067, 2471, 3739, 4422, 7279`).
+- `CAMERA_RECONFIGURING` is published only as a refusal to an operator action. That covers the
+  shutter while not Ready (`CameraEngine.kt:5202`), REC admission (`:6308, 6535, 6636, 6840`), and
+  Custom WB (`CameraViewModel.kt:2406`).
+- No optics door publishes a condition when it starts an ordinary reopen. That includes `setRawWanted`,
+  aspect, fps, hi-res, lens preset, mode switch, and TC.
 
-### CT5-9 — Info: CLAUDE.md "Recovery also adopts durable `COMPLETE` rows" no longer holds unconditionally
+So during an ordinary reopen, `cameraCondition` is null, `reopenInProgress` is false, and the caption
+is null. The old KDoc this commit rewrote named that case as the reason the caption exists: "says
+'Camera reconfiguring…' … for the length of every aspect/fps/lens reopen". The row now gives no
+explanation for a not-Ready window in the common case and shows the caption only in the rare one.
+That is the reverse of AGG5-55's intent, which was to drop the false claim in cold start, pause, and
+terminal failure and keep the true one.
 
-- Severity: Info. Confidence: High. Status: Confirmed (doc vs code).
-- Cites: CLAUDE.md, pending-MediaStore-rows bullet; `MediaStoreWriter.kt` `orphanDisposition` COMPLETE arm.
-- Why: Since AGG4-28, a COMPLETE row with provider SIZE <= 0 is adopted only when the probe says
-  VALID (see CT5-2). The authority document should state the condition, or CT5-2's fix should make
-  the sentence true again.
+Two more inconsistencies follow:
 
-## Cycle-4 claims checked and found to hold (no finding)
+- `railChipState` still reports `CAMERA_RECONFIGURING` for any `!cameraReady`. That includes cold
+  start and the terminal error, which are the states AGG5-55 called false. Two surfaces now disagree
+  about the same state.
+- `docs/ARCHITECTURE.md:150` still documents the pre-fix behaviour: "a reopen (`!cameraReady`) keeps the
+  request live under 'Camera reconfiguring…'".
 
-- A.1 (c1cd9bef): the VM no longer writes the engine-owned `stillCaptureAdmissionAvailable`. This is a
-  behavior fix, not just a comment.
-- A.2/M.2/M.3 (b1f7869e, 7f137b9b): the bare-door preflight failure now converges through the bounded
-  retry, which re-enters `reconfigureCamera(startup = true)`. A refusal nothing else owns publishes
-  `CAMERA_UNAVAILABLE_REOPEN`.
-- A.3 (691943df): a same-camera Video recall with a different `chooseVideoSize` answer is structural.
-  The SDR-to-10-bit transfer change is already covered by `commitFastPathOrReconfigure`'s
-  `sessionTransferChanged`.
-- A.5, A.6, A.7, A.8, A.10, A.18, A.19, A.24/M.6: the diffs match their plan text. The momentary
-  holds snapshot on press, restore on release, are cancelled by an explicit toggle and by recall,
-  and are released at onStop. The persisted value and MR store use the operator's value.
-- B.1/B.2 walker (`probeMp4MoovPresence`): MPEG4Writer's crash layouts (size-0 or zero-largesize
-  `mdat`, overrun) map to ABSENT, and a finalized front or tail `moov` maps to PRESENT. The only
-  concern found is the PRESENT-and-throw disposition in CT5-1.
-- B.4/M.7 splice: SOI + new APP1 + every non-Exif segment in original order. This matches
-  ExifInterface's own ordering, so APP0-after-APP1 is not a regression. The thumbnail-tier fallback is
-  correct.
-- B.5 (9408fb35), B.6 (ac51a897), B.8 (56bb2269), B.9 (25abb2f2), A.9 (a36aa43b), A.11, A.13: the
-  logic matches the stated invariant.
-- C.9/M.1: every `rollbackOptics` status call site's message is in `CAMERA_CONDITION_ENDING_MESSAGES`.
-  The two `scheduleColdStartRetry` terminals use `CAMERA_UNAVAILABLE_REOPEN`, which is also in the set.
-- No cycle-4 `fix` commit was found to be test-only or comment-only while claiming a behavior change.
-  c7953e52 is typed `test` but carries a 44-line production refactor of the engine's DNG
-  settle-before-camera line. It is behavior-preserving by inspection, but the commit type understates
-  it (Info, not filed).
+**Failure scenario.** In Photo, the operator taps DNG. `setRawWanted` re-resolves the route and the
+session goes Not-Ready for ~1 s. Under the format chips the row is blank while the chips stay enabled
+over cleared outputs. If the operator happens to press the shutter in that window, the refusal makes
+"Camera reconfiguring…" appear, and it stays until Ready.
 
-## Final sweep (commonly missed)
+**Suggested fix.** Publish an optics-family PROGRESS condition (`CAMERA_RECONFIGURING`) at the start
+of each optics transaction that clears Ready. It should end through the existing Ready/rollback
+`clearProgress` path and stay ranked below events, so it does not chatter on the plate. Alternatively,
+derive `reopenInProgress` from Engine truth: a pending optics generation newer than the last Ready
+publication. Use the same predicate for `railChipState`, and update the ARCHITECTURE row. Add a test:
+optics door → Not-Ready publication → caption is `status_camera_reconfiguring` without any shutter
+press.
 
-- Threading: `readyDngOnlyAnnounced` is written only inside the main-posted Ready branch. The
-  `deferredProgressStatus` writes all sit under `cameraReadyPublicationGate`'s status monitor. Holds.
-- Lock order: `ProcessAdmissionSignal.refresh` reads owner state under the signal lock (signal →
-  owner). Owners notify after releasing their own lock. No inversion found.
-- Edge: `ChainCharacteristicsReread` stays armed after a chain head fails before completion. It is
-  harmless, because the next head re-arms anyway.
-- Edge: `exifApp1WithoutThumbnailIfd` bounds-checks the IFD0 entry count against the payload before
-  zeroing the link.
+---
 
-## Files covered
+## CT6-3 — A shutter refusal is a timer-less condition that outlives a dead camera
 
-`camera/CameraStatus.kt`, `camera/CameraEngine.kt` (preflight disposition, cold retry, recall
-structural check, front leave, route resolution, DNG pre-capture, chain re-read call sites, mic-claim
-status, EXIF builder), `camera/CameraController.kt` (controls apply plan, chars gate),
-`camera/ManualControls.kt`, `camera/CameraState.kt` (effective focal, rearReturnLens, dngOnlySubstitution,
-osdPhotoFormats, backOpticsDoorRefusal), `camera/CaptureCapabilities.kt`, `camera/DngPreCaptureAllocation.kt`,
-`camera/StillPublicationDispatcher.kt`, `camera/FamilyDeletionMarkerDispatcher.kt`,
-`storage/MediaStoreWriter.kt` (recovery loop, probes, walker, re-arm), `ProcessAdmissionSignal.kt`,
-`capture/HeifExif.kt`, `capture/StillCapturePipeline.kt`, `gl/GlPipeline.kt` (orphan containment),
-`video/VideoRecorder.kt` (validation docs), `ui/CameraViewModel.kt` (status plate, momentary holds,
-recall/rollback, audio toggle, route fold, zoom ease, handheld rule), `ui/MomentaryHold.kt`,
-`ui/ZoomMath.kt`, `ui/controls/ManualDials.kt`, `ui/controls/PhotoFormatChips.kt`,
-`ui/controls/ProControls.kt`, `ui/overlays/Overlays.kt` (focal label), `AudioDenialReason.kt`,
-`MainActivity.kt` (provenance wiring), `HardwareInputPolicy.kt`, CLAUDE.md cycle-4 edits,
-docs/plans/2026-10-02-rpl-cycle4.md.
+**Severity** Low-Medium. **Confidence** Medium-High. **Status** confirmed from code (plate behaviour is
+older; the Output-row half is new with AGG5-55).
+
+**Cites:** `camera/CameraEngine.kt:5197-5203` (`capturePhoto` → `CAMERA_RECONFIGURING` when
+`currentAcceptedCameraSession() == null`); `camera/CameraStatus.kt:202-209` (`CAMERA_RECONFIGURING` is
+`CameraStatusLifecycle.PROGRESS`, `durationMs = null`); `camera/CameraStatus.kt` `StatusPlate.publish`
+/ `expire`; `ui/CameraViewModel.kt:3685-3690` (`fireShutterWithFeedback`, no ready guard; hardware
+keys reach it).
+
+**Why it is a problem.** A PROGRESS status has no timer by design, and "an EVENT ends it": Ready,
+rollback, pause, or a terminal. The `CAMERA_RECONFIGURING` *refusal*, however, can be published when no
+such event will follow. After the bounded retry is spent, the Engine publishes
+`CAMERA_UNAVAILABLE_REOPEN` / `PREVIEW_UNAVAILABLE_REOPEN`, which is a 6 s ERROR event and the
+terminal. If the operator then presses the hardware shutter (KEYCODE_CAMERA, half-press, or quick
+button bound to SHUTTER), `capturePhoto` finds no accepted session and publishes the PROGRESS refusal.
+`StatusPlate.publish` defers it behind the unexpired ERROR, and `expire` hands it the plate when the
+6 s run out. From then on "Camera reconfiguring…" stays indefinitely over a camera that will not come
+back until the app is reopened. With AGG5-55, `cameraCondition` now holds it too, so the Output row
+also says "Camera reconfiguring…". That is the terminal state AGG5-55's KDoc says the row must not
+claim.
+
+**Failure scenario.** The camera is held by another app, and retries exhaust with "Camera unavailable.
+Reopen the app." The operator presses the camera key twice. Six seconds later the plate and the
+Output row both read "Camera reconfiguring…", which contradicts the terminal instruction.
+
+**Suggested fix.** Publish the refusal as a short EVENT, for example a dedicated
+`CAMERA_NOT_READY` response in `RESPONSE_MESSAGES` with the 2.5 s default, instead of reusing the
+condition message. Alternatively, drop a deferred `CAMERA_RECONFIGURING` when the plate holds a
+`CAMERA_TERMINAL_MESSAGES` event. Add a plate test: terminal REOPEN → refusal → expire → plate is
+empty and `condition` is null.
+
+---
+
+## CT6-4 — A recall rollback splits the stab/fps request from the wire and the screen (MRG5-8 half-closed)
+
+**Severity** Low-Medium. **Confidence** Medium-High. **Status** confirmed from code.
+
+**Cites:** `ui/CameraViewModel.kt:1165-1176` (rollback restores `requestedVideoStabMode` /
+`requestedVideoFrameRate` only); `:1728` `engine.setVideoStabMode(e.videoStabMode)` and `:1748`
+`engine.setVideoFrameRate(safeFrameRate)` (pushed by `applyLoaded` outside the optics transaction, so
+the Engine rollback packet does not carry them); `:1784, :1804` (displayed `videoStabMode` /
+`videoFrameRate` set to the bank's); `:3427-3470` (`reconcileZoomToCaps` now derives the DISPLAYED
+stab from the request and no longer pushes the Engine — `dd3edc64` removed that push).
+
+**Why it is a problem.** Before MRG5-8, a rolled-back recall left the bank's stab/fps in all three
+places: request, display, and Engine. That was consistent, and the known AGG4-10 "non-optics fields
+not undone" behaviour. MRG5-8 restores only the request. After a rollback:
+
+- The Engine keeps the bank's stab mode and frame rate, and the HAL gets them.
+- `_state.videoStabMode` / `videoFrameRate` keep the bank's values, so the UI shows them.
+- `requestedVideo*` holds the prior values, which `currentExtras` persists.
+
+The next caps publication then makes it worse. `reconcileZoomToCaps` sets the *displayed* stab from
+the prior request but does not push the Engine any more. The screen shows the prior mode (for example
+"Active") while the Engine and HAL keep the bank's mode (for example OFF). For fps,
+`reconcileFrameRate` does push `applyVideoFrameRate(prior)`, so the wire jumps silently at an
+unrelated caps change. Until one arrives, clips record at the bank's rate while the persisted request
+says otherwise.
+
+**Failure scenario.** The operator is in Video, TELE, Active, 60 fps. They recall MR2 (OFF, 30 fps),
+whose recalled lens/route is refused, so the optics roll back. The plate says the camera is unchanged.
+The Fn tile shows OFF/30 and the next clip records OFF/30, but a relaunch restores Active/60. If a lens
+round-trip happens first, the Fn tile reads Active while the HAL stays on OFF, and the 300 mm clip is
+recorded without OIS+EIS while the UI claims it.
+
+**Suggested fix.** When the rollback restores a request, also re-apply it to the wire and the screen:
+call `engine.setVideoStabMode(requestedVideoStabMode)` and set the displayed value through
+`normalizedForAvailableModes(caps)`, then call `reconcileFrameRate()`. Better, make the
+`reconcileZoomToCaps` display write and an Engine push one helper, so the display can never derive
+from a request the Engine was not given. Add a Robolectric test: recall → rollback → assert Engine
+stab/fps == displayed == persisted, before and after a caps republish.
+
+---
+
+## CT6-5 — The FrameGap evidence reserve does not preserve the evidence it exists for
+
+**Severity** Low (debug diagnostics; but FIELD_CHECKS A6 and the S4a soak read these rows as
+pass/fail). **Confidence** High. **Status** confirmed from code.
+
+**Cites:** `camera/DiagnosticTelemetry.kt:213-241` (`FrameGapAccumulator.record` / `takeSummary` reset
+the window whether or not the row is admitted); `gl/GlPipeline.kt:902-920` (periodic summaries use
+`recurringDiagnosticAllowed`, so a refusal drops the row after the reset); `:1805`
+(`finish()` → terminal summary); `docs/ARCHITECTURE.md:72`, `CLAUDE.md` (log-quota bullet:
+"a missing terminal FrameGap line reads as 'no stall above the threshold'").
+
+**Why it is a problem.** `715ccb0a` carved a 12-row evidence reserve so that "a chatty soak must not
+be able to silence" the terminal FrameGap line. The accumulator, however, is windowed:
+
+- Each due `record()` calls `takeSummary()`, which zeroes `count` / `maximumMs` / the buckets, and
+  then `emitFrameGapSummary` is refused once the shared 168 rows are gone. That window's stalls are
+  lost for good.
+- `finish()` reports only stalls since the last periodic boundary, and returns `null` when that tail
+  window has none, so no terminal line is emitted at all.
+
+So in exactly the case the reserve was built for (shared rows drained), a session with real ≥1 s
+wedges can end with no terminal line, or with one that shows only the last ≤15 s. A missing or small
+line is then read as "no stall", which is the false pass the KDoc says the reserve prevents.
+
+**Failure scenario.** A ten-minute A5/A6 soak with change-gated producers spends the shared rows by
+minute 6. A 1.4 s wedge at minute 8 is accumulated, taken at the next 15 s boundary, and refused. At
+GL stop the tail window is empty, so `finish()` returns null. The operator finds no FrameGap line and
+records "zero stalls > 200 ms".
+
+**Suggested fix.** Reset the window only after the row is admitted. If a periodic emission is
+refused, keep accumulating (or fold it into a cumulative total), so the terminal summary carries
+every unreported stall. Optionally emit `count=0` explicitly at terminal, so absence never means
+"zero". Pin this with a test: shared budget exhausted → periodic refused → terminal reports the
+refused window's count and maximum.
+
+---
+
+## CT6-6 — A failed delete marker can still close still admission for the process (AGG5-2 residual)
+
+**Severity** Low. **Confidence** Medium. **Status** needs manual validation (reachability of an
+older live capture after >32 newer terminals).
+
+**Cites:** `camera/RetainedStillDeletionOwner.kt:112-135` (`completeDeletionDurability` closes
+admission for an id not in `producerTerminalIds`; `markCaptureProducersTerminal` caps that set at
+`maxTombstones` oldest-first); `camera/CameraEngine.kt:8392` (`MAX_RETAINED_STILL_DELETE_TOMBSTONES =
+32`); `ui/CaptureOutputTracker.kt:253-264` (a pinned review capture keeps `liveStillCaptureId`
+outside the 8-entry history).
+
+**Why it is a problem.** MRG5-5 introduced `producerTerminalIds` to answer "can this id still produce?"
+independently of the family registry. But it is bounded at 32 and evicted oldest-first. Take an id
+whose producers finished long ago and whose terminal record has been pushed out by 32 newer terminal
+captures. If that id's durable marker fails, `completeDeletionDurability(id, false)` adds it to
+`nonDurableLiveDeletions`. Its producer edge already fired and will never fire again, and no later
+durable marker exists for it. `canAdmitCapture()` is then false until process death, which is the
+AGG5-2 symptom ("still capture dead until process restart") through a different door. The tracker
+can hand the Engine such an id: a review-pinned capture keeps `liveStillFamilies` membership beyond
+the ordinary history while timelapse or repeated BURSTs (5 ids each) produce more than 32 newer
+captures.
+
+**Failure scenario.** The operator opens review on capture N while a timelapse keeps running, or
+returns to a pinned review after several bursts. The disk is near full, so the family marker commit
+fails. Every later still is refused for the rest of the process.
+
+**Suggested fix.** Treat "older than the oldest retained `producerTerminalIds` entry and not
+registered as live" as terminal, since ids are monotonic. Alternatively, keep a monotonic
+`highestTerminalWatermark` alongside the set. Or have the ViewModel pass the tracker's knowledge that
+the capture's outputs are all recorded. Add a test with 33 terminal ids and then a failed marker on
+the first one: admission stays open.
+
+---
+
+## Info (no ID; for the doc lane)
+
+- `docs/ARCHITECTURE.md:150` describes pre-AGG5-55 Output-row behaviour (covered in CT6-2).
+- The `CAMERA_REOPEN_CONDITION_MESSAGES` KDoc says it is "the reopen/recovery conditions the Output row
+  calls reconfiguring". As CT6-2 shows, no plain reopen publishes one of them.

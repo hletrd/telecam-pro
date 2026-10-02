@@ -1,225 +1,215 @@
-# Architect review — RPL cycle 5
+# Architect review — RPL cycle 6
 
-Scope: coupling and layering, duplicated sources of truth (VM vs Engine predicates), ownership and
-generation consistency, model-string branching outside the two sanctioned seams, god-object growth,
-and missing single seams that cause real divergence. Baseline: `ea7d4374` (after the cycle-4 merge
-and deslop). I read CLAUDE.md, the cycle-4 plan (`docs/plans/2026-10-02-rpl-cycle4.md`, including its
-"later cycle", "carried" and "Deferred" lists) and the archived cycle-4 architect review. Items those
-lists already track (AGG4-12/13/17/19/27/33, the AGG3/AGG2/AGG carried sets, MRG4-5, and the
-`MemoryBankAudioProvenance` deslop note) are not reported again here.
+- Agent: architect (AR6). HEAD `30970c9e`. Read-only review. No Gradle run.
+- Inputs read: `CLAUDE.md`, `docs/ARCHITECTURE.md` (persistence, threading and status sections),
+  `docs/FIELD_CHECKS.md` (A6–A9), the cycle-5 aggregate
+  (`archive-rpl-cycle5-2026-10-02/_aggregate.md`), the cycle-5 plan and its later-cycle list, and the
+  cycle-5 architect review.
+- Scope inventory: the cycle-5 diff `ea7d4374..30970c9e` over `app/src/main` (32 files). I read the
+  full diffs of `ui/CameraViewModel.kt`, `camera/CameraEngine.kt`, `camera/CameraController.kt`,
+  `ui/ZoomMath.kt`, `camera/RecordingStorageDispatcher.kt`, `MainActivity.kt`,
+  `AudioDenialReason.kt` and `ui/MomentaryHold.kt`. I also read in full
+  `camera/RetainedStillDeletionOwner.kt`, `camera/CameraStatus.kt` (`StatusPlate` and the message
+  classification sets), `camera/DeviceProfile.kt`, `camera/OpticsConstraints.kt`
+  (`rawSelectable`), the stabilization helpers in `camera/CaptureCapabilities.kt`, the Engine
+  optics-transaction/rollback machinery (`beginOpticsTransaction`, `OpticsSnapshot`,
+  `executeOpticsRollbackEffects`), the route-inventory publication, and the `tools/check_docs.py`
+  log-door change (`715ccb0a`).
+- Angle: duplicated sources of truth, ownership/generation gaps, layering, model-string seams, and
+  god-object hazards that produce concrete bugs.
+- Known items not re-raised: AGG5-38/40/44/47/48 and the rest of the later-cycle list, plus
+  owner-decided items.
 
-Summary: 0 Critical, 0 High, 0 Medium, 2 Low, 3 Info.
+Summary: 0 Critical, 0 High, 1 Medium, 1 Low-Medium, 1 Low, 3 Info.
 
-The cycle-4 VM/Engine fixes I traced hold up: A.7 rear-only refusal, A.10 `rearReturnLens`, A.18
-route-inventory fold, A.19 pre-inventory optical set, A.20 one effective focal, A.24 momentary holds,
-and the A.2/MRG4-2/3 bare-retry disposition. I found no new model-string branching. The two findings
-below are what is left of the "two copies of one fact" bug class on the zoom/lens axis.
+The model-string sweep is clean. `Build.MODEL` reaches behaviour only through `DeviceProfile.resolve`
+(Engine, plus the Controller's own copy, which the Engine overrides to GENERIC on EXTERNAL) and
+`detectPhone`. The EXIF make/model use is a label, not a branch. The cycle-5 fixes I traced hold up:
+the A1.1 split of `completeGlInputReady`, the A1.4 cancel order, the A1.5/M.5 per-capture latch, the
+AGG5-39 stale presentation, and the AGG5-22 move of provenance into the VM.
 
----
+The new defects all come from one cause. AGG5-4 and MRG5-8 added two more VM-private "operator
+request" mirrors: stabilization and frame rate. The Engine's optics rollback does not know about
+them. So the VM, the Engine and the UI now hold three copies of one fact, and they diverge on the
+rollback path.
 
 ## Findings
 
-### AR5-1: The Engine's lens band never follows a seamless zoom, so every rollback publishes a stale band to the VM, and the band predicate exists in three hand-written copies
-
-- Severity: Low · Confidence: High · Status: Confirmed (code path); visible symptom needs device validation
-- Cites:
-  - `camera/CameraEngine.kt:4764-4810` (`setZoomRatio`): writes `controls.zoomRatio` and never re-bands `lensChoice`.
-  - `camera/CameraEngine.kt:4842-4863` (`commitZoomForBoost`): same, never re-bands.
-  - `camera/CameraEngine.kt:600, 2848, 3017`: the only zoom-derived re-band sites. They run at caps
-    install and door commit, never on a pinch.
-  - `camera/CameraEngine.kt:605-614` (`lensBandFollowsZoom`): a private engine copy of the predicate.
-  - `ui/CameraViewModel.kt:2334-2343` (`flushZoom`) and `ui/CameraViewModel.kt:3194-3200`
-    (`reconcileZoomToCaps`): the two VM copies, written inline as
-    `!teleconverterMode && activeCameraRoute == BACK && !standaloneRouteFor(s)`.
-  - `camera/CameraEngine.kt:759-764` (`currentOpticsSnapshot`): `lens = lensChoice` becomes the
-    rollback baseline.
-  - `ui/CameraViewModel.kt:999-1003`: the rollback publication writes `lens = rollback.lens` into UI
-    state.
-- Why it matters: on the logical photo route the VM re-bands `lens` from the unified zoom on every
-  flush (`flushZoom`). The Engine only writes the ratio, so after a pinch from 1× to 5× the VM holds
-  `TELE3X` and the Engine still holds `MAIN`. Most doors hide this because they carry the VM's lens
-  into the Engine transaction (`setVideoMode(resolvedLens)`, the DNG remap packet,
-  `setResolvedOptics`). On the logical route `unifiedZoomOf` and `resolveNonTeleId` also ignore the
-  lens. But `OpticsSnapshot.lens` is the stale engine value, and every `rollbackOptics` publishes it
-  back to the VM.
-- Failure scenario (PMA110):
-  1. In Photo, pinch to 5× without backgrounding the app. The VM holds `TELE3X`; the Engine holds
-     `MAIN`.
-  2. Run any door that rolls back. Examples: Video with the standalone lens unavailable
-     (`CAMERA_UNAVAILABLE_MODE_UNCHANGED`), TC with the 3× lens unavailable
-     (`TELE_LENS_UNAVAILABLE_UNCHANGED`), a recording that wins the race against a mode/lens door
-     (`STOP_RECORDING_*_UNCHANGED`), or a failed DNG reopen.
-  3. The rollback publishes `lens = MAIN, zoom = 5.0`. The rail and lens caption now highlight 1×
-     while the frame is at 5×. This lasts until the next zoom movement re-bands it.
-
-  A second path is latent today. If DNG were toggled while FRONT, `onSetPhotoFormats` passes no
-  remap packet (`dngDoorRemapsZoomScale` is false on lens-local routes). On leaving FRONT the Engine
-  would then compute `rearReturnZoom(..., lensPreset = MAIN.zoomPreset)` = 5.0 on the main standalone
-  lens, while the VM computes 5/3 = 1.67 on `TELE3X`. That is a real wire/UI zoom split, and the
-  next `updateControls` would jump the frame to 1.67× on the main lens. It is unreachable from the UI
-  right now only because `rawSelectable(frontFacing = true)` disables the DNG chip
-  (`camera/OpticsConstraints.kt:97-103`, `ui/controls/PhotoFormatChips.kt:76-84`). Any future
-  DNG-capable front route or a new DNG entry point would expose it.
-- Suggested fix:
-  - Hoist the predicate into one pure top-level function in `CameraState.kt`:
-    `lensBandFollowsZoom(video, teleconverter, route, rawWanted, rawForcesStandalone)`.
-  - Call it from the Engine's three re-band sites and the two VM sites.
-  - Inside the existing monitor in `setZoomRatio` and `commitZoomForBoost`, add
-    `if (lensBandFollowsZoom(...)) lensChoice = LensChoice.forZoom(z)`.
-  - Host test: drive `setZoomRatio(5f)` on a logical-route engine, then a failing door. The rollback
-    publication must carry `TELE3X`. Also add a table test that the VM and Engine predicates agree
-    over (mode × DNG × law × TC × route).
-- PMA110 behaviour change: no wire change. On the logical route the Engine lens feeds only
-  rollback/snapshot publication and lens-ignoring conversions; standalone routes do not re-band.
-  Only the rail after a rollback changes, and it becomes correct.
-
-### AR5-2: "Unified zoom" has two formulas, the UI's and the Engine's, which disagree on lens-local routes and read two different copies of the RAW law
-
-- Severity: Low · Confidence: High · Status: Confirmed (code); visible effect masked today
-- Cites:
-  - `camera/CameraState.kt:590-602` (`CameraUiState.unifiedZoom`): short-circuits lens-local routes
-    (FRONT/EXTERNAL) to the raw ratio, and reads `state.rawForcesStandalone`. That field defaults to
-    `true`, the PMA110 law, until the first route-inventory publication
-    (`camera/CameraState.kt:1771-1777`).
-  - `camera/CameraEngine.kt:7824-7838` (`pushTeleFinder`): calls
-    `unifiedZoomOf(lensChoice, zoom, standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone), acceptedOpticalPresets)`
-    with NO lens-local short-circuit. It reads the live law and the Engine's lens.
-  - Consumers of the UI form: `ui/CameraScreen.kt:774-781`, `ui/overlays/Overlays.kt:723-730, 1088-1095`.
-    The Engine form feeds the GL `teleFinderResolved` flag.
-- Why it matters: CLAUDE.md says the finder gate is "ONE shared unit-tested predicate … resolved in
-  one place". The predicate is shared, but its zoom INPUT is computed by two different functions.
-  On FRONT or EXTERNAL in VIDEO, `standaloneRouteWanted` is true, so the Engine multiplies the
-  front/external lens-local ratio by the retained REAR band's optical base. With a retained `TELE3X`
-  band, a FRONT local 1.0 becomes 3.0 and GL resolves the overview ON while the UI gate says OFF.
-  - FRONT: masked because `pushPunchIn` suppresses the loupe there (`camera/CameraEngine.kt:7781-7785`).
-  - EXTERNAL: masked in practice because the optical set is normally empty there (base falls back
-    to MAIN). The pre-inventory window is the exception, since `acceptedOpticalPresets` is seeded
-    to `LensInventory.ALL.optical` (A.19).
-  - GENERIC devices before the first route inventory: the UI form assumes the PMA110 RAW law and
-    the Engine form does not, so a restored DNG selection reads the logical ratio as lens-local in
-    the UI only.
-  - Under TC, neither form includes the converter in its standalone argument. That is consistent
-    between the two forms and covered by the predicate's own `teleconverter ||` term.
-- Failure scenario: any future change that lets punch-in run on FRONT or EXTERNAL, or a converter
-  plus EXTERNAL combination, makes the GL overview draw with no Compose border or OSD tag (or the
-  reverse). That is the same symptom class as the 2026-08-04 "transparent rectangle" report.
-- Suggested fix: one pure `routeUnifiedZoom(route, lens, zoomRatio, videoMode, rawWanted, rawForcesStandalone, optical)`
-  that applies the `lensLocalZoom` short-circuit. `CameraUiState.unifiedZoom` and `pushTeleFinder`
-  both call it. The UI should read the RAW law from one place: either always `state.rawForcesStandalone`,
-  or have the VM's `standaloneRouteFor` read the state copy rather than `engine.rawForcesStandalone`.
-  Host table test: both call sites agree for every (route × mode × DNG × law × band).
-- PMA110 behaviour change: none on BACK. On FRONT/EXTERNAL the GL flag changes only where it is
-  currently masked.
-
-### AR5-3 (Info): God-object growth continued through cycle 4
-
-- Severity: Info · Confidence: High · Status: Confirmed
-- Line counts, `887d39fb` to `ea7d4374`:
-
-  | File | Before | After | Change |
-  |---|---|---|---|
-  | `camera/CameraEngine.kt` | 8935 | 9142 | +207 |
-  | `ui/CameraViewModel.kt` | 4729 | 4877 | +148 |
-  | `storage/MediaStoreWriter.kt` | 3350 | 3550 | +200 |
-  | `camera/CameraController.kt` | 2962 | 3014 | +52 |
-
-- Most of the additions are correct fixes. Several of them are, however, a third or fourth
-  restatement of a predicate that already exists. Examples are AR5-1's band predicate, and the
-  EXIF effective-focal formula in `exifShotOf` (`camera/CameraEngine.kt:8100-8106`), which restates
-  `effectiveEquivFocalMm` (`camera/CameraState.kt:2062-2071`) inline instead of calling it. The
-  AGG4-14 KDoc says "One number now feeds all three", but the EXIF number is still a separate copy.
-  Today they agree numerically: the same terms, plus the result zoom.
-- The VM still performs provider mutations directly (`MediaStoreWriter.deleteKnownOutput`,
-  `deleteUntrackedFamilySiblings`, `discardPendingOutput` at `ui/CameraViewModel.kt:4061-4071, 4170`)
-  while the Engine owns the family tombstone. This is the existing design and is not a defect. It is
-  the main reason storage ownership is split across the UI/engine layer boundary.
-- Suggested direction (later cycle): extract the zoom/lens scale seam (`unifiedZoomOf`, band
-  predicate, rear return, remap functions) into one `RouteScale` module that both the VM and Engine
-  call. Make `exifShotOf` call `effectiveEquivFocalMm`.
-
-### AR5-4 (Info): Fix-off defaults survive on route/scale seams that AGG4-47 did not cover
-
-- Severity: Info · Confidence: High · Status: Confirmed (no current caller omits them)
-- Cites:
-  - `ui/ZoomMath.kt:387-399` `remapModeOptics(frontFacing = false, lensLocalRoute = frontFacing, photoIsStandalone = false, optical = LensChoice.entries.toSet())`
-  - `ui/ZoomMath.kt:476-484` `remapRouteScaleOptics(optical = LensChoice.entries.toSet())`
-  - `ui/ZoomMath.kt:521-533` `restoredOptics(photoStandalone = false)`
-  - `camera/CameraState.kt:664-693` `teleFinderResolved/teleFinderVisible(zoomRatio = 1f)`
-  - `camera/Teleconverter.kt:149-153` `teleconverterDeclaration(measuredOtherHostEquivMm = 70)`
-- Why it matters: each default is the PMA110 or "fix-off" answer. AGG4-47 removed exactly this
-  pattern from `standaloneRouteWanted`, `hlgSessionAccepted` and `chars(shot)`, because an omitted
-  argument compiles into the pre-fix bug. For example, `optical = entries` divides by a lens a
-  one-camera tablet does not have, which is the TB336ZU 27 mm vs 81 mm class of defect. Every
-  production caller passes these arguments today (`ui/CameraViewModel.kt:2462-2472, 2575-2582, 1408`),
-  so this is latent.
-- Suggested fix: remove the defaults and let the compiler enforce the arguments, as AGG4-47 did.
-
-### AR5-5 (Info): `onPhoneModel`/converter declaration refuse on FRONT through the rear-optics door
-
-- Severity: Info · Confidence: Medium · Status: Confirmed (behaviour); design question
-- Cites: `ui/CameraViewModel.kt:2699, 2712, 2724` call `rejectBackOnlyOpticsDoor()` for the phone,
-  profile and custom magnification. `ui/CameraViewModel.kt:1899-1909` is that function.
-- Why it matters: the converter DECLARATION is a persisted Setup fact, not a route change. Refusing
-  it with "Switch to rear first" while the Lens tab is open on FRONT/EXTERNAL is consistent between
-  the VM and Engine (no divergence). It does, however, couple a settings edit to the live route.
-  This is not a bug. It is recorded so a future "declaration while FRONT" request does not
-  reintroduce an optimistic VM write the Engine then refuses (the AGG4-16 shape).
+| ID | Severity | Confidence | Status | Summary | Primary cite |
+|---|---|---|---|---|---|
+| AR6-1 | Medium | High | Confirmed (code path); visible symptom needs device validation | A failed MR recall rolls back the VM's stab/fps REQUEST only. The Engine keeps the recalled stab request on the wire, and the rollback's own caps reconcile then shows the prior mode. The OSD reads "Active" while clips record with stabilization OFF, and re-picking Active is a no-op | `ui/CameraViewModel.kt:1170-1177, 3431-3436, 3515`; `camera/CameraEngine.kt:658-687, 1298, 1306, 2182-2189` |
+| AR6-2 | Low-Medium | High | Confirmed (code path) | The recall rollback restore is keyed on the recall's own begin generation. A newer door that supersedes the recall and then fails restores the PRE-recall Engine baseline but drops the VM restore record. The AGG5-23/24 and MRG5-8 symptoms come back through supersession | `ui/CameraViewModel.kt:1153-1154, 1699-1708`; `camera/CameraEngine.kt:799-805` |
+| AR6-3 | Low | Medium | Likely; needs manual validation (topology change) | The A2.9 route-inventory fold clears glide state only, and does so asynchronously. It never cancels the 40 ms throttled `pendingControls` packet, so a trailing packet holding the rear zoom lands on the lens-local route. The posted invalidation can also clear a newer door's glide state | `ui/CameraViewModel.kt:876-892, 328-332`; `ui/CameraViewModel.kt:4849-4868` |
+| AR6-4 | Info | High | Confirmed | After AGG5-9, about 46 debug rows call raw `android.util.Log` behind a caller-side gate. The quota check accepts any gate token within the previous 1,200 characters, which is a lexical anchor. That contradicts CLAUDE.md's "only a real bounded facade/guard" | `tools/check_docs.py` `debug_log_classification_inventory`; CLAUDE.md log-quota bullet |
+| AR6-5 | Info | High | Confirmed | Tested-but-unused seams: `StatusPlate.clearProgress()` is pinned by tests, but production clears through a hand-written copy in `clearProgressStatus`. `recallMemorySlot` and `lastAppliedRecall` are now test-only public API | `camera/CameraStatus.kt:486-493`; `ui/CameraViewModel.kt:2081-2108, 3978-3990` |
+| AR6-6 | Info | High | Confirmed | God-object growth: Engine 9142→9365 (+223) and VM 4877→5202 (+325). The VM now holds five hand-synchronised request mirrors, each with its own rollback rule | `ui/CameraViewModel.kt:113-169` |
 
 ---
 
-## Already tracked (not re-reported)
+### AR6-1 (Medium): stab/fps recall rollback leaves the VM request, the Engine request/wire and the display as three different values
 
-- AGG4-17 (DeviceProfile resolved independently in Engine and Controller). Still true at
-  `camera/CameraEngine.kt:1336` and `camera/CameraController.kt:67`. No new evidence.
-- AGG4-13 (per-size FPS gate). `reconcileFrameRate` still reads `s.caps`, which can be the outgoing
-  route's caps during a reopen (`ui/CameraViewModel.kt:3160-3166`). Same item, no new failure seen.
-- MRG4-5 (program target moving during a gesture). The handheld target now tracks zoom by design
-  (A.20).
+- Severity: Medium. Confidence: High. Status: confirmed from code. The OSD/clip mismatch needs a
+  device check.
+- Cites:
+  - `ui/CameraViewModel.kt:1728` and `:1748`. The recall pushes `engine.setVideoStabMode(e.videoStabMode)`
+    and `engine.setVideoFrameRate(safeFrameRate)`. These are Engine fields **outside** the optics
+    transaction.
+  - `camera/CameraEngine.kt:658-687`. `OpticsSnapshot` has no `videoStabMode` and no
+    `videoFrameRate`, so the Engine's rollback never restores either. `camera/CameraEngine.kt:1802`
+    holds the Engine's own stab REQUEST. Since AGG5-4 the comment at `ui/CameraViewModel.kt:3431-3434`
+    says "the Engine keeps the request too".
+  - `ui/CameraViewModel.kt:1170-1177` (MRG5-8). The rollback puts only the VM mirrors
+    `requestedVideoStabMode` / `requestedVideoFrameRate` back to the prior values. It neither pushes
+    them to the Engine nor touches the displayed `videoStabMode` / `videoFrameRate`.
+  - `camera/CameraEngine.kt:1297-1298, 1306`. `executeOpticsRollbackEffects` posts
+    `onOpticsRollback`, then `onCapsReady`, then calls `applyStabilization()`. That last call
+    re-pushes the Engine's still-recalled stab mode to the wire.
+  - `ui/CameraViewModel.kt:3431-3436, 3466-3471`. `reconcileZoomToCaps` sets the DISPLAY to
+    `normalize(requestedVideoStabMode)`, the prior value. AGG5-4 deliberately removed the Engine push.
+  - `ui/CameraViewModel.kt:3515`. `onVideoStabMode(mode)` returns early when
+    `mode == requestedVideoStabMode && normalized == current.videoStabMode`.
+- Why it is a problem: the request/display split from AGG5-4 is correct only while the VM request
+  and the Engine request are the same value. MRG5-8 added a rollback leg that edits one copy. It has
+  no matching Engine write, and the Engine transaction has no field for it. Frame rate converges by
+  accident: `reconcileFrameRate` pushes the prior rate through `applyVideoFrameRate`. Stabilization
+  does not converge, because the AGG5-4 caps reconcile is display-only by design.
+- Failure scenario (PMA110, TELE video, operator request Active/ENHANCED):
+  1. Recall an MR bank whose stabilization is OFF. The optimistic apply writes display OFF, Engine
+     OFF and VM request OFF.
+  2. The recall's route fails asynchronously, for example `CAMERA_UNAVAILABLE_RECALL_UNCHANGED` when
+     the target lens is busy. Then `onOpticsRollback` sets the VM request back to ENHANCED. The
+     rollback's `onCapsReady` sets the display to ENHANCED ("Active"). The Engine still holds OFF,
+     and `applyStabilization()` keeps CONTROL_VIDEO_STABILIZATION_MODE = OFF on the wire.
+  3. The OSD/Fn says Active, but every 300 mm clip records without the OIS+EIS profile. Persisted
+     settings say ENHANCED, so only a relaunch fixes it.
+  4. The operator re-selects Active. Line 3515 sees `mode == request` and `normalized == display`,
+     and returns. The Engine is never told, so the obvious in-app remedy does nothing.
 
-## Final sweep (commonly-missed checks)
+  The reverse case (prior OFF, bank ENHANCED) shows "Off" while it records with stabilization, and
+  it also triggers a session reconfigure on the next real change.
+- Suggested fix, pick one owner:
+  - (a) Make the Engine own both requests. Add `videoStabMode` and `videoFrameRate` to
+    `OpticsSnapshot`, restore them in `commitOpticsRollbackLocked`, and publish them in
+    `OpticsRollbackPublication`. The VM rollback leg then reads `engine.currentVideoStabRequest()`,
+    the same way `requestedVideoResolution = engine.currentRequestedVideoSize()` already does at
+    `ui/CameraViewModel.kt:1109`. Delete the VM-only revert.
+  - (b) Minimal fix: in the MRG5-8 leg, when the VM request is reverted, also call
+    `engine.setVideoStabMode(restore.priorStabMode)` and `applyVideoFrameRate(...)`.
+  - Also drop the early return at 3515, or compare against the Engine's request instead of the VM
+    mirror.
+  - Robolectric test: a recall with OFF over ENHANCED, an async rollback, then assert that the
+    display, `engine` request and controller wire mode all read ENHANCED. A second test should
+    re-select Active after the rollback and assert that the Engine receives it.
+- PMA110 behaviour change: only on the failed-recall path, where it becomes correct.
 
-- **Model strings.** `Build.MODEL` is read in `DeviceProfile.resolve` (Engine:1336, Controller:67),
-  `detectPhone` (VM:402-409), and EXIF identity labels (`exifShotOf`, which labels and does not
-  branch). No capability, route, or request decision branches on a model string. Clean.
-- **Layering.** `ui/` does not import `CameraController`, `GlPipeline`, or `VideoRecorder`, and no
-  `camera/gl/video/storage/capture` file imports `ui.*`. The only cross-layer reach is the VM's use
-  of `MediaStoreWriter` (AR5-3).
-- **Rear-only refusal (A.7).** The VM and Engine now both feed `activeCameraRoute`. One residual: the
-  VM gates on `isRecording` while the Engine gates on `recorder != null`. The VM is stricter during
-  admission (optimistic `isRecording = true`). After a stop latched mid-admission, the Engine briefly
-  holds a published recorder while the VM reads false. A lens tap in that window gets an Engine
-  `STOP_RECORDING_FIRST` with the VM's optimistic lens already published and no rollback. The window
-  is milliseconds, so I am not raising a finding; noted for whoever touches `RecordingAdmissionLatch`.
-- **Momentary holds and the focus-ruler loupe assist.** I traced both orders (hold, then ruler; and
-  ruler, then hold). The assist only engages when `!state.punchIn` (`ui/controls/ManualDials.kt:257-264`),
-  so the two snapshots never capture each other's transient value. No defect.
-- **Route-inventory fold (A.18).** The VM's `routeChanged` compares against its own
-  `activeCameraRoute`, and the Engine compares against its own. Both are written synchronously by
-  the same doors, so they cannot disagree on a republish.
-- **EXIF vs OSD focal.** Numerically identical today (AR5-3 notes the duplicated formula).
-- **Converter declaration seed.** The Engine starts from `FIND_X9_ULTRA`, and the VM re-pushes
-  `detectPhone ?: OTHER` during construction (`seedPhoneModel`, VM:2871-2895) before start. No stale
-  window.
+### AR6-2 (Low-Medium): a superseded recall loses its VM rollback record
 
-## Files examined
+- Severity: Low-Medium. Confidence: High. Status: confirmed from code.
+- Cites:
+  - `camera/CameraEngine.kt:799-805`. `beginOpticsTransaction` selects the baseline with
+    `selectRollbackBaseline(cameraReady, …, opticsRollbackBaseline)`. While a recall (generation N)
+    is still un-Ready, a newer door N+1 inherits the PRE-recall Ready baseline. The comment there
+    says "Both must roll back to the last Ready state". The superseded recall N itself never rolls
+    back.
+  - `ui/CameraViewModel.kt:1699-1708`. The VM records `RecallRollbackRestore(generation = N, …)`.
+  - `ui/CameraViewModel.kt:1153-1154`. On rollback it checks
+    `recallRollbackRestore?.takeIf { it.generation == rollback.generation }` and then sets
+    `recallRollbackRestore = null`. A rollback of N+1 does not match N, so the record is thrown away.
+- Why it is a problem: the restore record exists because the recall's VM-only state belongs to the
+  same transaction as the Engine optics it armed. That state is the pre-inventory
+  codec/transfer/formats (AGG5-23), the cancelled-hold AE lock (AGG5-24) and the stab/fps requests
+  (MRG5-8). MRG5-6 correctly stopped keying the record on a re-read generation. But the Engine's
+  rollback scope is "everything since the last Ready", and the record's scope is "exactly
+  generation N". Those two scopes differ whenever a recall is superseded.
+- Failure scenario:
+  1. The operator holds AEL (momentary), so the live `aeLock` is true and the snapshot is false.
+  2. Recall MR2. The recall cancels the hold, records `aeLockPrior = false`, and starts generation N.
+  3. Before Ready, tap the 10× preset (N+1). The 10× lens is unavailable, so N+1 rolls back to the
+     pre-recall baseline. That baseline's controls carry the HELD `aeLock = true`.
+  4. The VM drops the N record, and the rollback's `scheduleSettingsSave()` persists a latched AE
+     lock. This is the AGG5-24 symptom. The same path leaves a pre-inventory AVC / S-Log3 /
+     JPEG-only bank armed and persisted (AGG5-23), and leaves the bank's stab/fps request persisted
+     (MRG5-8).
+- Suggested fix:
+  - Keep restore records in a small list keyed by begin generation. Clear them when an owned Ready
+    commit of generation ≥ g arrives, because the recall is accepted at that point.
+  - On a rollback, apply every record with `g ≤ rollback.generation`, newest first, because the
+    Engine baseline predates all of them.
+  - Alternatively, have the rollback publication carry the baseline's own generation and restore
+    every record whose g is greater than it.
+  - Test: recall, then a superseding failing door, then assert the AE lock, the pending codec and
+    the stab/fps requests are back at their pre-recall values.
 
-- `camera/CameraEngine.kt`: optics transactions, `setLens`, `setFrontCamera`, `setRawWanted`,
-  `setVideoMode`, `setZoomRatio`/`commitZoomForBoost`/`setZoomInteraction`, `pushTeleFinder`,
-  `pushPunchIn`, `applyResolvedCameraRoute`, `resolveNonTeleId`, `selectCurrentLens`,
-  `handlePreflightFailure`, `exifShotOf`, `stopRecording`, recorder admission publish,
-  `resolveLensOpticsIntent`.
-- `camera/CameraState.kt`: `unifiedZoomOf`, `localZoomOf`, `resolveTeleZoomTransition`,
-  `standaloneRouteWanted`, `rearReturnZoom`/`rearReturnLens`, `teleFinderResolved`/`Visible`,
-  `hiResAdmitted`, `LensChoice.forZoom`, `CameraUiState` derived focal/zoom properties,
-  `effectiveEquivFocalMm`.
-- `camera/OpticsConstraints.kt`, `camera/ControlAvailability.kt`, `camera/DeviceProfile.kt`,
-  `camera/Teleconverter.kt`, `camera/CaptureCapabilities.kt` (focal derivation),
-  `camera/DeviceExifLabels.kt`.
-- `ui/CameraViewModel.kt`: optics doors, `flushZoom`, `applyZoomRatio`, `onHardwareZoomStep`,
-  `reconcileZoomToCaps`, rollback publication, `applyLoaded`, `onSetPhotoFormats`,
-  `applyEncoderInventory`, momentary holds, `onAutoPunchIn`, delete paths,
-  `programHandheldShutterNs`, `cameraRoutePublishedState`.
-- `ui/ZoomMath.kt`, `ui/MomentaryHold.kt`, `ui/controls/PhotoFormatChips.kt`,
-  `ui/controls/ProSheet.kt` (format row), `ui/controls/ManualDials.kt` (ZoomRuler, loupe assist),
-  `ui/CameraScreen.kt` and `ui/overlays/Overlays.kt` (finder gate consumers).
-- Cycle-4 diffs: `69d58550`, `54c90d3a`, `992ec720`, `597c40df`, `6e75d245`, `b1f7869e`.
+### AR6-3 (Low): the route-inventory fold (A2.9) skips the pending-controls half of the remap hygiene
+
+- Severity: Low. Confidence: Medium. Status: likely. Needs a topology-change run (EXTERNAL
+  plug/unplug, or a front-only device) to see it.
+- Cites:
+  - `ui/CameraViewModel.kt:876-892`. The fold resets `controls.zoomRatio = 1` (via
+    `cameraRoutePublishedState`, `:4862-4866`) on the setup thread. It then calls
+    `mainHandler.post { invalidateOpticsDerivedState() }`.
+  - `ui/CameraViewModel.kt:328-332`. `applyControlsRunnable` pushes `pendingControls` WHOLESALE
+    through `engine.setControls`, including whatever zoom it captured.
+  - By contrast, every VM optics door and the rollback leg (`ui/CameraViewModel.kt:1091`) call
+    `cancelPendingControls()` before re-scaling zoom.
+- Why it is a problem: the zoom scale changes, but the 40 ms trailing packet captured in the old
+  (rear, unified) scale is not cancelled. When it fires, it writes the old ratio to the Engine on
+  the lens-local route. The VM state then reads 1× while the wire carries the stale ratio, or its
+  caps-clamped value. There is a second effect: the invalidation runs at some later point on main,
+  so it can also cancel a glide or trailing flush that a NEWER main-thread door has already
+  started.
+- Suggested fix: run the fold's main half (`cancelPendingControls()` plus
+  `invalidateOpticsDerivedState()`) in one main-thread task. Better still, fold the zoom reset into
+  that same main task, so that the state rewrite and the hygiene are atomic with respect to main
+  input. Test: schedule a throttled controls apply, deliver a route-changed inventory, and assert
+  that `engine.setControls` never receives the old zoom.
+
+### AR6-4 (Info): log-quota enforcement became lexical when gated rows moved to raw `android.util.Log`
+
+- Cites: `715ccb0a`; `tools/check_docs.py` `debug_log_classification_inventory` (`RECURRING_GATES`,
+  with the `before` window of 1,200 characters); 46 `android.util.Log.[di](` sites under
+  `app/src/main/kotlin`.
+- Why: before AGG5-9, a gated row still went through the bounded `DiagnosticLog` facade, so a wrong
+  or missing guard was still bounded. To stop the double charge, these rows now bypass the facade.
+  The gate classifies a raw call as "recurring_budgeted" if a gate token appears anywhere in the
+  previous 1,200 characters, even when that token guards a different statement. Today all 46 sites
+  are genuinely guarded; I checked each against its preceding five lines. But a raw
+  `android.util.Log.i` placed after an unrelated guarded block in the same function would pass the
+  check. That would be an unbounded producer, which is exactly the ColorOS-quota class CLAUDE.md
+  says the inventory now excludes ("severity or an anchor string no longer pretends…").
+- Suggested fix: add one pre-admitted door, for example
+  `DiagnosticLog.admittedInfo(tag, msg, admission)`, that takes the admission token the gate
+  returned. Then reject raw `android.util.Log.[di]` in `app/src/main` outright. A cheaper option is
+  to require that the gate token sits in the condition of the immediately enclosing `if`.
+
+### AR6-5 (Info): tested seams that production does not call
+
+- `camera/CameraStatus.kt:486-493`. `StatusPlate.clearProgress()` is exercised by
+  `StatusPlateArbitrationTest` (`:56, :151-152, :162`). Production `clearProgressStatus`
+  (`ui/CameraViewModel.kt:2081-2108`) re-implements it inline. The copy differs from the pure version
+  when a PROGRESS condition is shown: the pure version also clears `deferredEvent`, and the copy does
+  not. That state looks unreachable today, but the copy is what ships, and the tests prove the other
+  one. Route production through `currentStatusPlate().clearProgress()` followed by
+  `recordStatusPlate`.
+- `ui/CameraViewModel.kt:3978-3990`. After AGG5-22, `recallMemorySlot` and the `lastAppliedRecall`
+  field have no production caller; only `OpticsRecallTransactionRobolectricTest` uses them. Make
+  them `internal` with `@VisibleForTesting`, or have tests drive `onRecallMemorySlot` and read the
+  state.
+
+### AR6-6 (Info): god-object growth and request mirrors
+
+- Line counts `ea7d4374` → `30970c9e`: `camera/CameraEngine.kt` 9142→9365, `ui/CameraViewModel.kt`
+  4877→5202.
+- The VM now keeps five operator-request mirrors beside the displayed values:
+  - `requestedVideoResolution`
+  - `requestedVideoStabMode`
+  - `requestedVideoFrameRate`
+  - `pendingCodec/Transfer/PhotoFormatsUntilInventory`
+  - `punchInBeforeAuto` / `momentaryPunchIn` / `momentaryAeLock`
+
+  Each has its own rollback rule. One of them is re-read from the Engine
+  (`requestedVideoResolution`), two are VM-only reverts, and one is a field-by-field compare. AR6-1
+  and AR6-2 are what that inconsistency produces.
+- Direction for a later cycle: one immutable `OperatorRequest` packet owned by the Engine's optics
+  snapshot and published with every rollback/Ready. The VM would read it rather than mirror it.
+  `currentExtras` then persists `engine.request` and nothing VM-private.

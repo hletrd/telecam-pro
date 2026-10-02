@@ -1,257 +1,247 @@
-# Perf reviewer: RPL cycle 5 (2026-10-02)
+# Perf reviewer: RPL cycle 6 (2026-10-02)
 
-Role: performance, concurrency, threading, CPU/memory, UI responsiveness. ID prefix `PR5-`.
-Scope: the cycle-4 delta (`887d39fb..ea7d4374`, 86 commits) plus the standing hot paths: `gl/*`,
-`camera/CameraEngine.kt`, `camera/CameraController.kt`, `ui/CameraViewModel.kt`,
-`ui/CameraScreen.kt`, `ui/controls/*`, `ui/overlays/*`, `video/*`, `storage/*`, and
-`camera/StandbyAudioController.kt`.
+Agent: perf-reviewer (c6). HEAD `30970c9e`. ID prefix `PR6-`. Read-only review; no Gradle or gate run.
 
-Prior context I read: `CLAUDE.md`, `docs/plans/2026-10-02-rpl-cycle4.md` (later-cycle, carried and
-Deferred lists), and `.context/reviews/archive-rpl-cycle{1..4}-2026-10-02/perf-reviewer.md` plus the
-cycle-4 `_aggregate.md`. Nothing below re-reports a tracked item as new. Where a finding touches a
-tracked ID, it says so.
+Scope: performance, concurrency, thread safety, and CPU/memory/allocation on hot paths. I covered the
+cycle-5 delta (`ea7d4374..30970c9e`, 32 main-source files) plus these standing hot paths:
+
+- `gl/GlPipeline.kt`: `drawFrame` and `runAnalysisReadback`, the analysis generation executor, and
+  the FrameGap evidence path.
+- `gl/FlipRenderer.kt`: the per-draw path.
+- `camera/CameraController.kt`: the per-frame repeating-result callback, the still callbacks, and
+  `applyControlsOnCamera`.
+- `camera/CameraEngine.kt`: the AGG5-5 invalidation order, the AGG5-1/26 resume rebind,
+  `completeGlInputReady`, still admission publication, and the BURST/AEB head result.
+- `camera/RetainedStillDeletionOwner.kt`, `DngPreCaptureAllocation.kt`,
+  `RecordingStorageDispatcher.kt`, `CameraStatus.kt` (StatusPlate), `DiagnosticTelemetry.kt`, and
+  `VendorTagInspector.kt`.
+- `ui/CameraViewModel.kt`: the analysis fan-out, the status plate and its timers, the Ready fold,
+  the route-inventory fold, the stab/fps request split, and encoder inventory loading.
+- `ui/ZoomMath.kt`, `ui/controls/ProSheet.kt`, `ManualDials.kt`, and `ui/overlays/Overlays.kt`:
+  composition-time math and draw allocations.
+- `video/VideoRecorder.kt`: the AGG5-3 cleanup classification and the audio and drain loops.
+- `video/EncoderCaps.kt`: the AGG5-30 retry loader.
+- `capture/StillCapturePipeline.kt` and `HeifExif.kt`: the AGG5-34/35 buffers and the single EXIF
+  compose.
+- `storage/MediaStoreWriter.kt`: the AGG5-7/8 probes, the JPEG structure probe, and the AGG5-27
+  owner.
+- The executor/thread inventory across `app/src/main/kotlin`.
+
+I checked the AGG5 fixes in these areas against their findings: AGG5-5/27/30/34/35/37/9/1/26/3/4.
+AGG5-5 (Ready cleared before the DNG cancel), AGG5-27 (the queue sized to the permits), and
+AGG5-34/35 (pre-sized in-place JPEG buffer, one EXIF compose per shot) are correct as written. The
+hot GL, renderer, and per-frame result paths have no new allocation or locking regressions. Earlier
+cycles already removed the boxing, readback, and recomposition costs there, and nothing in cycle 5
+reintroduced them. Nothing below repeats a tracked AGG5 item unless it adds new evidence. Two
+findings (PR6-2, PR6-3) are incomplete edges of cycle-5 fixes (AGG5-30, AGG5-2/MRG5-5).
 
 ## Summary
 
 | ID | Severity | Confidence | Status | One line |
 |---|---|---|---|---|
-| PR5-1 | Medium | High | Confirmed (code) | `invalidateCameraReady` cancels DNG owners while the session still reads as current. The cancel's settle runs the BURST/AEB continuation, which dispatches a new DNG allocation that escapes the cancel |
-| PR5-2 | Medium | Medium | Needs device validation | One poisoned EGL orphan makes every later preview/encoder detach throw. The current output is blamed, and a healthy recording is failed. AGG4-18 now routes more failures into this list |
-| PR5-3 | Low | Medium | Confirmed (code) | `RejectedOutputCleanupCapacityOwner` has the same permit/queue mismatch AGG4-26 fixed in the family-deletion owner, so a reserved DNG-failure cleanup can be rejected and parked until the next launch |
-| PR5-4 | Low | High | Confirmed (code) | The cycle-4 JPEG splice encodes into an unsized `ByteArrayOutputStream`: about 19 array doublings plus a full copy, beside the 50 MB rotated bitmap |
-| PR5-5 | Low | High | Confirmed (code) | A HEIF+JPEG shot composes the identical EXIF APP1 twice: two cache temp files and two `ExifInterface` parse/save passes on `ioExecutor` |
-| PR5-6 | Info | High | Confirmed (code) | `GyroEis` registers sensor listeners with no Handler, so accelerometer (~16 Hz) and gyro (50 Hz while motion-inversion tracking is on) callbacks run on the main looper |
+| PR6-1 | Low | Medium | Confirmed (code) | `markStillProducersTerminal` decides whether to republish from a `canAdmitCapture()` read taken before the mark. If a failed delete marker for the same id lands in between, the shutter publication stays at `false` while live admission is `true` |
+| PR6-2 | Low | High | Confirmed (code) | AGG5-30 incomplete. A load that exhausts its retries returns `CodecInventory.EMPTY`, and the ViewModel applies it as authoritative: it clears the pending request, sets `encoderInventoryLoaded = true`, and the next save persists HEIF→JPEG and HLG→SDR (the AGG-34 loss through a new door) |
+| PR6-3 | Low | Low-Medium | Needs manual validation | `producerTerminalIds` evicts after 32 ids. A failed durable marker for a capture whose producer edge has already been evicted re-adds the AGG5-2 latch for that id, with no edge left to clear it. Still admission then stays closed until Engine release |
+| PR6-4 | Low | Medium | Needs device validation | The AGG5-4 request/wire split makes `reconcileFrameRate` push a narrowed or restored fps through `engine.setControls` on every route change in both directions. Each push is a FULL_REBUILD, about 180 ms of repeating-request stall right after Ready, and caps then videoSize can flip it twice |
+| PR6-5 | Info | Medium | Confirmed (code) | AGG5-37 moved the debug capability dump onto the SHARED recurring row owner. Every debug cold start now spends about 25–40 of the 168 shared rows, 5 s after launch, before any soak producer runs |
+| PR6-6 | Info | Medium | Confirmed (code) | The AGG5-3 `*CodecErrorLatched` flags are set for ANY drain/audio thread exception, including a mic read failure or a muxer write throw on a healthy codec. The "errored codec" evidence is wider than its KDoc claims |
 
-Counts: Critical 0, High 0, Medium 2, Low 3, Info 1.
+Counts: Critical 0, High 0, Medium 0, Low 4, Info 2.
 
 ## Findings
 
-### PR5-1: `invalidateCameraReady` cancels DNG owners before Ready is cleared, so the cancel's settle continues the chain onto the dying session and a fresh DNG allocation escapes the cancel
+### PR6-1: A TOCTOU on the producer-terminal republish gate can leave the shutter disabled while admission is open
 
-- **Severity / Confidence / Status:** Medium / High / Confirmed by code read. The provider churn and
-  the admission hold are host-provable. The visible symptom needs a device.
+- **Severity / Confidence / Status:** Low / Medium / Confirmed by code read. The interleaving is
+  narrow but legal.
 - **Where:**
-  - `camera/CameraEngine.kt:550-566`: `invalidateCameraReady()` calls
-    `cancelDngPreCaptureAllocations()` as its first statement, outside and before the monitor block
-    that sets `cameraReady = false`, `readyController = null`, and `acceptedCameraSession = null`.
-  - `camera/CameraEngine.kt:5088-5099`: the list of owners to cancel is snapshotted once.
-  - `camera/DngPreCaptureAllocation.kt:183-186` (`cancel` → `attempt.retire()`, synchronous) →
-    `:247-258` `dngOwnerRetirement`: unregister, release the DNG admission / rejected-cleanup /
-    snapshot reservations, then `settleRegisteredShot(settle)`. `settle` runs the chain's `onDone`
-    on the invalidating thread.
-  - `camera/CameraEngine.kt:5193-5208` (BURST `fire(shot + 1)`) and `:5220-5285` (AEB `fire(i + 1)`)
-    gate only on `acceptedSessionIsCurrent(accepted)` (`:4879-4880`). That check is still TRUE at
-    this point, because the monitor block has not run yet.
-- **Why:** At this moment the cancelled owner has just released the process-wide single DNG
-  admission slot and its rejected-cleanup reservation. The continuation therefore passes every
-  gate in `dispatchStillCapture` (`:4935-4955`): it acquires the DNG slot again, reserves cleanup,
-  registers a NEW owner (missed by the snapshot already taken at `:5095-5097`), and `start()`
-  dispatches a real `MediaStore` insert to the pre-native pool. When that insert returns,
-  `isCurrent` is false (`DngPreCaptureAllocation.kt:148-150`). The attempt retires, the
-  just-created pending row goes through `onLateValue` → `cleanLateAllocation` → the rejected-output
-  owner (a second provider round trip), and the retirement settles once more. Only then does the
-  next `fire()` see the cleared session and stop.
-- **Failure scenarios:**
-  1. BURST or AEB with DNG on, and the operator backgrounds the app mid-chain (`pause()`,
-     `:7574`, main thread) or any optics door reopens (`reconfigureCamera`, `:4347`). Each
-     invalidation costs one wasted pending insert + delete pair. The process DNG slot also stays
-     held for the length of that insert. If the provider is slow (the condition this owner exists
-     for), the slot is held for up to `DNG_PRE_CAPTURE_ALLOCATION_TIMEOUT_MS` = 8 s. After resume,
-     every still on every route is refused with `FINISHING_PREVIOUS_PHOTO`, even though nothing
-     the operator asked for is in flight.
-  2. Manual-exposure AEB: the continuation also calls `ctrl.updateControls(stepControls)` on the
-     controller being torn down (`:5236`), and later `ctrl.updateControls(controls)`. These are
-     wasted camera-thread posts at best, and a bracket step pushed into the outgoing session's
-     request during its close.
-  3. The new owner's insert happens while the app is backgrounded. MediaProvider observers (the
-     gallery) see a pending row appear and vanish.
-- **Fix:** Clear Ready first, then cancel. Inside `invalidateCameraReady`, run the existing monitor
-  block (session generation, `cameraReady = false`, `readyController = null`,
-  `acceptedCameraSession = null`) before calling `cancelDngPreCaptureAllocations()`. Then publish
-  the tap and Ready edges. The per-owner `cancelEachSealed` (AGG4-21) already guarantees a cancel
-  failure cannot skip the invalidation, so the "first statement" placement is no longer needed for
-  safety. With Ready cleared first, the settle's `fire()` takes its `!acceptedSessionIsCurrent`
-  exit, and no owner can register after the snapshot.
-  Host test: register a DNG owner for a BURST chain, call the invalidation, and assert that the
-  allocator received no second dispatch and that the DNG admission is free afterwards.
-  **PMA110 behaviour:** unchanged for single shots. Only multi-shot DNG chains interrupted by an
-  invalidation change, and they stop issuing the wasted allocation.
+  - `camera/CameraEngine.kt:5839-5845`: `markStillProducersTerminal`.
+  - `camera/CameraEngine.kt:5580-5589`: the marker task, which runs
+    `completeDeletionDurability(liveStillId, false)` and then `publishProcessStillAdmission()` in
+    `finally`.
+  - `camera/RetainedStillDeletionOwner.kt:112-123` and `:129-134`.
+  - `camera/DngPreCaptureAllocation.kt:26-38`: `StillAdmissionPublication.publish`, which is
+    change-gated on the delivered value.
+  - `camera/CameraState.kt:1894-1899`: `stillCaptureReady` and `primaryShutterHealthy` read the
+    delivered `stillCaptureAdmissionAvailable`.
+- **Why:** `wasAdmitting` is read in one owner-lock acquisition, and the mark happens in a second.
+  The family-deletion-marker worker (T2) can run its whole close-and-publish sequence between the
+  two:
+  1. T1 (still save lane, producer terminal for capture X) reads `wasAdmitting = true`.
+  2. T2 (marker worker) runs `completeDeletionDurability(X, false)`. X is not yet in
+     `producerTerminalIds`, so it adds X to `nonDurableLiveDeletions`.
+  3. T2's `finally` publishes. The snapshot is `false`, so `false` is delivered and the shutter
+     closes.
+  4. T1's `markCaptureProducersTerminal(X)` removes X, so admission is live `true` again.
+  5. `!wasAdmitting` is false, so T1 never publishes.
 
-### PR5-2: A poisoned EGL orphan that still cannot be destroyed makes every later preview/encoder detach throw, and the failure is attributed to the CURRENT output
+  The publication now holds `false` while the owners say `true`. Later `markStillProducersTerminal`
+  calls read `wasAdmitting = true` and stay silent too. The only things that repair the state are an
+  unrelated admission edge (a DNG slot, storage capacity, or a family retirement task) or Engine
+  re-creation.
+- **Failure scenario:** The operator deletes the just-shot photo from review while its DNG/HEIF tail
+  is finishing, on a nearly full disk, so the durable marker fails. Both shutter surfaces then render
+  disabled (`primaryShutterEnabled`) until some unrelated admission edge fires. That can be
+  indefinite on a photo-only session, because no capture can run to cause one.
+- **Fix:** Drop the `wasAdmitting` gate and always call `publishProcessStillAdmission()` after the
+  mark. `StillAdmissionPublication` already re-reads live state under its own lock and is
+  change-gated, so an unconditional publish costs one lock and a three-owner read, and nothing is
+  delivered when the value did not change. Alternatively, have `markCaptureProducersTerminal` return
+  "admission reopened" computed inside the owner lock. Add a two-latch interleaving test.
 
-- **Severity / Confidence / Status:** Medium / Medium / Needs device validation. Whether a
-  surface whose detach failed keeps failing `eglDestroySurface` is driver-dependent. The control
-  flow below is certain.
+### PR6-2: An exhausted codec scan is applied as the real inventory and persists degraded HEIF/HLG choices (AGG5-30 incomplete)
+
+- **Severity / Confidence / Status:** Low / High / Confirmed by code read. Rare trigger (three failed
+  `MediaCodecList` walks within about 750 ms), permanent effect.
 - **Where:**
-  - `gl/GlPipeline.kt:495-510`: `clearPreviewOutput` calls `clearOrphanedOutputs(core)` BEFORE it
-    touches the preview it was asked to detach.
-  - `:526-535` `clearOrphanedOutputs` → `RetainedOutputs.releaseAll` (`:2086-2091`). This
-    propagates the first throw and keeps that entry at the head of the list (`removeAt(0)` runs
-    only after a successful release).
-  - `:836-856`: `clearEncoderOutput` sweeps the same list first.
-  - The callers that treat any throw from these as "the current output could not relinquish its
-    native window": the texture-acquisition branch at `:997-1015` (since AGG4-18 it also
-    orphans), the preview draw/swap branch at `:1230-1247`, the post-encoder preview branch at
-    `:1294-1302`, `applyPreviewOutput` at `:414-429`, and `failEncoderOutput` at `:858-865`.
-- **Why:** After a single containment, the poisoned EGLSurface sits in `orphanedEglOutputs`. From
-  then on, every preview transition first retries that orphan. If its destroy still fails:
-  - Any later preview fault, even a transient one the current preview could have detached
-    cleanly, takes the "detach failed" branch. That branch calls `failEncoderOutput` on a healthy
-    active recording and orphans another surface. The orphan list grows, and each new entry sits
-    behind the stuck head.
-  - `applyPreviewOutput(surface = …)` throws at `:429` before creating the new window surface. The
-    engine's bounded three-retry budget is spent on the old orphan, which ends in
-    `PREVIEW_UNAVAILABLE_REOPEN` while the new TextureView surface itself is fine.
-  - A clean REC stop's `clearEncoderOutput` cannot prove detach, which forces the terminal EGL
-    reset fallback for an encoder surface that was never at fault.
-  The AGG4-18 KDoc (`:512-518`) promises that the next bind "creates a fresh EGLSurface instead of
-  … the poisoned one". That is true only when the deferred sweep succeeds. When it does not, the
-  sweep makes the next bind fail, so the containment converts one fault into a sticky fault that
-  spans outputs.
-- **Fix:** Make the orphan sweep best-effort and isolated from the output being detached:
-  1. Sweep each orphan individually and catch its failure. Keep failed entries retained, but do
-     not let them throw into the current output's detach. Change-gate one `DiagnosticLog.w` per
-     orphan so the 300-row quota is not spent.
-  2. In `clearPreviewOutput`, detach the CURRENT preview first, then sweep.
-  3. Keep the sweep strict only where a codec Surface can depend on it: an orphaned ENCODER
-     EGLSurface of the same codec input must block that codec's Surface release. To support
-     that, tag orphans with their role (preview or encoder) so a stuck preview orphan cannot veto
-     encoder teardown.
+  - `video/EncoderCaps.kt:124-143`: an exhausted `load()` returns `CodecInventory.EMPTY` without
+    latching, and `isLoaded()` stays false.
+  - `ui/CameraViewModel.kt:3042-3055`: `loadEncoderInventoryAsync` applies whatever `load()` returned,
+    without checking `isLoaded()`.
+  - `ui/CameraViewModel.kt:3058-3096`: `applyEncoderInventory`. It sets
+    `pending*UntilInventory = null` (`:3064-3066`), normalizes the transfer against
+    `tenBitEncodeAvailable = false` and the formats against `heifEncodeAvailable = false`, pushes
+    `engine.setVideoPipeline`/`setRawWanted`, and sets `encoderInventoryLoaded = true` (`:3086`).
+  - `ui/CameraViewModel.kt:1841-1850`: `currentExtras` protects the pending request only while
+    `!encoderInventoryLoaded`.
+- **Why:** AGG5-30's stated contract is that a failed walk does not latch, so a later load walks
+  again. The loader keeps that contract, but its only consumer cannot tell "no encoders on this
+  device" from "the walk failed". It consumes the operator's pending request, writes the degraded
+  placeholders into state, and marks the inventory loaded. The next `saveSettingsIfEnabled` or
+  background save then persists them. This is the AGG-34 loss (HEIF→JPEG, HLG/10-bit→SDR) through
+  the retry-exhausted door. The next ViewModel's successful walk cannot restore those choices,
+  because the request is gone from disk.
+- **Failure scenario:** mediaserver restarts during the cold-start scan, for example right after an
+  update. The operator's persisted HEIF + HLG setup comes back as JPEG + SDR on every later launch,
+  with no status message. Only one `EncoderCaps` warning row exists, and only in the reserved log.
+- **Fix:** After `load()`, check `EncoderCaps.isLoaded()`. If it is false, leave `pending*` and
+  `encoderInventoryLoaded` untouched and schedule a bounded retry (on the next `onStart`, or a single
+  delayed retry on `ioExecutor`). Alternatively, return a typed `Loaded(inventory)` / `Failed` from
+  the loader so the ViewModel cannot treat a failure as inventory. Add a ViewModel test that drives
+  a failing scan and asserts that `currentExtras()` still carries the pending HEIF/HLG request.
 
-  Host-testable through the existing `detachEglOutput` / `RetainedOutputs` seams, with a
-  `releaseAll` that sees one permanently failing entry.
-  **PMA110 behaviour:** identical on the normal path, where the orphan list is empty.
+### PR6-3: The bounded producer-terminal memory can re-close still admission for an old pinned capture (AGG5-2/MRG5-5 edge)
 
-### PR5-3: `RejectedOutputCleanupCapacityOwner` has the AGG4-26 permit/queue mismatch: a reserved cleanup can be rejected at exactly the moment an outage drains
-
-- **Severity / Confidence / Status:** Low / Medium / Confirmed by code read. This is the sibling
-  of AGG4-26, which cycle 4 fixed only in `FamilyDeletionMarkerCapacityOwner`.
+- **Severity / Confidence / Status:** Low / Low-Medium / Needs manual validation. Whether review can
+  keep an old capture pinned while 32 or more newer captures complete depends on the UI flow, for
+  example timelapse or BURST while review is open.
 - **Where:**
-  - `storage/MediaStoreWriter.kt:2133-2142`: queue `ArrayBlockingQueue(backlogCapacity)` (8), but
-    `Semaphore(workerCount + backlogCapacity)` (10).
-  - `:2188-2201` `runAttempt` releases the permit in its `finally`, inside the task, so the worker
-    is still busy.
-  - `:2174-2186` `submitReserved` turns `RejectedExecutionException` into an UNRESOLVED result.
-  - `:2296-2298` `canAdmit` counts permits.
-  - Both process owners use this class: `rejectedOutputOwner` (`:220-231`, no retry scheduler) and
-    `pendingIdentityRecoveryOwner` (`:238-250`). A grep for `Semaphore(` finds no other
-    semaphore-plus-executor pair; the other dispatchers bound by the executor alone and are fine.
-- **Why:** Under a provider stall, both workers block and all 8 queue slots fill, so 10 permits are
-  taken. When the provider recovers, a worker finishes and releases its permit while still inside
-  the task. A `reserve()` (DNG admission at `CameraEngine.kt:4949`/`:5756`) succeeds in that
-  window. Its later `submit` then meets a full queue with both workers busy, and is rejected.
-  - For `rejectedOutputOwner`, the incomplete DNG's pending row is marked UNRESOLVED with no
-    retry scheduler. It counts toward `MAX_REJECTED_OUTPUTS` and is retried only by the next
-    launch recovery's `retryRejectedOutputs()` (`:1315`).
-  - For the identity owner, the row waits a backoff it did not need.
-  The window opens precisely as an outage drains, which is the one time this owner has a backlog.
-- **Fix:** Use the AGG4-26 remedy: size the queue at `workerCount + backlogCapacity` so every
-  permit's task fits in the queue alone. Pin it with a test seam like
-  `FamilyDeletionMarkerCapacityOwner.afterTaskReleased`. Alternatively, release the permit from
-  `ThreadPoolExecutor.afterExecute`. **PMA110:** no change outside the saturation window.
+  - `camera/RetainedStillDeletionOwner.kt:129-134`: `producerTerminalIds` is trimmed oldest-first to
+    `maxTombstones = 32` (`camera/CameraEngine.kt:8392`).
+  - `camera/RetainedStillDeletionOwner.kt:112-123`: a failed marker for an id that is not in
+    `producerTerminalIds` adds that id to `nonDurableLiveDeletions`.
+  - `camera/RetainedStillDeletionOwner.kt:264-265`: `canAdmitCapture()` requires
+    `nonDurableLiveDeletions.isEmpty()`.
+- **Why:** MRG5-5 records producer terminality per id so that a failed marker arriving AFTER the
+  terminal edge does not close admission. That memory is capped at 32 ids. For a capture whose
+  terminal edge is older than the last 32 terminal ids, the original AGG5-2 behavior returns: the
+  failed marker adds the id, no producer edge for it will ever come again, and only a later
+  successful marker for the same id clears it. There is no retry for that id.
+  `BURST_COUNT = 5` means seven bursts are enough to evict an id.
+- **Failure scenario:** Review is open and pinned on capture N. While it is open, 32 or more newer
+  shots complete, for example a timelapse running. The operator then deletes N on a full disk, so
+  the marker fails. Every later still is refused for the Engine's lifetime, which is the AGG5-2
+  symptom.
+- **Fix:** Ask the right question instead of keeping a bounded history. Treat an id below the
+  owner's lowest retained producer-terminal id, and not in the live family registry, as terminal.
+  Capture ids are monotonic, so "evicted from `producerTerminalIds`" implies "older than its oldest
+  member". Alternatively, record the newest evicted id as a low-water mark and treat
+  `captureId <= lowWater` as terminal. Add a test: 33 terminal edges, then a failed marker for the
+  first id, then assert that `canAdmitCapture()` is true.
 
-### PR5-4: The cycle-4 JPEG splice encodes into an unsized `ByteArrayOutputStream`, which costs about 19 doublings plus a full copy while the 50 MB bitmap is live
+### PR6-4: The fps request/wire split costs a full repeating-request rebuild per route switch, in both directions
 
-- **Severity / Confidence / Status:** Low / High / Confirmed by code read. This is a memory
-  regression introduced by B.4 (AGG4-6).
-- **Where:** `capture/StillCapturePipeline.kt:313-325` (`ByteArrayOutputStream()` at its default
-  32-byte capacity, then `toByteArray()`), and `writeSingleJpeg` at `:351-392`.
-- **Why:** Before B.4, `Bitmap.compress` streamed straight into the provider stream. Now a
-  12.5 MP JPEG (roughly 4 to 12 MB at the user's quality) grows from 32 bytes by doubling. That
-  allocates about 2× the final size in discarded arrays, then `toByteArray()` adds a third full
-  copy. Meanwhile the about 50 MB rotated ARGB bitmap and the input JPEG `bytes` are still
-  reachable on `ioExecutor`. A peak of about 3× the JPEG size, piled onto a working set that
-  perf review #3 had worked to shrink, raises GC pressure during BURST/timelapse.
-  `StillSnapshot.Yuv.jpegBytes` (`capture/StillSnapshot.kt:55-60`) documents and avoids exactly
-  this by pre-sizing to `width * height`.
-- **Fix:**
-  - Pre-size the stream (`width * height / 2` matches typical q90 to q97 output). Better, use a
-    small `ByteArrayOutputStream` subclass that exposes `buf`/`count`, so `exifSplicePlan` and
-    `writeJpegWithExifApp1` read the internal buffer with no `toByteArray()` copy.
-  - The JPEG lane is the last reader of `rotated`, so it can be recycled after `compress` and
-    before the Binder `openOutputStream` and write.
+- **Severity / Confidence / Status:** Low / Medium / Needs device validation. Whether the Photo
+  logical route or FRONT excludes the requested rate at the chosen size on PMA110 is unmeasured.
+- **Where:**
+  - `ui/CameraViewModel.kt:3415-3426`: `reconcileFrameRate` targets `requestedVideoFrameRate` or the
+    nearest allowed rate.
+  - `ui/CameraViewModel.kt:3384-3398`: `applyVideoFrameRate` calls `engine.setControls(controls)`
+    with the new `fps`.
+  - Callers: `onCapsReady` (`:914-918`) and `onVideoSizeChosen` (`:926-930`).
+  - `camera/CameraController.kt:1446-1455`: an fps delta is not a sensor-only delta, so
+    `controlsApplyPlan` takes FULL_REBUILD (`startPreview`, the 170–250 ms repeating-request swap
+    CLAUDE.md measured).
+- **Why:** Before AGG5-4, narrowing ratcheted the stored value once, and later trips found it
+  already deliverable, so nothing was pushed. Now the request survives (which is correct), so every
+  trip to a route that cannot deliver it pushes the narrowed fps, and every trip back pushes the
+  request again. Both pushes land on the main queue after the new route's caps, normally after the
+  route's own first `startPreview`, so each one is a second repeating-request swap right after
+  Ready. Caps arrive with the OLD `videoResolution`, and `onVideoSizeChosen` follows with the new
+  size. When the allowed set differs between those two sizes, one route change pushes twice.
+- **Failure scenario:** The operator records 60 fps on the tele and checks framing on FRONT (or a
+  route whose size × codec lacks 60 fps). Every switch shows a visible ~180–250 ms preview hitch
+  just after the new route comes up, in each direction.
+- **Fix:** Keep the request/wire split, but defer the push. Have `reconcileFrameRate` update only
+  the displayed value and the engine's `videoFrameRate` while the route is not recording-capable or
+  `!cameraReady`. Let the Engine's own route commit carry `fps` inside the reconfigure packet: it
+  already normalizes controls per route at `setControls`/commit, so the first `startPreview` builds
+  with the right range. Also coalesce `onCapsReady` + `onVideoSizeChosen` into one reconcile per
+  optics generation. Device check: count `startPreview` rebuilds (3A `requestGeneration` steps) on
+  one Video tele→FRONT→tele trip at 60 fps, before and after.
 
-  Host test: assert that the splice output is byte-identical from the exposed buffer.
-  **PMA110 file output:** identical.
+### PR6-5: The debug capability dump now spends about 20% of the shared recurring log rows at every cold start
 
-### PR5-5: A HEIF+JPEG shot composes the identical EXIF APP1 twice through cache temp files
+- **Severity / Confidence / Status:** Info / Medium / Confirmed by code read. Debug builds only, but
+  this budget is the evidence channel FIELD_CHECKS soaks read.
+- **Where:**
+  - `camera/VendorTagInspector.kt:46-63` and `:268-276`: two rows per camera id plus two per physical
+    sub-camera, plus `ConcurrentMandatory`/`ConcurrentProbe` rows for each PIP id and profile, all
+    through `DiagnosticLog.i`, which charges the shared recurring owner.
+  - `camera/CameraEngine.kt:2113-2124`: the dump runs 5 s after every debug cold start.
+  - `camera/DiagnosticTelemetry.kt:36-46`: the shared owner holds 168 rows.
+- **Why:** AGG5-37 correctly stopped the dump from draining the 120-row warning reserve on every
+  Engine start, and `claimDump` makes it run once per process. But each new process (every
+  `am start` in a field check) now pays roughly 25–40 shared rows before the 3A heartbeat, ZoomTrace,
+  periodic FrameGap summaries, ZSL, and focus traces run. Those producers were budgeted against the
+  full 168 rows; the ten-minute A5 soak alone plans 41 3A rows. The terminal FrameGap and StartupTrace
+  rows keep their 12-row evidence reserve, but the periodic evidence does not.
+- **Fix:** Gate the dump behind an explicit debug switch, such as the existing
+  `getExternalFilesDir()/…` flag-file idiom or a system property, instead of running it on every
+  debug launch. Alternatively, give it its own small owner outside the 168 shared rows and lower the
+  shared allowance by the same amount, so the 300-row total stays exact.
 
-- **Severity / Confidence / Status:** Low / High / Confirmed by code read.
-- **Where:** `capture/StillCapturePipeline.kt:273` (HEIF) and `:323` (JPEG) each call
-  `uprightStillExif(rotated, exifShot, …)` → `composeStillExifApp1` (`:732-768`). Each call does a
-  1×1 `Bitmap.compress`, `File.createTempFile`, a write, an `ExifInterface` parse and
-  `saveAttributes()` (a file rewrite), a `readBytes`, and a delete.
-- **Why:** Both calls receive the same `rotated` dimensions, `ORIENTATION_NORMAL`, and no source
-  EXIF, so the two payloads are byte-identical. The second call is pure cache-directory I/O on the
-  serial `ioExecutor`, and it delays the JPEG publication (and the next timelapse tick) for every
-  dual-format shot.
-- **Fix:** Compose the payload once in `saveProcessedStills` (lazily, only if either format is
-  wanted) and pass it to both writers. Keep the per-lane best-effort null semantics. A test can
-  count compositions per dual-format shot. **PMA110 file output:** identical.
+### PR6-6: The AGG5-3 "codec errored" evidence is wider than "the codec failed"
 
-### PR5-6 (Info): `GyroEis` sensor callbacks run on the main looper
+- **Severity / Confidence / Status:** Info / Medium / Confirmed by code read. No device consequence
+  is known.
+- **Where:** `video/VideoRecorder.kt:668-673` (video drain `catch (t: Exception)` →
+  `videoCodecErrorLatched.set(true)`) and `:810-814` (audio worker `catch` →
+  `audioCodecErrorLatched.set(true)`). Compare the KDoc at `:209-216` and `:2172-2180` ("its drain
+  thread ended on a thrown codec/muxer call").
+- **Why:** The audio worker also throws on a mid-REC negative `AudioRecord.read` (the AGG3-2
+  video-only degrade) while the AAC codec is healthy and Executing. The video drain catch also covers
+  a muxer `writeSampleData` throw, where the codec is healthy too. Both set the latch. If a later
+  `stop()` on such a codec throws an `IllegalStateException` for some other reason, it is classified
+  `SkippedToRelease` instead of `Failed`. That is the only classification branch AGG5-3 meant to
+  open only for a codec in the documented Error state. Today the consequence is benign, because a
+  healthy codec's `stop()` does not throw. But the latch no longer means what the decision table and
+  its tests assume.
+- **Fix:** Latch only on a throw from a `MediaCodec` call. Either wrap the
+  `dequeueOutputBuffer`/`queueInputBuffer`/`getOutputBuffer`/`releaseOutputBuffer` calls, or catch
+  `MediaCodec.CodecException` / an `IllegalStateException` raised by those calls specifically. Leave
+  `audioReadFailure` and muxer throws unlatched. Alternatively, amend the KDoc to state the wider
+  rule.
 
-- **Where:** `stab/GyroEis.kt:91` and `:146`: `registerListener(this, sensor, period)` with no
-  `Handler`. `SAMPLING_PERIOD_US = 60_000` (`:302`); `GYRO_SAMPLING_PERIOD_US = 20_000` (`:317`).
-- **Why:** The work is tiny (a few float operations, plus one short `rotationLock` section shared
-  with the analysis executor). It is still a 50 Hz main-thread wakeup source whenever
-  motion-inversion tracking is armed, on top of the Compose frame loop. This is noted for
-  completeness only, and is not a defect today.
-- **Fix (optional):** register on a dedicated `HandlerThread` or on the GL handler. The fields are
-  already `@Volatile` or lock-guarded for cross-thread readers.
+## Final sweep (no new finding)
 
-## Cycle-4 delta: threading and perf observations (clean)
-
-| Site | Observation | Verdict |
-|---|---|---|
-| `ProcessAdmissionSignal.refresh` (AGG4-35), `ProcessAdmissionSignal.kt:44-75` | `read()` runs under the signal lock and takes both owners' locks. Lock order is signal → owner. Every `notifyAvailability` runs outside the owner lock (`MediaStoreWriter.kt:2154-2158, 2245-2252, 2275-2290`), and listeners run outside the signal lock | No inversion |
-| `ChainCharacteristicsReread` (AGG4-37), `CameraController.kt:2042, 2308` | Armed on the camera handler and consumed in `tryComplete`. It is an `AtomicBoolean`. A head whose completion never arrives leaves it armed for the next continuation (one extra Binder read at most) | OK |
-| `controlsApplyPlan` NO_OP (AGG4-34), `ManualControls.kt:737-745` | An EV-only delta under admitted manual AE changes no wire key. `controls` is still stored, so the next rebuild and stills carry it | OK; saves about 180 ms per 40 ms tick |
-| `zoomEaseTicker` (AGG4-20), `CameraViewModel.kt:2362-2371` | `removeCallbacks` before `post` ends the double 30 Hz chain | OK |
-| `FamilyDeletionMarkerCapacityOwner` (AGG4-26) | Queue sized workers + backlog | Fixed. Sibling left open: PR5-3 |
-| Status plate (AGG4-65), `CameraViewModel.kt:1810-1886` | Every `deferredProgressStatus` read and write happens under the gate monitor, including the timer expiry and `clearProgressStatus` | OK |
-| `recallVideoStreamSizeChanges` (AGG4-8), `CameraEngine.kt:3038-3042` | Pure in-memory caps lookup on `setupExecutor`; no Binder call | OK |
-| `probeMp4MoovPresence` (AGG4-3/4), `MediaStoreWriter.kt:2827-2867` | Reads 8- or 16-byte headers only, bounded at 4096 boxes, on recovery or the recording-storage worker | OK |
-| `ZoomRuler` (AGG4-73), `ManualDials.kt:1255-1280` | Pure `zoomRulerScale` per recomposition; drag events still go through the VM coalescer | OK |
-
-## Final sweep (commonly missed): clean or already tracked
-
-- Log quota: every raw `android.util.Log` site (`MainActivity.kt:781`; `CameraEngine.kt:4967, 5631,
-  5768, 6788, 7441, 7499`; `GlPipeline.kt:567, 909`; `FlipRenderer.kt:342`;
-  `CameraViewModel.kt:1161`) is still behind `recurringDiagnosticAllowed`,
-  `processDiagnosticLogBudget`, a change gate, or `DEBUG`. The new `StillCapturePipeline`
-  warnings go through `DiagnosticLog` and fire once per shot at most.
-- GL hot path: no new per-frame allocation in `drawFrame`. The AGG4-18 helper allocates nothing.
-  The FrameGap and finder-failure logs remain change-gated.
-- ViewModel publications: the analysis, audio-level, AF and focus-distance paths are unchanged.
-  Quantization and consumer gates are intact.
-- Engine monitor: the new cycle-4 code (`handlePreflightFailure`, `scheduleColdStartRetry`
-  outcome, `applyResolvedCameraRoute` early return) makes no Binder or callback calls under
-  `synchronized(this)`. The `cameraOpWithheld` AppOps query still runs outside the monitor
-  (`CameraEngine.kt:3628-3645`).
-- Already tracked, not re-reported: PERF3-1 (encoder waits behind preview swap), PERF4-4 /
-  AGG4-36 (warm relaunch reruns recovery), AGG4-34 WB/tint pacing half, MRG4-5 (program target
-  during gesture), PERF3-6 (YUV intermediate JPEG), P13 (audio-loop allocations).
-
-## Files covered
-
-- camera: `CameraEngine.kt` (invalidation, DNG dispatch and owner retirement, BURST/AEB/timelapse
-  chains, preflight retry, recall fast path, route apply, failure path, engine-monitor sites),
-  `CameraController.kt` (cycle-4 diff: chain chars reread, controls apply plan, session config),
-  `DngPreCaptureAllocation.kt`, `RecordingPreNativeAllocation.kt` (attempt retire/late value,
-  dispatcher), `FamilyDeletionMarkerDispatcher.kt`, `StillPublicationDispatcher.kt`,
-  `RetainedStillDiscardDispatcher.kt`, `RecordingStorageDispatcher.kt`, `ManualControls.kt`
-  (apply-plan classifiers), `CameraState.kt` (publication gate, computed format getters),
-  `LaunchMediaRecoveryCoordinator.kt` (diff)
-- gl: `GlPipeline.kt` (drawFrame, preview/encoder output lifecycle, orphan containment,
-  `RetainedOutputs`), `FlipRenderer.kt` / `FocusDetail.kt` / `MotionInversion.kt` (diffs)
-- storage: `MediaStoreWriter.kt` (admission signal, rejected/identity owners, moov walk, video
-  verdicts)
-- capture: `StillCapturePipeline.kt`, `HeifExif.kt`, `StillSnapshot.kt`
-- video: `VideoRecorder.kt` (diff)
-- ui: `CameraViewModel.kt` (engine callbacks, status plate, momentary holds, zoom ease),
-  `MomentaryHold.kt`, `CameraScreen.kt` (diff, state collection), `controls/ManualDials.kt`,
-  `controls/RulerAccessibility.kt`, `ZoomMath.kt`, `overlays/Overlays.kt` (diff),
-  `ViewModelMediaDeleteDispatcher.kt`
-- root/other: `ProcessAdmissionSignal.kt`, `AudioDenialReason.kt`, `MainActivity.kt` (key
-  diagnostics), `stab/GyroEis.kt`
+- **Per-frame callback** (`CameraController.kt:1072-1213`): unchanged apart from the `android.util.Log`
+  aliasing. Every row is gated before string building. ZoomTrace and 3A are change-gated and charged
+  once (AGG5-9 holds).
+- **GL draw/readback:** the per-readback allocations are the `digitalGainDisplayLut` 256-int LUT
+  (only when gain > 1) and four 256-bin histogram arrays, about 5 KB at about 6 Hz. That is
+  negligible and unchanged. The busy-gate ordering of `bytes` holds.
+- **StatusPlate** (`CameraViewModel.kt:1992-2063`): `publishStatus` now always calls
+  `_state.update`. `CameraUiState` equality suppresses no-op emissions, and status traffic is
+  event-rate, not frame-rate. Timers use `postAtTime` under the status monitor, and a re-arm happens
+  only on restore. No leak.
+- **Executor inventory:** no new executor or thread in cycle 5. The `CodecInventoryLoader` retry sleeps
+  (250 + 500 ms) run on `vm-io` ahead of the latest-capture restore. That only matters on the
+  already-failing path (see PR6-2).
+- **AGG5-5 order:** `cancelDngPreCaptureAllocations` now runs after the monitor clears
+  `acceptedCameraSession`, so a settle's `fire()` sees `acceptedSessionIsCurrent == false`.
+  `DngPreCaptureAllocation.start` returns SHUTDOWN for a cancelled attempt, and the dispatched body
+  returns for a retired one. Closed.
+- **AGG5-1/26 resume rebind:** `previewReady` is not cleared by `pause()`, so the ordinary foreground
+  return takes neither branch, and the "byte-identical" claim holds. A rebind racing an in-flight
+  bind is the documented same-surface swap.
