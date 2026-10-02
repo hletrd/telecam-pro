@@ -15,21 +15,26 @@ class StillSnapshotYuvTest {
     fun nv21Snapshot_dropsPixelsOnFailureAndSuccess() {
         var encodes = 0
         val failing = StillSnapshot.Nv21(ByteArray(12), 4, 2, compress = { _, _, _, _ -> encodes++; false })
-        assertThrows(IllegalStateException::class.java) { failing.jpegBytes() }
-        val second = assertThrows(IllegalStateException::class.java) { failing.jpegBytes() }
-        assertEquals("StillSnapshot.jpegBytes is single-use", second.message)
+        assertThrows(IllegalStateException::class.java) { failing.jpeg() }
+        val second = assertThrows(IllegalStateException::class.java) { failing.jpeg() }
+        assertEquals("StillSnapshot.jpeg is single-use", second.message)
         assertEquals(1, encodes)
 
         val throwing = StillSnapshot.Nv21(ByteArray(12), 4, 2, compress = { _, _, _, _ -> error("encoder died") })
-        assertThrows(IllegalStateException::class.java) { throwing.jpegBytes() }
+        assertThrows(IllegalStateException::class.java) { throwing.jpeg() }
         assertEquals(
-            "StillSnapshot.jpegBytes is single-use",
-            assertThrows(IllegalStateException::class.java) { throwing.jpegBytes() }.message,
+            "StillSnapshot.jpeg is single-use",
+            assertThrows(IllegalStateException::class.java) { throwing.jpeg() }.message,
         )
 
         val ok = StillSnapshot.Nv21(ByteArray(12), 4, 2, compress = { _, _, _, out -> out.write(byteArrayOf(9)); true })
-        assertArrayEquals(byteArrayOf(9), ok.jpegBytes())
-        assertThrows(IllegalStateException::class.java) { ok.jpegBytes() }
+        // AGG6-35: the encode is handed over IN PLACE — the pre-sized (width*height) backing array
+        // and its count, byte-identical to the old toByteArray() copy but without making it.
+        val encoded = ok.jpeg()
+        assertEquals(1, encoded.length)
+        assertEquals(4 * 2, encoded.bytes.size)
+        assertArrayEquals(byteArrayOf(9), encoded.bytes.copyOf(encoded.length))
+        assertThrows(IllegalStateException::class.java) { ok.jpeg() }
     }
 
     @Test

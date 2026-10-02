@@ -6012,14 +6012,15 @@ class CameraEngine internal constructor(
                                 val queued = runCatching {
                                     ioExecutor.execute {
                                         try {
-                                            val bytes = runCatching { processedSnapshot.jpegBytes() }
+                                            val encoded = runCatching { processedSnapshot.jpeg() }
                                                 .onFailure { Log.e("CameraEngine", "Still JPEG encode failed", it) }
                                                 .getOrNull()
-                                            if (bytes == null) {
+                                            if (encoded == null) {
                                                 reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                                             } else {
                                                 stillPipeline.saveProcessedStills(
-                                                    bytes,
+                                                    encoded.bytes,
+                                                    encoded.length,
                                                     spec,
                                                     exifShot,
                                                     wantHeif = formats.heif,

@@ -166,7 +166,8 @@ internal class StillCapturePipeline(
     }
 
     /**
-     * ONE decode → center-crop to [ShotSpec.aspectRatio] (processed stills only; [saveDng]'s RAW
+     * The JPEG is the first [length] bytes of [bytes] (a YUV snapshot hands over its encoder's
+     * backing array, AGG6-35). ONE decode → center-crop to [ShotSpec.aspectRatio] (processed stills only; [saveDng]'s RAW
      * output always stays full-frame) → rotate pass feeding BOTH processed encoders (PERF4-5): the
      * old per-format lanes each decoded/cropped/rotated the SAME bytes into a ~50 MB ARGB
      * intermediate, so a HEIF+JPEG shot paid the whole pixel pipeline twice serially on
@@ -175,6 +176,7 @@ internal class StillCapturePipeline(
      */
     fun saveProcessedStills(
         bytes: ByteArray,
+        length: Int,
         spec: ShotSpec,
         exifShot: ExifShot,
         wantHeif: Boolean,
@@ -187,7 +189,10 @@ internal class StillCapturePipeline(
             // HEIF is unavailable here — format normalization already collapsed it, and running it
             // anyway would be the exact 200MP decode this branch exists to avoid.
             if (wantJpeg) {
-                runCatching { writePassthroughJpeg(bytes, spec, exifShot) }
+                // The passthrough source is a HAL JPEG snapshot, whose array IS the JPEG; the trim
+                // is a guard, never a copy on that path.
+                val exact = if (length == bytes.size) bytes else bytes.copyOf(length)
+                runCatching { writePassthroughJpeg(exact, spec, exifShot) }
                     .onFailure {
                         Log.e("StillCapturePipeline", "JPEG save failed", it)
                         emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
@@ -198,14 +203,14 @@ internal class StillCapturePipeline(
         var decoded: Bitmap? = null
         var rotated: Bitmap? = null
         try {
-            val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            val d = BitmapFactory.decodeByteArray(bytes, 0, length)
             if (d == null) {
                 // decodeByteArray returns null (it does not throw) on a corrupt/truncated JPEG — a
                 // StillSnapshot YUV→JPEG repack fault or a garbage HAL blob. Every other failure edge
                 // here logs; this one used to toast "Photo save failed" with NO app line, the exact
                 // signature CLAUDE.md names for swallowed save defects (AGG2-22). One reserved row
                 // per failed shot.
-                Log.e("StillCapturePipeline", "processed decode returned null (${bytes.size} bytes, hiRes=${spec.hiRes})")
+                Log.e("StillCapturePipeline", "processed decode returned null ($length bytes, hiRes=${spec.hiRes})")
                 emitStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                 return
             }

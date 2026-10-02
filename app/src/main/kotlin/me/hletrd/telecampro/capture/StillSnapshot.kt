@@ -4,7 +4,6 @@ import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.media.Image
-import java.io.ByteArrayOutputStream
 
 /**
  * A still frame snapshotted OFF its (short-lived) [Image] so the save pipeline can run later on an
@@ -15,7 +14,7 @@ import java.io.ByteArrayOutputStream
  *    the plane ByteBuffers (row-wise bulk-read fast paths in [packYuv420ToNv21] — the earlier
  *    fully elementwise pack was ~19M bounds-checked ops per still, NOT a cheap memcpy, and it
  *    stalled 3A/zoom during bursts; the later per-plane byte[] snapshot phase doubled the copy
- *    work and the transient to ~44 MB), and the JPEG encode happens lazily in [jpegBytes] on the
+ *    work and the transient to ~44 MB), and the JPEG encode happens lazily in [jpeg] on the
  *    caller's io thread — never on the camera thread, where ~200 ms of encode would stall preview
  *    and 3A.
  *
@@ -24,16 +23,24 @@ import java.io.ByteArrayOutputStream
  */
 sealed class StillSnapshot {
     /**
-     * Compressed JPEG bytes of the shot; potentially expensive — call on an io thread. SINGLE-USE:
+     * The shot's compressed JPEG: the first [length] bytes of [bytes]. For the NV21 variant [bytes]
+     * is the encoder's own pre-sized backing array, read IN PLACE (AGG6-35, like the processed
+     * lane's [EncodedJpegBuffer] since AGG5-34): `toByteArray()` copied the whole 6–12 MB encode,
+     * so ~2× the encoded size was live on the io thread for every logical-route still.
+     */
+    class Encoded internal constructor(val bytes: ByteArray, val length: Int)
+
+    /**
+     * Compressed JPEG of the shot; potentially expensive — call on an io thread. SINGLE-USE:
      * the NV21 variant drops its ~19 MB pixel copy after encoding (perf review #3c — the io lambda
      * that calls this keeps the snapshot object reachable through the whole multi-second HEIF/JPEG
      * encode, so an internal release is what actually frees the pixels). A second call throws.
      */
-    abstract fun jpegBytes(): ByteArray
+    abstract fun jpeg(): Encoded
 
     private class Jpeg(private val bytes: ByteArray) : StillSnapshot() {
         // No internal release: the retained state IS the returned array, nothing extra to drop.
-        override fun jpegBytes(): ByteArray = bytes
+        override fun jpeg(): Encoded = Encoded(bytes, bytes.size)
     }
 
     internal class Nv21(
@@ -41,24 +48,24 @@ sealed class StillSnapshot {
         private val width: Int,
         private val height: Int,
         // Host-test seam only; production always compresses through YuvImage.
-        private val compress: (ByteArray, Int, Int, ByteArrayOutputStream) -> Boolean = { pixels, w, h, out ->
+        private val compress: (ByteArray, Int, Int, java.io.OutputStream) -> Boolean = { pixels, w, h, out ->
             YuvImage(pixels, ImageFormat.NV21, w, h, null)
                 .compressToJpeg(Rect(0, 0, w, h), INTERMEDIATE_QUALITY, out)
         },
     ) : StillSnapshot() {
         private var pixels: ByteArray? = nv21
 
-        override fun jpegBytes(): ByteArray {
-            val nv21 = checkNotNull(pixels) { "StillSnapshot.jpegBytes is single-use" }
+        override fun jpeg(): Encoded {
+            val nv21 = checkNotNull(pixels) { "StillSnapshot.jpeg is single-use" }
             // Dropped on EVERY exit (AGG3-62 / FD3-3): a failed compress used to keep the ~19 MB
             // copy reachable for as long as the failing io lambda held this snapshot, and the call
             // is single-use either way — a retry would only fail the same pixels again.
             pixels = null
             // width*height (~12.5 MB) start size: a 12.5 MP q97 JPEG typically lands 6–12 MB, so
             // the earlier width*height/2 guaranteed at least one internal array doubling + copy.
-            val out = ByteArrayOutputStream(width * height)
+            val out = EncodedJpegBuffer(width * height)
             check(compress(nv21, width, height, out)) { "YUV→JPEG compress failed" }
-            return out.toByteArray()
+            return Encoded(out.buffer(), out.size())
         }
     }
 
