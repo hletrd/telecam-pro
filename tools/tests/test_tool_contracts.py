@@ -1122,12 +1122,12 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         def remove_e2_from_dashboard(root: Path) -> None:
             path = root / "docs/FIELD_CHECKS.md"
             text = path.read_text(encoding="utf-8")
-            # E4 is the current terminal dashboard entry. Keep it intact while removing only E2 so
+            # F1 is the current terminal dashboard entry. Keep it intact while removing only E2 so
             # this mutation continues to prove one missing open body check, and also fails fast if a
             # future field-check addition leaves this fixture stale again.
-            marker = " · E2 ☐ · E3 ☐ · E4 ☐."
+            marker = " · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘."
             self.assertIn(marker, text)
-            path.write_text(text.replace(marker, " · E3 ☐ · E4 ☐.", 1), encoding="utf-8")
+            path.write_text(text.replace(marker, " · E3 ☐ · E4 ☐ · F1 ⊘.", 1), encoding="utf-8")
 
         result, private_docs_present = run_documentation_gate_from_committed_export(
             remove_e2_from_dashboard,
@@ -1139,6 +1139,27 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             "FAIL  field dashboard names every body check exactly and in order",
             result.stdout,
         )
+        self.assertIn(
+            "FAIL  field dashboard open membership and prose count match the body",
+            result.stdout,
+        )
+
+    def test_committed_export_rejects_a_host_only_entry_dashboarded_as_passed(self) -> None:
+        # MRG4-6: a change with no device procedure is listed as `⊘ HOST-ONLY`; the dashboard may
+        # neither drop it nor report it green.
+        def mark_host_only_passed(root: Path) -> None:
+            path = root / "docs/FIELD_CHECKS.md"
+            text = path.read_text(encoding="utf-8")
+            marker = " · F1 ⊘."
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, " · F1 ✅.", 1), encoding="utf-8")
+
+        result, private_docs_present = run_documentation_gate_from_committed_export(
+            mark_host_only_passed,
+        )
+
+        self.assertEqual(private_docs_present, ())
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
             "FAIL  field dashboard open membership and prose count match the body",
             result.stdout,

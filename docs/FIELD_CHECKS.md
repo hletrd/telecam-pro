@@ -3,13 +3,16 @@
 The verifications that need a device in your hands, plus the device checks a host test cannot
 close. This ledger is exhaustive: every open device claim in `CLAUDE.md` or `docs/ARCHITECTURE.md`
 has an entry here, including the two (D2, E4) that are checkable over ADB but have not been run.
+A change whose device effect has NO field procedure is listed too (section F, `⊘ HOST-ONLY`), so
+its absence from the open list is a recorded fact rather than an omission.
 
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐.
-Nine remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
-front route, **A5** needs a sustained front pseudo-ZSL soak, **D1** needs an off-axis sound source,
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘.
+Ten remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
+front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE capture
+pair plus a FrameGap read during a pinch, **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, and **E1/E2/E3/E4** need real MediaProvider ownership,
 system-consent, reset/reindex, and pending-expiry behavior. B1 closed the rotation
 work end to end; C1 confirmed the afocal
@@ -128,6 +131,32 @@ or camera errors, memory/gralloc use stays bounded without growing across the so
 thermal change is recorded rather than guessed, and the post-soak still completes and publishes.
 Record the exact measurements even when they pass. A failure keeps pseudo-ZSL disabled for that
 route/device until measured admission evidence exists.
+
+### A6. Photo-P handheld shutter follows the effective focal — ◯ OPEN 2026-10-02
+
+Cycle 4 (A.20) made photo PROGRAM's handheld target 1/(EFFECTIVE focal): one `effectiveEquivFocalMm`
+now feeds the OSD focal, the program line, and the focus-detail exposure gate, so the target moves
+with zoom inside a lens band. That deliberately changes PMA110 exposure at any zoom above 1×. It
+also means every zoom step can re-center the app-side program shutter (≤0.35 stop per loop tick,
+brightness-neutral), and each re-center is a sensor fast-path submit that this HAL pays for with a
+~180 ms repeating-request swap — the stutter class the zoom work removed (MRG4-5). Whether that
+shows up during a gesture has not been measured; do not change the program target for it until it
+has.
+
+- Rear camera, **PHOTO**, exposure **PROGRAM**, flash OFF, TELE with the teleconverter declared
+  (the glass need not be mounted: the rule reads the declared converter). Ordinary room light, so
+  ISO is not railed at either end — record the ISO, because a railed ISO lets the program line slide
+  the shutter by design.
+- At TC local 1× and again at local 4×, note the OSD focal, let AE settle, take one still, and read
+  its EXIF `ExposureTime` / `ISOSpeedRatings` / `FocalLengthIn35mmFilm`.
+- FrameGap during a pinch: with the debug APK, pinch smoothly from TC local 1× to 4× and back three
+  times in PROGRAM, then repeat the same pinches in **MANUAL** (fixed exposure, the control). Keep
+  the bounded `FrameGap` summaries (`count`, `maxMs`, 200–399/400–999/≥1000 ms buckets) for each run.
+
+**Pass:** the OSD focal and EXIF 35 mm focal agree, and EXIF `ExposureTime` is ≈1/(that focal) at
+each zoom (≈4× shorter at local 4× than at 1×) while ISO is unrailed. The PROGRAM pinch shows no
+more ≥200 ms gaps than the MANUAL control. Extra gaps in PROGRAM are a fail that reopens MRG4-5
+(hold the program target constant while a zoom gesture is active); record both runs' summaries.
 
 ---
 
@@ -341,6 +370,27 @@ backing file to `.pending-<newDateExpires>-<DISPLAY_NAME>`, so `_data` changes w
 name, `relative_path`, and row id stay put. A changed display name or `relative_path` would break
 the frozen discard identity and is a failure. An unchanged `date_expires` means the re-arm does not
 hold on that build and the retained-row lifetime is still about one week.
+
+---
+
+## F. Host-only — no device procedure
+
+### F1. EGL texture-acquisition failure with a failed preview detach — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 4 (A.22) gave the texture-acquisition branch the containment the draw/swap branch already
+had: when acquisition fails and the preview DETACH also fails, the poisoned preview EGL surface is
+orphaned (`orphanPoisonedPreviewOutput`, destroyed later by the checked orphan sweep) and an active
+encoder owner is failed, instead of retaining a poisoned owner for same-surface retries. Reaching
+that branch needs `updateTexImage` to fail AND an `eglMakeCurrent` detach to fail on the same frame.
+No debug fault hook exists to inject either on a device, and an ordinary session cannot provoke
+them on demand, so there is **no device procedure** for this change. Its evidence is the host
+coverage of the shared helper (all three branches); it is listed here so the open count above is a
+measured fact, not a gap.
+
+**Reopen when:** a debug-only fault hook for texture acquisition / EGL detach is added, or a field
+log shows a preview loss with an acquisition failure. Then: inject the failure mid-preview and once
+mid-REC, and pass when the preview recovers through the bounded same-surface retry (or reaches the
+terminal reopen status) and the recording finalizes instead of freezing.
 
 ---
 

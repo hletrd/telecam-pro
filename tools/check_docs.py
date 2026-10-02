@@ -1294,7 +1294,7 @@ check(
 # and every OPEN/HALF DONE body obligation must be represented by an open/partial dashboard symbol.
 status_match = re.search(r"^\*\*Status \([^)]+\):\*\* (.+)\.$", field_checks, re.MULTILINE)
 dashboard_entries = (
-    re.findall(r"\b([A-Z]\d+)\s+(✅|◐|☐|◯)", status_match.group(1))
+    re.findall(r"\b([A-Z]\d+)\s+(✅|◐|☐|◯|⊘)", status_match.group(1))
     if status_match else []
 )
 body_headings = re.findall(r"^### ([A-Z]\d+)\. (.+)$", field_checks, re.MULTILINE)
@@ -1307,7 +1307,11 @@ normalized_dashboard_entries = [
 expected_body_entries = [
     (
         identity,
-        "◐" if "◐ HALF DONE" in heading else "☐" if "◯ OPEN" in heading else "✅",
+        # A `⊘ HOST-ONLY` entry records a change with no device procedure: listed, never open.
+        "◐" if "◐ HALF DONE" in heading
+        else "☐" if "◯ OPEN" in heading
+        else "⊘" if "⊘ HOST-ONLY" in heading
+        else "✅",
     )
     for identity, heading in body_headings
 ]
