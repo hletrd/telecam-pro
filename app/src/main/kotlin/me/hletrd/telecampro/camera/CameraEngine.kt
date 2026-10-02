@@ -428,6 +428,9 @@ class CameraEngine internal constructor(
     // True only while the GL generation exists but has not created its camera input Surface yet.
     // Optics intents during this window remain pending; the input callback converges on the latest.
     @Volatile private var glInputPending = false
+    // The optics generation whose open the GL input-ready continuation queued (AGG6-19); cleared by
+    // pause(). Resume's reopen task skips a generation already owned by that open.
+    private val inputReadyOpenGeneration = java.util.concurrent.atomic.AtomicLong(NO_INPUT_READY_OPEN)
     // True between pause() and resume(). openCamera() honors it so a camera open queued during
     // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
     // launched behind the keyguard, where onStop lands right as the session would configure.
@@ -2117,6 +2120,10 @@ class CameraEngine internal constructor(
         resolveInitialCameraRouteAvailability()
         // Capture route + token after GL input exists. A newer intent invalidates it.
         val desired = currentOpticsReconfiguration()
+        // Published BEFORE the open is queued, so resume's own reopen task — queued earlier on the
+        // same serial lane but possibly dequeued after this — sees that this generation's open is
+        // already owned (AGG6-19).
+        inputReadyOpenGeneration.set(desired.transaction.generation)
         reconfigureCamera(
             desired.overrideId,
             desired.transaction,
@@ -7825,6 +7832,9 @@ class CameraEngine internal constructor(
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
+        // A queued input-ready open sees `paused` and returns without a controller; the next
+        // resume's reopen must not mistake that abandoned generation for a pending owner.
+        inputReadyOpenGeneration.set(NO_INPUT_READY_OPEN)
         startupTraceOwnership.revoke()
         cancelRecorderSetupReplay()
         retirePreNativeRecordingAllocation()
@@ -7982,6 +7992,12 @@ class CameraEngine internal constructor(
             resolveInitialCameraRouteAvailability()
             if (runDeferredRouteTopologyConvergence(startupTraceOwner)) return@execute
             val desired = currentOpticsReconfiguration()
+            // The missing-input re-bind above can complete the whole GL input window before this
+            // task dequeues; the input-ready continuation then queued THIS generation's open
+            // behind us (AGG6-19). Converging it a second time invalidated Ready and dual-opened
+            // the id that open was about to open — a close/reopen blackout and a same-device double
+            // open on the HAL. That open also adopted this resume's trace owner, so it stays armed.
+            if (inputReadyOpenGeneration.get() == desired.transaction.generation) return@execute
             reconfigureCamera(
                 desired.overrideId,
                 desired.transaction,
@@ -8482,6 +8498,7 @@ class CameraEngine internal constructor(
         // Matches the UI's bounded late-sibling model with extra headroom for still saves that outlive
         // rapid review deletion. Once a retained URI is routed here, its DISCARD marker is durable.
         private const val MAX_RETAINED_STILL_DELETE_TOMBSTONES = 32
+        private const val NO_INPUT_READY_OPEN = Long.MIN_VALUE
 
         // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
         // took over the gesture exposure trade; it was unreferenced and its comment still asserted

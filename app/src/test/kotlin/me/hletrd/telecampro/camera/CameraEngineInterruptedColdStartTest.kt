@@ -197,6 +197,38 @@ class CameraEngineInterruptedColdStartTest {
         )
     }
 
+    // AGG6-19: the input-ready continuation already queued this generation's open; resume's own
+    // reopen must not converge it a second time (Ready invalidation + same-device dual open).
+    @Test
+    fun `resume does not re-converge a generation the input-ready open owns`() {
+        val engine = engine()
+        retainSurface(engine)
+        installInput(engine)
+        setField(engine, "started", true)
+        setField(engine, "paused", true)
+        setField(engine, "previewReady", true)
+        val generation = (getField(engine, "opticsIntentGeneration") as AtomicLong).get()
+        (getField(engine, "inputReadyOpenGeneration") as AtomicLong).set(generation)
+        val session = getField(engine, "cameraSessionGeneration") as AtomicLong
+        val before = session.get()
+
+        engine.resume()
+        drainSetup(engine)
+
+        assertEquals("no second Ready invalidation for the owned generation", before, session.get())
+    }
+
+    @Test
+    fun `pause forgets an abandoned input-ready open`() {
+        val engine = engine()
+        val marker = getField(engine, "inputReadyOpenGeneration") as AtomicLong
+        marker.set((getField(engine, "opticsIntentGeneration") as AtomicLong).get())
+
+        engine.pause()
+
+        assertTrue(marker.get() != (getField(engine, "opticsIntentGeneration") as AtomicLong).get())
+    }
+
     @Test
     fun `rebind predicate is false only for a live input with a presented preview`() {
         assertFalse(resumePreviewRebindWanted(inputSurfacePresent = true, previewReady = true))
