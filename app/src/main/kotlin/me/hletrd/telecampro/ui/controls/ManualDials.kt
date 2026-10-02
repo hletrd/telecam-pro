@@ -1128,7 +1128,11 @@ internal fun isoStops(lower: Int, upper: Int, stepEv: Float): IntArray {
     if (lower >= upper || stepEv <= 0f) return intArrayOf(lower)
     val set = sortedSetOf(lower, upper)
     val ln2 = Math.log(2.0)
-    val kLo = Math.ceil(Math.log(lower / 100.0) / ln2 / stepEv).toInt()
+    // AGG5-32: the bounds are the RAW advertised SENSITIVITY_RANGE. A malformed HAL lower bound of 0
+    // made log(0) = -Infinity → ceil().toInt() = Int.MIN_VALUE → ~2^31 iterations in composition (an
+    // ANR). Only a non-positive bound's CANDIDATE window starts at ISO 1 (every positive bound is
+    // byte-identical); the raw bound itself stays in [set].
+    val kLo = Math.ceil(Math.log((if (lower > 0) lower else 1) / 100.0) / ln2 / stepEv).toInt()
     val kHi = Math.floor(Math.log(upper / 100.0) / ln2 / stepEv).toInt()
     for (k in kLo..kHi) {
         val raw = 100.0 * Math.pow(2.0, k * stepEv.toDouble())
@@ -1148,7 +1152,10 @@ internal fun shutterStops(lower: Long, upper: Long, stepEv: Float): LongArray {
     val set = sortedSetOf(lower, upper)
     val ln2 = Math.log(2.0)
     val anchor = 1_000_000_000.0
-    val kLo = Math.ceil(Math.log(lower / anchor) / ln2 / stepEv).toInt()
+    // AGG5-32: same -Infinity window as [isoStops] for a non-positive advertised EXPOSURE_TIME lower
+    // bound. Only a non-positive bound's candidate window starts at 1 µs (no real shutter is faster);
+    // every positive bound is byte-identical and the raw bound stays.
+    val kLo = Math.ceil(Math.log((if (lower > 0L) lower else SHUTTER_STOP_FLOOR_NS) / anchor) / ln2 / stepEv).toInt()
     val kHi = Math.floor(Math.log(upper / anchor) / ln2 / stepEv).toInt()
     for (k in kLo..kHi) {
         val ns = Math.round(anchor * Math.pow(2.0, k * stepEv.toDouble()))
@@ -1156,6 +1163,8 @@ internal fun shutterStops(lower: Long, upper: Long, stepEv: Float): LongArray {
     }
     return set.toLongArray()
 }
+
+private const val SHUTTER_STOP_FLOOR_NS = 1_000L
 
 private fun shutterStops(range: Range<Long>, stepEv: Float): LongArray = shutterStops(range.lower, range.upper, stepEv)
 

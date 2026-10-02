@@ -103,4 +103,29 @@ class DialStopsTest {
             isoStops(25, 102400, 1f).toList(),
         )
     }
+
+    // AGG5-32 / DB5-12: a malformed HAL advertising a ZERO (or negative) lower bound made
+    // `log(0 / anchor)` = -Infinity, whose ceil().toInt() is Int.MIN_VALUE, so `kLo..kHi` ran about
+    // 2^31 iterations inside composition (an ANR). The candidate window is now finite; both raw
+    // bounds stay in the result exactly as before.
+    @Test(timeout = 2_000)
+    fun `non-positive lower bounds return a finite ladder that keeps both bounds`() {
+        val iso = isoStops(0, 3200, 1f / 3f)
+        assertEquals(0, iso.first())
+        assertEquals(3200, iso.last())
+        assertTrue(iso.size < 64)
+        assertTrue(iso.contains(100) && iso.contains(1600))
+        val negIso = isoStops(-5, 800, 1f)
+        assertEquals(-5, negIso.first())
+        assertEquals(800, negIso.last())
+
+        val shutter = shutterStops(0L, 1_000_000_000L, 1f / 3f)
+        assertEquals(0L, shutter.first())
+        assertEquals(1_000_000_000L, shutter.last())
+        assertTrue(shutter.size < 128)
+        assertTrue(shutter.contains(500_000_000L))
+        val negShutter = shutterStops(-1L, 250_000_000L, 1f)
+        assertEquals(-1L, negShutter.first())
+        assertEquals(250_000_000L, negShutter.last())
+    }
 }
