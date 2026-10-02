@@ -86,8 +86,18 @@ internal fun heifExifDimensionAttributes(
  *
  * Only the first [length] bytes are the JPEG (AGG5-34): the processed lane hands over an encoder's
  * internal buffer, whose capacity exceeds its count, instead of a `toByteArray()` copy.
+ *
+ * [privacyStrip] is the HAL passthrough lane's plan (AGG6-14): the header is not ours, so it keeps
+ * only the allow-listed segments a decoder or colour pipeline needs — JFIF/JFXX APP0, APP2 (ICC
+ * profile, MPF) and Adobe APP14 — and drops EVERY other APPn, including a vendor XMP APP1 that can
+ * carry `exif:GPS*` or a serial, and every COM (free text). Non-APP segments (DQT, DHT, SOF, …)
+ * are kept as always.
  */
-internal fun exifSplicePlan(jpeg: ByteArray, length: Int = jpeg.size): List<IntRange>? {
+internal fun exifSplicePlan(
+    jpeg: ByteArray,
+    length: Int = jpeg.size,
+    privacyStrip: Boolean = false,
+): List<IntRange>? {
     require(length in 0..jpeg.size) { "JPEG length $length outside its ${jpeg.size}-byte buffer" }
     if (length < 4 || jpeg[0] != 0xff.toByte() || jpeg[1] != 0xd8.toByte()) return null
     val kept = mutableListOf<IntRange>()
@@ -117,7 +127,9 @@ internal fun exifSplicePlan(jpeg: ByteArray, length: Int = jpeg.size): List<IntR
                 val payloadStart = offset + 4
                 val exif = marker == 0xe1 && end - payloadStart >= EXIF_SIGNATURE.size &&
                     EXIF_SIGNATURE.indices.all { index -> jpeg[payloadStart + index] == EXIF_SIGNATURE[index] }
-                if (exif) {
+                val privacyDropped = privacyStrip &&
+                    (marker == 0xfe || (marker in 0xe1..0xef && marker !in PRIVACY_KEPT_APP_MARKERS))
+                if (exif || privacyDropped) {
                     kept += keptStart until offset
                     keptStart = end
                 }
@@ -126,6 +138,26 @@ internal fun exifSplicePlan(jpeg: ByteArray, length: Int = jpeg.size): List<IntR
         }
     }
     return null
+}
+
+/**
+ * The passthrough lane's fail-closed APP1 (AGG6-14): `Exif\0\0` + a little-endian TIFF whose only
+ * IFD0 entry is Orientation — built purely, with no ExifInterface and no cache file, so it exists
+ * exactly when the composer's full payload does not (full cache, an ExifInterface parse/save
+ * failure on a vendor APP1, a refused splice). The HAL's own APP1 is never written in its place:
+ * a sideways-safe image is an acceptable degradation, a leaked location is not.
+ */
+internal fun minimalOrientationExifApp1(orientation: Int): ByteArray {
+    require(orientation in 1..8) { "EXIF orientation $orientation outside 1..8" }
+    return EXIF_SIGNATURE + byteArrayOf(
+        // TIFF header: "II", 42, IFD0 at offset 8.
+        'I'.code.toByte(), 'I'.code.toByte(), 0x2a, 0, 8, 0, 0, 0,
+        // IFD0: one entry — Orientation (0x0112), SHORT (3), count 1, value, padding.
+        1, 0,
+        0x12, 0x01, 3, 0, 1, 0, 0, 0, orientation.toByte(), 0, 0, 0,
+        // No next IFD.
+        0, 0, 0, 0,
+    )
 }
 
 /** True when [payload] is an `Exif\0\0` APP1 body that fits one JPEG segment. */
@@ -195,5 +227,8 @@ internal fun exifApp1WithoutThumbnailIfd(payload: ByteArray): ByteArray? {
 }
 
 private const val MAX_JPEG_SEGMENT_LENGTH = 0xffff
+
+/** APP0 (JFIF/JFXX), APP2 (ICC profile, MPF) and APP14 (Adobe colour transform). */
+private val PRIVACY_KEPT_APP_MARKERS = setOf(0xe0, 0xe2, 0xee)
 
 private val EXIF_SIGNATURE = byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)

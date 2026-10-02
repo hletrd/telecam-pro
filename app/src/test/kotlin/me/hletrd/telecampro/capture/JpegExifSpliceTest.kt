@@ -129,6 +129,7 @@ class JpegExifSpliceTest {
                 encoded = encoded.buffer(),
                 length = encoded.size(),
                 exifPayload = payload,
+                passthroughOrientation = null,
                 onSpliceRefused = { refusals += it },
             ),
         )
@@ -140,16 +141,16 @@ class JpegExifSpliceTest {
 
         // An unspliceable payload: the JPEG prefix verbatim (never the buffer's spare capacity).
         val verbatim = ByteArrayOutputStream()
-        assertTrue(writeJpegOnce({ verbatim }, encoded.buffer(), encoded.size(), byteArrayOf(1, 2), { refusals += it }))
+        assertTrue(writeJpegOnce({ verbatim }, encoded.buffer(), encoded.size(), byteArrayOf(1, 2), null, { refusals += it }))
         assertArrayEquals(trimmed, verbatim.toByteArray())
         assertEquals(1, refusals.size)
         // No payload at all: verbatim, no refusal row.
         val plain = ByteArrayOutputStream()
-        assertTrue(writeJpegOnce({ plain }, encoded.buffer(), encoded.size(), null, { refusals += it }))
+        assertTrue(writeJpegOnce({ plain }, encoded.buffer(), encoded.size(), null, null, { refusals += it }))
         assertArrayEquals(trimmed, plain.toByteArray())
         assertEquals(1, refusals.size)
         // No stream: nothing written, reported to the caller.
-        assertFalse(writeJpegOnce({ null }, encoded.buffer(), encoded.size(), payload, { refusals += it }))
+        assertFalse(writeJpegOnce({ null }, encoded.buffer(), encoded.size(), payload, null, { refusals += it }))
     }
 
     @Test
@@ -437,6 +438,122 @@ class JpegExifSpliceTest {
             val start = offset.toInt()
             if (start < 0 || start + count > bytes.size) null else bytes.copyOfRange(start, start + count)
         }
+
+    // AGG6-14 (SR6-3, TE6-2): the strip is a property of the bytes written. A passthrough whose EXIF
+    // composition failed (null payload) or whose payload the splice refused must still drop the
+    // HAL APP1 — and its XMP — and carry an orientation-only APP1 instead.
+    @Test
+    fun `a passthrough whose EXIF composition fails still drops the HAL APP1 and XMP`() {
+        val hal = privateHalJpeg()
+        val xmp = segment(0xe1, "http://ns.adobe.com/xap/1.0/\u0000<x:xmpmeta exif:GPSLatitude=\"37\"/>".toByteArray())
+        val comment = segment(0xfe, "owner: someone".toByteArray())
+        val withXmp = SOI + xmp + comment + hal.copyOfRange(2, hal.size)
+        assertNotNull("fixture precondition: the HAL APP1 carries GPS", ExifInterface(ByteArrayInputStream(withXmp)).latLong)
+
+        for (payload in listOf(null, byteArrayOf(1, 2))) {
+            val written = ByteArrayOutputStream()
+            val refusals = mutableListOf<String>()
+            assertTrue(
+                writeJpegOnce(
+                    open = { written },
+                    encoded = withXmp,
+                    length = withXmp.size,
+                    exifPayload = payload,
+                    passthroughOrientation = ExifInterface.ORIENTATION_ROTATE_90,
+                    onSpliceRefused = { refusals += it },
+                ),
+            )
+            val bytes = written.toByteArray()
+            val exif = ExifInterface(ByteArrayInputStream(bytes))
+            assertNull(exif.latLong)
+            assertNull(exif.getAttribute(ExifInterface.TAG_BODY_SERIAL_NUMBER))
+            assertNull(exif.getAttribute(ExifInterface.TAG_SOFTWARE))
+            assertEquals(ExifInterface.ORIENTATION_ROTATE_90, exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, 0))
+            assertEquals(1, exifApp1Count(bytes))
+            assertEquals(-1, indexOf(bytes, "xap/1.0".toByteArray()))
+            assertEquals(-1, indexOf(bytes, "owner".toByteArray()))
+            assertEquals(-1, indexOf(bytes, "GPSLatitude".toByteArray()))
+            assertNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+            assertEquals(if (payload == null) 0 else 1, refusals.size)
+        }
+    }
+
+    @Test
+    fun `a composed passthrough payload is spliced over a header stripped of XMP`() {
+        val hal = privateHalJpeg()
+        val xmp = segment(0xe1, "http://ns.adobe.com/xap/1.0/\u0000serial".toByteArray())
+        val withXmp = SOI + xmp + hal.copyOfRange(2, hal.size)
+        val payload = composePassthroughStillExif(cacheDir, withXmp, shot(), rotationDegrees = 180)
+        val written = ByteArrayOutputStream()
+        assertTrue(writeJpegOnce({ written }, withXmp, withXmp.size, payload, ExifInterface.ORIENTATION_ROTATE_180, {}))
+        val bytes = written.toByteArray()
+        val exif = ExifInterface(ByteArrayInputStream(bytes))
+        assertNull(exif.latLong)
+        assertEquals("200", exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY))
+        assertEquals(-1, indexOf(bytes, "xap/1.0".toByteArray()))
+        assertEquals(-1, indexOf(bytes, "serial".toByteArray()))
+        assertNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+        // The processed lane's plan is unchanged: a non-Exif APP1 it did not write stays.
+        assertTrue(indexOf(requireNotNull(spliceExifApp1(withXmp, payload)), "xap/1.0".toByteArray()) >= 0)
+    }
+
+    @Test
+    fun `an unwalkable passthrough header is refused instead of written verbatim`() {
+        val refusals = mutableListOf<String>()
+        var opened = false
+        val garbage = SOI + byteArrayOf(0x12, 0x34) + byteArrayOf(0xff.toByte(), 0xda.toByte(), 0, 2)
+        assertFalse(
+            writeJpegOnce({ opened = true; ByteArrayOutputStream() }, garbage, garbage.size, null, 1, { refusals += it }),
+        )
+        assertFalse(opened)
+        assertEquals(1, refusals.size)
+    }
+
+    @Test
+    fun `the HAL strip list covers XMP and every free-text tag`() {
+        listOf(
+            ExifInterface.TAG_XMP,
+            ExifInterface.TAG_ARTIST,
+            ExifInterface.TAG_COPYRIGHT,
+            ExifInterface.TAG_USER_COMMENT,
+            ExifInterface.TAG_IMAGE_DESCRIPTION,
+        ).forEach { tag -> assertTrue("$tag kept", tag in PASSTHROUGH_PRIVACY_STRIPPED_TAGS) }
+    }
+
+    @Test
+    fun `the privacy plan keeps only JFIF, ICC or MPF, Adobe and non-APP segments`() {
+        val scan = byteArrayOf(0xff.toByte(), 0xda.toByte(), 0, 2, 7, 7, 0xff.toByte(), 0xd9.toByte())
+        val app0 = segment(0xe0, "JFIF\u0000".toByteArray())
+        val icc = segment(0xe2, "ICC_PROFILE\u0000".toByteArray())
+        val adobe = segment(0xee, "Adobe".toByteArray())
+        val vendor = segment(0xe5, "vendor id".toByteArray())
+        val exifSeg = segment(0xe1, EXIF + byteArrayOf(1))
+        val dqt = segment(0xdb, ByteArray(5))
+        val jpeg = SOI + app0 + exifSeg + icc + vendor + segment(0xfe, "c".toByteArray()) + adobe + dqt + scan
+        val payload = minimalOrientationExifApp1(ExifInterface.ORIENTATION_NORMAL)
+        val out = ByteArrayOutputStream()
+        writeJpegWithExifApp1(out, jpeg, requireNotNull(exifSplicePlan(jpeg, privacyStrip = true)), payload)
+        assertArrayEquals(SOI + segment(0xe1, payload) + app0 + icc + adobe + dqt + scan, out.toByteArray())
+        assertThrows(IllegalArgumentException::class.java) { minimalOrientationExifApp1(0) }
+        assertThrows(IllegalArgumentException::class.java) { minimalOrientationExifApp1(9) }
+    }
+
+    private fun privateHalJpeg(): ByteArray {
+        val source = File.createTempFile("hal-fallback-", ".jpg", cacheDir)
+        source.writeBytes(encodedJpeg(32, 24))
+        ExifInterface(source).apply {
+            setLatLong(37.5665, 126.9780)
+            setAttribute(ExifInterface.TAG_BODY_SERIAL_NUMBER, "SN-0042")
+            setAttribute(ExifInterface.TAG_SOFTWARE, "HAL 4.0")
+            saveAttributes()
+        }
+        return source.readBytes()
+    }
+
+    private fun indexOf(haystack: ByteArray, needle: ByteArray): Int =
+        (0..haystack.size - needle.size).firstOrNull { start ->
+            needle.indices.all { haystack[start + it] == needle[it] }
+        } ?: -1
 
     // ---- pure splice framing ---------------------------------------------------------------------
 

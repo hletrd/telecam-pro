@@ -328,7 +328,7 @@ internal class StillCapturePipeline(
             emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
             return
         }
-        writeSingleJpeg(encoded.buffer(), encoded.size(), exifPayload, spec)
+        writeSingleJpeg(encoded.buffer(), encoded.size(), exifPayload, passthroughOrientation = null, spec = spec)
     }
 
     /**
@@ -357,7 +357,13 @@ internal class StillCapturePipeline(
      * with [exifPayload] spliced in ([writeJpegOnce]), mark COMPLETE, publish. The row is opened for
      * writing exactly once and never reopened "rw".
      */
-    private fun writeSingleJpeg(encoded: ByteArray, length: Int, exifPayload: ByteArray?, spec: ShotSpec) {
+    private fun writeSingleJpeg(
+        encoded: ByteArray,
+        length: Int,
+        exifPayload: ByteArray?,
+        passthroughOrientation: Int?,
+        spec: ShotSpec,
+    ) {
         val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("jpg"),
@@ -371,6 +377,7 @@ internal class StillCapturePipeline(
                 encoded = encoded,
                 length = length,
                 exifPayload = exifPayload,
+                passthroughOrientation = passthroughOrientation,
                 onSpliceRefused = { message -> Log.w("StillCapturePipeline", message) },
             )
         }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
@@ -398,16 +405,26 @@ internal class StillCapturePipeline(
      * (AGG4-6). Same publish-or-delete policy as [writeProcessedJpeg].
      */
     private fun writePassthroughJpeg(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
-        // Best-effort like the processed lane — a failed EXIF build must never lose the image. The
-        // orientation tag is the one exception a viewer NEEDS for uprightness, but a passthrough
-        // with EXIF missing still beats a deleted take, and the miss now leaves a log row.
+        // Best-effort like the processed lane — a failed EXIF build must never lose the image. But
+        // the HAL bytes carry the HAL's OWN APP1, so "without our EXIF" must never mean "with
+        // theirs" (AGG6-14): writeJpegOnce then strips it and writes an orientation-only APP1.
         val exifPayload = bestEffortHeifExif(
             build = { composePassthroughStillExif(context.cacheDir, bytes, exifShot, spec.rotationDegrees) },
             onFailure = { failure ->
-                Log.w("StillCapturePipeline", "passthrough JPEG EXIF payload failed; saving without EXIF", failure)
+                Log.w(
+                    "StillCapturePipeline",
+                    "passthrough JPEG EXIF payload failed; saving with orientation-only EXIF",
+                    failure,
+                )
             },
         )
-        writeSingleJpeg(bytes, bytes.size, exifPayload, spec)
+        writeSingleJpeg(
+            bytes,
+            bytes.size,
+            exifPayload,
+            passthroughOrientation = RotationMath.exifOrientationFor(spec.rotationDegrees),
+            spec = spec,
+        )
     }
 
     /**
@@ -785,22 +802,39 @@ internal fun writeProcessedStillFormats(
  * bytes verbatim when there is no payload or it cannot be spliced ([onSpliceRefused] reports why;
  * never a lost image). False when [open] yields no stream. There is no second open and no in-place
  * rewrite: that `saveAttributes()` rewrite is what once left a shifted body recovery adopted.
+ *
+ * A non-null [passthroughOrientation] marks the HAL passthrough lane, whose [encoded] header is the
+ * HAL's, and makes the privacy strip a property of the BYTES WRITTEN rather than of the composer
+ * (AGG6-14): the header keeps only allow-listed segments ([exifSplicePlan] `privacyStrip`), and a
+ * missing or unspliceable payload is replaced by [minimalOrientationExifApp1] instead of falling
+ * back to the verbatim HAL APP1 (GPS, serials, MakerNote, XMP). A header that cannot be walked
+ * cannot be proven free of that APP1, so it is refused (false) rather than written verbatim.
  */
 internal fun writeJpegOnce(
     open: () -> java.io.OutputStream?,
     encoded: ByteArray,
     length: Int,
     exifPayload: ByteArray?,
+    passthroughOrientation: Int?,
     onSpliceRefused: (String) -> Unit,
 ): Boolean {
-    val splice = exifPayload?.let { payload ->
-        exifSplicePlan(encoded, length)?.takeIf { isSpliceableExifPayload(payload) }?.let { plan -> plan to payload }
+    val privacyStrip = passthroughOrientation != null
+    val plan = if (exifPayload != null || privacyStrip) exifSplicePlan(encoded, length, privacyStrip) else null
+    val composed = exifPayload?.let { payload ->
+        plan?.takeIf { isSpliceableExifPayload(payload) }?.let { it to payload }
             ?: run {
                 onSpliceRefused(
                     "JPEG EXIF splice refused ($length B image, ${payload.size} B APP1); saving without EXIF",
                 )
                 null
             }
+    }
+    val splice = composed ?: passthroughOrientation?.let { orientation ->
+        if (plan == null) {
+            onSpliceRefused("passthrough JPEG header unwalkable ($length B); refusing to write HAL metadata")
+            return false
+        }
+        plan to minimalOrientationExifApp1(orientation)
     }
     return open()?.use { out ->
         if (splice != null) {
@@ -859,7 +893,8 @@ internal fun composePassthroughStillExif(
 
 /**
  * Identifying tags a HAL-seeded composition never republishes (AGG5-51): the whole GPS directory,
- * the body/lens serials, the owner name, the unique image id, and the opaque MakerNote. Only the
+ * the body/lens serials, the owner name, the unique image id, the opaque MakerNote, and (AGG6-14)
+ * the embedded XMP packet plus every free-text tag. Only the
  * hi-res passthrough lane seeds from a HAL APP1 (capability-gated, dormant on PMA110); every other
  * lane composes from a blank 1×1 seed and carries none of these to begin with.
  */
@@ -901,6 +936,13 @@ internal val PASSTHROUGH_PRIVACY_STRIPPED_TAGS: List<String> = listOf(
     ExifInterface.TAG_CAMERA_OWNER_NAME,
     ExifInterface.TAG_IMAGE_UNIQUE_ID,
     ExifInterface.TAG_MAKER_NOTE,
+    // Free text and embedded XMP (AGG6-14): a vendor HAL can write a location, a device id or an
+    // owner into any of them, and IFD0's XMP packet can carry `exif:GPS*` outright.
+    ExifInterface.TAG_XMP,
+    ExifInterface.TAG_ARTIST,
+    ExifInterface.TAG_COPYRIGHT,
+    ExifInterface.TAG_USER_COMMENT,
+    ExifInterface.TAG_IMAGE_DESCRIPTION,
 )
 
 /**
