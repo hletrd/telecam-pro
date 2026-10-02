@@ -49,7 +49,13 @@ class DeviceProfileTest {
                 wantHlg = false,
                 supportsRaw = true,
                 standalone = true,
-                teleconverterMode = false, // TC on + GENERIC profile collapses to false
+                teleconverterMode = false, // TC on + GENERIC profile collapses to false,
+                logicalMultiCamera = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
             )
             assertFalse("attempt $attempt", plan.useVendorOperationMode)
         }

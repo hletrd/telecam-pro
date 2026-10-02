@@ -14,7 +14,19 @@ class SessionFallbackLadderTest {
 
     @Test
     fun `attempt 0 is the full session`() {
-        val p = sessionAttemptPlan(attempt = 0, wantHlg = true, supportsRaw = true, standalone = true)
+        val p = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertEquals(
             SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true, useDeepZslReader = true),
             p,
@@ -23,19 +35,55 @@ class SessionFallbackLadderTest {
 
     @Test
     fun `attempt 1 drops RAW first, keeps HLG and JPEG`() {
-        val p = sessionAttemptPlan(attempt = 1, wantHlg = true, supportsRaw = true, standalone = true)
+        val p = sessionAttemptPlan(
+            attempt = 1,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertEquals(SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = false), p)
     }
 
     @Test
     fun `attempt 2 also drops HLG`() {
-        val p = sessionAttemptPlan(attempt = 2, wantHlg = true, supportsRaw = true, standalone = true)
+        val p = sessionAttemptPlan(
+            attempt = 2,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertEquals(SessionAttemptPlan(useHlg = false, useJpeg = true, useRaw = false), p)
     }
 
     @Test
     fun `attempt 3 is preview-only`() {
-        val p = sessionAttemptPlan(attempt = 3, wantHlg = true, supportsRaw = true, standalone = true)
+        val p = sessionAttemptPlan(
+            attempt = 3,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertEquals(SessionAttemptPlan(useHlg = false, useJpeg = false, useRaw = false), p)
     }
 
@@ -43,19 +91,55 @@ class SessionFallbackLadderTest {
     fun `RAW is never enabled through physical routing`() {
         // Routed RAW SIGSEGVs the QTI HAL (DataSpace override for format 0x20) — the gate must hold
         // even on attempt 0 with full RAW support.
-        val p = sessionAttemptPlan(attempt = 0, wantHlg = true, supportsRaw = true, standalone = false)
+        val p = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = false,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertFalse(p.useRaw)
         assertTrue(p.useJpeg)
     }
 
     @Test
     fun `RAW requires the capability`() {
-        assertFalse(sessionAttemptPlan(attempt = 0, wantHlg = false, supportsRaw = false, standalone = true).useRaw)
+        assertFalse(sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = false,
+            supportsRaw = false,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        ).useRaw)
     }
 
     @Test
     fun `HLG is never enabled when unwanted or unsupported`() {
-        assertFalse(sessionAttemptPlan(attempt = 0, wantHlg = false, supportsRaw = true, standalone = true).useHlg)
+        assertFalse(sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = false,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        ).useHlg)
     }
 
     @Test
@@ -63,7 +147,19 @@ class SessionFallbackLadderTest {
         // Device-observed 2026-07-14: a still with the RAW target on the plain logical camera
         // errors the whole camera device ~5 s after the shot (CAMERA_ERROR(3)); the image never
         // arrives. RAW is standalone-only in BOTH failure modes.
-        val p = sessionAttemptPlan(attempt = 0, wantHlg = false, supportsRaw = true, standalone = true, logicalMultiCamera = true)
+        val p = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = false,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = true,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertFalse(p.useRaw)
         assertTrue(p.useJpeg)
     }
@@ -76,6 +172,12 @@ class SessionFallbackLadderTest {
             supportsRaw = true,
             standalone = true,
             teleconverterMode = true,
+            logicalMultiCamera = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
         val regular = sessionAttemptPlan(
             attempt = 3,
@@ -83,6 +185,12 @@ class SessionFallbackLadderTest {
             supportsRaw = true,
             standalone = true,
             teleconverterMode = true,
+            logicalMultiCamera = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
 
         assertTrue(vendor.useVendorOperationMode)
@@ -96,8 +204,32 @@ class SessionFallbackLadderTest {
 
     @Test
     fun `teleconverter reserves both preview-only attempts for last`() {
-        val vendor = sessionAttemptPlan(6, true, true, true, teleconverterMode = true)
-        val regular = sessionAttemptPlan(7, true, true, true, teleconverterMode = true)
+        val vendor = sessionAttemptPlan(
+            attempt = 6,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+            logicalMultiCamera = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
+        val regular = sessionAttemptPlan(
+            attempt = 7,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+            logicalMultiCamera = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
 
         assertFalse(vendor.useJpeg)
         assertTrue(vendor.useVendorOperationMode)
@@ -115,6 +247,12 @@ class SessionFallbackLadderTest {
             supportsRaw = true,
             standalone = true,
             wantHiRes = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
         assertTrue(p.useHiResStill)
         assertFalse(p.useRaw)
@@ -130,7 +268,19 @@ class SessionFallbackLadderTest {
         // silently lost RAW for the whole session (cycle-6 debugger F3).
         assertEquals(
             SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true, useDeepZslReader = true),
-            sessionAttemptPlan(1, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true),
+            sessionAttemptPlan(
+                attempt = 1,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                wantHiRes = true,
+                logicalMultiCamera = false,
+                teleconverterMode = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
     }
 
@@ -141,13 +291,31 @@ class SessionFallbackLadderTest {
         // compared against itself (cycle-6 test-review F-A1).
         for (attempt in 1..4) {
             assertEquals(
-                sessionAttemptPlan(attempt - 1, wantHlg = true, supportsRaw = true, standalone = true),
+                sessionAttemptPlan(
+                    attempt = attempt - 1,
+                    wantHlg = true,
+                    supportsRaw = true,
+                    standalone = true,
+                    logicalMultiCamera = false,
+                    teleconverterMode = false,
+                    wantHiRes = false,
+                    tenBitVideoOnly = false,
+                    frontRoute = false,
+                    yuvStillRequired = true,
+                    rawStandaloneOnly = true,
+                ),
                 sessionAttemptPlan(
                     attempt,
                     wantHlg = true,
                     supportsRaw = true,
                     standalone = true,
                     wantHiRes = true,
+                    logicalMultiCamera = false,
+                    teleconverterMode = false,
+                    tenBitVideoOnly = false,
+                    frontRoute = false,
+                    yuvStillRequired = true,
+                    rawStandaloneOnly = true,
                 ),
             )
         }
@@ -156,8 +324,32 @@ class SessionFallbackLadderTest {
     @Test
     fun `unwanted hi-res changes nothing at attempt 0`() {
         assertEquals(
-            sessionAttemptPlan(0, wantHlg = true, supportsRaw = true, standalone = true),
-            sessionAttemptPlan(0, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = false),
+            sessionAttemptPlan(
+                attempt = 0,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                logicalMultiCamera = false,
+                teleconverterMode = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
+            sessionAttemptPlan(
+                attempt = 0,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                wantHiRes = false,
+                logicalMultiCamera = false,
+                teleconverterMode = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
     }
 
@@ -170,6 +362,11 @@ class SessionFallbackLadderTest {
             standalone = true,
             teleconverterMode = true,
             wantHiRes = true,
+            logicalMultiCamera = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
         assertTrue(vendor0.useVendorOperationMode)
         assertTrue(vendor0.useHiResStill)
@@ -177,13 +374,61 @@ class SessionFallbackLadderTest {
         // Every later TELE rung maps onto the ordinary TELE ladder shifted by one (hi-res never
         // re-enters mid-ladder, and the first fallback is vendor-full WITH RAW).
         assertEquals(
-            sessionAttemptPlan(0, true, true, true, teleconverterMode = true),
-            sessionAttemptPlan(1, true, true, true, teleconverterMode = true, wantHiRes = true),
+            sessionAttemptPlan(
+                attempt = 0,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                teleconverterMode = true,
+                logicalMultiCamera = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
+            sessionAttemptPlan(
+                attempt = 1,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                teleconverterMode = true,
+                wantHiRes = true,
+                logicalMultiCamera = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
         for (attempt in 1..8) {
             assertEquals(
-                sessionAttemptPlan(attempt - 1, true, true, true, teleconverterMode = true),
-                sessionAttemptPlan(attempt, true, true, true, teleconverterMode = true, wantHiRes = true),
+                sessionAttemptPlan(
+                    attempt = attempt - 1,
+                    wantHlg = true,
+                    supportsRaw = true,
+                    standalone = true,
+                    teleconverterMode = true,
+                    logicalMultiCamera = false,
+                    wantHiRes = false,
+                    tenBitVideoOnly = false,
+                    frontRoute = false,
+                    yuvStillRequired = true,
+                    rawStandaloneOnly = true,
+                ),
+                sessionAttemptPlan(
+                    attempt = attempt,
+                    wantHlg = true,
+                    supportsRaw = true,
+                    standalone = true,
+                    teleconverterMode = true,
+                    wantHiRes = true,
+                    logicalMultiCamera = false,
+                    tenBitVideoOnly = false,
+                    frontRoute = false,
+                    yuvStillRequired = true,
+                    rawStandaloneOnly = true,
+                ),
             )
         }
     }
@@ -195,19 +440,67 @@ class SessionFallbackLadderTest {
         // have passed the suite (cycle-6 test-review F-A1).
         assertEquals(
             SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = false, useVendorOperationMode = true),
-            sessionAttemptPlan(1, true, true, true, teleconverterMode = true),
+            sessionAttemptPlan(
+                attempt = 1,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                teleconverterMode = true,
+                logicalMultiCamera = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
         assertEquals(
             SessionAttemptPlan(useHlg = false, useJpeg = true, useRaw = false, useVendorOperationMode = true),
-            sessionAttemptPlan(2, true, true, true, teleconverterMode = true),
+            sessionAttemptPlan(
+                attempt = 2,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                teleconverterMode = true,
+                logicalMultiCamera = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
         assertEquals(
             SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = false, useVendorOperationMode = false),
-            sessionAttemptPlan(4, true, true, true, teleconverterMode = true),
+            sessionAttemptPlan(
+                attempt = 4,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                teleconverterMode = true,
+                logicalMultiCamera = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
         assertEquals(
             SessionAttemptPlan(useHlg = false, useJpeg = true, useRaw = false, useVendorOperationMode = false),
-            sessionAttemptPlan(5, true, true, true, teleconverterMode = true),
+            sessionAttemptPlan(
+                attempt = 5,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                teleconverterMode = true,
+                logicalMultiCamera = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            ),
         )
     }
 
@@ -220,9 +513,33 @@ class SessionFallbackLadderTest {
         assertEquals(4, maxSessionAttempt(teleconverterMode = false, wantHiRes = true))
         assertEquals(8, maxSessionAttempt(teleconverterMode = true, wantHiRes = true))
         // The last in-bounds attempt of each ladder is its preview-only last resort.
-        val plainLast = sessionAttemptPlan(4, true, true, true, wantHiRes = true)
+        val plainLast = sessionAttemptPlan(
+            attempt = 4,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            wantHiRes = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertFalse(plainLast.useJpeg)
-        val teleLast = sessionAttemptPlan(8, true, true, true, teleconverterMode = true, wantHiRes = true)
+        val teleLast = sessionAttemptPlan(
+            attempt = 8,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+            wantHiRes = true,
+            logicalMultiCamera = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertFalse(teleLast.useJpeg)
         assertFalse(teleLast.useVendorOperationMode)
     }
@@ -243,6 +560,12 @@ class SessionFallbackLadderTest {
                 supportsRaw = true,
                 standalone = true,
                 logicalMultiCamera = true,
+                teleconverterMode = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
             )
         }
 
@@ -302,6 +625,11 @@ class SessionFallbackLadderTest {
                     frontRoute = false,
                     logicalStillRequiresYuv = DeviceProfile.PMA110.logicalStillRequiresYuv,
                 ),
+                teleconverterMode = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                rawStandaloneOnly = true,
             )
         }
 
@@ -328,6 +656,11 @@ class SessionFallbackLadderTest {
                     standalone = true,
                     frontRoute = true,
                     yuvStillRequired = mustUseYuvStill,
+                    logicalMultiCamera = false,
+                    teleconverterMode = false,
+                    wantHiRes = false,
+                    tenBitVideoOnly = false,
+                    rawStandaloneOnly = true,
                 )
             }
 
@@ -360,6 +693,11 @@ class SessionFallbackLadderTest {
                         standalone = true,
                         teleconverterMode = tele,
                         wantHiRes = hiRes,
+                        logicalMultiCamera = false,
+                        tenBitVideoOnly = false,
+                        frontRoute = false,
+                        yuvStillRequired = true,
+                        rawStandaloneOnly = true,
                     )
                     if (plan.useHiResStill) continue
                     if (!plan.useDeepZslReader) {
@@ -377,11 +715,35 @@ class SessionFallbackLadderTest {
         // They can never coexist anyway (hi-res is standalone-only, the deep reader logical-only),
         // and stacking a 200MP blob on a 5-deep full-res ring is exactly the over-demanding combo
         // the ladder exists to avoid. The deep rung simply moves to the full plan at attempt 1.
-        val hiResRung = sessionAttemptPlan(0, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true)
+        val hiResRung = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            wantHiRes = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
         assertTrue(hiResRung.useHiResStill)
         assertFalse(hiResRung.useDeepZslReader)
         assertTrue(
-            sessionAttemptPlan(1, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true)
+            sessionAttemptPlan(
+                attempt = 1,
+                wantHlg = true,
+                supportsRaw = true,
+                standalone = true,
+                wantHiRes = true,
+                logicalMultiCamera = false,
+                teleconverterMode = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
+                yuvStillRequired = true,
+                rawStandaloneOnly = true,
+            )
                 .useDeepZslReader,
         )
     }
@@ -395,6 +757,11 @@ class SessionFallbackLadderTest {
             standalone = true,
             teleconverterMode = true,
             tenBitVideoOnly = true,
+            logicalMultiCamera = false,
+            wantHiRes = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
 
         assertTrue(plan.useHlg)
@@ -415,6 +782,12 @@ class SessionFallbackLadderTest {
             supportsRaw = true,
             standalone = true,
             tenBitVideoOnly = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
         assertTrue(plan(1).useHlg)
         assertTrue(plan(1).useJpeg)
@@ -444,6 +817,9 @@ class SessionFallbackLadderTest {
                         wantHiRes = hiRes,
                         tenBitVideoOnly = true,
                         rawStandaloneOnly = false,
+                        logicalMultiCamera = false,
+                        frontRoute = false,
+                        yuvStillRequired = true,
                     )
                     val where = "tele=$tele hiRes=$hiRes attempt=$attempt"
                     assertFalse("RAW on a 10-bit rung: $where", plan.useRaw)

@@ -30,6 +30,9 @@ class DeviceRouteLawsTest {
         frontRoute = front,
         yuvStillRequired = yuvRequired,
         rawStandaloneOnly = rawStandaloneOnly,
+        teleconverterMode = false,
+        wantHiRes = false,
+        tenBitVideoOnly = false,
     )
 
     // ---- YUV still lane -------------------------------------------------------------------------
@@ -149,6 +152,9 @@ class YuvLaneShapeTest {
             wantHiRes = true,
             yuvStillRequired = true,
             rawStandaloneOnly = true,
+            teleconverterMode = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
         )
         assertTrue(p.useYuvStill)
     }
@@ -168,6 +174,9 @@ class YuvLaneShapeTest {
                 teleconverterMode = true,
                 yuvStillRequired = false,
                 rawStandaloneOnly = false,
+                wantHiRes = false,
+                tenBitVideoOnly = false,
+                frontRoute = false,
             ).useYuvStill
             if (!on) seenFalse = true
             assertTrue("rung $attempt re-deepened after dropping", !(seenFalse && on))

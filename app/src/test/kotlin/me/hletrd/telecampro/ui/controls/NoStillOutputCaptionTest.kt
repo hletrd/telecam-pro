@@ -21,6 +21,12 @@ class NoStillOutputCaptionTest {
             supportsRaw = true,
             standalone = true,
             tenBitVideoOnly = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
         // The production plan -> outputs function: the HLG fact comes from the plan inside it, so
         // the test cannot supply (or forget) the very argument whose omission would be the bug.
@@ -51,6 +57,12 @@ class NoStillOutputCaptionTest {
             supportsRaw = true,
             standalone = true,
             tenBitVideoOnly = false,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            frontRoute = false,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
         )
         val outputs = acceptedPhotoSessionOutputs(
             plan = plan,

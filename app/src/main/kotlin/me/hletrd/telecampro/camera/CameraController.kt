@@ -2109,6 +2109,8 @@ class CameraController internal constructor(
                         requestControls,
                         caps,
                         pinAutoFps = pinAutoFps,
+                        // The STILL keeps its true exposure; only repeating requests are capped.
+                        previewExposureCap = false,
                         enforceFrameRate = pinAutoFps,
                     )
                     // Keep stills consistent with the session's pipeline: with the log session active the
@@ -2833,15 +2835,17 @@ internal fun sessionAttemptPlan(
     wantHlg: Boolean,
     supportsRaw: Boolean,
     standalone: Boolean,
-    logicalMultiCamera: Boolean = false,
-    teleconverterMode: Boolean = false,
-    wantHiRes: Boolean = false,
-    tenBitVideoOnly: Boolean = false,
-    frontRoute: Boolean = false,
+    // No defaults (AGG5-50): tenBitVideoOnly is the HLG10+JPEG+RAW crash guard (a HAL crash the
+    // ladder cannot rescue) and the rest are route laws; an omitted argument must not compile.
+    logicalMultiCamera: Boolean,
+    teleconverterMode: Boolean,
+    wantHiRes: Boolean,
+    tenBitVideoOnly: Boolean,
+    frontRoute: Boolean,
     /** Route-resolved [DeviceProfile.logicalStillRequiresYuv] — true keeps YUV on every still rung. */
-    yuvStillRequired: Boolean = true,
+    yuvStillRequired: Boolean,
     /** [DeviceProfile.rawRequiresStandalone] — true keeps the PMA110 standalone-only RAW law. */
-    rawStandaloneOnly: Boolean = true,
+    rawStandaloneOnly: Boolean,
 ): SessionAttemptPlan {
     // The SHIPPING non-SDR video rung (`tenBitSessionWanted(videoMode, transfer)` upstream — this
     // said "10-bit EXPERIMENT rung (debug-gated upstream)" long after it shipped, AGG3-50). HLG10 +

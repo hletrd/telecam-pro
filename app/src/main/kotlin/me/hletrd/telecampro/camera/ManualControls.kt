@@ -669,14 +669,17 @@ internal fun sensorRequestTiming(
 fun CaptureRequest.Builder.applyManualControls(
     c: ManualControls,
     caps: CameraCaps,
-    pinAutoFps: Boolean = false,
+    // No defaults on these three (AGG5-50): each one IS a measured HAL guard, and an omitted
+    // argument used to compile straight into the pre-fix bug — a repeating builder that forgot
+    // previewExposureCap put a multi-second exposure on the wire and lost the next still.
+    pinAutoFps: Boolean,
     // PREVIEW requests only: cap the AE-OFF exposure at the fluidity ceiling (1/15 s; PROGRAM
     // aims tighter at 1/30 s), trading brightness into ISO then GL digital gain so the live view
     // never becomes a slideshow in dim light; the STILL request keeps the true exposure. See
     // applyExposure / previewExposureTrade.
-    previewExposureCap: Boolean = false,
+    previewExposureCap: Boolean,
     // VIDEO only: app-owned S/ISO/M exposure may not stretch the sensor frame beyond 1/fps.
-    enforceFrameRate: Boolean = false,
+    enforceFrameRate: Boolean,
 ) {
     applyFocus(c, caps)
     applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
@@ -1021,8 +1024,8 @@ private fun CaptureRequest.Builder.applyExposure(
     c: ManualControls,
     caps: CameraCaps,
     pinAutoFps: Boolean,
-    previewExposureCap: Boolean = false,
-    enforceFrameRate: Boolean = false,
+    previewExposureCap: Boolean,
+    enforceFrameRate: Boolean,
 ) {
     val isoRange = caps.isoRange
     val manualAe = manualAeAdmitted(c, caps)
