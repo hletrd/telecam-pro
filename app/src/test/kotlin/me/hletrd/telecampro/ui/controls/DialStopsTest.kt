@@ -123,7 +123,7 @@ class DialStopsTest {
         assertEquals(0L, shutter.first())
         assertEquals(1_000_000_000L, shutter.last())
         assertTrue(shutter.size < 128)
-        assertTrue(shutter.contains(500_000_000L))
+        assertTrue(shutterStops(0L, 1_000_000_000L, 1f).contains(500_000_000L))
         val negShutter = shutterStops(-1L, 250_000_000L, 1f)
         assertEquals(-1L, negShutter.first())
         assertEquals(250_000_000L, negShutter.last())
