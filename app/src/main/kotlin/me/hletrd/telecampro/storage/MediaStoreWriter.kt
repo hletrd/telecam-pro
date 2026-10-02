@@ -1744,8 +1744,9 @@ object MediaStoreWriter {
      * container decides on its tracks. An extractor THROW used to end there too, so a crash-truncated
      * take — the commonest orphan, with no `moov` at all — stayed INDETERMINATE on every launch
      * (AGG4-4). It is now judged structurally on the same descriptor: a proven-absent `moov` is
-     * INVALID; any other walk answer re-throws the extractor's cause, so the row stays a transient
-     * probe failure that is retained (and its expiry re-armed) for a later launch.
+     * INVALID; a walk that found a complete `moov` is a deterministic INDETERMINATE (kept, not
+     * re-armed, MRG4-4); an unreadable walk re-throws the extractor's cause, so the row stays a
+     * transient probe failure that is retained (and its expiry re-armed) for a later launch.
      */
     private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe =
         openReadableParcelFd(context, uri).use { descriptor ->
@@ -2867,9 +2868,15 @@ internal fun probeMp4MoovPresence(
 
 /**
  * Launch recovery's video verdict on one opened descriptor (AGG4-4). A parse decides on its tracks;
- * a parse throw is INVALID only when [moovPresence] PROVES the `moov` absent. Otherwise the
- * extractor's cause is re-thrown (with any walk failure suppressed onto it) so `pendingProbeOutcome`
- * records a transient probe failure — exactly the pre-walk answer for that row.
+ * a parse throw is INVALID only when [moovPresence] PROVES the `moov` absent.
+ *
+ * A parse throw over a walk that READ the bytes and found a complete `moov` (MRG4-4) is a constant
+ * of those bytes — a corrupt sample table or a box the extractor rejects — so it returns a plain
+ * INDETERMINATE: the row is kept but NOT re-armed ([keptRowReassertsPending]), because every later
+ * launch would reach the same throw and re-arming it made the take immortal hidden storage. Only a
+ * walk that could not read the bytes (UNKNOWN, or a walk throw) re-throws the extractor's cause
+ * (with any walk failure suppressed onto it), so `pendingProbeOutcome` records a transient probe
+ * failure that a later launch may still resolve.
  */
 internal fun recoveryVideoVerdict(
     hasVideoTrack: () -> Boolean,
@@ -2886,8 +2893,11 @@ internal fun recoveryVideoVerdict(
         parseFailure.addSuppressed(walkFailure)
         throw parseFailure
     }
-    if (moovPresenceVerdict(presence) == PendingProbe.INVALID) return PendingProbe.INVALID
-    throw parseFailure
+    return when (presence) {
+        Mp4MoovPresence.ABSENT -> PendingProbe.INVALID
+        Mp4MoovPresence.PRESENT -> PendingProbe.INDETERMINATE
+        Mp4MoovPresence.UNKNOWN -> throw parseFailure
+    }
 }
 
 /** Verdict a parse throw may take once the walk has spoken (shared by the live tail and recovery). */

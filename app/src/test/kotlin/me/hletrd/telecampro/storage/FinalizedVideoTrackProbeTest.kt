@@ -5,6 +5,7 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.ByteBuffer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
@@ -223,13 +224,16 @@ class FinalizedVideoTrackProbeTest {
             PendingProbe.INVALID,
             recoveryVideoVerdict({ throw IOException("no moov") }, { Mp4MoovPresence.ABSENT }),
         )
-        for (presence in listOf(Mp4MoovPresence.PRESENT, Mp4MoovPresence.UNKNOWN)) {
-            val cause = IOException("extractor $presence")
-            val thrown = assertThrows(IOException::class.java) {
-                recoveryVideoVerdict({ throw cause }, { presence })
-            }
-            assertSame(cause, thrown)
+        val unknownCause = IOException("extractor UNKNOWN")
+        val thrown0 = assertThrows(IOException::class.java) {
+            recoveryVideoVerdict({ throw unknownCause }, { Mp4MoovPresence.UNKNOWN })
         }
+        assertSame(unknownCause, thrown0)
+        // MRG4-4: a read walk that found the moov makes the throw a constant of the bytes.
+        assertEquals(
+            PendingProbe.INDETERMINATE,
+            recoveryVideoVerdict({ throw IOException("corrupt stbl") }, { Mp4MoovPresence.PRESENT }),
+        )
         val cause = IOException("extractor")
         val walk = IOException("walk")
         val thrown = assertThrows(IOException::class.java) {
@@ -237,6 +241,31 @@ class FinalizedVideoTrackProbeTest {
         }
         assertSame(cause, thrown)
         assertSame(walk, thrown.suppressed.single())
+    }
+
+    // MRG4-4: the fixture end to end through the recovery outcome and the re-arm rule.
+    @Test
+    fun `a moov-present take the extractor rejects is kept but not re-armed`() {
+        val bytes = concat(box("ftyp", 16), box("mdat", 64), box("moov", 40))
+        val deterministic = pendingProbeOutcome {
+            recoveryVideoVerdict({ throw IOException("unsupported box") }, { walk(bytes) })
+        }
+        assertEquals(PendingProbeOutcome(PendingProbe.INDETERMINATE, failed = false), deterministic)
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.REGISTERED, deterministic.probe),
+        )
+        assertFalse(keptRowReassertsPending(PendingJournalState.REGISTERED, deterministic))
+
+        // The same bytes behind a failing read prove nothing: transient, kept AND re-armed.
+        val unreadable = pendingProbeOutcome {
+            recoveryVideoVerdict(
+                { throw IOException("fuse busy") },
+                { probeMp4MoovPresence(bytes.size.toLong()) { _, _ -> null } },
+            )
+        }
+        assertTrue(unreadable.failed)
+        assertTrue(keptRowReassertsPending(PendingJournalState.REGISTERED, unreadable))
     }
 
     // ---- the top-level ISO-BMFF walk -------------------------------------------------------------
