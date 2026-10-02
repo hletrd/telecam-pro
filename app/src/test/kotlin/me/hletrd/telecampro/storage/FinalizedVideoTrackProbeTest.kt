@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -218,37 +219,73 @@ class FinalizedVideoTrackProbeTest {
 
     @Test
     fun `recovery deletes only a proven moov-less take and otherwise keeps the transient failure`() {
-        assertEquals(PendingProbe.VALID, recoveryVideoVerdict({ true }, { error("not walked") }))
-        assertEquals(PendingProbe.INVALID, recoveryVideoVerdict({ false }, { error("not walked") }))
+        val noReparse: () -> Boolean = { error("must not re-parse") }
+        assertEquals(PendingProbe.VALID, recoveryVideoVerdict({ true }, { error("not walked") }, noReparse))
+        assertEquals(PendingProbe.INVALID, recoveryVideoVerdict({ false }, { error("not walked") }, noReparse))
         assertEquals(
             PendingProbe.INVALID,
-            recoveryVideoVerdict({ throw IOException("no moov") }, { Mp4MoovPresence.ABSENT }),
+            recoveryVideoVerdict({ throw IOException("no moov") }, { Mp4MoovPresence.ABSENT }, noReparse),
         )
         val unknownCause = IOException("extractor UNKNOWN")
         val thrown0 = assertThrows(IOException::class.java) {
-            recoveryVideoVerdict({ throw unknownCause }, { Mp4MoovPresence.UNKNOWN })
+            recoveryVideoVerdict({ throw unknownCause }, { Mp4MoovPresence.UNKNOWN }, noReparse)
         }
         assertSame(unknownCause, thrown0)
-        // MRG4-4: a read walk that found the moov makes the throw a constant of the bytes.
-        assertEquals(
-            PendingProbe.INDETERMINATE,
-            recoveryVideoVerdict({ throw IOException("corrupt stbl") }, { Mp4MoovPresence.PRESENT }),
-        )
         val cause = IOException("extractor")
         val walk = IOException("walk")
         val thrown = assertThrows(IOException::class.java) {
-            recoveryVideoVerdict({ throw cause }, { throw walk })
+            recoveryVideoVerdict({ throw cause }, { throw walk }, noReparse)
         }
         assertSame(cause, thrown)
         assertSame(walk, thrown.suppressed.single())
     }
 
-    // MRG4-4: the fixture end to end through the recovery outcome and the re-arm rule.
+    // AGG5-8 (correcting MRG4-4): one throw over a present moov is the AGG2-18 transient class.
     @Test
-    fun `a moov-present take the extractor rejects is kept but not re-armed`() {
+    fun `a moov-present take whose extractor throws once is decided by a fresh-descriptor parse`() {
+        val bytes = concat(box("ftyp", 16), box("mdat", 64), box("moov", 40))
+        val pauses = AtomicInteger()
+        val recovered = pendingProbeOutcome {
+            recoveryVideoVerdict(
+                hasVideoTrack = { throw IOException("Failed to instantiate extractor") },
+                moovPresence = { walk(bytes) },
+                reparseOnFreshDescriptor = { true },
+                beforeReparse = { pauses.incrementAndGet() },
+            )
+        }
+        assertEquals(PendingProbeOutcome(PendingProbe.VALID), recovered)
+        assertEquals(1, pauses.get())
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.REGISTERED, recovered.probe),
+        )
+
+        // A reopen that fails proves nothing about the bytes: transient, kept AND re-armed.
+        val reopenFailed = pendingProbeOutcome {
+            recoveryVideoVerdict(
+                { throw IOException("fuse busy") },
+                { walk(bytes) },
+                { throw FreshDescriptorUnavailable(IOException("provider restarting")) },
+            )
+        }
+        assertTrue(reopenFailed.failed)
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.REGISTERED, reopenFailed.probe),
+        )
+        assertTrue(keptRowReassertsPending(PendingJournalState.REGISTERED, reopenFailed))
+    }
+
+    // MRG4-4's bound survives: only a REPEATED throw over a present moov is the byte constant.
+    @Test
+    fun `a moov-present take the extractor rejects twice is kept but not re-armed`() {
         val bytes = concat(box("ftyp", 16), box("mdat", 64), box("moov", 40))
         val deterministic = pendingProbeOutcome {
-            recoveryVideoVerdict({ throw IOException("unsupported box") }, { walk(bytes) })
+            recoveryVideoVerdict(
+                { throw IOException("unsupported box") },
+                { walk(bytes) },
+                { throw IOException("unsupported box") },
+            )
         }
         assertEquals(PendingProbeOutcome(PendingProbe.INDETERMINATE, failed = false), deterministic)
         assertEquals(
@@ -262,6 +299,7 @@ class FinalizedVideoTrackProbeTest {
             recoveryVideoVerdict(
                 { throw IOException("fuse busy") },
                 { probeMp4MoovPresence(bytes.size.toLong()) { _, _ -> null } },
+                { error("an unreadable walk must not re-parse") },
             )
         }
         assertTrue(unreadable.failed)

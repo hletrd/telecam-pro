@@ -1750,15 +1750,26 @@ object MediaStoreWriter {
      * container decides on its tracks. An extractor THROW used to end there too, so a crash-truncated
      * take — the commonest orphan, with no `moov` at all — stayed INDETERMINATE on every launch
      * (AGG4-4). It is now judged structurally on the same descriptor: a proven-absent `moov` is
-     * INVALID; a walk that found a complete `moov` is a deterministic INDETERMINATE (kept, not
-     * re-armed, MRG4-4); an unreadable walk re-throws the extractor's cause, so the row stays a
-     * transient probe failure that is retained (and its expiry re-armed) for a later launch.
+     * INVALID; a walk that found a complete `moov` earns one confirming parse on a fresh descriptor,
+     * and only a repeated throw is a deterministic INDETERMINATE (kept, not re-armed — AGG5-8); an
+     * unreadable walk or a failed reopen re-throws the extractor's cause, so the row stays a
+     * transient probe failure that is retained (and its expiry re-armed) for a later launch. Launch
+     * recovery runs on its own background executor, never main or camera, so the pause is safe.
      */
     private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe =
         openReadableParcelFd(context, uri).use { descriptor ->
             recoveryVideoVerdict(
                 hasVideoTrack = { parcelFdHasVideoTrack(descriptor) },
                 moovPresence = { parcelFdMoovPresence(descriptor) },
+                reparseOnFreshDescriptor = {
+                    val fresh = try {
+                        openReadableParcelFd(context, uri)
+                    } catch (failure: Exception) {
+                        throw FreshDescriptorUnavailable(failure)
+                    }
+                    fresh.use(::parcelFdHasVideoTrack)
+                },
+                beforeReparse = { sleepPreservingInterrupt(FINALIZED_VIDEO_PARSE_RETRY_MS) },
             )
         }
 
@@ -2888,17 +2899,29 @@ internal fun probeMp4MoovPresence(
  * Launch recovery's video verdict on one opened descriptor (AGG4-4). A parse decides on its tracks;
  * a parse throw is INVALID only when [moovPresence] PROVES the `moov` absent.
  *
- * A parse throw over a walk that READ the bytes and found a complete `moov` (MRG4-4) is a constant
- * of those bytes — a corrupt sample table or a box the extractor rejects — so it returns a plain
- * INDETERMINATE: the row is kept but NOT re-armed ([keptRowReassertsPending]), because every later
- * launch would reach the same throw and re-arming it made the take immortal hidden storage. Only a
- * walk that could not read the bytes (UNKNOWN, or a walk throw) re-throws the extractor's cause
- * (with any walk failure suppressed onto it), so `pendingProbeOutcome` records a transient probe
- * failure that a later launch may still resolve.
+ * A parse throw over a walk that READ the bytes and found a complete `moov` is NOT yet a constant
+ * of those bytes (AGG5-8, correcting MRG4-4): `MediaExtractor.setDataSource` on a MediaProvider FUSE
+ * fd throws the same exception for a transient provider failure (media scan, MediaProvider restart
+ * mid-read, revoked fd — the AGG2-18 class) as for a corrupt container, and a later walk succeeding
+ * only shows the bytes were readable then. So that take — the best-formed one recovery ever sees —
+ * gets ONE confirming parse: [beforeReparse] pauses and [reparseOnFreshDescriptor] opens a FRESH
+ * descriptor and parses it (re-parsing the same fd only re-reads a revoked one, CR4-7). A fresh
+ * parse decides on its tracks. A failed reopen proves nothing and re-throws the extractor's cause (a
+ * transient probe failure: kept AND re-armed). Only a REPEATED parse throw over a present `moov` is
+ * the byte constant — a corrupt sample table or a box the extractor rejects — and returns a plain
+ * INDETERMINATE: kept but NOT re-armed ([keptRowReassertsPending]), so the re-arm stays bounded and
+ * the take cannot become immortal hidden storage. A walk that could not read the bytes (UNKNOWN, or
+ * a walk throw) re-throws the extractor's cause (with any walk failure suppressed onto it), so
+ * `pendingProbeOutcome` records a transient probe failure that a later launch may still resolve.
+ *
+ * [reparseOnFreshDescriptor] reports an OPEN failure by throwing [FreshDescriptorUnavailable] and a
+ * PARSE failure by throwing anything else.
  */
 internal fun recoveryVideoVerdict(
     hasVideoTrack: () -> Boolean,
     moovPresence: () -> Mp4MoovPresence,
+    reparseOnFreshDescriptor: () -> Boolean,
+    beforeReparse: () -> Unit = {},
 ): PendingProbe {
     val parseFailure = try {
         return if (hasVideoTrack()) PendingProbe.VALID else PendingProbe.INVALID
@@ -2912,8 +2935,21 @@ internal fun recoveryVideoVerdict(
         throw parseFailure
     }
     if (presence == Mp4MoovPresence.UNKNOWN) throw parseFailure
-    return moovPresenceVerdict(presence)
+    if (presence == Mp4MoovPresence.ABSENT) return PendingProbe.INVALID
+    beforeReparse()
+    return try {
+        if (reparseOnFreshDescriptor()) PendingProbe.VALID else PendingProbe.INVALID
+    } catch (unavailable: FreshDescriptorUnavailable) {
+        parseFailure.addSuppressed(unavailable)
+        throw parseFailure
+    } catch (_: Exception) {
+        // The same bytes rejected twice, on two descriptors: a constant, not a transient.
+        PendingProbe.INDETERMINATE
+    }
 }
+
+/** [recoveryVideoVerdict]'s confirming reopen failed; nothing about the bytes is proven. */
+internal class FreshDescriptorUnavailable(cause: Throwable) : IOException("fresh descriptor unavailable", cause)
 
 /** Verdict a parse throw may take once the walk has spoken (shared by the live tail and recovery). */
 internal fun moovPresenceVerdict(presence: Mp4MoovPresence): PendingProbe =
