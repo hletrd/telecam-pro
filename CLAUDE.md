@@ -1121,8 +1121,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   EVERY completed DNG tail uses one process-wide finite owner (two daemon workers + two backlog
   slots) shared across Engine generations. RAW-only SINGLE/BURST/AEB/timelapse transfer directly;
   mixed-output tails queue only a lightweight transfer behind their processed sibling's terminal on
-  `ioExecutor`, then publish on that same process owner. Capacity overflow, facade shutdown, transfer
-  rejection, or marker exhaustion
+  `ioExecutor`, then publish on that same process owner. A mixed tail whose processed sibling was
+  never queued has nothing to wait behind and transfers DIRECT like RAW-only output. Capacity
+  overflow, facade shutdown, a real ordered-lane transfer rejection, or marker exhaustion
   settles the live capture family exactly once and keeps the structurally complete private row for
   launch recovery; provider work never falls back inline and complete DNG bytes are never deleted for
   lack of live publication capacity.

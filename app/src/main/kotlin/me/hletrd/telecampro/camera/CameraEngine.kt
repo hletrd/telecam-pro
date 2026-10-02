@@ -269,7 +269,8 @@ class CameraEngine internal constructor(
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     // Every completed DNG publication tail uses finite process-wide capacity. Mixed-output shots
     // enqueue only the cheap transfer behind their processed sibling on [ioExecutor], while RAW-only
-    // SINGLE/BURST/AEB/timelapse transfer directly; sequence completion still preserves exact order.
+    // SINGLE/BURST/AEB/timelapse — and a mixed shot whose sibling was never queued — transfer
+    // directly; sequence completion still preserves exact order.
     private val stillPublicationDispatcher = StillPublicationDispatcher(
         workerCount = STILL_PUBLICATION_WORKER_COUNT,
         backlogCapacity = STILL_PUBLICATION_BACKLOG_CAPACITY,
@@ -5883,7 +5884,11 @@ class CameraEngine internal constructor(
                             // DngCreator needs the live Image, so write + the bounded COMPLETE
                             // marker attempt remain on this camera callback. Publication transfers
                             // to the process owner directly for RAW-only or, for mixed output, via a
-                            // lightweight ioExecutor task queued after the processed sibling.
+                            // lightweight ioExecutor task queued after the processed sibling. A mixed
+                            // shot whose processed sibling was never queued (no processed Image, a
+                            // snapshot-copy failure, a dispatch rejection) has nothing to wait
+                            // behind and transfers DIRECT too (AGG4-7); only a real ordered-lane
+                            // rejection retains the private row for launch recovery.
                             when (val write = stillPipeline.saveDng(
                                 raw,
                                 rawChars,
