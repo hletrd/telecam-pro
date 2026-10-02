@@ -246,4 +246,38 @@ class MomentaryHoldRobolectricTest {
         v.onAutoPunchIn(false)
         assertFalse(v.state.value.punchIn)
     }
+
+    // ---- AGG5-65: rebinding a key mid-hold ends the old action's hold ----
+
+    @Test fun `rebinding an AEL key mid-hold restores the operator's lock state`() {
+        val v = vm()
+        v.onVolumeKeyAction(HardwareKeyAction.AEL)
+        idle(600)
+        v.onHardwareFullKey(true)
+        assertTrue(v.state.value.controls.aeLock)
+        v.onVolumeKeyAction(HardwareKeyAction.NONE)
+        assertFalse("the hold ended with the binding", v.state.value.controls.aeLock)
+        v.onHardwareFullKey(false) // the release now goes to NONE
+        assertFalse(v.state.value.controls.aeLock)
+        // A later AEL press snapshots afresh instead of reusing a stale one.
+        v.onToggleAeLock(true)
+        v.onVolumeKeyAction(HardwareKeyAction.AEL)
+        v.onHardwareFullKey(true)
+        v.onHardwareFullKey(false)
+        assertTrue(v.state.value.controls.aeLock)
+    }
+
+    @Test fun `rebinding a punch-in key mid-hold restores the loupe`() {
+        val v = punchInVm()
+        v.onHardwareHalfPress(true)
+        assertTrue(v.state.value.punchIn)
+        v.onHalfPressAction(HardwareKeyAction.AF_ON)
+        assertFalse(v.state.value.punchIn)
+        assertEquals(false, persistedPunchIn(v))
+        // Rebinding a key that holds nothing changes nothing.
+        v.onTogglePunchIn(true)
+        v.onQuickButtonAction(HardwareKeyAction.PUNCH_IN)
+        v.onQuickButtonAction(HardwareKeyAction.SHUTTER)
+        assertTrue(v.state.value.punchIn)
+    }
 }

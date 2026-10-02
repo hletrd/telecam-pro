@@ -3806,18 +3806,36 @@ class CameraViewModel private constructor(
     }
 
     override fun onVolumeKeyAction(action: HardwareKeyAction) {
+        endMomentaryHoldOnRebind(_state.value.volumeKeyAction, action)
         _state.update { it.copy(volumeKeyAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 
     override fun onHalfPressAction(action: HardwareKeyAction) {
+        endMomentaryHoldOnRebind(_state.value.halfPressAction, action)
         _state.update { it.copy(halfPressAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 
     override fun onQuickButtonAction(action: HardwareKeyAction) {
+        endMomentaryHoldOnRebind(_state.value.quickButtonAction, action)
         _state.update { it.copy(quickButtonAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
+    }
+
+    /**
+     * AGG5-65 / TE5-11: the release edge is dispatched by the action bound AT RELEASE TIME, so a key
+     * rebound mid-hold sent its release to the new action and the old AEL / PUNCH_IN hold leaked —
+     * applied until onStop, with the next press keeping the stale snapshot. Rebinding is an explicit
+     * operator act, so it ends the old action's hold here and restores the operator's value.
+     */
+    private fun endMomentaryHoldOnRebind(old: HardwareKeyAction, new: HardwareKeyAction) {
+        if (old == new) return
+        when (old) {
+            HardwareKeyAction.AEL -> momentaryAeLock.release()?.let(::applyMomentaryAeLock)
+            HardwareKeyAction.PUNCH_IN -> momentaryPunchIn.release()?.let(::applyMomentaryPunchIn)
+            else -> Unit
+        }
     }
 
     override fun onReviewOpenChange(open: Boolean, uri: Uri): Boolean {
