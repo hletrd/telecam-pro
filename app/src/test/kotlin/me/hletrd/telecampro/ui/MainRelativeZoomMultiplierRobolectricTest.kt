@@ -39,7 +39,11 @@ class MainRelativeZoomMultiplierRobolectricTest {
         teleconverter: Boolean = false,
         facing: CameraFacing = CameraFacing.BACK,
         route: CameraRoute = CameraRoute.BACK,
+        lens: LensChoice = LensChoice.MAIN,
+        cameraReady: Boolean = true,
     ) = CameraUiState(
+        cameraReady = cameraReady,
+        lens = lens,
         mode = mode,
         photoFormats = PhotoFormats(heif = true, dngRaw = dng),
         rawForcesStandalone = rawForcesStandalone,
@@ -104,5 +108,44 @@ class MainRelativeZoomMultiplierRobolectricTest {
                 .mainRelativeZoomMultiplier,
             0f,
         )
+    }
+
+    // AGG6-25: during the reopen a door started, `caps` are still the OUTGOING camera while the zoom
+    // packet is already in the target scale. DNG-on at the 3× preset read "1.0×" until tele caps came.
+    @Test
+    fun `a reopen reads the target lens, not the outgoing caps`() {
+        val dngReopen = state(
+            CaptureMode.PHOTO,
+            equivMm = 23.4f, // still the logical camera
+            dng = true,
+            lens = LensChoice.TELE3X,
+            cameraReady = false,
+        )
+        assertEquals("3.0×", formatDisplayZoom(1f, dngReopen.mainRelativeZoomMultiplier))
+        val videoReopen = state(CaptureMode.VIDEO, equivMm = 23.4f, lens = LensChoice.TELE3X, cameraReady = false)
+        assertEquals("3.0×", formatDisplayZoom(1f, videoReopen.mainRelativeZoomMultiplier))
+        // A one-camera tablet's "3×" is a crop of its main: the reached OPTICAL lens divides.
+        val tablet = LensInventory(
+            available = setOf(LensChoice.MAIN, LensChoice.TELE3X),
+            optical = setOf(LensChoice.MAIN),
+            presetEquivMm = mapOf(LensChoice.MAIN to 26f, LensChoice.TELE3X to 78f),
+        )
+        val tabletReopen = state(
+            CaptureMode.VIDEO,
+            equivMm = 26f,
+            inventory = tablet,
+            lens = LensChoice.TELE3X,
+            cameraReady = false,
+        )
+        assertEquals("3.0×", formatDisplayZoom(3f, tabletReopen.mainRelativeZoomMultiplier))
+        // No measurement yet: the caps answer as before.
+        val noInventory = state(
+            CaptureMode.VIDEO,
+            equivMm = 69.4f,
+            inventory = LensInventory.ALL,
+            lens = LensChoice.TELE3X,
+            cameraReady = false,
+        )
+        assertEquals(69.4f / 23f, noInventory.mainRelativeZoomMultiplier, 1e-5f)
     }
 }

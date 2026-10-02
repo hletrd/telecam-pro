@@ -5,6 +5,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.opticalBaseFor
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.localZoomOf
 import me.hletrd.telecampro.camera.rearReturnZoom
@@ -92,7 +93,7 @@ internal val CameraUiState.mainRelativeZoomMultiplier: Float
     get() = zoomDisplayMultiplier(
         teleconverter = teleconverterMode,
         teleconverterMagnification = teleconverterMagnification,
-        equivalentFocalMm = caps?.equivalentFocalMm,
+        equivalentFocalMm = displayedRouteEquivMm,
         frontFacing = facing == CameraFacing.FRONT,
         activeRoute = activeCameraRoute,
         standaloneRoute = standaloneRouteWanted(
@@ -102,6 +103,25 @@ internal val CameraUiState.mainRelativeZoomMultiplier: Float
         ),
         measuredMainEquivMm = lensInventory.presetEquivMm[LensChoice.MAIN],
     )
+
+/**
+ * The numerator for [mainRelativeZoomMultiplier]: the measured focal of the lens the stored zoom
+ * ratio is LOCAL to (AGG6-25). Once Ready that is the accepted camera's `caps`. During a reopen it is
+ * not: every remap door (Photo→Video, DNG on, a video lens pick) writes the zoom packet in the
+ * TARGET route's scale at once, while `caps` keep describing the OUTGOING camera until the new one
+ * delivers — so DNG-on at the PMA110 3× preset divided the logical camera's 23.4 mm by 23 over a
+ * lens-local 1.0 and every readout said "1.0×" for the length of the reopen. Until Ready the
+ * numerator is therefore the OPTICAL lens that route reaches ([opticalBaseFor], never the band
+ * tapped — a one-camera tablet's "3×" is a crop of its main), falling back to `caps` while the
+ * inventory has no measurement. Steady-state readouts are unchanged.
+ */
+internal val CameraUiState.displayedRouteEquivMm: Float?
+    get() {
+        if (cameraReady) return caps?.equivalentFocalMm
+        val reached = opticalBaseFor(lens.zoomPreset, lensInventory.optical)
+        return lensInventory.presetEquivMm[reached]?.takeIf { it.isFinite() && it > 0f }
+            ?: caps?.equivalentFocalMm
+    }
 
 /**
  * The Quick Zoom ruler's mapping between its displayed main-relative scale and the LENS-LOCAL ratio
