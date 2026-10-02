@@ -800,6 +800,11 @@ class CameraViewModel private constructor(
         restoreAudio = ::restoreRecordAudioFromGrant,
     )
     private var encoderInventory: CodecInventory = CodecInventory.EMPTY
+    // The platform codec inventory's two reads (host-test seams; production is EncoderCaps): the
+    // latched answer without walking, and the bounded walk, whose null is a FAILURE (AGG6-1).
+    private var cachedEncoderInventory: () -> CodecInventory? = EncoderCaps::loadedInventory
+    private var walkEncoderInventory: () -> CodecInventory? = EncoderCaps::load
+    private var encoderInventoryLoadInFlight = false
     private var pendingCodecUntilInventory: VideoCodec? = null
     private var pendingTransferUntilInventory: ColorTransfer? = null
     private var pendingPhotoFormatsUntilInventory: PhotoFormats? = null
@@ -3039,20 +3044,32 @@ class CameraViewModel private constructor(
         pendingControls = pendingControls?.copy(zoomRatio = z)
     }
 
-    /** Loads the one immutable platform codec inventory off main, then reconciles retained intent. */
+    /**
+     * Loads the one immutable platform codec inventory off main, then reconciles retained intent.
+     * Runs at init and again on every [onStart] until one walk has succeeded (AGG6-1): a FAILED walk
+     * (null) is not device truth, so it applies nothing — `encoderInventoryLoaded` stays false, the
+     * operator's pending codec/curve/format request keeps winning in `currentExtras`, and nothing is
+     * normalized or persisted. Applying it as EMPTY narrowed HEIF→JPEG and HLG/log→SDR, persisted
+     * that on the next background, and left REC without a candidate for the ViewModel's life.
+     * Single-flight: a resume while a walk is still running does not queue a second one.
+     */
     private fun loadEncoderInventoryAsync() {
-        if (EncoderCaps.isLoaded()) {
-            applyEncoderInventory(EncoderCaps.currentInventory())
+        if (_state.value.encoderInventoryLoaded || encoderInventoryLoadInFlight) return
+        cachedEncoderInventory()?.let { inventory ->
+            applyEncoderInventory(inventory)
             return
         }
-        runCatching {
+        encoderInventoryLoadInFlight = true
+        val submitted = runCatching {
             ioExecutor.execute {
-                val inventory = EncoderCaps.load()
+                val inventory = walkEncoderInventory()
                 mainHandler.post {
-                    if (!cleared) applyEncoderInventory(inventory)
+                    encoderInventoryLoadInFlight = false
+                    if (!cleared && inventory != null) applyEncoderInventory(inventory)
                 }
             }
-        }
+        }.isSuccess
+        if (!submitted) encoderInventoryLoadInFlight = false
     }
 
     private fun applyEncoderInventory(inventory: CodecInventory) {
@@ -4620,6 +4637,9 @@ class CameraViewModel private constructor(
         lifecycleStarted = true
         infoRefresh.start()
         engine.resume()
+        // AGG6-1: a codec walk that failed (mediaserver restarting during the cold-start scan) is
+        // retried here; a no-op once one has succeeded or while one is still running.
+        loadEncoderInventoryAsync()
         refreshStandbyAudioMeter()
         // Re-arm the OSD tickers paused in onStop (level only if its overlay is enabled).
         mainHandler.removeCallbacks(levelTicker)

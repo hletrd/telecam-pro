@@ -60,23 +60,24 @@ class EncoderCapsTest {
             onScanFailure = { reports += it },
         )
 
-        assertTrue(loader.load().availableVideoCodecs.isEmpty())
+        // AGG6-1: an exhausted load is a FAILURE (null), never the device answer EMPTY.
+        assertNull(loader.load())
         assertEquals(CODEC_SCAN_MAX_ATTEMPTS, walks)
         assertEquals(listOf(2, 3), pauses)
         assertFalse("a failed walk must not latch", loader.isLoaded())
         assertEquals(1, reports.size)
 
         // A second failed load walks again but does not report again.
-        loader.load()
+        assertNull(loader.load())
         assertEquals(2 * CODEC_SCAN_MAX_ATTEMPTS, walks)
         assertEquals(1, reports.size)
 
         // The provider recovers: the next load latches the real inventory, and later loads reuse it.
         failing = false
-        assertEquals(listOf(VideoCodec.HEVC), loader.load().availableVideoCodecs)
+        assertEquals(listOf(VideoCodec.HEVC), loader.load()?.availableVideoCodecs)
         assertTrue(loader.isLoaded())
         val walksAtLatch = walks
-        assertEquals(listOf(VideoCodec.HEVC), loader.load().availableVideoCodecs)
+        assertEquals(listOf(VideoCodec.HEVC), loader.load()?.availableVideoCodecs)
         assertEquals(listOf(VideoCodec.HEVC), loader.currentInventory().availableVideoCodecs)
         assertEquals(walksAtLatch, walks)
     }
@@ -92,7 +93,7 @@ class EncoderCapsTest {
             },
             onScanFailure = { reports += it },
         )
-        assertTrue(loader.load().availableVideoCodecs.isEmpty())
+        assertEquals(emptyList<VideoCodec>(), loader.load()?.availableVideoCodecs)
         assertTrue("an empty SUCCESSFUL walk is the device's real answer and latches", loader.isLoaded())
         assertEquals(2, walks)
         assertTrue(reports.isEmpty())

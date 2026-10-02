@@ -102,8 +102,14 @@ internal fun discoverCodecInventory(load: () -> List<CodecComponent>): CodecInve
  * restarting during the cold-start scan, a Binder hiccup) used to latch [CodecInventory.EMPTY] for
  * the whole process: no video codecs and no HEIF until the process died, with no log line. Now one
  * [load] makes at most [maxAttempts] walks, [pause] between them, and a load that exhausts them
- * returns EMPTY WITHOUT latching, so the next load (the next ViewModel) walks again. [onScanFailure]
- * reports the first exhausted load once per process — a bounded, quota-safe single row.
+ * latches nothing and returns NULL, so the next load walks again. [onScanFailure] reports the first
+ * exhausted load once per process — a bounded, quota-safe single row.
+ *
+ * Null, not [CodecInventory.EMPTY] (AGG6-1): EMPTY is a real device answer ("no encoders"), and the
+ * ViewModel applied a failed walk's EMPTY exactly as one — it consumed the operator's pending
+ * HEIF/codec/curve request, normalized it to JPEG/SDR, marked the inventory loaded and PERSISTED the
+ * narrowing, so the next process's successful walk restored the degraded values. A failure must be
+ * a different type from an answer so no caller can mistake one for the other.
  */
 internal class CodecInventoryLoader(
     private val scan: () -> List<CodecComponent>,
@@ -120,7 +126,7 @@ internal class CodecInventoryLoader(
         require(maxAttempts > 0)
     }
 
-    fun load(): CodecInventory {
+    fun load(): CodecInventory? {
         if (loaded) return inventory
         return synchronized(loadLock) {
             if (loaded) return@synchronized inventory
@@ -139,7 +145,7 @@ internal class CodecInventoryLoader(
                 failureReported = true
                 lastFailure?.let(onScanFailure)
             }
-            CodecInventory.EMPTY
+            null
         }
     }
 
@@ -166,13 +172,17 @@ object EncoderCaps {
         onScanFailure = { failure ->
             me.hletrd.telecampro.camera.DiagnosticLog.w(
                 "EncoderCaps",
-                "codec inventory walk failed $CODEC_SCAN_MAX_ATTEMPTS times; no video/HEIF encoders until a later load",
+                "codec inventory walk failed $CODEC_SCAN_MAX_ATTEMPTS times; request kept, retried on resume",
                 failure,
             )
         },
     )
 
-    fun load(): CodecInventory = loader.load()
+    /** The latched inventory, or null when this load's bounded walk failed (nothing latched). */
+    fun load(): CodecInventory? = loader.load()
+
+    /** The latched inventory without walking, or null when no walk has succeeded yet. */
+    fun loadedInventory(): CodecInventory? = if (loader.isLoaded()) loader.currentInventory() else null
 
     private val inventory: CodecInventory get() = loader.currentInventory()
 
