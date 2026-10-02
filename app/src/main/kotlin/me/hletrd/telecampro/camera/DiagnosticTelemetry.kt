@@ -263,7 +263,9 @@ internal data class FrameGapSummary(
  * covered vanished, and a quiet tail made [finish] return nothing at all — the exact "no FrameGap
  * row = no stall" false pass the evidence reserve exists to prevent. Refused counts now carry
  * forward into the next due summary and the terminal one, and a refused terminal summary carries
- * into the next generation's terminal row.
+ * into this pipeline's next terminal row (its next stop). The accumulator is a field of one
+ * `GlPipeline`, so carried counts do NOT survive that pipeline's replacement: a bounded native
+ * wedge that retires the object drops them with it (MRG6-9).
  */
 internal class FrameGapAccumulator(
     private val summaryIntervalMs: Long = FRAME_GAP_SUMMARY_INTERVAL_MS,
