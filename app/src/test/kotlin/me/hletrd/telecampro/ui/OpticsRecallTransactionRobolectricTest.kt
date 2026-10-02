@@ -291,6 +291,29 @@ class OpticsRecallTransactionRobolectricTest {
         assertFalse("consumed: a second resume does nothing", vm.reconcileMicrophoneGrant())
     }
 
+    // AGG6-15: a grant observed mid-take must not flip audio on over a clip whose recorder fixed
+    // `doAudio = false` at start; the reason survives and the reconciliation runs when REC ends.
+    @Test
+    fun `a grant observed mid-take is deferred until the take ends`() {
+        val (vm, engine) = createViewModel()
+        val reason = AudioDenialReasonStore(app)
+        reason.write(true)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(recordAudio = false, isRecording = true)
+        vm.microphonePermissionCheck = { true }
+
+        assertFalse(vm.reconcileMicrophoneGrant())
+        assertFalse("the silent take stays silent on screen", vm.state.value.recordAudio)
+        assertTrue("the denial reason is not consumed mid-take", reason.read())
+
+        engine.onRecordingTerminated!!.invoke(IllegalStateException("take ended"))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertFalse(vm.state.value.isRecording)
+        assertTrue("the deferred grant restores audio for the next take", vm.state.value.recordAudio)
+        assertFalse(reason.read())
+        assertEquals(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON, vm.state.value.status?.message)
+    }
+
     // AGG4-10: a failed recall lit its slot on the optimistic apply; the rollback restores a
     // baseline that is not the bank, so the indicator must go out with it.
     @Test

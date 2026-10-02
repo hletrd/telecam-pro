@@ -793,6 +793,8 @@ class CameraViewModel private constructor(
     // half moved here in AGG4-49, but the recall half (write the reason, reconcile the grant) lived
     // only in the Activity's CameraActions wrapper, so any other door reaching onRecallMemorySlot —
     // a test harness, a future Fn/hardware recall — silently reverted to the provenance-blind rule.
+    // A resume/grant reconciliation that arrived mid-take, replayed when REC ends (AGG6-15).
+    private var microphoneGrantDeferredUntilStop = false
     private val memoryBankAudioProvenance = MemoryBankAudioProvenance(
         reason = audioDenialReason,
         recordAudio = { _state.value.recordAudio },
@@ -1403,6 +1405,7 @@ class CameraViewModel private constructor(
                     )
                 }
                 refreshStandbyAudioMeter()
+                replayDeferredMicrophoneGrant()
             }
         }
         engine.onRecordingFinalizing = { finalizing ->
@@ -2895,7 +2898,24 @@ class CameraViewModel private constructor(
      * The Activity's resume/grant reconciliation (a Settings grant observed on resume): the same
      * provenance rule the recall leg applies, announced. True when audio came back.
      */
-    fun reconcileMicrophoneGrant(): Boolean = memoryBankAudioProvenance.restoreIfGranted(announce = true)
+    fun reconcileMicrophoneGrant(): Boolean {
+        // Never mid-take (AGG6-15): the recorder fixed `doAudio` at start, so flipping `recordAudio`
+        // on during a take (a multi-window Settings grant, any resume while still rolling) showed a
+        // flat meter and "audio on" over a silent clip. The denial reason is left untouched and the
+        // reconciliation runs again when the take ends ([replayDeferredMicrophoneGrant]).
+        if (_state.value.isRecording) {
+            microphoneGrantDeferredUntilStop = true
+            return false
+        }
+        return memoryBankAudioProvenance.restoreIfGranted(announce = true)
+    }
+
+    /** Runs a grant reconciliation a take deferred, once REC has ended (AGG6-15). Main thread. */
+    private fun replayDeferredMicrophoneGrant() {
+        if (!microphoneGrantDeferredUntilStop || _state.value.isRecording) return
+        microphoneGrantDeferredUntilStop = false
+        memoryBankAudioProvenance.restoreIfGranted(announce = true)
+    }
     override fun onAudioGain(gain: Float) {
         if (rejectIfRecording()) return
         val normalized = normalizeAudioGain(gain)
@@ -3843,6 +3863,7 @@ class CameraViewModel private constructor(
                     audioRoute = audioInputStatus(it.audioInputPreference).route,
                 )
             }
+            replayDeferredMicrophoneGrant()
         } else {
             val s = _state.value
             val inputStatus = audioInputStatus(s.audioInputPreference)
@@ -3898,6 +3919,7 @@ class CameraViewModel private constructor(
                             )
                         }
                         refreshStandbyAudioMeter()
+                        replayDeferredMicrophoneGrant()
                     }
                 }
             }
@@ -4688,6 +4710,8 @@ class CameraViewModel private constructor(
         // publish again after resume; leaving untimed recovery copy behind would resurrect a stale
         // pill over the next generation.
         clearProgressStatus()
+        // The Activity's resume reconciles the grant itself; a deferral must not outlive the take.
+        microphoneGrantDeferredUntilStop = false
         // The next resume is a cold start, not a reopen of this session's camera (AGG6-9).
         _state.update { it.copy(cameraReadyEstablished = false, cameraTerminal = false) }
         cancelCountdown()
