@@ -2757,8 +2757,9 @@ internal fun cameraErrorCodeIsPolicyBlock(error: Int): Boolean =
     error == android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_DISABLED
 
 /**
- * Whether a failure LOOKS policy-block class. NOT sufficient on its own — see
- * [me.hletrd.telecampro.camera.cameraPolicyBlockConfirmed].
+ * Whether a failure LOOKS policy-block class. NOT sufficient on its own: the Engine confirms it
+ * against AppOps ([CameraEngine.cameraOpWithheld] over the pure [cameraOpModeWithheld] predicate)
+ * before latching or announcing a policy block.
  *
  * `CAMERA_DISABLED` is ambiguous by design: the platform also raises it for the TRANSIENT
  * background-proc-state refusal this project documents (a relaunch behind the keyguard, or the

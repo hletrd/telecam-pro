@@ -670,7 +670,7 @@ internal fun focalRailState(
 /**
  * One chip of the rail's TELE face, where the marks are total-magnification zoom picks rather than
  * lenses. Same availability rules and same wording as [focalRailState] (both read through
- * [railChipStateDescription], so the two faces of one rail cannot drift apart) and the same
+ * [railChipState], so the two faces of one rail cannot drift apart) and the same
  * RadioButton relationship — a free pinch can leave every mark unselected, and a radio group with no
  * selection announces exactly that truthfully.
  */
