@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import java.time.Duration
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.HardwareKeyAction
+import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.storage.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -95,6 +96,54 @@ class MomentaryHoldRobolectricTest {
         assertEquals(false, SettingsStore(app).load()?.controls?.aeLock)
         v.onHardwareFullKey(false)
         assertFalse(v.state.value.controls.aeLock)
+    }
+
+    // MRG4-8: a recall or restore owns the setting; the held key's release must not overwrite it.
+    @Test fun `a recall mid-hold survives the release of an AEL hold`() {
+        val v = vm()
+        v.onToggleAeLock(true)
+        v.onStoreMemorySlot(MemorySlot.MR1) // MR1 carries aeLock = true
+        v.onToggleAeLock(false)
+        v.onVolumeKeyAction(HardwareKeyAction.AEL)
+        idle(600)
+        v.onHardwareFullKey(true) // snapshot: unlocked
+        v.onRecallMemorySlot(MemorySlot.MR1)
+        assertTrue(v.state.value.controls.aeLock)
+        v.onHardwareFullKey(false)
+        assertTrue("the release must not restore the pre-recall unlocked state", v.state.value.controls.aeLock)
+    }
+
+    @Test fun `a recall mid-hold survives the release of a punch-in hold`() {
+        val v = vm()
+        v.onTogglePunchIn(true)
+        v.onStoreMemorySlot(MemorySlot.MR2) // MR2 carries punchIn = true
+        v.onTogglePunchIn(false)
+        v.onHalfPressAction(HardwareKeyAction.PUNCH_IN)
+        idle(600)
+        v.onHardwareHalfPress(true) // snapshot: off
+        v.onRecallMemorySlot(MemorySlot.MR2)
+        assertTrue(v.state.value.punchIn)
+        v.onHardwareHalfPress(false)
+        assertTrue("the release must not switch the recalled loupe off", v.state.value.punchIn)
+    }
+
+    @Test fun `backgrounding ends a hold whose key-up never arrives`() {
+        val v = vm()
+        v.onStart()
+        v.onVolumeKeyAction(HardwareKeyAction.AEL)
+        v.onHalfPressAction(HardwareKeyAction.PUNCH_IN)
+        idle(600)
+        v.onHardwareFullKey(true)
+        v.onHardwareHalfPress(true)
+        assertTrue(v.state.value.controls.aeLock)
+        assertTrue(v.state.value.punchIn)
+        v.onStop()
+        assertFalse("the held lock does not outlive the foreground", v.state.value.controls.aeLock)
+        assertFalse("the held loupe does not outlive the foreground", v.state.value.punchIn)
+        // The lost key-up now finds no hold, so it cannot overwrite a later operator choice.
+        v.onToggleAeLock(true)
+        v.onHardwareFullKey(false)
+        assertTrue(v.state.value.controls.aeLock)
     }
 
     @Test fun `an explicit toggle mid-hold survives the release`() {

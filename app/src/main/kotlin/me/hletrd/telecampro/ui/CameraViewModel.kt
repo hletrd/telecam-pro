@@ -1526,6 +1526,11 @@ class CameraViewModel private constructor(
         // admission still precedes any stale trailing apply without mutating a rejected recall.
         cancelPendingControls()
         cancelCountdown()
+        // MRG4-8: the recalled/restored packet now owns AE lock and punch-in. A momentary AEL /
+        // PUNCH_IN hold still held across this door would otherwise restore its pre-press snapshot
+        // on the key release — over the bank the operator just recalled.
+        momentaryAeLock.cancel()
+        momentaryPunchIn.cancel()
         // Mirror the engine transaction: setResolvedOptics resets ITS pre-TELE return snapshot, so
         // the VM's copy must drop too (same discipline as the front-camera door). Keeping the old
         // unified zoom here made a later TC-off restore a framing the engine had already forgotten —
@@ -4334,6 +4339,14 @@ class CameraViewModel private constructor(
         // The controller is about to be closed. Retire its ownership/UI now, queue the ROI clear,
         // and skip a preview rebuild that could only race the queued close.
         clearTapFocus(rebuildPreview = false)
+        // MRG4-8: a backgrounded Activity receives no key-up, so a momentary hold would otherwise
+        // stay applied across the whole next foreground session (and its snapshot would later
+        // overwrite whatever the operator set meanwhile). End each hold exactly as its release
+        // would — restore the operator's own value — before the background save.
+        momentaryAeLock.release()?.let { locked ->
+            updateControls(slot = null, persist = false) { it.copy(aeLock = locked) }
+        }
+        momentaryPunchIn.release()?.let(::applyMomentaryPunchIn)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         standbyMeterEnabled = false
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
