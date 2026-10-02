@@ -155,6 +155,25 @@ class StartupTraceTest {
         assertTrue(!startupTraceRequestMayFinish(requestGeneration = 7L, latestRequestGeneration = 8L))
     }
 
+    // AGG6-18: a pause inside the cold-start GL window revokes the owner the input-ready
+    // continuation captured; the replayed open belongs to resume's owner, which its own reopen task
+    // left armed at the input-pending guard.
+    @Test
+    fun `input-ready adopts the live resume owner over a revoked capture`() {
+        val engine = EngineStartupTraceOwnership()
+        val coldStart = checkNotNull(engine.begin())
+        assertSame("no pause: the capture is still live", coldStart, engine.adoptForInputReady())
+
+        assertTrue(engine.revoke()) // pause inside the GL window
+        val resume = checkNotNull(engine.begin())
+
+        assertSame(resume, engine.adoptForInputReady())
+        assertSame(resume, engine.claimController(engine.adoptForInputReady()))
+        StartupTrace.mark(resume, "open")
+        StartupTrace.finish(resume, "first-result")
+        assertEquals(listOf("open", "first-result"), StartupTrace.marksForTest().map { it.first })
+    }
+
     @Test
     fun `resume A pause then resume B owns a fresh origin and rejects A result`() {
         val engine = EngineStartupTraceOwnership()

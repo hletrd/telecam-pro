@@ -2121,7 +2121,7 @@ class CameraEngine internal constructor(
             desired.overrideId,
             desired.transaction,
             startup = true,
-            startupTraceOwner = startupTraceOwner,
+            startupTraceOwner = startupTraceOwnership.adoptForInputReady(),
         )
         // Enumerated AFTER the route/open task is queued, like the debug capability scan below it:
         // the rail can render its pre-enumeration default for the few hundred ms this costs, but the
@@ -4438,7 +4438,9 @@ class CameraEngine internal constructor(
         val ownedGl = glOwners.current()
         val input = ownedGl.inputSurface ?: run {
             // An optics intent that lands between GL start and input-Surface creation is valid and
-            // remains Not-Ready. The input callback snapshots the latest generation and converges it.
+            // remains Not-Ready. The input callback snapshots the latest generation and converges it
+            // — and opens under this Engine's live trace owner (AGG6-18), so a resume's owner
+            // passed here is deliberately left armed for it rather than disarmed.
             if (glInputPending) return
             // Same disposition table as the selection/caps preflight (AGG5-25): a bare
             // reopenForSession() door already invalidated Ready before queueing, so the plain
