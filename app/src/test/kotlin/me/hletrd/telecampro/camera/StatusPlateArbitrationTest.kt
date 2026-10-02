@@ -14,7 +14,8 @@ class StatusPlateArbitrationTest {
     private val dngKept = CameraStatusMessage.DNG_SAVE_DELAYED.status()
     private val refusal = CameraStatusMessage.STOP_RECORDING_FIRST.status()
     private val finishing = CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status()
-    private val reconfiguring = CameraStatusMessage.CAMERA_RECONFIGURING.status()
+    // The ordinary optics condition (CAMERA_RECONFIGURING is a timed refusal since AGG6-10).
+    private val starting = CameraStatusMessage.STARTING_CAMERA.status()
     private val saved = CameraStatusMessage.VIDEO_SAVED.status()
     private val withoutAudio = CameraStatusMessage.RECORDING_WITHOUT_AUDIO.status()
     private val dngOnly = CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY.status()
@@ -35,7 +36,7 @@ class StatusPlateArbitrationTest {
                 StatusPlateRank.RETAINED_TAKE,
                 StatusPlateRank.ERROR,
             ),
-            listOf(reconfiguring, saved, finishing, refusal, retained, dngFailed).map { it.plateRank },
+            listOf(starting, saved, finishing, refusal, retained, dngFailed).map { it.plateRank },
         )
     }
 
@@ -50,12 +51,12 @@ class StatusPlateArbitrationTest {
         // An ambient lower event cannot displace it, and Ready still clears it.
         val held = over.plate.publish(CameraStatusMessage.FILE_ALREADY_REMOVED.status().copy(), 200L)
         assertTrue("FILE_ALREADY_REMOVED is a response", held.shownChanged)
-        val ambient = over.plate.publish(CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT.status(), 200L)
+        val ambient = over.plate.publish(dngOnly, 200L)
         assertFalse(ambient.shownChanged)
         assertEquals(errorRecovering, ambient.plate.shown)
         assertNull(over.plate.clearProgress().shown)
         // A non-error condition still yields to every event.
-        assertEquals(StatusPlateRank.PROGRESS, reconfiguring.plateRank)
+        assertEquals(StatusPlateRank.PROGRESS, starting.plateRank)
     }
 
     @Test fun `a lower ambient event does not replace an unexpired retained-take instruction`() {
@@ -72,8 +73,8 @@ class StatusPlateArbitrationTest {
 
     @Test fun `equal or higher rank wins`() {
         assertEquals(dngFailed, shownAt(retained).publish(dngFailed, 10L).plate.shown)
-        val sameRank = CameraStatusMessage.MICROPHONE_BUSY.status()
-        val result = shownAt(CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT.status()).publish(sameRank, 10L)
+        val sameRank = CameraStatusMessage.RAW_UNAVAILABLE.status()
+        val result = shownAt(dngOnly).publish(sameRank, 10L)
         assertTrue(result.shownChanged)
         assertEquals(sameRank, result.plate.shown)
         // A repeat of the same event re-arms its timer.
@@ -139,12 +140,12 @@ class StatusPlateArbitrationTest {
     }
 
     @Test fun `progress waits behind a higher non-terminal event and returns when it expires`() {
-        val behind = shownAt(retained).publish(reconfiguring, 10L)
+        val behind = shownAt(retained).publish(starting, 10L)
         assertFalse(behind.shownChanged)
         assertEquals(retained, behind.plate.shown)
-        assertEquals(reconfiguring, behind.plate.deferredProgress)
-        assertEquals(reconfiguring, behind.plate.condition)
-        assertEquals(StatusPlate(reconfiguring), behind.plate.expire(retained, 6_000L))
+        assertEquals(starting, behind.plate.deferredProgress)
+        assertEquals(starting, behind.plate.condition)
+        assertEquals(StatusPlate(starting), behind.plate.expire(retained, 6_000L))
         // A stale timer for something no longer shown changes nothing.
         assertEquals(behind.plate, behind.plate.expire(loaded, 6_000L))
         // The condition ending first drops it without touching the event.
@@ -153,13 +154,13 @@ class StatusPlateArbitrationTest {
     }
 
     @Test fun `an event replacing a condition defers it, and conditions replace each other`() {
-        val event = StatusPlate(reconfiguring).publish(saved, 0L)
+        val event = StatusPlate(starting).publish(saved, 0L)
         assertTrue(event.shownChanged)
         assertEquals(saved, event.plate.shown)
-        assertEquals(reconfiguring, event.plate.deferredProgress)
-        val starting = CameraStatusMessage.STARTING_CAMERA.status()
-        assertEquals(StatusPlate(starting), StatusPlate(reconfiguring).publish(starting, 0L).plate)
-        assertNull(StatusPlate(reconfiguring).clearProgress().shown)
+        assertEquals(starting, event.plate.deferredProgress)
+        val retrying = CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING.status()
+        assertEquals(StatusPlate(retrying), StatusPlate(starting).publish(retrying, 0L).plate)
+        assertNull(StatusPlate(starting).clearProgress().shown)
     }
 
     // MRG4-1: an event that ENDS the condition must not resurrect it on expiry.
@@ -176,15 +177,15 @@ class StatusPlateArbitrationTest {
         assertNull(preview.plate.deferredProgress)
     }
 
-    @Test fun `a not-ready rollback ends reconfiguring instead of deferring it`() {
+    @Test fun `a not-ready rollback ends the optics condition instead of deferring it`() {
         val unchanged = CameraStatusMessage.CAMERA_UNAVAILABLE_MODE_UNCHANGED.status()
-        val plate = StatusPlate(reconfiguring).publish(unchanged, 0L).plate
+        val plate = StatusPlate(starting).publish(unchanged, 0L).plate
         assertEquals(unchanged, plate.shown)
         assertNull(plate.deferredProgress)
         assertNull(plate.expire(unchanged, 6_000L).shown)
         // A WARNING-severity rollback ends it too, even while it is deferred behind a higher event.
         val stopFirst = CameraStatusMessage.STOP_RECORDING_LENS_UNCHANGED.status()
-        val behindError = shownAt(dngFailed, deferredProgress = reconfiguring).publish(stopFirst, 10L)
+        val behindError = shownAt(dngFailed, deferredProgress = starting).publish(stopFirst, 10L)
         assertEquals("a refusal is a response: it takes the plate", stopFirst, behindError.plate.shown)
         assertNull(behindError.plate.deferredProgress)
         assertEquals(dngFailed, behindError.plate.deferredEvent?.status)
@@ -213,11 +214,11 @@ class StatusPlateArbitrationTest {
         assertFalse(lens.endsCondition(CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING.status()))
     }
 
-    @Test fun `an ordinary success over reconfiguring still lets reconfiguring return`() {
-        val plate = StatusPlate(reconfiguring).publish(loaded, 0L).plate
+    @Test fun `an ordinary success over the optics condition still lets it return`() {
+        val plate = StatusPlate(starting).publish(loaded, 0L).plate
         assertEquals(loaded, plate.shown)
-        assertEquals(reconfiguring, plate.deferredProgress)
-        assertEquals(StatusPlate(reconfiguring), plate.expire(loaded, 1_500L))
+        assertEquals(starting, plate.deferredProgress)
+        assertEquals(StatusPlate(starting), plate.expire(loaded, 1_500L))
     }
 
     @Test fun `every condition-ending and response message is an event`() {
@@ -230,9 +231,49 @@ class StatusPlateArbitrationTest {
         }
     }
 
+    // AGG6-10: the not-Ready refusal is a timed response. As a timer-less condition, a press after
+    // the terminal "reopen the app" left "Camera reconfiguring…" on the plate (and in the Output
+    // row's condition) for good once the terminal expired.
+    @Test fun `the not-ready refusal is a timed response that never outlives the terminal`() {
+        val refusal = CameraStatusMessage.CAMERA_RECONFIGURING.status()
+        assertEquals(CameraStatusLifecycle.EVENT, refusal.lifecycle)
+        assertEquals(2_500L, refusal.durationMs)
+        val terminal = CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status()
+        val pressed = shownAt(terminal, atMs = 0L).publish(refusal, 1_000L)
+        assertTrue("the press is answered", pressed.shownChanged)
+        assertEquals(refusal, pressed.plate.shown)
+        assertNull(pressed.plate.condition)
+        val back = pressed.plate.expire(refusal, 3_500L)
+        assertEquals("the terminal returns for its remaining time", terminal, back.shown)
+        val after = back.expire(terminal, 8_500L)
+        assertNull(after.shown)
+        assertNull(after.condition)
+    }
+
+    // AGG6-7 / UX6-1: the microphone answers to a REC press are responses; a REC refused with
+    // "Microphone busy" right after a take that did not finish cleanly used to be dropped under that
+    // take's retained-take line, so the press looked inert.
+    @Test fun `microphone answers take the plate over a retained-take line which returns`() {
+        listOf(
+            CameraStatusMessage.MICROPHONE_BUSY,
+            CameraStatusMessage.RECORDING_WITHOUT_AUDIO,
+            CameraStatusMessage.MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO,
+            CameraStatusMessage.MICROPHONE_DENIED_AUDIO_OFF,
+            CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON,
+            CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT,
+        ).forEach { message ->
+            val answer = message.status()
+            val covered = shownAt(retained, atMs = 0L).publish(answer, 1_000L)
+            assertTrue(message.name, covered.shownChanged)
+            assertEquals(message.name, answer, covered.plate.shown)
+            assertEquals(message.name, retained, covered.plate.deferredEvent?.status)
+            assertEquals(message.name, retained, covered.plate.expire(answer, 3_500L).shown)
+        }
+    }
+
     @Test fun `an empty plate admits anything and null clears everything`() {
         assertEquals(loaded, StatusPlate(null).publish(loaded, 0L).plate.shown)
-        val cleared = shownAt(retained, deferredProgress = reconfiguring).publish(null, 10L)
+        val cleared = shownAt(retained, deferredProgress = starting).publish(null, 10L)
         assertTrue(cleared.shownChanged)
         assertEquals(StatusPlate(null), cleared.plate)
     }

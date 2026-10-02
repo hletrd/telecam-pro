@@ -200,8 +200,13 @@ fun CameraStatusMessage.status(
         -> CameraStatusSeverity.ERROR
     }
     val lifecycle = when (this) {
+        // NOT CAMERA_RECONFIGURING (AGG6-10): nothing publishes it when a reopen BEGINS — it is the
+        // answer to a press made while no session is accepted (shutter, REC admission, Custom WB).
+        // As a timer-less condition it outlived the moment it answered: published after the terminal
+        // "reopen the app", or by a late recorder refusal after the superseding Ready had already
+        // cleared conditions, it stayed on the plate (and in the Output row) indefinitely. It is a
+        // timed RESPONSE now; the reopen itself is read from Ready truth (`reopenInProgress`).
         CameraStatusMessage.STARTING_CAMERA,
-        CameraStatusMessage.CAMERA_RECONFIGURING,
         CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
         CameraStatusMessage.CAMERA_ERROR_RECOVERING,
         CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
@@ -281,7 +286,6 @@ private val CAMERA_TERMINAL_MESSAGES: Set<CameraStatusMessage> = setOf(
  */
 internal val OPTICS_CONDITION_MESSAGES: Set<CameraStatusMessage> = setOf(
     CameraStatusMessage.STARTING_CAMERA,
-    CameraStatusMessage.CAMERA_RECONFIGURING,
     CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
 )
 
@@ -330,6 +334,19 @@ internal val RESPONSE_MESSAGES: Set<CameraStatusMessage> = setOf(
     CameraStatusMessage.VIDEO_SAVED,
     CameraStatusMessage.CUSTOM_WB_SET,
     CameraStatusMessage.USE_AUTO_WB,
+    // The refusal of a press made while no session is accepted (AGG6-10).
+    CameraStatusMessage.CAMERA_RECONFIGURING,
+    // The microphone answers to a REC press or to the operator's own grant (AGG6-7 / UX6-1). A REC
+    // refused with "Microphone busy" comes right after a take that did not finish cleanly — exactly
+    // when a retained-take or save-failed line holds the plate — so as a plain WARNING it was
+    // dropped and the press looked inert; "Recording without audio" was likewise lost under any
+    // unexpired warning, so a silent take started with no notice. The covered line returns.
+    CameraStatusMessage.MICROPHONE_BUSY,
+    CameraStatusMessage.RECORDING_WITHOUT_AUDIO,
+    CameraStatusMessage.MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO,
+    CameraStatusMessage.MICROPHONE_DENIED_AUDIO_OFF,
+    CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON,
+    CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT,
 )
 
 /**

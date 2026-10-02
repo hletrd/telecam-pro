@@ -77,7 +77,6 @@ class StatusUrgencyTest {
     fun `camera conditions are cleared by terminal events never timers`() {
         val conditions = setOf(
             CameraStatusMessage.STARTING_CAMERA,
-            CameraStatusMessage.CAMERA_RECONFIGURING,
             CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
             CameraStatusMessage.CAMERA_ERROR_RECOVERING,
             CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,

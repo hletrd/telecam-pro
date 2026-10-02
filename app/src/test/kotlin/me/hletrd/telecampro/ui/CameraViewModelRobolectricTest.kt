@@ -1035,13 +1035,13 @@ class CameraViewModelRobolectricTest {
     // AGG5-55: the Output row keys "reconfiguring" on the live condition, shown or deferred.
     @Test fun `camera condition tracks a deferred reopen and clears on Ready`() {
         val (v, e) = createViewModel()
-        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
-        assertEquals(CameraStatusMessage.CAMERA_RECONFIGURING, v.state.value.cameraCondition)
+        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING.status())
+        assertEquals(CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING, v.state.value.cameraCondition)
         v.onAppStatus(CameraStatusMessage.MEMORY_SLOT_SAVED)
         assertEquals(CameraStatusMessage.MEMORY_SLOT_SAVED, v.state.value.status?.message)
         assertEquals(
-            "still reconfiguring behind the event",
-            CameraStatusMessage.CAMERA_RECONFIGURING,
+            "still retrying behind the event",
+            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
             v.state.value.cameraCondition,
         )
         e.onCameraReadyChange!!.invoke(
@@ -1109,11 +1109,11 @@ class CameraViewModelRobolectricTest {
         val (v, e) = createViewModel()
         val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
         e.onStatus!!.invoke(retained)
-        v.onAppStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
-        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+        e.onStatus!!.invoke(CameraStatusMessage.RAW_UNAVAILABLE.status())
+        e.onStatus!!.invoke(CameraStatusMessage.STARTING_CAMERA.status())
         assertEquals(retained, v.state.value.status)
         idleFor(6_000)
-        assertEquals(CameraStatusMessage.CAMERA_RECONFIGURING, v.state.value.status?.message)
+        assertEquals(CameraStatusMessage.STARTING_CAMERA, v.state.value.status?.message)
         e.onCameraReadyChange!!.invoke(
             CameraReadyPublication(
                 sequence = 1L,
@@ -1131,7 +1131,6 @@ class CameraViewModelRobolectricTest {
         val (v, e) = createViewModel()
         val conditions = listOf(
             CameraStatusMessage.STARTING_CAMERA,
-            CameraStatusMessage.CAMERA_RECONFIGURING,
             CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
             CameraStatusMessage.CAMERA_ERROR_RECOVERING,
             CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
