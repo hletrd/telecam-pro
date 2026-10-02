@@ -489,7 +489,14 @@ class DngPreCaptureAllocationTest {
                 providerTask = task
                 RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
             },
-            allocate = { "content://media/dng/late-timeout" },
+            allocate = {
+                // The deadline fires while the provider insert is blocked in flight (a dequeued
+                // task; one still queued at retirement never inserts at all — DB5-13).
+                checkNotNull(timeout).invoke()
+                assertTrue(failures.single() is java.util.concurrent.TimeoutException)
+                assertEquals(1, retired.get())
+                "content://media/dng/late-timeout"
+            },
             isCurrent = { true },
             onReady = { ready.incrementAndGet() },
             onLateValue = late::add,
@@ -503,9 +510,6 @@ class DngPreCaptureAllocationTest {
         )
 
         assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
-        checkNotNull(timeout).invoke()
-        assertTrue(failures.single() is java.util.concurrent.TimeoutException)
-        assertEquals(1, retired.get())
         checkNotNull(providerTask).invoke()
         assertEquals(listOf("content://media/dng/late-timeout"), late.toList())
         assertEquals(0, ready.get())
@@ -581,5 +585,80 @@ class DngPreCaptureAllocationTest {
         assertFalse(first.release())
         assertTrue(admission.canAdmit())
         assertTrue(requireNotNull(admission.tryAcquire()).release())
+    }
+
+    @Test
+    fun `DNG admission signal follows the live lease across every edge`() {
+        val admission = DngPreCaptureAdmission()
+        val events = CopyOnWriteArrayList<Boolean>()
+        val subscription = admission.subscribe(events::add)
+        val lease = requireNotNull(admission.tryAcquire())
+        assertNull(admission.tryAcquire())
+        assertTrue(lease.release())
+        assertFalse(lease.release())
+        assertEquals(listOf(true, false, true), events.toList())
+        subscription.close()
+    }
+
+    /** DB5-13: a cancel after dispatch but before the worker dequeues the task never inserts. */
+    @Test
+    fun `a task dequeued after cancel never allocates a provider row`() {
+        var providerTask: (() -> Unit)? = null
+        val allocationRan = AtomicBoolean(false)
+        val retired = AtomicInteger()
+        val owner = DngPreCaptureAllocation(
+            dispatch = { task ->
+                providerTask = task
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = {
+                allocationRan.set(true)
+                "content://media/dng/orphan"
+            },
+            isCurrent = { true },
+            onReady = { error("a retired owner cannot reach Camera2") },
+            onLateValue = { error("no row may be inserted after retirement") },
+            onFailure = {},
+            onRetired = { retired.incrementAndGet() },
+        )
+
+        assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+        assertTrue(owner.cancel())
+        checkNotNull(providerTask).invoke()
+
+        assertFalse(allocationRan.get())
+        assertEquals(1, retired.get())
+    }
+
+    /** DB5-13: a cancel racing the deadline arm completes the armed timer instead of leaking it. */
+    @Test
+    fun `a cancel landing while the deadline arms completes it and dispatches nothing`() {
+        lateinit var owner: DngPreCaptureAllocation<String>
+        val timerCancelled = AtomicBoolean(false)
+        val dispatched = AtomicBoolean(false)
+        val retired = AtomicInteger()
+        owner = DngPreCaptureAllocation(
+            dispatch = {
+                dispatched.set(true)
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = { "row" },
+            isCurrent = { true },
+            onReady = { error("a cancelled owner cannot reach Camera2") },
+            onLateValue = { error("no row was allocated") },
+            onFailure = {},
+            onRetired = { retired.incrementAndGet() },
+            deadlineScheduler = RecordingTeardownScheduler { _, _ ->
+                // invalidateCameraReady on another thread, between the latch check and the arm.
+                owner.cancel()
+                RecordingTeardownCancellation { timerCancelled.set(true) }
+            },
+            deadlineMs = 1L,
+        )
+
+        assertEquals(RecordingPreNativeDispatch.SHUTDOWN, owner.start())
+        assertTrue("the armed 8 s timer is completed, not left to fire", timerCancelled.get())
+        assertFalse(dispatched.get())
+        assertEquals(1, retired.get())
     }
 }

@@ -47,8 +47,12 @@ internal class DngPreCaptureAdmission {
     private val occupied = AtomicBoolean(false)
     private val admissionSignal = ProcessAdmissionSignal(initial = true)
 
+    // Both edges publish through refresh, which re-reads the live lease INSIDE the signal monitor
+    // (TE5-12, the AGG4-35 race): with a computed publish, a release preempted between its CAS and
+    // its `publish(true)` could land after a racing acquire's change-gated `publish(false)` and
+    // leave the shutter reading open while the slot was held.
     fun tryAcquire(): Lease? = if (occupied.compareAndSet(false, true)) {
-        admissionSignal.publish(false)
+        admissionSignal.refresh { !occupied.get() }
         Lease(this)
     } else {
         null
@@ -61,7 +65,7 @@ internal class DngPreCaptureAdmission {
 
     private fun release() {
         check(occupied.compareAndSet(true, false)) { "DNG pre-capture admission underflow" }
-        admissionSignal.publish(true)
+        admissionSignal.refresh { !occupied.get() }
     }
 
     internal class Lease internal constructor(private val owner: DngPreCaptureAdmission) {
@@ -132,7 +136,20 @@ internal class DngPreCaptureAllocation<T : Any>(
         if (allocationDeadline != null && !allocationDeadline.arm()) {
             return RecordingPreNativeDispatch.SHUTDOWN
         }
+        // DB5-13: a cancel that landed after the latch check above already retired this attempt,
+        // but its `deadline.get()?.complete()` ran against a deadline that was not yet armed (a
+        // no-op), so the armed timer would fire 8 s later for nothing. Complete it here and never
+        // dispatch provider work for a retired owner.
+        if (cancelRequested.get()) {
+            allocationDeadline?.complete()
+            return RecordingPreNativeDispatch.SHUTDOWN
+        }
         val submission = dispatch {
+            // The dispatcher only cancels a task it has not dequeued yet. A worker that dequeued
+            // this one after the cancel must not insert a row: the retirement already released the
+            // process DNG slot and its rejected-cleanup reservation, so the late row would have no
+            // cleanup capacity and the next shot could overtake it (DB5-13).
+            if (attempt.isRetired()) return@dispatch
             val result = runCatching(allocate)
             when (attempt.deliver(result) {
                 onFailure(result.exceptionOrNull())

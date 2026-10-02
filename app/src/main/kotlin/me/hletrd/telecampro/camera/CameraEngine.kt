@@ -548,7 +548,14 @@ class CameraEngine internal constructor(
 
     /** Returns the session generation this invalidation produced (see [rollbackOpticsAfterPreflight]). */
     private fun invalidateCameraReady(): Long {
-        cancelDngPreCaptureAllocations()
+        // Ready/session are cleared BEFORE the DNG owners are cancelled (AGG5-5). A cancel settles
+        // its shot synchronously, and a BURST/AEB settle continues the chain gated only on
+        // `acceptedSessionIsCurrent` — which still read TRUE while this used to cancel first, so
+        // the continuation re-took the just-released process DNG slot, registered a NEW owner the
+        // cancel snapshot had already missed, and dispatched a real pending insert for a dying
+        // session (held up to the 8 s allocation deadline, refusing every still after resume).
+        // cancelEachSealed already guarantees a throwing cancel cannot skip the invalidation, so
+        // the old "first statement" placement bought nothing.
         val (publication, tapPublication) = synchronized(this) {
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
             val retiredTap = retireTapFocusLocked(rebuildPreview = false)
@@ -561,6 +568,7 @@ class CameraEngine internal constructor(
                 sessionGeneration = sessionGeneration,
             ) to retiredTap
         }
+        cancelDngPreCaptureAllocations()
         tapPublication?.let { onTapFocusChange?.invoke(it) }
         onCameraReadyChange?.invoke(publication)
         return publication.sessionGeneration
@@ -5124,10 +5132,10 @@ class CameraEngine internal constructor(
     }
 
     /**
-     * First statement of [invalidateCameraReady]: nothing here may throw past it. One owner's
-     * cancel runs its retirement callbacks (settle, admission release, publication); a failure
-     * there must neither skip the remaining owners nor abort the invalidation before Ready is
-     * cleared (AGG4-21), so each cancel is sealed individually.
+     * Runs inside [invalidateCameraReady] right after Ready/session are cleared (AGG5-5): nothing
+     * here may throw past it. One owner's cancel runs its retirement callbacks (settle, admission
+     * release, publication); a failure there must neither skip the remaining owners nor abort the
+     * invalidation's Ready publication (AGG4-21), so each cancel is sealed individually.
      */
     private fun cancelDngPreCaptureAllocations() {
         val pending = synchronized(dngPreCaptureAllocationLock) {
@@ -5951,7 +5959,7 @@ class CameraEngine internal constructor(
                             // snapshot-copy failure, a dispatch rejection) has nothing to wait
                             // behind and transfers DIRECT too (AGG4-7); only a real ordered-lane
                             // rejection retains the private row for launch recovery.
-                            when (val write = stillPipeline.saveDng(
+                            val write = stillPipeline.saveDng(
                                 raw,
                                 rawChars,
                                 result,
@@ -5959,7 +5967,14 @@ class CameraEngine internal constructor(
                                 checkNotNull(dngAllocation) {
                                     "DNG Camera2 dispatch has no preallocated output"
                                 },
-                            )) {
+                            )
+                            // The serialization the admission buys ends HERE, before any tail is
+                            // handed to a worker (AGG5-5 / TR5-15): a RAW-only BURST/AEB tail
+                            // transferred to the process owner could otherwise settle on that
+                            // worker and fire the next shot while this thread still held the slot,
+                            // refusing the chain's own continuation (`tryAcquire` false).
+                            releaseDngAdmission()
+                            when (write) {
                                 is DngWriteResult.Complete -> {
                                     rejectedDngCleanup?.cancel()
                                     val pending = write.publication
@@ -5995,6 +6010,7 @@ class CameraEngine internal constructor(
                                 }
                             }
                         } else {
+                            releaseDngAdmission()
                             dngPublishQueued = submitIncompleteDngCleanup()
                             reportStatus(CameraStatusMessage.DNG_CAPTURE_FAILED.status())
                         }
@@ -6004,7 +6020,9 @@ class CameraEngine internal constructor(
                     }
                 } finally {
                     // Pre-capture serialization ends with the live Camera2 callback, not with slow
-                    // publication/cleanup tails; those have their own finite process owners.
+                    // publication/cleanup tails; those have their own finite process owners. The
+                    // DNG branches already released before their handoff; this exactly-once
+                    // release is the backstop for every other exit (processed-only, a throw).
                     releaseDngAdmission()
                     if (!processedQueued) finishProcessed()
                     if (!dngPublishQueued) finishDng()
@@ -6015,7 +6033,11 @@ class CameraEngine internal constructor(
             override fun onError(t: Throwable) {
                 var dngCleanupQueued = false
                 try {
-                    if (formats.dngRaw) dngCleanupQueued = submitIncompleteDngCleanup()
+                    if (formats.dngRaw) {
+                        // Same order as onPhoto: release before the cleanup worker can settle.
+                        releaseDngAdmission()
+                        dngCleanupQueued = submitIncompleteDngCleanup()
+                    }
                     Log.e("CameraEngine", "Photo capture failed", t)
                     reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
