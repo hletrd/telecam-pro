@@ -9,14 +9,18 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘.
-Fourteen remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
-**A9** needs a pause during cold start, **D1** needs an off-axis sound source,
+**A9** needs a pause (and a fast return) during cold start, **A10** needs zoom readouts on PMA110 and
+both tablets, **A11** needs a Video→Photo→FRONT→Video trip and a clip's frame rate, **A12** needs a
+few FRONT presses with DNG on, **A13** needs the status plate watched through reopens and a mic-less
+REC press, **A14** needs one pulled DNG per device, **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
-live publication tail, and **E1/E2/E3/E4** need real MediaProvider ownership,
+live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
+run of ordinary clips plus one more take, and **E1/E2/E3/E4** need real MediaProvider ownership,
 system-consent, reset/reindex, and pending-expiry behavior. B1 closed the rotation
 work end to end; C1 confirmed the afocal
 correction against real converter glass. C3 is closed as an honest no-observable-difference result,
@@ -261,6 +265,11 @@ either of two independent triggers:
    preview, whose `previewReady` stays false, now re-binds on every resume. Neither can be provoked
    on demand on PMA110, because both need a preview EGL failure first. **This half is host-only**
    (as F7/F8 are): host tests drive the interleaving, and no device step is owed for it.
+3. **A resume refused while the cold-start task was finishing** (AGG6-20, cycle 6 plan A1.2): the
+   task read `paused` and cleared `starting` outside one monitor, so a `resume()` between the two was
+   refused by the still-set `starting` and nothing restarted the camera. Cycle 6 reads and clears both
+   under one monitor and replays a refused resume. This needs a background AND a return inside the
+   cold-start window, which the fast-return attempts below aim for.
 
 The ordinary foreground return has an input surface and a presented preview, so it re-binds
 nothing and stays byte-identical. Host tests drive both interleavings; whether a real launch can
@@ -268,11 +277,115 @@ land in the trigger-1 window is a device question.
 
 - Force-stop the app. Launch it and press Home (or lock the screen) within roughly half a second,
   before the viewfinder appears. Return to the app. Repeat five times, varying the delay.
+- Then five fast-return attempts: launch, press Home, and return at once (for example a script that
+  runs `adb shell am start -n <component>`, `adb shell input keyevent KEYCODE_HOME` and the same
+  `am start` back to back).
 - Keep the debug logcat for each attempt (`CameraController`, `Session configured`, `StartupTrace`).
 
 **Pass:** every return shows a live, upright preview within a couple of seconds, with no black
 viewfinder that needs a second background/foreground to recover, and no crash. Record the delay
 and outcome of each attempt.
+
+### A10. Zoom readout follows the route's own scale — ◯ OPEN 2026-10-02
+
+Cycle 5 (plan A2.4, with the MRG5-4 follow-up) changed every zoom readout — the pill, the Fn ZOOM
+value, the zoom ruler and the Shoot-tab slider, all read through `mainRelativeZoomMultiplier`. The
+LOGICAL seamless route now displays 1:1, because its wire zoom is already main-relative; it used to
+multiply by the measured 23.4 mm ÷ the nominal 23 mm and read "3.1×" at the 3× preset. A standalone
+route divides by the nominal 23 mm while the measured main is within the 10 % caption band, and by
+the measured main otherwise. This is a PMA110-visible change, and the tablet readings recorded in
+`CLAUDE.md` predate it. The host tables cover 23.4 mm and 26 mm mains; no device readout has been
+taken.
+
+- PMA110, rear **PHOTO**, DNG off (logical route). Tap the 0.6×, 1×, 3× and 10× presets and note the
+  pill, the Fn ZOOM value and the ruler at each.
+- Turn DNG on (standalone routes) and repeat at 1×, 3× and 10×.
+- On the TB336ZU and the TB331FC, rear PHOTO at the 1× preset (and 3× zoom where the rail offers it).
+
+**Pass:** PMA110 reads 0.6× / 1.0× / 3.0× / 10.0× on the logical route and 1.0× / 3.0× / 10.0× on
+the standalone routes, with the pill, Fn value and ruler agreeing at every point. Each tablet's main
+lens reads 1.0× (no longer 1.1×). Record each surface's reading; any surface that disagrees with the
+pill is a fail.
+
+### A11. Stabilization and frame-rate requests survive non-recording routes — ◯ OPEN 2026-10-02
+
+Cycle 5 (plan A2.1, with the MRG5 follow-ups `dd3edc64` and `3489859e`) separated the operator's
+video-stabilization and frame-rate REQUEST from the value a route can display. Photo-logical and
+FRONT routes that lack Active stabilization or the higher frame rate narrow only what they show and
+send; they no longer write the narrowed value back into the persisted request. The host tests feed
+caps without stabilization mode 2 or 60 fps and then the tele Video caps. The device-visible effect —
+the tele Video route records with Active stabilization and the higher frame rate again after such a
+trip — has not been observed.
+
+- PMA110, rear **VIDEO** on a route that offers Active stabilization and a frame rate above 30 fps
+  (TELE, for example). Select Active and the highest frame rate offered, and note both rows.
+- Switch to **PHOTO** (logical route), then to the FRONT camera, then back to the rear, then back to
+  **VIDEO** on the same route. Repeat once with a background/foreground in the middle and once with
+  an app relaunch (Remember Settings on).
+- Record a ~5 s clip after each return and read its frame rate (`ffprobe` or `MediaExtractor`); keep
+  the debug logcat result line that reports `vstab`.
+
+**Pass:** after every trip the settings rows read Active and the selected frame rate again, the clip
+carries that frame rate, and the result metadata reports the matching stabilization mode. A row that
+returns as Standard/Off or 30 fps, or a clip at the narrowed rate, is a fail.
+
+### A12. RAW loss is quiet per press and on FRONT — ◯ OPEN 2026-10-02
+
+Cycle 5 (plan A1.11, with the MRG5-1 latch `009bf08f`) stopped raising "RAW unavailable" on every
+shutter press of a structurally RAW-less route (one where `rawSelectable` is false, such as FRONT).
+On a RAW-capable route whose accepted session lost its RAW reader, the loss is announced once per
+session shape at Ready instead. The second half needs the session ladder to drop RAW, which PMA110
+cannot be made to do on demand, so this entry checks the visible first half; the once-per-shape
+announcement stays covered by the host predicate test.
+
+- PMA110, rear **PHOTO** with DNG on. Take one still and confirm a DNG is saved.
+- Switch to the FRONT camera and press the shutter three times. Return to the rear camera and press
+  it once more.
+
+**Pass:** no front press shows "RAW unavailable", each saves its processed still, and FRONT's Ready
+shows no RAW-loss line. Back on the rear camera the next still writes a DNG again and no notice
+appears. Record the status lines seen after each press.
+
+### A13. Reopen caption, refusals and microphone lines on the status plate — ◯ OPEN 2026-10-02
+
+Cycle 6 (plan A2.6 and A2.7) changes three visible status behaviours, all host-tested only:
+
+1. An ordinary reopen (DNG on/off, aspect, frame rate, lens or mode change) shows the reconfiguring
+   caption for as long as that reopen holds. The caption follows Not-Ready with a pending optics
+   generation, not a published PROGRESS status. Cold start and the terminal reopen-the-app state do
+   not show it, and the focal rail's TalkBack state and the Custom WB caption use the same rule.
+2. A "Camera reconfiguring…" REFUSAL (a shutter or REC press during a reopen) is a timed response.
+   It no longer sticks on the plate over a live, Ready viewfinder.
+3. "Microphone busy" and the microphone-outcome lines (for example "Recording without audio") are
+   responses to the REC press, so they take the plate even over an unexpired warning or retained-take
+   line, which returns afterwards for its remaining time.
+
+- PMA110, rear **PHOTO**. Toggle DNG on and off, then switch the aspect ratio, and watch the Output
+  row during each reopen. Force-stop and relaunch, and watch the same row during cold start.
+- Toggle DNG and press the shutter at once, inside the reopen. Repeat in **VIDEO** with an fps change
+  and an immediate REC press.
+- With audio on and the microphone permission revoked in Android Settings, press REC.
+
+**Pass:** (1) the caption appears during each ordinary reopen and clears at Ready, and cold start
+shows only "Starting camera…". (2) Each refusal line shows and then clears on its own within a few
+seconds, including when Ready arrives first. (3) The microphone-outcome line is shown at the REC
+press and the take records video-only. Record the lines seen and any that stuck. A "Microphone busy"
+refusal cannot be provoked on demand; if one is seen, record whether it was shown over the line
+already on the plate.
+
+### A14. A saved DNG carries no serial or unique-id tag — ◯ OPEN 2026-10-02
+
+`DngCreator` writes its own TIFF/EXIF tags from platform properties, and `CLAUDE.md`'s "captures carry
+no GPS tags" proof parsed a HEIF only. No saved DNG has been checked for a camera serial or a unique
+image id (AGG6-34). `setLocation` is never called, so no GPS directory is expected.
+
+- PMA110, rear **PHOTO** with DNG on. Save one DNG on TELE and one at the 1× preset. Where available,
+  save one DNG on the TB336ZU and on the TB331FC as well.
+- Pull each file and list every tag: `exiftool -a -G1 -s <file>` (or the repository's TIFF parser).
+
+**Pass:** no file carries `CameraSerialNumber`, `BodySerialNumber`, `LensSerialNumber`,
+`ImageUniqueID` or any GPS tag. Record the full tag list for each device. A present identifying tag is
+a fail that needs a strip in the DNG lane plus a matching `CLAUDE.md` correction.
 
 ---
 
@@ -412,6 +525,44 @@ next launch's recovery.
 unverified), plays end to end, and carries the expected tracks: video-only for the audio-off take;
 the privacy-toggle take may carry a silent AAC track or degrade to video-only — record which. Any
 good clip reported as retained is a fail; keep its logcat and the pulled file.
+
+### D4. Standby meter and REC admission under a quick Stop — ◯ OPEN 2026-10-02
+
+Cycle 6 (plan A1.11, carrying AGG5-42, AGG5-43 and AGG5-66) makes three changes on the REC admission
+edge. A Stop latched during admission is no longer absorbed by a racing REC press. The standby level
+meter re-arms after a Stop-latched admission fails, where before it stayed off until the next Video
+entry. An audio-off take no longer reports "Microphone busy". The interleavings are host-tested; the
+meter is a real `AudioRecord` and its re-arm has not been seen on a device.
+
+- PMA110, **VIDEO**, audio on, details visible so the standby meter shows while armed. Speak or tap
+  near the phone and confirm the meter moves.
+- Press REC and then Stop as fast as possible, five times, so the Stop lands inside the admission
+  window. After each pair, wait two seconds and talk again.
+- Turn audio off and repeat three REC/Stop pairs.
+
+**Pass:** after every quick pair the standby meter moves again within about a second, no recording is
+left running (no tally, no timer), and any clip that was created is published or reported. No
+audio-off pair shows "Microphone busy". Record each pair's outcome and keep the debug logcat.
+
+### D5. Recorder cleanup classification on ordinary stops — ◯ OPEN 2026-10-02
+
+Cycle 6 (plan B.1) extends the cycle-5 cleanup classification (F8). The audio-encoder SETUP failure
+path classifies its `stop()` like the video ladder, so an AAC `start()` failure degrades to a
+video-only take instead of quarantining the recorder for the process. A codec error is latched where
+`signalEndOfInputStream`/`stop` throws, not only on the drain thread. The `*CodecErrorLatched` flags
+mean a codec error only, not a microphone read fault or a muxer throw. The error branches cannot be
+provoked on demand (F8), but every ordinary stop now runs through the changed classification, and that
+path is device-checkable.
+
+- PMA110, **VIDEO**, audio on. Record six clips: three of ~5 s, one stopped within the first second,
+  one with the microphone disabled from the quick-settings privacy tile mid-take, and one with audio
+  off.
+- After the last clip, start a seventh take without restarting the app.
+
+**Pass:** every clip finalizes and appears in the gallery with its expected tracks (video-only for the
+audio-off take; the privacy-tile take may carry a silent AAC track or degrade to video-only — record
+which). The seventh take starts normally, and no logcat row reports `UNSAFE_RECORDER_RESTART` or a
+recorder quarantine. Record each clip's track list.
 
 ---
 
@@ -593,6 +744,23 @@ demand; the evidence is the fake-native-graph host test.
 
 **Reopen when:** a field log shows `UNSAFE_RECORDER_RESTART` after a codec error, or a device repro
 of an encoder error mid-REC exists. Then pass when the next REC starts without a process restart.
+
+Cycle 6 (plan B.1) extends this classification to the audio-encoder setup path and to a codec error
+that surfaces at the `signalEndOfInputStream`/`stop` throw site. The error branches stay host-only
+for the reason above; the ordinary-stop path they now share is the open check D5.
+
+### F9. Ready cleared before DNG owners cancel — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 5 (plan A1.4): `invalidateCameraReady` clears Ready and the session generation first and only
+then cancels the DNG owners. A dispatched DNG allocation whose attempt is already retired returns
+without acting, `DngPreCaptureAdmission` publishes through a locked refresh, and a RAW-only chain
+releases its DNG admission before handing the tail to a worker. The visible symptom it closes — a
+BURST/AEB step continuing onto a session that is being torn down — needs a reopen to land inside
+one step's dispatch, a window that a hand-driven mode switch cannot target. The evidence is the
+host ordering tests; an ordinary interrupted burst is already exercised by any mode switch.
+
+**Reopen when:** a field log shows a still dispatched after `invalidateCameraReady`, or a
+`CAMERA_ERROR` on a BURST/AEB interrupted by a mode, lens or DNG change.
 
 ---
 

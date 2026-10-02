@@ -993,7 +993,7 @@ unresolved_field_references = [
         r"[^.]{0,160}FIELD_CHECKS\.md[^.]{0,160}\b(?:remains|still) open\b",
     )
     for match in re.finditer(pattern, normalized_architecture, re.I)
-    if re.search(r"\b[A-E]\d\b", match.group(0)) is None
+    if re.search(r"\b[A-E]\d+\b", match.group(0)) is None
 ]
 check(
     not unresolved_field_references,
@@ -1369,12 +1369,21 @@ check(
     "field dashboard names every body check exactly and in order",
     f"dashboard={dashboard_ids} body={body_ids}",
 )
-remain_words = {
+remain_units = {
     "One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5,
-    "Six": 6, "Seven": 7, "Eight": 8, "Nine": 9, "Ten": 10,
-    "Eleven": 11, "Twelve": 12, "Thirteen": 13, "Fourteen": 14, "Fifteen": 15,
-    "Sixteen": 16, "Seventeen": 17, "Eighteen": 18, "Nineteen": 19, "Twenty": 20,
+    "Six": 6, "Seven": 7, "Eight": 8, "Nine": 9,
 }
+remain_words = {
+    **remain_units,
+    "Ten": 10, "Eleven": 11, "Twelve": 12, "Thirteen": 13, "Fourteen": 14, "Fifteen": 15,
+    "Sixteen": 16, "Seventeen": 17, "Eighteen": 18, "Nineteen": 19,
+}
+# The open count outgrew "Twenty" in cycle 6; spell the compound tens the way the prose writes them
+# ("Twenty-one") instead of capping the ledger at a vocabulary limit.
+for tens_word, tens in (("Twenty", 20), ("Thirty", 30), ("Forty", 40)):
+    remain_words[tens_word] = tens
+    for unit_word, unit in remain_units.items():
+        remain_words[f"{tens_word}-{unit_word.lower()}"] = tens + unit
 remain_match = re.search(
     rf"^({'|'.join(remain_words)}) remain:",
     field_checks,
