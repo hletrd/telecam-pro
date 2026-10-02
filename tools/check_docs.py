@@ -93,6 +93,199 @@ RECURRING_GATES = (
 DOUBLE_CHARGE_WINDOW_LINES = 6
 
 
+# AR6-4 / AGG6-37 (tool half): a raw `android.util.Log.[di]` bypasses the bounded facade on purpose
+# (AGG5-9: it was already admitted), so its ONLY bound is the guard in front of it. The scan used to
+# accept any gate token anywhere in the previous 1,200 characters, so a raw row placed after an
+# unrelated guarded block in the same function passed as "recurring_budgeted" while being an
+# unbounded producer. The guard must now be STRUCTURAL: a non-negated gate CALL in the condition of
+# the innermost enclosing `if (…) {`, in a single-statement `if (…) Log…`, in the `takeIf { … }` of a
+# `?.let {` block, or an early `if (!admitted) return` whose `val admitted = …` holds the gate call —
+# and the condition may not OR the gate away (`||` at its top level).
+GATE_CALL_NAMES = {
+    "recurring": (
+        "recurringDiagnosticAllowed",
+        "evidenceDiagnosticAllowed",
+        "tapFocusDiagnosticAllowed",
+        "processDiagnosticLogBudget.tryAcquire",
+    ),
+    "reserved": (
+        "reservedDiagnosticAllowed",
+        "processReservedDiagnosticLogBudget.tryAcquire",
+    ),
+}
+
+
+def kotlin_code_only(source: str) -> str:
+    """[source] with comments and string-literal text blanked (same length; template code kept)."""
+    out = list(source)
+    index = 0
+    length = len(source)
+    # Each frame is ("code", brace depth) or ("string", is_raw).
+    stack: list[tuple[str, object]] = [("code", 0)]
+
+    def blank(start: int, end: int) -> None:
+        for position in range(start, end):
+            if out[position] != "\n":
+                out[position] = " "
+
+    while index < length:
+        kind, value = stack[-1]
+        char = source[index]
+        if kind == "code":
+            if source.startswith("//", index):
+                end = source.find("\n", index)
+                end = length if end < 0 else end
+                blank(index, end)
+                index = end
+                continue
+            if source.startswith("/*", index):
+                depth, cursor = 1, index + 2
+                while cursor < length and depth:
+                    if source.startswith("/*", cursor):
+                        depth, cursor = depth + 1, cursor + 2
+                    elif source.startswith("*/", cursor):
+                        depth, cursor = depth - 1, cursor + 2
+                    else:
+                        cursor += 1
+                blank(index, cursor)
+                index = cursor
+                continue
+            if source.startswith('"""', index):
+                stack.append(("string", True))
+                index += 3
+                continue
+            if char == '"':
+                stack.append(("string", False))
+                index += 1
+                continue
+            if char == "'":
+                end = index + 1
+                while end < length and source[end] != "'":
+                    end += 2 if source[end] == "\\" else 1
+                blank(index + 1, end)
+                index = end + 1
+                continue
+            if char == "{":
+                stack[-1] = ("code", int(value) + 1)
+            elif char == "}":
+                if int(value) == 0 and len(stack) > 1:
+                    stack.pop()  # closes a `${` template expression
+                    blank(index, index + 1)
+                    index += 1
+                    continue
+                stack[-1] = ("code", int(value) - 1)
+            index += 1
+            continue
+        # Inside a string literal.
+        raw = bool(value)
+        if raw and source.startswith('"""', index):
+            stack.pop()
+            index += 3
+            continue
+        if not raw and char == '"':
+            stack.pop()
+            index += 1
+            continue
+        if not raw and char == "\\":
+            blank(index, index + 2)
+            index += 2
+            continue
+        if source.startswith("${", index):
+            blank(index, index + 2)
+            stack.append(("code", 0))
+            index += 2
+            continue
+        blank(index, index + 1)
+        index += 1
+    return "".join(out)
+
+
+def _matching_open(code: str, close_index: int, opener: str, closer: str) -> int | None:
+    depth = 0
+    for position in range(close_index, -1, -1):
+        if code[position] == closer:
+            depth += 1
+        elif code[position] == opener:
+            depth -= 1
+            if depth == 0:
+                return position
+    return None
+
+
+def _top_level(text: str) -> str:
+    """[text] with every parenthesized/braced group removed (only depth-0 characters kept)."""
+    kept, depth = [], 0
+    for char in text:
+        if char in "({":
+            depth += 1
+        elif char in ")}":
+            depth -= 1
+        elif depth == 0:
+            kept.append(char)
+    return "".join(kept)
+
+
+def _admits(condition: str, gates: tuple[str, ...]) -> bool:
+    """A non-negated gate call ANDed (never ORed) into [condition]."""
+    if "||" in _top_level(condition):
+        return False
+    for gate in gates:
+        pattern = r"(?<![\w.!])(?:[\w.]+\.)?" + re.escape(gate) + r"\s*\("
+        for match in re.finditer(pattern, condition):
+            prefix = condition[:match.start()].rstrip()
+            if not prefix.endswith("!"):
+                return True
+    return False
+
+
+def _if_condition_before(code: str, end: int) -> str | None:
+    """The condition of an `if (…)` whose `)` is the last code character before [end]."""
+    head = code[:end].rstrip()
+    if not head.endswith(")"):
+        return None
+    open_index = _matching_open(code, len(head) - 1, "(", ")")
+    if open_index is None or not re.search(r"\bif\s*$", code[:open_index]):
+        return None
+    return code[open_index + 1:len(head) - 1]
+
+
+def raw_log_guarded(code: str, call: int, gates: tuple[str, ...]) -> bool:
+    """True when the raw Log call at [call] in comment/string-blanked [code] is structurally gated."""
+    single = _if_condition_before(code, call)
+    if single is not None and _admits(single, gates):
+        return True
+    depth, block = 0, None
+    for position in range(call - 1, -1, -1):
+        char = code[position]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            if depth == 0:
+                block = position
+                break
+            depth -= 1
+    if block is None:
+        return False
+    condition = _if_condition_before(code, block)
+    if condition is not None and _admits(condition, gates):
+        return True
+    header = code[:block].rstrip()
+    if header.endswith("?.let") or header.endswith(".let"):
+        lambda_close = len(header.rsplit("let", 1)[0].rstrip().rstrip("?.").rstrip()) - 1
+        if lambda_close >= 0 and code[lambda_close] == "}":
+            lambda_open = _matching_open(code, lambda_close, "{", "}")
+            if lambda_open is not None and re.search(r"\btakeIf\s*$", code[:lambda_open]):
+                if _admits(code[lambda_open + 1:lambda_close], gates):
+                    return True
+    body = code[block + 1:call]
+    for early in re.finditer(r"\bif\s*\(\s*!\s*(\w+)\s*\)\s*return\b", body):
+        name = early.group(1)
+        assignment = re.search(rf"\bval\s+{name}\s*=", body[:early.start()])
+        if assignment and _admits(body[assignment.end():early.start()], gates):
+            return True
+    return False
+
+
 def debug_log_classification_inventory() -> tuple[dict[str, int], list[str], list[str]]:
     counts = {"recurring_budgeted": 0, "one_shot_session": 0, "reserved_fault": 0}
     unclassified: list[str] = []
@@ -105,11 +298,14 @@ def debug_log_classification_inventory() -> tuple[dict[str, int], list[str], lis
         bounded_alias = (
             "import me.hletrd.telecampro.camera.DiagnosticLog as Log" in source
         )
+        # Comments and string text are blanked so a `Log.i(` in prose is not a call site and a
+        # brace inside a literal cannot misplace the enclosing block.
+        code = kotlin_code_only(source)
         previous_end = 0
-        for match in invocation.finditer(source):
+        for match in invocation.finditer(code):
             level = match.group("level")
-            before = source[max(previous_end, match.start() - 1_200):match.start()]
-            facade_prefix = source[max(0, match.start() - 24):match.start()]
+            before = code[max(previous_end, match.start() - 1_200):match.start()]
+            facade_prefix = code[max(0, match.start() - 24):match.start()]
             previous_end = match.end()
             aliased_door = bounded_alias and not source[match.start():].startswith("android.util.Log.")
             bounded_facade = "Diagnostic" in facade_prefix or aliased_door
@@ -124,13 +320,10 @@ def debug_log_classification_inventory() -> tuple[dict[str, int], list[str], lis
                     double_charged.append(f"{relative}:{line}:Log.{level}")
                 counts["reserved_fault" if level in {"e", "w"} else "recurring_budgeted"] += 1
                 continue
-            if any(gate in before for gate in RECURRING_GATES):
+            if raw_log_guarded(code, match.start(), GATE_CALL_NAMES["recurring"]):
                 counts["recurring_budgeted"] += 1
                 continue
-            if (
-                "reservedDiagnosticAllowed" in before
-                or "processReservedDiagnosticLogBudget.tryAcquire" in before
-            ):
+            if raw_log_guarded(code, match.start(), GATE_CALL_NAMES["reserved"]):
                 counts["reserved_fault"] += 1
                 continue
             line = source.count("\n", 0, match.start()) + 1

@@ -1703,6 +1703,62 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                     result.stdout,
                 )
 
+    def test_committed_export_requires_a_structural_guard_on_raw_debug_rows(self) -> None:
+        # AR6-4 / AGG6-37: a gate TOKEN within 1,200 characters used to classify a raw row as
+        # budgeted. Each mutation below kept such a token nearby and passed the lexical scan.
+        engine = "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt"
+        telemetry = "app/src/main/kotlin/me/hletrd/telecampro/camera/DiagnosticTelemetry.kt"
+        destroyed = (
+            '            android.util.Log.i("CameraEngine", "PreviewSurface: DESTROYED '
+            '(current=${System.identityHashCode(previewSurface)})")\n        }\n'
+        )
+        fixtures = (
+            # An unguarded raw row AFTER an unrelated guarded block in the same function.
+            (
+                engine,
+                destroyed,
+                destroyed + '        android.util.Log.i("CameraEngine", "unguarded after a guard")\n',
+            ),
+            # The gate named only in a comment.
+            (
+                engine,
+                "    fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {\n"
+                "        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {\n",
+                "    fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {\n"
+                "        if (BuildConfig.DEBUG) { // recurringDiagnosticAllowed(BuildConfig.DEBUG)\n",
+            ),
+            # The gate ORed away, and the gate negated.
+            (
+                telemetry,
+                "        if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {\n"
+                "            android.util.Log.d(tag, message)",
+                "        if (debugEnabled || recurringDiagnosticAllowed(debugEnabled = true, recurring)) {\n"
+                "            android.util.Log.d(tag, message)",
+            ),
+            (
+                telemetry,
+                "        if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {\n"
+                "            android.util.Log.d(tag, message)",
+                "        if (!recurringDiagnosticAllowed(debugEnabled = true, recurring)) {\n"
+                "            android.util.Log.d(tag, message)",
+            ),
+        )
+        for relative, current, stale in fixtures:
+            with self.subTest(relative=relative, stale=stale):
+                def mutate(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  every production debug log site has an executable quota classification",
+                    result.stdout,
+                )
+
     def test_committed_export_rejects_a_double_charged_gated_debug_row(self) -> None:
         # AGG5-9: a pre-gated row routed back through the `DiagnosticLog as Log` door is charged
         # twice. Reverting any one of the single-charge sites must fail the gate.
