@@ -29,7 +29,7 @@ object AutoExposure {
 
     // Log-domain proportional gain: each tick moves GAIN of the measured error, so it converges in
     // a few ticks (~0.5 s at 6 Hz) without overshoot. The deadband holds the value once we're
-    // within ~1/12 stop so a noisy meter doesn't jitter ISO/shutter forever.
+    // within 0.05 stop (~1/20, [DEADBAND_STOPS]) so a noisy meter doesn't jitter ISO/shutter forever.
     //
     // The per-tick clamp is ERROR-SCHEDULED (cycle 8): near the target it keeps the tuned
     // 0.30-stop ceiling (user: 1-stop ticks read as visible steps — steady-state smoothness is

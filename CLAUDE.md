@@ -66,7 +66,7 @@ deprecated APIs, latest stable everything.
 | Kotlin | 2.4.20 | Compose compiler plugin version; AGP supplies Kotlin Android support |
 | Gradle | 9.8.0 | wrapper |
 | Compose BOM | 2026.09.00 | Material3 |
-| compileSdk / targetSdk / minSdk | 37 / 36 / **33** | compileSdk 37 required by androidx core/core-ktx 1.19.x and the lifecycle 2.11.0 compose artifacts (`lifecycle-runtime-compose`, `lifecycle-viewmodel-compose`); minSdk 33 since the 2026-08-01 multi-device decision — this row said 36 for two days while the constraint bullet above said 33 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / **33** | compileSdk 37 required by androidx core/core-ktx 1.19.x and the lifecycle 2.11.0 compose artifacts (`lifecycle-runtime-compose`, `lifecycle-viewmodel-compose`); minSdk 33 since the 2026-08-01 multi-device decision — this row said 36 for two days while the constraint bullet above said 33; targetSdk 37 waits for an on-device Android 17 behaviour-change pass (Play has required 36 since 2026-08-31) |
 | JDK | 21 (aarch64) | Homebrew `openjdk@21` |
 | heifwriter | 1.1.0 | latest STABLE (the earlier "no stable 1.1.0 exists" note was wrong) |
 
@@ -83,7 +83,9 @@ macOS/Linux paths, and fail before Gradle with the missing Platform 37 / Build T
 ## Build / deploy / verify loop
 
 ```bash
-# authoritative non-device host gate (Android + coverage + Python tools/harness/docs)
+# authoritative non-device host gate (Android + coverage + Python tools/harness/docs, plus
+# :app:lintRelease on a clean tree; Kotlin warnings are fatal; its last line is the release-lint
+# verdict, `release lint: RAN` or `release lint: SKIPPED (dirty tree)`)
 python3 tools/verify_host.py
 # :app:assembleDebugAndroidTest compiles/packages androidTest; it does not run or prove device behavior.
 
@@ -232,7 +234,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   route's full-res YUV still reader also streams on the
   REPEATING request (`zslStreamingActive`), and a 3-deep ring pairs frames with their
   `TotalCaptureResult` by exact `SENSOR_TIMESTAMP`. S4a soak, device-measured: **29–31 fps lit /
-  14–16 fps at the dark fluidity cap over 5-minute soaks, zero FrameGap stalls ≥200 ms, zero camera
+  14–16 fps at the dark fluidity cap over 5-minute soaks, zero FrameGap stalls >200 ms, zero camera
   errors, +0.3 °C battery.** S4b serve check, device-measured: **a lit 1× photo served 4/4 shutter
   presses at 0 ms delivery lag**; a dark M-mode 2 s shot served **none** and ran a real capture whose
   EXIF read a true 2.0 s. **The dark refusal is the DESIGN, not a gap — the user has explicitly
@@ -640,7 +642,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   selected one: moving glass to another body does not regrind it. Consumers read `CameraUiState.teleconverterMagnification` /
   `.teleconverterFocalMm`, so the profile and its custom value can never drift apart, and the old
   hardcoded `300f` / `"300 mm"` readouts (OSD, EXIF, Fn tile, MR summary, lens caption) are derived.
-  Five rules hold this together:
+  Six rules hold this together:
   1. **Passive glass cannot announce itself; the PHONE can.** There is no contact, no ID, no optical
      trick that tells us a converter is mounted or which one — so the converter dropdown is pure
      declaration. `detectPhone` resolves `Build.MODEL` and only preselects the phone dropdown, and
@@ -1165,11 +1167,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   process emits. Two live consequences: (1) `GlPipeline`'s `FrameGap` line logs only gaps **>200 ms**,
   not >50 ms — since the cycle-8 fluidity cap a dark preview runs at a DESIGNED 66.7 ms cadence, so
   the old 50 ms rule fired ~15 rows/s and spent the whole quota in ~20 s, after which it ate the
-  startup trace and the focus-verdict trace outright; 200 ms still catches the ~180 ms
-  `setRepeatingRequest` stalls and real wedges, and normal cadence is not news. (2) `StartupTrace`
+  startup trace and the focus-verdict trace outright; the threshold is STRICT (`gap > 200`), so it
+  catches swap stalls whose producer gap exceeds 200 ms (the upper part of the measured 170–250 ms
+  `setRepeatingRequest` band) and real wedges, while a swap stall at or under 200 ms is not counted;
+  normal cadence is not news. (2) `StartupTrace`
   BUFFERS its marks and emits the whole cold start as ONE line at `finish()` — a requirement, not
   tidiness: per-mark logging gets silently eaten before it reaches logcat. Same rule for the
-  `FocusConfidence` trace (change-gated + 2 s heartbeat). The debug 3A trace likewise samples a
+  `FocusConfidence` trace (change-gated with at least 3 s between changes, plus a 15 s heartbeat). The debug 3A trace likewise samples a
   bucketed state tuple, paces changes to at least 3 s, and uses a 15 s stable heartbeat (41 rows over
   the ten-minute A5 soak; no more than 201 under continuous tuple changes). The sustained-YUV probe
   accumulates cadence in constant memory and emits only enable + terminal summary rows. **Any new
