@@ -1179,6 +1179,22 @@ class CameraViewModel private constructor(
                     if (requestedVideoFrameRate == restore.armedFrameRate) {
                         requestedVideoFrameRate = restore.priorFrameRate
                     }
+                    // AGG6-2: and onto the WIRE and the SCREEN. The recall pushed the bank's
+                    // stabilization and rate to the Engine outside its optics transaction, so the
+                    // Engine rollback cannot restore them, and the display kept the bank's values
+                    // too: the Fn tile could read Active while every 300 mm clip recorded with
+                    // stabilization OFF, and re-picking Active hit onVideoStabMode's no-change
+                    // return, so the Engine was never told. Caps reconcile is display-only by
+                    // design (AGG5-4), so the push has to happen here. Never mid-take (a stab
+                    // class change reopens the session); a recall cannot start one while its own
+                    // transaction is un-Ready, so this guard only fences an impossible order.
+                    if (_state.value.isRecording) return@let
+                    engine.setVideoStabMode(requestedVideoStabMode)
+                    val shownStab = _state.value.caps
+                        ?.let { requestedVideoStabMode.normalizedForAvailableModes(it.videoStabModes) }
+                        ?: requestedVideoStabMode
+                    _state.update { it.copy(videoStabMode = shownStab) }
+                    applyVideoFrameRate(frameRateTargetFor(_state.value) ?: requestedVideoFrameRate)
                 }
                 // AGG5-24: the restored baseline carried the HELD AE lock of a hold this recall
                 // cancelled. Put the operator's value back as a momentary (non-persisting) write, so
@@ -3432,13 +3448,18 @@ class CameraViewModel private constructor(
     private fun reconcileFrameRate() {
         val s = _state.value
         if (s.isRecording) return
+        val target = frameRateTargetFor(s) ?: return
+        if (target != s.videoFrameRate) applyVideoFrameRate(target)
+    }
+
+    /** The rate [reconcileFrameRate] puts on the wire for [s]'s route, or null while it has no caps. */
+    private fun frameRateTargetFor(s: CameraUiState): VideoFrameRate? {
         val allowed = VideoFrameRate.availableFor(s.caps, s.videoResolution, s.videoCodec)
-        val target = if (requestedVideoFrameRate in allowed) {
+        return if (requestedVideoFrameRate in allowed) {
             requestedVideoFrameRate
         } else {
-            allowed.minByOrNull { kotlin.math.abs(it.fps - requestedVideoFrameRate.fps) } ?: return
+            allowed.minByOrNull { kotlin.math.abs(it.fps - requestedVideoFrameRate.fps) }
         }
-        if (target != s.videoFrameRate) applyVideoFrameRate(target)
     }
 
     private fun reconcileZoomToCaps(caps: CameraCaps) {

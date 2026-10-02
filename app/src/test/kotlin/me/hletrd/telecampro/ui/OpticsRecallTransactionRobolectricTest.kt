@@ -473,6 +473,55 @@ class OpticsRecallTransactionRobolectricTest {
         assertEquals(VideoFrameRate.FPS_24, extras.videoFrameRate)
     }
 
+    // AGG6-2: the restored requests must also reach the Engine (the recall pushed the bank's stab
+    // and rate outside the optics transaction, so the Engine rollback cannot restore them) and the
+    // screen. Before, the Engine kept recording the bank's OFF / 25 fps under a restored request.
+    @Test
+    fun `owned rollback puts the restored stabilization and rate on the Engine and the screen`() {
+        SettingsStore(app).savePreset(
+            MemorySlot.MR2,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(
+                mode = CaptureMode.VIDEO,
+                videoStabMode = VideoStabMode.OFF,
+                videoFrameRate = VideoFrameRate.FPS_25,
+            ),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        fun engineField(name: String): Any? = CameraEngine::class.java.getDeclaredField(name)
+            .apply { isAccessible = true }
+            .get(engine)
+        fun setEngineField(name: String, value: Any) = CameraEngine::class.java.getDeclaredField(name)
+            .apply { isAccessible = true }
+            .set(engine, value)
+        // The operator's ENHANCED / 30 fps, consistent on request, Engine and screen.
+        ViewModelTestAccess.setField(vm, "requestedVideoStabMode", VideoStabMode.ENHANCED)
+        ViewModelTestAccess.setField(vm, "requestedVideoFrameRate", VideoFrameRate.FPS_30)
+        setEngineField("videoStabMode", VideoStabMode.ENHANCED)
+        setEngineField("videoFrameRate", VideoFrameRate.FPS_30)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(
+            videoStabMode = VideoStabMode.ENHANCED,
+            videoFrameRate = VideoFrameRate.FPS_30,
+        )
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2))
+        assertEquals(VideoStabMode.OFF, engineField("videoStabMode"))
+        assertEquals(VideoFrameRate.FPS_25, engineField("videoFrameRate"))
+        invokeRollback(engine, currentRollbackAttempt(engine))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(VideoStabMode.ENHANCED, engineField("videoStabMode"))
+        assertEquals(VideoFrameRate.FPS_30, engineField("videoFrameRate"))
+        val ui = vm.state.value
+        assertEquals(VideoStabMode.ENHANCED, ui.videoStabMode)
+        assertEquals(VideoFrameRate.FPS_30, ui.videoFrameRate)
+        assertEquals(30, ui.controls.fps)
+    }
+
     @Test
     fun `synchronous recording refusal leaves declaration and Engine packet unchanged`() {
         saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
