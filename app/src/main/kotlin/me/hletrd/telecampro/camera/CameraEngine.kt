@@ -5939,36 +5939,24 @@ class CameraEngine internal constructor(
                 "CaptureFamily: registered stem=$stem outputs=$outputs",
             )
         }
-        val remainingSaveLanes = java.util.concurrent.atomic.AtomicInteger(
-            (if (formats.wantsProcessedStill) 1 else 0) + (if (formats.dngRaw) 1 else 0),
-        )
-        val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
-        val finishSequence = {
-            if (remainingSaveLanes.get() == 0 && completionDelivered.compareAndSet(false, true)) {
+        // Lane/settlement ownership (AGG6-22): see [StillSaveLanes] for why onError may not finish
+        // a lane once onPhoto was entered.
+        val lanes = StillSaveLanes(
+            wantsProcessed = formats.wantsProcessedStill,
+            wantsDng = formats.dngRaw,
+            onProcessedFinished = { retainedSnapshotLease?.release() },
+            settle = {
                 settleRegisteredStillShot(
                     registered = registeredShot,
                     traceText = traceText,
                     traceSettlement = traceAdmission.settlement,
                     onDone = onDone,
                 )
-            }
-            Unit
-        }
-        val processedFinished = java.util.concurrent.atomic.AtomicBoolean(!formats.wantsProcessedStill)
-        val finishProcessed = {
-            if (processedFinished.compareAndSet(false, true)) {
-                retainedSnapshotLease?.release()
-                if (remainingSaveLanes.decrementAndGet() == 0) finishSequence()
-            }
-            Unit
-        }
-        val dngFinished = java.util.concurrent.atomic.AtomicBoolean(!formats.dngRaw)
-        val finishDng = {
-            if (dngFinished.compareAndSet(false, true) && remainingSaveLanes.decrementAndGet() == 0) {
-                finishSequence()
-            }
-            Unit
-        }
+            },
+        )
+        val finishSequence: () -> Unit = lanes::finishSequence
+        val finishProcessed: () -> Unit = lanes::finishProcessed
+        val finishDng: () -> Unit = lanes::finishDng
         fun releaseDngAdmission() {
             if (dngPreCaptureLease?.release() == true) {
                 publishProcessStillAdmission()
@@ -6019,8 +6007,13 @@ class CameraEngine internal constructor(
                 rawChars: CameraCharacteristics?,
                 takenAtMs: Long,
             ) {
+                lanes.enterPhoto()
                 var processedQueued = false
                 var dngPublishQueued = false
+                // Whether the DNG lane reached its own terminal decision (published, retained,
+                // cleanup submitted, or its reservation cancelled). A throw before that hands the
+                // preallocated row to bounded cleanup below, as onError used to.
+                var dngLaneDecided = false
                 try {
                     val spec = requestSpec.copy(takenAtMs = takenAtMs)
                     // Copy the live Image first so the ImageReader slot and Camera2 handler are held
@@ -6103,6 +6096,7 @@ class CameraEngine internal constructor(
                             when (write) {
                                 is DngWriteResult.Complete -> {
                                     rejectedDngCleanup?.cancel()
+                                    dngLaneDecided = true
                                     val pending = write.publication
                                     dngPublishQueued = transferCompletedDngFromCameraCallback(
                                         formats = formats,
@@ -6123,6 +6117,7 @@ class CameraEngine internal constructor(
                                     check(write.allocation == dngAllocation) {
                                         "DNG rejection lost its preallocated identity"
                                     }
+                                    dngLaneDecided = true
                                     dngPublishQueued = submitIncompleteDngCleanup()
                                 }
                                 is DngWriteResult.Failed -> {
@@ -6131,12 +6126,14 @@ class CameraEngine internal constructor(
                                     // exhaustion (tombstoned family → durable discard) and say
                                     // "saved, pending recovery", not "save failed" (AGG-31).
                                     rejectedDngCleanup?.cancel()
+                                    dngLaneDecided = true
                                     Log.e("CameraEngine", "DNG completion marker failed", write.failure)
                                     retainCompletedDngForRecovery(write.publication)
                                 }
                             }
                         } else {
                             releaseDngAdmission()
+                            dngLaneDecided = true
                             dngPublishQueued = submitIncompleteDngCleanup()
                             reportStatus(CameraStatusMessage.DNG_CAPTURE_FAILED.status())
                         }
@@ -6144,6 +6141,16 @@ class CameraEngine internal constructor(
                     if (!formats.wantsProcessedStill && !formats.dngRaw) {
                         reportStatus(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
                     }
+                } catch (failure: Throwable) {
+                    // Contained HERE, not left to the controller's onError (AGG6-22): only this
+                    // body knows which lanes it already handed off. An undecided DNG lane takes the
+                    // same bounded cleanup onError used to submit.
+                    Log.e("CameraEngine", "Photo capture failed", failure)
+                    if (formats.dngRaw && !dngLaneDecided) {
+                        releaseDngAdmission()
+                        dngPublishQueued = submitIncompleteDngCleanup()
+                    }
+                    reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
                     // Pre-capture serialization ends with the live Camera2 callback, not with slow
                     // publication/cleanup tails; those have their own finite process owners. The
@@ -6157,6 +6164,13 @@ class CameraEngine internal constructor(
             }
 
             override fun onError(t: Throwable) {
+                if (!lanes.claimErrorTerminal()) {
+                    // onPhoto ran: its finally settled every lane it did not hand off, and a queued
+                    // processed save finishes its own. Finishing here would settle the shot under
+                    // a live save (AGG6-22).
+                    Log.e("CameraEngine", "Photo callback failed after delivery", t)
+                    return
+                }
                 var dngCleanupQueued = false
                 try {
                     if (formats.dngRaw) {
