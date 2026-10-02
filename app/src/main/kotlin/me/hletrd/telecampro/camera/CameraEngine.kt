@@ -9450,18 +9450,19 @@ internal fun mapTapFocusGeometry(
     previewRotationDegrees: Int,
     // Display → TEXTURE mirror, for the loupe/content mapping. False on this device: the front
     // stream is pre-mirrored and the preview shows it as-is, so displayed x == texture x.
-    mirrorX: Boolean = false,
+    mirrorX: Boolean,
     // Display → ACTIVE-ARRAY mirror, for AE/AF metering regions. SEPARATE from [mirrorX] and
     // usually its opposite on the front route: metering regions are array coordinates, and the
     // array holds the TRUE scene while the preview shows it mirrored. Sharing one flag made the
     // front route meter the horizontally opposite point (cycle-6 debugger F2) — a tap on the left
     // of the selfie is on the right of the array. Applied to the RAW view x, before the rotation
     // into array space, matching where the device-verified encoder un-mirror acts.
-    meteringMirrorX: Boolean = false,
+    meteringMirrorX: Boolean,
     // The WINDOW's rotation away from natural. 0 for a portrait-locked activity, non-zero only
-    // where Android 16+ ignores screenOrientation (sw600dp+). Defaulted so every existing caller and
-    // test pins the unrotated matrix unchanged.
-    windowRotationDeg: Int = 0,
+    // where Android 16+ ignores screenOrientation (sw600dp+). No defaults on these three (AGG6-37):
+    // a default is a fix-off switch, so a new caller that forgot the window or mirror term compiled
+    // and silently mapped every tap through the unrotated, unmirrored matrix.
+    windowRotationDeg: Int,
 ): TapFocusGeometry {
     // The tap arrives in the WINDOW's frame; viewTapToSensorPoint and viewTapToLoupeCenter both
     // assume the device's NATURAL frame. Un-rotate ONCE here so neither has to grow its own window

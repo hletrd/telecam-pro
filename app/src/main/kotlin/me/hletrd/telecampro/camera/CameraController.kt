@@ -277,10 +277,13 @@ class CameraController internal constructor(
         controls: ManualControls,
         tenBitHlg: Boolean,
         highSpeedFps: Int = 0,
-        videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-        teleconverterMode: Boolean = false,
+        // No defaults on the route terms (AGG6-37): a default is a fix-off switch — a new open path
+        // that forgot one compiled and silently opened with stabilization off, the TC hints off,
+        // or video AUTO free to drop its cadence (the 29.97 → 25 fps file pinAutoFps exists for).
+        videoStabHalMode: Int,
+        teleconverterMode: Boolean,
         teleconverterMagnification: Float = TELECONVERTER_MAGNIFICATION,
-        pinAutoFps: Boolean = false,
+        pinAutoFps: Boolean,
         diagnosticOpticsGeneration: Long = 0,
         // Dual-open camera switching: open the DEVICE now (the outgoing camera keeps streaming
         // through its ~120 ms) but hold the session until [startDeferredSession] — the preview
