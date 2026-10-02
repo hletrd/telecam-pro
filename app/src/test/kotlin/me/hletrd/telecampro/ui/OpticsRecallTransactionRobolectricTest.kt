@@ -569,6 +569,66 @@ class OpticsRecallTransactionRobolectricTest {
         assertFalse(extras.jpeg)
     }
 
+    // MRG6-3: two stacked pre-inventory recalls, then the inventory, then a rollback reaching both.
+    // Only the newer recall's armed bank was consumed, so the older record had nothing to undo and
+    // the walk stopped on the OLDER bank's codec/curve/formats instead of the pre-recall request.
+    @Test
+    fun `stacked pre-inventory recalls roll back to the request before the first`() {
+        fun saveVideoBank(slot: MemorySlot, codec: VideoCodec, transfer: ColorTransfer, heif: Boolean, jpeg: Boolean) =
+            SettingsStore(app).savePreset(
+                slot,
+                ManualControls(zoomRatio = 1f),
+                ExtraSettings(mode = CaptureMode.VIDEO, videoCodec = codec, transfer = transfer, heif = heif, jpeg = jpeg),
+                "",
+                "",
+            )
+        saveVideoBank(MemorySlot.MR1, VideoCodec.AVC, ColorTransfer.SLOG3_CINE, heif = false, jpeg = true)
+        saveVideoBank(MemorySlot.MR2, VideoCodec.HEVC, ColorTransfer.SDR, heif = true, jpeg = true)
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(encoderInventoryLoaded = false)
+        val launchFormats = me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = false)
+        ViewModelTestAccess.setField(vm, "pendingCodecUntilInventory", VideoCodec.HEVC)
+        ViewModelTestAccess.setField(vm, "pendingTransferUntilInventory", ColorTransfer.HLG)
+        ViewModelTestAccess.setField(vm, "pendingPhotoFormatsUntilInventory", launchFormats)
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR1))
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2))
+        val attempt = currentRollbackAttempt(engine)
+        val inventory = me.hletrd.telecampro.video.buildCodecInventory(
+            listOf(
+                me.hletrd.telecampro.video.CodecComponent(
+                    name = "vendor.hevc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = setOf(android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
+                ),
+                me.hletrd.telecampro.video.CodecComponent(
+                    name = "vendor.avc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_AVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = emptySet(),
+                ),
+            ),
+        )
+        ViewModelTestAccess.invoke(vm, "applyEncoderInventory", inventory)
+        assertEquals("the inventory applied the newer bank", ColorTransfer.SDR, vm.state.value.transfer)
+        assertEquals("no reopen superseded the recall", attempt.generation, currentGeneration(engine))
+        invokeRollback(engine, attempt)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val ui = vm.state.value
+        assertEquals(VideoCodec.HEVC, ui.videoCodec)
+        assertEquals(ColorTransfer.HLG, ui.transfer)
+        assertEquals(launchFormats, ui.photoFormats)
+        val extras = ViewModelTestAccess.invoke(vm, "currentExtras") as ExtraSettings
+        assertEquals(VideoCodec.HEVC, extras.videoCodec)
+        assertEquals(ColorTransfer.HLG, extras.transfer)
+    }
+
     // MRG5-8: a rolled-back recall's stabilization / frame-rate REQUESTS go back to the operator's,
     // so the rollback's own save does not persist the bank it was told did not load. A newer pick
     // made after the recall (here: the frame rate) is the operator's and survives.

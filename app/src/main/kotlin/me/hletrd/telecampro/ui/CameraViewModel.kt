@@ -3215,20 +3215,33 @@ class CameraViewModel private constructor(
         engine.setRawWanted(safeFormats.dngRaw)
         // AGG6-16: an unsettled recall whose armed request this just consumed can no longer be
         // undone through the pending mirrors; record what was APPLIED for it, per field.
-        recallRollbackRestores.replaceAll { restore ->
+        // MRG6-3: walked NEWEST first along the same chain the pending branch follows. With two
+        // pre-inventory recalls only the newer one's armed value was consumed, so the older record
+        // got nothing to compare against; the rollback restored the newer record's prior — the
+        // OLDER bank — and stopped there. An older record whose armed value the newer one replaced
+        // is instead credited with what the newer record's restore will write, so the walk
+        // continues down to the pre-recall request.
+        var chain = consumedPending
+        var shown = PendingInventoryRequest(safeCodec, safeTransfer, safeFormats)
+        val credited = HashMap<RecallRollbackRestore, PendingInventoryRequest>()
+        recallRollbackRestores.sortedByDescending { it.generation }.forEach { restore ->
             val armed = restore.armed
-            if (armed == null || restore.inventoryApplied != null) return@replaceAll restore
-            restore.copy(
-                inventoryApplied = PendingInventoryRequest(
-                    codec = safeCodec.takeIf { armed.codec != null && consumedPending.codec == armed.codec },
-                    transfer = safeTransfer.takeIf {
-                        armed.transfer != null && consumedPending.transfer == armed.transfer
-                    },
-                    formats = safeFormats.takeIf {
-                        armed.formats != null && consumedPending.formats == armed.formats
-                    },
-                ),
+            if (armed == null || restore.inventoryApplied != null) return@forEach
+            val applied = PendingInventoryRequest(
+                codec = shown.codec.takeIf { armed.codec != null && chain.codec == armed.codec },
+                transfer = shown.transfer.takeIf { armed.transfer != null && chain.transfer == armed.transfer },
+                formats = shown.formats.takeIf { armed.formats != null && chain.formats == armed.formats },
             )
+            credited[restore] = applied
+            chain = PendingInventoryRequest(
+                codec = if (applied.codec != null) restore.prior.codec else chain.codec,
+                transfer = if (applied.transfer != null) restore.prior.transfer else chain.transfer,
+                formats = if (applied.formats != null) restore.prior.formats else chain.formats,
+            )
+            shown = inventoryAppliedRestoreTarget(shown, applied, restore.priorRequest)
+        }
+        recallRollbackRestores.replaceAll { restore ->
+            credited[restore]?.let { restore.copy(inventoryApplied = it) } ?: restore
         }
         _state.update {
             it.copy(
@@ -3257,15 +3270,14 @@ class CameraViewModel private constructor(
         prior: PendingInventoryRequest,
     ) {
         val s = _state.value
-        val codec = prior.codec.takeIf { applied.codec != null && s.videoCodec == applied.codec }
-        val transfer = prior.transfer.takeIf { applied.transfer != null && s.transfer == applied.transfer }
-        if (codec != null || transfer != null) {
-            val safeCodec = (codec ?: s.videoCodec)
-                .takeIf { it in encoderInventory.availableVideoCodecs } ?: s.videoCodec
-            val safeTransfer = (transfer ?: s.transfer).normalizedForEncoder(
-                safeCodec,
-                encoderInventory.tenBitEncodeAvailable,
-            )
+        val target = inventoryAppliedRestoreTarget(
+            PendingInventoryRequest(s.videoCodec, s.transfer, s.photoFormats),
+            applied,
+            prior,
+        )
+        val safeCodec = target.codec ?: s.videoCodec
+        val safeTransfer = target.transfer ?: s.transfer
+        if (safeCodec != s.videoCodec || safeTransfer != s.transfer) {
             engine.setVideoPipeline(
                 encoderInventory.candidatesFor(safeCodec, safeTransfer),
                 safeTransfer,
@@ -3273,10 +3285,38 @@ class CameraViewModel private constructor(
             )
             _state.update { it.copy(videoCodec = safeCodec, transfer = safeTransfer) }
         }
-        val formats = prior.formats
-            ?.takeIf { applied.formats != null && s.photoFormats == applied.formats }
-            ?.normalizedForEncoder(encoderInventory.heifEncodeAvailable)
+        val formats = target.formats
         if (formats != null && formats != _state.value.photoFormats) onSetPhotoFormats(formats)
+    }
+
+    /**
+     * What [restoreInventoryAppliedRecall] leaves on screen when it runs against [shown] — the ONE
+     * derivation, so `applyEncoderInventory` can credit an older stacked recall with exactly the
+     * value the newer record's restore will write (MRG6-3). Each field goes back to [prior] only
+     * while [shown] still holds the [applied] value; codec stays only if the inventory offers it, and
+     * the curve is re-normalized against the codec it lands on.
+     */
+    private fun inventoryAppliedRestoreTarget(
+        shown: PendingInventoryRequest,
+        applied: PendingInventoryRequest,
+        prior: PendingInventoryRequest,
+    ): PendingInventoryRequest {
+        val codec = prior.codec.takeIf { applied.codec != null && shown.codec == applied.codec }
+        val transfer = prior.transfer.takeIf { applied.transfer != null && shown.transfer == applied.transfer }
+        var nextCodec = shown.codec
+        var nextTransfer = shown.transfer
+        if (codec != null || transfer != null) {
+            val safeCodec = (codec ?: shown.codec)
+                ?.takeIf { it in encoderInventory.availableVideoCodecs } ?: shown.codec
+            nextCodec = safeCodec
+            nextTransfer = safeCodec?.let { c ->
+                (transfer ?: shown.transfer)?.normalizedForEncoder(c, encoderInventory.tenBitEncodeAvailable)
+            } ?: nextTransfer
+        }
+        val formats = prior.formats
+            ?.takeIf { applied.formats != null && shown.formats == applied.formats }
+            ?.normalizedForEncoder(encoderInventory.heifEncodeAvailable)
+        return PendingInventoryRequest(nextCodec, nextTransfer, formats ?: shown.formats)
     }
 
     /**
