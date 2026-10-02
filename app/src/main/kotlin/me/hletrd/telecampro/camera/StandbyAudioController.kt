@@ -464,7 +464,7 @@ private fun createAndroidStandbyAudioInput(
     if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
         // ONE line per AudioRecord generation, not per read: ColorOS drops everything past a
         // 300-row per-process quota, so a per-buffer line would eat the traces that matter.
-        Log.i(
+        android.util.Log.i(
             "StandbyAudioMeter",
             "standby format: pref=${preference.name} device=${device?.type ?: -1} " +
                 "channels=$channelCount routed=${runCatching { recorder.routedDevice?.type }.getOrNull()}",

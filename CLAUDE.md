@@ -1176,10 +1176,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   memory and emit one first/15-second/terminal summary with count, maximum, and 200–399/400–999/
   ≥1000 ms buckets, rather than one row per broken frame. Capture-family edges, ShutterLag/ZSL
   decisions, standby/audio shape, hardware, zoom, motion, focus-confidence, Touch-AF scan/reset, 3A,
-  session/recording information, and those summaries share one 180-row process admission door.
+  session/recording information, and those summaries share one 180-row recurring class: 168
+  shared rows plus a 12-row EVIDENCE reserve that only the cold-start line and the TERMINAL FrameGap
+  summary may spend, and only once the shared rows are gone — both are read as negative evidence
+  ("no line" = "no stall" / "no measurement"), so a chatty soak must not be able to silence them.
   Every warning/error crosses a separate 120-row process owner, making the complete runtime maximum
-  exactly 300. The executable source inventory accepts only a real bounded facade/guard; severity or
-  an anchor string no longer pretends an unbounded producer is reserved.
+  exactly 300. **A gated row is charged ONCE:** a caller that already passed
+  `recurringDiagnosticAllowed`/`tapFocusDiagnosticAllowed`/`processDiagnosticLogBudget.tryAcquire`
+  emits through `android.util.Log`, never back through the `DiagnosticLog as Log` door — ~28
+  producers did, which halved the real allowance and spent the last row with nothing logged. The
+  executable source inventory accepts only a real bounded facade/guard (and rejects that double
+  charge); severity or an anchor string no longer pretends an unbounded producer is reserved.
 - **Cold start is instrumented, and the measured budget is `resume → first camera frame ≈ 544 ms`
   (debug, 2026-07-25).** `camera/StartupTrace.kt` marks `openCamera → onOpened →
   createCaptureSession → onConfigured → previewRequestBuilt → firstCameraResult` against a

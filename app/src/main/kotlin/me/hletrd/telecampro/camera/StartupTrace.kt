@@ -33,8 +33,10 @@ object StartupTrace {
     internal var elapsedMs: () -> Long = { SystemClock.elapsedRealtime() }
 
     // Same reason as the clock: android.util.Log is not mocked on the host, so the emit path needs
-    // a seam or finish() cannot be exercised at all. Production never reassigns it.
-    internal var emit: (String) -> Unit = { Log.i(TAG, it) }
+    // a seam or finish() cannot be exercised at all. Production never reassigns it. The cold-start
+    // line may fall back to the evidence reserve once the shared recurring rows are spent (AGG5-9):
+    // a missing line would otherwise read as "no measurement" after any chatty session.
+    internal var emit: (String) -> Unit = { Log.evidence(TAG, it) }
 
     private var originMs = 0L
     private var nextGeneration = 0L

@@ -851,7 +851,7 @@ class VideoRecorder(private val context: Context) {
             )
         }.getOrNull()
         if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
-            Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
+            android.util.Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
                 "trackSupport=[$support] echo=[$echo]")
         }
     }

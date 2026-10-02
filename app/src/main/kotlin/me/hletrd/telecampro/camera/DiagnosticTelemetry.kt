@@ -7,8 +7,13 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Process-lifetime allowance for recurring DEBUG diagnostics.
  *
- * ColorOS caps the complete process at 300 rows. Recurring evidence producers share this smaller
- * allowance so startup, frame-gap, recovery, and fault rows always retain an explicit reserve.
+ * ColorOS caps the complete process at 300 rows. The recurring class is 180 of them: 168 rows that
+ * every repeatable information producer shares, plus a 12-row EVIDENCE reserve that only the
+ * cold-start line ([StartupTrace]) and the terminal FrameGap summary may spend, and only once the
+ * shared rows are gone ([evidenceDiagnosticAllowed]). Warnings/errors cross the separate 120-row
+ * reserved owner. The evidence reserve exists because those two rows are read as NEGATIVE
+ * evidence: a missing terminal FrameGap line reads as "no stall above the threshold", and a
+ * missing cold-start line as "no measurement", so a chatty soak must not be able to silence them.
  */
 internal class ProcessDiagnosticLogBudget(private val maxRows: Int) {
     private val used = AtomicInteger(0)
@@ -29,17 +34,43 @@ internal class ProcessDiagnosticLogBudget(private val maxRows: Int) {
 }
 
 internal const val RECURRING_DIAGNOSTIC_ROW_BUDGET = 180
+internal const val EVIDENCE_DIAGNOSTIC_ROW_RESERVE = 12
+internal const val SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET =
+    RECURRING_DIAGNOSTIC_ROW_BUDGET - EVIDENCE_DIAGNOSTIC_ROW_RESERVE
 internal const val RESERVED_DIAGNOSTIC_ROW_BUDGET = 120
 internal const val COLOR_OS_PROCESS_LOG_ROW_LIMIT = 300
-internal val processDiagnosticLogBudget = ProcessDiagnosticLogBudget(RECURRING_DIAGNOSTIC_ROW_BUDGET)
+internal val processDiagnosticLogBudget =
+    ProcessDiagnosticLogBudget(SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET)
+internal val processEvidenceDiagnosticLogBudget =
+    ProcessDiagnosticLogBudget(EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
 internal val processReservedDiagnosticLogBudget =
     ProcessDiagnosticLogBudget(RESERVED_DIAGNOSTIC_ROW_BUDGET)
 
-/** The only admission door for repeatable DEBUG information rows. Fault/error logs stay reserved. */
+/**
+ * The admission door for repeatable DEBUG information rows. Fault/error logs stay reserved.
+ *
+ * ONE charge per emitted row (AGG5-9): a caller that gates here has ALREADY paid for its row, so it
+ * must emit through `android.util.Log` directly, never through [DiagnosticLog] (or a file's
+ * `DiagnosticLog as Log` alias), whose door charges the same owner again. The double charge halved
+ * the real allowance, and on the LAST row the gate took it while the inner door refused, so the
+ * row was spent and nothing reached logcat. `tools/check_docs.py` rejects an aliased door call
+ * directly under one of these gates.
+ */
 internal fun recurringDiagnosticAllowed(
     debugEnabled: Boolean,
     budget: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
 ): Boolean = debugEnabled && budget.tryAcquire()
+
+/**
+ * Admission for the two NEGATIVE-evidence rows (cold start, terminal FrameGap summary): the shared
+ * recurring owner first, then the evidence reserve that no other producer can reach. Same
+ * one-charge rule as [recurringDiagnosticAllowed].
+ */
+internal fun evidenceDiagnosticAllowed(
+    debugEnabled: Boolean,
+    shared: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
+    evidence: ProcessDiagnosticLogBudget = processEvidenceDiagnosticLogBudget,
+): Boolean = debugEnabled && (shared.tryAcquire() || evidence.tryAcquire())
 
 /**
  * Finite process allowance for warnings/errors that must not overrun ColorOS's real quota. The owner
@@ -57,6 +88,7 @@ internal fun reservedDiagnosticAllowed(
 internal class DiagnosticLogDoors(
     private val recurring: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
     private val reserved: ProcessDiagnosticLogBudget = processReservedDiagnosticLogBudget,
+    private val evidence: ProcessDiagnosticLogBudget = processEvidenceDiagnosticLogBudget,
 ) {
     fun d(tag: String, message: String) {
         if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {
@@ -66,6 +98,13 @@ internal class DiagnosticLogDoors(
 
     fun i(tag: String, message: String) {
         if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {
+            android.util.Log.i(tag, message)
+        }
+    }
+
+    /** Information row that may fall back to the evidence reserve; see [evidenceDiagnosticAllowed]. */
+    fun evidence(tag: String, message: String) {
+        if (evidenceDiagnosticAllowed(debugEnabled = true, recurring, evidence)) {
             android.util.Log.i(tag, message)
         }
     }
@@ -94,6 +133,8 @@ internal object DiagnosticLog {
     fun d(tag: String, message: String) = process.d(tag, message)
 
     fun i(tag: String, message: String) = process.i(tag, message)
+
+    fun evidence(tag: String, message: String) = process.evidence(tag, message)
 
     fun w(tag: String, message: String) = process.w(tag, message)
 

@@ -78,6 +78,56 @@ class DiagnosticLogTest {
     }
 
     @Test
+    fun `a gated emission is charged exactly once`() {
+        // AGG5-9: the pre-gate IS the charge. Before the fix the gated producers emitted through the
+        // `DiagnosticLog as Log` alias, whose door charged the same owner again (2 rows per line),
+        // and on the last row the gate took it while the door refused, so nothing was logged.
+        val tag = uniqueTag("gated")
+        val recurring = ProcessDiagnosticLogBudget(1)
+
+        if (recurringDiagnosticAllowed(debugEnabled = true, budget = recurring)) {
+            android.util.Log.i(tag, "gated row")
+        }
+
+        assertEquals(1, recurring.usedRows())
+        assertEquals(listOf("gated row"), ShadowLog.getLogsForTag(tag).map { it.msg })
+    }
+
+    @Test
+    fun `the evidence door spends the reserve only after the shared rows are gone`() {
+        val tag = uniqueTag("evidence")
+        val shared = ProcessDiagnosticLogBudget(1)
+        val evidence = ProcessDiagnosticLogBudget(1)
+        val doors = DiagnosticLogDoors(shared, ProcessDiagnosticLogBudget(1), evidence)
+
+        doors.evidence(tag, "shared row")
+        assertEquals(1, shared.usedRows())
+        assertEquals(0, evidence.usedRows())
+
+        // An ordinary recurring producer can never reach the reserve.
+        doors.i(tag, "suppressed recurring row")
+        assertEquals(0, evidence.usedRows())
+
+        doors.evidence(tag, "reserve row")
+        doors.evidence(tag, "suppressed evidence row")
+        assertEquals(1, evidence.usedRows())
+        assertEquals(
+            listOf("shared row", "reserve row"),
+            ShadowLog.getLogsForTag(tag).map { it.msg },
+        )
+    }
+
+    @Test
+    fun `the evidence reserve is carved out of the recurring class, not added to it`() {
+        assertEquals(
+            RECURRING_DIAGNOSTIC_ROW_BUDGET,
+            SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET + EVIDENCE_DIAGNOSTIC_ROW_RESERVE,
+        )
+        assertTrue(processDiagnosticLogBudget.usedRows() <= SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        assertTrue(processEvidenceDiagnosticLogBudget.usedRows() <= EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
+    }
+
+    @Test
     fun `production binding never exceeds the process ceilings`() {
         // Secondary, order-independent check of the real process owners: whatever earlier classes
         // spent, the production doors can only add at most one row per call and never pass a cap.

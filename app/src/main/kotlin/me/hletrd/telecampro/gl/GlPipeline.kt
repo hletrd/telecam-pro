@@ -899,13 +899,20 @@ class GlPipeline(
     private val previewFrameTiming = me.hletrd.telecampro.camera.PreviewFrameTiming()
     private val frameGapAccumulator = me.hletrd.telecampro.camera.FrameGapAccumulator()
 
-    private fun emitFrameGapSummary(summary: me.hletrd.telecampro.camera.FrameGapSummary) {
-        if (!me.hletrd.telecampro.camera.recurringDiagnosticAllowed(
-                me.hletrd.telecampro.BuildConfig.DEBUG,
-            )
-        ) {
-            return
+    // The TERMINAL summary may fall back to the evidence reserve (AGG5-9): "no FrameGap row" is
+    // read as "no stall above the threshold", so a soak whose chatty producers drained the shared
+    // recurring rows must not turn a missing line into a false pass. Periodic summaries stay on the
+    // shared rows only, so a continuously stalling stream cannot spend the reserve before its end.
+    private fun emitFrameGapSummary(
+        summary: me.hletrd.telecampro.camera.FrameGapSummary,
+        terminal: Boolean = false,
+    ) {
+        val admitted = if (terminal) {
+            me.hletrd.telecampro.camera.evidenceDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        } else {
+            me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
         }
+        if (!admitted) return
         android.util.Log.i(
             "GlPipeline",
             "FrameGap: count=${summary.count} maxMs=${summary.maximumMs} " +
@@ -1795,7 +1802,7 @@ class GlPipeline(
         }
         if (analysisGeneration === ownedAnalysis) analysisGeneration = null
         resetEncoderTimestampBase()
-        frameGapAccumulator.finish()?.let(::emitFrameGapSummary)
+        frameGapAccumulator.finish()?.let { emitFrameGapSummary(it, terminal = true) }
         previewFrameTiming.reset()
         egl = null
         inited = false

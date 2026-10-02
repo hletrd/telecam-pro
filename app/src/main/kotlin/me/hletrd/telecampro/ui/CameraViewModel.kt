@@ -596,7 +596,7 @@ class CameraViewModel private constructor(
             focusConfidenceDiagnosticGate.shouldEmit(now, candidate) &&
             processDiagnosticLogBudget.tryAcquire()
         ) {
-            Log.i(
+            android.util.Log.i(
                 "FocusConfidence",
                 "candidate=$candidate afLimit=$afLimit frameDetail=$frameDetail " +
                     "verdict=${lastFocusDetail?.verdict} tiles=${lastFocusDetail?.judgeableTiles}" +
@@ -701,7 +701,7 @@ class CameraViewModel private constructor(
         ) {
             lastMotionShape = shape
             lastMotionHeartbeatMs = now
-            Log.i(
+            android.util.Log.i(
                 "MotionInversion",
                 "tick frame=${data.verdict} blocks=${data.votingBlocks}/${data.totalBlocks} " +
                     "agree=${data.agreeVotes} oppose=${data.opposeVotes} " +
@@ -726,7 +726,7 @@ class CameraViewModel private constructor(
         if ((settled != beforeSettled || pending != beforePending) &&
             processDiagnosticLogBudget.tryAcquire()
         ) {
-            Log.i(
+            android.util.Log.i(
                 "MotionInversion",
                 "settled=$settled pending=$pending streak=${motionConfidence.streak} " +
                     "frame=${data.verdict} blocks=${data.votingBlocks}/${data.totalBlocks} " +

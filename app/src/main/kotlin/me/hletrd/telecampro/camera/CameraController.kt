@@ -575,7 +575,7 @@ class CameraController internal constructor(
             zoomSubmitDiagnosticGate.shouldEmit(zoomSubmitNowMs, ratio) &&
             processDiagnosticLogBudget.tryAcquire()
         ) {
-            Log.i(TAG, "ZoomTrace: submit=$ratio t=$zoomSubmitNowMs")
+            android.util.Log.i(TAG, "ZoomTrace: submit=$ratio t=$zoomSubmitNowMs")
         }
         runCatching {
             caps.zoomRatioRange?.let {
@@ -756,14 +756,14 @@ class CameraController internal constructor(
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = useHlg
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
+                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
                     }
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
                     // ambiguously enough to mis-parse — the characteristics query is the only
                     // authority, and on a multi-device build it decides what colour modes exist.
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        Log.i(TAG, "DynamicRangeProfiles: " + caps.supportedDynamicRangeProfiles.sorted().joinToString { p ->
+                        android.util.Log.i(TAG, "DynamicRangeProfiles: " + caps.supportedDynamicRangeProfiles.sorted().joinToString { p ->
                             when (p) {
                                 DynamicRangeProfiles.STANDARD -> "STANDARD"
                                 DynamicRangeProfiles.HLG10 -> "HLG10"
@@ -893,7 +893,7 @@ class CameraController internal constructor(
                     if (closed) { runCatching { s.close() }; return }
                     session = s
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
+                        android.util.Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
                     }
                     when (sessionStartDelivery(startHighSpeedPreview())) {
                         SessionStartDelivery.READY -> onReady.onReady(PhotoSessionOutputs())
@@ -1087,7 +1087,7 @@ class CameraController internal constructor(
                             processDiagnosticLogBudget.tryAcquire()
                         ) {
                             lastTracedResultZoom = rz
-                            Log.i(TAG, "ZoomTrace: result=$rz t=$zoomResultNowMs")
+                            android.util.Log.i(TAG, "ZoomTrace: result=$rz t=$zoomResultNowMs")
                         }
                     }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
@@ -1206,7 +1206,7 @@ class CameraController internal constructor(
                                 force = firstDiagnosticResult,
                             ) && processDiagnosticLogBudget.tryAcquire()
                         ) {
-                            Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=$iso expNs=$exposureNs lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
+                            android.util.Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=$iso expNs=$exposureNs lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                         }
                     }
                 }
@@ -1217,7 +1217,7 @@ class CameraController internal constructor(
             // is mid-scan (common in CONTINUOUS mode).
             if (tapAfTriggerRequired) {
                 if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = true)) {
-                    Log.i(TAG, "Touch AF: scanning region $meteringPoint")
+                    android.util.Log.i(TAG, "Touch AF: scanning region $meteringPoint")
                 }
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
                 s.capture(builder.build(), callback, handler)
@@ -1546,7 +1546,7 @@ class CameraController internal constructor(
             if (!timestampSourceReported) {
                 timestampSourceReported = true
                 if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                    Log.i(TAG, "SENSOR_TIMESTAMP source=${caps.timestampSource} (not REALTIME) — ZSL ages read System.nanoTime")
+                    android.util.Log.i(TAG, "SENSOR_TIMESTAMP source=${caps.timestampSource} (not REALTIME) — ZSL ages read System.nanoTime")
                 }
             }
             System.nanoTime()
@@ -1609,7 +1609,7 @@ class CameraController internal constructor(
         // refusal in a case where wire==intent is diagnosable instead of read as "the freeze".
         if (!zslStreamingActive() || zslRing.isEmpty()) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                Log.i(TAG, "ZslRefuse: streaming=${zslStreamingActive()} ring=${zslRing.size}")
+                android.util.Log.i(TAG, "ZslRefuse: streaming=${zslStreamingActive()} ring=${zslRing.size}")
             }
             return false
         }
@@ -1630,7 +1630,7 @@ class CameraController internal constructor(
         )
         if (!zslIntentEligible(intent)) {
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                Log.i(
+                android.util.Log.i(
                     TAG,
                     "ZslRefuse: intent manualAe=${intent.manualAe} raw=${intent.wantRaw} " +
                         "flash=${intent.flash} gesture=${intent.gestureActive}",
@@ -1650,7 +1650,7 @@ class CameraController internal constructor(
             )
             if (!zslFrameAdmissible(facts, intent, nowNs)) {
                 if (i == zslRing.indices.last && recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                    Log.i(
+                    android.util.Log.i(
                         TAG,
                         "ZslRefuse: newest frame age=${(nowNs - facts.timestampNs) / 1_000_000}ms " +
                             "exp=${facts.exposureNs}/${intent.exposureNs} iso=${facts.iso}/${intent.iso} " +
@@ -1669,7 +1669,7 @@ class CameraController internal constructor(
             p.jpeg = entry.image
             pending = p
             if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                Log.i(TAG, "ShutterLag: ZSL served buffered frame, age $ageMs ms")
+                android.util.Log.i(TAG, "ShutterLag: ZSL served buffered frame, age $ageMs ms")
             }
             tryComplete(p)
             return true
@@ -1691,12 +1691,12 @@ class CameraController internal constructor(
             if (enabled) {
                 zslSpikeAccumulator = ZslSpikeAccumulator()
                 if (processDiagnosticLogBudget.tryAcquire()) {
-                    Log.i(TAG, "ZslSpike: cadence accumulation ENABLED")
+                    android.util.Log.i(TAG, "ZslSpike: cadence accumulation ENABLED")
                 }
             } else {
                 val summary = zslSpikeAccumulator.finish(android.os.SystemClock.uptimeMillis())
                 if (processDiagnosticLogBudget.tryAcquire()) {
-                    Log.i(
+                    android.util.Log.i(
                         TAG,
                         "ZslSpike: disabled frames=${summary.frames} durationMs=${summary.durationMs} " +
                             "avgFps=${summary.averageFps} windows=${summary.windows} " +
@@ -2172,7 +2172,7 @@ class CameraController internal constructor(
                         // TRUE shutter moment (sensor exposure start): queue→started is the user-felt
                         // shutter lag; started→completed→image is HAL processing + readout.
                         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                            Log.i(TAG, "ShutterLag: started +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
+                            android.util.Log.i(TAG, "ShutterLag: started +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
                         }
                     }
 
@@ -2189,7 +2189,7 @@ class CameraController internal constructor(
                             newPending.result = result
                         }
                         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                            Log.i(TAG, "ShutterLag: completed +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
+                            android.util.Log.i(TAG, "ShutterLag: completed +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
                         }
                         tryComplete(newPending)
                     }
@@ -2294,7 +2294,7 @@ class CameraController internal constructor(
             p.done = true
         }
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-            Log.i(TAG, "ShutterLag: images+result +${(System.nanoTime() - p.queuedAtNs) / 1_000_000} ms")
+            android.util.Log.i(TAG, "ShutterLag: images+result +${(System.nanoTime() - p.queuedAtNs) / 1_000_000} ms")
         }
         // A transient open-time read failure (the same resume race as openCamera's synchronous
         // CAMERA_DISABLED) used to leave rawChars null for the controller's whole life, failing

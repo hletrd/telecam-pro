@@ -1665,10 +1665,14 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             ),
             (
                 "app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt",
-                "if (!me.hletrd.telecampro.camera.recurringDiagnosticAllowed(\n"
-                "                me.hletrd.telecampro.BuildConfig.DEBUG,\n"
-                "            )",
-                "if (!me.hletrd.telecampro.BuildConfig.DEBUG",
+                "        val admitted = if (terminal) {\n"
+                "            me.hletrd.telecampro.camera.evidenceDiagnosticAllowed("
+                "me.hletrd.telecampro.BuildConfig.DEBUG)\n"
+                "        } else {\n"
+                "            me.hletrd.telecampro.camera.recurringDiagnosticAllowed("
+                "me.hletrd.telecampro.BuildConfig.DEBUG)\n"
+                "        }\n",
+                "        val admitted = me.hletrd.telecampro.BuildConfig.DEBUG\n",
             ),
         )
         for relative, current, stale in fixtures:
@@ -1684,6 +1688,38 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(
                     "FAIL  every production debug log site has an executable quota classification",
+                    result.stdout,
+                )
+
+    def test_committed_export_rejects_a_double_charged_gated_debug_row(self) -> None:
+        # AGG5-9: a pre-gated row routed back through the `DiagnosticLog as Log` door is charged
+        # twice. Reverting any one of the single-charge sites must fail the gate.
+        fixtures = (
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt",
+                'android.util.Log.i(TAG, "ZoomTrace: submit=$ratio t=$zoomSubmitNowMs")',
+                'Log.i(TAG, "ZoomTrace: submit=$ratio t=$zoomSubmitNowMs")',
+            ),
+            (
+                "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt",
+                'android.util.Log.i(\n                "FocusConfidence",',
+                'Log.i(\n                "FocusConfidence",',
+            ),
+        )
+        for relative, current, stale in fixtures:
+            with self.subTest(relative=relative):
+                def mutate(root: Path) -> None:
+                    path = root / relative
+                    text = path.read_text(encoding="utf-8")
+                    self.assertIn(current, text)
+                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
+
+                result, _ = run_documentation_gate_from_committed_export(mutate)
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(
+                    "FAIL  a recurring-gated debug row is charged once, not again through the "
+                    "DiagnosticLog door",
                     result.stdout,
                 )
 

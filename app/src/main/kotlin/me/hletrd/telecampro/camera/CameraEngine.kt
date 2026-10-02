@@ -883,7 +883,7 @@ class CameraEngine internal constructor(
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-            Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
+            android.util.Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
         }
         // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
         // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
@@ -1454,7 +1454,7 @@ class CameraEngine internal constructor(
         // The change gate inside pushTeleFinder makes this free when the answer did not move.
         pushTeleFinder()
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-            Log.i(
+            android.util.Log.i(
                 "CameraEngine",
                 "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
                     "available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
@@ -1917,7 +1917,7 @@ class CameraEngine internal constructor(
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-            Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
+            android.util.Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
         }
         // Retain the TextureView edge before a finite recorder-setup refusal. TextureView does not
         // promise to repeat this callback when a process-wide setup token later retires.
@@ -2185,7 +2185,7 @@ class CameraEngine internal constructor(
 
     fun onPreviewSurfaceDestroyed() {
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-            Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
+            android.util.Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
         }
         cancelRecorderSetupReplay()
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
@@ -2290,7 +2290,7 @@ class CameraEngine internal constructor(
                     height = height,
                     onReady = {
                         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                            Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
+                            android.util.Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
                         }
                         handlePreviewReady(ownedGl, surface, surfaceGeneration)
                     },
@@ -3445,7 +3445,7 @@ class CameraEngine internal constructor(
             publication
         }
         if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = tapPublication != null)) {
-            Log.i("CameraEngine", "TapFocus: cleared")
+            android.util.Log.i("CameraEngine", "TapFocus: cleared")
         }
         tapPublication?.let { onTapFocusChange?.invoke(it) }
     }

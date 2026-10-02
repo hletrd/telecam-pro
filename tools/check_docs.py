@@ -79,9 +79,24 @@ def read(rel: str) -> str:
 # same source block or match an explicit startup/session edge below. Adding a new bare Log.i/Log.d,
 # or deleting a recurring guard, therefore fails this gate instead of being hidden by occurrence
 # counts elsewhere in the file.
-def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
+#
+# AGG5-9: a row that a caller ALREADY admitted through a recurring gate must reach logcat through
+# `android.util.Log`, not the file's `DiagnosticLog as Log` alias — that door charges the same owner
+# a second time (halving the real allowance, and on the last row spending it with nothing logged).
+# Such sites are returned separately as double-charged.
+RECURRING_GATES = (
+    "recurringDiagnosticAllowed",
+    "evidenceDiagnosticAllowed",
+    "tapFocusDiagnosticAllowed",
+    "processDiagnosticLogBudget.tryAcquire",
+)
+DOUBLE_CHARGE_WINDOW_LINES = 6
+
+
+def debug_log_classification_inventory() -> tuple[dict[str, int], list[str], list[str]]:
     counts = {"recurring_budgeted": 0, "one_shot_session": 0, "reserved_fault": 0}
     unclassified: list[str] = []
+    double_charged: list[str] = []
     invocation = re.compile(r"(?:android\.util\.)?Log\.(?P<level>[vdiwe])\s*\(")
     source_root = ROOT / "app/src/main/kotlin"
     for path in sorted(source_root.rglob("*.kt")):
@@ -96,18 +111,20 @@ def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
             before = source[max(previous_end, match.start() - 1_200):match.start()]
             facade_prefix = source[max(0, match.start() - 24):match.start()]
             previous_end = match.end()
-            bounded_facade = (
-                "Diagnostic" in facade_prefix
-                or (bounded_alias and not source[match.start():].startswith("android.util.Log."))
-            )
+            aliased_door = bounded_alias and not source[match.start():].startswith("android.util.Log.")
+            bounded_facade = "Diagnostic" in facade_prefix or aliased_door
             if bounded_facade:
+                recent = "\n".join(before.split("\n")[-DOUBLE_CHARGE_WINDOW_LINES:])
+                if (
+                    aliased_door
+                    and level in {"d", "i"}
+                    and any(gate in recent for gate in RECURRING_GATES)
+                ):
+                    line = source.count("\n", 0, match.start()) + 1
+                    double_charged.append(f"{relative}:{line}:Log.{level}")
                 counts["reserved_fault" if level in {"e", "w"} else "recurring_budgeted"] += 1
                 continue
-            if (
-                "recurringDiagnosticAllowed" in before
-                or "tapFocusDiagnosticAllowed" in before
-                or "processDiagnosticLogBudget.tryAcquire" in before
-            ):
+            if any(gate in before for gate in RECURRING_GATES):
                 counts["recurring_budgeted"] += 1
                 continue
             if (
@@ -118,7 +135,7 @@ def debug_log_classification_inventory() -> tuple[dict[str, int], list[str]]:
                 continue
             line = source.count("\n", 0, match.start()) + 1
             unclassified.append(f"{relative}:{line}:Log.{level}")
-    return counts, unclassified
+    return counts, unclassified, double_charged
 
 
 def read_private(rel: str) -> str | None:
@@ -1885,7 +1902,9 @@ trace_admission_call = re.search(
     camera_engine,
     re.S,
 )
-debug_log_classes, unclassified_debug_logs = debug_log_classification_inventory()
+debug_log_classes, unclassified_debug_logs, double_charged_debug_logs = (
+    debug_log_classification_inventory()
+)
 check(
     not unclassified_debug_logs
     and all(debug_log_classes[classification] > 0 for classification in (
@@ -1895,6 +1914,11 @@ check(
     and debug_log_classes["one_shot_session"] == 0,
     "every production debug log site has an executable quota classification",
     ", ".join(unclassified_debug_logs[:8]),
+)
+check(
+    not double_charged_debug_logs,
+    "a recurring-gated debug row is charged once, not again through the DiagnosticLog door",
+    ", ".join(double_charged_debug_logs[:8]),
 )
 check(
     'if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = true))' in camera_controller
