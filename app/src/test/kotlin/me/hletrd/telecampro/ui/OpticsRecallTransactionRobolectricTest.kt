@@ -456,6 +456,119 @@ class OpticsRecallTransactionRobolectricTest {
         assertEquals(false, SettingsStore(app).load()?.controls?.aeLock)
     }
 
+    // AGG6-11: a newer door that supersedes an un-Ready recall inherits the PRE-recall baseline, so
+    // its rollback undoes the recall too. Keyed by equality on the recall's generation, the recall's
+    // record was dropped there: the held AE lock, the pre-inventory bank and its stab request stayed.
+    @Test
+    fun `a superseding failed door still restores what the superseded recall changed`() {
+        saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
+        SettingsStore(app).savePreset(
+            MemorySlot.MR2,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(
+                mode = CaptureMode.PHOTO,
+                lens = LensChoice.TELE3X,
+                teleconverter = true,
+                videoCodec = VideoCodec.AVC,
+                transfer = ColorTransfer.SLOG3_CINE,
+                videoStabMode = VideoStabMode.OFF,
+            ),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(encoderInventoryLoaded = false)
+        ViewModelTestAccess.setField(vm, "pendingCodecUntilInventory", VideoCodec.HEVC)
+        ViewModelTestAccess.setField(vm, "pendingTransferUntilInventory", ColorTransfer.HLG)
+        ViewModelTestAccess.setField(vm, "requestedVideoStabMode", VideoStabMode.ENHANCED)
+        vm.onVolumeKeyAction(HardwareKeyAction.AEL)
+        vm.onHardwareFullKey(true) // momentary lock; the operator's value is unlocked
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100))
+        assertTrue(vm.state.value.controls.aeLock)
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2)) // cancels the hold; arms AVC / S-Log3 / OFF
+        val recallGeneration = currentGeneration(engine)
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR1)) // the newer door, un-Ready recall superseded
+        assertTrue(currentGeneration(engine) > recallGeneration)
+        invokeRollback(engine, currentRollbackAttempt(engine))
+        shadowOf(Looper.getMainLooper()).idle()
+        vm.onHardwareFullKey(false) // the cancelled hold restores nothing
+
+        assertFalse("the held lock must not survive", vm.state.value.controls.aeLock)
+        assertEquals(VideoCodec.HEVC, ViewModelTestAccess.field(vm, "pendingCodecUntilInventory"))
+        assertEquals(ColorTransfer.HLG, ViewModelTestAccess.field(vm, "pendingTransferUntilInventory"))
+        assertEquals(VideoStabMode.ENHANCED, ViewModelTestAccess.field(vm, "requestedVideoStabMode"))
+        ViewModelTestAccess.invoke(vm, "saveSettingsIfEnabled")
+        val saved = SettingsStore(app).load()
+        assertEquals(false, saved?.controls?.aeLock)
+        assertEquals(VideoCodec.HEVC, saved?.extras?.videoCodec)
+        assertEquals(ColorTransfer.HLG, saved?.extras?.transfer)
+    }
+
+    // AGG6-16: the encoder inventory landing BETWEEN a pre-inventory recall and its rollback consumed
+    // the armed bank, so neither the pending restore nor the pipeline packet put the request back.
+    @Test
+    fun `rollback after the inventory landed restores the request the recall replaced`() {
+        SettingsStore(app).savePreset(
+            MemorySlot.MR2,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(
+                mode = CaptureMode.VIDEO,
+                videoCodec = VideoCodec.AVC,
+                transfer = ColorTransfer.SDR,
+                heif = false,
+                jpeg = true,
+            ),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(encoderInventoryLoaded = false)
+        val launchFormats = me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = false)
+        ViewModelTestAccess.setField(vm, "pendingCodecUntilInventory", VideoCodec.HEVC)
+        ViewModelTestAccess.setField(vm, "pendingTransferUntilInventory", ColorTransfer.HLG)
+        ViewModelTestAccess.setField(vm, "pendingPhotoFormatsUntilInventory", launchFormats)
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2))
+        val attempt = currentRollbackAttempt(engine)
+        val inventory = me.hletrd.telecampro.video.buildCodecInventory(
+            listOf(
+                me.hletrd.telecampro.video.CodecComponent(
+                    name = "vendor.hevc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = setOf(android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
+                ),
+                me.hletrd.telecampro.video.CodecComponent(
+                    name = "vendor.avc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_AVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = emptySet(),
+                ),
+            ),
+        )
+        ViewModelTestAccess.invoke(vm, "applyEncoderInventory", inventory)
+        assertEquals("the inventory applied the recalled bank", VideoCodec.AVC, vm.state.value.videoCodec)
+        invokeRollback(engine, attempt)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val ui = vm.state.value
+        assertEquals(VideoCodec.HEVC, ui.videoCodec)
+        assertEquals(ColorTransfer.HLG, ui.transfer)
+        assertEquals(launchFormats, ui.photoFormats)
+        val extras = ViewModelTestAccess.invoke(vm, "currentExtras") as ExtraSettings
+        assertEquals(VideoCodec.HEVC, extras.videoCodec)
+        assertEquals(ColorTransfer.HLG, extras.transfer)
+        assertTrue(extras.heif)
+        assertFalse(extras.jpeg)
+    }
+
     // MRG5-8: a rolled-back recall's stabilization / frame-rate REQUESTS go back to the operator's,
     // so the rollback's own save does not persist the bank it was told did not load. A newer pick
     // made after the recall (here: the frame rate) is the operator's and survives.

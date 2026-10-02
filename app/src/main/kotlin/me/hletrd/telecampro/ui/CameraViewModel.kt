@@ -836,18 +836,32 @@ class CameraViewModel private constructor(
      *
      * [generation] is what `setResolvedOptics` returned — the transaction it BEGAN (MRG5-6), never a
      * later re-read another intent could already have bumped.
+     *
+     * [priorRequest] is [prior] resolved against the state the recall replaced, and [inventoryApplied]
+     * is what `applyEncoderInventory` made of [armed] when the inventory landed BEFORE the rollback
+     * (AGG6-16): it consumes the pending mirrors, so the rollback must undo the applied values
+     * instead — per field, only where the inventory applied the recall's value.
      */
     private data class RecallRollbackRestore(
         val generation: Long,
         val armed: PendingInventoryRequest?,
         val prior: PendingInventoryRequest,
+        val priorRequest: PendingInventoryRequest,
         val aeLockPrior: Boolean?,
         val armedStabMode: VideoStabMode,
         val priorStabMode: VideoStabMode,
         val armedFrameRate: VideoFrameRate,
         val priorFrameRate: VideoFrameRate,
+        val inventoryApplied: PendingInventoryRequest? = null,
     )
-    private var recallRollbackRestore: RecallRollbackRestore? = null
+    // Every recall/restore transaction not yet settled, oldest first (AGG6-11). Keyed by the
+    // generation each one BEGAN, but not matched to the rollback by equality: a newer door that
+    // supersedes an un-Ready recall inherits the PRE-recall Engine baseline, so its rollback undoes
+    // the recall too — and an equality match dropped the recall's record there, persisting its held
+    // AE lock, pre-inventory codec/curve/formats and stab/fps request. A rollback applies every
+    // record it reaches (begun at or before its generation), newest first; an owned Ready of a
+    // generation at or after a record's settles it. Main-thread only.
+    private val recallRollbackRestores = ArrayList<RecallRollbackRestore>()
     // The operator's recording-size REQUEST, kept apart from `videoResolution` (the size the engine
     // could DELIVER on the current route/aspect). Persisting the delivered size turned a 1080p pick
     // into Open Gate's 2560×1920 after one Open Gate trip and a relaunch, and then into 4K once Open
@@ -981,6 +995,8 @@ class CameraViewModel private constructor(
                     // A newer optics intent or pause/session reopen can land while this camera-thread
                     // callback is queued for main. Both generations bind its output snapshot.
                     if (!engine.isCameraReadyPublicationCurrent(publication)) return@post
+                    // An owned Ready settles every recall begun at or before it (AGG6-11).
+                    recallRollbackRestores.removeAll { it.generation <= publication.opticsGeneration }
                     var formatStatus: CameraStatus? = null
                     // Captured inside the transform, assigned after it (tracer T10): update()
                     // retries on CAS contention, and writing the field mid-transform feeds run 1's
@@ -1160,9 +1176,13 @@ class CameraViewModel private constructor(
                 // was before that recall armed it — field by field, and only where the field still
                 // holds the recall's value (a newer codec/curve/format pick on this queue is the
                 // operator's and survives, like every other direct write the rollback keeps).
-                val recallRestore = recallRollbackRestore?.takeIf { it.generation == rollback.generation }
-                recallRollbackRestore = null
-                recallRestore?.armed?.let { armed ->
+                val reached = recallRollbackRestores.filter { it.generation <= rollback.generation }
+                recallRollbackRestores.removeAll(reached)
+                // Newest first: each record's prior is the state its recall replaced, which is the
+                // previous record's armed value, so the walk ends on the pre-recall request.
+                val recallRestores = reached.sortedByDescending { it.generation }
+                recallRestores.forEach { recallRestore ->
+                    val armed = recallRestore.armed ?: return@forEach
                     if (!_state.value.encoderInventoryLoaded) {
                         if (pendingCodecUntilInventory == armed.codec) {
                             pendingCodecUntilInventory = recallRestore.prior.codec
@@ -1173,17 +1193,23 @@ class CameraViewModel private constructor(
                         if (pendingPhotoFormatsUntilInventory == armed.formats) {
                             pendingPhotoFormatsUntilInventory = recallRestore.prior.formats
                         }
+                    } else {
+                        recallRestore.inventoryApplied?.let { applied ->
+                            restoreInventoryAppliedRecall(applied, recallRestore.priorRequest)
+                        }
                     }
                 }
                 // MRG5-8: the stabilization / frame-rate REQUESTS under the same rule — back to what
                 // they were only while they still hold the recall's value, so a newer pick survives.
-                recallRestore?.let { restore ->
+                recallRestores.forEach { restore ->
                     if (requestedVideoStabMode == restore.armedStabMode) {
                         requestedVideoStabMode = restore.priorStabMode
                     }
                     if (requestedVideoFrameRate == restore.armedFrameRate) {
                         requestedVideoFrameRate = restore.priorFrameRate
                     }
+                }
+                if (recallRestores.isNotEmpty() && !_state.value.isRecording) {
                     // AGG6-2: and onto the WIRE and the SCREEN. The recall pushed the bank's
                     // stabilization and rate to the Engine outside its optics transaction, so the
                     // Engine rollback cannot restore them, and the display kept the bank's values
@@ -1192,8 +1218,7 @@ class CameraViewModel private constructor(
                     // return, so the Engine was never told. Caps reconcile is display-only by
                     // design (AGG5-4), so the push has to happen here. Never mid-take (a stab
                     // class change reopens the session); a recall cannot start one while its own
-                    // transaction is un-Ready, so this guard only fences an impossible order.
-                    if (_state.value.isRecording) return@let
+                    // transaction is un-Ready, so the recording guard only fences an impossible order.
                     engine.setVideoStabMode(requestedVideoStabMode)
                     val shownStab = _state.value.caps
                         ?.let { requestedVideoStabMode.normalizedForAvailableModes(it.videoStabModes) }
@@ -1204,8 +1229,10 @@ class CameraViewModel private constructor(
                 // AGG5-24: the restored baseline carried the HELD AE lock of a hold this recall
                 // cancelled. Put the operator's value back as a momentary (non-persisting) write, so
                 // the save below records what the operator had, not the key's transient lock.
-                recallRestore?.aeLockPrior?.let { prior ->
-                    if (_state.value.controls.aeLock != prior) applyMomentaryAeLock(prior)
+                recallRestores.forEach { recallRestore ->
+                    recallRestore.aeLockPrior?.let { prior ->
+                        if (_state.value.controls.aeLock != prior) applyMomentaryAeLock(prior)
+                    }
                 }
                 // The same DNG mirror for the pre-inventory REQUEST. Left stale, the rolled-back
                 // DNG was persisted by currentExtras and then replayed by applyEncoderInventory's
@@ -1723,10 +1750,15 @@ class CameraViewModel private constructor(
         // on the key release — over the bank the operator just recalled.
         val cancelledAeLockPrior = momentaryAeLock.cancel()
         momentaryPunchIn.cancel()
-        recallRollbackRestore = RecallRollbackRestore(
+        recallRollbackRestores += RecallRollbackRestore(
             generation = opticsGeneration,
             armed = armedPending,
             prior = priorPending,
+            priorRequest = PendingInventoryRequest(
+                priorPending.codec ?: currentState.videoCodec,
+                priorPending.transfer ?: currentState.transfer,
+                priorPending.formats ?: currentState.photoFormats,
+            ),
             aeLockPrior = cancelledAeLockPrior,
             armedStabMode = e.videoStabMode,
             priorStabMode = priorStabRequest,
@@ -3120,6 +3152,11 @@ class CameraViewModel private constructor(
         val requestedCodec = pendingCodecUntilInventory ?: before.videoCodec
         val requestedTransfer = pendingTransferUntilInventory ?: before.transfer
         val requestedFormats = pendingPhotoFormatsUntilInventory ?: before.photoFormats
+        val consumedPending = PendingInventoryRequest(
+            pendingCodecUntilInventory,
+            pendingTransferUntilInventory,
+            pendingPhotoFormatsUntilInventory,
+        )
         pendingCodecUntilInventory = null
         pendingTransferUntilInventory = null
         pendingPhotoFormatsUntilInventory = null
@@ -3140,6 +3177,23 @@ class CameraViewModel private constructor(
             safeCodec,
         )
         engine.setRawWanted(safeFormats.dngRaw)
+        // AGG6-16: an unsettled recall whose armed request this just consumed can no longer be
+        // undone through the pending mirrors; record what was APPLIED for it, per field.
+        recallRollbackRestores.replaceAll { restore ->
+            val armed = restore.armed
+            if (armed == null || restore.inventoryApplied != null) return@replaceAll restore
+            restore.copy(
+                inventoryApplied = PendingInventoryRequest(
+                    codec = safeCodec.takeIf { armed.codec != null && consumedPending.codec == armed.codec },
+                    transfer = safeTransfer.takeIf {
+                        armed.transfer != null && consumedPending.transfer == armed.transfer
+                    },
+                    formats = safeFormats.takeIf {
+                        armed.formats != null && consumedPending.formats == armed.formats
+                    },
+                ),
+            )
+        }
         _state.update {
             it.copy(
                 encoderInventoryLoaded = true,
@@ -3153,6 +3207,40 @@ class CameraViewModel private constructor(
             )
         }
         reconcileFrameRate()
+    }
+
+    /**
+     * Undoes what `applyEncoderInventory` applied for a recall that then rolled back (AGG6-16): each
+     * field goes back to [prior] only while it still holds the [applied] value — a codec/curve/format
+     * picked after the inventory landed is the operator's and survives. Codec and curve republish
+     * the pipeline like the inventory did; the formats take the format door, because DNG is a route
+     * input whose change must carry the zoom remap.
+     */
+    private fun restoreInventoryAppliedRecall(
+        applied: PendingInventoryRequest,
+        prior: PendingInventoryRequest,
+    ) {
+        val s = _state.value
+        val codec = prior.codec.takeIf { applied.codec != null && s.videoCodec == applied.codec }
+        val transfer = prior.transfer.takeIf { applied.transfer != null && s.transfer == applied.transfer }
+        if (codec != null || transfer != null) {
+            val safeCodec = (codec ?: s.videoCodec)
+                .takeIf { it in encoderInventory.availableVideoCodecs } ?: s.videoCodec
+            val safeTransfer = (transfer ?: s.transfer).normalizedForEncoder(
+                safeCodec,
+                encoderInventory.tenBitEncodeAvailable,
+            )
+            engine.setVideoPipeline(
+                encoderInventory.candidatesFor(safeCodec, safeTransfer),
+                safeTransfer,
+                safeCodec,
+            )
+            _state.update { it.copy(videoCodec = safeCodec, transfer = safeTransfer) }
+        }
+        val formats = prior.formats
+            ?.takeIf { applied.formats != null && s.photoFormats == applied.formats }
+            ?.normalizedForEncoder(encoderInventory.heifEncodeAvailable)
+        if (formats != null && formats != _state.value.photoFormats) onSetPhotoFormats(formats)
     }
 
     /**
