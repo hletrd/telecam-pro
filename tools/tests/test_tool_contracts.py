@@ -234,7 +234,10 @@ class DeviceProbeParityTest(unittest.TestCase):
             REPO_ROOT
             / "app/src/androidTest/kotlin/me/hletrd/telecampro/video/EncoderProfileLevelProbeTest.kt"
         ).read_text(encoding="utf-8")
-        self.assertIn("EncoderCaps.load().candidatesFor", source)
+        # load() is nullable since a failed codec walk stopped being an authoritative EMPTY (AGG6-1);
+        # the probe must still read the production inventory, then its candidate axis.
+        self.assertIn("val inventory = EncoderCaps.load()", source)
+        self.assertIn("inventory.candidatesFor(VideoCodec.HEVC", source)
         self.assertIn("MediaCodecList.REGULAR_CODECS", source)
         self.assertIn("MediaCodec.createByCodecName", source)
         self.assertNotIn("createEncoderByType", source)

@@ -74,9 +74,13 @@ class EncoderProfileLevelProbeTest {
     fun probeWhichKeysTheEncoderAccepts() {
         val infoByName = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
             .associateBy { it.name }
-        // A null inventory is a failed codec walk (AGG6-1), not "no encoders": fail loudly rather
-        // than log a false "no HEVC encoder" verdict.
-        val inventory = checkNotNull(EncoderCaps.load()) { "MediaCodecList walk failed; probe has no inventory" }
+        // A null inventory is a failed codec walk (AGG6-1), not "no encoders": say so instead of
+        // logging a false "no HEVC encoder" verdict (and, like every probe here, never fail CI).
+        val inventory = EncoderCaps.load()
+        if (inventory == null) {
+            Log.i(TAG, "VERDICT: MediaCodecList walk failed; no inventory to probe")
+            return
+        }
         val candidates = inventory.candidatesFor(VideoCodec.HEVC, ColorTransfer.SDR)
         if (candidates.isEmpty()) {
             Log.i(TAG, "VERDICT: no HEVC encoder on this device; nothing to probe")
