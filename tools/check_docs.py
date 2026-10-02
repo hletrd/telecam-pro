@@ -1492,8 +1492,9 @@ check(
     and "child_environment = keytool_environment(base_environment)" in read(
         "tools/run_scoped_signed_release.py"
     )
-    and 'SEALED_GRADLE_FLAGS = ("--no-build-cache", "--no-configuration-cache", "--no-daemon")'
-    in release_wrapper
+    and '"--no-daemon",\n    "-Pkotlin.compiler.execution.strategy=in-process",\n)' in release_wrapper
+    and "isolated_git([\"checkout\", \"--quiet\", \"--detach\", commit], destination)" in release_wrapper
+    and "release export bytes do not match the commit's blobs" in release_wrapper
     and 'command = ["./gradlew", *SEALED_GRADLE_FLAGS, *tasks]' in release_wrapper
     and "-PimmutableRelease" not in release_wrapper
     and "create_release_authority" not in release_wrapper
@@ -1704,17 +1705,24 @@ def globbed_files(prefixes: tuple[str, ...]) -> list[str]:
 
 
 def published_text(rel: str) -> str | None:
-    """The file's UTF-8 text, or None for a binary (a NUL byte or an undecodable payload)."""
+    """The file's text, or None only for a binary.
+
+    SR6-7 / RG6-13 (AGG6-33): an undecodable payload used to count as binary, so one Latin-1
+    `.properties` byte (that format's Java default encoding) or a stray non-UTF-8 byte in a markdown
+    file silently removed the WHOLE file from the secret-fact scan — a content classification that
+    failed open. A BOM-marked UTF-16 file is decoded as such; otherwise only a NUL-bearing payload is
+    binary, and everything else is decoded with replacement, which keeps every ASCII pattern
+    matchable.
+    """
     try:
         payload = (ROOT / rel).read_bytes()
     except OSError:
         return None
+    if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return payload.decode("utf-16", errors="replace")
     if b"\0" in payload:
         return None
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    return payload.decode("utf-8", errors="replace")
 
 
 def password_property_scan_paths() -> list[str]:

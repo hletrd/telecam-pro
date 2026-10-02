@@ -148,8 +148,27 @@ RELEASE_CHILD_ENVIRONMENT_NAMES = frozenset({
 RELEASE_CHILD_ENVIRONMENT_PREFIXES = ("LC_",)
 # A FROM-CACHE task skips its action, so its bytes would not come from the sealed inputs; the
 # configuration cache would persist the signing values; a reused daemon carries JVM state (agents,
-# system properties) from whichever unsealed build started it.
-SEALED_GRADLE_FLAGS = ("--no-build-cache", "--no-configuration-cache", "--no-daemon")
+# system properties) from whichever unsealed build started it. `--no-daemon` governs only the GRADLE
+# daemon (SR6-2 / AGG6-32): KGP's default `daemon` compiler strategy discovers and reuses a resident
+# Kotlin compile daemon through its run files, and one started by an ordinary unsealed build — in a
+# shell that carried a JVM agent — would compile the release's Kotlin into the signed APK. In-process
+# compilation runs inside this run's own sealed JVM, which also makes `kotlin.daemon.jvmargs` moot.
+# The wrapper owns this argv; `validate_gradle_tasks` still refuses any caller `-P`.
+SEALED_GRADLE_FLAGS = (
+    "--no-build-cache",
+    "--no-configuration-cache",
+    "--no-daemon",
+    "-Pkotlin.compiler.execution.strategy=in-process",
+)
+# SR6-4 (AGG6-32): Gradle warns that DEBUG logging can print security-sensitive values, and the sealed
+# run streams its console with the signing values in the child environment. A level left at `debug`
+# or `info` in the user home is ambient and persistent, so only the quieter levels are admitted.
+ADMITTED_GRADLE_LOGGING_LEVELS = frozenset({"quiet", "warn", "lifecycle"})
+# SR6-5 (AGG6-32): what the sealed run does NOT re-verify, recorded in the evidence so its claim is no
+# stronger than what the wrapper controlled. The wrapper verifies `distributionSha256Sum` only on
+# download and deletes the zip after unpacking, so the unpacked distribution's `lib/` jars cannot be
+# re-hashed here; only its `init.d` and `gradle.properties` are checked.
+UNVERIFIED_RELEASE_INPUTS = ("gradle-distribution-unpacked-lib",)
 USER_GRADLE_PROPERTY_ALLOWLIST = frozenset({
     "org.gradle.jvmargs",
     "org.gradle.daemon",
@@ -263,10 +282,19 @@ def _require_inert_gradle_properties(properties: pathlib.Path) -> None:
         key for key, value in entries
         if key.endswith("jvmargs") and not jvm_arguments_admitted(value)
     })
-    if unexpected or injected:
+    verbose = sorted({
+        key for key, value in entries
+        if key == "org.gradle.logging.level"
+        and value.strip().lower() not in ADMITTED_GRADLE_LOGGING_LEVELS
+    })
+    if unexpected or injected or verbose:
         raise RuntimeError(
             f"refusing a sealed release build: {properties} sets keys a sealed build cannot carry: "
-            + ", ".join([*unexpected, *(f"{key} (non-allowlisted JVM argument)" for key in injected)])
+            + ", ".join([
+                *unexpected,
+                *(f"{key} (non-allowlisted JVM argument)" for key in injected),
+                *(f"{key} (only quiet, warn or lifecycle)" for key in verbose),
+            ])
             + ". Remove or comment out those keys (or point GRADLE_USER_HOME at a directory without "
             "them) for the release run; build caching, the configuration cache, and "
             "systemProp.http(s).proxyHost/proxyPort/nonProxyHosts may stay."
@@ -355,27 +383,79 @@ def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.Complet
     return subprocess.run(command, cwd=cwd, env=environment, text=True, check=True)
 
 
-def git_value(root: pathlib.Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=root,
+# SR6-1 (AGG6-32): git runs user-configured CODE during clone/checkout/status — smudge/clean/process
+# filter drivers selected by `core.attributesFile` or a template `info/attributes`, the
+# `post-checkout` hook from `init.templateDir`/`core.hooksPath`, an fsmonitor hook — and honours
+# environment such as `GIT_CONFIG_COUNT/KEY_n/VALUE_n`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR` and
+# `GIT_ALTERNATE_OBJECT_DIRECTORIES`. A paired smudge/clean filter could write injected source into
+# the export and then report it clean, so the evidence would name a commit the APK was not built
+# from. Every git child of the export therefore runs with no `GIT_*` variable, no system or global
+# config or attributes, no hooks, no fsmonitor and no clone template — and the checked-out bytes are
+# then proven against the commit's own blob ids (`export_commit`), so even an unforeseen channel
+# cannot make the export differ from the commit silently. LFS-tracked Play screenshots stay pointer
+# files under this; they are not build inputs.
+GIT_CHILD_ENVIRONMENT_NAMES = frozenset({"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"})
+ISOLATED_GIT_CONFIG = (
+    "-c", f"core.hooksPath={os.devnull}",
+    "-c", f"core.attributesFile={os.devnull}",
+    "-c", "core.fsmonitor=false",
+)
+
+
+def git_child_environment(environment: Mapping[str, str], *, isolated: bool) -> dict[str, str]:
+    """The environment a git child receives: an allowlist that never carries a `GIT_*` variable.
+
+    `isolated` also drops system/global config and attributes. Only the status of the operator's
+    OWN checkout (`require_clean_commit`) keeps global config, because its global ignore rules and
+    LFS filter describe that working tree; the export's integrity does not rest on that status.
+    """
+    child = {
+        name: value
+        for name, value in environment.items()
+        if name in GIT_CHILD_ENVIRONMENT_NAMES or name.startswith(RELEASE_CHILD_ENVIRONMENT_PREFIXES)
+    }
+    child["GIT_TERMINAL_PROMPT"] = "0"
+    if isolated:
+        child.update({
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+        })
+    return child
+
+
+def isolated_git(
+    arguments: Sequence[str],
+    cwd: pathlib.Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one export git child under the isolated configuration (bytes; raises on failure)."""
+    return subprocess.run(
+        ["git", *ISOLATED_GIT_CONFIG, *arguments],
+        cwd=cwd,
+        env=git_child_environment(os.environ if environment is None else environment, isolated=True),
         capture_output=True,
-        text=True,
         check=True,
     )
-    return result.stdout.strip()
+
+
+def git_value(root: pathlib.Path, *arguments: str) -> str:
+    return isolated_git(arguments, root).stdout.decode("utf-8").strip()
 
 
 def require_clean_commit(root: pathlib.Path) -> tuple[str, str]:
     status = subprocess.run(
         [
             "git",
+            "-c", "core.fsmonitor=false",
             "status",
             "--porcelain=v1",
             "--untracked-files=all",
             "--ignore-submodules=none",
         ],
         cwd=root,
+        env=git_child_environment(os.environ, isolated=False),
         capture_output=True,
         text=True,
         check=True,
@@ -391,12 +471,7 @@ def require_clean_commit(root: pathlib.Path) -> tuple[str, str]:
 
 def tracked_entries(root: pathlib.Path) -> list[tuple[str, str]]:
     """Return exact Git modes and paths; release inputs must be ordinary blob entries."""
-    raw = subprocess.run(
-        ["git", "ls-files", "--stage", "-z"],
-        cwd=root,
-        capture_output=True,
-        check=True,
-    ).stdout
+    raw = isolated_git(["ls-files", "--stage", "-z"], root).stdout
     entries: list[tuple[str, str]] = []
     for record in raw.split(b"\0"):
         if not record:
@@ -417,6 +492,23 @@ def tracked_entries(root: pathlib.Path) -> list[tuple[str, str]]:
 
 def sha256_regular_beneath(root: pathlib.Path, relative: str) -> str:
     """Hash one regular file through no-follow directory/file descriptors."""
+    return _digests_regular_beneath(root, relative, None)[0]
+
+
+def _git_blob_hasher(object_format: str, size: int):
+    if object_format not in {"sha1", "sha256"}:
+        raise RuntimeError(f"unsupported Git object format: {object_format!r}")
+    hasher = hashlib.new(object_format)
+    hasher.update(b"blob %d\0" % size)
+    return hasher
+
+
+def _digests_regular_beneath(
+    root: pathlib.Path,
+    relative: str,
+    object_format: str | None,
+) -> tuple[str, str | None]:
+    """SHA-256 of one regular file and, with [object_format], its Git blob id — from ONE read."""
     parts = pathlib.PurePosixPath(relative).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise RuntimeError(f"release source path is unsafe: {relative!r}")
@@ -439,14 +531,24 @@ def sha256_regular_beneath(root: pathlib.Path, relative: str) -> str:
         if not stat.S_ISREG(attributes.st_mode):
             raise RuntimeError(f"release source is not a regular file: {relative}")
         digest = hashlib.sha256()
+        blob = (
+            _git_blob_hasher(object_format, attributes.st_size)
+            if object_format is not None else None
+        )
+        read = 0
         with os.fdopen(os.dup(file_fd), "rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
+                if blob is not None:
+                    blob.update(chunk)
+                read += len(chunk)
         final_attributes = os.fstat(file_fd)
         identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
         if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
             raise RuntimeError(f"release source changed while it was hashed: {relative}")
-        return digest.hexdigest()
+        if read != final_attributes.st_size:
+            raise RuntimeError(f"release source read was incomplete: {relative}")
+        return digest.hexdigest(), (blob.hexdigest() if blob is not None else None)
     except OSError as error:
         raise RuntimeError(f"could not safely read release source {relative}: {error}") from error
     finally:
@@ -553,27 +655,60 @@ def write_release_evidence(
         # the allowlisted environment it passed, so the evidence claim is no stronger than that.
         "gradle_command": list(gradle_command),
         "gradle_environment_names": sorted(environment_names),
+        "unverified_inputs": list(UNVERIFIED_RELEASE_INPUTS),
     }
     payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
     write_regular_exclusive(staging / RELEASE_EVIDENCE_NAME, payload, 0o444)
 
 
+def commit_blob_ids(root: pathlib.Path, commit: str) -> dict[str, tuple[str, str]]:
+    """`path -> (mode, blob id)` for every entry of [commit]'s tree, read from the object store."""
+    raw = isolated_git(["ls-tree", "-r", "-z", "--full-tree", commit], root).stdout
+    blobs: dict[str, tuple[str, str]] = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise RuntimeError("Git returned a malformed commit-tree record")
+        mode, kind, object_id = (field.decode("ascii") for field in fields)
+        relative = raw_path.decode("utf-8")
+        if kind != "blob" or mode not in {"100644", "100755"}:
+            raise RuntimeError(
+                f"release source is not a regular tracked file: {relative} (mode {mode})"
+            )
+        blobs[relative] = (mode, object_id)
+    return blobs
+
+
 def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) -> dict[str, str]:
-    subprocess.run(
-        ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(destination)],
-        cwd=destination.parent,
-        check=True,
+    # `--template=` (empty) installs no hooks and no `info/attributes` into the private clone.
+    isolated_git(
+        ["clone", "--quiet", "--shared", "--no-checkout", "--template=", str(root), str(destination)],
+        destination.parent,
     )
-    subprocess.run(
-        ["git", "checkout", "--quiet", "--detach", commit],
-        cwd=destination,
-        check=True,
-    )
+    isolated_git(["checkout", "--quiet", "--detach", commit], destination)
+    object_format = git_value(destination, "rev-parse", "--show-object-format")
+    committed = commit_blob_ids(destination, commit)
     tracked = tracked_entries(destination)
-    return {
-        relative: sha256_regular_beneath(destination, relative)
-        for _, relative in tracked
-    }
+    if sorted(committed) != sorted(relative for _, relative in tracked) or any(
+        committed[relative][0] != mode for mode, relative in tracked
+    ):
+        raise RuntimeError("release export index does not match the commit tree")
+    expected: dict[str, str] = {}
+    mismatched: list[str] = []
+    for _, relative in tracked:
+        sha256, blob_id = _digests_regular_beneath(destination, relative, object_format)
+        if blob_id != committed[relative][1]:
+            mismatched.append(relative)
+        expected[relative] = sha256
+    if mismatched:
+        # A checkout filter, hook or attribute conversion rewrote bytes: the export is not the commit.
+        raise RuntimeError(
+            "release export bytes do not match the commit's blobs: " + ", ".join(sorted(mismatched))
+        )
+    return expected
 
 
 def _release_owner_paths(
@@ -977,9 +1112,14 @@ def keytool_environment(environment: Mapping[str, str]) -> dict[str, str]:
     """The allowlisted environment keytool receives (the sealed Gradle child's allowlist)."""
     present = [name for name in JVM_LAUNCHER_INJECTION_ENVIRONMENT if environment.get(name)]
     if present:
+        # RG6-13 (AGG6-33): name the remedy. The common `-Dfile.encoding=UTF-8` setting is harmless
+        # but indistinguishable from an agent by NAME alone, and the release run does not need it.
         raise UploadKeyGateError(
             "refusing to verify the upload key while a JVM launcher option variable is set: "
             + ", ".join(present)
+            + ". Unset it for the release run (for example `env -u "
+            + " -u ".join(present)
+            + " python3 tools/...`); a -Dfile.encoding setting is not needed there"
         )
     return release_child_environment(environment)
 
@@ -1092,23 +1232,17 @@ def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
             changed.append(relative)
     if changed:
         raise RuntimeError("immutable release snapshot changed during build: " + ", ".join(changed))
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=snapshot,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    ignored_sources = subprocess.run(
+    status = isolated_git(
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        snapshot,
+    ).stdout.decode("utf-8")
+    ignored_sources = isolated_git(
         [
-            "git", "ls-files", "--others", "--ignored", "--exclude-standard", "--",
+            "ls-files", "--others", "--ignored", "--exclude-standard", "--",
             "app/src/main", "app/src/release",
         ],
-        cwd=snapshot,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+        snapshot,
+    ).stdout.decode("utf-8")
     if status or ignored_sources:
         details = "\n".join(part.rstrip() for part in (status, ignored_sources) if part)
         raise RuntimeError(f"release build created or changed source inputs:\n{details}")

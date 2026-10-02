@@ -1419,7 +1419,15 @@ wrapper refuses every auto-applied init-script source it does not control — a
 distribution `init.d` holding anything beyond the stock `readme.txt` — plus any user or distribution
 `gradle.properties` key beyond inert JVM/console settings, with `jvmargs` screened by a token-shape
 ALLOWLIST (heap/GC/encoding/locale/module opens; no `@argfile`, `-XX:On*`, boot class path, class
-loader, or heap dump). It always passes `--no-build-cache --no-configuration-cache --no-daemon`.
+loader, or heap dump), and `org.gradle.logging.level` limited to quiet/warn/lifecycle (Gradle's DEBUG
+level can print sensitive values). It always passes `--no-build-cache --no-configuration-cache
+--no-daemon -Pkotlin.compiler.execution.strategy=in-process` — `--no-daemon` alone would still reuse a
+resident Kotlin compile daemon started by an unsealed build. Every export git child runs with no
+`GIT_*` variable, no system/global config or attributes, no hooks, no fsmonitor and an empty clone
+template, and each checked-out file must hash to the commit's own blob id, so a filter, hook or
+attribute conversion cannot make the export differ from the commit. The unpacked distribution's
+`lib/` jars are NOT re-verified (the wrapper checks `distributionSha256Sum` only on download and
+deletes the zip); the evidence lists that under `unverified_inputs`.
 keytool receives the same allowlisted environment and is refused outright while
 `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`/`_JAVA_OPTIONS` is set; the scoped signing helper launches the
 inner wrapper as `python -I -S` with that allowlist; `release-evidence.json` records that argv and the environment NAMES it passed. The

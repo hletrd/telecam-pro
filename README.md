@@ -182,6 +182,16 @@ repository-relative regular file that the immutable wrapper copies and seals; an
 git, and release bundling fails fast rather than emitting an unsigned artifact. Release builds are
 R8-minified.
 
+The export runs git with no `GIT_*` variable, no system or global config or attributes, no hooks and
+no clone template, then proves every checked-out file against the commit's own blob ids, so an ambient
+filter or hook cannot change what is built. Gradle runs with the Kotlin compiler in-process, so a
+resident compile daemon from an earlier unsealed build is never reused. A user `gradle.properties`
+may set `org.gradle.logging.level` only to `quiet`, `warn` or `lifecycle`. The run refuses to start
+while `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS` is set — including the common
+`-Dfile.encoding=UTF-8` — so unset them for the release command (`env -u JAVA_TOOL_OPTIONS …`). The
+unpacked Gradle distribution's `lib/` jars are not re-verified after download; the evidence records
+that as an unverified input.
+
 This boundary detects mutation during the wrapper invocation and prevents accidental reuse of a
 mutable Gradle path. It is not process authentication against a malicious process already running as
 the same OS user: that process can rewrite user-owned files after publication. Preserve the unique

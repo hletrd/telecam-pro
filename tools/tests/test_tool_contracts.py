@@ -1896,6 +1896,23 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         self.assertNotIn("tools/blob.txt", result.stdout)
         self.assertIn(f"ok    {self.PASSWORD_RULE}", result.stdout)
 
+    def test_non_utf8_text_is_scanned_not_skipped(self) -> None:
+        # SR6-7 / RG6-13 (AGG6-33): an undecodable byte used to drop the whole file from the scan.
+        leak = self.SYNTHETIC_PASSWORD_LEAKS[0].replace("SYNTHETIC-FIXTURE: ", "")
+        for relative, payload in (
+            ("tools/latin1.properties", b"# caf\xe9\n# " + leak.encode("ascii") + b"\n"),
+            ("tools/utf16-note.txt", ("\ufeff" + leak + "\n").encode("utf-16-le")),
+        ):
+            with self.subTest(relative=relative):
+                def add(root: Path, relative: str = relative, payload: bytes = payload) -> None:
+                    (root / relative).write_bytes(payload)
+
+                result, _ = run_documentation_gate_from_committed_export(add)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"FAIL  {self.PASSWORD_RULE}", result.stdout)
+                self.assertIn(relative, result.stdout)
+
     def test_new_unstaged_files_are_scanned_but_ignored_ones_are_not(self) -> None:
         # REG4-3 / DBG4-4: the pre-commit gate must see a published file the author has not added
         # yet. `/docs/*.md` and `.context/` are ignored (private by default; a public doc there is

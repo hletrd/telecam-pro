@@ -669,7 +669,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
         commands, error = self.gradle_home_case(inert)
         self.assertIsNone(error)
         self.assertEqual(
-            ["./gradlew", "--no-build-cache", "--no-configuration-cache", "--no-daemon", ":app:bundleRelease"],
+            ["./gradlew", *release.SEALED_GRADLE_FLAGS, ":app:bundleRelease"],
             commands[0],
         )
 
@@ -692,7 +692,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
         commands, error = self.gradle_home_case(developer_home)
         self.assertIsNone(error)
         self.assertEqual(
-            ["./gradlew", "--no-build-cache", "--no-configuration-cache", "--no-daemon", ":app:bundleRelease"],
+            ["./gradlew", *release.SEALED_GRADLE_FLAGS, ":app:bundleRelease"],
             commands[0],
         )
 
@@ -966,6 +966,138 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                     run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                     after_snapshot=replace_parent,
                 )
+
+    # SR6-1 (AGG6-32): the export's git children must not run ambient filters, hooks or env config.
+    def export_case(self, root: Path, temp_dir: str, environment: dict[str, str]) -> Path:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        destination = Path(temp_dir) / "export"
+        with patch.dict(os.environ, environment):
+            expected = release.export_commit(root, destination, commit)
+        self.assertEqual(
+            hashlib.sha256(b"committed bytes\n").hexdigest(),
+            expected["app/src/main/tracked.txt"],
+        )
+        return destination
+
+    def test_export_ignores_env_injected_smudge_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            attributes = Path(temp_dir) / "attributes"
+            attributes.write_text("* filter=inject\n", encoding="utf-8")
+            destination = self.export_case(root, temp_dir, {
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "core.attributesFile",
+                "GIT_CONFIG_VALUE_0": str(attributes),
+                "GIT_CONFIG_KEY_1": "filter.inject.smudge",
+                "GIT_CONFIG_VALUE_1": "sed s/committed/INJECTED/",
+            })
+            self.assertEqual(
+                "committed bytes\n",
+                destination.joinpath("app/src/main/tracked.txt").read_text(encoding="utf-8"),
+            )
+
+    def test_export_ignores_global_config_filter_and_template_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            home = Path(temp_dir) / "home"
+            home.mkdir()
+            marker = Path(temp_dir) / "hook-ran"
+            template = Path(temp_dir) / "template"
+            (template / "hooks").mkdir(parents=True)
+            hook = template / "hooks/post-checkout"
+            hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+            hook.chmod(0o755)
+            (template / "info").mkdir()
+            (template / "info/attributes").write_text("* filter=inject\n", encoding="utf-8")
+            global_config = home / "global.gitconfig"
+            global_config.write_text(
+                "[filter \"inject\"]\n\tsmudge = sed s/committed/INJECTED/\n"
+                f"[init]\n\ttemplateDir = {template}\n",
+                encoding="utf-8",
+            )
+            destination = self.export_case(root, temp_dir, {
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_TEMPLATE_DIR": str(template),
+            })
+            self.assertEqual(
+                "committed bytes\n",
+                destination.joinpath("app/src/main/tracked.txt").read_text(encoding="utf-8"),
+            )
+            self.assertFalse(marker.exists())
+            self.assertFalse(destination.joinpath(".git/hooks/post-checkout").exists())
+
+    def test_export_refuses_bytes_that_differ_from_the_commit_blobs(self) -> None:
+        # A tracked attribute is the one conversion channel config isolation cannot remove; the blob
+        # proof is what refuses it (without it, the CRLF bytes would be hashed as "expected").
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            (root / ".gitattributes").write_text("*.txt text eol=crlf\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitattributes"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "attr"], cwd=root, check=True, capture_output=True)
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+            ).stdout.strip()
+            with self.assertRaisesRegex(RuntimeError, "do not match the commit's blobs: .*tracked.txt"):
+                release.export_commit(root, Path(temp_dir) / "export", commit)
+
+    def test_git_children_never_inherit_git_environment(self) -> None:
+        ambient = {
+            "PATH": "/bin", "HOME": "/home/operator", "LC_ALL": "C",
+            "GIT_DIR": "/elsewhere/.git", "GIT_CONFIG_PARAMETERS": "'core.hooksPath'='/x'",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/x", "TELECAMPRO_STORE_PASSWORD": "synthetic",
+        }
+        isolated = release.git_child_environment(ambient, isolated=True)
+        self.assertFalse(any(
+            name.startswith("GIT_") and name not in {
+                "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_ATTR_NOSYSTEM", "GIT_TERMINAL_PROMPT",
+            }
+            for name in isolated
+        ))
+        self.assertEqual(os.devnull, isolated["GIT_CONFIG_GLOBAL"])
+        self.assertNotIn("TELECAMPRO_STORE_PASSWORD", isolated)
+        status = release.git_child_environment(ambient, isolated=False)
+        self.assertNotIn("GIT_DIR", status)
+        self.assertNotIn("GIT_CONFIG_GLOBAL", status)
+
+    def test_sealed_run_compiles_kotlin_in_process_and_records_unverified_inputs(self) -> None:
+        # SR6-2 / SR6-5 (AGG6-32).
+        commands, error = self.gradle_home_case(lambda home: None)
+        self.assertIsNone(error)
+        self.assertIn("-Pkotlin.compiler.execution.strategy=in-process", commands[0])
+        self.assertIn("--no-daemon", commands[0])
+
+    def test_sealed_run_refuses_verbose_gradle_logging(self) -> None:
+        # SR6-4 (AGG6-32): DEBUG/INFO logging may print signing values to a captured console.
+        for level, admitted in (("debug", False), ("info", False), ("lifecycle", True), ("WARN", True)):
+            with self.subTest(level=level):
+                def logging_home(home: Path, level: str = level) -> None:
+                    (home / "gradle.properties").write_text(
+                        f"org.gradle.logging.level={level}\n", encoding="utf-8"
+                    )
+
+                commands, error = self.gradle_home_case(logging_home)
+                if admitted:
+                    self.assertIsNone(error)
+                else:
+                    self.assertIsNotNone(error)
+                    self.assertIn("org.gradle.logging.level (only quiet, warn or lifecycle)", str(error))
+                    self.assertEqual([], commands)
+
+    def test_launcher_option_refusal_names_the_remedy(self) -> None:
+        # RG6-13 (AGG6-33): the common -Dfile.encoding setting is refused by NAME; say how to proceed.
+        with self.assertRaises(release.UploadKeyGateError) as raised:
+            release.keytool_environment({"PATH": "/bin", "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"})
+        message = str(raised.exception)
+        self.assertIn("env -u JAVA_TOOL_OPTIONS", message)
+        self.assertNotIn("UTF-8", message)
 
 
 class GradleTaskArgumentTest(unittest.TestCase):
