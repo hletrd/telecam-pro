@@ -9,6 +9,7 @@ import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import androidx.core.graphics.createBitmap
+import androidx.exifinterface.media.ExifInterface
 import java.io.File
 import java.io.FileOutputStream
 import me.hletrd.telecampro.camera.AspectRatio
@@ -736,6 +737,13 @@ internal fun composeStillExifApp1(
     return try {
         FileOutputStream(temp).use { it.write(seed) }
         val exif = androidx.exifinterface.media.ExifInterface(temp)
+        // A HAL's own APP1 is not ours to republish wholesale (AGG5-51): the app has no location
+        // permission and never requests JPEG_GPS_LOCATION, yet a vendor or non-conforming HAL can
+        // still embed cached GPS, a body/lens serial, an owner name, a unique id, or a MakerNote with
+        // device identifiers. Blank them before our tags go on; a null value removes the tag.
+        if (sourceExifApp1 != null) {
+            PASSTHROUGH_PRIVACY_STRIPPED_TAGS.forEach { tag -> exif.setAttribute(tag, null) }
+        }
         exifAttributeList(shot).forEach { (tag, value) -> exif.setAttribute(tag, value) }
         exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, orientation.toString())
         dimensions.forEach { (tag, value) -> exif.setAttribute(tag, value) }
@@ -848,6 +856,52 @@ internal fun composePassthroughStillExif(
         )
     }
 }
+
+/**
+ * Identifying tags a HAL-seeded composition never republishes (AGG5-51): the whole GPS directory,
+ * the body/lens serials, the owner name, the unique image id, and the opaque MakerNote. Only the
+ * hi-res passthrough lane seeds from a HAL APP1 (capability-gated, dormant on PMA110); every other
+ * lane composes from a blank 1×1 seed and carries none of these to begin with.
+ */
+internal val PASSTHROUGH_PRIVACY_STRIPPED_TAGS: List<String> = listOf(
+    ExifInterface.TAG_GPS_VERSION_ID,
+    ExifInterface.TAG_GPS_LATITUDE_REF,
+    ExifInterface.TAG_GPS_LATITUDE,
+    ExifInterface.TAG_GPS_LONGITUDE_REF,
+    ExifInterface.TAG_GPS_LONGITUDE,
+    ExifInterface.TAG_GPS_ALTITUDE_REF,
+    ExifInterface.TAG_GPS_ALTITUDE,
+    ExifInterface.TAG_GPS_TIMESTAMP,
+    ExifInterface.TAG_GPS_SATELLITES,
+    ExifInterface.TAG_GPS_STATUS,
+    ExifInterface.TAG_GPS_MEASURE_MODE,
+    ExifInterface.TAG_GPS_DOP,
+    ExifInterface.TAG_GPS_SPEED_REF,
+    ExifInterface.TAG_GPS_SPEED,
+    ExifInterface.TAG_GPS_TRACK_REF,
+    ExifInterface.TAG_GPS_TRACK,
+    ExifInterface.TAG_GPS_IMG_DIRECTION_REF,
+    ExifInterface.TAG_GPS_IMG_DIRECTION,
+    ExifInterface.TAG_GPS_MAP_DATUM,
+    ExifInterface.TAG_GPS_DEST_LATITUDE_REF,
+    ExifInterface.TAG_GPS_DEST_LATITUDE,
+    ExifInterface.TAG_GPS_DEST_LONGITUDE_REF,
+    ExifInterface.TAG_GPS_DEST_LONGITUDE,
+    ExifInterface.TAG_GPS_DEST_BEARING_REF,
+    ExifInterface.TAG_GPS_DEST_BEARING,
+    ExifInterface.TAG_GPS_DEST_DISTANCE_REF,
+    ExifInterface.TAG_GPS_DEST_DISTANCE,
+    ExifInterface.TAG_GPS_PROCESSING_METHOD,
+    ExifInterface.TAG_GPS_AREA_INFORMATION,
+    ExifInterface.TAG_GPS_DATESTAMP,
+    ExifInterface.TAG_GPS_DIFFERENTIAL,
+    ExifInterface.TAG_GPS_H_POSITIONING_ERROR,
+    ExifInterface.TAG_BODY_SERIAL_NUMBER,
+    ExifInterface.TAG_LENS_SERIAL_NUMBER,
+    ExifInterface.TAG_CAMERA_OWNER_NAME,
+    ExifInterface.TAG_IMAGE_UNIQUE_ID,
+    ExifInterface.TAG_MAKER_NOTE,
+)
 
 /**
  * The passthrough lane's EXIF, degraded in tiers so the one tag a viewer NEEDS — Orientation, the

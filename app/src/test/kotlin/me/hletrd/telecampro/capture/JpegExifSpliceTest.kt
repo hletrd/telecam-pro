@@ -217,6 +217,48 @@ class JpegExifSpliceTest {
         assertNotNull(BitmapFactory.decodeByteArray(spliced, 0, spliced.size))
     }
 
+    // AGG5-51 (SR5-5): the passthrough seed is the HAL's own APP1, which the app does not control.
+    @Test
+    fun `a HAL-seeded composition drops GPS, serials, owner, unique id, and MakerNote`() {
+        val source = File.createTempFile("hal-private-", ".jpg", cacheDir)
+        source.writeBytes(encodedJpeg(32, 24))
+        ExifInterface(source).apply {
+            setLatLong(37.5665, 126.9780)
+            setAttribute(ExifInterface.TAG_GPS_ALTITUDE, "38/1")
+            setAttribute(ExifInterface.TAG_GPS_DATESTAMP, "2026:10:02")
+            setAttribute(ExifInterface.TAG_BODY_SERIAL_NUMBER, "SN-0042")
+            setAttribute(ExifInterface.TAG_LENS_SERIAL_NUMBER, "LSN-7")
+            setAttribute(ExifInterface.TAG_CAMERA_OWNER_NAME, "Owner")
+            setAttribute(ExifInterface.TAG_IMAGE_UNIQUE_ID, "0123456789abcdef0123456789abcdef")
+            setAttribute(ExifInterface.TAG_SOFTWARE, "HAL 3.0")
+            saveAttributes()
+        }
+        val hal = source.readBytes()
+        val halExif = ExifInterface(ByteArrayInputStream(hal))
+        assertNotNull("fixture precondition: the HAL APP1 carries GPS", halExif.latLong)
+        assertEquals("SN-0042", halExif.getAttribute(ExifInterface.TAG_BODY_SERIAL_NUMBER))
+
+        val payload = composeStillExifApp1(
+            cacheDir,
+            shot(),
+            32,
+            24,
+            ExifInterface.ORIENTATION_ROTATE_90,
+            sourceExifApp1 = extractExifApp1(hal),
+        )
+
+        val exif = ExifInterface(ByteArrayInputStream(requireNotNull(spliceExifApp1(hal, payload))))
+        assertNull(exif.latLong)
+        PASSTHROUGH_PRIVACY_STRIPPED_TAGS.forEach { tag -> assertNull("$tag survived", exif.getAttribute(tag)) }
+        // Everything else the HAL wrote still sits under ours, and ours still lands.
+        assertEquals("HAL 3.0", exif.getAttribute(ExifInterface.TAG_SOFTWARE))
+        assertEquals("200", exif.getAttribute(ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY))
+        assertEquals(ExifInterface.ORIENTATION_ROTATE_90, exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, 0))
+        // The strip list covers the directory and identifiers the finding names.
+        assertTrue(ExifInterface.TAG_MAKER_NOTE in PASSTHROUGH_PRIVACY_STRIPPED_TAGS)
+        assertTrue(ExifInterface.TAG_GPS_LATITUDE in PASSTHROUGH_PRIVACY_STRIPPED_TAGS)
+    }
+
     @Test
     fun `a source that is not an EXIF APP1 makes the composer fail instead of guessing`() {
         assertThrows(IllegalStateException::class.java) {
