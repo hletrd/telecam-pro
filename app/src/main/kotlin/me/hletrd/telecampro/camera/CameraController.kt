@@ -50,12 +50,16 @@ class CameraController internal constructor(
     fun interface ErrorCb { fun onError(t: Throwable) }
 
     interface PhotoCallback {
-        /** Images are valid only for the duration of this call. rawChars is the RAW producer's characteristics. */
+        /**
+         * Images are valid only for the duration of this call. rawChars is the RAW producer's
+         * characteristics: non-null whenever [raw] is, and null only for a processed-only shot whose
+         * characteristics read failed — HEIF/JPEG never read it (AGG5-41).
+         */
         fun onPhoto(
             jpeg: Image?,
             raw: Image?,
             result: TotalCaptureResult,
-            rawChars: CameraCharacteristics,
+            rawChars: CameraCharacteristics?,
             takenAtMs: Long,
         )
         fun onError(t: Throwable)
@@ -2307,8 +2311,13 @@ class CameraController internal constructor(
         // live Images held (AGG4-37, the PERF2-5 cost f32a5bbd brought back).
         val chars = chars(shot = chainCharsReread.consume())
         try {
-            if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
-            else p.cb.onError(IllegalStateException("Missing camera characteristics"))
+            // Only DngCreator needs the characteristics; a processed-only shot whose Images the HAL
+            // already delivered must not be discarded over a failed read (AGG5-41).
+            if (stillCompletionMissingCharacteristics(wantRaw = p.wantRaw, charsPresent = chars != null)) {
+                p.cb.onError(IllegalStateException("Missing camera characteristics"))
+            } else {
+                p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
+            }
         } catch (t: Throwable) {
             p.cb.onError(t)
         } finally {
@@ -2957,6 +2966,10 @@ internal fun meteringRect(
     val top = (cy - rh / 2).coerceIn(activeTop, activeBottom - rh)
     return intArrayOf(left, top, rw, rh)
 }
+
+/** Whether a completed still must fail for a missing characteristics read: only DNG needs it. */
+internal fun stillCompletionMissingCharacteristics(wantRaw: Boolean, charsPresent: Boolean): Boolean =
+    wantRaw && !charsPresent
 
 /**
  * The AF-override key state both request-build paths must apply identically (ARCH4-5): the full

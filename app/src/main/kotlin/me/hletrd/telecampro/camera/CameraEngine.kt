@@ -5906,7 +5906,7 @@ class CameraEngine internal constructor(
                 jpeg: Image?,
                 raw: Image?,
                 result: TotalCaptureResult,
-                rawChars: CameraCharacteristics,
+                rawChars: CameraCharacteristics?,
                 takenAtMs: Long,
             ) {
                 var processedQueued = false
@@ -5974,7 +5974,9 @@ class CameraEngine internal constructor(
                             // rejection retains the private row for launch recovery.
                             val write = stillPipeline.saveDng(
                                 raw,
-                                rawChars,
+                                // The controller fails a RAW shot whose read failed before this
+                                // callback (AGG5-41), so a delivered RAW Image always has it.
+                                checkNotNull(rawChars) { "RAW still delivered without characteristics" },
                                 result,
                                 spec,
                                 checkNotNull(dngAllocation) {

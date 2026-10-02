@@ -196,4 +196,12 @@ class AfOverrideTest {
         assertFalse(tapAfShouldRearmAfterUnlock(true, false, false, true))
         assertFalse(tapAfShouldRearmAfterUnlock(true, false, true, false))
     }
+
+    /** AGG5-41: only a RAW shot needs the characteristics read. */
+    @Test
+    fun `missing characteristics fail only a shot that wants RAW`() {
+        assertFalse(stillCompletionMissingCharacteristics(wantRaw = false, charsPresent = false))
+        assertTrue(stillCompletionMissingCharacteristics(wantRaw = true, charsPresent = false))
+        assertFalse(stillCompletionMissingCharacteristics(wantRaw = true, charsPresent = true))
+    }
 }
