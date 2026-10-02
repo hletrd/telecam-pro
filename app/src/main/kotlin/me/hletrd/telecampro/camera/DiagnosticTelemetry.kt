@@ -14,8 +14,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * reserved owner. The evidence reserve exists because those two rows are read as NEGATIVE
  * evidence: a missing terminal FrameGap line reads as "no stall above the threshold", and a
  * missing cold-start line as "no measurement", so a chatty soak must not be able to silence them.
+ * The reserve is two SEPARATE 6-row slices (AGG6-4): the cold-start line fires once per resume and
+ * the terminal FrameGap row once per GL stop, so one shared 12 let ~12 background/foreground cycles
+ * of cold starts spend the very row the soak's stall verdict depends on.
  */
-internal class ProcessDiagnosticLogBudget(private val maxRows: Int) {
+internal class ProcessDiagnosticLogBudget(internal val maxRows: Int) {
     private val used = AtomicInteger(0)
 
     init {
@@ -35,14 +38,19 @@ internal class ProcessDiagnosticLogBudget(private val maxRows: Int) {
 
 internal const val RECURRING_DIAGNOSTIC_ROW_BUDGET = 180
 internal const val EVIDENCE_DIAGNOSTIC_ROW_RESERVE = 12
+internal const val STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE = 6
+internal const val FRAME_GAP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE =
+    EVIDENCE_DIAGNOSTIC_ROW_RESERVE - STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE
 internal const val SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET =
     RECURRING_DIAGNOSTIC_ROW_BUDGET - EVIDENCE_DIAGNOSTIC_ROW_RESERVE
 internal const val RESERVED_DIAGNOSTIC_ROW_BUDGET = 120
 internal const val COLOR_OS_PROCESS_LOG_ROW_LIMIT = 300
 internal val processDiagnosticLogBudget =
     ProcessDiagnosticLogBudget(SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET)
-internal val processEvidenceDiagnosticLogBudget =
-    ProcessDiagnosticLogBudget(EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
+internal val processStartupEvidenceDiagnosticLogBudget =
+    ProcessDiagnosticLogBudget(STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
+internal val processFrameGapEvidenceDiagnosticLogBudget =
+    ProcessDiagnosticLogBudget(FRAME_GAP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
 internal val processReservedDiagnosticLogBudget =
     ProcessDiagnosticLogBudget(RESERVED_DIAGNOSTIC_ROW_BUDGET)
 
@@ -63,13 +71,15 @@ internal fun recurringDiagnosticAllowed(
 
 /**
  * Admission for the two NEGATIVE-evidence rows (cold start, terminal FrameGap summary): the shared
- * recurring owner first, then the evidence reserve that no other producer can reach. Same
- * one-charge rule as [recurringDiagnosticAllowed].
+ * recurring owner first, then that producer's OWN evidence slice, which no other producer can reach.
+ * The default slice is the terminal FrameGap one (its only defaulted caller is the GL thread); the
+ * cold-start line reaches its slice through [DiagnosticLogDoors.evidence]. Same one-charge rule as
+ * [recurringDiagnosticAllowed].
  */
 internal fun evidenceDiagnosticAllowed(
     debugEnabled: Boolean,
     shared: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
-    evidence: ProcessDiagnosticLogBudget = processEvidenceDiagnosticLogBudget,
+    evidence: ProcessDiagnosticLogBudget = processFrameGapEvidenceDiagnosticLogBudget,
 ): Boolean = debugEnabled && (shared.tryAcquire() || evidence.tryAcquire())
 
 /**
@@ -88,7 +98,7 @@ internal fun reservedDiagnosticAllowed(
 internal class DiagnosticLogDoors(
     private val recurring: ProcessDiagnosticLogBudget = processDiagnosticLogBudget,
     private val reserved: ProcessDiagnosticLogBudget = processReservedDiagnosticLogBudget,
-    private val evidence: ProcessDiagnosticLogBudget = processEvidenceDiagnosticLogBudget,
+    private val evidence: ProcessDiagnosticLogBudget = processStartupEvidenceDiagnosticLogBudget,
 ) {
     fun d(tag: String, message: String) {
         if (recurringDiagnosticAllowed(debugEnabled = true, recurring)) {
@@ -102,7 +112,7 @@ internal class DiagnosticLogDoors(
         }
     }
 
-    /** Information row that may fall back to the evidence reserve; see [evidenceDiagnosticAllowed]. */
+    /** Cold-start row that may fall back to its evidence slice; see [evidenceDiagnosticAllowed]. */
     fun evidence(tag: String, message: String) {
         if (evidenceDiagnosticAllowed(debugEnabled = true, recurring, evidence)) {
             android.util.Log.i(tag, message)
@@ -195,7 +205,17 @@ internal data class FrameGapSummary(
     val atLeast1Second: Int,
 )
 
-/** Constant-memory bounded summaries for recurring producer stalls. */
+/**
+ * Constant-memory bounded summaries for recurring producer stalls.
+ *
+ * The window is cleared only when its row was ADMITTED (AGG6-4): [record] and [finish] hand each
+ * summary to an `emit` that reports whether the log gate let it through. A refused periodic row
+ * used to have its counts zeroed BEFORE the gate, so once the shared rows were gone every stall it
+ * covered vanished, and a quiet tail made [finish] return nothing at all — the exact "no FrameGap
+ * row = no stall" false pass the evidence reserve exists to prevent. Refused counts now carry
+ * forward into the next due summary and the terminal one, and a refused terminal summary carries
+ * into the next generation's terminal row.
+ */
 internal class FrameGapAccumulator(
     private val summaryIntervalMs: Long = FRAME_GAP_SUMMARY_INTERVAL_MS,
 ) {
@@ -210,7 +230,7 @@ internal class FrameGapAccumulator(
         require(summaryIntervalMs > 0L)
     }
 
-    fun record(nowMs: Long, gapMs: Long): FrameGapSummary? {
+    fun record(nowMs: Long, gapMs: Long, emit: (FrameGapSummary) -> Boolean) {
         require(gapMs > PREVIEW_FRAME_GAP_THRESHOLD_MS)
         count++
         maximumMs = maxOf(maximumMs, gapMs)
@@ -219,20 +239,27 @@ internal class FrameGapAccumulator(
             gapMs < 1_000L -> under1Second++
             else -> atLeast1Second++
         }
-        if (lastSummaryMs != Long.MIN_VALUE && nowMs - lastSummaryMs < summaryIntervalMs) return null
+        if (lastSummaryMs != Long.MIN_VALUE && nowMs - lastSummaryMs < summaryIntervalMs) return
+        // The interval paces ATTEMPTS too: a refused row is retried at the next due gap, not on
+        // every gap, so a stalling stream cannot hammer an exhausted gate.
         lastSummaryMs = nowMs
-        return takeSummary()
+        emitAndClear(emit)
     }
 
-    fun finish(): FrameGapSummary? = if (count == 0) null else takeSummary()
+    /** Terminal summary: emitted whenever any unreported stall exists, never for a clean window. */
+    fun finish(emit: (FrameGapSummary) -> Boolean) {
+        if (count > 0) emitAndClear(emit)
+    }
 
-    private fun takeSummary() = FrameGapSummary(
-        count = count,
-        maximumMs = maximumMs,
-        under400Ms = under400Ms,
-        under1Second = under1Second,
-        atLeast1Second = atLeast1Second,
-    ).also {
+    private fun emitAndClear(emit: (FrameGapSummary) -> Boolean) {
+        val summary = FrameGapSummary(
+            count = count,
+            maximumMs = maximumMs,
+            under400Ms = under400Ms,
+            under1Second = under1Second,
+            atLeast1Second = atLeast1Second,
+        )
+        if (!emit(summary)) return
         count = 0
         maximumMs = 0L
         under400Ms = 0

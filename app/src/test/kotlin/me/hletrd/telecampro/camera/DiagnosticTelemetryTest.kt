@@ -51,20 +51,70 @@ class DiagnosticTelemetryTest {
     @Test
     fun `frame gaps emit bounded bucket summaries and retain a terminal remainder`() {
         val gaps = FrameGapAccumulator(summaryIntervalMs = 1_000L)
+        val emitted = mutableListOf<FrameGapSummary>()
+        val admitAll: (FrameGapSummary) -> Boolean = { emitted += it; true }
 
-        assertEquals(
-            FrameGapSummary(1, 250L, 1, 0, 0),
-            gaps.record(0L, 250L),
-        )
-        assertEquals(null, gaps.record(100L, 500L))
-        assertEquals(null, gaps.record(200L, 1_200L))
-        assertEquals(
-            FrameGapSummary(3, 1_200L, 1, 1, 1),
-            gaps.record(1_000L, 300L),
-        )
-        assertEquals(null, gaps.finish())
-        assertEquals(null, gaps.record(1_100L, 700L))
-        assertEquals(FrameGapSummary(1, 700L, 0, 1, 0), gaps.finish())
+        gaps.record(0L, 250L, admitAll)
+        assertEquals(listOf(FrameGapSummary(1, 250L, 1, 0, 0)), emitted)
+        gaps.record(100L, 500L, admitAll)
+        gaps.record(200L, 1_200L, admitAll)
+        assertEquals(1, emitted.size)
+        gaps.record(1_000L, 300L, admitAll)
+        assertEquals(FrameGapSummary(3, 1_200L, 1, 1, 1), emitted.last())
+        // A clean tail window emits nothing; a stalled one emits its remainder.
+        gaps.finish(admitAll)
+        assertEquals(2, emitted.size)
+        gaps.record(1_100L, 700L, admitAll)
+        gaps.finish(admitAll)
+        assertEquals(FrameGapSummary(1, 700L, 0, 1, 0), emitted.last())
+        assertEquals(3, emitted.size)
+    }
+
+    // AGG6-4: the window clears only once its row is admitted. Exhausted shared rows refuse the
+    // periodic summary; its stall must still reach the terminal row through the FrameGap slice.
+    @Test
+    fun `a refused periodic summary carries its stalls into the terminal evidence row`() {
+        val shared = ProcessDiagnosticLogBudget(1)
+        val startupSlice = ProcessDiagnosticLogBudget(STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
+        val frameGapSlice = ProcessDiagnosticLogBudget(FRAME_GAP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
+        assertTrue(shared.tryAcquire())
+        val emitted = mutableListOf<FrameGapSummary>()
+        fun periodic(summary: FrameGapSummary): Boolean =
+            recurringDiagnosticAllowed(debugEnabled = true, budget = shared).also { if (it) emitted += summary }
+        fun terminal(summary: FrameGapSummary): Boolean =
+            evidenceDiagnosticAllowed(debugEnabled = true, shared = shared, evidence = frameGapSlice)
+                .also { if (it) emitted += summary }
+        val gaps = FrameGapAccumulator(summaryIntervalMs = 1_000L)
+
+        gaps.record(0L, 1_400L, ::periodic)
+        gaps.record(2_000L, 450L, ::periodic)
+        assertTrue(emitted.isEmpty())
+        gaps.finish(::terminal)
+        assertEquals(listOf(FrameGapSummary(2, 1_400L, 0, 1, 1)), emitted)
+        assertEquals(1, frameGapSlice.usedRows())
+
+        // Repeated cold starts spend only their own slice and never the FrameGap one.
+        repeat(STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE * 3) {
+            evidenceDiagnosticAllowed(debugEnabled = true, shared = shared, evidence = startupSlice)
+        }
+        assertEquals(STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE, startupSlice.usedRows())
+        gaps.record(3_000L, 300L, ::periodic)
+        gaps.finish(::terminal)
+        assertEquals(FrameGapSummary(1, 300L, 1, 0, 0), emitted.last())
+    }
+
+    @Test
+    fun `a refused terminal summary carries into the next admitted terminal row`() {
+        val gaps = FrameGapAccumulator(summaryIntervalMs = 1_000L)
+        val emitted = mutableListOf<FrameGapSummary>()
+        gaps.record(0L, 900L) { false }
+        gaps.finish { false }
+        gaps.record(500L, 1_100L) { false }
+        gaps.finish { emitted += it; true }
+        assertEquals(listOf(FrameGapSummary(2, 1_100L, 0, 1, 1)), emitted)
+        // Admitted: the next generation starts from an empty window.
+        gaps.finish { emitted += it; true }
+        assertEquals(1, emitted.size)
     }
 
     @Test

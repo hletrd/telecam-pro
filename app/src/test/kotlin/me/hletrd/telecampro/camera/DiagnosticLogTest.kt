@@ -124,8 +124,40 @@ class DiagnosticLogTest {
             RECURRING_DIAGNOSTIC_ROW_BUDGET,
             SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET + EVIDENCE_DIAGNOSTIC_ROW_RESERVE,
         )
+        // RG6-12: pin the CONFIGURED owners, not just a usage bound — a revert of the shared owner
+        // to the whole 180-row class, or of the split slices to one 12, must fail here.
+        assertEquals(168, SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET)
+        assertEquals(SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET, processDiagnosticLogBudget.maxRows)
+        assertEquals(
+            EVIDENCE_DIAGNOSTIC_ROW_RESERVE,
+            processStartupEvidenceDiagnosticLogBudget.maxRows + processFrameGapEvidenceDiagnosticLogBudget.maxRows,
+        )
+        assertEquals(6, processStartupEvidenceDiagnosticLogBudget.maxRows)
+        assertEquals(6, processFrameGapEvidenceDiagnosticLogBudget.maxRows)
+        assertEquals(RESERVED_DIAGNOSTIC_ROW_BUDGET, processReservedDiagnosticLogBudget.maxRows)
         assertTrue(processDiagnosticLogBudget.usedRows() <= SHARED_RECURRING_DIAGNOSTIC_ROW_BUDGET)
-        assertTrue(processEvidenceDiagnosticLogBudget.usedRows() <= EVIDENCE_DIAGNOSTIC_ROW_RESERVE)
+    }
+
+    @Test
+    fun `the default evidence door is the startup slice and the default gate the FrameGap slice`() {
+        // AGG6-4: the two NEGATIVE-evidence producers must never share a slice. Fresh exhausted
+        // shared owners force each default onto its reserve; at most one process row is spent.
+        val exhausted = ProcessDiagnosticLogBudget(1).also { assertTrue(it.tryAcquire()) }
+        val startupBefore = processStartupEvidenceDiagnosticLogBudget.usedRows()
+        val frameGapBefore = processFrameGapEvidenceDiagnosticLogBudget.usedRows()
+        DiagnosticLogDoors(recurring = exhausted).evidence(uniqueTag("startup"), "cold start row")
+        assertEquals(frameGapBefore, processFrameGapEvidenceDiagnosticLogBudget.usedRows())
+        assertEquals(
+            minOf(startupBefore + 1, STARTUP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE),
+            processStartupEvidenceDiagnosticLogBudget.usedRows(),
+        )
+        val startupAfter = processStartupEvidenceDiagnosticLogBudget.usedRows()
+        evidenceDiagnosticAllowed(debugEnabled = true, shared = exhausted)
+        assertEquals(startupAfter, processStartupEvidenceDiagnosticLogBudget.usedRows())
+        assertEquals(
+            minOf(frameGapBefore + 1, FRAME_GAP_EVIDENCE_DIAGNOSTIC_ROW_RESERVE),
+            processFrameGapEvidenceDiagnosticLogBudget.usedRows(),
+        )
     }
 
     @Test
@@ -139,10 +171,10 @@ class DiagnosticLogTest {
         // The GL FrameGap summary takes the defaulted process owners; a release build (debug off)
         // must never spend a row from either of them.
         val sharedBefore = processDiagnosticLogBudget.usedRows()
-        val evidenceBefore = processEvidenceDiagnosticLogBudget.usedRows()
+        val evidenceBefore = processFrameGapEvidenceDiagnosticLogBudget.usedRows()
         assertFalse(evidenceDiagnosticAllowed(debugEnabled = false))
         assertEquals(sharedBefore, processDiagnosticLogBudget.usedRows())
-        assertEquals(evidenceBefore, processEvidenceDiagnosticLogBudget.usedRows())
+        assertEquals(evidenceBefore, processFrameGapEvidenceDiagnosticLogBudget.usedRows())
 
         assertTrue(processDiagnosticLogBudget.usedRows() <= RECURRING_DIAGNOSTIC_ROW_BUDGET)
         assertTrue(processReservedDiagnosticLogBudget.usedRows() <= RESERVED_DIAGNOSTIC_ROW_BUDGET)

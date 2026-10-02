@@ -899,25 +899,27 @@ class GlPipeline(
     private val previewFrameTiming = me.hletrd.telecampro.camera.PreviewFrameTiming()
     private val frameGapAccumulator = me.hletrd.telecampro.camera.FrameGapAccumulator()
 
-    // The TERMINAL summary may fall back to the evidence reserve (AGG5-9): "no FrameGap row" is
-    // read as "no stall above the threshold", so a soak whose chatty producers drained the shared
-    // recurring rows must not turn a missing line into a false pass. Periodic summaries stay on the
-    // shared rows only, so a continuously stalling stream cannot spend the reserve before its end.
+    // The TERMINAL summary may fall back to its own evidence slice (AGG5-9, AGG6-4): "no FrameGap
+    // row" is read as "no stall above the threshold", so a soak whose chatty producers drained the
+    // shared recurring rows must not turn a missing line into a false pass. Periodic summaries stay
+    // on the shared rows only, so a continuously stalling stream cannot spend the reserve before its
+    // end. Returns whether the row was admitted: the accumulator clears only an admitted window.
     private fun emitFrameGapSummary(
         summary: me.hletrd.telecampro.camera.FrameGapSummary,
-        terminal: Boolean = false,
-    ) {
+        terminal: Boolean,
+    ): Boolean {
         val admitted = if (terminal) {
             me.hletrd.telecampro.camera.evidenceDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
         } else {
             me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
         }
-        if (!admitted) return
+        if (!admitted) return false
         android.util.Log.i(
             "GlPipeline",
             "FrameGap: count=${summary.count} maxMs=${summary.maximumMs} " +
                 "buckets=${summary.under400Ms}/${summary.under1Second}/${summary.atLeast1Second}",
         )
+        return true
     }
 
     // Live-zoom compensation (see FlipRenderer.draw zoomComp): the UI's requested zoom vs the zoom
@@ -969,7 +971,9 @@ class GlPipeline(
             // it ate the startup trace and the focus-verdict trace outright). 200 ms still catches
             // what this line exists for: the ~180 ms setRepeatingRequest stalls and real stream
             // wedges. Normal cadence is NOT news.
-            producerGapMs?.let { frameGapAccumulator.record(now, it) }?.let(::emitFrameGapSummary)
+            producerGapMs?.let { gap ->
+                frameGapAccumulator.record(now, gap) { emitFrameGapSummary(it, terminal = false) }
+            }
         }
         // Release builds use render timing too: setZoomTarget() consults it to decide whether the
         // preview is quiet enough for a cached redraw. Producer timing remains a separate DEBUG
@@ -1802,7 +1806,7 @@ class GlPipeline(
         }
         if (analysisGeneration === ownedAnalysis) analysisGeneration = null
         resetEncoderTimestampBase()
-        frameGapAccumulator.finish()?.let { emitFrameGapSummary(it, terminal = true) }
+        frameGapAccumulator.finish { emitFrameGapSummary(it, terminal = true) }
         previewFrameTiming.reset()
         egl = null
         inited = false

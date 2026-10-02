@@ -1188,6 +1188,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   shared rows plus a 12-row EVIDENCE reserve that only the cold-start line and the TERMINAL FrameGap
   summary may spend, and only once the shared rows are gone — both are read as negative evidence
   ("no line" = "no stall" / "no measurement"), so a chatty soak must not be able to silence them.
+  The reserve is two separate 6-row slices, one per producer, so repeated cold starts cannot spend
+  the FrameGap row, and a FrameGap window is cleared only after its row is ADMITTED: a refused
+  summary's stalls carry forward into the next admitted (ultimately the terminal) row.
   Every warning/error crosses a separate 120-row process owner, making the complete runtime maximum
   exactly 300. **A gated row is charged ONCE:** a caller that already passed
   `recurringDiagnosticAllowed`/`tapFocusDiagnosticAllowed`/`processDiagnosticLogBudget.tryAcquire`
