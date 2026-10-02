@@ -2124,6 +2124,8 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
     private val retryInitialDelayMs: Long = 250L,
     private val retryMaxDelayMs: Long = 30_000L,
     private val onAvailabilityChanged: ((Boolean) -> Unit)? = null,
+    /** Test seam: runs on the worker right after a finished attempt returns its permit. */
+    private val afterTaskReleased: () -> Unit = {},
 ) {
     private val lock = Any()
     private val unresolved = LinkedHashSet<T>()
@@ -2135,11 +2137,16 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
         workerCount,
         0L,
         java.util.concurrent.TimeUnit.MILLISECONDS,
-        java.util.concurrent.ArrayBlockingQueue(backlogCapacity),
+        // The queue alone must hold every permit's task (AGG5-27, the AGG4-26 sibling): the permit
+        // returns in runAttempt's finally while that worker is still busy, so a reserve() in that
+        // window used to be admitted by the semaphore and then rejected by a backlog-sized queue —
+        // a spurious UNRESOLVED that counted against admissionLimit exactly as an outage drained.
+        java.util.concurrent.ArrayBlockingQueue(workerCount + backlogCapacity),
         threadFactory,
         java.util.concurrent.ThreadPoolExecutor.AbortPolicy(),
     )
-    private val admission = java.util.concurrent.Semaphore(workerCount + backlogCapacity, true)
+    private val permitCount = workerCount + backlogCapacity
+    private val admission = java.util.concurrent.Semaphore(permitCount, true)
 
     init {
         require(workerCount > 0)
@@ -2198,6 +2205,7 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
         } finally {
             releaseReservation()
             retryDelay?.let { scheduleRetry(output, it) }
+            afterTaskReleased()
         }
     }
 
@@ -2308,9 +2316,9 @@ internal class RejectedOutputCleanupCapacityOwner<T>(
         onAvailabilityChanged?.invoke(canAdmit())
     }
 
-    internal fun admittedCount(): Int =
-        executor.maximumPoolSize + executor.queue.remainingCapacity() + executor.queue.size -
-            admission.availablePermits()
+    internal fun admittedCount(): Int = permitCount - admission.availablePermits()
+
+    internal fun queuedTaskCount(): Int = executor.queue.size
 
     internal fun shutdownNowForTest() = executor.shutdownNow()
 }

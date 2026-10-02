@@ -115,6 +115,56 @@ class RejectedOutputCleanupDispatcherTest {
         assertEquals(1, owner.unresolvedCount())
     }
 
+    @Test
+    fun `a cleanup reserved before the worker dequeues the backlog is never rejected`() {
+        // AGG5-27 (the AGG4-26 sibling): runAttempt returns its permit in a finally while the worker
+        // is still busy and the backlog task is still queued. A reservation in that window used to be
+        // admitted by the semaphore and then rejected by a backlog-sized queue as UNRESOLVED.
+        val releaseFirst = CountDownLatch(1)
+        val firstEntered = CountDownLatch(1)
+        val allFinished = CountDownLatch(3)
+        val windowResults = java.util.concurrent.CopyOnWriteArrayList<Any>()
+        lateinit var owner: RejectedOutputCleanupCapacityOwner<String>
+        owner = RejectedOutputCleanupCapacityOwner(
+            workerCount = 1,
+            backlogCapacity = 1,
+            admissionLimit = 4,
+            discardEffect = { output ->
+                if (output == "first") {
+                    firstEntered.countDown()
+                    releaseFirst.await(5, TimeUnit.SECONDS)
+                }
+                PendingOutputDiscardResult.DELETED
+            },
+            afterTaskReleased = {
+                if (windowResults.isEmpty()) {
+                    // On the worker, after "first" returned its permit and before the worker can
+                    // dequeue "second": the queue is still occupied.
+                    windowResults += owner.queuedTaskCount()
+                    val reserved = owner.reserve()
+                    windowResults += reserved?.submit("window") { result ->
+                        windowResults += result
+                        allFinished.countDown()
+                    } ?: "no permit"
+                }
+            },
+        )
+        try {
+            assertTrue(requireNotNull(owner.reserve()).submit("first") { allFinished.countDown() })
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS))
+            assertTrue(requireNotNull(owner.reserve()).submit("second") { allFinished.countDown() })
+            assertNull("both permits are taken", owner.reserve())
+
+            releaseFirst.countDown()
+            assertTrue(allFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf<Any>(1, true, PendingOutputDiscardResult.DELETED), windowResults.toList())
+            assertEquals(0, owner.unresolvedCount())
+        } finally {
+            releaseFirst.countDown()
+            owner.shutdownNowForTest()
+        }
+    }
+
     private fun <T> owner(
         effect: (T) -> PendingOutputDiscardResult,
     ) = RejectedOutputCleanupCapacityOwner(
