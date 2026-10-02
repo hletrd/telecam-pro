@@ -2594,11 +2594,12 @@ check(
 # ---- Stacked KDoc pairs (DOC4-6 / AGG4-55) -------------------------------------------------------
 # A `/** … */` block immediately followed by another `/**` (only blank lines between) documents no
 # declaration: Dokka and the IDE attach only the SECOND block, so the first block's HAL-quirk
-# rationale is detached from the symbol it explains. The known sites are being re-homed after the
-# RPL cycle-4 merge, so this scan is REPORT-ONLY for now: it prints every site as `info` lines and
-# never fails the gate. To enforce, set STACKED_KDOC_ENFORCED = True below (or export
-# TELECAM_ENFORCE_STACKED_KDOC=1 for a trial run); the scan then becomes an ordinary failing check.
-STACKED_KDOC_ENFORCED = False
+# rationale is detached from the symbol it explains. The post-merge sweep after RPL cycle 4
+# re-homed every known site (AGG4-55), so the scan ENFORCES: a new stacked pair
+# fails the gate. A file-level header that documents no declaration is a plain `/* … */` comment,
+# which this scan deliberately does not count — only a `/**` block followed by another `/**` is a
+# detached KDoc. STACKED_KDOC_ENFORCED = False drops back to the report-only `info` listing.
+STACKED_KDOC_ENFORCED = True
 STACKED_KDOC_SCAN_ROOTS = ("app/src/main",)
 STACKED_KDOC = re.compile(r"\*/[ \t]*\n(?:[ \t]*\n)*[ \t]*/\*\*")
 
@@ -2610,6 +2611,9 @@ def stacked_kdoc_sites() -> list[str]:
         for path in sorted((ROOT / scan_root).rglob("*.kt")):
             text = path.read_text(encoding="utf-8")
             for match in STACKED_KDOC.finditer(text):
+                # The closing `*/` must end a KDoc: a plain `/* … */` header above a KDoc is fine.
+                if not text.startswith("/**", text.rfind("/*", 0, match.start())):
+                    continue
                 line = text.count("\n", 0, match.start()) + 1
                 sites.append(f"{path.relative_to(ROOT).as_posix()}:{line}")
     return sites

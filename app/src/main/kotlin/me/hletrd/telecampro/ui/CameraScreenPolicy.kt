@@ -32,7 +32,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
-/**
+/*
  * Non-composable policy helpers for [CameraScreen], hoisted (behavior-locked, verbatim) out of
  * CameraScreen.kt so the pure decision logic lives apart from Compose emission: status urgency and
  * display duration, the locale-neutral remaining-capacity parser used by the status pill,
@@ -75,19 +75,6 @@ internal fun reviewTargetEnabled(
     recording: Boolean,
     recordingFinalizing: Boolean = false,
 ): Boolean = !recordingStarting && !recording && !recordingFinalizing
-
-/**
- * PROGRESS statuses describe a condition that is either true or false right now, so an EVENT ends
- * them — never a timer. [CAMERA_STARTING_STATUS] is the one the app emits: the owner reported
- * "starting the camera takes a long time" on a device whose session configures in ~950 ms, and the
- * cause was this classifier dropping the message into the 2.5 s neutral bucket. The pill therefore
- * sat for its full 2.5 s after the camera was already live, and the wait the user was reading was
- * the timer, not the camera. A timer is wrong in BOTH directions here: too long makes a fast start
- * look slow, and too short would clear the message while the camera is still coming up, which
- * claims ready before it is. Nothing bounds this one — while the camera has genuinely not come up,
- * "Starting camera…" is true, and every way that attempt can end (Ready, an error status, the
- * exhausted-retry terminal status) replaces it.
- */
 
 /** Locale-neutral meaning of the status pill's compact remaining-media token. */
 internal sealed interface RemainingCapacity {

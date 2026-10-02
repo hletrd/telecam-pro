@@ -8,7 +8,7 @@ import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.LensExifMetadata
 import kotlin.math.abs
 
-/**
+/*
  * Focus-confidence detection: the OSD's one honest statement about whether the viewfinder is
  * resolving the subject. TWO independent proofs feed one tag, one hold, one OSD slot.
  *

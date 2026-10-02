@@ -395,15 +395,6 @@ const val FINDER_MIN_BOTTOM_CLEARANCE = 0.088f
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
 const val PUNCH_IN_CROP = 0.6f
 
-/**
- * The engine-resolved half of the finder gate: user toggle, plus either TELE mounted or unified
- * zoom at [FINDER_MIN_ZOOM]. In PHOTO the 4:3 still aspect is also required. In VIDEO the still
- * aspect is not consulted at all: it is semantically unrelated to recorded framing, and keying the
- * overlay off it is what used to make the PIP appear/vanish mid-clip. 16:9 STILLS stay excluded
- * because the AspectMask pillarboxes would dim and misframe the corner box.
- * ONE implementation for the engine (`pushTeleFinder`) and the Compose border — the same
- * hand-written condition used to live in three places and could silently drift.
- */
 /** Zoom at or past which the finder is offered without a converter mounted. */
 const val FINDER_MIN_ZOOM = 3f
 
@@ -424,21 +415,6 @@ const val FINDER_MIN_ZOOM = 3f
  */
 fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled && !frontFacing
 
-/**
- * Whether the rear PHOTO route must pin a STANDALONE lens instead of the logical multicamera.
- *
- * Photo normally runs on the logical camera because that is what makes 0.6–20× pinch seamless: the
- * HAL crosses lenses internally and the session never reopens. But RAW cannot come off it — the
- * logical camera ADVERTISES the RAW capability and then errors the whole device ~5 s after a still
- * that carries a RAW target (`CAMERA_ERROR(3)`, no image ever arrives; device-measured). Every
- * physical camera on this device really does support RAW, so the limitation is the logical route,
- * not the sensor.
- *
- * So when the operator wants DNG, the route switches to the standalone lens nearest the current
- * framing and RAW works at ANY focal length — not just through the teleconverter. The cost is that
- * zoom then steps between lenses with a reopen instead of crossing seamlessly, exactly as the video
- * route already does. That is the trade, and it is opt-in: turning DNG off restores seamless zoom.
- */
 /**
  * The OPTICAL lens a standalone route actually lands on for a main-relative [unified] ratio, and
  * therefore the divisor that turns that ratio into a LENS-LOCAL one.
@@ -544,6 +520,30 @@ internal fun resolveTeleZoomTransition(
     )
 }
 
+/**
+ * Whether the rear route must pin a STANDALONE lens instead of the logical multicamera.
+ *
+ * Two independent reasons, and only the first is universal:
+ * 1. VIDEO always pins a standalone lens. That is the EIS decision, not a RAW one: the logical
+ *    camera's video stabilization leaks an uncorrected warp band into the preview and the recorded
+ *    file, so video stays on the matching standalone lens on every device.
+ * 2. PHOTO pins one only when DNG is wanted AND the device profile carries the PMA110 law
+ *    ([rawForcesStandalone] = [DeviceProfile.rawRequiresStandalone]). [DeviceProfile.GENERIC] keeps
+ *    RAW on the logical camera, so a spec device keeps seamless zoom with DNG on.
+ *
+ * The PMA110 law, measured on that HAL: photo normally runs on the logical camera because that is
+ * what makes 0.6–20× pinch seamless: the HAL crosses lenses internally and the session never
+ * reopens. But RAW cannot come off it — the logical camera ADVERTISES the RAW capability and then
+ * errors the whole device ~5 s after a still that carries a RAW target (`CAMERA_ERROR(3)`, no image
+ * ever arrives; device-measured). Every physical camera on that device really does support RAW, so
+ * the limitation is the logical route, not the sensor.
+ *
+ * So on that profile, when the operator wants DNG, the route switches to the standalone lens
+ * nearest the current framing and RAW works at ANY focal length — not just through the
+ * teleconverter. The cost is that zoom then steps between lenses with a reopen instead of crossing
+ * seamlessly, exactly as the video route already does. That is the trade, and it is opt-in: turning
+ * DNG off restores seamless zoom.
+ */
 fun standaloneRouteWanted(
     videoMode: Boolean,
     rawWanted: Boolean,
@@ -652,6 +652,15 @@ fun rearReturnLens(
     currentLens: LensChoice,
 ): LensChoice = if (targetStandaloneRoute) currentLens else LensChoice.forZoom(returnedZoom)
 
+/**
+ * The engine-resolved half of the finder gate: user toggle, plus either TELE mounted or unified
+ * zoom at [FINDER_MIN_ZOOM]. In PHOTO the 4:3 still aspect is also required. In VIDEO the still
+ * aspect is not consulted at all: it is semantically unrelated to recorded framing, and keying the
+ * overlay off it is what used to make the PIP appear/vanish mid-clip. 16:9 STILLS stay excluded
+ * because the AspectMask pillarboxes would dim and misframe the corner box.
+ * ONE implementation for the engine (`pushTeleFinder`) and the Compose border — the same
+ * hand-written condition used to live in three places and could silently drift.
+ */
 fun teleFinderResolved(
     enabled: Boolean,
     teleconverter: Boolean,
@@ -863,15 +872,6 @@ fun finderContainsTopLeftPoint(
 val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
 
 /**
- * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
- * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
- * periscope the Hasselblad teleconverter clamps onto. Lens picks are ZOOM PRESETS on the seamless
- * logical camera — they do NOT bundle teleconverter mode: TELE stays on only when it already is
- * AND the pick is its 3× host lens, and the separate TELE toggle owns converter shooting (the
- * afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
- * app-side gyro warping).
- */
-/**
  * Which [LensChoice] presets THIS device can actually deliver, and which of those are a real lens
  * rather than digital zoom.
  *
@@ -978,6 +978,15 @@ internal fun lensInventoryOf(
     )
 }
 
+/**
+ * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
+ * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
+ * periscope the Hasselblad teleconverter clamps onto. Lens picks are ZOOM PRESETS on the seamless
+ * logical camera — they do NOT bundle teleconverter mode: TELE stays on only when it already is
+ * AND the pick is its 3× host lens, and the separate TELE toggle owns converter shooting (the
+ * afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
+ * app-side gyro warping).
+ */
 enum class LensChoice(val targetEquivMm: Float, val zoomPreset: Float) {
     ULTRAWIDE(14f, 0.6f),
     MAIN(23f, 1f),
@@ -1253,11 +1262,6 @@ data class PhotoFormats(
 }
 
 /**
- * Drops HEIF when this device cannot encode it, promoting JPEG so the shutter still writes a file.
- * HeifWriter needs the platform HEVC encoder, which is not CDD-mandatory at API 33; without this a
- * fresh install on such a handset produced NO output at all from its own default (2026-08-02).
- */
-/**
  * The gamma choices this device can encode HONESTLY. HLG and all three log profiles are tagged
  * BT.2020 and carry a 10-bit HEVC profile; on an 8-bit-only encoder they yield a Main/yuv420p stream
  * wearing those tags, so they are withheld rather than offered as a claim the file cannot back.
@@ -1282,6 +1286,11 @@ fun ColorTransfer.normalizedForEncoder(
     ColorTransfer.SDR
 }
 
+/**
+ * Drops HEIF when this device cannot encode it, promoting JPEG so the shutter still writes a file.
+ * HeifWriter needs the platform HEVC encoder, which is not CDD-mandatory at API 33; without this a
+ * fresh install on such a handset produced NO output at all from its own default (2026-08-02).
+ */
 fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormats = when {
     heifEncodeAvailable || !heif -> this
     else -> copy(heif = false, jpeg = true)

@@ -7,7 +7,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-/**
+/*
  * Frame-detail metric: "does this frame resolve any FINE structure, or only coarse structure?"
  *
  * WHY THIS EXISTS (device-measured 2026-07-25, PMA110): with a subject ~9 cm from the lens on the
@@ -151,21 +151,6 @@ internal fun focusFrameVerdict(totalTiles: Int, judgeableTiles: Int, sharpTiles:
     }
 
 /**
- * RGBA8888 analysis snapshot -> frame-detail verdict. Pure; runs on the analysis executor, never on
- * the GL thread, and only over bytes the existing scope/AE readback already produced.
- *
- * DELIBERATELY TAKES NO `lut`. Its siblings [computeHistogram]/[computeWaveform] apply
- * [digitalGainDisplayLut] so the scopes match the brightness-simulated preview. This must NOT: the
- * LUT clips at white (fabricating exactly-zero curvature at every lag — the precise confusion this
- * metric exists to avoid) and its slope varies with level (so it is not the identity on a ratio of
- * curvatures). An OPTICS verdict must not move when a display-only brightness simulation moves;
- * omitting the parameter makes that a compile error rather than a review catch.
- *
- * Note the ratio is invariant under any smooth monotone tone curve anyway: for locally smooth L,
- * d^2 g(L)/dk^2 ~= g'*L''k^2 + g''*(L'k)^2 — both terms scale as k^2, so the two-lag ratio survives
- * the BT.1886 encoding the analysis draw always uses.
- */
-/**
  * Reusable accumulator scratch (perf review #7). The analysis executor is single-flight by
  * construction (AnalysisGeneration's busy gate), so one thread-confined scratch is safe; sizing is
  * re-checked per call and only ever grows. Before this, every run allocated ~205 KiB (the w*h luma
@@ -206,6 +191,21 @@ private class FocusDetailScratch {
 
 private val focusDetailScratch = ThreadLocal.withInitial { FocusDetailScratch() }
 
+/**
+ * RGBA8888 analysis snapshot -> frame-detail verdict. Pure; runs on the analysis executor, never on
+ * the GL thread, and only over bytes the existing scope/AE readback already produced.
+ *
+ * DELIBERATELY TAKES NO `lut`. Its siblings [computeHistogram]/[computeWaveform] apply
+ * [digitalGainDisplayLut] so the scopes match the brightness-simulated preview. This must NOT: the
+ * LUT clips at white (fabricating exactly-zero curvature at every lag — the precise confusion this
+ * metric exists to avoid) and its slope varies with level (so it is not the identity on a ratio of
+ * curvatures). An OPTICS verdict must not move when a display-only brightness simulation moves;
+ * omitting the parameter makes that a compile error rather than a review catch.
+ *
+ * Note the ratio is invariant under any smooth monotone tone curve anyway: for locally smooth L,
+ * d^2 g(L)/dk^2 ~= g'*L''k^2 + g''*(L'k)^2 — both terms scale as k^2, so the two-lag ratio survives
+ * the BT.1886 encoding the analysis draw always uses.
+ */
 internal fun computeFocusDetail(bytes: ByteArray, w: Int, h: Int): FocusDetailData {
     if (w <= 0 || h <= 0 || bytes.size.toLong() < w.toLong() * h.toLong() * 4L) {
         return FocusDetailData.UNJUDGED

@@ -1,6 +1,6 @@
 package me.hletrd.telecampro.ui
 
-/**
+/*
  * The camera-switch dip: a short fade to black over the viewfinder while a REOPEN replaces the
  * Camera2 session, and back out when the new session is accepted.
  *

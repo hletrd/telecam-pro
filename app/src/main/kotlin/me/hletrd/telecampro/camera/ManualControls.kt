@@ -1155,14 +1155,6 @@ private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: Came
 }
 
 /**
- * Flash via AE modes. Interacts with [applyExposure], which owns CONTROL_AE_MODE:
- *  - MANUAL exposure (`!autoExposure && supportsManualSensor`) → AE is OFF, so the AE-driven
- *    auto/always-flash modes are unusable; only TORCH and OFF are honored (via FLASH_MODE).
- *  - AE ON → set the flash AE-mode variant here (runs after applyExposure, so it wins):
- *      OFF → AE_MODE_ON + FLASH_MODE_OFF, AUTO → AE_MODE_ON_AUTO_FLASH,
- *      ON → AE_MODE_ON_ALWAYS_FLASH, TORCH → AE_MODE_ON + FLASH_MODE_TORCH.
- */
-/**
  * The FLASH_MODE key for the manual-AE (AE-OFF) branch, pure for the host pin: TORCH must survive
  * EVERY AE-OFF mode — FLASH_MODE_TORCH is a direct lamp control and needs no AE metering (only
  * the AUTO/ON firing variants do; unusable under AE_MODE_OFF, they resolve to OFF here). Null =
@@ -1179,6 +1171,14 @@ internal fun manualAeFlashMode(flash: FlashMode, flashAvailable: Boolean): Int? 
         FlashMode.OFF, FlashMode.AUTO, FlashMode.ON -> CameraMetadata.FLASH_MODE_OFF
     }
 
+/**
+ * Flash via AE modes. Interacts with [applyExposure], which owns CONTROL_AE_MODE:
+ *  - MANUAL exposure (`!autoExposure && supportsManualSensor`) → AE is OFF, so the AE-driven
+ *    auto/always-flash modes are unusable; only TORCH and OFF are honored (via FLASH_MODE).
+ *  - AE ON → set the flash AE-mode variant here (runs after applyExposure, so it wins):
+ *      OFF → AE_MODE_ON + FLASH_MODE_OFF, AUTO → AE_MODE_ON_AUTO_FLASH,
+ *      ON → AE_MODE_ON_ALWAYS_FLASH, TORCH → AE_MODE_ON + FLASH_MODE_TORCH.
+ */
 private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCaps) {
     val aeManual = manualAeAdmitted(c, caps)
     if (aeManual) {

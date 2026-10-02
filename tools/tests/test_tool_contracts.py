@@ -1889,29 +1889,33 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(f"FAIL  {rule}", result.stdout)
 
-    def test_stacked_kdoc_scan_reports_now_and_enforces_behind_the_documented_flag(self) -> None:
-        # DOC4-6 / AGG4-55: report-only until the known sites are re-homed; one flag enforces it.
+    def test_stacked_kdoc_scan_enforces_and_ignores_plain_file_headers(self) -> None:
+        # DOC4-6 / AGG4-55: every known site was re-homed, so a new stacked pair fails the gate,
+        # while a plain `/* … */` file header above a KDoc documents no declaration and stays legal.
         relative = "app/src/main/kotlin/me/hletrd/telecampro/StackedKdocFixture.kt"
+        header_relative = "app/src/main/kotlin/me/hletrd/telecampro/PlainHeaderFixture.kt"
         source = (
             "package me.hletrd.telecampro\n\n"
             "/** Detached rationale that documents nothing. */\n\n"
             "/** The block Dokka actually attaches. */\n"
             "internal val stackedKdocFixture = 1\n"
         )
+        header_source = (
+            "package me.hletrd.telecampro\n\n"
+            "/*\n * File-level rationale that documents no single declaration.\n */\n\n"
+            "/** The declaration's own KDoc. */\n"
+            "internal val plainHeaderFixture = 1\n"
+        )
 
         def add(root: Path) -> None:
             (root / relative).write_text(source, encoding="utf-8")
+            (root / header_relative).write_text(header_source, encoding="utf-8")
 
-        reported, _ = run_documentation_gate_from_committed_export(add)
-        self.assertIn(f"  info    {relative}:3", reported.stdout)
-        self.assertNotIn("FAIL  no stacked KDoc pair", reported.stdout)
-
-        enforced, _ = run_documentation_gate_from_committed_export(
-            add, environment={**os.environ, "TELECAM_ENFORCE_STACKED_KDOC": "1"},
-        )
+        enforced, _ = run_documentation_gate_from_committed_export(add)
         self.assertNotEqual(enforced.returncode, 0, enforced.stdout + enforced.stderr)
         self.assertIn("FAIL  no stacked KDoc pair leaves a rationale detached", enforced.stdout)
         self.assertIn(f"{relative}:3", enforced.stdout)
+        self.assertNotIn(f"{header_relative}:", enforced.stdout)
 
     def test_committed_export_rejects_missing_tablet_screenshot(self) -> None:
         def add_missing_asset(root: Path) -> None:

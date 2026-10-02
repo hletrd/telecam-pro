@@ -528,12 +528,6 @@ class CameraController internal constructor(
     }
 
     /**
-     * Zoom-only fast path (see CameraEngine.setZoomRatio): mutate the cached repeating builder's
-     * zoom keys and resubmit — no full request re-derivation, no metering/AF churn. Falls back to a
-     * full [startPreview] rebuild when no builder is cached yet (pre-first-preview) or in
-     * constrained high-speed mode (whose repeating request is a burst list).
-     */
-    /**
      * Orders EVERY writer of [controls] against every other: open()'s packet write runs on the setup
      * executor while the camera thread's zoom/boost/mode read-modify-writes are already queued
      * against the freshly installed controller, so a lost update there puts the operator's manual
@@ -542,6 +536,12 @@ class CameraController internal constructor(
      */
     private val controlsWriteLock = Any()
 
+    /**
+     * Zoom-only fast path (see CameraEngine.setZoomRatio): mutate the cached repeating builder's
+     * zoom keys and resubmit — no full request re-derivation, no metering/AF churn. Falls back to a
+     * full [startPreview] rebuild when no builder is cached yet (pre-first-preview) or in
+     * constrained high-speed mode (whose repeating request is a burst list).
+     */
     fun setZoomRatio(ratio: Float, requestRatio: Float = ratio) {
         postToCamera {
             // [controls] feeds STILL requests too (capturePhoto snapshots it): store the EXACT
@@ -1265,18 +1265,6 @@ class CameraController internal constructor(
     }
 
     /**
-     * Applies the metering regions as AE (and, in an AF focus mode, AF) rectangles, sized to the
-     * RAW/producer sensor active array.
-     *
-     * A tap-to-meter [meteringPoint] (SENSOR-normalized) takes priority and OVERRIDES the mode: a
-     * ~10% spot centered on that point, clamped inside the active array. When no point is set the
-     * metering mode drives it:
-     *   MATRIX → no region (default full-frame metering).
-     *   CENTER → one center rectangle covering 40% of the active array at METERING_WEIGHT_MAX.
-     *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
-     * No-op when the active array is unavailable, so it degrades to full-frame metering.
-     */
-    /**
      * Owns one fresh grey-card measurement. Rebuilding the repeating request with [PendingCustomWbSample.tag]
      * makes callbacks from frames already in flight ineligible; only a later unlocked-AUTO,
      * AWB-converged result from this request can complete the sample.
@@ -1318,6 +1306,18 @@ class CameraController internal constructor(
         return true
     }
 
+    /**
+     * Applies the metering regions as AE (and, in an AF focus mode, AF) rectangles, sized to the
+     * RAW/producer sensor active array.
+     *
+     * A tap-to-meter [meteringPoint] (SENSOR-normalized) takes priority and OVERRIDES the mode: a
+     * ~10% spot centered on that point, clamped inside the active array. When no point is set the
+     * metering mode drives it:
+     *   MATRIX → no region (default full-frame metering).
+     *   CENTER → one center rectangle covering 40% of the active array at METERING_WEIGHT_MAX.
+     *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
+     * No-op when the active array is unavailable, so it degrades to full-frame metering.
+     */
     private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
         val targets = meteringRegionTargets(caps.maxAeRegions, caps.maxAfRegions, controls.focusMode)
         if (!targets.ae && !targets.af) return
@@ -2699,18 +2699,6 @@ internal data class SessionAttemptPlan(
 )
 
 /**
- * Pure core of the fallback ladder (full → drop RAW → drop HLG → preview-only) so the
- * HAL-crash-critical ordering is unit-testable off-device. TELE tries both operation modes with
- * capture streams before either preview-only last resort. [standalone] is the
- * `selection.physicalId == null` RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
- * [wantHiRes] rides a PREPENDED attempt-0 rung (the hi-res variant of the full plan, RAW forced
- * off) and is the FIRST thing dropped: every later attempt maps onto the ORDINARY ladder shifted
- * by one, so a rejected hi-res combo falls back to full-WITH-RAW before anything else degrades.
- * (The old mapping reused the ordinary indices, whose attempt 1 already had RAW off — a rejected
- * hi-res session silently cost the whole session its RAW rung; cycle-6 debugger F3. The ladder is
- * one attempt LONGER when hi-res is wanted: see [maxSessionAttempt].)
- */
-/**
  * A camera loss that means "another client took the camera", not "the camera is broken".
  *
  * The HAL delivers it as onDisconnected, or onError ERROR_CAMERA_IN_USE(1)/ERROR_MAX_CAMERAS_IN_USE
@@ -2741,6 +2729,15 @@ internal fun cameraFailureIsEviction(failure: Throwable): Boolean =
             )
 
 /**
+ * Pure predicate over an AppOps mode: is the camera op WITHHELD? Only ALLOWED and FOREGROUND let an
+ * app open the camera; IGNORED (the silent deny OEM privacy managers use), ERRORED, and DEFAULT all
+ * mean it cannot. Pure and top-level so the JVM suite pins it — the constants are plain ints.
+ */
+internal fun cameraOpModeWithheld(mode: Int): Boolean =
+    mode != android.app.AppOpsManager.MODE_ALLOWED &&
+        mode != android.app.AppOpsManager.MODE_FOREGROUND
+
+/**
  * The camera exists and the runtime permission is GRANTED, but the platform refuses to open it for
  * THIS app — `Camera "0" disabled by policy` from the camera service.
  *
@@ -2753,15 +2750,6 @@ internal fun cameraFailureIsEviction(failure: Throwable): Boolean =
  * retrying cannot help and the existing "permission denied" copy never fires (the permission is not
  * denied). Only the user, in the app's own settings page, can clear it.
  */
-/**
- * Pure predicate over an AppOps mode: is the camera op WITHHELD? Only ALLOWED and FOREGROUND let an
- * app open the camera; IGNORED (the silent deny OEM privacy managers use), ERRORED, and DEFAULT all
- * mean it cannot. Pure and top-level so the JVM suite pins it — the constants are plain ints.
- */
-internal fun cameraOpModeWithheld(mode: Int): Boolean =
-    mode != android.app.AppOpsManager.MODE_ALLOWED &&
-        mode != android.app.AppOpsManager.MODE_FOREGROUND
-
 internal class CameraPolicyBlockedException(message: String) : IllegalStateException(message)
 
 /** Pure classifier for the policy-block onError code. */
@@ -2791,6 +2779,18 @@ internal fun resolveMustUseYuvStill(
     logicalStillRequiresYuv: Boolean,
 ): Boolean = logicalMultiCamera && !frontRoute && logicalStillRequiresYuv
 
+/**
+ * Pure core of the fallback ladder (full → drop RAW → drop HLG → preview-only) so the
+ * HAL-crash-critical ordering is unit-testable off-device. TELE tries both operation modes with
+ * capture streams before either preview-only last resort. [standalone] is the
+ * `selection.physicalId == null` RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
+ * [wantHiRes] rides a PREPENDED attempt-0 rung (the hi-res variant of the full plan, RAW forced
+ * off) and is the FIRST thing dropped: every later attempt maps onto the ORDINARY ladder shifted
+ * by one, so a rejected hi-res combo falls back to full-WITH-RAW before anything else degrades.
+ * (The old mapping reused the ordinary indices, whose attempt 1 already had RAW off — a rejected
+ * hi-res session silently cost the whole session its RAW rung; cycle-6 debugger F3. The ladder is
+ * one attempt LONGER when hi-res is wanted: see [maxSessionAttempt].)
+ */
 internal fun sessionAttemptPlan(
     attempt: Int,
     wantHlg: Boolean,

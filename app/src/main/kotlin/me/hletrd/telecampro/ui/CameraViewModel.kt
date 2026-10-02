@@ -1905,8 +1905,10 @@ class CameraViewModel private constructor(
 
     fun onAppStatus(message: CameraStatusMessage) = showStatus(message)
 
-    /** Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a smooth handoff. */
     /**
+     * Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a
+     * smooth handoff.
+     *
      * [seedFromLive] is true only when the exposure being replaced was the HAL AE's: then the live
      * result values ARE that exposure. Coming from S/ISO/M (or app-side P) the live values are the
      * preview's TRADED wire (exposure capped, ISO raised, residual as GL gain), so seeding from them

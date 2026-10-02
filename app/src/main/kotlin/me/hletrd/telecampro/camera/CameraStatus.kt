@@ -73,6 +73,20 @@ enum class CameraStatusMessage {
 
 enum class CameraStatusSeverity { INFO, SUCCESS, WARNING, ERROR }
 enum class CameraStatusLivePriority { POLITE, ASSERTIVE }
+
+/**
+ * PROGRESS statuses describe a condition that is either true or false right now, so an EVENT ends
+ * them — never a timer: [CameraStatusMessage.status] gives a PROGRESS status a null `durationMs`.
+ * [CameraStatusMessage.STARTING_CAMERA] is the one the app emits at cold start: the owner reported
+ * "starting the camera takes a long time" on a device whose session configures in ~950 ms, and the
+ * cause was the duration classifier dropping the message into the 2.5 s neutral bucket. The pill
+ * therefore sat for its full 2.5 s after the camera was already live, and the wait the user was
+ * reading was the timer, not the camera. A timer is wrong in BOTH directions here: too long makes a
+ * fast start look slow, and too short would clear the message while the camera is still coming up,
+ * which claims ready before it is. Nothing bounds this one — while the camera has genuinely not
+ * come up, "Starting camera…" is true, and every way that attempt can end (Ready, an error status,
+ * the exhausted-retry terminal status) replaces it.
+ */
 enum class CameraStatusLifecycle { PROGRESS, EVENT }
 
 /** A formatting argument with no presentation wording embedded in the domain event. */

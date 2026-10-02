@@ -634,10 +634,6 @@ internal fun autoFpsBounds(ranges: List<Pair<Int, Int>>, maxFps: Int): Pair<Int,
         ?: ranges.firstOrNull { maxFps in it.first..it.second }
 
 /**
- * THE stream-aspect rule (16:9 standard / 4:3 open-gate-and-photo), shared by [CameraCaps.read]'s
- * list building and the engine's pre-caps fallback picker so the two can't drift apart.
- */
-/**
  * Picks the still (JPEG) reader size from [candidates] for a sensor whose active array is
  * [arrayW] x [arrayH]. Returns null when there is nothing to choose from.
  *
@@ -675,6 +671,10 @@ internal fun pickStillSize(
     return pool.maxByOrNull(area)
 }
 
+/**
+ * THE stream-aspect rule (16:9 standard / 4:3 open-gate-and-photo), shared by [CameraCaps.read]'s
+ * list building and the engine's pre-caps fallback picker so the two can't drift apart.
+ */
 internal fun matchesStreamAspect(width: Int, height: Int, fourByThree: Boolean): Boolean =
     if (fourByThree) height * 4 == width * 3 else height * 16 == width * 9
 

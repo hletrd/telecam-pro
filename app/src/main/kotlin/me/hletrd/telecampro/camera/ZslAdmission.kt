@@ -3,7 +3,7 @@ package me.hletrd.telecampro.camera
 import kotlin.math.abs
 import kotlin.math.ln
 
-/**
+/*
  * Pseudo-ZSL admission (cycle 8). The LOGICAL photo route streams its full-res YUV still reader on
  * the repeating request (S4a device-measured 2026-07-25: 29-31 fps lit / 14-16 fps at the dark
  * fluidity cap, zero stalls or errors, negligible thermal over ~10 min), and the controller holds

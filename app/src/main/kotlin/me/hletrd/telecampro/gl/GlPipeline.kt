@@ -619,10 +619,6 @@ class GlPipeline(
      */
     fun setWindowRotation(degrees: Int) = post { windowRotationDeg = RotationMath.normalize(degrees) }
 
-    /** Loupe Overview: with the resolved flag on and the punch-in loupe active, draw a small
-     *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
-     *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
-     *  actual gating also requires the loupe ([punchIn], checked at draw). */
     /**
      * How the accepted camera session encoded its buffers (HLG10/DV vs 8-bit SDR).
      *
@@ -632,6 +628,10 @@ class GlPipeline(
      */
     fun setSourceHlg(enabled: Boolean) = post { renderer.setSourceHlg(enabled) }
 
+    /** Loupe Overview: with the resolved flag on and the punch-in loupe active, draw a small
+     *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
+     *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
+     *  actual gating also requires the loupe ([punchIn], checked at draw). */
     fun setTeleFinder(enabled: Boolean) = post { teleFinder = enabled }
 
     /** Sets the loupe magnification center (texcoord 0..1); the punch-in zoom follows this point. */
@@ -2178,7 +2178,6 @@ internal fun dispatchWithResult(
 // snapshot + dimensions) so they are unit-testable off-GL-thread, matching the codebase's pure-seam
 // pattern (e.g. camera/meteringRect, camera/centerCropBox).
 
-/** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
 /**
  * Display-referred byte LUT mirroring the shader's `dgain`: BT.1886 decode → linear ×[gain] →
  * clamp → re-encode. Applied to the UNBOOSTED analysis readback's per-pixel values before binning
@@ -2198,6 +2197,7 @@ internal fun digitalGainDisplayLut(gain: Float): IntArray? {
     return lut
 }
 
+/** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
 internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int, lut: IntArray? = null): HistogramData {
     val luma = IntArray(256)
     val red = IntArray(256)

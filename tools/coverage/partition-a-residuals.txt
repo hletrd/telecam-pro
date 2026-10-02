@@ -9,7 +9,7 @@
 #   ./gradlew :app:createDebugUnitTestCoverageReport
 #   python3 tools/coverage/partition_report.py \
 #       app/build/reports/coverage/test/debug/report.xml --write-regions
-me/hletrd/telecampro/camera/CameraControllerKt	1	app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt:2738	sha256:4598749e2ef81794	framework-bound: CameraAccessException construction throws from android.jar stubs, while sibling top-level classifiers remain pure Partition A
+me/hletrd/telecampro/camera/CameraControllerKt	1	app/src/main/kotlin/me/hletrd/telecampro/camera/CameraController.kt:2726	sha256:4598749e2ef81794	framework-bound: CameraAccessException construction throws from android.jar stubs, while sibling top-level classifiers remain pure Partition A
 me/hletrd/telecampro/camera/CameraStateKt	1	app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt:945	sha256:801c606510ce5668	proven-unreachable: LensChoice.entries is statically nonempty, so minByOrNull cannot reach the continue fallback
 me/hletrd/telecampro/storage/CaptureFamilyKey$Companion	2	app/src/main/kotlin/me/hletrd/telecampro/storage/CaptureFamily.kt:61,66	sha256:0dd9badd2221c0c1	proven-unreachable: the closed filename regex limits media tags and numeric widths to values already accepted by CaptureFamilyKey
 me/hletrd/telecampro/storage/HeifBoundedReader	2	app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt:3417-3418	sha256:2e9b9185a9e03309	proven-unreachable: every private parser call supplies a fixed or already validated unsigned-field width in the zero-through-eight range

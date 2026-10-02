@@ -559,13 +559,6 @@ internal fun texCoordQuad(mirrorX: Boolean): FloatArray {
 }
 
 /**
- * Center-crop "cover" scale factors (ex, ey) for the quad geometry, extracted from [FlipRenderer.draw]
- * as pure Float math (no GL) so the aspect logic is unit-testable. Content aspect is taken AFTER all
- * rotation: the SurfaceTexture transform's sensor orientation PLUS the extra texcoord rotation, so a
- * net 90/270 swaps the displayed width/height. Exactly one axis is scaled >1 to overscan the target;
- * matching aspects return (1, 1). [targetHeight] is floored at 1 to avoid a divide-by-zero.
- */
-/**
  * Clamps a punch-in/loupe center so the SAMPLED WINDOW stays inside the texture.
  *
  * [FlipRenderer.draw] samples `center ± halfExtent`, where the half-extent is
@@ -586,6 +579,13 @@ internal fun clampPunchInCenter(center: Float, crop: Float, zoomComp: Float): Fl
     return center.coerceIn(halfExtent, 1f - halfExtent)
 }
 
+/**
+ * Center-crop "cover" scale factors (ex, ey) for the quad geometry, extracted from [FlipRenderer.draw]
+ * as pure Float math (no GL) so the aspect logic is unit-testable. Content aspect is taken AFTER all
+ * rotation: the SurfaceTexture transform's sensor orientation PLUS the extra texcoord rotation, so a
+ * net 90/270 swaps the displayed width/height. Exactly one axis is scaled >1 to overscan the target;
+ * matching aspects return (1, 1). [targetHeight] is floored at 1 to avoid a divide-by-zero.
+ */
 internal fun coverScale(
     previewW: Int,
     previewH: Int,

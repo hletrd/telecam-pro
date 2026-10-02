@@ -684,17 +684,6 @@ internal fun audioAccessibilityStates(
     }
 
 /**
- * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the
- * NEXT shot in the current mode:
- *  - PHOTO: 35mm-equivalent focal (tagged TELE through the converter), still formats, drive mode
- *    (when not single-shot) and self-timer (when armed).
- *  - VIDEO: focal, the resolved recording spec (resolution · fps · codec · Mbps — what the encoder
- *    will actually write), and the transfer function.
- *  - Both: metering pattern (when not matrix), lock state, and — in video — the stabilization tag
- *    (ALWAYS rendered there, not only when non-default: at 300 mm whether stabilization is active
- *    is standing information; UI review #7 aligned this doc with the render).
- */
-/**
  * The ONE gate for the OIS OFF tag and its compact-strip visibility clause (review L11 /
  * verification S5). Capability-gated: `oisEnabled` is a persisted preference that normalization
  * deliberately never touches on no-OIS routes, so without the capability axis the tag claimed a
@@ -887,6 +876,17 @@ internal fun statusBarFocalLabel(effectiveFocalMm: Float?, teleconverterMode: Bo
         else -> "%.0f mm".format(Locale.US, effectiveFocalMm)
     }
 
+/**
+ * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the
+ * NEXT shot in the current mode:
+ *  - PHOTO: 35mm-equivalent focal (tagged TELE through the converter), still formats, drive mode
+ *    (when not single-shot) and self-timer (when armed).
+ *  - VIDEO: focal, the resolved recording spec (resolution · fps · codec · Mbps — what the encoder
+ *    will actually write), and the transfer function.
+ *  - Both: metering pattern (when not matrix), lock state, and — in video — the stabilization tag
+ *    (ALWAYS rendered there, not only when non-default: at 300 mm whether stabilization is active
+ *    is standing information; UI review #7 aligned this doc with the render).
+ */
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
     if (compact && !compactShootingStatusVisible(state)) return

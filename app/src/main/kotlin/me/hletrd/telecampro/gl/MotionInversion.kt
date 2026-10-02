@@ -6,7 +6,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-/**
+/*
  * Motion-inversion metric: "does the scene move the way the gyro says it should, or the opposite?"
  *
  * WHY THIS EXISTS. The afocal teleconverter is a telescope with no erecting prism, so the image it

@@ -44,11 +44,6 @@ import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
 import me.hletrd.telecampro.video.VideoRecorder
 
 /**
- * Facade tying Camera2 + GL(180° flip) + capture encoders + video recorder + MediaStore together.
- * Called by the ViewModel; internal work runs on the components' own threads. All image encoding
- * happens off the UI thread (inside camera/GL callbacks).
- */
-/**
  * Narrow pre-native composition seam used by host tests to drive [CameraEngine.startRecording].
  *
  * The ordinary Engine constructor passes null and therefore keeps the production Camera2 preflight,
@@ -179,6 +174,11 @@ private data class RecorderSetupOwner(
     val captureId: Int,
 )
 
+/**
+ * Facade tying Camera2 + GL(180° flip) + capture encoders + video recorder + MediaStore together.
+ * Called by the ViewModel; internal work runs on the components' own threads. All image encoding
+ * happens off the UI thread (inside camera/GL callbacks).
+ */
 class CameraEngine internal constructor(
     private val context: Context,
     private val recordingPreNativeOverrides: RecordingPreNativeEngineOverrides? = null,
@@ -3548,12 +3548,6 @@ class CameraEngine internal constructor(
     }
 
     /**
-     * Atomically invalidates an accepted Camera2 session and claims any recorder fed by it. The
-     * shared engine monitor is also the recording-admission gate, so failure either wins before REC
-     * publication or claims the published recorder; it cannot leave a phantom recorder between the
-     * two transitions.
-     */
-    /**
      * True when AppOps is withholding the CAMERA op from this package, i.e. the runtime permission
      * can read GRANTED while every open is refused. Device-confirmed shape on a Lenovo TB331FC:
      * `appops CAMERA: ignore` at UID level with `REVOKED_COMPAT` on the permission.
@@ -3573,6 +3567,12 @@ class CameraEngine internal constructor(
         cameraOpModeWithheld(mode)
         }.getOrDefault(false)
 
+    /**
+     * Atomically invalidates an accepted Camera2 session and claims any recorder fed by it. The
+     * shared engine monitor is also the recording-admission gate, so failure either wins before REC
+     * publication or claims the published recorder; it cannot leave a phantom recorder between the
+     * two transitions.
+     */
     private fun handleActiveCameraFailure(
         failedController: CameraController,
         failure: Throwable,
@@ -8819,11 +8819,6 @@ internal fun dispatchGenerationOwnedPreviewBind(
 }.getOrDefault(false)
 
 /**
- * Linearizes terminal shutdown with operations that can acquire a fresh native owner. The block is
- * deliberately executed while holding the monitor: close either waits for the in-flight acquisition
- * and owns its teardown, or prevents it from beginning.
- */
-/**
  * Gate that stops a queued native acquisition from resurrecting a released generation after
  * teardown has begun.
  *
@@ -8849,6 +8844,11 @@ internal fun dispatchGenerationOwnedPreviewBind(
 internal class TerminalAcquisitionGate {
     @Volatile private var open = true
 
+    /**
+     * Linearizes terminal shutdown with operations that can acquire a fresh native owner. The block
+     * is deliberately executed while holding the monitor: close either waits for the in-flight
+     * acquisition and owns its teardown, or prevents it from beginning.
+     */
     @Synchronized
     fun runIfOpen(block: () -> Unit): Boolean {
         if (!open) return false
@@ -8932,10 +8932,6 @@ internal fun resolveLensOpticsIntent(
 internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)
 
 /**
- * Pure rect math behind the still-photo aspect crop, extracted so the 4:3/16:9 gating is
- * unit-testable without a Bitmap (an unmocked android.jar stub on the JVM).
- */
-/**
  * AUTO-exposure AEB compensation steps: a ±2-stop bracket around [center] converted through the
  * camera's advertised [evStepStops], then clamped to its compensation-unit range.
  * distinct() so a narrow range that clamps two steps to the same value doesn't fire duplicate
@@ -8950,6 +8946,10 @@ internal fun aeCompAebSteps(center: Int, lower: Int, upper: Int, evStepStops: Fl
         .distinct()
 }
 
+/**
+ * Pure rect math behind the still-photo aspect crop, extracted so the 4:3/16:9 gating is
+ * unit-testable without a Bitmap (an unmocked android.jar stub on the JVM).
+ */
 internal fun centerCropBox(srcW: Int, srcH: Int, ratioW: Int, ratioH: Int): CropBox {
     val heightForFullWidth = srcW * ratioH / ratioW
     val (cropW, cropH) = if (heightForFullWidth <= srcH) {

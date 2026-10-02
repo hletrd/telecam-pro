@@ -1,6 +1,6 @@
 package me.hletrd.telecampro.camera
 
-/**
+/*
  * Pure device/lens labels written into saved-file EXIF.
  *
  * These used to be literals and id tables measured on one phone: `TAG_MAKE`/`TAG_MODEL` were

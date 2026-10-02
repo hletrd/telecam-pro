@@ -15,7 +15,7 @@ import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.availableTransfers
 
-/**
+/*
  * The SINGLE home of the enum tap-cycle orders and the auto-exposure readout text shared by the
  * shooting-screen dials (ManualDials), the Fn overlay / My Menu (ProSheet), and the Fn bar
  * (CameraScreen). These used to exist as verbatim private copies in ProSheet and ManualDials —
@@ -161,6 +161,14 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
     AspectRatio.W16_9 -> AspectRatio.W4_3
 }
 
+/** Timer cycle: OFF → 3s → 10s → OFF. Fixed order, matches the sheet's chip order. */
+internal fun nextShutterTimer(current: ShutterTimer): ShutterTimer =
+    ShutterTimer.entries[(current.ordinal + 1) % ShutterTimer.entries.size]
+
+/** Mic-input cycle over the declared preference order (resolution against live ports is later). */
+internal fun nextAudioInput(current: AudioInputPreference): AudioInputPreference =
+    AudioInputPreference.entries[(current.ordinal + 1) % AudioInputPreference.entries.size]
+
 /**
  * Whether [slot] can do anything at all in [mode] — the axis the Fn slot EDITOR must filter on.
  * It offered all 20 slots to all three lists (Photo Fn / Video Fn / My Menu), which put four
@@ -174,14 +182,6 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
  *    could read "Active" while the OSD read "OIS OFF" for the same frame.
  * My Menu is a settings surface rather than a shooting one, so it keeps every slot.
  */
-/** Timer cycle: OFF → 3s → 10s → OFF. Fixed order, matches the sheet's chip order. */
-internal fun nextShutterTimer(current: ShutterTimer): ShutterTimer =
-    ShutterTimer.entries[(current.ordinal + 1) % ShutterTimer.entries.size]
-
-/** Mic-input cycle over the declared preference order (resolution against live ports is later). */
-internal fun nextAudioInput(current: AudioInputPreference): AudioInputPreference =
-    AudioInputPreference.entries[(current.ordinal + 1) % AudioInputPreference.entries.size]
-
 internal fun fnSlotAppliesTo(slot: FnSlot, mode: CaptureMode): Boolean = when (slot) {
     FnSlot.OPEN_GATE, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.STABILIZATION, FnSlot.AUDIO_INPUT ->
         mode == CaptureMode.VIDEO
