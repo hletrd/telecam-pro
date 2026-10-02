@@ -285,6 +285,32 @@ class OpticsRouteInputTransactionRobolectricTest {
         assertFalse("same size keeps the fast commit", recallStreamSizeChanges(camera, enabledVideo = true))
     }
 
+    /**
+     * TE5-13 / AGG4-8 at the CALL SITE: the recall's structural decision, fed from real Engine
+     * fields and a real recall baseline, must send a same-camera 1080p Video recall over a 4K
+     * session to the reconfigure path. Pinning its stream-size input to false fails here.
+     */
+    @Test
+    fun `same-camera video recall of another resolution takes the reconfigure path`() {
+        val camera = acceptedPma110Engine()
+        val uhd = android.util.Size(3840, 2160)
+        val fhd = android.util.Size(1920, 1080)
+        setField(camera, "selection", TeleSelection(logicalId = "2", physicalId = null, equivFocalMm = 23f))
+        setField(camera, "videoSize", uhd)
+        setField(camera, "caps", videoCaps(listOf(uhd, fhd)))
+        setBoolean(camera, "videoMode", true)
+        recallPhoto(camera, LensChoice.MAIN, zoom = 1f, rawWanted = false, video = true)
+        val before = field(currentTransaction(camera), "before")!!
+
+        setField(camera, "requestedVideoSize", fhd)
+        assertTrue(invoke(camera, "recallRequiresReconfigure", before, true, false, "2") as Boolean)
+        setField(camera, "requestedVideoSize", uhd)
+        assertFalse(
+            "an unchanged size keeps the same-camera fast commit",
+            invoke(camera, "recallRequiresReconfigure", before, true, false, "2") as Boolean,
+        )
+    }
+
     private fun recallStreamSizeChanges(camera: CameraEngine, enabledVideo: Boolean): Boolean =
         invoke(camera, "recallVideoStreamSizeChanges", enabledVideo) as Boolean
 

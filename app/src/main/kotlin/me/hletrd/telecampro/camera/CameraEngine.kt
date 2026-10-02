@@ -3021,19 +3021,11 @@ class CameraEngine internal constructor(
                 rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
                 return@execute
             }
-            val before = transaction.before
-            val beforeCameraId = before.selection?.let { it.physicalId ?: it.logicalId }
-            val structuralChange = resolvedOpticsRequiresReconfigure(
-                beforeVideo = before.videoMode,
-                targetVideo = enabledVideo,
-                beforeTeleconverter = before.teleconverter,
-                targetTeleconverter = routeTeleconverter,
-                beforeCameraId = beforeCameraId,
+            val structuralChange = recallRequiresReconfigure(
+                before = transaction.before,
+                enabledVideo = enabledVideo,
+                routeTeleconverter = routeTeleconverter,
                 targetCameraId = id,
-                controllerAvailable = controller != null,
-                beforeReady = before.ready,
-                readyControllerMatches = before.readyController === controller,
-                videoStreamSizeChanges = recallVideoStreamSizeChanges(enabledVideo),
             )
             if (structuralChange) {
                 reconfigureCamera(id, transaction)
@@ -3073,6 +3065,30 @@ class CameraEngine internal constructor(
         }
         return true
     }
+
+    /**
+     * The recall's ONE structural decision, with every input wired from Engine state here (TE5-13):
+     * the pure [resolvedOpticsRequiresReconfigure] table is host-tested on its own, so a call site
+     * that dropped an input (e.g. AGG4-8's stream-size term pinned to false) stayed green. The
+     * Robolectric recall suite drives this method against real Engine fields instead.
+     */
+    private fun recallRequiresReconfigure(
+        before: OpticsSnapshot,
+        enabledVideo: Boolean,
+        routeTeleconverter: Boolean,
+        targetCameraId: String,
+    ): Boolean = resolvedOpticsRequiresReconfigure(
+        beforeVideo = before.videoMode,
+        targetVideo = enabledVideo,
+        beforeTeleconverter = before.teleconverter,
+        targetTeleconverter = routeTeleconverter,
+        beforeCameraId = before.selection?.let { it.physicalId ?: it.logicalId },
+        targetCameraId = targetCameraId,
+        controllerAvailable = controller != null,
+        beforeReady = before.ready,
+        readyControllerMatches = before.readyController === controller,
+        videoStreamSizeChanges = recallVideoStreamSizeChanges(enabledVideo),
+    )
 
     /**
      * Whether a same-camera recall's Video packet names a different stream size than the session is
