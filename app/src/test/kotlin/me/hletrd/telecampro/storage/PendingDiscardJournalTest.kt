@@ -688,6 +688,11 @@ class PendingDiscardJournalTest {
                 byteArrayOf(
                     0xff.toByte(),
                     0xd8.toByte(),
+                    // A Start-of-Scan before the EOI: recovery's JPEG probe is structural (AGG5-71).
+                    0xff.toByte(),
+                    0xda.toByte(),
+                    0x00,
+                    0x04,
                     0x01,
                     0x02,
                     0xff.toByte(),

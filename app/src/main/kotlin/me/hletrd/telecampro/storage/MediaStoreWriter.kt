@@ -1845,19 +1845,24 @@ object MediaStoreWriter {
         }
     }
 
-    /** Judged on the descriptor's real length, never the provider's SIZE column (AGG4-28). */
+    /**
+     * Judged on the descriptor's real length, never the provider's SIZE column (AGG4-28), and on
+     * structure as well as the tail ([probeCompleteJpegStructure], AGG5-71). Positional reads only.
+     */
     private fun probeCompleteJpeg(context: Context, uri: Uri): PendingProbe {
         val pfd = openReadableParcelFd(context, uri)
         return pfd.use {
             FileInputStream(it.fileDescriptor).use { input ->
                 val channel = input.channel
-                if (channel.size() < 4L) return@use PendingProbe.INVALID
-                channel.position(channel.size() - 2L)
-                val tail = ByteArray(2)
-                if (input.read(tail) == 2 && tail[0] == 0xff.toByte() && tail[1] == 0xd9.toByte()) {
-                    PendingProbe.VALID
-                } else {
-                    PendingProbe.INVALID
+                probeCompleteJpegStructure(channel.size()) { offset, byteCount ->
+                    val buffer = ByteBuffer.allocate(byteCount)
+                    var position = offset
+                    while (buffer.hasRemaining()) {
+                        val read = channel.read(buffer, position)
+                        if (read <= 0) return@probeCompleteJpegStructure null
+                        position += read
+                    }
+                    buffer.array()
                 }
             }
         }
@@ -3020,6 +3025,54 @@ internal fun orphanDisposition(
     probe == PendingProbe.INVALID -> OrphanDisposition.DELETE
     else -> OrphanDisposition.KEEP_PENDING
 }
+
+/**
+ * Recovery's JPEG completion verdict (AGG5-71). An `FF D9` tail alone is not proof: a passthrough
+ * lane killed between its APP1 write and its body write leaves `SOI + APP1` whose EXIF block ends in
+ * the embedded thumbnail's own EOI, so the file ends `FF D9` with no SOF and no scan at all — and
+ * the tail-only probe adopted it as a broken picture. VALID therefore also needs the header walk
+ * from SOI to reach a Start-of-Scan (`FF DA`) before that tail; an EOI, a stuffed byte where a
+ * marker must be, a segment that overruns, or a short read is INVALID. Only 4-byte segment headers
+ * are read (never entropy-coded data), and the walk stops at [MAX_JPEG_HEADER_SEGMENTS] as
+ * INDETERMINATE rather than guessing. The same marker grammar as `exifSplicePlan`: a lone `FF`
+ * fill byte advances by one, and TEM/RST are length-less.
+ */
+internal fun probeCompleteJpegStructure(
+    fileSize: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): PendingProbe {
+    if (fileSize < 4L) return PendingProbe.INVALID
+    val tail = readAt(fileSize - 2L, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+    if (tail[0] != 0xff.toByte() || tail[1] != 0xd9.toByte()) return PendingProbe.INVALID
+    val soi = readAt(0L, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+    if (soi[0] != 0xff.toByte() || soi[1] != 0xd8.toByte()) return PendingProbe.INVALID
+    // The scan must start strictly before the trailing EOI.
+    val headerLimit = fileSize - 2L
+    var offset = 2L
+    var segments = 0
+    while (offset + 2L <= headerLimit) {
+        if (++segments > MAX_JPEG_HEADER_SEGMENTS) return PendingProbe.INDETERMINATE
+        val marker = readAt(offset, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+        if (marker[0] != 0xff.toByte()) return PendingProbe.INVALID
+        when (val code = marker[1].toInt() and 0xff) {
+            0xda -> return PendingProbe.VALID
+            0xff -> offset += 1L
+            0xd9, 0x00 -> return PendingProbe.INVALID
+            else -> if (code == 0x01 || code in 0xd0..0xd7) {
+                offset += 2L
+            } else {
+                if (offset + 4L > headerLimit) return PendingProbe.INVALID
+                val length = readAt(offset + 2L, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+                val segmentLength = ((length[0].toInt() and 0xff) shl 8) or (length[1].toInt() and 0xff)
+                if (segmentLength < 2) return PendingProbe.INVALID
+                offset += 2L + segmentLength
+            }
+        }
+    }
+    return PendingProbe.INVALID
+}
+
+private const val MAX_JPEG_HEADER_SEGMENTS = 4_096
 
 /**
  * Structural HEIF completion probe. Reads bounded ISO-BMFF metadata only, never pixel data. A valid

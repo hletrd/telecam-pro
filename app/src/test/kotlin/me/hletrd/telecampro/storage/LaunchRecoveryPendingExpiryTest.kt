@@ -266,6 +266,9 @@ class LaunchRecoveryPendingExpiryTest {
             val size = 8 + payload.size
             return byteArrayOf(0, 0, (size ushr 8).toByte(), size.toByte()) + type.toByteArray() + payload
         }
-        val WHOLE_JPEG = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte())
+        /** SOI, a minimal SOS (recovery's probe needs a scan before the EOI, AGG5-71), EOI. */
+        val WHOLE_JPEG = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xda.toByte(), 0, 4, 1, 2, 0xff.toByte(), 0xd9.toByte(),
+        )
     }
 }

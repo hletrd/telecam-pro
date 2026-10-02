@@ -9,6 +9,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.TimeZone
 import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.storage.PendingProbe
+import me.hletrd.telecampro.storage.probeCompleteJpegStructure
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -219,6 +221,73 @@ class JpegExifSpliceTest {
         tiff.put(thumbnail, 0, minOf(thumbnail.size, thumbnailLength))
         return EXIF + tiff.array()
     }
+
+    // ---- recovery's structural JPEG probe (AGG5-71) ---------------------------------------------
+
+    @Test
+    fun `a passthrough file killed after its APP1 write ends FF D9 yet is not a complete JPEG`() {
+        // A thumbnail-carrying APP1 whose IFD1 JPEG thumbnail is its LAST bytes (the HAL layout the
+        // passthrough tier seeds from), so the payload ends in the thumbnail's own EOI.
+        val payload = halExifWithThumbnail(thumbnailLength = encodedJpeg(8, 8).size, littleEndian = true)
+        assertTrue(isSpliceableExifPayload(payload))
+        val headerOnly = SOI + segment(0xe1, payload)
+        assertArrayEquals(
+            "fixture precondition: the header-only prefix ends in an EOI",
+            byteArrayOf(0xff.toByte(), 0xd9.toByte()),
+            headerOnly.copyOfRange(headerOnly.size - 2, headerOnly.size),
+        )
+        assertEquals(PendingProbe.INVALID, probeJpeg(headerOnly))
+
+        val whole = requireNotNull(spliceExifApp1(encodedJpeg(32, 24), payload))
+        assertEquals(PendingProbe.VALID, probeJpeg(whole))
+        assertEquals(PendingProbe.VALID, probeJpeg(encodedJpeg(16, 16)))
+    }
+
+    @Test
+    fun `the JPEG probe needs SOI, a scan before the tail, and a walkable header`() {
+        val scan = byteArrayOf(0xff.toByte(), 0xda.toByte(), 0, 4, 7, 7, 0xff.toByte(), 0xd9.toByte())
+        assertEquals(PendingProbe.VALID, probeJpeg(SOI + scan))
+        assertEquals(
+            "fill bytes and RST are walked like the splice plan",
+            PendingProbe.VALID,
+            probeJpeg(SOI + segment(0xe0, ByteArray(3)) + byteArrayOf(0xff.toByte()) + RST0 + scan),
+        )
+        assertEquals("too short", PendingProbe.INVALID, probeJpeg(byteArrayOf(0xff.toByte(), 0xd9.toByte())))
+        assertEquals("no EOI tail", PendingProbe.INVALID, probeJpeg(SOI + scan.copyOf(6)))
+        assertEquals("no SOI", PendingProbe.INVALID, probeJpeg(byteArrayOf(0, 0) + scan))
+        assertEquals("EOI only", PendingProbe.INVALID, probeJpeg(SOI + byteArrayOf(0xff.toByte(), 0xd9.toByte())))
+        assertEquals(
+            "a segment that reaches the tail",
+            PendingProbe.INVALID,
+            probeJpeg(SOI + segment(0xe0, byteArrayOf(1, 0xff.toByte(), 0xd9.toByte()))),
+        )
+        assertEquals(
+            "a segment shorter than itself",
+            PendingProbe.INVALID,
+            probeJpeg(SOI + byteArrayOf(0xff.toByte(), 0xe0.toByte(), 0, 1) + scan),
+        )
+        assertEquals(
+            "a stuffed byte where a marker must be",
+            PendingProbe.INVALID,
+            probeJpeg(SOI + byteArrayOf(0xff.toByte(), 0x00) + scan),
+        )
+        assertEquals(
+            "garbage between segments",
+            PendingProbe.INVALID,
+            probeJpeg(SOI + byteArrayOf(0x12, 0x34) + scan),
+        )
+        assertEquals(
+            "a short read proves nothing complete",
+            PendingProbe.INVALID,
+            probeCompleteJpegStructure((SOI + scan).size.toLong()) { _, _ -> null },
+        )
+    }
+
+    private fun probeJpeg(bytes: ByteArray): PendingProbe =
+        probeCompleteJpegStructure(bytes.size.toLong()) { offset, count ->
+            val start = offset.toInt()
+            if (start < 0 || start + count > bytes.size) null else bytes.copyOfRange(start, start + count)
+        }
 
     // ---- pure splice framing ---------------------------------------------------------------------
 
