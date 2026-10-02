@@ -157,6 +157,39 @@ internal fun spliceExifApp1(jpeg: ByteArray, payload: ByteArray): ByteArray? {
         .toByteArray()
 }
 
+/**
+ * [payload] (an `Exif\0\0` APP1 body) with IFD0's next-IFD link zeroed, so a reader no longer
+ * reaches IFD1 — the thumbnail directory. The thumbnail bytes stay in the buffer as unreferenced
+ * data; ExifInterface re-serializes only what it parsed, so a composition seeded with this drops the
+ * thumbnail (MRG4-9). Null when the TIFF header or IFD0 cannot be walked, or there is no IFD1.
+ */
+internal fun exifApp1WithoutThumbnailIfd(payload: ByteArray): ByteArray? {
+    val tiff = EXIF_SIGNATURE.size
+    if (!isSpliceableExifPayload(payload) || payload.size < tiff + 8) return null
+    val littleEndian = when {
+        payload[tiff] == 'I'.code.toByte() && payload[tiff + 1] == 'I'.code.toByte() -> true
+        payload[tiff] == 'M'.code.toByte() && payload[tiff + 1] == 'M'.code.toByte() -> false
+        else -> return null
+    }
+    fun u16(at: Int): Int = if (littleEndian) {
+        (payload[at].toInt() and 0xff) or ((payload[at + 1].toInt() and 0xff) shl 8)
+    } else {
+        ((payload[at].toInt() and 0xff) shl 8) or (payload[at + 1].toInt() and 0xff)
+    }
+    fun u32(at: Int): Long = if (littleEndian) {
+        (u16(at).toLong()) or (u16(at + 2).toLong() shl 16)
+    } else {
+        (u16(at).toLong() shl 16) or u16(at + 2).toLong()
+    }
+    if (u16(tiff + 2) != 0x2a) return null
+    val ifd0 = u32(tiff + 4)
+    if (ifd0 < 8L || tiff + ifd0 + 2L > payload.size) return null
+    val entries = u16(tiff + ifd0.toInt())
+    val link = tiff + ifd0.toInt() + 2 + entries * 12
+    if (link + 4 > payload.size || u32(link) == 0L) return null
+    return payload.copyOf().also { stripped -> for (index in 0 until 4) stripped[link + index] = 0 }
+}
+
 private const val MAX_JPEG_SEGMENT_LENGTH = 0xffff
 
 private val EXIF_SIGNATURE =byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)

@@ -414,14 +414,16 @@ internal class StillCapturePipeline(
             build = {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                composeStillExifApp1(
-                    context.cacheDir,
-                    exifShot,
-                    bounds.outWidth,
-                    bounds.outHeight,
-                    exifOrientationFor(spec.rotationDegrees),
-                    sourceExifApp1 = extractExifApp1(bytes),
-                )
+                composePassthroughExifApp1(extractExifApp1(bytes)) { source ->
+                    composeStillExifApp1(
+                        context.cacheDir,
+                        exifShot,
+                        bounds.outWidth,
+                        bounds.outHeight,
+                        exifOrientationFor(spec.rotationDegrees),
+                        sourceExifApp1 = source,
+                    )
+                }
             },
             onFailure = { failure ->
                 Log.w("StillCapturePipeline", "passthrough JPEG EXIF payload failed; saving without EXIF", failure)
@@ -767,6 +769,37 @@ internal fun composeStillExifApp1(
         // user media.
         runCatching { temp.delete() }
     }
+}
+
+/**
+ * The passthrough lane's EXIF, degraded in tiers so the one tag a viewer NEEDS — Orientation, the
+ * passthrough's only rotation — survives (MRG4-9). A HAL EXIF whose IFD1 thumbnail sits near the
+ * 64 KiB APP1 cap grows past it once our tags are added; the composed payload was then refused at the
+ * splice and the hi-res JPEG saved with NO EXIF, i.e. sideways. Tiers: the full HAL EXIF under ours;
+ * the same without its thumbnail directory ([exifApp1WithoutThumbnailIfd]); ours alone. A tier that
+ * throws (ExifInterface refuses an oversized APP1) or yields an unspliceable payload falls through;
+ * the last tier's failure propagates to the caller's best-effort handler.
+ */
+internal fun composePassthroughExifApp1(
+    sourceExifApp1: ByteArray?,
+    compose: (source: ByteArray?) -> ByteArray,
+): ByteArray {
+    val sources = buildList {
+        if (sourceExifApp1 != null) {
+            add(sourceExifApp1)
+            exifApp1WithoutThumbnailIfd(sourceExifApp1)?.let(::add)
+        }
+    }
+    for (source in sources) {
+        val payload = try {
+            compose(source)
+        } catch (tierFailure: Exception) {
+            // Fall through to the next, smaller tier; only the last tier's failure is reported.
+            continue
+        }
+        if (isSpliceableExifPayload(payload)) return payload
+    }
+    return compose(null)
 }
 
 /**

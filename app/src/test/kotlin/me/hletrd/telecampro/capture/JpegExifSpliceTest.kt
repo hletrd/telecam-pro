@@ -118,6 +118,108 @@ class JpegExifSpliceTest {
         }
     }
 
+    // MRG4-9: a HAL EXIF whose thumbnail sits near the APP1 cap used to cost the passthrough ALL of
+    // its EXIF — Orientation included, so a rotated hi-res capture displayed sideways.
+    @Test
+    fun `an oversized-thumbnail HAL EXIF keeps orientation by dropping only the thumbnail`() {
+        val source = halExifWithThumbnail(thumbnailLength = 65_000, littleEndian = true)
+        assertTrue("the fixture is itself a legal APP1", isSpliceableExifPayload(source))
+        val compose = { seed: ByteArray? ->
+            composeStillExifApp1(cacheDir, shot(), 32, 24, ExifInterface.ORIENTATION_ROTATE_90, seed)
+        }
+        // The single-tier composition the lane used before cannot be spliced (or is refused outright).
+        val untiered = runCatching { compose(source) }.getOrNull()
+        assertFalse(untiered != null && isSpliceableExifPayload(untiered))
+
+        val payload = composePassthroughExifApp1(source, compose)
+
+        assertTrue(isSpliceableExifPayload(payload))
+        val spliced = requireNotNull(spliceExifApp1(encodedJpeg(32, 24), payload))
+        val exif = ExifInterface(ByteArrayInputStream(spliced))
+        assertEquals(ExifInterface.ORIENTATION_ROTATE_90, exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, 0))
+        assertEquals("the HAL's own tags survive the thumbnail drop", "HAL 1.0", exif.getAttribute(ExifInterface.TAG_SOFTWARE))
+        assertFalse(exif.hasThumbnail())
+    }
+
+    @Test
+    fun `passthrough tiers keep the full source when it fits and fall back to ours alone last`() {
+        val seen = mutableListOf<ByteArray?>()
+        val small = EXIF + byteArrayOf(7)
+        assertArrayEquals(small, composePassthroughExifApp1(small) { seen += it; small })
+        assertEquals(1, seen.size)
+
+        seen.clear()
+        val ours = EXIF + byteArrayOf(1)
+        val source = halExifWithThumbnail(thumbnailLength = 16, littleEndian = false)
+        val result = composePassthroughExifApp1(source) { seed ->
+            seen += seed
+            if (seed == null) ours else throw IllegalStateException("too large")
+        }
+        assertArrayEquals(ours, result)
+        assertEquals(3, seen.size)
+        assertArrayEquals(source, seen[0])
+        assertNull(seen[2])
+
+        // No source at all: ours, once.
+        seen.clear()
+        assertArrayEquals(ours, composePassthroughExifApp1(null) { seen += it; ours })
+        assertEquals(listOf<ByteArray?>(null), seen)
+    }
+
+    @Test
+    fun `the thumbnail unlink zeroes only IFD0's next-IFD link and refuses what it cannot walk`() {
+        for (littleEndian in listOf(true, false)) {
+            val source = halExifWithThumbnail(thumbnailLength = 16, littleEndian = littleEndian)
+            val stripped = requireNotNull(exifApp1WithoutThumbnailIfd(source))
+            // IFD0 at TIFF offset 8 with one entry: the link sits at 6 + 8 + 2 + 12.
+            val link = 6 + 8 + 2 + 12
+            assertArrayEquals(ByteArray(4), stripped.copyOfRange(link, link + 4))
+            assertArrayEquals(source.copyOfRange(0, link), stripped.copyOfRange(0, link))
+            assertArrayEquals(source.copyOfRange(link + 4, source.size), stripped.copyOfRange(link + 4, source.size))
+            // Already unlinked: nothing to strip.
+            assertNull(exifApp1WithoutThumbnailIfd(stripped))
+        }
+        val good = halExifWithThumbnail(thumbnailLength = 16, littleEndian = true)
+        assertNull("not an EXIF APP1", exifApp1WithoutThumbnailIfd(byteArrayOf(1, 2, 3)))
+        assertNull("too short for a TIFF header", exifApp1WithoutThumbnailIfd(EXIF + byteArrayOf(0x49, 0x49)))
+        assertNull("unknown byte order", exifApp1WithoutThumbnailIfd(good.copyOf().also { it[6] = 0x41; it[7] = 0x41 }))
+        assertNull("bad TIFF magic", exifApp1WithoutThumbnailIfd(good.copyOf().also { it[8] = 0x2b }))
+        assertNull("IFD0 inside the header", exifApp1WithoutThumbnailIfd(good.copyOf().also { it[10] = 4 }))
+        assertNull("IFD0 past the end", exifApp1WithoutThumbnailIfd(good.copyOf().also { it[11] = 0x7f }))
+        assertNull(
+            "an entry count whose link overruns",
+            exifApp1WithoutThumbnailIfd(good.copyOf().also { it[6 + 8] = 0xff.toByte(); it[6 + 9] = 0x0f }),
+        )
+    }
+
+    /**
+     * A hand-built `Exif\0\0` + TIFF: IFD0 = Software "HAL 1.0"; IFD1 = a JPEG thumbnail of
+     * [thumbnailLength] bytes (a real tiny JPEG, padded), the shape a HAL emits near the cap.
+     */
+    private fun halExifWithThumbnail(thumbnailLength: Int, littleEndian: Boolean): ByteArray {
+        val order = if (littleEndian) java.nio.ByteOrder.LITTLE_ENDIAN else java.nio.ByteOrder.BIG_ENDIAN
+        val software = "HAL 1.0\u0000".toByteArray(Charsets.US_ASCII)
+        val ifd0 = 8
+        val softwareAt = ifd0 + 2 + 12 + 4
+        val ifd1 = softwareAt + software.size
+        val thumbAt = ifd1 + 2 + 3 * 12 + 4
+        val tiff = java.nio.ByteBuffer.allocate(thumbAt + thumbnailLength).order(order)
+        tiff.put(if (littleEndian) byteArrayOf(0x49, 0x49) else byteArrayOf(0x4d, 0x4d))
+        tiff.putShort(0x2a).putInt(ifd0)
+        tiff.putShort(1)
+        tiff.putShort(0x0131).putShort(2).putInt(software.size).putInt(softwareAt)
+        tiff.putInt(ifd1)
+        tiff.put(software)
+        tiff.putShort(3)
+        tiff.putShort(0x0103).putShort(3).putInt(1).putShort(6).putShort(0) // Compression = JPEG
+        tiff.putShort(0x0201.toShort()).putShort(4).putInt(1).putInt(thumbAt)
+        tiff.putShort(0x0202.toShort()).putShort(4).putInt(1).putInt(thumbnailLength)
+        tiff.putInt(0)
+        val thumbnail = encodedJpeg(8, 8)
+        tiff.put(thumbnail, 0, minOf(thumbnail.size, thumbnailLength))
+        return EXIF + tiff.array()
+    }
+
     // ---- pure splice framing ---------------------------------------------------------------------
 
     @Test
