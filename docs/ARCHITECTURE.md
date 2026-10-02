@@ -429,7 +429,11 @@ Accessed from GL + audio/video threads:
   racing release against native code; all later GL/preview/Camera/microphone/REC admission is refused
   with restart status. A codec/audio drain still alive after the bounded join returns a typed
   quarantine-required result without clearing owners or the pending row; strict finalization never
-  releases that process lease. After every native owner is checked released, first-wins native
+  releases that process lease. An `IllegalStateException`/`CodecException` from
+  `signalEndOfInputStream()`/`stop()` on a codec whose drain or setup already threw is MediaCodec's
+  Error-state check, not an unproven release (`codecCleanupDecision`): it skips to `release()`, whose
+  own failure still quarantines, and an EOS failure that does quarantine stops the `AudioRecord`
+  first so the microphone is not held process-long. After every native owner is checked released, first-wins native
   classification releases the process REC lease, `recorderTeardownInFlight`, and microphone handoff
   immediately. The recorder then hands an immutable capture-specific storage continuation (URI,
   capture id at the Engine callback boundary, container verdict, sample proof, and failure) to a

@@ -111,6 +111,97 @@ class RecorderQuarantineAdmissionGateTest {
         }
     }
 
+    // AGG5-3 (DB5-1): a codec in the Error state throws a Java-level state check from EOS/stop.
+    @Test
+    fun `only a state throw from a non-release call on an errored codec skips to release`() {
+        val gate = RecorderNativeOperationGate()
+        val stateThrow = IllegalStateException("codec is in the Error state")
+        val throwing = gate.run<Unit> { throw stateThrow }
+        val skipped = codecCleanupDecision(throwing, CodecCleanupCall.STOP, errorLatched = true)
+        assertEquals(CodecCleanupDecision.SkippedToRelease(stateThrow), skipped)
+        assertEquals(
+            CodecCleanupDecision.SkippedToRelease(stateThrow),
+            codecCleanupDecision(throwing, CodecCleanupCall.SIGNAL_END_OF_INPUT, errorLatched = true),
+        )
+        // No error evidence: the same throw stays "release unproven".
+        assertEquals(
+            CodecCleanupDecision.Failed(stateThrow),
+            codecCleanupDecision(throwing, CodecCleanupCall.STOP, errorLatched = false),
+        )
+        // release() itself failing is never skipped.
+        assertEquals(
+            CodecCleanupDecision.Failed(stateThrow),
+            codecCleanupDecision(throwing, CodecCleanupCall.RELEASE, errorLatched = true),
+        )
+        // Another throwable type is not the documented state check.
+        val runtime = RuntimeException("native fault")
+        assertEquals(
+            CodecCleanupDecision.Failed(runtime),
+            codecCleanupDecision(gate.run<Unit> { throw runtime }, CodecCleanupCall.STOP, errorLatched = true),
+        )
+        // The admission gate's own revocation (also an ISE subclass) stays revoked/unproven.
+        val revokedThrow = RecorderNativeOperationRevokedException()
+        assertEquals(
+            CodecCleanupDecision.Failed(revokedThrow),
+            codecCleanupDecision(gate.run<Unit> { throw revokedThrow }, CodecCleanupCall.STOP, errorLatched = true),
+        )
+        assertEquals(
+            CodecCleanupDecision.Completed,
+            codecCleanupDecision(gate.run { }, CodecCleanupCall.STOP, errorLatched = true),
+        )
+        assertTrue(gate.close())
+        assertEquals(
+            CodecCleanupDecision.Revoked,
+            codecCleanupDecision(gate.run { }, CodecCleanupCall.STOP, errorLatched = true),
+        )
+    }
+
+    @Test
+    fun `an errored codec's stop throw lets the fake graph finish releasing every owner`() {
+        // A fake native graph after recordFailure: the video codec's drain ended on a CodecException,
+        // so its stop() throws the Error-state check while release() succeeds.
+        val productionOrder = listOf(RecorderNativeOwnerOperation.AUDIO_INPUT_STOP) +
+            RECORDER_POST_DRAIN_PRE_MUXER_NATIVE_OWNERS + RECORDER_POST_DRAIN_NATIVE_OWNERS
+        fun runGraph(videoErrorLatched: Boolean, releaseThrows: Boolean): Pair<RecorderNativeOwnerOperation?, List<RecorderNativeOwnerOperation>> {
+            val gate = RecorderNativeOperationGate()
+            val released = mutableListOf<RecorderNativeOwnerOperation>()
+            val first = runRecorderNativeOwnerSequence(productionOrder) { owner ->
+                val call = when (owner) {
+                    RecorderNativeOwnerOperation.VIDEO_CODEC_STOP -> CodecCleanupCall.STOP
+                    RecorderNativeOwnerOperation.VIDEO_CODEC_RELEASE -> CodecCleanupCall.RELEASE
+                    else -> null
+                }
+                val outcome = gate.run<Unit> {
+                    when {
+                        owner == RecorderNativeOwnerOperation.VIDEO_CODEC_STOP ->
+                            throw IllegalStateException("stop() in the Error state")
+                        owner == RecorderNativeOwnerOperation.VIDEO_CODEC_RELEASE && releaseThrows ->
+                            throw IllegalStateException("release() failed")
+                    }
+                }
+                val ok = if (call != null) {
+                    when (codecCleanupDecision(outcome, call, videoErrorLatched)) {
+                        CodecCleanupDecision.Completed, is CodecCleanupDecision.SkippedToRelease -> true
+                        else -> false
+                    }
+                } else {
+                    nativeCleanupOutcome(outcome) == NativeCleanupOutcome.Completed
+                }
+                if (ok) released += owner
+                ok
+            }
+            return first to released
+        }
+
+        val (cleanFirst, cleanReleased) = runGraph(videoErrorLatched = true, releaseThrows = false)
+        assertEquals(null, cleanFirst)
+        assertEquals(productionOrder, cleanReleased)
+
+        // Quarantine stays for a failed release() and for a stop throw with no error evidence.
+        assertEquals(RecorderNativeOwnerOperation.VIDEO_CODEC_RELEASE, runGraph(true, releaseThrows = true).first)
+        assertEquals(RecorderNativeOwnerOperation.VIDEO_CODEC_STOP, runGraph(false, releaseThrows = false).first)
+    }
+
     @Test
     fun `all production native owners release through the terminal success return`() {
         val productionOrder = listOf(RecorderNativeOwnerOperation.AUDIO_INPUT_STOP) +

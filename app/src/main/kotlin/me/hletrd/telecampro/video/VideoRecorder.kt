@@ -140,6 +140,11 @@ class VideoRecorder(private val context: Context) {
     // this flag lets both drain loops leave without touching the unsafe native graph.
     private val terminallyQuarantined = AtomicBoolean(false)
     private val firstFailure = FirstFailureSignal()
+    // Set by a drain thread that ENDED on a thrown codec/muxer call — evidence that its codec may sit
+    // in MediaCodec's Error state, where only reset()/release() are legal (AGG5-3). Read only by the
+    // finalizer's codec cleanup classification ([codecCleanupDecision]).
+    private val videoCodecErrorLatched = AtomicBoolean(false)
+    private val audioCodecErrorLatched = AtomicBoolean(false)
     private val videoStartupProof = VideoStartupProof()
     private val videoStartupDeadlineExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "video-start-proof").apply { isDaemon = true }
@@ -196,6 +201,31 @@ class VideoRecorder(private val context: Context) {
             NativeCleanupOutcome.Revoked -> false
             is NativeCleanupOutcome.Failed -> {
                 nativeCleanupFailure.compareAndSet(null, outcome.cause)
+                false
+            }
+        }
+    }
+
+    /**
+     * [nativeCleanup] for a MediaCodec call (AGG5-3). A codec in the Error state throws a Java-level
+     * IllegalStateException/CodecException from `signalEndOfInputStream()`/`stop()` — a state check,
+     * not evidence that a native owner is still running — yet [nativeCleanup] read it as "release
+     * unproven" and quarantined the whole process (camera dead until restart, and before
+     * AUDIO_INPUT_STOP the mic stayed held). When [errorLatched] proves the codec already failed, that
+     * throw SKIPS to `release()` instead. A `release()` failure, a hang (the deadline), a revoked
+     * admission, and a live drain thread (checked separately after the joins) all still quarantine.
+     */
+    private fun codecCleanup(call: CodecCleanupCall, errorLatched: Boolean, block: () -> Unit): Boolean {
+        if (nativeCleanupFailure.get() != null) return false
+        return when (val decision = codecCleanupDecision(nativeOperations.run(block), call, errorLatched)) {
+            CodecCleanupDecision.Completed -> true
+            is CodecCleanupDecision.SkippedToRelease -> {
+                Log.w(TAG, "codec $call threw on an errored codec; skipping to release()", decision.cause)
+                true
+            }
+            CodecCleanupDecision.Revoked -> false
+            is CodecCleanupDecision.Failed -> {
+                nativeCleanupFailure.compareAndSet(null, decision.cause)
                 false
             }
         }
@@ -319,15 +349,23 @@ class VideoRecorder(private val context: Context) {
                         codec, attempt.width, attempt.height,
                         encoderRate, captureRate, attemptBitRate, transfer,
                     )
-                    nativeOperation {
-                        owner.codec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    try {
+                        nativeOperation {
+                            owner.codec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                        }
+                        owner.surface = nativeOperation { owner.codec.createInputSurface() }
+                        nativeOperation { owner.codec.start() }
+                    } catch (failure: Exception) {
+                        // A component that refused configure/start may now be in the Error state;
+                        // its stop() then throws, which must not end the ladder (AGG5-3).
+                        if (failure !is RecorderNativeOperationRevokedException) owner.errorLatched = true
+                        throw failure
                     }
-                    owner.surface = nativeOperation { owner.codec.createInputSurface() }
-                    nativeOperation { owner.codec.start() }
                 },
                 releaseRejected = { owner ->
                     val surfaceReleased = nativeCleanup { owner.surface?.release() }
-                    val codecStopped = surfaceReleased && nativeCleanup { owner.codec.stop() }
+                    val codecStopped = surfaceReleased &&
+                        codecCleanup(CodecCleanupCall.STOP, owner.errorLatched) { owner.codec.stop() }
                     val codecReleased = codecStopped && nativeCleanup { owner.codec.release() }
                     if (codecReleased) provisionalVideoOwners.remove(owner)
                     codecReleased
@@ -425,7 +463,17 @@ class VideoRecorder(private val context: Context) {
         if (terminallyQuarantined.get()) return quarantinedNativeStopResult()
         cancelVideoStartupDeadline()
         var finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED
-        if (!nativeCleanup { videoCodec?.signalEndOfInputStream() }) return quarantinedNativeStopResult()
+        if (!codecCleanup(CodecCleanupCall.SIGNAL_END_OF_INPUT, videoCodecErrorLatched.get()) {
+                videoCodec?.signalEndOfInputStream()
+            }
+        ) {
+            // Giving up here used to skip AUDIO_INPUT_STOP too, so the mic stayed held (privacy
+            // indicator lit) for the life of the process (AGG5-3). AudioRecord.stop() is the
+            // ordinary unblock-the-read call this finalizer makes next anyway: it releases no owner,
+            // so the retained graph stays exactly as it stood at the failure.
+            stopAudioInputBeforeQuarantine()
+            return quarantinedNativeStopResult()
+        }
 
         // AudioRecord.read() may still be blocked after running flips false. Stop the input before
         // joining so the worker can queue AAC EOS instead of timing out while waiting for PCM.
@@ -552,14 +600,22 @@ class VideoRecorder(private val context: Context) {
                         inputSurfaceOwner.releaseConditionally { surface -> nativeCleanup { surface.release() } }
                     }
                 }
-                RecorderNativeOwnerOperation.VIDEO_CODEC_STOP -> nativeCleanup { videoCodec?.stop() }
+                RecorderNativeOwnerOperation.VIDEO_CODEC_STOP ->
+                    codecCleanup(CodecCleanupCall.STOP, videoCodecErrorLatched.get()) { videoCodec?.stop() }
                 RecorderNativeOwnerOperation.VIDEO_CODEC_RELEASE -> nativeCleanup { videoCodec?.release() }
-                RecorderNativeOwnerOperation.AUDIO_CODEC_STOP -> nativeCleanup { audioCodec?.stop() }
+                RecorderNativeOwnerOperation.AUDIO_CODEC_STOP ->
+                    codecCleanup(CodecCleanupCall.STOP, audioCodecErrorLatched.get()) { audioCodec?.stop() }
                 RecorderNativeOwnerOperation.AUDIO_CODEC_RELEASE -> nativeCleanup { audioCodec?.release() }
                 RecorderNativeOwnerOperation.MUXER_RELEASE -> nativeCleanup { muxer?.release() }
                 RecorderNativeOwnerOperation.DESCRIPTOR_CLOSE -> nativeCleanup { pfd?.close() }
             }
         } == null
+
+    /** Best-effort, outside the cleanup-failure gate; a closed admission gate makes it a no-op. */
+    private fun stopAudioInputBeforeQuarantine() {
+        if (terminallyQuarantined.get()) return
+        nativeOperations.run { audioRecord?.stop() }
+    }
 
     private fun quarantinedNativeStopResult(): NativeStopResult = NativeStopResult(
         error = nativeCleanupFailure.get()
@@ -612,6 +668,8 @@ class VideoRecorder(private val context: Context) {
             drainVideoLoop(codec, info)
         } catch (t: Exception) {
             if (me.hletrd.telecampro.BuildConfig.DEBUG) Log.w(TAG, "video drain aborted (encoder error): ${t.message}")
+            // Latched BEFORE recordFailure wakes the finalizer, which classifies this codec's EOS/stop.
+            videoCodecErrorLatched.set(true)
             recordFailure(t)
         }
     }
@@ -752,6 +810,7 @@ class VideoRecorder(private val context: Context) {
             try {
                 runAudio(record, codec)
             } catch (t: Exception) {
+                audioCodecErrorLatched.set(true)
                 // Every terminal audio fault reaches here (the negative-read throw, an audio codec
                 // throw, or an audio-track muxer write that propagated). Degrade to video-only — a
                 // cleanly-muxed video track must survive a dead mic, NOT be deleted via the shared
@@ -1892,6 +1951,8 @@ internal data class EncoderConfigureAttempt(
 private class MediaCodecAttemptOwner(
     val codec: MediaCodec,
     var surface: Surface? = null,
+    /** Its configure/createInputSurface/start threw: the codec may be in the Error state (AGG5-3). */
+    var errorLatched: Boolean = false,
 )
 
 internal data class ConfiguredEncoderAttempt<T>(
@@ -2093,6 +2154,48 @@ internal class RecordingStorageTail(
                 deleteAllocation = { MediaStoreWriter.discardPendingOutput(context, it) },
             ),
         ).also { completed = it }
+    }
+}
+
+/** The MediaCodec teardown calls [codecCleanupDecision] classifies (AGG5-3). */
+internal enum class CodecCleanupCall { SIGNAL_END_OF_INPUT, STOP, RELEASE }
+
+internal sealed interface CodecCleanupDecision {
+    data object Completed : CodecCleanupDecision
+    /** A Java-level state throw from a non-release call on an errored codec: proceed to release(). */
+    data class SkippedToRelease(val cause: Throwable) : CodecCleanupDecision
+    data object Revoked : CodecCleanupDecision
+    /** Native release unproven: the graph is retained and quarantined. */
+    data class Failed(val cause: Throwable) : CodecCleanupDecision
+}
+
+/**
+ * AGG5-3 (DB5-1): the ONLY throw that skips to `release()` is an [IllegalStateException] — which
+ * `MediaCodec.CodecException` is — from `signalEndOfInputStream()`/`stop()` on a codec whose
+ * [errorLatched] proves it already failed (its drain thread ended on a thrown call, or its
+ * configure/start threw). In MediaCodec's Error state only reset()/release() are legal, so that
+ * throw is the documented state check, not a live native owner. Everything else keeps the
+ * conservative "unproven" verdict: any `release()` failure, any other throwable type, the same throw
+ * on a codec with no error evidence, and the admission gate's own revocation.
+ */
+internal fun codecCleanupDecision(
+    outcome: RecorderNativeOperationResult<Unit>,
+    call: CodecCleanupCall,
+    errorLatched: Boolean,
+): CodecCleanupDecision = when (val cleanup = nativeCleanupOutcome(outcome)) {
+    NativeCleanupOutcome.Completed -> CodecCleanupDecision.Completed
+    NativeCleanupOutcome.Revoked -> CodecCleanupDecision.Revoked
+    is NativeCleanupOutcome.Failed -> {
+        val cause = cleanup.cause
+        if (call != CodecCleanupCall.RELEASE &&
+            errorLatched &&
+            cause is IllegalStateException &&
+            cause !is RecorderNativeOperationRevokedException
+        ) {
+            CodecCleanupDecision.SkippedToRelease(cause)
+        } else {
+            CodecCleanupDecision.Failed(cause)
+        }
     }
 }
 
