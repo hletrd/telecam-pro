@@ -19,6 +19,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowContentResolver
 
 /**
@@ -113,6 +114,56 @@ class LaunchRecoveryPendingExpiryTest {
         assertFalse(DISCARDED in provider.pendingWrites)
     }
 
+    // TE5-8: the recovery VIDEO branch end to end — descriptor wiring, the walk on the SAME
+    // descriptor, the fresh-descriptor re-parse, and the disposition. Robolectric's extractor never
+    // throws on an fd, so a shadow models the device's "Failed to instantiate extractor".
+    @Test
+    @Config(shadows = [RejectingMediaExtractorShadow::class])
+    fun `a moov-less take is deleted and a twice-rejected moov-present take is kept unarmed`() {
+        val suffix = UUID.randomUUID().toString()
+        val authority = "recovery-video-$suffix"
+        val videoBase = Uri.parse("content://$authority/videos")
+        val provider = RecordingProvider(
+            videoBase,
+            mapOf(
+                // A killed recorder: `mdat` with its placeholder size 0 (to EOF), no `moov`.
+                MOOV_LESS to Row("video/mp4", 0L, bytes = mp4Box("ftyp", 16) + mp4Box("mdat", 0, payload = 64)),
+                // A finalized container the extractor rejects on both descriptors.
+                MOOV_PRESENT to Row(
+                    "video/mp4",
+                    0L,
+                    bytes = mp4Box("ftyp", 16) + mp4Box("mdat", 72) + mp4Box("moov", 40),
+                ),
+                // The provider cannot open it this launch: transient, kept AND re-armed.
+                UNOPENABLE to Row("video/mp4", 0L),
+            ),
+        )
+        provider.attachInfo(context, ProviderInfo().apply { this.authority = authority })
+        ShadowContentResolver.registerProviderInternal(authority, provider)
+        val journal = PendingDiscardJournal(
+            context = context,
+            databaseName = "recovery-video-$suffix.db",
+            legacyPreferences = context.getSharedPreferences("recovery-video-$suffix", Context.MODE_PRIVATE),
+        )
+
+        val batch = MediaStoreWriter.cleanupOrphanedPendingBatch(
+            context = context,
+            cursor = OrphanRecoveryCursor(preflightComplete = true)
+                .withAfterId(OrphanRecoveryCollection.IMAGES, OrphanRecoveryCursor.COLLECTION_COMPLETE),
+            discardJournal = journal,
+            targets = listOf(OrphanRecoveryTarget(videoBase, OrphanRecoveryCollection.VIDEO)),
+        )
+
+        assertEquals(1, batch.report.deleted)
+        assertEquals(2, batch.report.retained)
+        assertFalse(MOOV_LESS in provider.rows)
+        assertTrue(MOOV_PRESENT in provider.rows)
+        assertFalse("a twice-rejected moov-present take is not re-armed", MOOV_PRESENT in provider.pendingWrites)
+        assertEquals(listOf(1), provider.pendingWrites[UNOPENABLE])
+        // First descriptor (extractor + walk) and the fresh re-parse descriptor, nothing more.
+        assertEquals(2, provider.opens.count { it == MOOV_PRESENT })
+    }
+
     @Test
     fun `an adoptable row whose publish keeps failing re-arms its expiry`() {
         // AGG4-5: ADOPT whose IS_PENDING=0 update fails leaves the row pending; it used to skip the
@@ -179,6 +230,7 @@ class LaunchRecoveryPendingExpiryTest {
         val rows = initialRows.toSortedMap()
         val pendingWrites = mutableMapOf<Long, MutableList<Int>>()
         val refusePublish = mutableSetOf<Long>()
+        val opens = mutableListOf<Long>()
 
         override fun onCreate(): Boolean = true
 
@@ -235,6 +287,7 @@ class LaunchRecoveryPendingExpiryTest {
         }
 
         override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            uri.lastPathSegment?.toLongOrNull()?.let(opens::add)
             val bytes = rows[uri.lastPathSegment?.toLongOrNull()]?.bytes
                 ?: throw FileNotFoundException("provider busy: $uri")
             val file = File.createTempFile("recovery-expiry-", ".bin", context!!.cacheDir)
@@ -248,6 +301,14 @@ class LaunchRecoveryPendingExpiryTest {
     }
 
     private companion object {
+        const val MOOV_LESS = 11L
+        const val MOOV_PRESENT = 12L
+        const val UNOPENABLE = 13L
+
+        /** One top-level ISO-BMFF box: [declaredSize] in its header, [payload] bytes after it. */
+        fun mp4Box(type: String, declaredSize: Int, payload: Int = declaredSize - 8): ByteArray =
+            java.nio.ByteBuffer.allocate(8 + payload).putInt(declaredSize).put(type.toByteArray()).array()
+
         const val KEPT = 1L
         const val DELETED = 2L
         const val ADOPTED = 3L
@@ -270,5 +331,14 @@ class LaunchRecoveryPendingExpiryTest {
         val WHOLE_JPEG = byteArrayOf(
             0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xda.toByte(), 0, 4, 1, 2, 0xff.toByte(), 0xd9.toByte(),
         )
+    }
+}
+
+/** Models the device's FUSE/extractor rejection: every fd parse throws, as MediaExtractor does. */
+@org.robolectric.annotation.Implements(android.media.MediaExtractor::class)
+class RejectingMediaExtractorShadow : org.robolectric.shadows.ShadowMediaExtractor() {
+    @org.robolectric.annotation.Implementation
+    override fun setDataSource(fd: java.io.FileDescriptor) {
+        throw java.io.IOException("Failed to instantiate extractor.")
     }
 }
