@@ -405,9 +405,11 @@ internal class StillCapturePipeline(
      * Hi-res JPEG lane: the HAL bytes go to disk verbatim (no decode, no crop, no pixel rotate),
      * with an EXIF APP1 carrying TAG_ORIENTATION for the full capture rotation — the DNG approach,
      * because at ~200MP the ordinary pixel-upright pass is a guaranteed OOM. The HAL's own EXIF is
-     * the composer's seed, so its tags survive under ours exactly as the old in-place
-     * `saveAttributes()` merge kept them — but the merged APP1 is spliced in before the single write
-     * (AGG4-6). Same publish-or-delete policy as [writeProcessedJpeg].
+     * the composer's seed, so its tags survive under ours EXCEPT [PASSTHROUGH_PRIVACY_STRIPPED_TAGS]
+     * (AGG5-51), and the merged APP1 is spliced in before the single write (AGG4-6). The strip fails
+     * CLOSED (AGG6-14): the header keeps only allow-listed segments (no XMP/COM/vendor APPn), a
+     * failed composition or refused splice writes an orientation-only APP1 instead of the HAL's,
+     * and an unwalkable header is refused. Same publish-or-delete policy as [writeProcessedJpeg].
      */
     private fun writePassthroughJpeg(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
         // Best-effort like the processed lane — a failed EXIF build must never lose the image. But
