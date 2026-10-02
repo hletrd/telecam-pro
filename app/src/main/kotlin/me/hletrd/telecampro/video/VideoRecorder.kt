@@ -2378,9 +2378,13 @@ internal fun shouldPublishRecording(
         finalizedValidation == FinalizedRecordingValidation.PASSED)
 
 /**
- * [INDETERMINATE] is the reopen that proved nothing (the provider open failed): neither
- * publishable nor deletable, so the stop tail retains the private row for launch recovery. An
- * extractor throw on an opened file after the tolerated muxer.stop() throw is FAILED (AGG3-6).
+ * [INDETERMINATE] is a reopen that proved nothing: the provider open failed, OR the file opened but
+ * the extractor threw without the top-level walk PROVING the `moov` absent (the AGG2-18 transient
+ * class). Neither publishable nor deletable, so the stop tail retains the private row for launch
+ * recovery. [FAILED] needs that proof: after the tolerated muxer.stop() throw, a confirming parse on
+ * a FRESH descriptor also threw AND the walk found no complete `moov` (AGG4-3, correcting AGG3-6,
+ * which made any extractor throw there FAILED and deleted playable takes) — see
+ * [me.hletrd.telecampro.storage.classifyFinalizedVideoTrack].
  */
 internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED, INDETERMINATE }
 

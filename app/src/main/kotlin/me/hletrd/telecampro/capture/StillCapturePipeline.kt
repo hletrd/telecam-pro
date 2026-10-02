@@ -613,7 +613,7 @@ internal fun retainedSaveStatus(kind: String, markerDurable: Boolean): CameraSta
  * The complete tag→value list one [ExifShot] stamps into a processed still, hoisted out of the
  * ExifInterface apply loop (the [heifExifDimensionAttributes] precedent) so the APEX/rational math
  * pinned against the stock camera's 3× reference sample is host-testable. Pure java.* + TAG_*
- * String constants only; [StillCapturePipeline.applyExifAttributes] replays it verbatim.
+ * String constants only; [composeStillExifApp1] replays it verbatim.
  */
 internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = buildList {
     if (shot.iso > 0) add(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY to shot.iso.toString())
