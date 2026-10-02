@@ -8437,8 +8437,12 @@ class CameraEngine internal constructor(
             // TELE reads a clean "300", not 297 — same nearest-10 rounding the OSD applies.
             focal35mm = if (spec.teleconverter) (Math.round(eff / 10f) * 10) else Math.round(eff),
             digitalZoom = digital,
-            evBiasStops = (result.get(android.hardware.camera2.CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
-                ?: c.exposureCompensation) * evStep,
+            evBiasStops = exifExposureBiasSteps(
+                manualAe = base?.let { manualAeAdmitted(c, it) } == true,
+                exposureMode = c.exposureMode,
+                resultSteps = result.get(android.hardware.camera2.CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION),
+                intentSteps = c.exposureCompensation,
+            ) * evStep,
             meteringMode = c.meteringMode,
             // NOT bare FLASH_STATE: this HAL reports FIRED on frames where the lamp is physically
             // dark (the documented torch lie), so with flash OFF a still could carry EXIF Flash=1
@@ -9052,6 +9056,27 @@ internal fun resumePreviewRebindWanted(inputSurfacePresent: Boolean, previewRead
  * actually refused it is the earlier recording owner still holding that claim, so it must not
  * blame a microphone the take never asked for.
  */
+/**
+ * EXIF ExposureBias, in EV-step units, from whichever owner actually applied it (AGG5-46).
+ *
+ * Under admitted manual AE (every AE-OFF mode, including app-side photo PROGRAM — the PMA110
+ * default) the request carries no `CONTROL_AE_EXPOSURE_COMPENSATION`: EV moves the app-side loop's
+ * TARGET instead. The capture result then echoes the template default 0, not null, so reading the
+ * result recorded ExposureBias 0 on every app-side still whatever EV was dialed. The loop's modes
+ * (SHUTTER, ISO, PROGRAM) take the frozen shot intent; MANUAL runs no loop, so a dialed EV moved
+ * nothing and the bias is 0. HAL AE keeps the wire's own answer.
+ */
+internal fun exifExposureBiasSteps(
+    manualAe: Boolean,
+    exposureMode: ExposureMode,
+    resultSteps: Int?,
+    intentSteps: Int,
+): Int = when {
+    !manualAe -> resultSteps ?: intentSteps
+    exposureMode == ExposureMode.MANUAL -> 0
+    else -> intentSteps
+}
+
 internal fun recordingClaimRefusalStatus(recordAudio: Boolean): CameraStatusMessage =
     if (recordAudio) CameraStatusMessage.MICROPHONE_BUSY else CameraStatusMessage.FINISHING_PREVIOUS_CLIP
 
