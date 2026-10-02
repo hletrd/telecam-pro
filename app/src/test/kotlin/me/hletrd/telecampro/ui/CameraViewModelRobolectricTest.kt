@@ -1158,6 +1158,40 @@ class CameraViewModelRobolectricTest {
         assertFalse("the new pinch's end still reaches the Engine", engineInteraction())
     }
 
+    // MRG6-2: the fold's settle used to CANCEL the whole throttled packet because of its old-scale
+    // zoom, dropping a real non-zoom edit staged before the fold — or made after the fold but before
+    // main settled it. `_state` showed the new value while the Engine kept the old one. The packet is
+    // now rebased onto the new route's zoom and still lands.
+    @Test fun `a route fold rebases a staged controls edit instead of dropping it`() {
+        val (v, e) = createViewModel()
+        val routes = me.hletrd.telecampro.camera.CameraRouteInventory(back = true, front = true, external = false)
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.BACK)
+        e.onCapsReady!!.invoke(
+            ViewModelTestAccess.caps(zoomRatioRange = android.util.Range(0.6f, 10f)),
+            e.currentOpticsGeneration(),
+        )
+        idleFor(0)
+        v.onZoomRatio(3f)
+        idleFor(1_000)
+        fun engineControls() = CameraEngine::class.java.getDeclaredField("controls")
+            .apply { isAccessible = true }
+            .get(e) as me.hletrd.telecampro.camera.ManualControls
+
+        // Staged inside the 40 ms window, then the fold lands before the throttle fires.
+        v.onJpegQuality(77)
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.FRONT)
+        idleFor(1_000)
+        assertEquals("the staged edit reaches the wire", 77, engineControls().jpegQuality)
+        assertEquals("on the new route's scale", 1f, engineControls().zoomRatio, 0f)
+
+        // Made after the fold wrote its epoch but before main settled it.
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.BACK)
+        v.onJpegQuality(66)
+        idleFor(1_000)
+        assertEquals("an edit built from the new state is not cancelled", 66, engineControls().jpegQuality)
+        assertEquals(66, v.state.value.controls.jpegQuality)
+    }
+
     // AGG5-4 / TR5-3: a route that cannot honour the stabilization / frame-rate REQUEST (Photo's
     // logical camera, FRONT) narrows only what is shown and what reaches the wire. It used to
     // narrow, push and PERSIST the request, so one FRONT visit downgraded every later tele clip.

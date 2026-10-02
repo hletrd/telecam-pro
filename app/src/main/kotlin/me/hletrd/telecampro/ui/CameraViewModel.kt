@@ -2697,7 +2697,7 @@ class CameraViewModel private constructor(
      * [CameraUiState.routeFoldEpoch]. The fold resets zoom onto the new route's scale on the setup
      * thread; until this runs, main still holds values in the OLD scale. A queued 16 ms flush, ease
      * tick or pinch compounded from the old pending ratio and wrote it to the NEW route, and the 40 ms
-     * throttled controls packet pushed the old zoom wholesale. So every main entry that reads or
+     * throttled controls packet pushed the old zoom wholesale (it is rebased onto the new zoom). So every main entry that reads or
      * submits those values settles first, and the fold's own post is then a no-op. Unlike the
      * synchronous doors, this one also ENDS an Engine zoom interaction it cancels: the route change
      * has already happened, so there is no outgoing controller to spare, and a posted invalidation
@@ -2708,7 +2708,11 @@ class CameraViewModel private constructor(
         val epoch = _state.value.routeFoldEpoch
         if (epoch == settledRouteFoldEpoch) return
         settledRouteFoldEpoch = epoch
-        cancelPendingControls()
+        // REBASE the throttled packet, never cancel it (MRG6-2): only its zoom is in the old scale.
+        // Cancelling dropped a real ISO/shutter/WB/focus edit staged just before the fold — or one
+        // built from the NEW state after it — leaving `_state` ahead of the wire until the next edit.
+        // The fold rewrites nothing but zoom, so the state's zoom is the whole correction.
+        pendingControls = pendingControls?.copy(zoomRatio = _state.value.controls.zoomRatio)
         if (zoomGlide.interacting) engine.setZoomInteraction(false)
         invalidateOpticsDerivedState()
     }
@@ -4716,6 +4720,8 @@ class CameraViewModel private constructor(
         persist: Boolean = slot != null,
         block: (ManualControls) -> ManualControls,
     ) {
+        // Settled first so a later settle cannot touch the packet this edit is about to stage.
+        settleRouteFold()
         val current = _state.value
         val requested = block(current.controls)
         val updated = (current.caps?.let(requested::normalizedFor) ?: requested)
