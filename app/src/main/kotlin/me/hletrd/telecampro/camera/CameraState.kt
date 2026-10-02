@@ -1785,6 +1785,10 @@ data class CameraUiState(
     val cameraPolicyBlocked: Boolean = false,
     val cameraOverrideId: String? = null,
     val status: CameraStatus? = null,
+    // The live PROGRESS condition (reopen, recovery, retry, cold start) whether the plate shows it or
+    // it waits behind an event (`StatusPlate.condition`). The Output row says "reconfiguring" only
+    // while one of the reopen/recovery conditions holds (AGG5-55), not for every not-Ready state.
+    val cameraCondition: CameraStatusMessage? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
     val lastMediaUri: android.net.Uri? = null,
     // Owner-null restore candidates match a TeleCam format but cannot claim TeleCam authorship.

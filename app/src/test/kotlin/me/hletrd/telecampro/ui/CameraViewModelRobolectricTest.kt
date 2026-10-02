@@ -931,6 +931,88 @@ class CameraViewModelRobolectricTest {
         )
     }
 
+    // AGG5-11 / TE5-10: the edge latches only when the plate SHOWED the notice. Dropped under an
+    // unexpired retained-take line, it used to latch anyway and no later Ready re-announced it.
+    @Test fun `DNG-only notice dropped under a retained take is announced by the next Ready`() {
+        val (v, e) = createViewModel()
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        setState(v) { it.copy(photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true)) }
+        var sequence = 0L
+        fun ready() {
+            e.onCameraReadyChange!!.invoke(
+                CameraReadyPublication(
+                    sequence = ++sequence,
+                    ready = true,
+                    opticsGeneration = optics,
+                    sessionGeneration = session,
+                    photoOutputs = PhotoSessionOutputs(raw = true),
+                ),
+            )
+            idleFor(0)
+        }
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        ready()
+        assertEquals("the notice is out-ranked", retained, v.state.value.status)
+        idleFor(6_000)
+        assertNull(v.state.value.status)
+        ready()
+        assertEquals(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY, v.state.value.status?.message)
+    }
+
+    // AGG5-11 / UX5-2: a response to the operator's own tap is never silently dropped; the retained
+    // instruction it covers comes back for the time it had left.
+    @Test fun `a response covers a retained-take line which then returns`() {
+        val (v, e) = createViewModel()
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        idleFor(1_000)
+        v.onAppStatus(CameraStatusMessage.STOP_RECORDING_FIRST)
+        assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+        idleFor(2_500)
+        assertEquals("the instruction returns", retained, v.state.value.status)
+        idleFor(4_999)
+        assertEquals("for the 5 s it had left", retained, v.state.value.status)
+        idleFor(1)
+        assertNull(v.state.value.status)
+    }
+
+    // AGG5-55: the Output row keys "reconfiguring" on the live condition, shown or deferred.
+    @Test fun `camera condition tracks a deferred reopen and clears on Ready`() {
+        val (v, e) = createViewModel()
+        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+        assertEquals(CameraStatusMessage.CAMERA_RECONFIGURING, v.state.value.cameraCondition)
+        v.onAppStatus(CameraStatusMessage.MEMORY_SLOT_SAVED)
+        assertEquals(CameraStatusMessage.MEMORY_SLOT_SAVED, v.state.value.status?.message)
+        assertEquals(
+            "still reconfiguring behind the event",
+            CameraStatusMessage.CAMERA_RECONFIGURING,
+            v.state.value.cameraCondition,
+        )
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            ),
+        )
+        idleFor(0)
+        assertNull(v.state.value.cameraCondition)
+        idleFor(1_500)
+        assertNull("the condition does not come back after Ready", v.state.value.status)
+    }
+
     // AGG4-65: the plate is priority-aware. "MR1 loaded" must not wipe a 6 s retained-take
     // instruction, and a progress condition published meanwhile waits and then takes the plate.
     @Test fun `status plate keeps a retained-take line over lower statuses`() {

@@ -1215,10 +1215,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   conditions: Ready, rollback/exhaustion, pause, or a newer PROGRESS status ends them. A transient
   EVENT status only SHADOWS one: the plate is rank-arbitrated, not last-writer-wins (`StatusPlate`,
   `StatusPlateRank`), so the condition waits behind the event as `deferredProgress` and returns when
-  that event expires — while a lower-ranked event can no longer replace an unexpired error or
-  retained-take instruction. A condition-ENDING event (`CAMERA_CONDITION_ENDING_MESSAGES`: the
-  `*_REOPEN` exhaustion and `*_UNCHANGED` rollback family) ENDS the condition instead, shown or
-  deferred — deferring it there resurrected "retrying…" with no timer after the error expired. A timer is wrong both
+  that event expires — while a lower-ranked AMBIENT event can no longer replace an unexpired error or
+  retained-take instruction. A RESPONSE to the operator's own input (`RESPONSE_MESSAGES`: refusals,
+  MR results, delete outcomes, `VIDEO_SAVED`) always takes the plate and only COVERS that higher
+  event, which returns for its remaining time; a status that RESOLVES the shown event (`DELETED` after
+  a failed delete, `VIDEO_SAVED` after "without audio") wipes it. An ERROR-severity condition ranks at
+  ERROR for arbitration. A condition-ENDING event (`CAMERA_CONDITION_ENDING_MESSAGES`) ENDS the
+  condition instead, shown or deferred — deferring it there resurrected "retrying…" with no timer
+  after the error expired — but only its own family (`endsCondition`): the `*_REOPEN` exhaustion ends
+  every condition, a `*_UNCHANGED` rollback only the optics ones (`OPTICS_CONDITION_MESSAGES`), never
+  a preview/camera-health recovery running beside it. A timer is wrong both
   ways: too long makes a fast transition read slow, too short claims ready before it is. Measure the
   pipeline before believing a latency report, and measure the pill too.
   Each armed measurement belongs first to one exact Engine resume/open transaction. That Engine

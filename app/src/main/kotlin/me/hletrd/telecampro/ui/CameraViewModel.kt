@@ -35,6 +35,7 @@ import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.StatusPlate
+import me.hletrd.telecampro.camera.DeferredStatusEvent
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.AudioDenialReasonStore
@@ -761,9 +762,13 @@ class CameraViewModel private constructor(
     // substitution. Not-Ready publications leave it alone, so a reopen of the same session shape
     // does not re-announce; a Ready that is not DNG-only re-arms it (AGG4-67).
     private var readyDngOnlyAnnounced = false
-    // A PROGRESS status waiting behind a higher-ranked event on the plate (AGG4-65). Guarded by the
-    // camera-ready publication gate's status monitor, like every other plate write.
+    // The plate's off-screen parts (AGG4-65 / AGG5-11): a PROGRESS condition waiting behind an event,
+    // a higher event a RESPONSE is covering, and when the shown status expires (uptime ms). `shown`
+    // itself lives in `_state.status`. Guarded by the camera-ready publication gate's status
+    // monitor, like every other plate write.
     private var deferredProgressStatus: CameraStatus? = null
+    private var deferredStatusEvent: DeferredStatusEvent? = null
+    private var shownStatusExpiresAtMs: Long? = null
     // The ONE owner of the audio-denial reason (AGG4-49): the memory-bank store reads it here, so a
     // bank's provenance never depends on which UI layer happened to reach this door.
     private val audioDenialReason = AudioDenialReasonStore(app)
@@ -952,10 +957,19 @@ class CameraViewModel private constructor(
                     }
                     if (acceptedApplied) {
                         preTeleUnifiedZoom = acceptedPreTele
-                        readyDngOnlyAnnounced = acceptedDngOnly
+                        // A Ready that is not DNG-only re-arms the edge. The edge itself latches
+                        // only below, once the plate actually SHOWED the notice (AGG5-11 / TE5-10):
+                        // a notice dropped under an unexpired retained-take line used to latch
+                        // anyway, so no later Ready of that shape ever announced it.
+                        if (!acceptedDngOnly) readyDngOnlyAnnounced = false
                     }
                     formatStatus?.let { status ->
-                        cameraReadyPublicationGate.runIfOwned(publication) { showStatus(status) }
+                        cameraReadyPublicationGate.runIfOwned(publication) {
+                            val shown = publishStatus(status)
+                            if (shown && status.message == CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY) {
+                                readyDngOnlyAnnounced = true
+                            }
+                        }
                     }
                 }
             }
@@ -1641,9 +1655,10 @@ class CameraViewModel private constructor(
                 preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
                 activeMemorySlot = activeSlot,
                 status = if (statusPublication.shownChanged) statusPublication.plate.shown else it.status,
+                cameraCondition = statusPublication.plate.condition?.message,
                 )
             }
-            if (statusPublication.shownChanged) armStatusTimer(statusPublication.plate.shown, statusOwner)
+            if (statusPublication.shownChanged) armStatusTimer(statusPublication.plate, statusOwner)
         }
         mainHandler.removeCallbacks(levelTicker)
         if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
@@ -1808,55 +1823,88 @@ class CameraViewModel private constructor(
         restoreLatestPublishedCapture()
     }
 
-    private fun publishStatus(status: CameraStatus?) {
+    /** Whether [status] actually took the plate (a dropped status returns false — AGG5-11 / TE5-10). */
+    private fun publishStatus(status: CameraStatus?): Boolean =
         cameraReadyPublicationGate.serializedStatus { statusOwner ->
             val publication = arbitrateStatus(status)
-            if (publication.shownChanged) {
-                _state.update { it.copy(status = publication.plate.shown) }
-                armStatusTimer(publication.plate.shown, statusOwner)
+            _state.update {
+                it.copy(
+                    status = if (publication.shownChanged) publication.plate.shown else it.status,
+                    cameraCondition = publication.plate.condition?.message,
+                )
             }
+            if (publication.shownChanged) armStatusTimer(publication.plate, statusOwner)
+            publication.shownChanged && status != null && publication.plate.shown == status
         }
+
+    /** The plate as the status monitor currently holds it (shown + off-screen parts). */
+    private fun currentStatusPlate(): StatusPlate = StatusPlate(
+        shown = _state.value.status,
+        deferredProgress = deferredProgressStatus,
+        deferredEvent = deferredStatusEvent,
+        shownExpiresAtMs = shownStatusExpiresAtMs,
+    )
+
+    private fun recordStatusPlate(plate: StatusPlate) {
+        deferredProgressStatus = plate.deferredProgress
+        deferredStatusEvent = plate.deferredEvent
+        shownStatusExpiresAtMs = plate.shownExpiresAtMs
     }
 
     /**
-     * Priority-aware plate arbitration (AGG4-65): see [StatusPlate.publish]. Must run under the
-     * gate's status monitor, like every plate write; it records the deferred progress condition.
+     * Priority-aware plate arbitration (AGG4-65 / AGG5-11): see [StatusPlate.publish]. Must run under
+     * the gate's status monitor, like every plate write; it records the off-screen plate parts.
      */
     private fun arbitrateStatus(status: CameraStatus?): StatusPlate.Publication {
-        val publication = StatusPlate(_state.value.status, deferredProgressStatus).publish(status)
-        deferredProgressStatus = publication.plate.deferredProgress
+        val publication = currentStatusPlate().publish(status, SystemClock.uptimeMillis())
+        recordStatusPlate(publication.plate)
         return publication
     }
 
-    private fun showStatus(message: CameraStatusMessage, vararg arguments: CameraStatusArgument) =
+    private fun showStatus(message: CameraStatusMessage, vararg arguments: CameraStatusArgument) {
         publishStatus(message.status(*arguments))
+    }
 
-    private fun showStatus(status: CameraStatus) = publishStatus(status)
+    private fun showStatus(status: CameraStatus) {
+        publishStatus(status)
+    }
 
+    /**
+     * Arms the dismissal of [plate]'s shown status at its [StatusPlate.shownExpiresAtMs] — the full
+     * duration for a fresh event, the REMAINING time for an event a response had covered (AGG5-11).
+     */
     private fun armStatusTimer(
-        status: CameraStatus?,
+        plate: StatusPlate,
         owner: CameraReadyPublicationGate.StatusOwner,
     ) {
         owner.requireHeld()
         clearStatusRunnable?.let(mainHandler::removeCallbacks)
         clearStatusRunnable = null
         val sequence = ++statusSequence
-        status?.durationMs?.let { durationMs ->
-            val runnable = Runnable {
-                cameraReadyPublicationGate.serialized {
-                    if (statusSequence == sequence) {
-                        // A progress condition that waited behind this event takes the plate back.
-                        val next = StatusPlate(_state.value.status, deferredProgressStatus).expire(status)
-                        deferredProgressStatus = next.deferredProgress
-                        _state.update { current ->
-                            if (current.status == status) current.copy(status = next.shown) else current
+        val status = plate.shown ?: return
+        val expiresAtMs = plate.shownExpiresAtMs ?: return
+        val runnable = Runnable {
+            cameraReadyPublicationGate.serializedStatus { timerOwner ->
+                if (statusSequence == sequence) {
+                    // A covered event returns for its remaining time; else a progress condition that
+                    // waited behind this event takes the plate back.
+                    val next = currentStatusPlate().expire(status, SystemClock.uptimeMillis())
+                    recordStatusPlate(next)
+                    var restored = false
+                    _state.update { current ->
+                        restored = current.status == status
+                        if (restored) {
+                            current.copy(status = next.shown, cameraCondition = next.condition?.message)
+                        } else {
+                            current
                         }
                     }
+                    if (restored && next.shownExpiresAtMs != null) armStatusTimer(next, timerOwner)
                 }
             }
-            clearStatusRunnable = runnable
-            mainHandler.postDelayed(runnable, durationMs)
         }
+        clearStatusRunnable = runnable
+        mainHandler.postAtTime(runnable, expiresAtMs)
     }
 
     /**
@@ -1868,11 +1916,18 @@ class CameraViewModel private constructor(
         val clear: () -> Unit = clear@{
             // The condition is over whether it is on the plate or waiting behind an event.
             deferredProgressStatus = null
-            if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) return@clear
+            if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) {
+                _state.update { it.copy(cameraCondition = null) }
+                return@clear
+            }
+            shownStatusExpiresAtMs = null
             _state.update { current ->
                 val status = current.status
-                if (status?.lifecycle == CameraStatusLifecycle.PROGRESS) current.copy(status = null)
-                else current
+                if (status?.lifecycle == CameraStatusLifecycle.PROGRESS) {
+                    current.copy(status = null, cameraCondition = null)
+                } else {
+                    current.copy(cameraCondition = null)
+                }
             }
             statusSequence++
             clearStatusRunnable?.let(mainHandler::removeCallbacks)

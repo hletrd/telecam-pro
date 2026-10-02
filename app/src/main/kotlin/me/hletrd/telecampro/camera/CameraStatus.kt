@@ -241,8 +241,9 @@ fun CameraStatusMessage.status(
  * `STOP_RECORDING_*_UNCHANGED` refusals that `rollbackOptics` carries). Deferring the condition
  * behind one of these was a resurrection: "Camera unavailable, retrying…" came back with no timer
  * when the 6 s REOPEN error expired, and no Ready would ever arrive to clear it because the retry
- * budget was already spent. So these END a shown or deferred condition instead of deferring it.
- * An ordinary event (an MR load, a saved clip) still only interrupts the condition, which returns.
+ * budget was already spent. So these END a condition instead of deferring it — but only the
+ * condition they are the end OF ([endsCondition]). An ordinary event (an MR load, a saved clip)
+ * still only interrupts the condition, which returns.
  */
 internal val CAMERA_CONDITION_ENDING_MESSAGES: Set<CameraStatusMessage> = setOf(
     CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,
@@ -262,6 +263,101 @@ internal val CAMERA_CONDITION_ENDING_MESSAGES: Set<CameraStatusMessage> = setOf(
 )
 
 /**
+ * The exhausted-retry terminals: the camera or preview is GONE until the app is reopened, so they end
+ * every condition, whichever family scheduled it.
+ */
+private val CAMERA_TERMINAL_MESSAGES: Set<CameraStatusMessage> = setOf(
+    CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN,
+)
+
+/**
+ * The conditions an OPTICS transaction owns (AGG5-11 / RG5-7): cold start, a reopen, and the bounded
+ * cold/bare preflight retry that transaction schedules. A Not-Ready rollback (`*_UNCHANGED`) is the
+ * end of exactly these. It is NOT the end of a camera-health recovery (`CAMERA_ERROR_RECOVERING`) or
+ * a preview-EGL retry (`PREVIEW_UNAVAILABLE_RETRYING` / `PREVIEW_INTERRUPTED_RECOVERING`) running
+ * beside it: keyed by message alone, an unavailable-lens tap erased "Preview unavailable, retrying…"
+ * and the plate went blank while that recovery was still in flight.
+ */
+internal val OPTICS_CONDITION_MESSAGES: Set<CameraStatusMessage> = setOf(
+    CameraStatusMessage.STARTING_CAMERA,
+    CameraStatusMessage.CAMERA_RECONFIGURING,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+)
+
+/** The reopen/recovery conditions the Output row calls "Camera reconfiguring…" (AGG5-55). */
+internal val CAMERA_REOPEN_CONDITION_MESSAGES: Set<CameraStatusMessage> = setOf(
+    CameraStatusMessage.CAMERA_RECONFIGURING,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+    CameraStatusMessage.CAMERA_ERROR_RECOVERING,
+    CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+    CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
+)
+
+/** Whether this event is the END of [condition] (shown or deferred), rather than an interruption. */
+internal fun CameraStatus.endsCondition(condition: CameraStatus): Boolean = when (message) {
+    in CAMERA_TERMINAL_MESSAGES -> true
+    in CAMERA_CONDITION_ENDING_MESSAGES -> condition.message in OPTICS_CONDITION_MESSAGES
+    else -> false
+}
+
+/**
+ * RESPONSES (AGG5-11 / UX5-2): the synchronous answer to the operator's OWN input — a refusal, the
+ * result of an MR store/recall, a delete outcome, the save of the clip they just stopped. AGG4-65
+ * stopped ambient chatter from wiping a retained-take instruction or an error, but it had no notion of
+ * who asked, so a refusal under a 6 s retained-take line was dropped and the tap looked inert (the
+ * affordance failure DES4-4 rejected for the shutter), and "Video saved" vanished under a still-up
+ * "Recording without audio". A response always takes the plate; a higher unexpired event it covers is
+ * DEFERRED (not wiped) and returns for its remaining time when the response expires, so the AGG4-65
+ * intent still holds.
+ */
+internal val RESPONSE_MESSAGES: Set<CameraStatusMessage> = setOf(
+    CameraStatusMessage.STOP_RECORDING_FIRST,
+    CameraStatusMessage.STOP_RECORDING_MODE_UNCHANGED,
+    CameraStatusMessage.STOP_RECORDING_RECALL_UNCHANGED,
+    CameraStatusMessage.STOP_RECORDING_LENS_UNCHANGED,
+    CameraStatusMessage.STOP_RECORDING_CAMERA_UNCHANGED,
+    CameraStatusMessage.SWITCH_TO_REAR_FIRST,
+    CameraStatusMessage.RECORDING_ALREADY_ACTIVE,
+    CameraStatusMessage.FINISHING_PREVIOUS_PHOTO,
+    CameraStatusMessage.FINISHING_PREVIOUS_CLIP,
+    CameraStatusMessage.MEMORY_SLOT_SAVED,
+    CameraStatusMessage.MEMORY_SLOT_EMPTY,
+    CameraStatusMessage.MEMORY_SLOT_LOADED,
+    CameraStatusMessage.DELETED,
+    CameraStatusMessage.DELETE_CANCELED,
+    CameraStatusMessage.FILE_ALREADY_REMOVED,
+    CameraStatusMessage.VIDEO_SAVED,
+    CameraStatusMessage.CUSTOM_WB_SET,
+    CameraStatusMessage.USE_AUTO_WB,
+)
+
+/**
+ * RESOLUTIONS (RG5-6): an incoming status that settles the very thing a shown or deferred event
+ * reported. The stale event is DROPPED, not deferred — "Could not delete file" must not return after
+ * the retry's "Deleted", nor "Finishing previous clip" after that clip's "Video saved".
+ */
+private val RESOLVED_BY: Map<CameraStatusMessage, Set<CameraStatusMessage>> = mapOf(
+    CameraStatusMessage.DELETED to setOf(
+        CameraStatusMessage.COULD_NOT_DELETE_FILE,
+        CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+        CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
+        CameraStatusMessage.DELETE_CANCELED,
+    ),
+    CameraStatusMessage.VIDEO_SAVED to setOf(
+        CameraStatusMessage.FINISHING_PREVIOUS_CLIP,
+        CameraStatusMessage.RECORDING_WITHOUT_AUDIO,
+        CameraStatusMessage.MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO,
+    ),
+)
+
+private fun CameraStatus.resolves(stale: CameraStatus): Boolean =
+    RESOLVED_BY[message]?.contains(stale.message) == true
+
+private val CameraStatus.isResponse: Boolean
+    get() = lifecycle == CameraStatusLifecycle.EVENT && message in RESPONSE_MESSAGES
+
+/**
  * Status-plate arbitration rank (AGG4-65), lowest first. The plate used to be last-writer-wins: a
  * 6 s retained-take instruction (the one line that tells the operator how to get a file back) or an
  * error was replaced within milliseconds by "MR1 loaded" or a refusal, and never came back.
@@ -270,6 +366,12 @@ internal enum class StatusPlateRank { PROGRESS, SUCCESS, INFO, WARNING, RETAINED
 
 internal val CameraStatus.plateRank: StatusPlateRank
     get() = when {
+        // An ERROR-severity condition (camera-error recovery, the bounded unavailable/preview
+        // retries) is ASSERTIVE: ranked as PROGRESS it waited behind a 1.5 s "MR1 loaded" and its
+        // TalkBack announcement was delayed or lost to a Ready (AGG5-11 / CT5-7). It ranks at ERROR
+        // for arbitration only — it still has no timer and Ready still clears it.
+        lifecycle == CameraStatusLifecycle.PROGRESS && severity == CameraStatusSeverity.ERROR ->
+            StatusPlateRank.ERROR
         // A condition, not an event: it yields to every event and returns when that event expires.
         lifecycle == CameraStatusLifecycle.PROGRESS -> StatusPlateRank.PROGRESS
         severity == CameraStatusSeverity.ERROR -> StatusPlateRank.ERROR
@@ -279,53 +381,114 @@ internal val CameraStatus.plateRank: StatusPlateRank
         else -> StatusPlateRank.SUCCESS
     }
 
+/** A higher event a response covered, with the display time it had left when it was covered. */
+internal data class DeferredStatusEvent(val status: CameraStatus, val remainingMs: Long)
+
 /**
- * The one status plate: what is [shown], plus a PROGRESS condition [deferredProgress] waiting behind
- * a higher-ranked event. Pure; the ViewModel owns the timers and the serialization.
+ * The one status plate: what is [shown] (until [shownExpiresAtMs] on the caller's uptime clock; null
+ * for a timer-less condition), a PROGRESS condition [deferredProgress] waiting behind an event, and a
+ * higher event [deferredEvent] a response is covering. Pure; the ViewModel owns the timers and the
+ * serialization.
  */
-internal data class StatusPlate(val shown: CameraStatus?, val deferredProgress: CameraStatus? = null) {
-    /** [plate] after a publication, and whether [shown] changed (only then is a timer re-armed). */
+internal data class StatusPlate(
+    val shown: CameraStatus?,
+    val deferredProgress: CameraStatus? = null,
+    val deferredEvent: DeferredStatusEvent? = null,
+    val shownExpiresAtMs: Long? = null,
+) {
+    /**
+     * [plate] after a publication, and whether [shown] changed (only then is a timer re-armed, for
+     * [StatusPlate.shownExpiresAtMs]).
+     */
     data class Publication(val plate: StatusPlate, val shownChanged: Boolean)
 
+    /** The live condition, shown or waiting: what the Output row's "reconfiguring" keys on. */
+    val condition: CameraStatus?
+        get() = shown?.takeIf { it.lifecycle == CameraStatusLifecycle.PROGRESS } ?: deferredProgress
+
     /**
-     * An unexpired EVENT is replaced only by an incoming status of EQUAL or HIGHER rank; a lower
-     * event is dropped, and a lower PROGRESS waits behind it. An event that replaces a PROGRESS
-     * condition defers it, so the condition reappears when the event expires (unless its own end
-     * clears it first). A [CAMERA_CONDITION_ENDING_MESSAGES] event IS that end: it drops the
-     * condition, shown or deferred, even when it is itself outranked and dropped. `null` is an
-     * explicit clear of everything.
+     * An unexpired EVENT is replaced only by an incoming status of EQUAL or HIGHER rank — measured
+     * against a covered [deferredEvent] too — or by a RESPONSE, which covers it instead of wiping it
+     * ([RESPONSE_MESSAGES]), or by its own RESOLUTION, which wipes it ([RESOLVED_BY]). A lower event is
+     * dropped, and a lower PROGRESS waits behind it. An event that replaces a PROGRESS condition defers
+     * it, so the condition reappears when the event expires — unless the event is that condition's
+     * END ([endsCondition]), which drops it shown or deferred, even when the ending event is itself
+     * outranked and dropped. Conditions replace each other. `null` is an explicit clear of everything.
      */
-    fun publish(incoming: CameraStatus?): Publication {
+    fun publish(incoming: CameraStatus?, nowMs: Long): Publication {
+        if (incoming == null) return Publication(StatusPlate(null), shownChanged = true)
         val current = shown
-        val endsCondition = incoming != null && incoming.message in CAMERA_CONDITION_ENDING_MESSAGES
+        val keptProgress = deferredProgress?.takeUnless { incoming.endsCondition(it) }
+        val keptEvent = deferredEvent?.takeUnless { incoming.resolves(it.status) }
+        fun show(progress: CameraStatus?, event: DeferredStatusEvent?) = Publication(
+            StatusPlate(incoming, progress, event, incoming.durationMs?.let { nowMs + it }),
+            shownChanged = true,
+        )
+        if (incoming.lifecycle == CameraStatusLifecycle.PROGRESS) {
+            val guard = listOfNotNull(
+                current?.takeIf { it.lifecycle == CameraStatusLifecycle.EVENT }?.plateRank,
+                deferredEvent?.status?.plateRank,
+            ).maxOrNull()
+            return when {
+                guard == null -> show(progress = null, event = null)
+                incoming.plateRank >= guard -> show(progress = null, event = null)
+                else -> Publication(copy(deferredProgress = incoming), shownChanged = false)
+            }
+        }
+        if (current == null) return show(keptProgress, keptEvent)
+        if (current.lifecycle == CameraStatusLifecycle.PROGRESS) {
+            return if (incoming.isResponse || incoming.plateRank >= current.plateRank ||
+                incoming.endsCondition(current)
+            ) {
+                show(current.takeUnless { incoming.endsCondition(it) }, keptEvent)
+            } else {
+                Publication(this, shownChanged = false)
+            }
+        }
+        // An unexpired EVENT holds the plate.
+        if (incoming.resolves(current)) return show(keptProgress, keptEvent)
+        if (incoming.isResponse) {
+            val covered = when {
+                // The plate already shows a response: whatever IT covered is still waiting.
+                current.isResponse -> keptEvent
+                incoming.plateRank >= current.plateRank -> null
+                else -> remainingOf(current, nowMs)?.let { DeferredStatusEvent(current, it) }
+            }
+            return show(keptProgress, covered)
+        }
+        val guard = maxOf(current.plateRank, deferredEvent?.status?.plateRank ?: current.plateRank)
         return when {
-            incoming == null -> Publication(StatusPlate(null), shownChanged = true)
-            current == null -> Publication(StatusPlate(incoming), shownChanged = true)
-            current.lifecycle == CameraStatusLifecycle.PROGRESS -> Publication(
-                StatusPlate(
-                    shown = incoming,
-                    deferredProgress = current.takeIf {
-                        incoming.lifecycle == CameraStatusLifecycle.EVENT && !endsCondition
-                    },
-                ),
-                shownChanged = true,
-            )
-            incoming.plateRank >= current.plateRank -> Publication(
-                StatusPlate(incoming, deferredProgress.takeUnless { endsCondition }),
-                shownChanged = true,
-            )
-            incoming.lifecycle == CameraStatusLifecycle.PROGRESS ->
-                Publication(StatusPlate(current, deferredProgress = incoming), shownChanged = false)
-            endsCondition -> Publication(StatusPlate(current), shownChanged = false)
-            else -> Publication(this, shownChanged = false)
+            incoming.plateRank >= guard -> show(keptProgress, event = null)
+            else -> Publication(copy(deferredProgress = keptProgress, deferredEvent = keptEvent), false)
         }
     }
 
-    /** The timer for [expired] fired: a deferred condition takes the plate if [expired] still has it. */
-    fun expire(expired: CameraStatus): StatusPlate =
-        if (shown == expired) StatusPlate(deferredProgress) else this
+    private fun remainingOf(event: CameraStatus, nowMs: Long): Long? {
+        val left = shownExpiresAtMs?.let { it - nowMs } ?: event.durationMs
+        return left?.takeIf { it > 0L }
+    }
+
+    /**
+     * The timer for [expired] fired: a covered event returns for its remaining time, else a deferred
+     * condition takes the plate — but only if [expired] still has it.
+     */
+    fun expire(expired: CameraStatus, nowMs: Long): StatusPlate = when {
+        shown != expired -> this
+        deferredEvent != null -> StatusPlate(
+            shown = deferredEvent.status,
+            deferredProgress = deferredProgress,
+            shownExpiresAtMs = nowMs + deferredEvent.remainingMs,
+        )
+        else -> StatusPlate(deferredProgress)
+    }
 
     /** The progress condition ended (Ready, rollback, pause): drop it whether shown or deferred. */
     fun clearProgress(): StatusPlate =
-        StatusPlate(shown?.takeUnless { it.lifecycle == CameraStatusLifecycle.PROGRESS })
+        // A shown condition never covers a deferred event (only a response does), so clearing it
+        // leaves nothing waiting.
+        if (shown?.lifecycle == CameraStatusLifecycle.PROGRESS) {
+            StatusPlate(null)
+        } else {
+            copy(deferredProgress = null)
+        }
 }
