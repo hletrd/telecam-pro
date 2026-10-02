@@ -2735,6 +2735,13 @@ class CameraEngine internal constructor(
     fun isOpticsGenerationCurrent(generation: Long): Boolean =
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
 
+    /**
+     * The optics intent generation as of now — read by a ViewModel door right after it began a
+     * transaction, so its own off-engine rollback state can be keyed to exactly that transaction's
+     * [OpticsRollbackPublication.generation] (AGG5-23 / AGG5-24). Read-only.
+     */
+    fun currentOpticsGeneration(): Long = opticsIntentGeneration.get()
+
     /** Rechecks only the independent codec/candidate/transfer publication after a main-queue hop. */
     fun isVideoPipelinePublicationCurrent(generation: Long): Boolean =
         videoPipelinePublicationGeneration.get() == generation

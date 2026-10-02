@@ -14,6 +14,7 @@ import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MemorySlot
@@ -340,6 +341,94 @@ class OpticsRecallTransactionRobolectricTest {
         assertNull(ViewModelTestAccess.field(vm, "pendingCodecUntilInventory"))
         assertNull(ViewModelTestAccess.field(vm, "pendingTransferUntilInventory"))
         assertNull(ViewModelTestAccess.field(vm, "pendingPhotoFormatsUntilInventory"))
+
+        // TE5-16: the SECOND refusal exit — the Engine's synchronous REC refusal of the optics
+        // transaction (`!opticsAccepted`) — must not arm them either.
+        val back = CameraRouteInventory(back = true, front = false, external = false)
+        engine.onCameraRouteInventory?.invoke(back, CameraRoute.BACK)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(cameraRoutes = back)
+        // The Engine refuses while it owns a recorder; an unconstructed placeholder is enough for
+        // that identity check and is removed again before teardown can touch it.
+        val recorderField = CameraEngine::class.java.getDeclaredField("recorder").apply { isAccessible = true }
+        val unsafe = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe")
+            .apply { isAccessible = true }
+            .get(null)
+        val placeholder = unsafe.javaClass.getMethod("allocateInstance", Class::class.java)
+            .invoke(unsafe, me.hletrd.telecampro.video.VideoRecorder::class.java)
+        recorderField.set(engine, placeholder)
+        try {
+            assertNull(vm.recallMemorySlot(MemorySlot.MR1))
+        } finally {
+            recorderField.set(engine, null)
+        }
+        assertNull(ViewModelTestAccess.field(vm, "pendingCodecUntilInventory"))
+        assertNull(ViewModelTestAccess.field(vm, "pendingTransferUntilInventory"))
+        assertNull(ViewModelTestAccess.field(vm, "pendingPhotoFormatsUntilInventory"))
+    }
+
+    // AGG5-23: an ACCEPTED pre-inventory recall that the Engine later rolls back puts the
+    // pre-inventory request back as it was; the rolled-back bank's codec/curve/formats must not be
+    // persisted by the rollback's save or replayed when the inventory lands.
+    @Test
+    fun `owned rollback of a pre-inventory recall restores the pending request`() {
+        SettingsStore(app).savePreset(
+            MemorySlot.MR2,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(
+                mode = CaptureMode.VIDEO,
+                videoCodec = VideoCodec.AVC,
+                transfer = ColorTransfer.SLOG3_CINE,
+                heif = false,
+                jpeg = true,
+            ),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(encoderInventoryLoaded = false)
+        val launchFormats = me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = false)
+        ViewModelTestAccess.setField(vm, "pendingCodecUntilInventory", VideoCodec.HEVC)
+        ViewModelTestAccess.setField(vm, "pendingTransferUntilInventory", ColorTransfer.HLG)
+        ViewModelTestAccess.setField(vm, "pendingPhotoFormatsUntilInventory", launchFormats)
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2))
+        assertEquals(VideoCodec.AVC, ViewModelTestAccess.field(vm, "pendingCodecUntilInventory"))
+        invokeRollback(engine, currentRollbackAttempt(engine))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(VideoCodec.HEVC, ViewModelTestAccess.field(vm, "pendingCodecUntilInventory"))
+        assertEquals(ColorTransfer.HLG, ViewModelTestAccess.field(vm, "pendingTransferUntilInventory"))
+        assertEquals(launchFormats, ViewModelTestAccess.field(vm, "pendingPhotoFormatsUntilInventory"))
+        val extras = ViewModelTestAccess.invoke(vm, "currentExtras") as ExtraSettings
+        assertEquals(VideoCodec.HEVC, extras.videoCodec)
+        assertEquals(ColorTransfer.HLG, extras.transfer)
+        assertTrue(extras.heif)
+        assertFalse(extras.jpeg)
+    }
+
+    // AGG5-24: a recall cancels a held AEL; its rollback restores the HELD lock, which no release
+    // will ever undo. The rollback puts the operator's value back and persists THAT.
+    @Test
+    fun `rollback of a hold-cancelling recall restores the operator's AE lock`() {
+        saveTelePreset(MemorySlot.MR1, PhoneModel.FIND_X9_ULTRA, TeleconverterProfile.EXPLORER_300)
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        vm.onVolumeKeyAction(HardwareKeyAction.AEL)
+        vm.onHardwareFullKey(true) // momentary lock; the operator's value is unlocked
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100))
+        assertTrue(vm.state.value.controls.aeLock)
+
+        vm.onRecallMemorySlot(MemorySlot.MR1) // cancels the hold
+        invokeRollback(engine, currentRollbackAttempt(engine))
+        shadowOf(Looper.getMainLooper()).idle()
+        vm.onHardwareFullKey(false) // the cancelled hold restores nothing
+
+        assertFalse("the held lock must not survive the rollback", vm.state.value.controls.aeLock)
+        ViewModelTestAccess.invoke(vm, "saveSettingsIfEnabled")
+        assertEquals(false, SettingsStore(app).load()?.controls?.aeLock)
     }
 
     @Test

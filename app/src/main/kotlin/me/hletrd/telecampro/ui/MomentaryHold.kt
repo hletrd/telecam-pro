@@ -27,8 +27,10 @@ internal class MomentaryHold {
     /** The operator's value for persistence: the snapshot while held, otherwise [live]. */
     fun persistedValue(live: Boolean): Boolean = prior ?: live
 
-    /** An explicit operator toggle mid-hold takes ownership; the release must not overwrite it. */
-    fun cancel() {
-        prior = null
-    }
+    /**
+     * An explicit operator toggle mid-hold takes ownership; the release must not overwrite it.
+     * Returns the cancelled snapshot (null when nothing was held), so a door that can still be rolled
+     * back can put the operator's value back if it fails (AGG5-24).
+     */
+    fun cancel(): Boolean? = prior.also { prior = null }
 }

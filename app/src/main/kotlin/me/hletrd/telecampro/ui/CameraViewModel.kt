@@ -796,6 +796,33 @@ class CameraViewModel private constructor(
     private var pendingCodecUntilInventory: VideoCodec? = null
     private var pendingTransferUntilInventory: ColorTransfer? = null
     private var pendingPhotoFormatsUntilInventory: PhotoFormats? = null
+
+    /** The three pre-inventory request mirrors as one value, for [RecallRollbackRestore]. */
+    private data class PendingInventoryRequest(
+        val codec: VideoCodec?,
+        val transfer: ColorTransfer?,
+        val formats: PhotoFormats?,
+    )
+
+    /**
+     * What an ACCEPTED recall/restore changed outside the Engine's rollback packet, keyed to the
+     * optics generation it began (AGG5-23 / AGG5-24). The Engine's asynchronous rollback restores its
+     * own baseline; these are the VM-only values the same failure must put back:
+     * - [armed] / [prior]: the pre-inventory codec/transfer/formats the recall armed and what they
+     *   were before. Left armed, a rolled-back bank's AVC / S-Log3 / JPEG-only was persisted by the
+     *   rollback's own save and replayed by applyEncoderInventory — the bank the operator was told
+     *   did not load ended up owning the pipeline (the AGG4-11 symptom through the async door).
+     * - [aeLockPrior]: the operator's value under a momentary AEL hold the recall cancelled. The
+     *   rollback restored the HELD `aeLock = true`, the release then restored nothing, and a
+     *   momentary press became a persisted latched lock (the AGG4-74 defect via the rollback door).
+     */
+    private data class RecallRollbackRestore(
+        val generation: Long,
+        val armed: PendingInventoryRequest?,
+        val prior: PendingInventoryRequest,
+        val aeLockPrior: Boolean?,
+    )
+    private var recallRollbackRestore: RecallRollbackRestore? = null
     // The operator's recording-size REQUEST, kept apart from `videoResolution` (the size the engine
     // could DELIVER on the current route/aspect). Persisting the delivered size turned a 1080p pick
     // into Open Gate's 2560×1920 after one Open Gate trip and a relaunch, and then into 4K once Open
@@ -1062,6 +1089,31 @@ class CameraViewModel private constructor(
                         // indicator, never shows a false one.
                         activeMemorySlot = null,
                     )
+                }
+                // AGG5-23: a rolled-back recall/restore's pre-inventory request goes back to what it
+                // was before that recall armed it — field by field, and only where the field still
+                // holds the recall's value (a newer codec/curve/format pick on this queue is the
+                // operator's and survives, like every other direct write the rollback keeps).
+                val recallRestore = recallRollbackRestore?.takeIf { it.generation == rollback.generation }
+                recallRollbackRestore = null
+                recallRestore?.armed?.let { armed ->
+                    if (!_state.value.encoderInventoryLoaded) {
+                        if (pendingCodecUntilInventory == armed.codec) {
+                            pendingCodecUntilInventory = recallRestore.prior.codec
+                        }
+                        if (pendingTransferUntilInventory == armed.transfer) {
+                            pendingTransferUntilInventory = recallRestore.prior.transfer
+                        }
+                        if (pendingPhotoFormatsUntilInventory == armed.formats) {
+                            pendingPhotoFormatsUntilInventory = recallRestore.prior.formats
+                        }
+                    }
+                }
+                // AGG5-24: the restored baseline carried the HELD AE lock of a hold this recall
+                // cancelled. Put the operator's value back as a momentary (non-persisting) write, so
+                // the save below records what the operator had, not the key's transient lock.
+                recallRestore?.aeLockPrior?.let { prior ->
+                    if (_state.value.controls.aeLock != prior) applyMomentaryAeLock(prior)
                 }
                 // The same DNG mirror for the pre-inventory REQUEST. Left stale, the rolled-back
                 // DNG was persisted by currentExtras and then replayed by applyEncoderInventory's
@@ -1547,11 +1599,19 @@ class CameraViewModel private constructor(
         // Armed only AFTER both refusal exits (AGG4-11): armed earlier, a REFUSED recall's codec,
         // transfer and formats (DNG included — a route input) were replayed by
         // applyEncoderInventory when the inventory landed, half-applying a bank the operator was
-        // told did not load.
-        if (!inventoryLoaded) {
+        // told did not load. What they held before is kept for this transaction's rollback.
+        val priorPending = PendingInventoryRequest(
+            pendingCodecUntilInventory,
+            pendingTransferUntilInventory,
+            pendingPhotoFormatsUntilInventory,
+        )
+        val armedPending = if (!inventoryLoaded) {
             pendingCodecUntilInventory = e.videoCodec
             pendingTransferUntilInventory = e.transfer
             pendingPhotoFormatsUntilInventory = requestedFormats
+            PendingInventoryRequest(e.videoCodec, e.transfer, requestedFormats)
+        } else {
+            null
         }
         // Mirrors setResolvedOptics: a recalled size becomes the request; none keeps the current one.
         restoredVideoSize?.let { requestedVideoResolution = it }
@@ -1563,8 +1623,14 @@ class CameraViewModel private constructor(
         // MRG4-8: the recalled/restored packet now owns AE lock and punch-in. A momentary AEL /
         // PUNCH_IN hold still held across this door would otherwise restore its pre-press snapshot
         // on the key release — over the bank the operator just recalled.
-        momentaryAeLock.cancel()
+        val cancelledAeLockPrior = momentaryAeLock.cancel()
         momentaryPunchIn.cancel()
+        recallRollbackRestore = RecallRollbackRestore(
+            generation = engine.currentOpticsGeneration(),
+            armed = armedPending,
+            prior = priorPending,
+            aeLockPrior = cancelledAeLockPrior,
+        )
         // AGG5-20: the recalled punch-in is the operator's value now, so the focus-ruler assist no
         // longer owns the field. Left set, a ruler close after the recall switched the bank's loupe
         // off (and saves kept writing the stale pre-assist snapshot instead of the recalled value).
