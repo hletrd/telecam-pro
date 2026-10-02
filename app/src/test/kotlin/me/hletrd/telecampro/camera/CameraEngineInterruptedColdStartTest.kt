@@ -218,6 +218,41 @@ class CameraEngineInterruptedColdStartTest {
         assertEquals("no second Ready invalidation for the owned generation", before, session.get())
     }
 
+    // MRG6-1: a pause inside completeGlInputReady's window (after its `paused` read, before its
+    // marker write) leaves the marker naming the current generation. The queued startup open then
+    // refuses on `paused`; resume's task, dequeued after it, must still converge rather than skip
+    // the only open left (black viewfinder).
+    @Test
+    fun `resume converges after the input-ready open it would defer to was abandoned`() {
+        val engine = engine()
+        retainSurface(engine)
+        installInput(engine)
+        setField(engine, "started", true)
+        setField(engine, "paused", true)
+        setField(engine, "previewReady", true)
+        val generation = (getField(engine, "opticsIntentGeneration") as AtomicLong).get()
+        val marker = getField(engine, "inputReadyOpenGeneration") as AtomicLong
+        marker.set(generation)
+        val desired = invoke(engine, "currentOpticsReconfiguration")!!
+        invoke(
+            engine,
+            "reconfigureCamera",
+            getField(desired, "overrideId"),
+            getField(desired, "transaction"),
+            true,
+            null,
+        )
+        drainSetup(engine)
+        assertEquals("the abandoned open no longer claims its generation", Long.MIN_VALUE, marker.get())
+        val session = getField(engine, "cameraSessionGeneration") as AtomicLong
+        val afterRefusal = session.get()
+
+        engine.resume()
+        drainSetup(engine)
+
+        assertTrue("resume's own reopen converged the generation", session.get() > afterRefusal)
+    }
+
     @Test
     fun `pause forgets an abandoned input-ready open`() {
         val engine = engine()

@@ -428,8 +428,9 @@ class CameraEngine internal constructor(
     // True only while the GL generation exists but has not created its camera input Surface yet.
     // Optics intents during this window remain pending; the input callback converges on the latest.
     @Volatile private var glInputPending = false
-    // The optics generation whose open the GL input-ready continuation queued (AGG6-19); cleared by
-    // pause(). Resume's reopen task skips a generation already owned by that open.
+    // The optics generation whose input-ready open is still PENDING on setupExecutor (AGG6-19):
+    // cleared by pause() and by that open's own task the moment it dequeues (MRG6-1). Resume's
+    // reopen task skips a generation whose open is still queued behind it.
     private val inputReadyOpenGeneration = java.util.concurrent.atomic.AtomicLong(NO_INPUT_READY_OPEN)
     // True between pause() and resume(). openCamera() honors it so a camera open queued during
     // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
@@ -4481,6 +4482,15 @@ class CameraEngine internal constructor(
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
         // the initial open and other reopens.
         setupExecutor.execute {
+            // The input-ready marker means "this open is still queued", never "it was queued once"
+            // (MRG6-1). A pause between completeGlInputReady's `paused` read and its marker write
+            // clears nothing, so the marker outlived the pause; this task then refused on `paused`
+            // below, and resume's task — dequeued after it — found the marker naming its own
+            // generation and skipped the only open left: a black viewfinder until an unrelated
+            // optics door. The lane is serial, so once this task runs, whatever it does finishes
+            // before resume's task looks: either a controller is installed (resume returns on it)
+            // or nothing opened and resume must converge. Clearing on dequeue covers every refusal.
+            if (startup) inputReadyOpenGeneration.compareAndSet(transaction.generation, NO_INPUT_READY_OPEN)
             if (!nativeAcquisitionMayProceed() || !glInputTransactionMayProceed(
                     ownerCurrent = glOwners.owns(ownedGl),
                     engineStarted = started,
