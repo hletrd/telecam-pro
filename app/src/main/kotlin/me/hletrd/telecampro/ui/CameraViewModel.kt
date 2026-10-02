@@ -3347,6 +3347,10 @@ class CameraViewModel private constructor(
         _state.update { it.copy(punchIn = enabled) }
     }
 
+    /** Non-persisting AE-lock write for a momentary hold (no recent-slot, no MR clear, no save). */
+    private fun applyMomentaryAeLock(locked: Boolean) =
+        updateControls(slot = null, persist = false) { it.copy(aeLock = locked) }
+
     override fun onAutoPunchIn(enabled: Boolean) {
         if (enabled) {
             // Snapshot what the operator had, so a save landing mid-assist writes THAT.
@@ -3436,7 +3440,7 @@ class CameraViewModel private constructor(
                 } else {
                     momentaryAeLock.release()
                 }
-                target?.let { locked -> updateControls(slot = null, persist = false) { it.copy(aeLock = locked) } }
+                target?.let(::applyMomentaryAeLock)
             }
             HardwareKeyAction.PUNCH_IN -> {
                 val target = if (active) momentaryPunchIn.press(_state.value.punchIn) else momentaryPunchIn.release()
@@ -4343,9 +4347,7 @@ class CameraViewModel private constructor(
         // stay applied across the whole next foreground session (and its snapshot would later
         // overwrite whatever the operator set meanwhile). End each hold exactly as its release
         // would — restore the operator's own value — before the background save.
-        momentaryAeLock.release()?.let { locked ->
-            updateControls(slot = null, persist = false) { it.copy(aeLock = locked) }
-        }
+        momentaryAeLock.release()?.let(::applyMomentaryAeLock)
         momentaryPunchIn.release()?.let(::applyMomentaryPunchIn)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         standbyMeterEnabled = false
