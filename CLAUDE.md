@@ -1232,7 +1232,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `flashState` (what the HAL claims) so wire truth stays separable from lamp truth.
 - **Debug capability diagnostics queue behind initial camera work.** The debug-only broad capability
   and vendor-tag scan runs on `setupExecutor` only after the initial route/open task is enqueued, so
-  diagnostics cannot delay the first Camera2 setup task.
+  diagnostics cannot delay the first Camera2 setup task. It runs ONCE per process at INFO through the
+  recurring door: the rows are facts, not faults, and at warning level per Engine start they used to
+  spend the 120-row reserved owner that real onError/configure warnings need.
 - **SettingsStore commits synchronously (`edit(commit = true)`), never apply().** Saves fire on user
   actions (a mode switch), and the very next gesture can be a Recents swipe-kill — apply()'s async
   disk write dies with the process and the change is silently lost ("last mode not remembered", hit
