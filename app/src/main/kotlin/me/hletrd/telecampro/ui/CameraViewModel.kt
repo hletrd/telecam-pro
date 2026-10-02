@@ -845,7 +845,9 @@ class CameraViewModel private constructor(
         // independent retry later converges complete truth. Mirror each publication plus the exact
         // active route in one fold; never infer EXTERNAL from the two-value facing axis.
         engine.onCameraRouteInventory = { routes, activeRoute ->
+            var routeChanged = false
             _state.update { current ->
+                routeChanged = activeRoute != current.activeCameraRoute
                 cameraRoutePublishedState(
                     current = current,
                     routes = routes,
@@ -853,6 +855,12 @@ class CameraViewModel private constructor(
                     rawForcesStandalone = engine.rawForcesStandalone,
                 )
             }
+            // AGG5-33 / DB5-14: a route CHANGE from this fold resets zoom onto another scale (a
+            // lens-local route's 1×), exactly like every VM optics door — so it takes the same
+            // remap hygiene. Left alone, `ZoomGlideState.pendingRatio` / `easeTarget` kept the rear
+            // route's absolute ratio and the next pinch compounded from it and jumped. The glide
+            // state and its runnables are main-confined; this callback arrives on the setup thread.
+            if (routeChanged) mainHandler.post { invalidateOpticsDerivedState() }
         }
         // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
         // selected camera's authoritative range on main before any delayed input can reuse it.

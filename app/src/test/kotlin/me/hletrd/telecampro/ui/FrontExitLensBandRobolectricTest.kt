@@ -13,6 +13,8 @@ import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.LensInventory
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -69,5 +71,30 @@ class FrontExitLensBandRobolectricTest {
                 .apply { isAccessible = true }
                 .invoke(vm)
         }
+    }
+
+    // AGG5-33 (VM half): a route change published by the inventory fold invalidates the coalesced
+    // zoom base like every optics door; a same-route republish leaves a live gesture alone.
+    @Test
+    fun `an inventory route change clears the stale coalesced zoom base`() {
+        RobolectricEglSentinels.ensure()
+        val engine = CameraEngine(app)
+        CameraEngine::class.java.getDeclaredField("paused").apply { isAccessible = true }.setBoolean(engine, true)
+        val vm = CameraViewModel(app, engine).also { viewModel = it }
+        val glide = ViewModelTestAccess.field(vm, "zoomGlide") as ZoomGlideState
+        val routes = CameraRouteInventory(back = true, front = true, external = false)
+
+        glide.pendingRatio = 3f
+        glide.easeTarget = 3.5f
+        engine.onCameraRouteInventory!!.invoke(routes, CameraRoute.BACK) // same route: discovery only
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(3f, glide.pendingRatio, 0f)
+        assertEquals(3.5f, glide.easeTarget)
+
+        engine.onCameraRouteInventory!!.invoke(routes, CameraRoute.FRONT)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(1f, vm.state.value.controls.zoomRatio, 0f)
+        assertTrue("the old-scale coalesced base is gone", glide.pendingRatio.isNaN())
+        assertNull("the old-scale glide target is gone", glide.easeTarget)
     }
 }
