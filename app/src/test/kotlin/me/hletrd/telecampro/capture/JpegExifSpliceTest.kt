@@ -16,6 +16,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -68,16 +69,122 @@ class JpegExifSpliceTest {
         }
     }
 
+    // TE5-7: the old "parity" test called composeStillExifApp1 twice and compared — determinism, not
+    // wiring. AGG5-35: the lane orchestration now composes ONCE and hands the same payload to both.
     @Test
-    fun `the HEIF payload and the JPEG payload are one composition`() {
-        // writeProcessedHeif and writeProcessedJpeg both call composeStillExifApp1 with NORMAL and no
-        // source; the composition is deterministic, so the two formats carry byte-identical EXIF.
-        withTimeZone("UTC") {
-            val heif = composeStillExifApp1(cacheDir, shot(), 40, 30, ExifInterface.ORIENTATION_NORMAL, null)
-            val jpeg = composeStillExifApp1(cacheDir, shot(), 40, 30, ExifInterface.ORIENTATION_NORMAL, null)
-            assertArrayEquals(heif, jpeg)
-            assertTrue(isSpliceableExifPayload(heif))
+    fun `a dual-format shot composes its EXIF once and both formats receive that payload`() {
+        val payload = EXIF + byteArrayOf(4, 2)
+        var compositions = 0
+        val received = mutableListOf<Pair<String, ByteArray?>>()
+        val failures = mutableListOf<String>()
+        writeProcessedStillFormats(
+            wantHeif = true,
+            wantJpeg = true,
+            composeExif = { compositions++; payload },
+            writeHeif = { received += "heif" to it; throw IllegalStateException("HEIF encoder died") },
+            writeJpeg = { received += "jpeg" to it },
+            onHeifFailure = { failures += "heif" },
+            onJpegFailure = { failures += "jpeg" },
+        )
+        assertEquals(1, compositions)
+        assertEquals(listOf("heif", "jpeg"), received.map { it.first })
+        received.forEach { (_, exif) -> assertSame(payload, exif) }
+        assertEquals("a HEIF failure never costs the JPEG", listOf("heif"), failures)
+
+        // One format: still one composition; a best-effort null reaches the lane as "no EXIF".
+        compositions = 0
+        received.clear()
+        writeProcessedStillFormats(
+            wantHeif = false,
+            wantJpeg = true,
+            composeExif = { compositions++; null },
+            writeHeif = { error("not wanted") },
+            writeJpeg = { received += "jpeg" to it },
+            onHeifFailure = { error("not wanted") },
+            onJpegFailure = { throw it },
+        )
+        assertEquals(1, compositions)
+        assertEquals(listOf<Pair<String, ByteArray?>>("jpeg" to null), received)
+    }
+
+    // AGG5-34 + TE5-7: the processed lane hands the encoder's own buffer (capacity > count) to the
+    // single write, and that write is byte-identical to the in-memory splice of the trimmed JPEG.
+    @Test
+    fun `the single JPEG write splices from the encoder buffer in one open`() {
+        val bitmap = Bitmap.createBitmap(48, 32, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.rgb(20, 140, 90))
+        val encoded = EncodedJpegBuffer(processedJpegInitialCapacity(48, 32))
+        check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, encoded))
+        bitmap.recycle()
+        assertTrue("the buffer is pre-sized beyond the JPEG", encoded.buffer().size > encoded.size())
+        val trimmed = encoded.toByteArray()
+        val payload = composeStillExifApp1(cacheDir, shot(), 48, 32, ExifInterface.ORIENTATION_NORMAL, null)
+
+        var opens = 0
+        val written = ByteArrayOutputStream()
+        val refusals = mutableListOf<String>()
+        assertTrue(
+            writeJpegOnce(
+                open = { opens++; written },
+                encoded = encoded.buffer(),
+                length = encoded.size(),
+                exifPayload = payload,
+                onSpliceRefused = { refusals += it },
+            ),
+        )
+        assertEquals(1, opens)
+        assertEquals(emptyList<String>(), refusals)
+        assertArrayEquals(requireNotNull(spliceExifApp1(trimmed, payload)), written.toByteArray())
+        assertEquals(1, exifApp1Count(written.toByteArray()))
+        assertNotNull(BitmapFactory.decodeByteArray(written.toByteArray(), 0, written.size()))
+
+        // An unspliceable payload: the JPEG prefix verbatim (never the buffer's spare capacity).
+        val verbatim = ByteArrayOutputStream()
+        assertTrue(writeJpegOnce({ verbatim }, encoded.buffer(), encoded.size(), byteArrayOf(1, 2), { refusals += it }))
+        assertArrayEquals(trimmed, verbatim.toByteArray())
+        assertEquals(1, refusals.size)
+        // No payload at all: verbatim, no refusal row.
+        val plain = ByteArrayOutputStream()
+        assertTrue(writeJpegOnce({ plain }, encoded.buffer(), encoded.size(), null, { refusals += it }))
+        assertArrayEquals(trimmed, plain.toByteArray())
+        assertEquals(1, refusals.size)
+        // No stream: nothing written, reported to the caller.
+        assertFalse(writeJpegOnce({ null }, encoded.buffer(), encoded.size(), payload, { refusals += it }))
+    }
+
+    @Test
+    fun `the splice plan reads only the declared JPEG length`() {
+        val scan = byteArrayOf(0xff.toByte(), 0xda.toByte(), 0, 2, 7, 7, 0xff.toByte(), 0xd9.toByte())
+        val jpeg = SOI + segment(0xe0, ByteArray(3)) + scan
+        val padded = jpeg + ByteArray(32) { 0x55 }
+        assertEquals(exifSplicePlan(jpeg), exifSplicePlan(padded, jpeg.size))
+        assertThrows(IllegalArgumentException::class.java) { exifSplicePlan(jpeg, jpeg.size + 1) }
+        assertTrue(processedJpegInitialCapacity(4080, 3064) >= 4080 * 3064 / 2)
+        assertEquals(64 * 1024, processedJpegInitialCapacity(1, 1))
+    }
+
+    // TE5-7: the passthrough lane's wiring — the HAL EXIF seeds the composer (MRG4-9's sideways save
+    // was the lane passing null) and the capture rotation lands as the orientation TAG.
+    @Test
+    fun `the passthrough EXIF build keeps the HAL tags and tags the capture rotation`() {
+        val source = File.createTempFile("hal-lane-", ".jpg", cacheDir)
+        source.writeBytes(encodedJpeg(32, 24))
+        ExifInterface(source).apply {
+            setAttribute(ExifInterface.TAG_SOFTWARE, "HAL 2.0")
+            saveAttributes()
         }
+        val hal = source.readBytes()
+
+        val payload = composePassthroughStillExif(cacheDir, hal, shot(), rotationDegrees = 90)
+
+        val exif = ExifInterface(ByteArrayInputStream(requireNotNull(spliceExifApp1(hal, payload))))
+        assertEquals("HAL 2.0", exif.getAttribute(ExifInterface.TAG_SOFTWARE))
+        assertEquals(
+            me.hletrd.telecampro.camera.RotationMath.exifOrientationFor(90),
+            exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, 0),
+        )
+        assertEquals(32, exif.getAttributeInt(ExifInterface.TAG_PIXEL_X_DIMENSION, 0))
+        assertEquals(24, exif.getAttributeInt(ExifInterface.TAG_PIXEL_Y_DIMENSION, 0))
     }
 
     @Test

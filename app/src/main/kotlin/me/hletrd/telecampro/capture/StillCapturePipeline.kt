@@ -238,16 +238,21 @@ internal class StillCapturePipeline(
                 d.recycle()
                 decoded = null
             }
-            if (wantHeif) runCatching { writeProcessedHeif(r, spec, exifShot) }
-                .onFailure {
+            writeProcessedStillFormats(
+                wantHeif = wantHeif,
+                wantJpeg = wantJpeg,
+                composeExif = { uprightStillExif(r, exifShot) },
+                writeHeif = { exif -> writeProcessedHeif(r, spec, exif) },
+                writeJpeg = { exif -> writeProcessedJpeg(r, spec, exif) },
+                onHeifFailure = {
                     Log.e("StillCapturePipeline", "HEIF save failed", it)
                     emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status())
-                }
-            if (wantJpeg) runCatching { writeProcessedJpeg(r, spec, exifShot) }
-                .onFailure {
+                },
+                onJpegFailure = {
                     Log.e("StillCapturePipeline", "JPEG save failed", it)
                     emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
-                }
+                },
+            )
         } catch (t: Throwable) {
             if (t is ThreadDeath || t is VirtualMachineError && t !is OutOfMemoryError) throw t
             Log.e("StillCapturePipeline", "Photo processing failed", t)
@@ -265,12 +270,12 @@ internal class StillCapturePipeline(
      * publication; persistent provider failure leaves it pending for launch recovery rather than
      * deleting a valuable take.
      */
-    private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
+    private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec, exifData: ByteArray?) {
         // EXIF is best-effort here exactly as in the JPEG and passthrough lanes: the payload is
         // composed through a cache temp file, a 1×1 encode and an ExifInterface save, so a full
         // cache or an I/O hiccup used to abort the whole save (HEIF_SAVE_FAILED, frame lost). The
-        // pixels are already rotated, so a HEIF without EXIF is still an upright, valid photo.
-        val exifData = uprightStillExif(rotated, exifShot, "HEIF")
+        // pixels are already rotated, so a HEIF without EXIF is still an upright, valid photo; a
+        // null [exifData] is that best-effort miss, composed once per shot by the caller.
         val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("heic"),
@@ -308,25 +313,28 @@ internal class StillCapturePipeline(
      * `Bitmap.compress` strips all metadata, so the EXIF goes back in — but into the ENCODED
      * BUFFER, before the pending row sees a byte (AGG4-6 / AGG3-24): see [exifSplicePlan] for why the
      * old in-place `saveAttributes()` rewrite of the row could leave a corrupt file recovery adopts.
-     * The APP1 comes from the very composer the HEIF lane uses, so both formats carry one tag set.
+     * The APP1 is the SAME payload the HEIF lane got — composed once per shot
+     * ([writeProcessedStillFormats], AGG5-35) — so both formats carry one tag set by construction.
+     *
+     * The encode lands in a pre-sized [EncodedJpegBuffer] that is spliced IN PLACE (AGG5-34): a
+     * default 32-byte stream grew by ~19 doublings and then `toByteArray()` copied the whole JPEG
+     * again, ~3× the encoded size live beside the ~50 MB rotated bitmap on every BURST frame.
      */
-    private fun writeProcessedJpeg(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
-        val encodedStream = java.io.ByteArrayOutputStream()
-        if (!rotated.compress(Bitmap.CompressFormat.JPEG, spec.jpegQuality, encodedStream)) {
+    private fun writeProcessedJpeg(rotated: Bitmap, spec: ShotSpec, exifPayload: ByteArray?) {
+        val encoded = EncodedJpegBuffer(processedJpegInitialCapacity(rotated.width, rotated.height))
+        if (!rotated.compress(Bitmap.CompressFormat.JPEG, spec.jpegQuality, encoded)) {
             Log.e("StillCapturePipeline", "JPEG encode returned false (${rotated.width}x${rotated.height})")
             emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
             return
         }
-        val encoded = encodedStream.toByteArray()
-        val exifPayload = uprightStillExif(rotated, exifShot, "JPEG")
-        writeSingleJpeg(encoded, exifPayload, spec)
+        writeSingleJpeg(encoded.buffer(), encoded.size(), exifPayload, spec)
     }
 
     /**
      * The EXIF APP1 for a pixel-upright processed still (HEIF and processed JPEG alike): orientation
      * NORMAL, no source EXIF, best-effort — null (logged) rather than a lost image.
      */
-    private fun uprightStillExif(rotated: Bitmap, exifShot: ExifShot, kind: String): ByteArray? =
+    private fun uprightStillExif(rotated: Bitmap, exifShot: ExifShot): ByteArray? =
         bestEffortHeifExif(
             build = {
                 composeStillExifApp1(
@@ -339,26 +347,16 @@ internal class StillCapturePipeline(
                 )
             },
             onFailure = { failure ->
-                Log.w("StillCapturePipeline", "$kind EXIF payload failed; saving without EXIF", failure)
+                Log.w("StillCapturePipeline", "processed still EXIF payload failed; saving without EXIF", failure)
             },
         )
 
     /**
-     * The one write both JPEG lanes share: allocate, write [encoded] with [exifPayload] spliced in
-     * (or verbatim when there is none / it cannot be spliced — logged, never a lost image), mark
-     * COMPLETE, publish. The row is opened for writing exactly once and never reopened "rw".
+     * The one write both JPEG lanes share: allocate, write the first [length] bytes of [encoded]
+     * with [exifPayload] spliced in ([writeJpegOnce]), mark COMPLETE, publish. The row is opened for
+     * writing exactly once and never reopened "rw".
      */
-    private fun writeSingleJpeg(encoded: ByteArray, exifPayload: ByteArray?, spec: ShotSpec) {
-        val plan = exifPayload?.let { payload ->
-            exifSplicePlan(encoded)?.takeIf { isSpliceableExifPayload(payload) }
-                ?: run {
-                    Log.w(
-                        "StillCapturePipeline",
-                        "JPEG EXIF splice refused (${encoded.size} B image, ${payload.size} B APP1); saving without EXIF",
-                    )
-                    null
-                }
-        }
+    private fun writeSingleJpeg(encoded: ByteArray, length: Int, exifPayload: ByteArray?, spec: ShotSpec) {
         val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("jpg"),
@@ -367,14 +365,13 @@ internal class StillCapturePipeline(
         if (allocation == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
         val u = allocation.uri
         val wrote = runCatching {
-            MediaStoreWriter.openOutputStream(context, u)?.use { out ->
-                if (plan != null) {
-                    writeJpegWithExifApp1(out, encoded, plan, exifPayload)
-                } else {
-                    out.write(encoded)
-                }
-                true
-            } ?: false
+            writeJpegOnce(
+                open = { MediaStoreWriter.openOutputStream(context, u) },
+                encoded = encoded,
+                length = length,
+                exifPayload = exifPayload,
+                onSpliceRefused = { message -> Log.w("StillCapturePipeline", message) },
+            )
         }.getOrElse { failure -> discardRejectedOutput(allocation); throw failure }
         if (!wrote) {
             discardRejectedOutput(allocation)
@@ -404,25 +401,12 @@ internal class StillCapturePipeline(
         // orientation tag is the one exception a viewer NEEDS for uprightness, but a passthrough
         // with EXIF missing still beats a deleted take, and the miss now leaves a log row.
         val exifPayload = bestEffortHeifExif(
-            build = {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                composePassthroughExifApp1(extractExifApp1(bytes)) { source ->
-                    composeStillExifApp1(
-                        context.cacheDir,
-                        exifShot,
-                        bounds.outWidth,
-                        bounds.outHeight,
-                        exifOrientationFor(spec.rotationDegrees),
-                        sourceExifApp1 = source,
-                    )
-                }
-            },
+            build = { composePassthroughStillExif(context.cacheDir, bytes, exifShot, spec.rotationDegrees) },
             onFailure = { failure ->
                 Log.w("StillCapturePipeline", "passthrough JPEG EXIF payload failed; saving without EXIF", failure)
             },
         )
-        writeSingleJpeg(bytes, exifPayload, spec)
+        writeSingleJpeg(bytes, bytes.size, exifPayload, spec)
     }
 
     /**
@@ -761,6 +745,107 @@ internal fun composeStillExifApp1(
         // App-private cache scratch only; failure to remove it is harmless and never touches
         // user media.
         runCatching { temp.delete() }
+    }
+}
+
+/**
+ * The processed-still orchestration (AGG5-35, TE5-7): the shot's upright EXIF APP1 is composed AT
+ * MOST ONCE — lazily, on the first lane that wants it — and the identical payload feeds both
+ * formats. Each lane composed its own before, so a HEIF+JPEG shot paid two cache temp files and two
+ * ExifInterface parse/save passes on the serial `ioExecutor` for byte-identical output, delaying
+ * the JPEG publication and the next timelapse tick. Each lane keeps its own failure isolation: a
+ * HEIF write error must not cost the JPEG. [composeExif] is the caller's best-effort composer
+ * (null = no EXIF, never a lost image).
+ */
+internal fun writeProcessedStillFormats(
+    wantHeif: Boolean,
+    wantJpeg: Boolean,
+    composeExif: () -> ByteArray?,
+    writeHeif: (ByteArray?) -> Unit,
+    writeJpeg: (ByteArray?) -> Unit,
+    onHeifFailure: (Throwable) -> Unit,
+    onJpegFailure: (Throwable) -> Unit,
+) {
+    val exif by lazy(LazyThreadSafetyMode.NONE, composeExif)
+    if (wantHeif) runCatching { writeHeif(exif) }.onFailure(onHeifFailure)
+    if (wantJpeg) runCatching { writeJpeg(exif) }.onFailure(onJpegFailure)
+}
+
+/**
+ * Writes the first [length] bytes of [encoded] through ONE [open] (AGG4-6, TE5-7): SOI + an APP1
+ * carrying [exifPayload] + every non-Exif header segment and the scan, in a single pass — or the
+ * bytes verbatim when there is no payload or it cannot be spliced ([onSpliceRefused] reports why;
+ * never a lost image). False when [open] yields no stream. There is no second open and no in-place
+ * rewrite: that `saveAttributes()` rewrite is what once left a shifted body recovery adopted.
+ */
+internal fun writeJpegOnce(
+    open: () -> java.io.OutputStream?,
+    encoded: ByteArray,
+    length: Int,
+    exifPayload: ByteArray?,
+    onSpliceRefused: (String) -> Unit,
+): Boolean {
+    val splice = exifPayload?.let { payload ->
+        exifSplicePlan(encoded, length)?.takeIf { isSpliceableExifPayload(payload) }?.let { plan -> plan to payload }
+            ?: run {
+                onSpliceRefused(
+                    "JPEG EXIF splice refused ($length B image, ${payload.size} B APP1); saving without EXIF",
+                )
+                null
+            }
+    }
+    return open()?.use { out ->
+        if (splice != null) {
+            writeJpegWithExifApp1(out, encoded, splice.first, splice.second)
+        } else {
+            out.write(encoded, 0, length)
+        }
+        true
+    } ?: false
+}
+
+/**
+ * A [java.io.ByteArrayOutputStream] whose filled prefix is read IN PLACE ([buffer] + [size]) rather
+ * than through a `toByteArray()` copy (AGG5-34). [buffer] is the live backing array: valid only
+ * until the next write, and only its first [size] bytes are the JPEG.
+ */
+internal class EncodedJpegBuffer(initialCapacity: Int) : java.io.ByteArrayOutputStream(initialCapacity) {
+    fun buffer(): ByteArray = buf
+}
+
+/**
+ * Initial capacity for a processed still's JPEG encode: half a byte per pixel covers typical q90-q97
+ * output in at most one doubling (the [StillSnapshot] YUV repack pre-sizes for the same reason),
+ * floored for tiny frames and capped below the array limit.
+ */
+internal fun processedJpegInitialCapacity(width: Int, height: Int): Int =
+    (width.toLong() * height / 2).coerceIn(MIN_JPEG_ENCODE_CAPACITY.toLong(), MAX_JPEG_ENCODE_CAPACITY.toLong()).toInt()
+
+private const val MIN_JPEG_ENCODE_CAPACITY = 64 * 1024
+private const val MAX_JPEG_ENCODE_CAPACITY = Int.MAX_VALUE - 8
+
+/**
+ * The passthrough lane's EXIF build (TE5-7): the HAL's own APP1 is the composer's seed — so its
+ * tags survive under ours — at the real frame bounds, with the capture rotation as the orientation
+ * TAG (the passthrough never pixel-rotates). Degrades in tiers via [composePassthroughExifApp1].
+ */
+internal fun composePassthroughStillExif(
+    cacheDir: File,
+    bytes: ByteArray,
+    shot: ExifShot,
+    rotationDegrees: Int,
+): ByteArray {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    return composePassthroughExifApp1(extractExifApp1(bytes)) { source ->
+        composeStillExifApp1(
+            cacheDir,
+            shot,
+            bounds.outWidth,
+            bounds.outHeight,
+            RotationMath.exifOrientationFor(rotationDegrees),
+            sourceExifApp1 = source,
+        )
     }
 }
 

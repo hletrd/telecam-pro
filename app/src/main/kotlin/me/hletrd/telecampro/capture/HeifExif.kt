@@ -83,20 +83,24 @@ internal fun heifExifDimensionAttributes(
  * carries whatever of them the composer chose to preserve), then everything from SOS to the end
  * verbatim. A missing SOI, a segment that overruns, or an EOI before any SOS is null — the caller
  * then writes the encoded bytes WITHOUT EXIF rather than guess at a structure it could not read.
+ *
+ * Only the first [length] bytes are the JPEG (AGG5-34): the processed lane hands over an encoder's
+ * internal buffer, whose capacity exceeds its count, instead of a `toByteArray()` copy.
  */
-internal fun exifSplicePlan(jpeg: ByteArray): List<IntRange>? {
-    if (jpeg.size < 4 || jpeg[0] != 0xff.toByte() || jpeg[1] != 0xd8.toByte()) return null
+internal fun exifSplicePlan(jpeg: ByteArray, length: Int = jpeg.size): List<IntRange>? {
+    require(length in 0..jpeg.size) { "JPEG length $length outside its ${jpeg.size}-byte buffer" }
+    if (length < 4 || jpeg[0] != 0xff.toByte() || jpeg[1] != 0xd8.toByte()) return null
     val kept = mutableListOf<IntRange>()
     var keptStart = 2
     var offset = 2
-    while (offset + 2 <= jpeg.size) {
+    while (offset + 2 <= length) {
         if (jpeg[offset] != 0xff.toByte()) return null
         val marker = jpeg[offset + 1].toInt() and 0xff
         when {
             // Fill byte: stays inside the current kept run; the real marker follows it.
             marker == 0xff -> offset += 1
             marker == 0xda -> {
-                kept += keptStart until jpeg.size
+                kept += keptStart until length
                 return kept.filterNot { it.isEmpty() }
             }
             // EOI before any scan, or a stuffed byte where a header marker must be: not a walkable
@@ -104,12 +108,12 @@ internal fun exifSplicePlan(jpeg: ByteArray): List<IntRange>? {
             marker == 0xd9 || marker == 0x00 -> return null
             marker == 0x01 || marker in 0xd0..0xd7 -> offset += 2
             else -> {
-                if (offset + 4 > jpeg.size) return null
+                if (offset + 4 > length) return null
                 val segmentLength = ((jpeg[offset + 2].toInt() and 0xff) shl 8) or
                     (jpeg[offset + 3].toInt() and 0xff)
                 if (segmentLength < 2) return null
                 val end = offset + 2 + segmentLength
-                if (end > jpeg.size) return null
+                if (end > length) return null
                 val payloadStart = offset + 4
                 val exif = marker == 0xe1 && end - payloadStart >= EXIF_SIGNATURE.size &&
                     EXIF_SIGNATURE.indices.all { index -> jpeg[payloadStart + index] == EXIF_SIGNATURE[index] }
