@@ -6322,7 +6322,12 @@ class CameraEngine internal constructor(
                 val stopNow = recAdmission.completeAdmission(succeeded)
                 if (!succeeded) releaseRecordingAdmissionTopologyLease(topologyLease)
                 onResult(succeeded)
-                if (stopNow) stopRecording()
+                // The latched Stop belongs to THIS admission's published recorder, so it stops that
+                // owner directly (AGG5-42). Through stopRecording() it re-entered the latch: a REC
+                // press that claimed a new admission between completeAdmission and here absorbed
+                // the Stop, its own refusal (the held topology lease) then discarded it, and the
+                // published clip kept rolling with the mic live while the UI read not-recording.
+                if (stopNow) stopPublishedRecording()
             }
         }
         val accepted = runCatching {
@@ -6415,7 +6420,7 @@ class CameraEngine internal constructor(
             onRetired = {
                 deadlineRef.get()?.complete()
                 recordingPreNativeAttempt.compareAndSet(attempt, null)
-                UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
+                abandonPendingRecordingAdmission(processAdmission)
                 completeAttempt(false)
             },
             onLateValue = { pending ->
@@ -6423,7 +6428,7 @@ class CameraEngine internal constructor(
             },
         )
         if (!recordingPreNativeAttempt.compareAndSet(null, attempt)) {
-            UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
+            abandonPendingRecordingAdmission(processAdmission)
             return false
         }
         val allocationDeadline = RecordingOperationDeadline(
@@ -6593,7 +6598,7 @@ class CameraEngine internal constructor(
                 // optimistic "starting" state and the REC press appeared to do nothing (AGG4-29).
                 // The claim is held by an earlier, unfinished recording owner: the microphone is
                 // busy, exactly the release-timeout sibling's status.
-                onStatus?.invoke(CameraStatusMessage.MICROPHONE_BUSY.status())
+                onStatus?.invoke(recordingClaimRefusalStatus(recordAudio).status())
                 false
             } else {
                 try {
@@ -6641,7 +6646,7 @@ class CameraEngine internal constructor(
         }
     } finally {
         // publishAdmission moves a successful setup to the active slot, so this is a no-op then.
-        UnsafeRecorderQuarantine.abandonPendingAdmission(processAdmission)
+        abandonPendingRecordingAdmission(processAdmission)
     }
 
     /** The post-mic-claim half of REC admission; every return path releases or converts the claim. */
@@ -6665,7 +6670,7 @@ class CameraEngine internal constructor(
         if (!meterReleased) {
             retirePendingRecordingRow(pending, recordingCaptureId, "mic-release-timeout")
             abortRecordingStart()
-            onStatus?.invoke(CameraStatusMessage.MICROPHONE_BUSY.status())
+            onStatus?.invoke(recordingClaimRefusalStatus(recordAudio).status())
             return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
@@ -7025,7 +7030,7 @@ class CameraEngine internal constructor(
         } else {
             // Release won before a VideoRecorder was bound. Revocation is sufficient: bind() now
             // fails atomically, so no vendor owner can appear after the pending process lease ends.
-            UnsafeRecorderQuarantine.abandonPendingAdmission(owner.processAdmission)
+            abandonPendingRecordingAdmission(owner.processAdmission)
             abortRecordingStart()
             releaseRecordingAdmissionTopologyLease(owner.topologyLease)
         }
@@ -7036,6 +7041,20 @@ class CameraEngine internal constructor(
 
     private fun abortRecordingStart() {
         standbyAudioController.abortRecording()
+    }
+
+    /**
+     * Releases a REC admission's pending process token, then rechecks standby intent (AGG5-43).
+     * While the token is pending the standby gate is closed, so both [abortRecordingStart]'s
+     * restart and a ViewModel re-enable during admission were refused; nothing retried them once a
+     * Stop-latched admission failed, and the armed-video meter stayed dead. A published recorder
+     * makes the token release and the recheck no-ops.
+     */
+    private fun abandonPendingRecordingAdmission(
+        token: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+    ) {
+        UnsafeRecorderQuarantine.abandonPendingAdmission(token)
+        standbyAudioController.recheckAfterRecordingAdmission()
     }
 
     /** A configured recorder whose Surface never crossed into EGL can be stopped directly. */
@@ -7068,6 +7087,11 @@ class CameraEngine internal constructor(
         // Admission still queued/in flight on the recorder executor → the latch takes the stop
         // and the admission completion runs it there (exactly-once, ordered behind the start).
         if (recAdmission.requestStop()) return
+        stopPublishedRecording()
+    }
+
+    /** Stops the published recorder, if any; never touches the pre-native attempt or the latch. */
+    private fun stopPublishedRecording() {
         val ownedRecording = synchronized(recorderOwnershipLock) {
             val owned = recorder ?: return
             recorderTeardownInFlight = true
@@ -8985,6 +9009,15 @@ internal fun rawLossAnnouncementAtReady(
  */
 internal fun resumePreviewRebindWanted(inputSurfacePresent: Boolean, previewReady: Boolean): Boolean =
     !inputSurfacePresent || !previewReady
+
+/**
+ * The status for a REC start refused at the standby-microphone hand-off (AGG5-66). The claim and
+ * its release wait guard the ONE mic owner, and an audio-off take opens no AudioRecord: what
+ * actually refused it is the earlier recording owner still holding that claim, so it must not
+ * blame a microphone the take never asked for.
+ */
+internal fun recordingClaimRefusalStatus(recordAudio: Boolean): CameraStatusMessage =
+    if (recordAudio) CameraStatusMessage.MICROPHONE_BUSY else CameraStatusMessage.FINISHING_PREVIOUS_CLIP
 
 /** Why [CameraEngine]'s bounded retry refused to schedule; pure so the classification is pinned. */
 internal fun coldStartRetryRefusal(

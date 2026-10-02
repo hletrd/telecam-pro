@@ -534,6 +534,68 @@ class CameraEngineRecordingPreNativeTest {
         }
     }
 
+    // AGG5-66: an audio-off take opens no AudioRecord, so a refused hand-off names the unfinished
+    // earlier recording, not a microphone.
+    @Test
+    fun `refused claim for an audio-off take reports the previous clip, not the microphone`() {
+        val statuses = CopyOnWriteArrayList<CameraStatusMessage>()
+        val done = CountDownLatch(1)
+        val engine = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/silent-refused") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ -> error("the refusal never reaches the post-claim path") },
+            ),
+        )
+        engine.onStatus = { it?.message?.let(statuses::add) }
+        val standby = field(engine, "standbyAudioController") as StandbyAudioController
+        assertTrue(standby.beginRecording().admitted)
+
+        try {
+            engine.startRecording(recordAudio = false) { done.countDown() }
+
+            assertTrue(done.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            assertFalse(CameraStatusMessage.MICROPHONE_BUSY in statuses)
+            assertEquals(1, statuses.count { it == CameraStatusMessage.FINISHING_PREVIOUS_CLIP })
+        } finally {
+            standby.abortRecording()
+        }
+    }
+
+    // AGG5-42: the latched Stop runs against THIS admission's published owner. Re-entering the
+    // latch let a REC press that claimed a new admission in between absorb it.
+    @Test
+    fun `a latched Stop is not absorbed by a racing REC admission`() {
+        val done = CountDownLatch(1)
+        val absorbed = AtomicBoolean(true)
+        lateinit var engine: CameraEngine
+        engine = engine(
+            overrides(
+                allocate = { _, _ -> Uri.parse("content://video/latched-stop") },
+                dispatch = ::runInline,
+                afterMic = { _, _, _ ->
+                    engine.stopRecording() // latched: this admission is still in flight
+                    true
+                },
+            ),
+        )
+        val latch = field(engine, "recAdmission") as RecordingAdmissionLatch
+
+        engine.startRecording(recordAudio = true) { result ->
+            assertTrue(result)
+            // The racing press's first step lands between completeAdmission and the latched Stop,
+            // which runs right after this callback on the same recorder-executor turn.
+            assertTrue(latch.tryBeginAdmission())
+            done.countDown()
+        }
+        assertTrue(done.await(WAIT_SECONDS, TimeUnit.SECONDS))
+        val executor = field(engine, "recorderExecutor") as java.util.concurrent.ExecutorService
+        executor.submit { absorbed.set(latch.hasStopRequest()) }.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        latch.completeAdmission(succeeded = false)
+
+        assertFalse("the Stop latched onto the racing admission", absorbed.get())
+    }
+
     @Test
     fun `two post-mic refusals release process mic and callback owners exactly once`() {
         val micClaims = AtomicInteger()

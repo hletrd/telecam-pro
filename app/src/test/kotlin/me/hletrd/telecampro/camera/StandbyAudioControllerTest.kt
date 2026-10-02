@@ -1305,6 +1305,56 @@ class StandbyAudioControllerTest {
         assertTrue(fixture.unavailable.isEmpty())
     }
 
+    // AGG5-43: abortRecording's restart runs while the failed admission's pending process token
+    // still closes the gate; the recheck after that token's release re-arms the meter.
+    @Test
+    fun `a recheck after a gated abort re-arms the standby meter`() {
+        var setupCalls = 0
+        var gateOpen = true
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            canStart = { gateOpen },
+        )
+        fixture.controller.setEnabled(true)
+        assertEquals(1, setupCalls)
+        assertTrue(fixture.controller.beginRecording().admitted)
+
+        gateOpen = false // the REC admission's pending token
+        fixture.controller.abortRecording()
+        assertEquals("the gated restart is refused", 1, setupCalls)
+
+        gateOpen = true // token abandoned
+        fixture.controller.recheckAfterRecordingAdmission()
+
+        assertEquals(2, setupCalls)
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `a recheck under a live recording claim or a disabled meter starts nothing`() {
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+        )
+        fixture.controller.setEnabled(true)
+        assertTrue(fixture.controller.beginRecording().admitted)
+
+        fixture.controller.recheckAfterRecordingAdmission()
+        assertEquals("a published recording keeps the claim", 1, setupCalls)
+
+        fixture.controller.finishRecording()
+        fixture.controller.disable()
+        val afterDisable = setupCalls
+        fixture.controller.recheckAfterRecordingAdmission()
+        assertEquals(afterDisable, setupCalls)
+    }
+
     @Test
     fun `finished recording rechecks intent instead of restoring it`() {
         var setupCalls = 0

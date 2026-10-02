@@ -598,6 +598,17 @@ internal class StandbyAudioController(
         if (!isPaused()) start(updateIntent = false)
     }
 
+    /**
+     * Rechecks current intent once the REC admission that refused [abortRecording]'s restart has
+     * released its process token (AGG5-43). That restart ran while the pending token still closed
+     * [canStart], so a Stop-latched admission that then failed left the armed-video meter dead with
+     * nothing to retry it. Intent is only observed, never changed: a claimed (published) recording,
+     * a disabled meter, or a still-closed gate all make this a no-op.
+     */
+    fun recheckAfterRecordingAdmission() {
+        if (!isPaused()) start(updateIntent = false)
+    }
+
     fun disable() {
         ownership.disable()
         liveInputTermination.get()?.requestStop()
