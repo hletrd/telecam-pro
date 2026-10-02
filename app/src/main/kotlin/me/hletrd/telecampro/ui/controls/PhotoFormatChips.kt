@@ -109,7 +109,8 @@ internal fun photoFormatChipModel(
         // AGG5-52 / UX5-4: this branch runs only on a READY session, where the route move DNG
         // triggers has already finished. A settled session without RAW (the ladder's drop-RAW rung,
         // or a standalone lens with no RAW output) is not "switching to a single lens" — nothing is
-        // switching, and every shot raises RAW_UNAVAILABLE meanwhile. Say what is true.
+        // switching. A drop-RAW rung is announced once per session shape at Ready (AGG5-10), and
+        // this caption is what stays after that notice is gone. Say what is true.
         !rawAvailable || (!outputs.raw && request.dngRaw) -> R.string.output_raw_unavailable
         // Word for word the status CameraEngine emits for the same accepted-output mask.
         !outputs.processed -> R.string.output_processed_unavailable_dng_only
