@@ -267,9 +267,10 @@ either of two independent triggers:
    (as F7/F8 are): host tests drive the interleaving, and no device step is owed for it.
 3. **A resume refused while the cold-start task was finishing** (AGG6-20, cycle 6 plan A1.2): the
    task read `paused` and cleared `starting` outside one monitor, so a `resume()` between the two was
-   refused by the still-set `starting` and nothing restarted the camera. Cycle 6 reads and clears both
-   under one monitor and replays a refused resume. This needs a background AND a return inside the
-   cold-start window, which the fast-return attempts below aim for.
+   refused by the still-set `starting` and nothing restarted the camera. Cycle 6 decides `paused` and
+   retires `starting` under one monitor, so a resume is never refused in the first place; nothing is
+   replayed. This needs a background AND a return inside the cold-start window, which the
+   fast-return attempts below aim for.
 
 The ordinary foreground return has an input surface and a presented preview, so it re-binds
 nothing and stays byte-identical. Host tests drive both interleavings; whether a real launch can

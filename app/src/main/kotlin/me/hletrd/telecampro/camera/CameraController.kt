@@ -2061,8 +2061,9 @@ class CameraController internal constructor(
             // Snapshot once: the timeout and the request must describe the same AEB/manual step even
             // if the UI publishes the next immutable control set while this capture is in flight.
             // Provider-preallocated DNG dispatch can arrive after the UI publishes a newer control
-            // packet. The shot still belongs to the shutter-time packet that named its family/EXIF;
-            // ordinary immediate captures keep reading the current controller value.
+            // packet. The shot still belongs to the shutter-time packet that named its family/EXIF.
+            // `frozen` is a required parameter, so EVERY capture — immediate ones included — reads
+            // that press-time packet, and its AF inputs were frozen with it.
             val requestControls = frozen.controls
 
             // Pseudo-ZSL: a single processed shot may serve the newest buffered frame instantly

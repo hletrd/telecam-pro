@@ -1059,10 +1059,10 @@ class CameraViewModel private constructor(
                             // with the request kept, each fast commit, recovery and resume of the
                             // same RAW-only session re-announced it.
                             acceptedDngOnly && !readyDngOnlyAnnounced ->
-                                // Word for word the engine's capture-time refusal and the
-                                // PhotoFormatToggles caption: this fires on Ready publication and
-                                // those fire at the shutter, so one user sees all three for one
-                                // output mask.
+                                // Word for word the PhotoFormatToggles caption: this Ready fold
+                                // and that caption are the only two places the DNG-only mask is
+                                // spoken (cycle 6 removed the per-press capture-time refusal), so
+                                // they must read the same for one output mask.
                                 CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY.status()
                             // NO route-switch "RAW unavailable" toast (user-removed 2026-07-31:
                             // "too noisy" — every front flip with DNG selected announced a state
