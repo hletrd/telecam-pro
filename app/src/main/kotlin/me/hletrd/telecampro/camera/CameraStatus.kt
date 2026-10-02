@@ -232,6 +232,33 @@ fun CameraStatusMessage.status(
 }
 
 /**
+ * Terminal statuses of the camera-availability family (MRG4-1): each one is published exactly when a
+ * PROGRESS condition ENDS without Ready — the exhausted retry (`*_REOPEN`) or a Not-Ready optics
+ * rollback (`*_UNCHANGED`, [CameraStatusMessage.FRONT_CAMERA_UNAVAILABLE], the
+ * `STOP_RECORDING_*_UNCHANGED` refusals that `rollbackOptics` carries). Deferring the condition
+ * behind one of these was a resurrection: "Camera unavailable, retrying…" came back with no timer
+ * when the 6 s REOPEN error expired, and no Ready would ever arrive to clear it because the retry
+ * budget was already spent. So these END a shown or deferred condition instead of deferring it.
+ * An ordinary event (an MR load, a saved clip) still only interrupts the condition, which returns.
+ */
+internal val CAMERA_CONDITION_ENDING_MESSAGES: Set<CameraStatusMessage> = setOf(
+    CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN,
+    CameraStatusMessage.STOP_RECORDING_MODE_UNCHANGED,
+    CameraStatusMessage.STOP_RECORDING_RECALL_UNCHANGED,
+    CameraStatusMessage.STOP_RECORDING_LENS_UNCHANGED,
+    CameraStatusMessage.STOP_RECORDING_CAMERA_UNCHANGED,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_MODE_UNCHANGED,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_FACING_UNCHANGED,
+    CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED,
+    CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED,
+    CameraStatusMessage.FRONT_CAMERA_UNAVAILABLE,
+    CameraStatusMessage.TELE_LENS_UNAVAILABLE_UNCHANGED,
+    CameraStatusMessage.LENS_UNAVAILABLE_UNCHANGED,
+)
+
+/**
  * Status-plate arbitration rank (AGG4-65), lowest first. The plate used to be last-writer-wins: a
  * 6 s retained-take instruction (the one line that tells the operator how to get a file back) or an
  * error was replaced within milliseconds by "MR1 loaded" or a refusal, and never came back.
@@ -261,24 +288,32 @@ internal data class StatusPlate(val shown: CameraStatus?, val deferredProgress: 
      * An unexpired EVENT is replaced only by an incoming status of EQUAL or HIGHER rank; a lower
      * event is dropped, and a lower PROGRESS waits behind it. An event that replaces a PROGRESS
      * condition defers it, so the condition reappears when the event expires (unless its own end
-     * clears it first). `null` is an explicit clear of everything.
+     * clears it first). A [CAMERA_CONDITION_ENDING_MESSAGES] event IS that end: it drops the
+     * condition, shown or deferred, even when it is itself outranked and dropped. `null` is an
+     * explicit clear of everything.
      */
     fun publish(incoming: CameraStatus?): Publication {
         val current = shown
+        val endsCondition = incoming != null && incoming.message in CAMERA_CONDITION_ENDING_MESSAGES
         return when {
             incoming == null -> Publication(StatusPlate(null), shownChanged = true)
             current == null -> Publication(StatusPlate(incoming), shownChanged = true)
             current.lifecycle == CameraStatusLifecycle.PROGRESS -> Publication(
                 StatusPlate(
                     shown = incoming,
-                    deferredProgress = current.takeIf { incoming.lifecycle == CameraStatusLifecycle.EVENT },
+                    deferredProgress = current.takeIf {
+                        incoming.lifecycle == CameraStatusLifecycle.EVENT && !endsCondition
+                    },
                 ),
                 shownChanged = true,
             )
-            incoming.plateRank >= current.plateRank ->
-                Publication(StatusPlate(incoming, deferredProgress), shownChanged = true)
+            incoming.plateRank >= current.plateRank -> Publication(
+                StatusPlate(incoming, deferredProgress.takeUnless { endsCondition }),
+                shownChanged = true,
+            )
             incoming.lifecycle == CameraStatusLifecycle.PROGRESS ->
                 Publication(StatusPlate(current, deferredProgress = incoming), shownChanged = false)
+            endsCondition -> Publication(StatusPlate(current), shownChanged = false)
             else -> Publication(this, shownChanged = false)
         }
     }
