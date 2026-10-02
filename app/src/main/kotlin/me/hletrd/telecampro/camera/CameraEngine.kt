@@ -5096,17 +5096,17 @@ class CameraEngine internal constructor(
             },
         ) { settle ->
             fun cleanLateAllocation(allocation: PendingOutputAllocation) {
-                val dispatch = MediaStoreWriter.dispatchRejectedOutput(
-                    context,
-                    allocation,
+                // The owner hands a late row here BEFORE it can release the shot's reserved
+                // cleanup capacity (AGG6-24), so the row spends that reservation rather than racing
+                // for unreserved capacity. A refused submit still retains the exact identity for
+                // bounded retry; REGISTERED is already durable, so launch recovery owns anything
+                // further. Provider work never falls back inline on the allocator/cancel caller.
+                val submitted = rejectedCleanup.submit(
+                    MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
                 ) { _ ->
                     publishProcessStillAdmission()
                 }
-                if (dispatch != me.hletrd.telecampro.storage.RejectedOutputCleanupDispatch.ACCEPTED) {
-                    // REGISTERED is already durable. Launch recovery owns this exact incomplete row;
-                    // provider work never falls back inline on the allocator/cancellation caller.
-                    publishProcessStillAdmission()
-                }
+                if (!submitted) publishProcessStillAdmission()
             }
 
             lateinit var owner: DngPreCaptureAllocation<PendingOutputAllocation>
@@ -5164,8 +5164,9 @@ class CameraEngine internal constructor(
                             dngPreCaptureAllocations.remove(owner)
                         }
                     },
+                    // The rejected-cleanup reservation is NOT released here: the owner releases it
+                    // through releaseLateCleanupCapacity only once no late row can appear.
                     releaseReservations = {
-                        rejectedCleanup.cancel()
                         snapshotLease?.release()
                         releaseDngAdmission()
                     },
@@ -5183,6 +5184,10 @@ class CameraEngine internal constructor(
                     synchronized(dngPreCaptureAllocationLock) {
                         dngPreCaptureAllocations.remove(owner)
                     }
+                },
+                releaseLateCleanupCapacity = {
+                    rejectedCleanup.cancel()
+                    publishProcessStillAdmission()
                 },
                 deadlineScheduler = RecordingTeardownScheduler { delayMs, action ->
                     runCatching {

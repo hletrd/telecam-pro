@@ -85,6 +85,11 @@ internal class DngPreCaptureAdmission {
  * Provider Binder calls cannot be interrupted. [cancel] therefore retires caller/capture ownership
  * immediately; an allocation that returns later is delivered only to [onLateValue]. A claimed value
  * is handed to [onReady] exactly once. The process dispatcher is finite and shared with recording.
+ *
+ * The caller's reserved cleanup capacity for a late row is released through
+ * [releaseLateCleanupCapacity] only once no row can appear any more (AGG6-24): never while a
+ * dequeued worker may still be inside the provider insert, never after a row reached
+ * [onLateValue] (which consumes it), and never after [onReady] claimed the row (which owns it).
  */
 internal class DngPreCaptureAllocation<T : Any>(
     private val dispatch: ((() -> Unit) -> RecordingPreNativeSubmission),
@@ -98,10 +103,37 @@ internal class DngPreCaptureAllocation<T : Any>(
     private val deadlineScheduler: RecordingTeardownScheduler? = null,
     private val deadlineMs: Long = DNG_PRE_CAPTURE_ALLOCATION_TIMEOUT_MS,
     private val beforeDeadlineCompletion: () -> Unit = {},
+    private val releaseLateCleanupCapacity: () -> Unit = {},
 ) {
     private val started = AtomicBoolean(false)
     private val cancelRequested = AtomicBoolean(false)
     private val deadline = AtomicReference<RecordingOperationDeadline?>(null)
+
+    // DB5-13 made a dequeued worker recheck retirement before inserting, but the recheck was
+    // check-then-act (AGG6-24): a cancel landing between it and the insert released the reserved
+    // cleanup capacity with the retirement, so the row the worker then inserted reached
+    // [onLateValue] with nothing reserved for it (fail-closed into launch recovery, but exactly the
+    // window that comment claimed was closed). [workLock] makes the recheck and "a worker is inside
+    // the provider" one step against the retirement's capacity release: a retirement that finds a
+    // worker in flight defers the release to that worker's exit, by which time any row it inserted
+    // has already consumed the capacity.
+    private val workLock = Any()
+    private var workerInFlight = false
+    private val lateCapacitySettled = AtomicBoolean(false)
+
+    private fun deliverLate(value: T) {
+        lateCapacitySettled.set(true)
+        onLateValue(value)
+    }
+
+    private fun releaseLateCapacityOnce() {
+        if (lateCapacitySettled.compareAndSet(false, true)) runCatching(releaseLateCleanupCapacity)
+    }
+
+    private fun releaseLateCapacityUnlessWorking() {
+        val idle = synchronized(workLock) { !workerInFlight }
+        if (idle) releaseLateCapacityOnce()
+    }
 
     /**
      * Built at construction, not inside [start] (AGG4-21). The engine registers this owner for
@@ -113,9 +145,15 @@ internal class DngPreCaptureAllocation<T : Any>(
     private val attempt = RecordingPreNativeAllocationAttempt<T>(
         onRetired = {
             deadline.get()?.complete()
-            onRetired()
+            // Released BEFORE the caller's retirement settles the shot, as it was when the caller
+            // released it itself: a chain continuation fired by that settle reserves its own.
+            try {
+                releaseLateCapacityUnlessWorking()
+            } finally {
+                onRetired()
+            }
         },
-        onLateValue = onLateValue,
+        onLateValue = ::deliverLate,
     )
 
     fun start(): RecordingPreNativeDispatch {
@@ -147,42 +185,25 @@ internal class DngPreCaptureAllocation<T : Any>(
         val submission = dispatch {
             // The dispatcher only cancels a task it has not dequeued yet. A worker that dequeued
             // this one after the cancel must not insert a row: the retirement already released the
-            // process DNG slot and its rejected-cleanup reservation, so the late row would have no
-            // cleanup capacity and the next shot could overtake it (DB5-13).
-            if (attempt.isRetired()) return@dispatch
-            val result = runCatching(allocate)
-            when (attempt.deliver(result) {
-                onFailure(result.exceptionOrNull())
-            }) {
-                RecordingPreNativeDelivery.READY -> {
-                    // Provider return and timeout race independently. Only the deadline winner may
-                    // transfer the row to Camera2; a losing return becomes ordinary late cleanup.
-                    beforeDeadlineCompletion()
-                    if (allocationDeadline != null && !allocationDeadline.complete()) {
-                        attempt.retire()
-                        return@dispatch
-                    }
-                    if (!runCatching(isCurrent).getOrDefault(false)) {
-                        attempt.retire()
-                        return@dispatch
-                    }
-                    val value = attempt.claim() ?: return@dispatch
-                    onClaimed()
-                    runCatching { onReady(value) }.exceptionOrNull()?.let { failure ->
-                        try {
-                            runCatching { onLateValue(value) }
-                        } finally {
-                            try {
-                                runCatching { onFailure(failure) }
-                            } finally {
-                                onRetired()
-                            }
-                        }
-                    }
+            // process DNG slot, so the next shot could overtake it (DB5-13). The recheck and the
+            // in-flight mark are one step under [workLock] (AGG6-24).
+            val begun = synchronized(workLock) {
+                if (attempt.isRetired()) false else {
+                    workerInFlight = true
+                    true
                 }
-                RecordingPreNativeDelivery.FAILED,
-                RecordingPreNativeDelivery.STALE,
-                -> Unit
+            }
+            if (!begun) return@dispatch
+            try {
+                runWorker(allocationDeadline)
+            } finally {
+                val retired = synchronized(workLock) {
+                    workerInFlight = false
+                    attempt.isRetired()
+                }
+                // A retirement during the insert deferred its release to here; a row it produced
+                // already settled the capacity through [deliverLate].
+                if (retired) releaseLateCapacityOnce()
             }
         }
         submission.cancellation?.let(attempt::attachCancellation)
@@ -190,6 +211,45 @@ internal class DngPreCaptureAllocation<T : Any>(
             attempt.retire { onFailure(null) }
         }
         return submission.dispatch
+    }
+
+    private fun runWorker(allocationDeadline: RecordingOperationDeadline?) {
+        val result = runCatching(allocate)
+        when (attempt.deliver(result) {
+            onFailure(result.exceptionOrNull())
+        }) {
+            RecordingPreNativeDelivery.READY -> {
+                // Provider return and timeout race independently. Only the deadline winner may
+                // transfer the row to Camera2; a losing return becomes ordinary late cleanup.
+                beforeDeadlineCompletion()
+                if (allocationDeadline != null && !allocationDeadline.complete()) {
+                    attempt.retire()
+                    return
+                }
+                if (!runCatching(isCurrent).getOrDefault(false)) {
+                    attempt.retire()
+                    return
+                }
+                val value = attempt.claim() ?: return
+                // The claimed row's cleanup reservation now belongs to [onReady].
+                lateCapacitySettled.set(true)
+                onClaimed()
+                runCatching { onReady(value) }.exceptionOrNull()?.let { failure ->
+                    try {
+                        runCatching { deliverLate(value) }
+                    } finally {
+                        try {
+                            runCatching { onFailure(failure) }
+                        } finally {
+                            onRetired()
+                        }
+                    }
+                }
+            }
+            RecordingPreNativeDelivery.FAILED,
+            RecordingPreNativeDelivery.STALE,
+            -> Unit
+        }
     }
 
     /**

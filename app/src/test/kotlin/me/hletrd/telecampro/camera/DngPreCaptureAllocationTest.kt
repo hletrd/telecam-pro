@@ -696,4 +696,113 @@ class DngPreCaptureAllocationTest {
         assertFalse(dispatched.get())
         assertEquals(1, retired.get())
     }
+
+    /**
+     * AGG6-24: a cancel landing after the worker's retirement recheck but inside the provider
+     * insert must not release the reserved cleanup capacity; the inserted row consumes it.
+     */
+    @Test
+    fun `a cancel inside the provider insert defers capacity release to the late row`() {
+        var providerTask: (() -> Unit)? = null
+        val events = CopyOnWriteArrayList<String>()
+        lateinit var owner: DngPreCaptureAllocation<String>
+        owner = DngPreCaptureAllocation(
+            dispatch = { task ->
+                providerTask = task
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = {
+                // invalidateCameraReady() cancels while this Binder insert is in flight.
+                assertTrue(owner.cancel())
+                assertFalse("released under a live insert", "release" in events)
+                "content://media/dng/in-flight"
+            },
+            isCurrent = { true },
+            onReady = { error("a retired owner cannot reach Camera2") },
+            onLateValue = { events += "late:$it" },
+            onFailure = {},
+            onRetired = { events += "retired" },
+            releaseLateCleanupCapacity = { events += "release" },
+        )
+
+        assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+        checkNotNull(providerTask).invoke()
+
+        assertEquals(listOf("retired", "late:content://media/dng/in-flight"), events.toList())
+    }
+
+    @Test
+    fun `a cancel inside a failed insert releases the capacity once at worker exit`() {
+        var providerTask: (() -> Unit)? = null
+        val events = CopyOnWriteArrayList<String>()
+        lateinit var owner: DngPreCaptureAllocation<String>
+        owner = DngPreCaptureAllocation(
+            dispatch = { task ->
+                providerTask = task
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = {
+                assertTrue(owner.cancel())
+                null
+            },
+            isCurrent = { true },
+            onReady = { error("a retired owner cannot reach Camera2") },
+            onLateValue = { error("no row was inserted") },
+            onFailure = {},
+            onRetired = { events += "retired" },
+            releaseLateCleanupCapacity = { events += "release" },
+        )
+
+        assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+        assertEquals(listOf<String>(), events.filter { it == "release" })
+        checkNotNull(providerTask).invoke()
+
+        assertEquals(listOf("retired", "release"), events.toList())
+    }
+
+    @Test
+    fun `an idle cancel releases the capacity before the retirement settles`() {
+        val events = CopyOnWriteArrayList<String>()
+        val owner = DngPreCaptureAllocation<String>(
+            dispatch = { RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED) },
+            allocate = { error("never dequeued") },
+            isCurrent = { true },
+            onReady = { error("a retired owner cannot reach Camera2") },
+            onLateValue = { error("no row") },
+            onFailure = {},
+            onRetired = { events += "retired" },
+            releaseLateCleanupCapacity = { events += "release" },
+        )
+
+        assertEquals(RecordingPreNativeDispatch.ACCEPTED, owner.start())
+        assertTrue(owner.cancel())
+        assertTrue(owner.cancel().not())
+
+        assertEquals(listOf("release", "retired"), events.toList())
+    }
+
+    @Test
+    fun `a claimed row keeps its capacity with Camera2`() {
+        var providerTask: (() -> Unit)? = null
+        val events = CopyOnWriteArrayList<String>()
+        val owner = DngPreCaptureAllocation(
+            dispatch = { task ->
+                providerTask = task
+                RecordingPreNativeSubmission(RecordingPreNativeDispatch.ACCEPTED)
+            },
+            allocate = { "row" },
+            isCurrent = { true },
+            onReady = { events += "ready:$it" },
+            onLateValue = { error("claimed") },
+            onFailure = {},
+            onRetired = { events += "retired" },
+            releaseLateCleanupCapacity = { events += "release" },
+        )
+
+        owner.start()
+        checkNotNull(providerTask).invoke()
+        owner.cancel()
+
+        assertEquals(listOf("ready:row"), events.toList())
+    }
 }
