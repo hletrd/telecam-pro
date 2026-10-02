@@ -97,28 +97,88 @@ internal fun discoverCodecInventory(load: () -> List<CodecComponent>): CodecInve
     runCatching { buildCodecInventory(load()) }.getOrDefault(CodecInventory.EMPTY)
 
 /**
- * Runtime encoder inventory. [load] performs at most one platform list walk process-wide and must be
- * called off main; all other methods are non-blocking reads of the resulting immutable snapshot.
+ * The process latch over the platform codec walk (AGG5-30). Only a SUCCESSFUL walk latches — an
+ * empty list included, because that is the device's real answer. A walk that THROWS (mediaserver
+ * restarting during the cold-start scan, a Binder hiccup) used to latch [CodecInventory.EMPTY] for
+ * the whole process: no video codecs and no HEIF until the process died, with no log line. Now one
+ * [load] makes at most [maxAttempts] walks, [pause] between them, and a load that exhausts them
+ * returns EMPTY WITHOUT latching, so the next load (the next ViewModel) walks again. [onScanFailure]
+ * reports the first exhausted load once per process — a bounded, quota-safe single row.
  */
-object EncoderCaps {
+internal class CodecInventoryLoader(
+    private val scan: () -> List<CodecComponent>,
+    private val maxAttempts: Int = CODEC_SCAN_MAX_ATTEMPTS,
+    private val pause: (attempt: Int) -> Unit = {},
+    private val onScanFailure: (Throwable) -> Unit = {},
+) {
     private val loadLock = Any()
     @Volatile private var loaded = false
     @Volatile private var inventory = CodecInventory.EMPTY
+    private var failureReported = false
+
+    init {
+        require(maxAttempts > 0)
+    }
 
     fun load(): CodecInventory {
         if (loaded) return inventory
         return synchronized(loadLock) {
-            if (!loaded) {
-                inventory = discoverCodecInventory(::scanPlatformComponents)
-                loaded = true
+            if (loaded) return@synchronized inventory
+            var lastFailure: Throwable? = null
+            for (attempt in 1..maxAttempts) {
+                if (attempt > 1) pause(attempt)
+                val walked = runCatching { buildCodecInventory(scan()) }
+                if (walked.isSuccess) {
+                    inventory = walked.getOrThrow()
+                    loaded = true
+                    return@synchronized inventory
+                }
+                lastFailure = walked.exceptionOrNull()
             }
-            inventory
+            if (!failureReported) {
+                failureReported = true
+                lastFailure?.let(onScanFailure)
+            }
+            CodecInventory.EMPTY
         }
     }
 
     fun currentInventory(): CodecInventory = inventory
 
     fun isLoaded(): Boolean = loaded
+}
+
+internal const val CODEC_SCAN_MAX_ATTEMPTS = 3
+private const val CODEC_SCAN_RETRY_PAUSE_MS = 250L
+
+/**
+ * Runtime encoder inventory. [load] latches the first successful platform list walk process-wide
+ * ([CodecInventoryLoader]) and must be called off main — a failed walk pauses and retries there; all
+ * other methods are non-blocking reads of the resulting immutable snapshot.
+ */
+object EncoderCaps {
+    private val loader = CodecInventoryLoader(
+        scan = ::scanPlatformComponents,
+        pause = { attempt ->
+            // Off main by contract (the ViewModel loads on ioExecutor); an interrupt skips the pause.
+            me.hletrd.telecampro.storage.sleepPreservingInterrupt(CODEC_SCAN_RETRY_PAUSE_MS * (attempt - 1))
+        },
+        onScanFailure = { failure ->
+            me.hletrd.telecampro.camera.DiagnosticLog.w(
+                "EncoderCaps",
+                "codec inventory walk failed $CODEC_SCAN_MAX_ATTEMPTS times; no video/HEIF encoders until a later load",
+                failure,
+            )
+        },
+    )
+
+    fun load(): CodecInventory = loader.load()
+
+    private val inventory: CodecInventory get() = loader.currentInventory()
+
+    fun currentInventory(): CodecInventory = inventory
+
+    fun isLoaded(): Boolean = loader.isLoaded()
 
     fun availableCodecs(): List<VideoCodec> = inventory.availableVideoCodecs
 

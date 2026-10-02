@@ -43,6 +43,61 @@ class EncoderCapsTest {
         assertFalse(thrown.tenBitEncodeAvailable)
     }
 
+    // AGG5-30: one throwing walk used to latch EMPTY for the whole process (no video, no HEIF).
+    @Test
+    fun `only a successful walk latches and a failed load retries boundedly with one report`() {
+        var walks = 0
+        var failing = true
+        val pauses = mutableListOf<Int>()
+        val reports = mutableListOf<Throwable>()
+        val loader = CodecInventoryLoader(
+            scan = {
+                walks++
+                if (failing) throw IllegalStateException("mediaserver restarting")
+                listOf(component("vendor.hevc", MediaFormat.MIMETYPE_VIDEO_HEVC))
+            },
+            pause = { pauses += it },
+            onScanFailure = { reports += it },
+        )
+
+        assertTrue(loader.load().availableVideoCodecs.isEmpty())
+        assertEquals(CODEC_SCAN_MAX_ATTEMPTS, walks)
+        assertEquals(listOf(2, 3), pauses)
+        assertFalse("a failed walk must not latch", loader.isLoaded())
+        assertEquals(1, reports.size)
+
+        // A second failed load walks again but does not report again.
+        loader.load()
+        assertEquals(2 * CODEC_SCAN_MAX_ATTEMPTS, walks)
+        assertEquals(1, reports.size)
+
+        // The provider recovers: the next load latches the real inventory, and later loads reuse it.
+        failing = false
+        assertEquals(listOf(VideoCodec.HEVC), loader.load().availableVideoCodecs)
+        assertTrue(loader.isLoaded())
+        val walksAtLatch = walks
+        assertEquals(listOf(VideoCodec.HEVC), loader.load().availableVideoCodecs)
+        assertEquals(listOf(VideoCodec.HEVC), loader.currentInventory().availableVideoCodecs)
+        assertEquals(walksAtLatch, walks)
+    }
+
+    @Test
+    fun `a walk that succeeds on a retry latches without a failure report`() {
+        var walks = 0
+        val reports = mutableListOf<Throwable>()
+        val loader = CodecInventoryLoader(
+            scan = {
+                if (++walks == 1) throw IllegalStateException("binder hiccup")
+                emptyList()
+            },
+            onScanFailure = { reports += it },
+        )
+        assertTrue(loader.load().availableVideoCodecs.isEmpty())
+        assertTrue("an empty SUCCESSFUL walk is the device's real answer and latches", loader.isLoaded())
+        assertEquals(2, walks)
+        assertTrue(reports.isEmpty())
+    }
+
     @Test
     fun `capability exception never grants Main10`() {
         val inventory = buildCodecInventory(
