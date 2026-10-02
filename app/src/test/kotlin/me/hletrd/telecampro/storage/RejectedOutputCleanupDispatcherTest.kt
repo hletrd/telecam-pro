@@ -27,10 +27,13 @@ class RejectedOutputCleanupDispatcherTest {
             val returned = callbackThread.submit<Boolean> {
                 reservation.submit("failed.dng") { completed.countDown() }
             }
-            assertTrue(returned.get(250, TimeUnit.MILLISECONDS))
+            // Generous bound (AGG6-31 / TE6-10): the non-blocking proof is that this returns while
+            // `release` is still held, not how fast a loaded CI JVM class-loads the executor path.
+            assertTrue(returned.get(5, TimeUnit.SECONDS))
             assertTrue(entered.await(1, TimeUnit.SECONDS))
             assertEquals(1, owner.admittedCount())
-            assertFalse(completed.await(100, TimeUnit.MILLISECONDS))
+            // Provider work is parked on `release`, so completion is exactly not yet reached.
+            assertEquals(1L, completed.count)
 
             release.countDown()
             assertTrue(completed.await(1, TimeUnit.SECONDS))

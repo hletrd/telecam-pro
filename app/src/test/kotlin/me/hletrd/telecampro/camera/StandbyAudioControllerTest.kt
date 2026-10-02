@@ -380,8 +380,10 @@ class StandbyAudioControllerTest {
         assertTrue(claim.admitted)
         val release = checkNotNull(claim.release)
         assertEquals(1, stopTasks.size)
-        assertFalse(release.await(20, TimeUnit.MILLISECONDS))
-        assertFalse(processReleased.await(20, TimeUnit.MILLISECONDS))
+        // The stop task is queued, not run: nothing can release before it is invoked below, so a
+        // zero wait is exact (AGG6-31); the event list then pins the order at event time.
+        assertFalse(release.await(0, TimeUnit.MILLISECONDS))
+        assertEquals(1L, processReleased.count)
 
         stopTasks.removeFirst().invoke()
 
@@ -1233,7 +1235,9 @@ class StandbyAudioControllerTest {
         assertTrue(claim.admitted)
         assertTrue(stopEntered.await(2, TimeUnit.SECONDS))
         val logicalRelease = checkNotNull(claim.release)
-        assertFalse(logicalRelease.await(20, TimeUnit.MILLISECONDS))
+        // Only the captured deadline action (invoked below) can release a stop that is parked in
+        // its blocked read, so a zero wait is exact rather than a timing window (AGG6-31).
+        assertFalse(logicalRelease.await(0, TimeUnit.MILLISECONDS))
 
         checkNotNull(deadline.getAndSet(null)).invoke()
 

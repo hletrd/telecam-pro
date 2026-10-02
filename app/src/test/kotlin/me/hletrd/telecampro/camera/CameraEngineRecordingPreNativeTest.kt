@@ -646,6 +646,8 @@ class CameraEngineRecordingPreNativeTest {
         val setupEntered = CountDownLatch(1)
         val releaseSetup = CountDownLatch(1)
         val replayed = CountDownLatch(1)
+        val retired = AtomicBoolean(false)
+        val replayedEarly = AtomicBoolean(false)
         val texture = SurfaceTexture(0)
         val surface = Surface(texture)
         val engine = engine(
@@ -657,7 +659,10 @@ class CameraEngineRecordingPreNativeTest {
                     releaseSetup.await()
                     false
                 },
-                onReplay = replayed::countDown,
+                onReplay = {
+                    if (!retired.get()) replayedEarly.set(true)
+                    replayed.countDown()
+                },
             ),
         )
         try {
@@ -669,8 +674,12 @@ class CameraEngineRecordingPreNativeTest {
             engine.resume()
             assertFalse(replayed.await(50, TimeUnit.MILLISECONDS))
 
+            retired.set(true)
             releaseSetup.countDown()
             assertTrue(replayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            // AGG6-31: the flag is read when the replay RUNS, so a replay that fired early but after
+            // the short window above still fails here instead of passing vacuously.
+            assertFalse(replayedEarly.get())
         } finally {
             releaseSetup.countDown()
             surface.release()
@@ -683,6 +692,8 @@ class CameraEngineRecordingPreNativeTest {
         val oldSetupEntered = CountDownLatch(1)
         val releaseOldSetup = CountDownLatch(1)
         val replacementReplayed = CountDownLatch(1)
+        val retired = AtomicBoolean(false)
+        val replayedEarly = AtomicBoolean(false)
         val texture = SurfaceTexture(0)
         val surface = Surface(texture)
         val old = engine(
@@ -701,7 +712,10 @@ class CameraEngineRecordingPreNativeTest {
                 allocate = { _, _ -> null },
                 dispatch = ::runInline,
                 afterMic = { _, _, _ -> false },
-                onReplay = replacementReplayed::countDown,
+                onReplay = {
+                    if (!retired.get()) replayedEarly.set(true)
+                    replacementReplayed.countDown()
+                },
             ),
         )
         try {
@@ -711,8 +725,12 @@ class CameraEngineRecordingPreNativeTest {
             replacement.onPreviewSurfaceAvailable(surface, 1080, 1920)
             assertFalse(replacementReplayed.await(50, TimeUnit.MILLISECONDS))
 
+            retired.set(true)
             releaseOldSetup.countDown()
             assertTrue(replacementReplayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            // AGG6-31: the flag is read when the replay RUNS, so a replay that fired early but after
+            // the short window above still fails here instead of passing vacuously.
+            assertFalse(replayedEarly.get())
         } finally {
             releaseOldSetup.countDown()
             surface.release()
@@ -726,6 +744,8 @@ class CameraEngineRecordingPreNativeTest {
         val foreignToken = checkNotNull(UnsafeRecorderQuarantine.snapshotAdmission(foreignOwner))
         assertTrue(UnsafeRecorderQuarantine.publishAdmission(foreignToken) { true })
         val replacementReplayed = CountDownLatch(1)
+        val retired = AtomicBoolean(false)
+        val replayedEarly = AtomicBoolean(false)
         val texture = SurfaceTexture(0)
         val surface = Surface(texture)
         val replacement = engine(
@@ -733,15 +753,22 @@ class CameraEngineRecordingPreNativeTest {
                 allocate = { _, _ -> null },
                 dispatch = ::runInline,
                 afterMic = { _, _, _ -> false },
-                onReplay = replacementReplayed::countDown,
+                onReplay = {
+                    if (!retired.get()) replayedEarly.set(true)
+                    replacementReplayed.countDown()
+                },
             ),
         )
         try {
             replacement.onPreviewSurfaceAvailable(surface, 1080, 1920)
             assertFalse(replacementReplayed.await(50, TimeUnit.MILLISECONDS))
 
+            retired.set(true)
             UnsafeRecorderQuarantine.finishAdmission(foreignToken)
             assertTrue(replacementReplayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            // AGG6-31: the flag is read when the replay RUNS, so a replay that fired early but after
+            // the short window above still fails here instead of passing vacuously.
+            assertFalse(replayedEarly.get())
         } finally {
             UnsafeRecorderQuarantine.finishAdmission(foreignToken)
             surface.release()
@@ -756,6 +783,8 @@ class CameraEngineRecordingPreNativeTest {
         >()
         val nativeBarrierEntered = CountDownLatch(1)
         val replayed = CountDownLatch(1)
+        val retired = AtomicBoolean(false)
+        val replayedEarly = AtomicBoolean(false)
         val texture = SurfaceTexture(0)
         val surface = Surface(texture)
         val engine = engine(
@@ -763,7 +792,10 @@ class CameraEngineRecordingPreNativeTest {
                 allocate = { _, _ -> null },
                 dispatch = ::runInline,
                 afterMic = { _, _, _ -> false },
-                onReplay = replayed::countDown,
+                onReplay = {
+                    if (!retired.get()) replayedEarly.set(true)
+                    replayed.countDown()
+                },
                 beforeGlNative = {
                     if (foreignToken.get() == null) {
                         val token = checkNotNull(UnsafeRecorderQuarantine.snapshotAdmission(Any()))
@@ -779,8 +811,12 @@ class CameraEngineRecordingPreNativeTest {
             assertTrue(nativeBarrierEntered.await(WAIT_SECONDS, TimeUnit.SECONDS))
             assertFalse(replayed.await(100, TimeUnit.MILLISECONDS))
 
+            retired.set(true)
             UnsafeRecorderQuarantine.finishAdmission(checkNotNull(foreignToken.get()))
             assertTrue(replayed.await(WAIT_SECONDS, TimeUnit.SECONDS))
+            // AGG6-31: the flag is read when the replay RUNS, so a replay that fired early but after
+            // the short window above still fails here instead of passing vacuously.
+            assertFalse(replayedEarly.get())
         } finally {
             foreignToken.get()?.let(UnsafeRecorderQuarantine::finishAdmission)
             surface.release()

@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import me.hletrd.telecampro.awaitParked
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -836,7 +837,9 @@ class ReconfigurationGenerationTest {
             beginCompleted.countDown()
         }
         assertTrue(beginAttempted.await(1, TimeUnit.SECONDS))
-        assertFalse(beginCompleted.await(100, TimeUnit.MILLISECONDS))
+        // Parked on the commit monitor proves exclusion now; a timing window could pass vacuously.
+        assertTrue(awaitParked(newerIntent))
+        assertEquals(1L, beginCompleted.count)
 
         releaseTerminal.countDown()
         assertTrue(beginCompleted.await(1, TimeUnit.SECONDS))

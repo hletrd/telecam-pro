@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import me.hletrd.telecampro.awaitParked
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -42,7 +43,9 @@ class StatusPublicationOwnershipTest {
             eventFinished.countDown()
         }
         assertTrue(eventAttempted.await(2, TimeUnit.SECONDS))
-        assertFalse("Engine event entered between recalled state and timer arm", eventFinished.await(100, TimeUnit.MILLISECONDS))
+        // Parked on the gate, not merely "not finished yet" inside a timing window (AGG6-31).
+        assertTrue("Engine event must park on the status gate", awaitParked(event))
+        assertEquals("Engine event entered between recalled state and timer arm", 1L, eventFinished.count)
         assertEquals("MR1 loaded", visible.get())
         assertEquals(null, timerOwner.get())
 

@@ -194,7 +194,8 @@ class RecordingTeardownTerminalGateTest {
 
             assertTrue(secondStored.await(5, TimeUnit.SECONDS))
             assertTrue(secondResult.get().saved)
-            assertFalse(firstStored.await(25, TimeUnit.MILLISECONDS))
+            // The first publish is parked on releaseFirstPublish, so this is exact, not a window.
+            assertEquals(1L, firstStored.count)
             assertEquals(listOf("first", "second"), completed.toList())
             assertTrue(deleted.isEmpty())
 

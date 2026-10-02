@@ -4,6 +4,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import me.hletrd.telecampro.awaitParked
 import me.hletrd.telecampro.storage.OrphanDisposition
 import me.hletrd.telecampro.storage.PendingJournalState
 import me.hletrd.telecampro.storage.PendingProbe
@@ -637,7 +638,9 @@ class RecorderQuarantineAdmissionGateTest {
         creator.start()
         assertTrue(publicationEntered.await(5, TimeUnit.SECONDS))
         closer.start()
-        assertFalse(closeDone.await(25, TimeUnit.MILLISECONDS))
+        // Parked on the gate lock proves close() is excluded now (AGG6-31), not within a window.
+        assertTrue(awaitParked(closer))
+        assertEquals(1L, closeDone.count)
 
         allowPublication.countDown()
         creator.join(5_000)
@@ -689,7 +692,9 @@ class RecorderQuarantineAdmissionGateTest {
         assertTrue(nativeReturned.await(5, TimeUnit.SECONDS))
         assertTrue(publicationEntered.await(5, TimeUnit.SECONDS))
         closer.start()
-        assertFalse(closeDone.await(25, TimeUnit.MILLISECONDS))
+        // Parked on the gate lock proves close() is excluded now (AGG6-31), not within a window.
+        assertTrue(awaitParked(closer))
+        assertEquals(1L, closeDone.count)
 
         allowStartPublication.countDown()
         starter.join(5_000)
@@ -737,7 +742,10 @@ class RecorderQuarantineAdmissionGateTest {
         timeout.start()
         assertTrue(revokeEntered.await(5, TimeUnit.SECONDS))
         replacement.start()
-        assertFalse(timeoutDone.await(25, TimeUnit.MILLISECONDS))
+        // The quarantine is parked in the revoke callback on allowAbandon, and the replacement on
+        // the gate lock: both are exact facts, not a timing window (AGG6-31).
+        assertTrue(awaitParked(replacement))
+        assertEquals(1L, timeoutDone.count)
         assertFalse(abandoned.get())
 
         allowAbandon.countDown()
