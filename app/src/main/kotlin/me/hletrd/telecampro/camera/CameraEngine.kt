@@ -5038,6 +5038,9 @@ class CameraEngine internal constructor(
         allowZsl: Boolean = false,
         onDone: (() -> Unit)? = null,
     ): Boolean {
+        // The press instant's AF override inputs, frozen with [shotControls] (AGG5-29): the DNG
+        // path below dispatches only after an up-to-8 s provider pre-allocation.
+        val frozenAf = accepted.controller.afInputsNow()
         // Sequence chaining bounds snapshots only inside one Engine. The process lease also covers
         // BURST/AEB/timelapse so a blocked old Engine cannot multiply full-resolution heap owners
         // when an Activity replacement admits another sequence.
@@ -5068,7 +5071,7 @@ class CameraEngine internal constructor(
                 cb = callback,
                 chainHead = chainHead,
                 allowZsl = allowZsl,
-                frozenControls = shotControls,
+                frozen = StillShotFreeze(shotControls, frozenAf),
             )
             return true
         }
@@ -5170,7 +5173,7 @@ class CameraEngine internal constructor(
                         cb = callback,
                         chainHead = chainHead,
                         allowZsl = allowZsl,
-                        frozenControls = shotControls,
+                        frozen = StillShotFreeze(shotControls, frozenAf),
                     )
                 },
                 onLateValue = ::cleanLateAllocation,

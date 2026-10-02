@@ -1057,7 +1057,7 @@ class CameraController internal constructor(
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
                 // drift class that produced the c928eac/f61594a regression pair). The tap region
                 // is set by applyMetering above; the trigger below drives the one-shot scan.
-                applyAfOverrides(this, controls)
+                applyAfOverrides(this, controls, afInputsNow())
             }
             // A fresh repeating request means the HAL may ramp its zoom again (session reopen ramps
             // from 1.0). Reset the change gate so the FIRST result after every rebuild forwards —
@@ -1761,7 +1761,7 @@ class CameraController internal constructor(
             // (ARCH4-5). This also covers the queued-trailing-task ordering (a tap can land
             // between queueing and firing): re-applying beats the old wholesale refusal, which
             // starved the preview to ~5 fps under app-side AE with a held tap-AF.
-            applyAfOverrides(b, controls)
+            applyAfOverrides(b, controls, afInputsNow())
             s.setRepeatingRequest(b.build(), cb, handler)
             publishPreviewDigitalGain()
         }.onFailure {
@@ -1772,6 +1772,12 @@ class CameraController internal constructor(
         }
     }
 
+    /** This instant's AF override inputs; a still freezes them with its controls at the press. */
+    internal fun afInputsNow(): StillAfInputs = StillAfInputs(
+        touchAfActive = touchAfActive,
+        lastFocusDistance = lastFocusDistance,
+    )
+
     /**
      * The ONE application site for the tap-to-focus / AF-lock override keys, shared by the full
      * rebuild (startPreview, after [applyManualControls]) and the sensor fast path (ARCH4-5:
@@ -1781,14 +1787,18 @@ class CameraController internal constructor(
      * hold is meant to freeze); AF lock pins AF_MODE_OFF at the last AF-resolved distance and
      * WINS when both are set (the pure [afOverrideFor] pins that precedence under test).
      */
-    private fun applyAfOverrides(builder: CaptureRequest.Builder, requestControls: ManualControls) {
+    private fun applyAfOverrides(
+        builder: CaptureRequest.Builder,
+        requestControls: ManualControls,
+        afInputs: StillAfInputs,
+    ) {
         val override = afOverrideForRequest(
             requestControls = requestControls,
-            touchAfActive = touchAfActive,
+            touchAfActive = afInputs.touchAfActive,
             maxAfRegions = caps.maxAfRegions,
             afModes = caps.afModes,
             supportsManualFocus = caps.supportsManualFocus,
-            lastFocusDistance = lastFocusDistance,
+            lastFocusDistance = afInputs.lastFocusDistance,
         )
         when (override) {
             is AfOverride.TouchAuto ->
@@ -2009,7 +2019,7 @@ class CameraController internal constructor(
         }
     }
 
-    fun capturePhoto(
+    internal fun capturePhoto(
         wantJpeg: Boolean,
         wantRaw: Boolean,
         cb: PhotoCallback,
@@ -2021,7 +2031,12 @@ class CameraController internal constructor(
          */
         chainHead: Boolean,
         allowZsl: Boolean = false,
-        frozenControls: ManualControls? = null,
+        /**
+         * The shutter-time packet: the controls that named the shot's family/EXIF plus the AF
+         * override inputs of that same instant (AGG5-29). A provider-preallocated DNG dispatch
+         * arrives up to 8 s after the press; no key of its request may read the live state.
+         */
+        frozen: StillShotFreeze,
     ) {
         val posted = postToCamera {
             // Always surface a result through the callback (even on the no-target/not-ready paths) so a
@@ -2045,7 +2060,7 @@ class CameraController internal constructor(
             // Provider-preallocated DNG dispatch can arrive after the UI publishes a newer control
             // packet. The shot still belongs to the shutter-time packet that named its family/EXIF;
             // ordinary immediate captures keep reading the current controller value.
-            val requestControls = frozenControls ?: controls
+            val requestControls = frozen.controls
 
             // Pseudo-ZSL: a single processed shot may serve the newest buffered frame instantly
             // when it truthfully IS the requested still (ZslAdmission.kt). Refusal falls through
@@ -2128,7 +2143,11 @@ class CameraController internal constructor(
                     // still dispatches after an up-to-8 s pre-allocation, and reading the live AF
                     // lock there fired a locked press in CONTINUOUS (or pinned a frozen MANUAL
                     // focus to AF_MODE_OFF at a lock engaged after the press).
-                    applyAfOverrides(this, requestControls)
+                    // The AF inputs are frozen with the packet too (AGG6-30 / TE6-4): a tap landing
+                    // during the pre-allocation flipped the live touch-AF hold (a CONTINUOUS press
+                    // then fired in AF_MODE_AUTO), and a lock re-engaged at a new distance moved
+                    // LockAt to the newer lens position.
+                    applyAfOverrides(this, requestControls, frozen.af)
                     // We rotate pixels ourselves (HEIF) / tag DNG + hi-res-JPEG orientation; keep
                     // the HAL out of rotation entirely.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
@@ -3006,6 +3025,12 @@ internal fun stillCompletionMissingCharacteristics(wantRaw: Boolean, charsPresen
  * The AF override for one request, read entirely from that request's control packet (AGG5-29):
  * the repeating paths pass the live controls, a still passes its frozen shutter-time packet.
  */
+/** The two live AF override inputs, frozen with a still's controls at the press (AGG5-29). */
+internal data class StillAfInputs(val touchAfActive: Boolean, val lastFocusDistance: Float)
+
+/** Everything a still's request reads that the operator can change after the press. */
+internal data class StillShotFreeze(val controls: ManualControls, val af: StillAfInputs)
+
 internal fun afOverrideForRequest(
     requestControls: ManualControls,
     touchAfActive: Boolean,
