@@ -123,6 +123,8 @@ import me.hletrd.telecampro.ui.externalNavigationFailure
 import me.hletrd.telecampro.ui.launchExternal
 import me.hletrd.telecampro.ui.modalFocusBoundary
 import me.hletrd.telecampro.ui.formatZoomMultiplier
+import me.hletrd.telecampro.ui.mainRelativeZoomMultiplier
+import me.hletrd.telecampro.ui.zoomRulerScale
 import me.hletrd.telecampro.ui.resolve
 import me.hletrd.telecampro.ui.overlays.photoFormatLabel
 import me.hletrd.telecampro.ui.theme.CameraColors
@@ -932,34 +934,27 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onAspectRatio,
     )
     caps?.zoomRatioRange?.let { range ->
-        // TELE shows the converter-equivalent scale (13–60× on the kit optic) but writes the
-        // lens-local ratio; the scale follows whichever converter the user declared.
-        val zBase = if (state.teleconverterMode) {
-            me.hletrd.telecampro.camera.teleDisplayBase(state.teleconverterMagnification)
-        } else {
-            1f
-        }
-        val loDisplay = range.lower * zBase
-        val zHi = if (state.teleconverterMode) {
-            minOf(range.upper * zBase, me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM)
-        } else {
-            range.upper
-        }
+        // The SAME main-relative display scale as the ZOOM chip, the HUD pill and the Quick Zoom
+        // ruler (AGG5-12): TELE shows the converter-equivalent scale (13–60× on the kit optic), a
+        // rear standalone route the opened lens ÷ main ("3.0×" on the 70 mm lens in Video or DNG
+        // Photo, where this row used to read the lens-local "1.0×" under a "3.0×" chip), and the
+        // logical/FRONT routes stay 1:1. Writes still land on the LENS-LOCAL ratio the engine owns.
+        val scale = zoomRulerScale(range.lower, range.upper, state.mainRelativeZoomMultiplier, state.teleconverterMode)
         // Defensive guard (mirrors the sibling ZoomRuler in ManualDials.kt): coerceIn/ClosedRange
         // THROW on lower > upper. Unreachable on this device's advertised caps, but a pathological
         // tele caps profile crossing the TELE display ceiling would otherwise crash every
         // recomposition of this tab.
-        if (zHi > loDisplay) {
+        if (scale.enabled) {
             // Framing state, not an output-format fact — the same misfiling Release fixed for the
             // drive rows (UI review #14). The Assist tab already owns "Framing" for overlays; here
             // the word covers the one live framing control this tab carries.
             SectionHeader(stringResource(R.string.section_framing))
             LabeledSlider(
                 label = stringResource(R.string.label_zoom),
-                valueLabel = formatZoomMultiplier(state.controls.zoomRatio * zBase),
-                value = (state.controls.zoomRatio * zBase).coerceIn(loDisplay, zHi),
-                onValueChange = { v -> actions.onZoomRatio(v / zBase) },
-                valueRange = loDisplay..zHi,
+                valueLabel = formatZoomMultiplier(scale.display(state.controls.zoomRatio)),
+                value = scale.display(state.controls.zoomRatio).coerceIn(scale.lo, scale.hi),
+                onValueChange = { v -> actions.onZoomRatio(scale.localForDisplay(v)) },
+                valueRange = scale.lo..scale.hi,
             )
         }
     }

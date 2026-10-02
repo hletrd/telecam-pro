@@ -78,4 +78,15 @@ class ZoomRulerScaleTest {
         assertEquals(0f, scale.fraction(1f), 0f)
         assertEquals(1f, zoomRulerScale(1f, 2f, 0f, teleconverter = false).base, 0f)
     }
+
+    // AGG5-12: the Shoot-tab Zoom slider is a value-domain slider on this same scale; its write
+    // lands lens-local and clamps into the advertised range like the ruler's fraction write.
+    @Test fun `value-domain writes land lens-local and clamp to the range`() {
+        val scale = zoomRulerScale(1f, 10f, multiplier(69f), teleconverter = false)
+        assertEquals(1f, scale.localForDisplay(3f), 1e-4f)
+        assertEquals(2f, scale.localForDisplay(6f), 1e-4f)
+        assertEquals(1f, scale.localForDisplay(0.5f), 1e-4f)
+        assertEquals(10f, scale.localForDisplay(99f), 1e-4f)
+        assertEquals(scale.localFor(0.25f), scale.localForDisplay(scale.lo + 0.25f * (scale.hi - scale.lo)), 1e-5f)
+    }
 }

@@ -107,7 +107,10 @@ internal data class ZoomRulerScale(
     fun fraction(localZoomRatio: Float): Float =
         if (hi <= lo) 0f else ((display(localZoomRatio) - lo) / (hi - lo)).coerceIn(0f, 1f)
 
-    fun localFor(fraction: Float): Float = ((lo + fraction * (hi - lo)) / base).coerceIn(lowerLocal, hi / base)
+    fun localFor(fraction: Float): Float = localForDisplay(lo + fraction * (hi - lo))
+
+    /** The lens-local ratio a value-domain slider (the Shoot-tab Zoom row) writes for [display]. */
+    fun localForDisplay(display: Float): Float = (display / base).coerceIn(lowerLocal, hi / base)
 }
 
 internal fun zoomRulerScale(
