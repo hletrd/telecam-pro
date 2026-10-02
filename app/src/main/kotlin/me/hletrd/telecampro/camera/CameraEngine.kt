@@ -5843,15 +5843,18 @@ class CameraEngine internal constructor(
 
     /**
      * The producer-terminal edge for one still capture. It may reopen still admission that a failed
-     * durable delete marker closed for exactly this capture (AGG5-2), so it republishes when it does;
-     * the ordinary path (admission already open) publishes nothing.
+     * durable delete marker closed for exactly this capture (AGG5-2), so it republishes from a read
+     * taken AFTER the mark. The publication re-reads every owner under its own monitor and is
+     * change-gated, so the ordinary path (admission already open) delivers nothing.
+     *
+     * It used to publish only when a `wasAdmitting` read taken BEFORE the mark was false (PR6-1).
+     * The marker worker could close admission and deliver `false` between that read and the mark;
+     * the mark then reopened the live owner, but the stale `true` read suppressed the republish and
+     * the shutter stayed disabled while admission was open, until some unrelated owner edge fired.
      */
     private fun markStillProducersTerminal(captureId: Int) {
-        val wasAdmitting = retainedStillDeletionOwner.canAdmitCapture()
         retainedStillDeletionOwner.markCaptureProducersTerminal(captureId)
-        if (!wasAdmitting && retainedStillDeletionOwner.canAdmitCapture()) {
-            runCatching { publishProcessStillAdmission() }
-        }
+        runCatching { publishProcessStillAdmission() }
     }
 
     /**

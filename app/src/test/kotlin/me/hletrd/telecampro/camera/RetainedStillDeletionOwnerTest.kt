@@ -480,4 +480,55 @@ class RetainedStillDeletionOwnerTest {
         owner.markCaptureProducersTerminal(504)
         assertTrue(owner.canAdmitCapture())
     }
+
+    // AGG6-3: terminality is answered by a positive live set, so an old terminal edge is never
+    // forgotten. Under the former 32-entry terminal ring, 40 later terminal captures evicted id 0 and
+    // its failed marker closed admission for the Engine's life.
+    @Test
+    fun `a failed marker for a capture outlived by 40 terminal captures leaves admission open`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 32,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        repeat(41) { id ->
+            owner.registerCaptureFamily(id, CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_100_000L + id, id.toLong()))
+            owner.markCaptureProducersTerminal(id)
+        }
+
+        owner.markCaptureDeletedInMemory(0)
+        owner.completeDeletionDurability(0, durable = false)
+
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `a failed marker for an id this owner never registered leaves admission open`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+
+        owner.markCaptureDeleted(9_001)
+
+        assertTrue("no producer here can emit an unowned tail", owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `a live producer outlives family eviction and keeps a failed marker fail-closed`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 2,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        repeat(40) { id ->
+            owner.registerCaptureFamily(id, CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_200_000L + id, id.toLong()))
+        }
+
+        owner.markCaptureDeleted(0)
+        assertFalse("capture 0 can still produce though its family was trimmed", owner.canAdmitCapture())
+        owner.markCaptureProducersTerminal(0)
+        assertTrue(owner.canAdmitCapture())
+    }
 }

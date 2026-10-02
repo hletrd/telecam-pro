@@ -59,12 +59,18 @@ internal class RetainedStillDeletionOwner<T>(
     // though the reason — an unowned late tail — ends the moment that capture's producers are
     // terminal. Per-id, it clears at that edge or when a later durable marker succeeds.
     private val nonDurableLiveDeletions = LinkedHashSet<Int>()
-    // Every id whose producers reached terminal, family-registered or not (MRG5-5), bounded to
-    // [maxTombstones] oldest-first. [producerTerminalCaptures] is coupled to the family registry for
-    // retirement, so a tombstoned id whose family was already evicted never entered it: its terminal
-    // edge arrived FIRST, the failed marker after, and admission closed for the process because no
-    // further edge for that id would ever come. This set answers only "can it still produce?".
-    private val producerTerminalIds = LinkedHashSet<Int>()
+    // Ids that can STILL produce: registered by [registerCaptureFamily] and not yet producer-terminal
+    // (AGG6-3). This answers "can it still produce?" positively. It replaced a 32-entry oldest-first
+    // ring of TERMINAL ids (MRG5-5), which proved terminality only while the id stayed in the ring: a
+    // pinned review capture outlived by 32 later shots fell out of it, its failed marker (a full disk
+    // while the user deletes to free space, AGG5-2's own motivating case) read "not terminal", and
+    // still admission closed for the Engine's life because no further edge for that id would come.
+    // The live set needs no eviction: every member leaves at its producer-terminal edge, so it is
+    // bounded by in-flight captures. An id not in it — terminal long ago, from a restored family,
+    // or never registered by this Engine — has no producer here that could emit an unowned tail.
+    // It is deliberately decoupled from [familiesByCapture], whose trimming must never forget a live
+    // producer.
+    private val liveProducerIds = LinkedHashSet<Int>()
 
     init {
         require(maxTombstones > 0)
@@ -74,6 +80,7 @@ internal class RetainedStillDeletionOwner<T>(
 
     /** Registers the durable filename family before Camera2 can produce any sibling. */
     fun registerCaptureFamily(captureId: Int, family: CaptureFamilyKey) = synchronized(lock) {
+        liveProducerIds.add(captureId)
         familiesByCapture.remove(captureId)
         familiesByCapture[captureId] = family
         trimRegisteredFamiliesLocked(captureId)
@@ -114,12 +121,12 @@ internal class RetainedStillDeletionOwner<T>(
         if (durable) {
             durableDeletedCaptures.add(captureId)
             nonDurableLiveDeletions.remove(captureId)
-        } else if (captureId !in producerTerminalIds) {
+        } else if (captureId in liveProducerIds) {
             // A failed durability boundary cannot be papered over by evicting its in-memory owner.
             // Close still admission while THIS capture can still produce an unowned tail; a capture
             // whose producers are already terminal has no tail left to own, so nothing closes —
-            // registered family or not (MRG5-5). Any other id stays fail-closed until its producer
-            // edge arrives.
+            // registered family or not (MRG5-5), and however many captures ago that edge was
+            // (AGG6-3). A live id stays fail-closed until its producer edge arrives.
             nonDurableLiveDeletions.add(captureId)
         }
         trimTombstonesLocked(captureId)
@@ -129,9 +136,7 @@ internal class RetainedStillDeletionOwner<T>(
     fun markCaptureProducersTerminal(captureId: Int): CaptureFamilyKey? = synchronized(lock) {
         // No later sibling can appear, so a failed marker for this id no longer guards anything.
         nonDurableLiveDeletions.remove(captureId)
-        producerTerminalIds.remove(captureId)
-        producerTerminalIds.add(captureId)
-        while (producerTerminalIds.size > maxTombstones) producerTerminalIds.remove(producerTerminalIds.first())
+        liveProducerIds.remove(captureId)
         if (captureId !in familiesByCapture) return@synchronized null
         producerTerminalCaptures.add(captureId)
         familiesByCapture[captureId].takeIf { captureId in durableDeletedCaptures }
