@@ -144,6 +144,32 @@ internal fun recordingStorageTerminalStatus(
     RecordingStorageTerminalDisposition.FAILED -> CameraStatusMessage.VIDEO_SAVE_FAILED
 }
 
+/** What one recording terminal presents: review registration and/or a transient status. */
+internal data class RecordingStoragePresentation(
+    /** Hand the saved clip to the review tracker, which orders by capture id (older = TRACK_ONLY). */
+    val forwardMedia: Boolean,
+    val status: CameraStatusMessage?,
+)
+
+/**
+ * The one presentation decision for a recording terminal (AGG5-39). A CURRENT result presents its
+ * media and status. A STALE one (a newer capture already owns presentation) still reaches the
+ * tracker — which ranks it below the newer capture by id, so it cannot steal review — and still
+ * announces FAILED / RETAINED / KEPT_UNVERIFIED, because a lost or privately retained take is news
+ * the operator must get whatever was shot after it. Only its "saved" confirmation is withheld.
+ */
+internal fun recordingStoragePresentationFor(
+    disposition: RecordingStorageTerminalDisposition,
+    hasUri: Boolean,
+    current: Boolean,
+): RecordingStoragePresentation {
+    val saved = disposition == RecordingStorageTerminalDisposition.SAVED
+    return RecordingStoragePresentation(
+        forwardMedia = saved && hasUri,
+        status = if (saved && !current) null else recordingStorageTerminalStatus(disposition),
+    )
+}
+
 /** Capture identity stays attached through provider completion and presentation. */
 internal data class RecordingStorageTerminalResult<T>(
     val captureId: Int,
@@ -156,9 +182,9 @@ internal data class RecordingStorageTerminalResult<T>(
  * First-order monotonic fold shared by review publication and transient storage status.
  *
  * [observeCapture] advances ownership as soon as any capture is admitted. A late recording result
- * remains logged/durable at the storage layer but cannot publish either review media or a status
- * belonging to an older take. The decision and [publish] callback run under one lock: returning an
- * accepted value and publishing later would let A pause, B publish, then A overwrite B. Calling
+ * remains logged/durable at the storage layer and cannot take CURRENT presentation from a newer
+ * capture; [publishOrStale] hands it to the stale callback, which [recordingStoragePresentationFor]
+ * limits. The decision and [publish] callback run under one lock: returning an accepted value and publishing later would let A pause, B publish, then A overwrite B. Calling
  * [publish] twice for one result is harmless only to ordering, not intended as event deduplication;
  * the Engine calls it exactly once per terminal result.
  */
@@ -172,20 +198,37 @@ internal class RecordingStoragePresentationReducer<T> {
         }
     }
 
+    /**
+     * Returns true when [result] owns current presentation ([present]). [publishOrStale] also
+     * hands an older result to its stale callback instead of letting it vanish (AGG5-39): a newer
+     * capture — an in-REC snapshot takes an id while the clip is still rolling — used to swallow
+     * the clip's terminal entirely, with no review registration and no status, so a FAILED or
+     * privately RETAINED take was never announced. [recordingStoragePresentationFor] decides what
+     * a stale terminal may still say.
+     */
     fun publish(
         result: RecordingStorageTerminalResult<T>,
         present: (RecordingStorageTerminalResult<T>) -> Unit,
     ): Boolean = publishWithAttempt(result, onAttempt = {}, present = present)
+
+    /** [publish] that also routes an older result to [presentStale]; the Engine's only entry. */
+    fun publishOrStale(
+        result: RecordingStorageTerminalResult<T>,
+        present: (RecordingStorageTerminalResult<T>) -> Unit,
+        presentStale: (RecordingStorageTerminalResult<T>) -> Unit,
+    ): Boolean = publishWithAttempt(result, onAttempt = {}, present = present, presentStale = presentStale)
 
     /** Test/diagnostic handshake immediately before attempting the serialized boundary. */
     internal fun publishWithAttempt(
         result: RecordingStorageTerminalResult<T>,
         onAttempt: () -> Unit,
         present: (RecordingStorageTerminalResult<T>) -> Unit,
+        presentStale: (RecordingStorageTerminalResult<T>) -> Unit = {},
     ): Boolean {
         onAttempt()
         return synchronized(lock) {
             if (result.captureId < newestCaptureId) {
+                presentStale(result)
                 false
             } else {
                 newestCaptureId = result.captureId

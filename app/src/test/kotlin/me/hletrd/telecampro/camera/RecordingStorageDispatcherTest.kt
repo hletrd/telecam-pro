@@ -337,6 +337,48 @@ class RecordingStorageDispatcherTest {
         assertEquals(listOf(c), presented)
     }
 
+    /** AGG5-39: an in-REC snapshot (id 11) must not swallow the clip's (id 10) terminal. */
+    @Test
+    fun `a stale clip terminal reaches the stale callback instead of vanishing`() {
+        val reducer = RecordingStoragePresentationReducer<String>()
+        reducer.observeCapture(10)
+        reducer.observeCapture(11)
+        val current = mutableListOf<RecordingStorageTerminalResult<String>>()
+        val stale = mutableListOf<RecordingStorageTerminalResult<String>>()
+        val failed = terminal(10, RecordingStorageTerminalDisposition.FAILED)
+
+        assertFalse(reducer.publishOrStale(failed, present = current::add, presentStale = stale::add))
+
+        assertEquals(emptyList<RecordingStorageTerminalResult<String>>(), current)
+        assertEquals(listOf(failed), stale)
+        assertEquals("a stale terminal never rewinds ownership", 11, reducer.newestCaptureId())
+    }
+
+    @Test
+    fun `a stale terminal still announces loss and retention but never claims saved`() {
+        assertEquals(
+            RecordingStoragePresentation(forwardMedia = false, status = CameraStatusMessage.VIDEO_SAVE_FAILED),
+            recordingStoragePresentationFor(RecordingStorageTerminalDisposition.FAILED, hasUri = false, current = false),
+        )
+        assertEquals(
+            RecordingStoragePresentation(forwardMedia = false, status = CameraStatusMessage.VIDEO_SAVE_DELAYED),
+            recordingStoragePresentationFor(RecordingStorageTerminalDisposition.RETAINED_PENDING, hasUri = true, current = false),
+        )
+        assertEquals(
+            RecordingStoragePresentation(forwardMedia = false, status = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED),
+            recordingStoragePresentationFor(RecordingStorageTerminalDisposition.RETAINED_UNVALIDATED, hasUri = true, current = false),
+        )
+        // The tracker ranks the older id TRACK_ONLY; only the "saved" confirmation is withheld.
+        assertEquals(
+            RecordingStoragePresentation(forwardMedia = true, status = null),
+            recordingStoragePresentationFor(RecordingStorageTerminalDisposition.SAVED, hasUri = true, current = false),
+        )
+        assertEquals(
+            RecordingStoragePresentation(forwardMedia = true, status = CameraStatusMessage.VIDEO_SAVED),
+            recordingStoragePresentationFor(RecordingStorageTerminalDisposition.SAVED, hasUri = true, current = true),
+        )
+    }
+
     @Test
     fun `terminal decision and callback are serialized against a newer completion`() {
         val reducer = RecordingStoragePresentationReducer<String>()

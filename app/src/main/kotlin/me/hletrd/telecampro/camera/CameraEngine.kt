@@ -5698,7 +5698,9 @@ class CameraEngine internal constructor(
         val captureId = captureSeq.incrementAndGet()
         // A newer still (including an in-REC snapshot) also owns current capture presentation. Its
         // tracker result already outranks an older video by this same id; advance the storage-status
-        // gate now so that video's late tail cannot make review and status disagree.
+        // gate now so that video's late tail cannot take review or claim "saved" over it. The tail
+        // still reaches the tracker (TRACK_ONLY by id) and still announces a failed/retained take
+        // (AGG5-39).
         recordingStoragePresentation.observeCapture(captureId)
         // Device orientation stays LIVE per shot (gravity, not an optics axis) — frames of one
         // burst share the chain's route but may straddle a physical re-hold like any two shots.
@@ -7594,12 +7596,22 @@ class CameraEngine internal constructor(
     private fun presentRecordingStorageResult(
         terminal: RecordingStorageTerminalResult<android.net.Uri>,
     ) {
-        recordingStoragePresentation.publish(terminal, present = { current ->
-            if (current.disposition == RecordingStorageTerminalDisposition.SAVED) {
-                current.outputUri?.let { onMediaSaved?.invoke(it, current.captureId) }
+        fun present(result: RecordingStorageTerminalResult<android.net.Uri>, current: Boolean) {
+            val presentation = recordingStoragePresentationFor(
+                disposition = result.disposition,
+                hasUri = result.outputUri != null,
+                current = current,
+            )
+            if (presentation.forwardMedia) {
+                result.outputUri?.let { onMediaSaved?.invoke(it, result.captureId) }
             }
-            onStatus?.invoke(recordingStorageTerminalStatus(current.disposition).status())
-        })
+            presentation.status?.let { onStatus?.invoke(it.status()) }
+        }
+        recordingStoragePresentation.publishOrStale(
+            terminal,
+            present = { present(it, current = true) },
+            presentStale = { present(it, current = false) },
+        )
     }
 
     private fun dispatchRecordingStorageTask(task: Runnable): RecordingStorageDispatch =

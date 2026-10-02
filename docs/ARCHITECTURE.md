@@ -1108,11 +1108,14 @@ demoted to track-only — an evicted family must never become the review owner (
 pinned and delete would silently degrade to file-only).
 
 Recording storage applies one earlier capture-owned gate before entering that tracker: any admitted
-newer capture (recording or still, including an in-REC snapshot) suppresses both review publication
-and transient storage status from older recording tails. The old file remains published or pending
-according to its own provider result and is logged by capture id; suppression is presentation-only.
-This keeps the review surface and save verdict on the same take even when provider tails finish out
-of order.
+newer capture (recording or still, including an in-REC snapshot) takes CURRENT presentation from
+older recording tails. An older tail still reaches the tracker, which ranks it track-only by capture
+id, and still announces a FAILED, delayed (retained) or kept-unverified take; only its "saved"
+confirmation is withheld (`recordingStoragePresentationFor`, AGG5-39 — an in-REC snapshot used to
+swallow the clip's whole terminal, so a lost or privately retained take was never announced). The
+old file remains published or pending according to its own provider result and is logged by capture
+id. This keeps the review surface and save verdict on the same take even when provider tails finish
+out of order.
 
 Review admission also follows native recording ownership rather than visible REC intent alone.
 `CameraEngine` change-gates a separate finalization edge from the moment Stop detaches the recorder
