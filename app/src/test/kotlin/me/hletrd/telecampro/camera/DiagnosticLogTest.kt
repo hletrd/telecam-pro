@@ -166,6 +166,7 @@ class DiagnosticLogTest {
         // spent, the production doors can only add at most one row per call and never pass a cap.
         val tag = uniqueTag("process")
         DiagnosticLog.d(tag, "recurring debug row")
+        DiagnosticLog.i(tag, "recurring information row")
         DiagnosticLog.evidence(tag, "evidence row")
         DiagnosticLog.w(tag, "reserved warning row")
         // The GL FrameGap summary takes the defaulted process owners; a release build (debug off)
@@ -183,7 +184,7 @@ class DiagnosticLogTest {
                 COLOR_OS_PROCESS_LOG_ROW_LIMIT,
         )
         // A row of THIS tag reaches logcat at most once per door call.
-        assertTrue(ShadowLog.getLogsForTag(tag).size <= 3)
+        assertTrue(ShadowLog.getLogsForTag(tag).size <= 4)
     }
 
     private fun uniqueTag(suffix: String) = "DiagnosticLogTest.$suffix.${System.nanoTime()}"

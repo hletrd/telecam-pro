@@ -156,6 +156,15 @@ class RecorderCodecTeardownTest {
     }
 
     @Test
+    fun `a native cleanup throw is recorded as the first unproved release`() {
+        val teardown = RecorderCodecTeardown(RecorderNativeOperationGate())
+        val failure = IllegalStateException("AudioRecord.release failed")
+        assertFalse(teardown.native { throw failure })
+        assertSame(failure, teardown.failure)
+        assertFalse(teardown.releaseFailedAudioSetup({}, {}, {}))
+    }
+
+    @Test
     fun `a clean codec cleanup completes`() {
         val teardown = RecorderCodecTeardown(RecorderNativeOperationGate())
         assertTrue(teardown.codec(CodecCleanupCall.STOP, teardown.videoFault) { })
