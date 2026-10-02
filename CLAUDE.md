@@ -1064,10 +1064,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   it with `shouldShowRequestPermissionRationale`, clear history on grant, and suppress automatic
   re-request only when Settings is genuinely required.
 - **Processed stills preserve one shot-owned EXIF snapshot.** `Bitmap.compress` strips metadata, so
-  `StillCapturePipeline` re-stamps JPEG through ExifInterface before publish. For HEIF it composes the
-  same EXIF attributes into a cache-only JPEG seed, extracts the APP1 payload, and passes it to
-  `HeifWriter.addExifData`; ISO / exposure / 35mm focal / make / model therefore stay in parity
-  across both processed formats. Lightweight physical-lens metadata is prefetched on
+  `StillCapturePipeline` composes the shot's EXIF APP1 ONCE through `composeStillExifApp1` (the
+  attributes go into a cache-only 1×1 JPEG seed through ExifInterface and the APP1 payload is
+  extracted; no user media is opened). HEIF passes that payload to `HeifWriter.addExifData`; both
+  JPEG lanes (processed and hi-res passthrough) splice it into the ENCODED buffer before the single
+  pending-row write. There is no in-place `saveAttributes()` rewrite of the row any more: that
+  rewrite grew the file without truncating, so a kill mid-rewrite left a shifted body that still
+  ended `FF D9` and recovery adopted it as valid. ISO / exposure / 35mm focal / make / model
+  therefore stay in parity across both processed formats. Lightweight physical-lens metadata is prefetched on
   `setupExecutor`; the camera callback is cache-only and copies the processed Image before composing
   ancillary metadata.
 - **Pending MediaStore rows have durable write states.** Every insert commits a `REGISTERED` journal
