@@ -270,21 +270,7 @@ internal class StillCapturePipeline(
         // composed through a cache temp file, a 1×1 encode and an ExifInterface save, so a full
         // cache or an I/O hiccup used to abort the whole save (HEIF_SAVE_FAILED, frame lost). The
         // pixels are already rotated, so a HEIF without EXIF is still an upright, valid photo.
-        val exifData = bestEffortHeifExif(
-            build = {
-                composeStillExifApp1(
-                    context.cacheDir,
-                    exifShot,
-                    rotated.width,
-                    rotated.height,
-                    RotationMath.ORIENTATION_NORMAL,
-                    sourceExifApp1 = null,
-                )
-            },
-            onFailure = { failure ->
-                Log.w("StillCapturePipeline", "HEIF EXIF payload failed; saving without EXIF", failure)
-            },
-        )
+        val exifData = uprightStillExif(rotated, exifShot, "HEIF")
         val allocation = MediaStoreWriter.createPendingImageAllocation(
             context,
             spec.familyKey.displayName("heic"),
@@ -332,7 +318,16 @@ internal class StillCapturePipeline(
             return
         }
         val encoded = encodedStream.toByteArray()
-        val exifPayload = bestEffortHeifExif(
+        val exifPayload = uprightStillExif(rotated, exifShot, "JPEG")
+        writeSingleJpeg(encoded, exifPayload, spec)
+    }
+
+    /**
+     * The EXIF APP1 for a pixel-upright processed still (HEIF and processed JPEG alike): orientation
+     * NORMAL, no source EXIF, best-effort — null (logged) rather than a lost image.
+     */
+    private fun uprightStillExif(rotated: Bitmap, exifShot: ExifShot, kind: String): ByteArray? =
+        bestEffortHeifExif(
             build = {
                 composeStillExifApp1(
                     context.cacheDir,
@@ -344,11 +339,9 @@ internal class StillCapturePipeline(
                 )
             },
             onFailure = { failure ->
-                Log.w("StillCapturePipeline", "JPEG EXIF payload failed; saving without EXIF", failure)
+                Log.w("StillCapturePipeline", "$kind EXIF payload failed; saving without EXIF", failure)
             },
         )
-        writeSingleJpeg(encoded, exifPayload, spec)
-    }
 
     /**
      * The one write both JPEG lanes share: allocate, write [encoded] with [exifPayload] spliced in

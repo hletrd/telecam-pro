@@ -192,4 +192,4 @@ internal fun exifApp1WithoutThumbnailIfd(payload: ByteArray): ByteArray? {
 
 private const val MAX_JPEG_SEGMENT_LENGTH = 0xffff
 
-private val EXIF_SIGNATURE =byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)
+private val EXIF_SIGNATURE = byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)
