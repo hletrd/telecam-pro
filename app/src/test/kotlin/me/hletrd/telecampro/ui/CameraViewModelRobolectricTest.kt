@@ -1059,6 +1059,51 @@ class CameraViewModelRobolectricTest {
         assertNull("the condition does not come back after Ready", v.state.value.status)
     }
 
+    // AGG6-9: "Camera reconfiguring…" is read from Ready truth. An ordinary reopen publishes no
+    // condition, so keyed on one the Output row said nothing during the DNG/aspect/fps/lens reopen it
+    // was written for; the cold start and the terminal "reopen the app" are not a reopen.
+    @Test fun `reopen in progress follows Not-Ready after Ready and never the terminal or cold start`() {
+        val (v, e) = createViewModel()
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        var sequence = 0L
+        fun publish(ready: Boolean) {
+            e.onCameraReadyChange!!.invoke(
+                CameraReadyPublication(
+                    sequence = ++sequence,
+                    ready = ready,
+                    opticsGeneration = optics,
+                    sessionGeneration = session,
+                    photoOutputs = if (ready) PhotoSessionOutputs(processed = true) else PhotoSessionOutputs(),
+                ),
+            )
+            idleFor(0)
+        }
+
+        publish(ready = false)
+        assertFalse("the cold start is not a reopen", v.state.value.reopenInProgress)
+        publish(ready = true)
+        assertFalse(v.state.value.reopenInProgress)
+        publish(ready = false)
+        assertTrue("an ordinary reopen of a working camera", v.state.value.reopenInProgress)
+        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+        assertFalse("no Ready follows the terminal", v.state.value.reopenInProgress)
+        publish(ready = true)
+        publish(ready = false)
+        assertTrue("a later Ready re-arms it", v.state.value.reopenInProgress)
+        v.onStart()
+        v.onStop()
+        assertFalse("a resume is a cold start again", v.state.value.reopenInProgress)
+    }
+
     // AGG5-4 / TR5-3: a route that cannot honour the stabilization / frame-rate REQUEST (Photo's
     // logical camera, FRONT) narrows only what is shown and what reaches the wire. It used to
     // narrow, push and PERSIST the request, so one FRONT visit downgraded every later tele clip.

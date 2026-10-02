@@ -221,17 +221,22 @@ class ReviewSurfacedSeamsTest {
     fun `tele zoom marks share the rail's availability wording`() {
         assertEquals(
             CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING,
-            teleZoomMarkState(selected = true, cameraReady = true, recording = true).state,
+            teleZoomMarkState(selected = true, cameraReady = true, reopenInProgress = false, recording = true).state,
         )
         assertEquals(
             CameraControlSelectionState.CAMERA_RECONFIGURING,
-            teleZoomMarkState(selected = false, cameraReady = false, recording = false).state,
+            teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = true, recording = false).state,
         )
-        val selected = teleZoomMarkState(selected = true, cameraReady = true, recording = false)
+        // AGG6-9: a cold start or the terminal is not "reconfiguring".
+        assertEquals(
+            CameraControlSelectionState.UNAVAILABLE,
+            teleZoomMarkState(selected = false, cameraReady = false, reopenInProgress = false, recording = false).state,
+        )
+        val selected = teleZoomMarkState(selected = true, cameraReady = true, reopenInProgress = false, recording = false)
         assertEquals(CameraControlSelectionState.SELECTED, selected.state)
         assertTrue(selected.enabled)
         assertFalse(
-            teleZoomMarkState(selected = false, cameraReady = true, recording = true).enabled,
+            teleZoomMarkState(selected = false, cameraReady = true, reopenInProgress = false, recording = true).enabled,
         )
     }
 

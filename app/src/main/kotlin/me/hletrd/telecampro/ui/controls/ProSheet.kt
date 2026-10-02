@@ -882,7 +882,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // the 10-bit trade caption (AGG2-35/AGG3-17), and a reopen reads as "reconfiguring".
         sessionOutputs = state.photoSessionOutputs,
         cameraReady = state.cameraReady,
-        reopenInProgress = state.cameraCondition in me.hletrd.telecampro.camera.CAMERA_REOPEN_CONDITION_MESSAGES,
+        reopenInProgress = state.reopenInProgress,
         // Neither pure session truth nor pure device capability — see [rawSelectable]. Session truth
         // alone made the chip unreachable on the logical photo route (the route only moves BECAUSE
         // DNG is chosen); capability alone left it live in a 10-bit video session that drops both
@@ -1110,13 +1110,14 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
     // Both refusal branches are word for word the toast the SAME refusal already emits from the
     // ViewModel (onCaptureCustomWb guards these two conditions in this order): the caption and the
-    // toast are one instruction seen twice, not two instructions. "Camera reconfiguring…" is also
-    // the app's single name for !cameraReady everywhere else.
+    // toast are one instruction seen twice, not two instructions. "Camera reconfiguring…" only while
+    // that is true ([CameraUiState.reopenInProgress], AGG6-9); a cold start or the terminal "reopen
+    // the app" gets no caption — the disabled chip and the status plate already say it.
     Captioned(
         if (customWbCaptureEnabled) {
             stringResource(R.string.custom_wb_aim_card)
         } else if (!state.cameraReady) {
-            stringResource(R.string.status_camera_reconfiguring)
+            if (state.reopenInProgress) stringResource(R.string.status_camera_reconfiguring) else null
         } else {
             stringResource(R.string.status_use_auto_wb)
         },

@@ -157,6 +157,7 @@
     <string name="a11y_state_ready">Ready</string>
     <string name="a11y_state_unavailable">Unavailable</string>
     <string name="a11y_unavailable_while_recording">Unavailable while recording</string>
+    <string name="a11y_unavailable">Unavailable</string>
     <string name="a11y_selected_teleconverter_on">Selected; teleconverter on</string>
     <string name="a11y_state_on">On</string>
     <string name="a11y_state_off">Off</string>

@@ -271,7 +271,7 @@ internal val CAMERA_CONDITION_ENDING_MESSAGES: Set<CameraStatusMessage> = setOf(
  * The exhausted-retry terminals: the camera or preview is GONE until the app is reopened, so they end
  * every condition, whichever family scheduled it.
  */
-private val CAMERA_TERMINAL_MESSAGES: Set<CameraStatusMessage> = setOf(
+internal val CAMERA_TERMINAL_MESSAGES: Set<CameraStatusMessage> = setOf(
     CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,
     CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN,
 )
@@ -289,9 +289,11 @@ internal val OPTICS_CONDITION_MESSAGES: Set<CameraStatusMessage> = setOf(
     CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
 )
 
-/** The reopen/recovery conditions the Output row calls "Camera reconfiguring…" (AGG5-55). */
+/**
+ * The recovery/retry conditions that read as "Camera reconfiguring…" even before this foreground
+ * session's first Ready (AGG5-55); see `CameraUiState.reopenInProgress` for the full predicate.
+ */
 internal val CAMERA_REOPEN_CONDITION_MESSAGES: Set<CameraStatusMessage> = setOf(
-    CameraStatusMessage.CAMERA_RECONFIGURING,
     CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
     CameraStatusMessage.CAMERA_ERROR_RECOVERING,
     CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,

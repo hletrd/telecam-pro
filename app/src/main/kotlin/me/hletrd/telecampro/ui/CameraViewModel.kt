@@ -1053,6 +1053,9 @@ class CameraViewModel private constructor(
                         // answer from photoSessionOutputs at render time (effectivePhotoFormats).
                         current.copy(
                             cameraReady = true,
+                            // A later Not-Ready is a reopen of this working camera (AGG6-9).
+                            cameraReadyEstablished = true,
+                            cameraTerminal = false,
                             photoSessionOutputs = publication.photoOutputs,
                         )
                     }
@@ -2018,6 +2021,9 @@ class CameraViewModel private constructor(
                 it.copy(
                     status = if (publication.shownChanged) publication.plate.shown else it.status,
                     cameraCondition = publication.plate.condition?.message,
+                    // Latched whether or not the plate showed it: the camera is gone either way.
+                    cameraTerminal = it.cameraTerminal ||
+                        status?.message in me.hletrd.telecampro.camera.CAMERA_TERMINAL_MESSAGES,
                 )
             }
             if (publication.shownChanged) armStatusTimer(publication.plate, statusOwner)
@@ -4682,6 +4688,8 @@ class CameraViewModel private constructor(
         // publish again after resume; leaving untimed recovery copy behind would resurrect a stale
         // pill over the next generation.
         clearProgressStatus()
+        // The next resume is a cold start, not a reopen of this session's camera (AGG6-9).
+        _state.update { it.copy(cameraReadyEstablished = false, cameraTerminal = false) }
         cancelCountdown()
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
         // to a phantom "recording" state with the timer still ticking.

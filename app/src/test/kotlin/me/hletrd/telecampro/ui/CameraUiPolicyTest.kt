@@ -128,21 +128,26 @@ class CameraUiPolicyTest {
 
     @Test
     fun `focal rail exposes selection converter reconfiguration and REC truth`() {
-        val selected = focalRailState(LensChoice.TELE3X, LensChoice.TELE3X, true, true, false)
+        val selected = focalRailState(LensChoice.TELE3X, LensChoice.TELE3X, true, true, false, false)
         assertTrue(selected.selected)
         assertTrue(selected.enabled)
         assertEquals(CameraControlSelectionState.SELECTED_TELECONVERTER_ON, selected.state)
         assertEquals(Role.RadioButton, selected.accessibilityRole)
 
-        val unselected = focalRailState(LensChoice.MAIN, LensChoice.TELE3X, true, true, false)
+        val unselected = focalRailState(LensChoice.MAIN, LensChoice.TELE3X, true, true, false, false)
         assertFalse(unselected.selected)
         assertEquals(CameraControlSelectionState.NOT_SELECTED, unselected.state)
 
-        val reconfiguring = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, false, false)
+        val reconfiguring = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, false, true, false)
         assertFalse(reconfiguring.enabled)
         assertEquals(CameraControlSelectionState.CAMERA_RECONFIGURING, reconfiguring.state)
 
-        val recording = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, true, true)
+        // AGG6-9: Not Ready but NOT reopening (cold start, the terminal) is plainly unavailable.
+        val notReopening = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, false, false, false)
+        assertFalse(notReopening.enabled)
+        assertEquals(CameraControlSelectionState.UNAVAILABLE, notReopening.state)
+
+        val recording = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, true, false, true)
         assertFalse(recording.enabled)
         assertEquals(CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING, recording.state)
     }

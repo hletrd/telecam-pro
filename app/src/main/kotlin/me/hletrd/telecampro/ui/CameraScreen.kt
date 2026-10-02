@@ -2882,6 +2882,7 @@ internal fun FocalRail(
                         presentation = teleZoomMarkState(
                             selected = mark == activeMark,
                             cameraReady = state.cameraReady,
+                            reopenInProgress = state.reopenInProgress,
                             recording = state.isRecording,
                         ),
                         onClick = { onTeleZoomMark(mark) },
@@ -2911,6 +2912,7 @@ internal fun FocalRail(
                             selectedLens = state.lens,
                             teleconverter = state.teleconverterMode,
                             cameraReady = state.cameraReady,
+                            reopenInProgress = state.reopenInProgress,
                             recording = state.isRecording,
                         ),
                         onClick = { onLens(choice) },
@@ -2984,6 +2986,7 @@ internal fun RailChip(
         when (presentation.state) {
             CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING -> R.string.a11y_unavailable_while_recording
             CameraControlSelectionState.CAMERA_RECONFIGURING -> R.string.status_camera_reconfiguring
+            CameraControlSelectionState.UNAVAILABLE -> R.string.a11y_unavailable
             CameraControlSelectionState.SELECTED -> R.string.a11y_selected
             CameraControlSelectionState.SELECTED_TELECONVERTER_ON -> R.string.a11y_selected_teleconverter_on
             CameraControlSelectionState.NOT_SELECTED -> R.string.a11y_not_selected

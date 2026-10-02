@@ -638,6 +638,8 @@ internal data class FocalRailState(
 internal enum class CameraControlSelectionState {
     UNAVAILABLE_WHILE_RECORDING,
     CAMERA_RECONFIGURING,
+    // Not Ready and NOT reconfiguring (cold start, the terminal "reopen the app") — AGG6-9.
+    UNAVAILABLE,
     SELECTED,
     SELECTED_TELECONVERTER_ON,
     NOT_SELECTED,
@@ -648,6 +650,7 @@ internal fun focalRailState(
     selectedLens: LensChoice,
     teleconverter: Boolean,
     cameraReady: Boolean,
+    reopenInProgress: Boolean,
     recording: Boolean,
 ): FocalRailState {
     val selected = choice == selectedLens
@@ -660,6 +663,7 @@ internal fun focalRailState(
         state = railChipState(
             selected = selected,
             cameraReady = cameraReady,
+            reopenInProgress = reopenInProgress,
             recording = recording,
             teleconverterSelected = teleconverter && choice == LensChoice.TELE3X,
         ),
@@ -677,22 +681,27 @@ internal fun focalRailState(
 internal fun teleZoomMarkState(
     selected: Boolean,
     cameraReady: Boolean,
+    reopenInProgress: Boolean,
     recording: Boolean,
 ): FocalRailState = FocalRailState(
     selected = selected,
     enabled = cameraReady && !recording,
-    state = railChipState(selected, cameraReady, recording),
+    state = railChipState(selected, cameraReady, reopenInProgress, recording),
     accessibilityRole = Role.RadioButton,
 )
 
 private fun railChipState(
     selected: Boolean,
     cameraReady: Boolean,
+    reopenInProgress: Boolean,
     recording: Boolean,
     teleconverterSelected: Boolean = false,
 ): CameraControlSelectionState = when {
     recording -> CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING
-    !cameraReady -> CameraControlSelectionState.CAMERA_RECONFIGURING
+    // The Output row's predicate (CameraUiState.reopenInProgress, AGG6-9): TalkBack used to read
+    // "Camera reconfiguring…" on every chip after the terminal "reopen the app".
+    !cameraReady && reopenInProgress -> CameraControlSelectionState.CAMERA_RECONFIGURING
+    !cameraReady -> CameraControlSelectionState.UNAVAILABLE
     teleconverterSelected -> CameraControlSelectionState.SELECTED_TELECONVERTER_ON
     selected -> CameraControlSelectionState.SELECTED
     else -> CameraControlSelectionState.NOT_SELECTED

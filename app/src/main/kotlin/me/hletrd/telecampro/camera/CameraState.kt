@@ -1800,10 +1800,14 @@ data class CameraUiState(
     val cameraPolicyBlocked: Boolean = false,
     val cameraOverrideId: String? = null,
     val status: CameraStatus? = null,
-    // The live PROGRESS condition (reopen, recovery, retry, cold start) whether the plate shows it or
-    // it waits behind an event (`StatusPlate.condition`). The Output row says "reconfiguring" only
-    // while one of the reopen/recovery conditions holds (AGG5-55), not for every not-Ready state.
+    // The live PROGRESS condition (recovery, retry, cold start) whether the plate shows it or it waits
+    // behind an event (`StatusPlate.condition`). One of the inputs of [reopenInProgress].
     val cameraCondition: CameraStatusMessage? = null,
+    // A session was accepted (Ready) since this foreground start, so a later Not-Ready is the reopen
+    // of a working camera, not the cold start; onStop clears it (a resume IS a cold start).
+    val cameraReadyEstablished: Boolean = false,
+    // The exhausted-retry terminal ("reopen the app") was published and no Ready has followed.
+    val cameraTerminal: Boolean = false,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
     val lastMediaUri: android.net.Uri? = null,
     // Owner-null restore candidates match a TeleCam format but cannot claim TeleCam authorship.
@@ -1819,6 +1823,20 @@ data class CameraUiState(
     val waveformData: WaveformData? = null,
 ) {
     val reviewOpen: Boolean get() = openReview != null
+
+    /**
+     * Whether "Camera reconfiguring…" is TRUE now (AGG6-9) — the one predicate the Output row, the
+     * focal rail's TalkBack state and the Custom WB caption share. AGG5-55 keyed it on a PROGRESS
+     * `CAMERA_RECONFIGURING` condition, but no optics door publishes one when an ordinary reopen
+     * (DNG, aspect, fps, lens, mode) begins — that message was only ever a shutter/REC refusal — so
+     * the row said nothing during exactly the reopen it was written for, while the rail and the WB
+     * caption still said "reconfiguring" for the cold start and the terminal. Now: Not-Ready after
+     * a Ready in this foreground session, or a recovery/retry condition, and never after the
+     * terminal ("reopen the app"), which no Ready will follow.
+     */
+    val reopenInProgress: Boolean
+        get() = !cameraReady && !cameraTerminal &&
+            (cameraReadyEstablished || cameraCondition in CAMERA_REOPEN_CONDITION_MESSAGES)
 
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots

@@ -66,8 +66,8 @@ internal data class PhotoFormatChipModel(
  *
  * [rawAvailable] is the caller's [me.hletrd.telecampro.camera.rawSelectable] answer (neither pure
  * session truth nor bare capability). [heifAvailable] is the device's HEIF encoder fact.
- * [reopenInProgress] is whether a reopen/recovery condition holds right now
- * ([me.hletrd.telecampro.camera.CAMERA_REOPEN_CONDITION_MESSAGES]); only it earns "reconfiguring".
+ * [reopenInProgress] is [me.hletrd.telecampro.camera.CameraUiState.reopenInProgress]; only it earns
+ * "reconfiguring".
  */
 internal fun photoFormatChipModel(
     request: PhotoFormats,
@@ -98,8 +98,8 @@ internal fun photoFormatChipModel(
     val jpegEnabled = processedAvailable && (!displayed.jpeg || displayed.heif || rawSelected)
     val dngEnabled = rawAvailable && (!displayed.dngRaw || processedRequested)
     val caption = when {
-        // Not Ready: only a live reopen/recovery is "reconfiguring" (AGG5-55). Cold start, pause and
-        // the exhausted-retry terminal are named by the plate; the row adds no claim of its own.
+        // Not Ready: only a live reopen/recovery is "reconfiguring" (AGG5-55 / AGG6-9). Cold start,
+        // pause and the exhausted-retry terminal are named by the plate; the row adds no claim.
         reconfiguring -> R.string.status_camera_reconfiguring.takeIf { reopenInProgress }
         // Same reasoning as the Ready-publication status: in VIDEO an accepted 10-bit session drops
         // the still readers by design, so the row says what it BOUGHT rather than what it lost.
