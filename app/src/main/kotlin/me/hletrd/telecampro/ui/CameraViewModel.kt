@@ -822,6 +822,10 @@ class CameraViewModel private constructor(
      * - [aeLockPrior]: the operator's value under a momentary AEL hold the recall cancelled. The
      *   rollback restored the HELD `aeLock = true`, the release then restored nothing, and a
      *   momentary press became a persisted latched lock (the AGG4-74 defect via the rollback door).
+     * - [armedStabMode] / [priorStabMode] and [armedFrameRate] / [priorFrameRate]: the stabilization
+     *   and frame-rate REQUESTS the recall wrote and what they were before (MRG5-8). Since AGG5-4
+     *   those feed `currentExtras` as the operator's request, which caps narrowing never corrects,
+     *   so a rolled-back bank's values were persisted as if it had loaded.
      *
      * [generation] is what `setResolvedOptics` returned — the transaction it BEGAN (MRG5-6), never a
      * later re-read another intent could already have bumped.
@@ -831,6 +835,10 @@ class CameraViewModel private constructor(
         val armed: PendingInventoryRequest?,
         val prior: PendingInventoryRequest,
         val aeLockPrior: Boolean?,
+        val armedStabMode: VideoStabMode,
+        val priorStabMode: VideoStabMode,
+        val armedFrameRate: VideoFrameRate,
+        val priorFrameRate: VideoFrameRate,
     )
     private var recallRollbackRestore: RecallRollbackRestore? = null
     // The operator's recording-size REQUEST, kept apart from `videoResolution` (the size the engine
@@ -1155,6 +1163,16 @@ class CameraViewModel private constructor(
                         if (pendingPhotoFormatsUntilInventory == armed.formats) {
                             pendingPhotoFormatsUntilInventory = recallRestore.prior.formats
                         }
+                    }
+                }
+                // MRG5-8: the stabilization / frame-rate REQUESTS under the same rule — back to what
+                // they were only while they still hold the recall's value, so a newer pick survives.
+                recallRestore?.let { restore ->
+                    if (requestedVideoStabMode == restore.armedStabMode) {
+                        requestedVideoStabMode = restore.priorStabMode
+                    }
+                    if (requestedVideoFrameRate == restore.armedFrameRate) {
+                        requestedVideoFrameRate = restore.priorFrameRate
                     }
                 }
                 // AGG5-24: the restored baseline carried the HELD AE lock of a hold this recall
@@ -1664,6 +1682,8 @@ class CameraViewModel private constructor(
         // Mirrors setResolvedOptics: a recalled size becomes the request; none keeps the current one.
         restoredVideoSize?.let { requestedVideoResolution = it }
         // A recalled/restored stabilization and frame rate are the operator's requests (AGG5-4).
+        val priorStabRequest = requestedVideoStabMode
+        val priorFrameRateRequest = requestedVideoFrameRate
         requestedVideoStabMode = e.videoStabMode
         requestedVideoFrameRate = safeFrameRate
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
@@ -1681,6 +1701,10 @@ class CameraViewModel private constructor(
             armed = armedPending,
             prior = priorPending,
             aeLockPrior = cancelledAeLockPrior,
+            armedStabMode = e.videoStabMode,
+            priorStabMode = priorStabRequest,
+            armedFrameRate = safeFrameRate,
+            priorFrameRate = priorFrameRateRequest,
         )
         // AGG5-20: the recalled punch-in is the operator's value now, so the focus-ruler assist no
         // longer owns the field. Left set, a ruler close after the recall switched the bank's loupe

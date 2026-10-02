@@ -24,6 +24,8 @@ import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.effectiveFocalMm
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.ExtraSettings
+import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.storage.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -429,6 +431,46 @@ class OpticsRecallTransactionRobolectricTest {
         assertFalse("the held lock must not survive the rollback", vm.state.value.controls.aeLock)
         ViewModelTestAccess.invoke(vm, "saveSettingsIfEnabled")
         assertEquals(false, SettingsStore(app).load()?.controls?.aeLock)
+    }
+
+    // MRG5-8: a rolled-back recall's stabilization / frame-rate REQUESTS go back to the operator's,
+    // so the rollback's own save does not persist the bank it was told did not load. A newer pick
+    // made after the recall (here: the frame rate) is the operator's and survives.
+    @Test
+    fun `owned rollback restores the stabilization and frame-rate requests`() {
+        SettingsStore(app).savePreset(
+            MemorySlot.MR2,
+            ManualControls(zoomRatio = 1f),
+            ExtraSettings(
+                mode = CaptureMode.VIDEO,
+                videoStabMode = VideoStabMode.OFF,
+                videoFrameRate = VideoFrameRate.FPS_25,
+            ),
+            "",
+            "",
+        )
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        installController(engine, currentDeclaration(engine))
+        ViewModelTestAccess.setField(vm, "requestedVideoStabMode", VideoStabMode.STANDARD)
+        ViewModelTestAccess.setField(vm, "requestedVideoFrameRate", VideoFrameRate.FPS_30)
+
+        assertNotNull(vm.recallMemorySlot(MemorySlot.MR2))
+        assertEquals(VideoStabMode.OFF, ViewModelTestAccess.field(vm, "requestedVideoStabMode"))
+        val attempt = currentRollbackAttempt(engine)
+        ViewModelTestAccess.setField(vm, "requestedVideoFrameRate", VideoFrameRate.FPS_24)
+        invokeRollback(engine, attempt)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(VideoStabMode.STANDARD, ViewModelTestAccess.field(vm, "requestedVideoStabMode"))
+        assertEquals(
+            "a newer pick is the operator's and survives",
+            VideoFrameRate.FPS_24,
+            ViewModelTestAccess.field(vm, "requestedVideoFrameRate"),
+        )
+        val extras = ViewModelTestAccess.invoke(vm, "currentExtras") as ExtraSettings
+        assertEquals(VideoStabMode.STANDARD, extras.videoStabMode)
+        assertEquals(VideoFrameRate.FPS_24, extras.videoFrameRate)
     }
 
     @Test
