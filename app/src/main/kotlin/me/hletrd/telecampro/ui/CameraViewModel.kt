@@ -938,9 +938,9 @@ class CameraViewModel private constructor(
                             // NO route-switch "RAW unavailable" toast (user-removed 2026-07-31:
                             // "too noisy" — every front flip with DNG selected announced a state
                             // the vanished chrome already shows). The sheet caption under the
-                            // format chips remains the one home for that truth, and the
-                            // CAPTURE-time status in CameraEngine still tells the user when an
-                            // actual shot dropped its DNG.
+                            // format chips remains the one home for that truth. Only a RAW-capable
+                            // route whose session LOST RAW (a drop-RAW rung) is announced, once per
+                            // session shape, by CameraEngine.commitOpticsReady (AGG5-10).
                             else -> null
                         }
                         // photoFormats stays the REQUEST (AGG3-18); readouts derive the session's

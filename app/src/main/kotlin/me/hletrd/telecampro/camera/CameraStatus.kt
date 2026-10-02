@@ -148,6 +148,10 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.STOP_RECORDING_CAMERA_UNCHANGED,
         CameraStatusMessage.SWITCH_TO_REAR_FIRST,
         CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY,
+        // A WARNING, announced once per session shape at Ready (AGG5-10): the shot still saves its
+        // HEIF/JPEG, so a red assertive 6 s ERROR on every press overstated it and, under the rank
+        // arbiter, also swallowed every lower-rank refusal for those 6 s.
+        CameraStatusMessage.RAW_UNAVAILABLE,
         CameraStatusMessage.OUTPUT_SAVED_PENDING,
         CameraStatusMessage.DNG_SAVE_DELAYED,
         CameraStatusMessage.VIDEO_SAVE_DELAYED,
@@ -178,7 +182,6 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.SELECTED_FPS_UNAVAILABLE,
         CameraStatusMessage.SELECTED_CODEC_UNAVAILABLE,
         CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE,
-        CameraStatusMessage.RAW_UNAVAILABLE,
         CameraStatusMessage.PHOTO_CAPTURE_FAILED,
         CameraStatusMessage.PHOTO_SAVE_FAILED,
         CameraStatusMessage.HEIF_SAVE_FAILED,
