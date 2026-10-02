@@ -46,6 +46,8 @@ import me.hletrd.telecampro.MemoryBankAudioProvenance
 import me.hletrd.telecampro.bankAudioOffByDenial
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.dngOnlySubstitution
+import me.hletrd.telecampro.camera.RawLossAnnouncement
+import me.hletrd.telecampro.camera.rawLossAnnouncementAtReady
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -767,6 +769,10 @@ class CameraViewModel private constructor(
     // substitution. Not-Ready publications leave it alone, so a reopen of the same session shape
     // does not re-announce; a Ready that is not DNG-only re-arms it (AGG4-67).
     private var readyDngOnlyAnnounced = false
+    // Main-confined: the accepted session shape whose RAW loss the plate last SHOWED (AGG5-10 /
+    // MRG5-1). The Engine used to latch this at emission, so a notice dropped under an unexpired
+    // ERROR was lost for that shape for good; the fold now latches it only when shown.
+    private var rawLossAnnouncedShape: String? = null
     // The plate's off-screen parts (AGG4-65 / AGG5-11): a PROGRESS condition waiting behind an event,
     // a higher event a RESPONSE is covering, and when the shown status expires (uptime ms). `shown`
     // itself lives in `_state.status`. Guarded by the camera-ready publication gate's status
@@ -964,6 +970,7 @@ class CameraViewModel private constructor(
                     var acceptedPreTele = Float.NaN
                     var acceptedApplied = false
                     var acceptedDngOnly = false
+                    var rawLoss: RawLossAnnouncement? = null
                     _state.update { current ->
                         // Reset PER ATTEMPT: update() retries on CAS contention, and a retry that
                         // LOSES gate ownership must not leave attempt 1's acceptedApplied=true
@@ -973,6 +980,7 @@ class CameraViewModel private constructor(
                         acceptedPreTele = Float.NaN
                         acceptedApplied = false
                         acceptedDngOnly = false
+                        rawLoss = null
                         formatStatus = null
                         if (!cameraReadyPublicationGate.owns(publication)) return@update current
                         // RAW truth and the pre-TELE return baseline change only when a camera intent
@@ -987,6 +995,15 @@ class CameraViewModel private constructor(
                         acceptedApplied = true
                         acceptedDngOnly = current.mode == CaptureMode.PHOTO &&
                             dngOnlySubstitution(current.photoFormats, publication.photoOutputs)
+                        rawLoss = publication.rawLoss?.let { facts ->
+                            rawLossAnnouncementAtReady(
+                                rawWanted = facts.rawWanted,
+                                rawSelectable = facts.rawSelectable,
+                                rawInSession = publication.photoOutputs.raw,
+                                announcedShape = rawLossAnnouncedShape,
+                                shape = facts.shape,
+                            )
+                        }
                         formatStatus = when {
                             // VIDEO never reports this. Stills during a take are not a feature this
                             // app owes anyone -- a professional body records, it does not offer a
@@ -1011,7 +1028,9 @@ class CameraViewModel private constructor(
                             // the vanished chrome already shows). The sheet caption under the
                             // format chips remains the one home for that truth. Only a RAW-capable
                             // route whose session LOST RAW (a drop-RAW rung) is announced, once per
-                            // session shape, by CameraEngine.commitOpticsReady (AGG5-10).
+                            // session shape (AGG5-10); rawLossAnnouncementAtReady never speaks on
+                            // a structurally RAW-less route, so a front flip stays quiet.
+                            rawLoss?.announce == true -> CameraStatusMessage.RAW_UNAVAILABLE.status()
                             else -> null
                         }
                         // photoFormats stays the REQUEST (AGG3-18); readouts derive the session's
@@ -1028,12 +1047,19 @@ class CameraViewModel private constructor(
                         // a notice dropped under an unexpired retained-take line used to latch
                         // anyway, so no later Ready of that shape ever announced it.
                         if (!acceptedDngOnly) readyDngOnlyAnnounced = false
+                        // Same rule for RAW loss (MRG5-1): a non-announcing verdict moves the latch
+                        // now (clears it, or keeps it on a RAW-less route); an announcing one
+                        // latches below only once the plate SHOWED it.
+                        rawLoss?.takeUnless { it.announce }?.let { rawLossAnnouncedShape = it.announcedShape }
                     }
                     formatStatus?.let { status ->
                         cameraReadyPublicationGate.runIfOwned(publication) {
                             val shown = publishStatus(status)
                             if (shown && status.message == CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY) {
                                 readyDngOnlyAnnounced = true
+                            }
+                            if (shown && status.message == CameraStatusMessage.RAW_UNAVAILABLE) {
+                                rawLossAnnouncedShape = rawLoss?.announcedShape
                             }
                         }
                     }

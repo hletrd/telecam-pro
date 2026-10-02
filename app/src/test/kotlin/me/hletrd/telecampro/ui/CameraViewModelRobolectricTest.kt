@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.camera.CameraController
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraRoute
@@ -967,6 +968,51 @@ class CameraViewModelRobolectricTest {
         assertNull(v.state.value.status)
         ready()
         assertEquals(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY, v.state.value.status?.message)
+    }
+
+    // MRG5-1 / MRG5-7: the RAW-loss notice, through the REAL commitOpticsReady and the Ready fold. It
+    // speaks exactly once per RAW-capable RAW-less shape, never on a structurally RAW-less route, and
+    // a notice the plate dropped under a retained-take line comes back with the next Ready.
+    @Test fun `RAW loss is announced once per shape and again after the plate dropped it`() {
+        val (v, e) = createViewModel()
+        fun field(name: String) = CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        val controller = CameraController(app)
+        field("controller").set(e, controller)
+        field("previewReady").setBoolean(e, true)
+        field("rawWanted").setBoolean(e, true)
+        field("caps").set(e, ViewModelTestAccess.caps().copy(supportsRaw = true))
+        val optics = (field("opticsIntentGeneration").get(e) as java.util.concurrent.atomic.AtomicLong).get()
+        val session = (field("cameraSessionGeneration").get(e) as java.util.concurrent.atomic.AtomicLong).get()
+        val commit = CameraEngine::class.java.declaredMethods.single {
+            it.name == "commitOpticsReady" && it.parameterTypes.size == 6
+        }.apply { isAccessible = true }
+        var shown = 0
+        fun ready() {
+            assertTrue(commit.invoke(e, optics, controller, PhotoSessionOutputs(processed = true), session, {}, null) as Boolean)
+            idleFor(0)
+            if (v.state.value.status?.message == CameraStatusMessage.RAW_UNAVAILABLE) {
+                shown++
+                setState(v) { it.copy(status = null) }
+            }
+        }
+
+        field("activeCameraRoute").set(e, CameraRoute.FRONT)
+        ready()
+        assertEquals("a structurally RAW-less route stays quiet", 0, shown)
+        field("activeCameraRoute").set(e, CameraRoute.BACK)
+
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        ready()
+        assertEquals("the notice is out-ranked", retained, v.state.value.status)
+        assertEquals(0, shown)
+        idleFor(6_000)
+        assertNull(v.state.value.status)
+        ready()
+        assertEquals("the dropped notice comes back with the next Ready", 1, shown)
+        ready()
+        ready()
+        assertEquals("same session shape: exactly once", 1, shown)
     }
 
     // AGG5-11 / UX5-2: a response to the operator's own tap is never silently dropped; the retained

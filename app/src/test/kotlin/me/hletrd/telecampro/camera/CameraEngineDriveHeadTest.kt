@@ -41,6 +41,23 @@ class CameraEngineDriveHeadTest {
         assertHeadRefused(DriveMode.AEB)
     }
 
+    // MRG5-7: AGG5-10 removed the per-press RAW_UNAVAILABLE. On a RAW-less accepted session (the
+    // FRONT route's only shape) a DNG-wanting press must stay quiet; the Ready fold owns the notice.
+    @Test
+    fun `a DNG-wanting press on a RAW-less session raises no RAW notice`() {
+        val engine = acceptedEngine()
+        setField(engine, "activeCameraRoute", CameraRoute.FRONT)
+        val statuses = mutableListOf<CameraStatusMessage>()
+        engine.onStatus = { it?.message?.let(statuses::add) }
+        // Stop the press before dispatch: there is no opened camera behind this controller.
+        while (true) heldLeases += ProcessProcessedSnapshotBudget.owner.tryAcquire() ?: break
+
+        engine.capturePhoto(PhotoFormats(heif = true, dngRaw = true))
+
+        assertTrue("the press reached the head", CameraStatusMessage.FINISHING_PREVIOUS_PHOTO in statuses)
+        assertFalse(CameraStatusMessage.RAW_UNAVAILABLE in statuses)
+    }
+
     private fun assertHeadRefused(drive: DriveMode) {
         val engine = acceptedEngine()
         engine.setDriveMode(drive)

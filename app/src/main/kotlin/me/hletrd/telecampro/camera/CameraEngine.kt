@@ -492,6 +492,7 @@ class CameraEngine internal constructor(
         opticsGeneration: Long,
         sessionGeneration: Long,
         photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
+        rawLoss: RawLossReadyFacts? = null,
     ): CameraReadyPublication {
         val sequence = cameraReadyPublicationSequence.incrementAndGet()
         if (ready) lastReadyPublicationSequence = sequence
@@ -502,6 +503,7 @@ class CameraEngine internal constructor(
             opticsGeneration = opticsGeneration,
             sessionGeneration = sessionGeneration,
             photoOutputs = photoOutputs,
+            rawLoss = rawLoss,
         )
     }
 
@@ -844,7 +846,6 @@ class CameraEngine internal constructor(
         var publication: CameraReadyPublication? = null
         var acceptedDiagnostic: String? = null
         var policyPublication: CameraPolicyPublication? = null
-        var rawLossAnnouncement = false
         val publicationGeneration = opticsCommitGate.commit(
             expectedGeneration = expectedGeneration,
             ownsTerminal = {
@@ -869,21 +870,14 @@ class CameraEngine internal constructor(
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = expectedController.takeIf { effectiveReady }
-            publication = nextCameraReadyPublication(
-                ready = effectiveReady,
-                opticsGeneration = expectedGeneration,
-                sessionGeneration = sessionGeneration,
-                photoOutputs = photoOutputs,
-            )
             val acceptedMode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO
             val acceptedCameraId = selection?.let { it.physicalId ?: it.logicalId } ?: "none"
-            acceptedDiagnostic = "CameraSessionAccepted: controllerId=${expectedController.diagnosticId} " +
-                "opticsGeneration=$expectedGeneration sessionGeneration=$sessionGeneration " +
-                "requestGeneration=${expectedController.latestPreviewRequestGeneration} " +
-                "mode=${acceptedMode.name} cameraId=$acceptedCameraId ready=$effectiveReady"
-            cameraRecoveryAttempts = 0
-            val rawLossShape = "$acceptedCameraId|$photoOutputs"
-            rawLossAnnouncement = rawLossAnnouncementAtReady(
+            // The RAW-loss announcement's INPUTS ride the publication; the ViewModel's Ready fold
+            // owns the per-shape latch (MRG5-1). Latching here, at emission, lost the notice for
+            // the whole shape whenever the plate dropped it under an unexpired ERROR/retained
+            // line — likely on exactly this path, since a drop-RAW rung often follows a failed
+            // reopen whose ERROR is still showing. The fold latches only once it was SHOWN.
+            val rawLoss = RawLossReadyFacts(
                 rawWanted = rawWanted,
                 rawSelectable = rawSelectable(
                     deviceSupportsRaw = caps?.supportsRaw == true,
@@ -892,10 +886,20 @@ class CameraEngine internal constructor(
                     hiResSession = photoOutputs.hiRes,
                     frontFacing = activeCameraRoute == CameraRoute.FRONT,
                 ),
-                rawInSession = photoOutputs.raw,
-                announcedShape = rawLossAnnouncedShape,
-                shape = rawLossShape,
-            ).also { rawLossAnnouncedShape = it.announcedShape }.announce
+                shape = "$acceptedCameraId|$photoOutputs",
+            )
+            publication = nextCameraReadyPublication(
+                ready = effectiveReady,
+                opticsGeneration = expectedGeneration,
+                sessionGeneration = sessionGeneration,
+                photoOutputs = photoOutputs,
+                rawLoss = rawLoss,
+            )
+            acceptedDiagnostic = "CameraSessionAccepted: controllerId=${expectedController.diagnosticId} " +
+                "opticsGeneration=$expectedGeneration sessionGeneration=$sessionGeneration " +
+                "requestGeneration=${expectedController.latestPreviewRequestGeneration} " +
+                "mode=${acceptedMode.name} cameraId=$acceptedCameraId ready=$effectiveReady"
+            cameraRecoveryAttempts = 0
             if (cameraPolicyBlocked) {
                 // A session was accepted, so whatever refused us is gone. Retract the gate in the
                 // same commit that publishes Ready — leaving it up over a live camera would be a
@@ -913,7 +917,6 @@ class CameraEngine internal constructor(
         runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
         policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
         onCameraReadyChange?.invoke(checkNotNull(publication))
-        if (rawLossAnnouncement) onStatus?.invoke(CameraStatusMessage.RAW_UNAVAILABLE.status())
         return true
     }
 
@@ -3487,10 +3490,6 @@ class CameraEngine internal constructor(
     // DNG intent, mirrored from the ViewModel: decides whether photo takes the standalone route.
     @Volatile
     private var rawWanted = false
-    // The accepted session shape (camera id + output mask) whose RAW loss was last announced, so a
-    // drop-RAW rung says so once per shape rather than on every fast commit/recovery (AGG5-10).
-    // Written only inside commitOpticsReady's monitor-held terminal.
-    private var rawLossAnnouncedShape: String? = null
     // Bumped by every DNG write that does NOT own an optics transaction (no route flip: Video,
     // TELE, FRONT/EXTERNAL, before start, or a device without the RAW law). A rollback restores the
     // baseline DNG intent only while this still matches the baseline's value — otherwise it would
@@ -5213,8 +5212,9 @@ class CameraEngine internal constructor(
                 onStatus?.invoke(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY.status())
             // No per-press RAW_UNAVAILABLE (AGG5-10). On a structurally RAW-less route (FRONT,
             // hi-res, 10-bit video) the OSD and the Output caption already carry the state, and on
-            // a RAW-capable route that lost RAW (a drop-RAW ladder rung) commitOpticsReady
-            // announces it once per session shape. The per-press ERROR fired on every selfie.
+            // a RAW-capable route that lost RAW (a drop-RAW ladder rung) the ViewModel's Ready fold
+            // announces it once per session shape, from the facts commitOpticsReady publishes.
+            // The per-press ERROR fired on every selfie.
         }
         val effectiveDrive = captureDriveMode(driveMode, singleShot)
         when (effectiveDrive) {
@@ -8911,6 +8911,9 @@ internal data class RawLossAnnouncement(val announce: Boolean, val announcedShap
  * carry RAW ([rawSelectable] — never FRONT, hi-res, or 10-bit video, where the OSD/caption already
  * carry the structural state), and the accepted session nonetheless has no RAW (a drop-RAW ladder
  * rung). It speaks once per session [shape]; a session WITH RAW, or no DNG wish, clears the latch.
+ * The ViewModel's Ready fold adopts a non-announcing result's shape at once, but an announcing one
+ * only after the status plate actually SHOWED it (MRG5-1): a notice the arbiter dropped under an
+ * unexpired ERROR or retained-take line must come back with the next Ready of that shape.
  */
 internal fun rawLossAnnouncementAtReady(
     rawWanted: Boolean,

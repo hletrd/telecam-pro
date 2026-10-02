@@ -1357,6 +1357,21 @@ data class CameraReadyPublication(
     val opticsGeneration: Long,
     val sessionGeneration: Long,
     val photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
+    /** Ready-time RAW-loss inputs (AGG5-10); null on Not-Ready publications. */
+    val rawLoss: RawLossReadyFacts? = null,
+)
+
+/**
+ * What the Engine knew about RAW when it accepted a session: the DNG wish it was routing for,
+ * whether this route COULD carry RAW ([rawSelectable]), and the session shape (camera id + output
+ * mask) the once-per-shape latch keys on. The ViewModel's Ready fold feeds these to
+ * [rawLossAnnouncementAtReady] and owns the latch, because only it knows whether the plate showed
+ * the notice (MRG5-1).
+ */
+data class RawLossReadyFacts(
+    val rawWanted: Boolean,
+    val rawSelectable: Boolean,
+    val shape: String,
 )
 
 /**
