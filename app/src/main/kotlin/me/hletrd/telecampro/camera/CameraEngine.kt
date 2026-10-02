@@ -2098,8 +2098,15 @@ class CameraEngine internal constructor(
         rendererAssists.replayAll(ownedGl)
         if (paused || UnsafeRecorderQuarantine.isActive()) {
             startupTraceOwnership.revoke(startupTraceOwner)
-            // Enumeration only (CameraManager reads, no device open) and idempotent, so the
-            // unpaused order below is unchanged and this paused branch simply cannot lose it.
+            // Enumeration only (CameraManager reads, no device open) and idempotent, so this paused
+            // branch cannot lose the inventory. It keeps the unpaused ORDER too (AGG6-17): route
+            // availability resolves first, because the inventory enumerates the RESOLVED route.
+            // Enqueued against the UNKNOWN default (back = true), an external-only device found no
+            // back lens, published LensInventory.ALL — the PMA110 0.6/1/3/10x rail and finder gate
+            // it cannot reach — and latched it; resume's own resolve then cleared the latch and
+            // nothing on that path enqueued the inventory again. Resume finds the route resolved
+            // and leaves both untouched.
+            resolveInitialCameraRouteAvailability()
             runCatching { setupExecutor.execute { runCatching { publishLensInventoryOnce() } } }
             return
         }

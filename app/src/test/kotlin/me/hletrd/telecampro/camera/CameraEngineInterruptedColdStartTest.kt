@@ -73,6 +73,38 @@ class CameraEngineInterruptedColdStartTest {
         assertTrue(getField(engine, "lensInventoryPublished") as Boolean)
     }
 
+    // AGG6-17: the paused input-ready branch resolves the route before it enumerates the lens
+    // inventory. Against the UNKNOWN back-first default an external-only device found no back lens
+    // and latched LensInventory.ALL (0.6/1/3/10x) for the process.
+    @Test
+    fun `paused input-ready on an external-only device enumerates the external lens`() {
+        val manager = app.getSystemService(android.hardware.camera2.CameraManager::class.java)
+        val chars = org.robolectric.shadows.ShadowCameraCharacteristics.newCameraCharacteristics()
+        shadowOf(chars).set(
+            android.hardware.camera2.CameraCharacteristics.LENS_FACING,
+            android.hardware.camera2.CameraMetadata.LENS_FACING_EXTERNAL,
+        )
+        shadowOf(chars).set(
+            android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS,
+            floatArrayOf(26f),
+        )
+        shadowOf(manager).addCamera("7", chars)
+        val engine = engine()
+        val gl = currentGl(engine)
+        setField(gl, "handler", Handler(Looper.getMainLooper()))
+        val inventories = mutableListOf<LensInventory>()
+        engine.onLensInventory = { inventories += it }
+        setField(engine, "paused", true)
+        setField(engine, "glInputPending", true)
+
+        invoke(engine, "completeGlInputReady", gl, null)
+        shadowOf(Looper.getMainLooper()).idle()
+        drainSetup(engine)
+
+        assertEquals(1, inventories.size)
+        assertTrue("the rail reflects the external lens, not the PMA110 set", inventories.single() != LensInventory.ALL)
+    }
+
     @Test
     fun `resume re-binds a cold-start preview bind that the pause dropped`() {
         val engine = engine()
