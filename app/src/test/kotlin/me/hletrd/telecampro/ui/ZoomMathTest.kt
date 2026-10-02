@@ -662,20 +662,39 @@ class ZoomMathTest {
         }
     }
 
-    // AGG5-49 / CT5-6: a standalone route divides by the MEASURED main, so the main lens itself
-    // reads "1.0×" on a 26 mm tablet (it read "1.1×" against the PMA110 nominal 23 mm) and the
-    // 23.4 mm PMA110 main keeps the 69.4 mm periscope at "3.0×".
+    // AGG5-49 / CT5-6: a standalone route divides by the MEASURED main once it is outside the
+    // focal-caption band, so the main lens itself reads "1.0×" on a 26 mm tablet (it read "1.1×"
+    // against the PMA110 nominal 23 mm). MRG5-4: within the band the nominal stays the divisor, so
+    // PMA110's 23.4 mm main keeps every standalone readout byte-identical, 10× included.
     @Test
     fun `standalone route divides by the measured main equivalent`() {
         assertEquals("1.0×", formatDisplayZoom(1f, rearMultiplier(26f, measuredMain = 26f)))
         assertEquals("3.0×", formatDisplayZoom(1f, rearMultiplier(78f, measuredMain = 26f)))
+        assertEquals(1f, rearMultiplier(27f, measuredMain = 27f), 0f)
+        assertEquals("3.0×", formatDisplayZoom(1f, rearMultiplier(81f, measuredMain = 27f)))
+        // PMA110: the nominal divides, exactly as before the measured divisor existed.
+        assertEquals(23.4f / 23f, rearMultiplier(23.4f, measuredMain = 23.4f), 0f)
         assertEquals("1.0×", formatDisplayZoom(1f, rearMultiplier(23.4f, measuredMain = 23.4f)))
+        assertEquals(69.4f / 23f, rearMultiplier(69.4f, measuredMain = 23.4f), 0f)
         assertEquals("3.0×", formatDisplayZoom(1f, rearMultiplier(69.4f, measuredMain = 23.4f)))
+        assertEquals(10f, rearMultiplier(230f, measuredMain = 23.4f), 0f)
+        assertEquals("10.0×", formatDisplayZoom(1f, rearMultiplier(230f, measuredMain = 23.4f)))
         // Pre-inventory (no measured main) falls back to the nominal 23 mm, and a missing caps
         // equivalent reads the main itself rather than dividing by zero or NaN.
         assertEquals(26f / 23f, rearMultiplier(26f, measuredMain = null), 1e-6f)
         assertEquals(1f, rearMultiplier(null, measuredMain = 26f), 0f)
         assertEquals(1f, rearMultiplier(Float.NaN, measuredMain = 0f), 0f)
+    }
+
+    @Test
+    fun `the standalone divisor keeps the nominal inside the caption band`() {
+        assertEquals(23f, standaloneMainDivisorMm(25.2f), 0f)
+        assertEquals(23f, standaloneMainDivisorMm(20.8f), 0f)
+        assertEquals(25.5f, standaloneMainDivisorMm(25.5f), 0f)
+        assertEquals(20.5f, standaloneMainDivisorMm(20.5f), 0f)
+        assertEquals(23f, standaloneMainDivisorMm(null), 0f)
+        assertEquals(23f, standaloneMainDivisorMm(Float.NaN), 0f)
+        assertEquals(23f, standaloneMainDivisorMm(-1f), 0f)
     }
 
     private fun rearMultiplier(

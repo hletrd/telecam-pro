@@ -10,6 +10,7 @@ import me.hletrd.telecampro.camera.localZoomOf
 import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
+import me.hletrd.telecampro.ui.controls.LENS_CAPTION_ROUNDING_BAND
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
 import me.hletrd.telecampro.camera.standaloneRouteWanted
@@ -34,9 +35,12 @@ internal data class ZoomBounds(val lower: Float, val upper: Float)
  * The LOGICAL seamless route is 1:1 (AGG5-49 / RG5-2): its wire zoom is ALREADY main-relative
  * (`unifiedZoomOf` returns it unchanged), so multiplying it by the logical camera's own measured
  * equivalent ÷ the nominal 23 mm read "3.1×" at the 3× preset on PMA110 (23.4 mm) — a scale
- * applied twice. On a standalone route the divisor is the MEASURED main lens ([measuredMainEquivMm],
- * the inventory's MAIN preset focal), never the PMA110 nominal: a 26 mm tablet main read "1.1×" at
- * the very lens the rail calls "1×" (CT5-6). The nominal survives only as the pre-inventory fallback.
+ * applied twice. On a standalone route the divisor follows the focal-caption honesty rule
+ * ([standaloneMainDivisorMm]): the nominal 23 mm while the MEASURED main ([measuredMainEquivMm],
+ * the inventory's MAIN preset focal) is within [LENS_CAPTION_ROUNDING_BAND] of it, the measured
+ * main otherwise. A 26 mm tablet main read "1.1×" at the very lens the rail calls "1×" (CT5-6), but
+ * dividing PMA110's 23.4 mm main by itself moved every PMA110 standalone readout by ~1.7% and read
+ * the 230 mm lens as "9.8×" while the rail and `unifiedZoomOf` called it 10× (MRG5-4).
  *
  * [teleconverterMagnification] is the SELECTED converter's magnification (CameraUiState.
  * teleconverterMagnification). It is an explicit parameter, never a global read, so this whole file
@@ -60,9 +64,22 @@ internal fun zoomDisplayMultiplier(
     teleconverter -> teleDisplayBase(teleconverterMagnification)
     !standaloneRoute -> 1f
     else -> {
-        val main = measuredMainEquivMm?.takeIf { it.isFinite() && it > 0f } ?: LensChoice.MAIN.targetEquivMm
+        val main = standaloneMainDivisorMm(measuredMainEquivMm)
         (equivalentFocalMm?.takeIf { it.isFinite() && it > 0f } ?: main) / main
     }
+}
+
+/**
+ * The standalone display divisor (MRG5-4): the same rule `lensFocalCaption` applies to the "23 mm"
+ * literal. Within [LENS_CAPTION_ROUNDING_BAND] of the nominal main, the nominal IS that lens's round
+ * label, so PMA110 (23.4 mm) keeps dividing by 23 and stays byte-identical; outside it the measured
+ * main is the truth (a 26 or 27 mm tablet main reads "1.0×"). Unknown, zero or non-finite measured
+ * values fall back to the nominal, as before the inventory arrives.
+ */
+internal fun standaloneMainDivisorMm(measuredMainEquivMm: Float?): Float {
+    val nominal = LensChoice.MAIN.targetEquivMm
+    val measured = measuredMainEquivMm?.takeIf { it.isFinite() && it > 0f } ?: return nominal
+    return if (kotlin.math.abs(measured - nominal) > nominal * LENS_CAPTION_ROUNDING_BAND) measured else nominal
 }
 
 /**

@@ -64,7 +64,8 @@ class MainRelativeZoomMultiplierRobolectricTest {
             state(CaptureMode.PHOTO, equivMm = 69.4f, dng = true),
         )) {
             val mul = s.mainRelativeZoomMultiplier
-            assertEquals(69.4f / 23.4f, mul, 1e-5f)
+            // MRG5-4: 23.4 mm is inside the caption band, so the nominal 23 mm divides (byte-identical).
+            assertEquals(69.4f / 23f, mul, 1e-5f)
             val slider = zoomRulerScale(1f, 10f, mul, s.teleconverterMode)
             assertEquals("3.0×", formatZoomMultiplier(slider.display(1f)))
             assertEquals("3.0×", formatDisplayZoom(1f, mul))
