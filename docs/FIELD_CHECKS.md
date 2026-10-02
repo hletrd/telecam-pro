@@ -9,11 +9,14 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘.
-Ten remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable large-screen
-front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE capture
-pair plus a FrameGap read during a pinch, **D1** needs an off-axis sound source,
-**D2** needs REC takes on the TB336ZU tablet, and **E1/E2/E3/E4** need real MediaProvider ownership,
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘.
+Fourteen remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
+capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
+**A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
+**A9** needs a pause during cold start, **D1** needs an off-axis sound source,
+**D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
+live publication tail, and **E1/E2/E3/E4** need real MediaProvider ownership,
 system-consent, reset/reindex, and pending-expiry behavior. B1 closed the rotation
 work end to end; C1 confirmed the afocal
 correction against real converter glass. C3 is closed as an honest no-observable-difference result,
@@ -126,20 +129,67 @@ S4a result to a different camera/session.
   returning to TeleCam Pro; do not kill the camera process or infer success from session configure.
 - Take a front photo after each soak and verify capture completion plus a valid published file.
 
-**Pass:** the front finder sustains its advertised/selected cadence without recurring ≥200 ms gaps
+**Pass:** the front finder sustains its advertised/selected cadence without recurring >200 ms gaps
 or camera errors, memory/gralloc use stays bounded without growing across the soak/return cycle,
 thermal change is recorded rather than guessed, and the post-soak still completes and publishes.
 Record the exact measurements even when they pass. A failure keeps pseudo-ZSL disabled for that
 route/device until measured admission evidence exists.
 
-### A6. Photo-P handheld shutter follows the effective focal — ◯ OPEN 2026-10-02
+### A6. Photo-P handheld shutter follows the effective focal — ◯ OPEN 2026-10-02 (owner decision)
 
 Cycle 4 (A.20) made photo PROGRAM's handheld target 1/(EFFECTIVE focal): one `effectiveEquivFocalMm`
-now feeds the OSD focal, the program line, and the focus-detail exposure gate, so the target moves
-with zoom inside a lens band. That deliberately changes PMA110 exposure at any zoom above 1×. It
-also means every zoom step can re-center the app-side program shutter (≤0.35 stop per loop tick,
+now feeds the OSD focal, the program line, and the focus-detail exposure gate. Two things changed at
+once, and the second was not recorded when this entry was first written:
+
+1. **A zoom term.** Inside a lens band the target used to stay at the band's preset focal; it now
+   follows zoom. With TC on it is `teleconverterFocalMm × zoom`.
+2. **A measured focal instead of the nominal one.** Without TC the base is the opened camera's
+   MEASURED 35 mm equivalent (`caps.equivalentFocalMm`), not the preset's nominal 14/23/70/230 mm. So
+   PMA110 is not byte-identical even at the preset points, including the launch-default logical 1×.
+
+**The full PMA110 delta, before → after** (photo, app-side P, flash off; EV < 0 means a faster
+shutter, so ISO rises by the same amount while ISO is unrailed; measured logical equivalent 23.4 mm,
+with an earlier run at 23.0 mm; standalone 3× lens 69.4 mm; kit converter 300/70):
+
+| PMA110 state | before | after (23.4 mm logical) | after (23.0 mm logical) | Δ |
+|---|---|---|---|---|
+| logical, 0.6× preset | 71.43 ms (1/14) | 71.23 ms | 72.46 ms | ±0.02 EV |
+| logical, 1× (launch default) | 43.48 ms (1/23) | 42.74 ms | 43.48 ms | −0.025 EV / 0 |
+| logical, 2× pinch | 43.48 ms | 21.37 ms | 21.74 ms | −1.0 EV |
+| logical, 2.9× (top of the main band) | 43.48 ms | 14.74 ms | 14.99 ms | −1.56 EV |
+| logical, 3× preset | 14.29 ms (1/70) | 14.25 ms | 14.49 ms | ±0.02 EV |
+| logical, 5× | 14.29 ms | 8.55 ms | 8.70 ms | −0.74 EV |
+| logical, 9.9× (top of the 3× band) | 14.29 ms | 4.32 ms | 4.39 ms | −1.73 EV |
+| logical, 10× preset | 4.348 ms (1/230) | 4.274 ms | 4.348 ms | −0.02 EV / 0 |
+| logical, 20× | 4.348 ms | 2.137 ms | 2.174 ms | −1.0 EV |
+| TELE + kit TC, local 1× (300 mm) | 3.333 ms | 3.333 ms | same | 0 (byte-identical) |
+| TELE + kit TC, local 2× (600 mm) | 3.333 ms | 1.667 ms | same | −1.0 EV |
+| TELE + kit TC, local 4× (1200 mm) | 3.333 ms | 0.833 ms | same | −2.0 EV |
+| TELE + kit TC, local ≈4.6× (60× cap, 1380 mm) | 3.333 ms | 0.725 ms | same | −2.2 EV |
+| DNG on (standalone 3× lens), local 1× | 14.29 ms | 14.41 ms (69.4 mm) | same | +0.012 EV |
+| DNG on (standalone 3× lens), local 2× | 14.29 ms | 7.21 ms | same | −0.99 EV |
+
+The same target bounds the focus-detail `SOFT` gate (exposure ≤ 16 × target, in every mode where the
+analysis readback runs). At TC local 4× its ceiling drops from 53.3 ms (16 × 1/300) to 13.3 ms
+(16 × 1/1200), so `SOFT` is refused across a 2-stop wider band of preview exposures. That is the
+"may miss" direction the detector's contract allows; it creates no false fires.
+
+**Owner decision (AGG5-13, open).** The physics backs the new rule — a digital crop is upsampled,
+so angular shake blur in the saved frame scales with the zoom-included focal — but its cost lands on
+this app's main use: at TC 3–4.6× in mid light, P now runs 1.6–2.2 stops more ISO. That is a
+sharpness-against-noise tradeoff, not a defect, so nothing is reverted until the owner chooses:
+
+- **Keep** the effective-focal rule (current behaviour).
+- **Keep the zoom term but restore the preset points:** key the non-TC branch on the nominal preset
+  focal × (zoom ÷ preset ratio). Preset positions return to the old values exactly; between presets
+  the zoom term stays. Host-testable with a table at 23.4/69.4 mm.
+- **Revert** to the band step function (preset focal, no zoom term).
+
+The device run below supplies the evidence for that choice. It also checks a second risk: every
+zoom step can re-center the app-side program shutter (≤0.35 stop per loop tick,
 brightness-neutral), and each re-center is a sensor fast-path submit that this HAL pays for with a
-~180 ms repeating-request swap — the stutter class the zoom work removed (MRG4-5). Whether that
+~180 ms repeating-request swap — the stutter class the zoom work removed (MRG4-5). The continuous
+zoom dependence makes that reachable on every logical-route pinch, not only under TC. Whether it
 shows up during a gesture has not been measured; do not change the program target for it until it
 has.
 
@@ -149,14 +199,69 @@ has.
   the shutter by design.
 - At TC local 1× and again at local 4×, note the OSD focal, let AE settle, take one still, and read
   its EXIF `ExposureTime` / `ISOSpeedRatings` / `FocalLengthIn35mmFilm`.
+- Repeat at the logical 1× launch default and at a 2× logical pinch, so the preset-point and zoom-term
+  rows above are both observed.
 - FrameGap during a pinch: with the debug APK, pinch smoothly from TC local 1× to 4× and back three
   times in PROGRAM, then repeat the same pinches in **MANUAL** (fixed exposure, the control). Keep
   the bounded `FrameGap` summaries (`count`, `maxMs`, 200–399/400–999/≥1000 ms buckets) for each run.
+  The line counts only producer gaps strictly longer than 200 ms, so a swap stall that lands at or
+  under 200 ms (the low part of the measured 170–250 ms band) is not counted by either run.
 
 **Pass:** the OSD focal and EXIF 35 mm focal agree, and EXIF `ExposureTime` is ≈1/(that focal) at
 each zoom (≈4× shorter at local 4× than at 1×) while ISO is unrailed. The PROGRAM pinch shows no
-more ≥200 ms gaps than the MANUAL control. Extra gaps in PROGRAM are a fail that reopens MRG4-5
+more >200 ms gaps than the MANUAL control. Extra gaps in PROGRAM are a fail that reopens MRG4-5
 (hold the program target constant while a zoom gesture is active); record both runs' summaries.
+Then record the owner's choice above in this entry.
+
+### A7. Processed-still EXIF parity, JPEG beside HEIF — ◯ OPEN 2026-10-02
+
+Cycle 4 (B.4) moved the JPEG lanes to splice the shot's APP1 EXIF into the encoded buffer before the
+single write, instead of rewriting the pending row in place; the HEIF lane hands the same attributes
+to `HeifWriter.addExifData`. `CLAUDE.md` states that ISO, exposure, 35 mm focal, make and model stay
+in parity across both processed formats. The host test parses spliced bytes with ExifInterface; no
+device file from the new splice has been read back.
+
+- Rear camera, **PHOTO**, output formats **HEIF + JPEG** together, so one shutter press writes both
+  processed formats for the same capture. Take one still on the logical route (YUV → JPEG encode)
+  and one on TELE (HAL JPEG).
+- Pull both files of each pair and dump their EXIF (`exiftool` or ExifInterface).
+- Where a hi-res route exists (not PMA110, whose hi-res is dormant), also pull one passthrough JPEG.
+
+**Pass:** within each pair `ExposureTime`, `ISOSpeedRatings`, `FocalLengthIn35mmFilm`, `Make` and
+`Model` are identical, `Orientation` agrees with the pixels, and both files open in a gallery. A
+JPEG with no EXIF at all is the logged build-failure path and is a fail here; record which lane.
+
+### A8. YUV still size on the logical and front routes — ◯ OPEN 2026-10-02
+
+Cycle 4 (A.17) made the YUV still size aspect-first through `pickStillSize`. On PMA110 the logical
+array is 4080×3064, and the host table assumes the logical YUV list contains that exact size; that
+list is not a recorded device measurement. If it is missing, the aspect-first rule can pick a much
+smaller in-aspect size with no error (DB5-17), on every LOGICAL and FRONT still.
+
+- Record the advertised YUV_420_888 output sizes for the logical camera and the front camera
+  (`adb shell dumpsys media.camera`, the stream configuration list for each id).
+- Take one 4:3 still on the logical 1× route and one on the front camera, and read each saved
+  file's pixel dimensions.
+
+**Pass:** each saved still has the largest advertised YUV size of its aspect (4080×3064 on the
+logical route if listed). Record both YUV lists verbatim; a saved still smaller than the largest
+in-aspect size, or a logical list without 4080×3064, is a fail that reopens DB5-17.
+
+### A9. Pause during cold start keeps a live preview — ◯ OPEN 2026-10-02
+
+Cycle 5 (plan A1.1/A1.2) moves the GL re-seed and the lens-inventory enqueue ahead of the `paused`
+gate in the cold-start input-ready callback, gates only route resolve and reconfiguration on
+`paused`, and re-binds the live preview surface on resume when the GL owner has no input surface
+yet. Host tests drive both interleavings; whether a real launch can land in that window is a device
+question.
+
+- Force-stop the app. Launch it and press Home (or lock the screen) within roughly half a second,
+  before the viewfinder appears. Return to the app. Repeat five times, varying the delay.
+- Keep the debug logcat for each attempt (`CameraController`, `Session configured`, `StartupTrace`).
+
+**Pass:** every return shows a live, upright preview within a couple of seconds, with no black
+viewfinder that needs a second background/foreground to recover, and no crash. Record the delay
+and outcome of each attempt.
 
 ---
 
@@ -279,6 +384,24 @@ pending token's own workers by TOKEN instead, and that change is host-tested onl
 `AudioRecord` reaching `start`. A clip with `set/openRecord` but no `start` is this race, not a mic
 fault. Record device build, APK/source identity, and per-take track lists.
 
+### D3. Clip publication through the live muxer-stop tail — ◯ OPEN 2026-10-02
+
+Cycle 4 (B.1) changed what happens when the post-stop parse of a finished clip throws: the clip is
+kept (retained, not published) unless a bounded ISO-BMFF top-level walk proves there is no complete
+`moov` box, and the confirming parse re-opens a fresh descriptor. A healthy clip must still publish
+normally; a false "retained" verdict on good takes would hide every clip from the gallery until the
+next launch's recovery.
+
+- PMA110, **VIDEO**, audio on. Record six clips of about 5 s: 4K HEVC SDR, 4K HEVC with HLG, 1080p
+  AVC, Open Gate, one with the microphone toggled off, and one where the mic is disabled from the
+  quick settings tile in the first second (the add-track window).
+- After each stop, note the status line, then pull the clip and confirm it plays.
+
+**Pass:** every clip appears in the gallery immediately after stop (published, not shown as kept or
+unverified), plays end to end, and carries the expected tracks: video-only for the audio-off take;
+the privacy-toggle take may carry a silent AAC track or degrade to video-only — record which. Any
+good clip reported as retained is a fail; keep its logcat and the pulled file.
+
 ---
 
 ## E. MediaProvider provenance — disposable test media
@@ -391,6 +514,74 @@ measured fact, not a gap.
 log shows a preview loss with an acquisition failure. Then: inject the failure mid-preview and once
 mid-REC, and pass when the preview recovers through the bounded same-surface retry (or reaches the
 terminal reopen status) and the recording finalizes instead of freezing.
+
+### F2. Bare reopen whose preflight read fails once — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 4 (A.2): a bare `reopenForSession()` whose camera-selection or capability read fails once on a
+live controller now schedules the existing bounded retry instead of parking Not-Ready. Reaching it
+needs a `CameraManager` characteristics or id-list read to fail transiently at that exact moment;
+nothing on the device provokes that on demand. Evidence: the host test that fails the read once and
+ends Ready or in a scheduled retry.
+
+**Reopen when:** a field log shows a reopen parked in Not-Ready after a characteristics failure.
+
+### F3. Same-camera recall with a different video size — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 4 (A.3): a memory-slot recall onto the same camera whose Video `chooseVideoSize` differs from
+the streaming size takes `reconfigureCamera` instead of the fast commit. The decision is a pure
+function of the two sizes, which the host test drives with a packet differing only in video size;
+the device-visible result (a recalled bank records at its own resolution) is exercised by any
+ordinary recall and adds no measurement.
+
+**Reopen when:** a recalled bank is reported recording at the previous bank's resolution.
+
+### F4. Lens re-band on leaving FRONT — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 4 (A.10): leaving FRONT onto the logical route re-bands the lens chip from the returned zoom in
+both the ViewModel and the Engine. The band is a pure function of that zoom and is host-tested; the
+visible outcome (the rail lights the chip that matches the returned framing) needs no instrument.
+
+**Reopen when:** the rail shows a lens chip that disagrees with the framing after a FRONT exit.
+
+### F5. EV-only delta under app-side AE is a wire no-op — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 4 (A.12, EV half): under app-side or manual AE an `exposureCompensation`-only change no longer
+rebuilds the preview (no `startPreview`), because the app-side loop, not the HAL, consumes EV there.
+The plan decision is pure and host-tested. Its device effect is the absence of one ~180 ms swap
+stall per EV tick, which A6's FrameGap protocol would show only incidentally; the WB/tint pacing
+half that needs FrameGap evidence is scheduled separately.
+
+**Reopen when:** EV ruler drags in S/ISO/M show >200 ms FrameGap summaries that a PROGRAM drag does
+not.
+
+### F6. Route-inventory fold keeps zoom — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 4 (A.18): folding a route inventory is pure discovery; zoom and the converter state reset only
+when the active route really changes, and the Engine side effect runs only then. The host test folds
+the same `(inventory, FRONT)` twice and keeps zoom. A device cannot choose when the inventory is
+re-delivered, so there is no procedure that targets the fold.
+
+**Reopen when:** zoom is reported snapping back to 1× without a mode, lens, TC or facing change.
+
+### F7. Lost capture buffer or aborted sequence settles the shot — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 5 (plan A1.6): `onCaptureBufferLost` for this shot's surfaces and `onCaptureSequenceAborted`
+take the same terminal as `onCaptureFailed`, so the shutter does not wait for the watchdog. Neither
+callback can be provoked on demand on PMA110; the evidence is the pure helper's host test.
+
+**Reopen when:** a field log shows a shot that ended only on the capture watchdog after a lost-buffer
+or sequence-aborted callback.
+
+### F8. Recorder cleanup after a codec error — ⊘ HOST-ONLY 2026-10-02
+
+Cycle 5 (plan B.4): cleanup throws are classified — an exception from `signalEndOfInputStream` or
+`stop` on a codec that already latched an error skips to `release()`, the AudioRecord is stopped
+before later phases are abandoned, and only a hang, a failed `release()` or a live drain thread
+quarantines the recorder. A real `MediaCodec` error needs a fault the device cannot inject on
+demand; the evidence is the fake-native-graph host test.
+
+**Reopen when:** a field log shows `UNSAFE_RECORDER_RESTART` after a codec error, or a device repro
+of an encoder error mid-REC exists. Then pass when the next REC starts without a process restart.
 
 ---
 

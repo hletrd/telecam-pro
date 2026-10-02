@@ -1372,8 +1372,14 @@ check(
 remain_words = {
     "One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5,
     "Six": 6, "Seven": 7, "Eight": 8, "Nine": 9, "Ten": 10,
+    "Eleven": 11, "Twelve": 12, "Thirteen": 13, "Fourteen": 14, "Fifteen": 15,
+    "Sixteen": 16, "Seventeen": 17, "Eighteen": 18, "Nineteen": 19, "Twenty": 20,
 }
-remain_match = re.search(r"^(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten) remain:", field_checks, re.MULTILINE)
+remain_match = re.search(
+    rf"^({'|'.join(remain_words)}) remain:",
+    field_checks,
+    re.MULTILINE,
+)
 check(
     normalized_dashboard_entries == expected_body_entries
     and open_dashboard_ids == open_body_ids

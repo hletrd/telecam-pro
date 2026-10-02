@@ -500,7 +500,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   aperture). Camera2 has no shutter-/ISO-priority AND no min-shutter hint, so `camera/AutoExposure.kt`
   closes the loop off the GL preview luma: SHUTTER drives ISO, ISO drives exposure time, and **photo
   PROGRAM runs a real program line** (`driveProgram`): shutter held at the handheld 1/(effective focal)
-  rule (≈1/300 s with the TC), ISO carries exposure, shutter slides (≤0.35 stop/tick,
+  rule (≈1/300 s with the TC at local 1×; since cycle 4 "effective" includes zoom and, off the TC,
+  the MEASURED equivalent, so PMA110 moves by up to −2.2 EV at TC 2–4.6× and ±0.025 EV even at the
+  presets — that delta remains a field check and owner decision (`docs/FIELD_CHECKS.md` A6)), ISO
+  carries exposure, shutter slides (≤0.35 stop/tick,
   brightness-neutral) only when ISO clamps — down to a 1/10 s ceiling in the dark, faster at base ISO
   in the bright. `ManualControls.programAppSide` (recomputed on mode/flash/exposure-mode changes) keeps
   video-P and AUTO/ON-flash-P on the HAL AE (flash metering needs AE ON). The GL luma readback is
@@ -1071,7 +1074,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   pending-row write. There is no in-place `saveAttributes()` rewrite of the row any more: that
   rewrite grew the file without truncating, so a kill mid-rewrite left a shifted body that still
   ended `FF D9` and recovery adopted it as valid. ISO / exposure / 35mm focal / make / model
-  therefore stay in parity across both processed formats. Lightweight physical-lens metadata is prefetched on
+  therefore stay in parity across both processed formats; the device readback of a JPEG+HEIF pair
+  from the splice lane remains a field check (`docs/FIELD_CHECKS.md` A7). Lightweight physical-lens metadata is prefetched on
   `setupExecutor`; the camera callback is cache-only and copies the processed Image before composing
   ancillary metadata.
 - **Pending MediaStore rows have durable write states.** Every insert commits a `REGISTERED` journal
