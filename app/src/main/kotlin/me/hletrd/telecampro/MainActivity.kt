@@ -540,9 +540,7 @@ class MainActivity : ComponentActivity() {
                                 if (!enabled) {
                                     // The operator chose silence. Clear the denial reason so a later
                                     // grant does NOT override their own choice.
-                                    permissionPreferences.edit(commit = true) {
-                                        putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false)
-                                    }
+                                    audioDenialReason.write(false)
                                     vm.onToggleRecordAudio(false)
                                     return
                                 }
@@ -724,9 +722,7 @@ class MainActivity : ComponentActivity() {
                             hasMicrophonePermission = hasMicrophonePermission,
                         )
                     ) {
-                        permissionPreferences.edit(commit = true) {
-                            putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
-                        }
+                        audioDenialReason.write(true)
                         vm.onToggleRecordAudio(false)
                         vm.onAppStatus(CameraStatusMessage.RECORDING_WITHOUT_AUDIO)
                     }
@@ -815,9 +811,7 @@ class MainActivity : ComponentActivity() {
                                 hasMicrophonePermission = hasMicrophonePermission,
                             )
                         ) {
-                            permissionPreferences.edit(commit = true) {
-                                putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
-                            }
+                            audioDenialReason.write(true)
                             vm.onToggleRecordAudio(false)
                             vm.onAppStatus(CameraStatusMessage.RECORDING_WITHOUT_AUDIO)
                         }
@@ -856,9 +850,7 @@ class MainActivity : ComponentActivity() {
                                 hasMicrophonePermission = hasMicrophonePermission,
                             )
                         ) {
-                            permissionPreferences.edit(commit = true) {
-                                putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
-                            }
+                            audioDenialReason.write(true)
                             vm.onToggleRecordAudio(false)
                             vm.onAppStatus(CameraStatusMessage.RECORDING_WITHOUT_AUDIO)
                         }
@@ -953,7 +945,7 @@ class MainActivity : ComponentActivity() {
         // this the refusal outlived itself: a later Settings grant left clips silent and the level
         // meter hidden, and the shutter never re-prompted because the flag it checks was the very
         // flag that was off.
-        permissionPreferences.edit(commit = true) { putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true) }
+        audioDenialReason.write(true)
         vm.onToggleRecordAudio(false)
         when (microphoneDeclineOutcome(action)) {
             MicrophoneDeclineOutcome.AUDIO_OFF_AND_RECORD -> {
@@ -1019,9 +1011,6 @@ class MainActivity : ComponentActivity() {
         const val PERMISSION_PREFS_NAME = AudioDenialReasonStore.PERMISSION_PREFS_NAME
         const val CAMERA_REQUESTED_BEFORE_KEY = "camera_requested_before"
 
-        /** Whether audio is off BECAUSE a microphone request was refused, not by operator choice. */
-        const val AUDIO_OFF_BY_DENIAL_KEY = AudioDenialReasonStore.AUDIO_OFF_BY_DENIAL_KEY
-
         // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
         // (device-captured via a dispatchKeyEvent log). Two are slide notches, one is the light-press.
         // Directions are a calibrated guess — swap SLIDE_IN/OUT if the on-device zoom goes the wrong way.
@@ -1058,12 +1047,15 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences(PERMISSION_PREFS_NAME, MODE_PRIVATE)
     }
 
+    // The one owner of WHY audio is off (AGG4-49); every denial-reason write goes through it.
+    private val audioDenialReason by lazy { AudioDenialReasonStore(permissionPreferences) }
+
     // Memory-bank recall provenance + the grant reconciliation, one host-tested owner (AGG4-49/9).
     // The permission is read LIVE, not from the Compose mirror, so a recall right after a grant
     // reconciles against the truth even before the next onResume refresh.
     private val memoryBankAudioProvenance by lazy {
         MemoryBankAudioProvenance(
-            reason = AudioDenialReasonStore(permissionPreferences),
+            reason = audioDenialReason,
             recordAudio = { vm.state.value.recordAudio },
             hasMicrophonePermission = { hasPermission(Manifest.permission.RECORD_AUDIO) },
             restoreAudio = { announce ->
