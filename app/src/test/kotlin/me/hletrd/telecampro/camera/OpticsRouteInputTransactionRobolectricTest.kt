@@ -24,6 +24,64 @@ class OpticsRouteInputTransactionRobolectricTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private var engine: CameraEngine? = null
 
+    // MRG5-6 / MRG6-4: another door that begins between setResolvedOptics' begin and its return
+    // bumps the live generation. The door must still return the generation IT began — the VM keys
+    // its recall rollback record on that value — never a re-read of the bumped counter. The GL
+    // transfer post, which runs after the begin, is the interleaving hook.
+    @Test
+    fun `recall returns the generation it began when a newer door bumps it before return`() {
+        val camera = acceptedPma110Engine()
+        val gl = (field(camera, "glOwners") as me.hletrd.telecampro.gl.AtomicOwnerSlot<*>).current()
+        val generation = field(camera, "opticsIntentGeneration") as AtomicLong
+        val before = generation.get()
+        var nestedBegan: Long? = null
+        var interleaved = false
+        setField(
+            gl,
+            "handler",
+            object : android.os.Handler(android.os.Looper.getMainLooper()) {
+                override fun sendMessageAtTime(msg: android.os.Message, uptimeMillis: Long): Boolean {
+                    if (!interleaved && generation.get() == before + 1) {
+                        interleaved = true
+                        nestedBegan = camera.setResolvedOptics(
+                            enabledVideo = false,
+                            resolvedLens = LensChoice.MAIN,
+                            resolvedTeleconverter = false,
+                            resolvedDeclaration = field(camera, "teleconverterDeclaration") as TeleconverterDeclaration,
+                            resolvedControls = ManualControls(zoomRatio = 1f),
+                            resolvedPhotoExposureTimeNs = ManualControls().exposureTimeNs,
+                            recalledVideoSize = null,
+                            resolvedTransfer = ColorTransfer.SDR,
+                            resolvedVideoCodec = VideoCodec.HEVC,
+                            resolvedVideoEncoderCandidates = emptyList(),
+                            resolvedRawWanted = false,
+                        )
+                    }
+                    return true
+                }
+            },
+        )
+
+        val began = camera.setResolvedOptics(
+            enabledVideo = false,
+            resolvedLens = LensChoice.TELE3X,
+            resolvedTeleconverter = false,
+            resolvedDeclaration = field(camera, "teleconverterDeclaration") as TeleconverterDeclaration,
+            resolvedControls = ManualControls(zoomRatio = 1f),
+            resolvedPhotoExposureTimeNs = ManualControls().exposureTimeNs,
+            recalledVideoSize = null,
+            resolvedTransfer = ColorTransfer.SDR,
+            resolvedVideoCodec = VideoCodec.HEVC,
+            resolvedVideoEncoderCandidates = emptyList(),
+            resolvedRawWanted = false,
+        )
+
+        assertTrue("the newer door ran inside the window", interleaved)
+        assertEquals(before + 2, nestedBegan)
+        assertEquals("the outer door returns the generation it began", before + 1, began)
+        assertEquals(before + 2, generation.get())
+    }
+
     @Test
     fun `recall publishes the DNG intent inside its own optics transaction`() {
         val camera = acceptedPma110Engine()
