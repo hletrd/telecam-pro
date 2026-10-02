@@ -320,20 +320,26 @@ claim that the guard is unnecessary.
 
 ### E4. Pending-row `DATE_EXPIRES` re-arm on a kept row — ◯ OPEN 2026-10-02
 
-Launch recovery re-writes `IS_PENDING = 1` on a row it KEEPS pending (`reassertPending`) so that
-MediaProvider re-arms the pending row's `DATE_EXPIRES`; otherwise idle maintenance deletes a retained
-take about a week after insert. The host test proves only that a kept row receives the update; the
-expiry effect is MediaProvider behaviour.
+Launch recovery re-writes `IS_PENDING = 1` (`reassertPending`) on a row it KEEPS pending only when
+a later launch can still adopt it (`keptRowReassertsPending`): a non-DISCARD row whose probe could
+not run this launch. MediaProvider then re-arms the pending row's `DATE_EXPIRES`; otherwise idle
+maintenance deletes a retained take about a week after insert. A row whose bytes were read to a
+constant verdict (an unknown MIME, an undecidable HEIF layout) is kept but deliberately NOT
+re-armed, so MediaProvider's expiry stays its terminal. The host test proves only which kept rows
+receive the update; the expiry effect is MediaProvider behaviour.
 
-- Create one disposable retained pending row the documented way (a take whose recovery verdict is
-  indeterminate), and record its URI, `date_expires`, display name, and `relative_path` with
-  `adb shell content query --uri <uri> --projection _id:date_expires:_display_name:relative_path`.
+- Create one disposable retained pending row whose probe cannot run at launch (for example a take
+  whose bytes the provider cannot open), and record its URI, `date_expires`, display name,
+  `relative_path`, and `_data` with
+  `adb shell content query --uri <uri> --projection _id:date_expires:_display_name:relative_path:_data`.
 - Relaunch the app so launch recovery keeps the row, then query the same columns again.
 
 **Pass:** `date_expires` moves later after the relaunch and the row is still present and pending.
-Record any display-name change the provider makes on that update too (the update is not
-side-effect-free). An unchanged `date_expires` means the re-arm does not hold on that build and the
-retained-row lifetime is still about one week.
+Record the provider's side effects on that update too: AOSP mainline MediaProvider renames the
+backing file to `.pending-<newDateExpires>-<DISPLAY_NAME>`, so `_data` changes while the display
+name, `relative_path`, and row id stay put. A changed display name or `relative_path` would break
+the frozen discard identity and is a failure. An unchanged `date_expires` means the re-arm does not
+hold on that build and the retained-row lifetime is still about one week.
 
 ---
 
