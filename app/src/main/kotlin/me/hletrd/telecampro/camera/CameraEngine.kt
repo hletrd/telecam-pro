@@ -1053,11 +1053,18 @@ class CameraEngine internal constructor(
             PreflightFailureDisposition.BARE_RETRY -> {
                 // A bare door is never a cold start; it owns no startup measurement.
                 startupTraceOwnership.revoke(startupTraceOwner)
-                scheduleColdStartRetry(
+                val outcome = scheduleColdStartRetry(
                     transaction,
                     CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
                     startupTraceOwner = null,
                 )
+                // MRG4-3: a bare door that could neither roll back (its baseline is post-mutation)
+                // nor retry would otherwise sit Not-Ready with NO status — the silent park AGG4-2
+                // set out to remove. Supersession and the lifecycle (pause/start/release) own their
+                // own next open; anything else ends in the honest terminal reopen status.
+                if (outcome == ColdStartRetryOutcome.BLOCKED) {
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                }
             }
         }
     }
@@ -3707,17 +3714,32 @@ class CameraEngine internal constructor(
         }
     }
 
-    /** Bounded retry for transient selection/capability failures before the first Ready session. */
+    /**
+     * Bounded retry for transient selection/capability failures before the first Ready session (and
+     * for a bare door's preflight failure, AGG4-2). Returns how the failure was disposed so a caller
+     * with no other way out can tell a real park ([ColdStartRetryOutcome.BLOCKED]) from a failure
+     * that something else already owns.
+     */
     private fun scheduleColdStartRetry(
         transaction: OpticsTransaction,
         reason: CameraStatusMessage,
         startupTraceOwner: StartupTrace.Owner? = null,
-    ) {
-        val canRun = nativeAcquisitionMayProceed() && started && !paused &&
-            recorder == null && gl.inputSurface != null
+    ): ColdStartRetryOutcome {
+        val acquisitionOpen = nativeAcquisitionMayProceed()
+        val recorderActive = recorder != null
+        val inputSurfacePresent = gl.inputSurface != null
+        val canRun = acquisitionOpen && started && !paused && !recorderActive && inputSurfacePresent
         if (!canRun || transaction.generation != opticsIntentGeneration.get()) {
             startupTraceOwnership.revoke(startupTraceOwner)
-            return
+            return coldStartRetryRefusal(
+                generationCurrent = transaction.generation == opticsIntentGeneration.get(),
+                acquisitionOpen = acquisitionOpen,
+                started = started,
+                paused = paused,
+                recorderActive = recorderActive,
+                inputSurfacePresent = inputSurfacePresent,
+                glInputPending = glInputPending,
+            )
         }
         when (val failure = coldStartRetryGate.failed(
             expectedGeneration = transaction.generation,
@@ -3725,10 +3747,11 @@ class CameraEngine internal constructor(
             canRun = canRun,
         )) {
             // Another failure already owns the one scheduled retry for this exact attempt.
-            ColdStartRetryGate.Failure.Ignore -> Unit
+            ColdStartRetryGate.Failure.Ignore -> return ColdStartRetryOutcome.OWNED
             ColdStartRetryGate.Failure.Exhausted -> {
                 startupTraceOwnership.revoke(startupTraceOwner)
                 onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                return ColdStartRetryOutcome.OWNED
             }
             is ColdStartRetryGate.Failure.Retry -> {
                 onStatus?.invoke(reason.status())
@@ -3763,6 +3786,7 @@ class CameraEngine internal constructor(
                     startupTraceOwnership.revoke(startupTraceOwner)
                     onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
                 }
+                return ColdStartRetryOutcome.OWNED
             }
         }
     }
@@ -8679,6 +8703,43 @@ internal fun frozenRecordingBitRate(
  */
 internal fun <T> cancelEachSealed(owners: Iterable<T>, cancel: (T) -> Unit): Int =
     owners.count { owner -> runCatching { cancel(owner) }.isFailure }
+
+/** How [CameraEngine]'s bounded retry disposed one preflight failure (MRG4-3). */
+internal enum class ColdStartRetryOutcome {
+    /** A retry is scheduled, another failure owns it, or the budget ended in the terminal status. */
+    OWNED,
+
+    /** A newer optics generation exists; its own door owns the next open. */
+    SUPERSEDED,
+
+    /**
+     * Pause/resume, a not-yet-started engine, closed native admission, or a pending GL input
+     * callback owns the next open of the newest intent.
+     */
+    LIFECYCLE_OWNED,
+
+    /** Nothing will retry (an active recorder, or no GL input with none pending): a real park. */
+    BLOCKED,
+}
+
+/** Why [CameraEngine]'s bounded retry refused to schedule; pure so the classification is pinned. */
+internal fun coldStartRetryRefusal(
+    generationCurrent: Boolean,
+    acquisitionOpen: Boolean,
+    started: Boolean,
+    paused: Boolean,
+    recorderActive: Boolean,
+    inputSurfacePresent: Boolean,
+    glInputPending: Boolean,
+): ColdStartRetryOutcome = when {
+    !generationCurrent -> ColdStartRetryOutcome.SUPERSEDED
+    !acquisitionOpen || !started || paused -> ColdStartRetryOutcome.LIFECYCLE_OWNED
+    recorderActive -> ColdStartRetryOutcome.BLOCKED
+    !inputSurfacePresent && glInputPending -> ColdStartRetryOutcome.LIFECYCLE_OWNED
+    !inputSurfacePresent -> ColdStartRetryOutcome.BLOCKED
+    // Every refusal condition is false: the retry COULD run, so nothing parks.
+    else -> ColdStartRetryOutcome.OWNED
+}
 
 internal enum class PreflightFailureDisposition {
     /** Before the first Ready session (or with no controller): the bounded cold-start retry. */

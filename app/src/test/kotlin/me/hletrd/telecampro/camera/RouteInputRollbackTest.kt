@@ -89,6 +89,28 @@ class RouteInputRollbackTest {
         )
     }
 
+    // MRG4-3: only a refusal nothing else owns counts as a park that needs the terminal status.
+    @Test
+    fun `retry refusal separates supersession and lifecycle from a real park`() {
+        fun refusal(
+            current: Boolean = true,
+            open: Boolean = true,
+            started: Boolean = true,
+            paused: Boolean = false,
+            recorder: Boolean = false,
+            input: Boolean = true,
+            pending: Boolean = false,
+        ) = coldStartRetryRefusal(current, open, started, paused, recorder, input, pending)
+        assertEquals(ColdStartRetryOutcome.SUPERSEDED, refusal(current = false, recorder = true))
+        assertEquals(ColdStartRetryOutcome.LIFECYCLE_OWNED, refusal(paused = true, recorder = true))
+        assertEquals(ColdStartRetryOutcome.LIFECYCLE_OWNED, refusal(started = false))
+        assertEquals(ColdStartRetryOutcome.LIFECYCLE_OWNED, refusal(open = false))
+        assertEquals(ColdStartRetryOutcome.LIFECYCLE_OWNED, refusal(input = false, pending = true))
+        assertEquals(ColdStartRetryOutcome.BLOCKED, refusal(recorder = true))
+        assertEquals(ColdStartRetryOutcome.BLOCKED, refusal(input = false))
+        assertEquals(ColdStartRetryOutcome.OWNED, refusal())
+    }
+
     // AGG4-2: the bare door's preflight failure converges through the bounded retry; only a
     // pre-mutation baseline may restore the outgoing session, and a cold start keeps its retry.
     @Test
