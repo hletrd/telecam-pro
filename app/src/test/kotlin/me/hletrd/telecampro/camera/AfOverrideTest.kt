@@ -242,4 +242,16 @@ class AfOverrideTest {
             ),
         )
     }
+
+    /** AGG5-28: only this shot's own targets fail it on buffer loss. */
+    @Test
+    fun `buffer loss fails the shot only for one of its own targets`() {
+        val jpeg = Any()
+        val raw = Any()
+        val preview = Any()
+        assertTrue(stillBufferLossFailsShot(jpeg, listOf(jpeg, raw)))
+        assertTrue(stillBufferLossFailsShot(raw, listOf(null, raw)))
+        assertFalse(stillBufferLossFailsShot(preview, listOf(jpeg, raw)))
+        assertFalse(stillBufferLossFailsShot(raw, listOf(jpeg, null)))
+    }
 }

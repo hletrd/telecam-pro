@@ -2197,26 +2197,28 @@ class CameraController internal constructor(
                         tryComplete(newPending)
                     }
                     override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                        if (captureTokenIsCurrent(pending, newPending)) {
-                            // Close any already-acquired images so the ImageReader (maxImages=2) isn't
-                            // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
-                            synchronized(newPending) {
-                                newPending.done = true
-                                runCatching { newPending.jpeg?.close() }
-                                runCatching { newPending.raw?.close() }
-                                // Same completion hygiene as tryComplete's finally (review
-                                // 2026-08-01): the failure path also armed the delivery watchdog,
-                                // whose delayed message otherwise retains this Pending — closure,
-                                // result blob and all — for the remaining 8-12 s+ budget.
-                                newPending.watchdog?.let { handler.removeCallbacks(it) }
-                                newPending.watchdog = null
-                                newPending.jpeg = null
-                                newPending.raw = null
-                                newPending.result = null
-                            }
-                            pending = null
-                            newPending.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
-                        }
+                        failStill(newPending, "Capture failed: ${failure.reason}")
+                    }
+
+                    // Camera2 reports a dropped output here while onCaptureCompleted still fires:
+                    // the result then lands, the Image never does, and tryComplete waited out the
+                    // whole 8-12 s watchdog with every shutter press refused (AGG5-28). The
+                    // pipeline has no partial-family terminal, so losing either target of THIS
+                    // shot fails the shot, exactly like onCaptureFailed.
+                    override fun onCaptureBufferLost(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        target: android.view.Surface,
+                        frameNumber: Long,
+                    ) {
+                        if (!stillBufferLossFailsShot(target, shotTargets = listOf(jpeg, raw))) return
+                        failStill(newPending, "Capture buffer lost")
+                    }
+
+                    // An aborted sequence (abortCaptures/close mid-shot) delivers no completion or
+                    // failure for its requests; without this the shot waited for the watchdog too.
+                    override fun onCaptureSequenceAborted(session: CameraCaptureSession, sequenceId: Int) {
+                        failStill(newPending, "Capture sequence aborted")
                     }
                 }, handler)
             }.onFailure { t ->
@@ -2272,6 +2274,32 @@ class CameraController internal constructor(
             else { image.close(); return }
         }
         tryComplete(p)
+    }
+
+    /**
+     * The one per-shot failure terminal for Camera2's capture callbacks (failed, buffer lost,
+     * sequence aborted). Inert unless [shot] still owns the pending slot and has not completed.
+     */
+    private fun failStill(shot: Pending, message: String) {
+        if (!captureTokenIsCurrent(pending, shot)) return
+        // Close any already-acquired images so the ImageReader (maxImages=2) isn't starved, and
+        // mark done so a late-arriving partial can't re-enter tryComplete.
+        synchronized(shot) {
+            if (shot.done) return
+            shot.done = true
+            runCatching { shot.jpeg?.close() }
+            runCatching { shot.raw?.close() }
+            // Same completion hygiene as tryComplete's finally (review 2026-08-01): the failure
+            // path also armed the delivery watchdog, whose delayed message otherwise retains this
+            // Pending — closure, result blob and all — for the remaining 8-12 s+ budget.
+            shot.watchdog?.let { handler.removeCallbacks(it) }
+            shot.watchdog = null
+            shot.jpeg = null
+            shot.raw = null
+            shot.result = null
+        }
+        pending = null
+        shot.cb.onError(IllegalStateException(message))
     }
 
     private fun tryComplete(p: Pending) {
@@ -2994,6 +3022,13 @@ internal fun afOverrideForRequest(
     afOffAdvertised = exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, afModes) != null,
     lastFocusDistance = lastFocusDistance,
 )
+
+/**
+ * A lost buffer fails the shot only when it is one of that shot's OWN targets (by identity): a
+ * surface the still request never carried says nothing about this shot's delivery.
+ */
+internal fun stillBufferLossFailsShot(target: Any, shotTargets: List<Any?>): Boolean =
+    shotTargets.any { it === target }
 
 /**
  * The AF-override key state both request-build paths must apply identically (ARCH4-5): the full
