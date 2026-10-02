@@ -1510,7 +1510,7 @@ class CameraEngine internal constructor(
      * rebuild, so the Engine said 1× while the wire kept the operator's zoom.
      */
     private fun applyResolvedCameraRoute(route: CameraRoute) {
-        if (!resolvedRouteChangesOptics(current = activeCameraRoute, resolved = route)) {
+        if (route == activeCameraRoute) {
             setActiveCameraRoute(route)
             return
         }
@@ -8675,14 +8675,6 @@ internal fun rollbackRawWanted(
     )
     return if (movesRestoredRoute) baseline else current
 }
-
-/**
- * Whether a discovered route resolution is a real route TRANSITION whose optics side effects
- * (TC off, lens-local 1×, override/pin cleared) must apply (AGG4-15). Re-resolving the route that
- * is already active is pure discovery and leaves the operator's optics alone.
- */
-internal fun resolvedRouteChangesOptics(current: CameraRoute, resolved: CameraRoute): Boolean =
-    current != resolved
 
 /**
  * Resolved encoder bitrate (bits/s) per attempt size for a FROZEN REC packet: the packet's own
