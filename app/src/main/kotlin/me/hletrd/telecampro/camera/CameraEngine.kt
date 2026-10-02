@@ -5084,8 +5084,9 @@ class CameraEngine internal constructor(
             )
         }
         // One continuation owner for both terminals of this allocation: a synchronous rejection
-        // settles (and may run onDone) inside start(), so the Boolean below must not ALSO hand the
-        // chain caller its own continuation (AGG2-3). The handoff/settle/dispatchResult wiring is
+        // settles inside start(), so the Boolean below must not ALSO hand the chain caller its own
+        // continuation (AGG2-3) — and it answers false, never "taken", so a refused BURST/AEB head
+        // refuses the press instead of walking the chain (AGG6-23). The handoff/settle/dispatchResult wiring is
         // [dispatchDngPreCaptureAllocation], the SAME function DngPreCaptureAllocationTest drives
         // (AGG3-39) — a copy in the test proved only the copy.
         return dispatchDngPreCaptureAllocation(

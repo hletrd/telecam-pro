@@ -209,28 +209,60 @@ internal class DngPreCaptureAllocation<T : Any>(
  * Chain callers (BURST/AEB/timelapse) read `dispatchStillCapture`'s Boolean as "true: `onDone`
  * owns the next step; false: it never will, continue yourself". A SYNCHRONOUS allocator rejection
  * (OVERFLOW/SHUTDOWN, or a deadline that cannot be armed) retires the attempt inside `start()`, and
- * that retirement settles the shot — running `onDone` — before `start()` returns non-ACCEPTED. The
- * dispatcher then ALSO returned false, so timelapse scheduled every tick twice (2^n live tasks while
- * the shared allocator stayed saturated) and AEB reset the preview to base controls in the middle
- * of the bracket step `onDone` had already fired (RPL cycle 2, AGG2-3). Whichever side claims first
- * owns the continuation: the settle path runs [onDone] only if the dispatcher has not taken it, and
- * the dispatcher answers true whenever the settle path already ran it.
+ * that retirement settles the shot before `start()` returns non-ACCEPTED. The dispatcher then ALSO
+ * returned false, so timelapse scheduled every tick twice (2^n live tasks while the shared
+ * allocator stayed saturated) and AEB reset the preview to base controls in the middle of the
+ * bracket step `onDone` had already fired (RPL cycle 2, AGG2-3).
+ *
+ * The first fix let whichever side claimed first own the continuation, so a synchronous rejection
+ * ran `onDone` from inside `start()` and the dispatcher answered TRUE (AGG6-23). That kept one
+ * continuation but answered the wrong question for a BURST/AEB HEAD: the press read as taken, the
+ * shutter animated success, and `fire(1..n)` walked the rest of the chain recursively on the same
+ * stack against the same saturated allocator. A settle that lands while `start()` is still running
+ * is therefore DEFERRED: a non-ACCEPTED start answers false and drops it (the caller continues
+ * itself, or — for a head — refuses the press), and an ACCEPTED start runs the deferred
+ * continuation before answering true. A settle after the answer follows it: once after true,
+ * never after false.
  */
 internal class StillContinuationHandoff(private val onDone: (() -> Unit)?) {
-    private val claimed = AtomicBoolean(false)
+    private enum class Phase { STARTING, OWNED_BY_SETTLE, REFUSED }
+
+    private val lock = Any()
+    private var phase = Phase.STARTING
+    private var deferredSettle = false
+    private var ran = false
 
     /** The settle path's continuation: runs [onDone] at most once, and never after a false return. */
     fun settle() {
         val done = onDone ?: return
-        if (claimed.compareAndSet(false, true)) done()
+        val run = synchronized(lock) {
+            when (phase) {
+                Phase.STARTING -> {
+                    deferredSettle = true
+                    false
+                }
+                Phase.OWNED_BY_SETTLE -> claimLocked()
+                Phase.REFUSED -> false
+            }
+        }
+        if (run) done()
     }
 
     /** The dispatcher's return value for [dispatch]: true means [onDone] owns the next step. */
     fun dispatchResult(dispatch: RecordingPreNativeDispatch): Boolean {
-        if (dispatch == RecordingPreNativeDispatch.ACCEPTED) return true
-        // No continuation to hand off: keep the plain refusal (SINGLE drive, byte-identical).
-        if (onDone == null) return false
-        return !claimed.compareAndSet(false, true)
+        val accepted = dispatch == RecordingPreNativeDispatch.ACCEPTED
+        val runDeferred = synchronized(lock) {
+            phase = if (accepted) Phase.OWNED_BY_SETTLE else Phase.REFUSED
+            accepted && deferredSettle && onDone != null && claimLocked()
+        }
+        if (runDeferred) checkNotNull(onDone)()
+        return accepted
+    }
+
+    private fun claimLocked(): Boolean {
+        if (ran) return false
+        ran = true
+        return true
     }
 }
 

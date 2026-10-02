@@ -42,10 +42,16 @@ class CameraEngineDngContinuationTest {
         var saturated = false
         try {
             // Fill the process-wide pre-native lane (workers + backlog) with blocked work.
-            repeat(RECORDING_PRE_NATIVE_WORKER_COUNT + RECORDING_PRE_NATIVE_BACKLOG_CAPACITY + 1) {
+            // Every slot held by THIS test's blocked work: another test's draining tasks could
+            // otherwise free capacity between the saturation probe and the dispatch below.
+            var held = 0
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (held < RECORDING_PRE_NATIVE_WORKER_COUNT + RECORDING_PRE_NATIVE_BACKLOG_CAPACITY) {
+                check(System.nanoTime() < deadline) { "the shared allocator never freed its slots" }
                 val submission = ProcessPreNativeMediaAllocator.dispatch { release.await() }
-                if (submission.dispatch != RecordingPreNativeDispatch.ACCEPTED) saturated = true
+                if (submission.dispatch == RecordingPreNativeDispatch.ACCEPTED) held++ else Thread.yield()
             }
+            saturated = ProcessPreNativeMediaAllocator.dispatch {}.dispatch != RecordingPreNativeDispatch.ACCEPTED
             assertTrue("the shared allocator must be saturated for this proof", saturated)
             assertTrue(ProcessDngPreCaptureAdmission.owner.canAdmit())
 

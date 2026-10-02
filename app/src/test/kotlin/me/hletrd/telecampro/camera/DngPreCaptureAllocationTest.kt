@@ -317,6 +317,41 @@ class DngPreCaptureAllocationTest {
         }
     }
 
+    // AGG6-23: a synchronous rejection is a refusal, not a continuation. The chain's onDone used to
+    // run from inside start() and the dispatcher answered true, so a refused BURST/AEB head read as
+    // a taken press and walked the rest of the chain on the same stack.
+    @Test
+    fun `a synchronous rejection answers false and never runs the chain continuation`() {
+        for ((dispatch, armable) in listOf(
+            RecordingPreNativeDispatch.OVERFLOW to true,
+            RecordingPreNativeDispatch.SHUTDOWN to true,
+            RecordingPreNativeDispatch.ACCEPTED to false,
+        )) {
+            val continuations = AtomicInteger()
+            val events = mutableListOf<String>()
+
+            val onDone: () -> Unit = { continuations.incrementAndGet() }
+            val dispatched = rejectedChainStep(dispatch, armable, onDone, events)
+
+            assertFalse("$dispatch/$armable", dispatched)
+            assertEquals("$dispatch/$armable", 0, continuations.get())
+            assertTrue("the registered shot still settled", "settle" in events)
+        }
+    }
+
+    @Test
+    fun `a settle deferred during an accepted start continues exactly once`() {
+        val ran = AtomicInteger()
+        val handoff = StillContinuationHandoff { ran.incrementAndGet() }
+        handoff.settle()
+        assertEquals("deferred while start() runs", 0, ran.get())
+
+        assertTrue(handoff.dispatchResult(RecordingPreNativeDispatch.ACCEPTED))
+        handoff.settle()
+
+        assertEquals(1, ran.get())
+    }
+
     @Test
     fun `continuation handoff keeps the plain refusal without a chain and one owner either way`() {
         assertFalse(rejectedChainStep(RecordingPreNativeDispatch.OVERFLOW, deadlineArmable = true, onDone = null))
