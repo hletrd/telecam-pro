@@ -166,6 +166,52 @@ class OpticsRouteInputTransactionRobolectricTest {
         }
     }
 
+    /**
+     * AGG5-25: the GL-input-missing branch of reconfigureCamera takes the same disposition table.
+     * A bare door with no input and none pending cannot retry, so it ends in the honest terminal
+     * reopen status instead of the condition-ending "camera unchanged" rollback it used to park on.
+     */
+    @Test
+    fun `bare door with no GL input ends in the reopen status, never a camera-unchanged park`() {
+        val camera = acceptedPma110Engine()
+        setBoolean(camera, "started", true)
+        setBoolean(camera, "glInputPending", false)
+        val statuses = mutableListOf<CameraStatusMessage>()
+        camera.onStatus = { it?.message?.let(statuses::add) }
+        val desired = invoke(camera, "currentOpticsReconfiguration")!!
+        val transaction = field(desired, "transaction")!!
+        assertFalse(field(transaction, "baselinePrecedesMutation") as Boolean)
+
+        try {
+            invoke(camera, "reconfigureCamera", field(desired, "overrideId"), transaction, false, null)
+
+            assertEquals(listOf(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN), statuses.toList())
+        } finally {
+            setBoolean(camera, "paused", true)
+            setBoolean(camera, "started", false)
+        }
+    }
+
+    @Test
+    fun `pre-mutation door with no GL input still restores the baseline`() {
+        val camera = acceptedPma110Engine()
+        // A recall freezes its rollback baseline BEFORE mutating (baselinePrecedesMutation = true).
+        recallPhoto(camera, LensChoice.TELE3X, zoom = 3f, rawWanted = false)
+        setBoolean(camera, "started", true)
+        setBoolean(camera, "glInputPending", false)
+        val statuses = mutableListOf<CameraStatusMessage>()
+        camera.onStatus = { it?.message?.let(statuses::add) }
+
+        try {
+            invoke(camera, "reconfigureCamera", null, currentTransaction(camera), false, null)
+
+            assertEquals(listOf(CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED), statuses.toList())
+        } finally {
+            setBoolean(camera, "paused", true)
+            setBoolean(camera, "started", false)
+        }
+    }
+
     @Test
     fun `DNG toggle on the TELE route publishes the intent without a reopen`() {
         val camera = acceptedPma110Engine()

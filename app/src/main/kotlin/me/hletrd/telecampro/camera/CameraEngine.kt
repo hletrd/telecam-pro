@@ -1053,19 +1053,23 @@ class CameraEngine internal constructor(
             PreflightFailureDisposition.BARE_RETRY -> {
                 // A bare door is never a cold start; it owns no startup measurement.
                 startupTraceOwnership.revoke(startupTraceOwner)
-                val outcome = scheduleColdStartRetry(
-                    transaction,
-                    CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
-                    startupTraceOwner = null,
-                )
-                // MRG4-3: a bare door that could neither roll back (its baseline is post-mutation)
-                // nor retry would otherwise sit Not-Ready with NO status — the silent park AGG4-2
-                // set out to remove. Supersession and the lifecycle (pause/start/release) own their
-                // own next open; anything else ends in the honest terminal reopen status.
-                if (outcome == ColdStartRetryOutcome.BLOCKED) {
-                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
-                }
+                retryBareDoor(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING)
             }
+        }
+    }
+
+    /**
+     * The BARE_RETRY arm shared by both preflight failure kinds (selection/caps in
+     * [handlePreflightFailure], a missing GL input in [reconfigureCamera]). MRG4-3: a bare door that
+     * could neither roll back (its baseline is post-mutation) nor retry would otherwise sit
+     * Not-Ready with NO status — the silent park AGG4-2 set out to remove. Supersession and the
+     * lifecycle (pause/start/release) own their own next open; anything else ends in the honest
+     * terminal reopen status.
+     */
+    private fun retryBareDoor(transaction: OpticsTransaction, reason: CameraStatusMessage) {
+        val outcome = scheduleColdStartRetry(transaction, reason, startupTraceOwner = null)
+        if (outcome == ColdStartRetryOutcome.BLOCKED) {
+            onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
         }
     }
 
@@ -4352,15 +4356,29 @@ class CameraEngine internal constructor(
             // An optics intent that lands between GL start and input-Surface creation is valid and
             // remains Not-Ready. The input callback snapshots the latest generation and converges it.
             if (glInputPending) return
-            if (startup || controller == null) {
-                scheduleColdStartRetry(
+            // Same disposition table as the selection/caps preflight (AGG5-25): a bare
+            // reopenForSession() door already invalidated Ready before queueing, so the plain
+            // "camera unchanged" rollback could not restore Ready and parked Not-Ready over a
+            // still-streaming session with a condition-ENDING status and nothing scheduled.
+            when (
+                preflightFailureDisposition(
+                    recoverColdPreflight = startup || controller == null,
+                    baselinePrecedesMutation = transaction.baselinePrecedesMutation,
+                )
+            ) {
+                PreflightFailureDisposition.COLD_RETRY -> scheduleColdStartRetry(
                     transaction,
                     CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
                     startupTraceOwner,
                 )
-            } else {
-                startupTraceOwnership.revoke(startupTraceOwner)
-                rollbackOptics(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED.status())
+                PreflightFailureDisposition.RESTORE_ROLLBACK -> {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    rollbackOptics(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED.status())
+                }
+                PreflightFailureDisposition.BARE_RETRY -> {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    retryBareDoor(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING)
+                }
             }
             return
         } // @Volatile in GlPipeline: safe cross-thread read
