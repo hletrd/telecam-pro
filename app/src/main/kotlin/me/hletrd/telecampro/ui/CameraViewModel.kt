@@ -1545,6 +1545,10 @@ class CameraViewModel private constructor(
         // on the key release — over the bank the operator just recalled.
         momentaryAeLock.cancel()
         momentaryPunchIn.cancel()
+        // AGG5-20: the recalled punch-in is the operator's value now, so the focus-ruler assist no
+        // longer owns the field. Left set, a ruler close after the recall switched the bank's loupe
+        // off (and saves kept writing the stale pre-assist snapshot instead of the recalled value).
+        autoPunchInActive = false
         // Mirror the engine transaction: setResolvedOptics resets ITS pre-TELE return snapshot, so
         // the VM's copy must drop too (same discipline as the front-camera door). Keeping the old
         // unified zoom here made a later TC-off restore a framing the engine had already forgotten —
@@ -3406,16 +3410,31 @@ class CameraViewModel private constructor(
     private fun applyMomentaryAeLock(locked: Boolean) =
         updateControls(slot = null, persist = false) { it.copy(aeLock = locked) }
 
+    /**
+     * The focus-ruler loupe assist (ManualDials). It OWNS `punchIn` only between its own engage and
+     * release, and the momentary PUNCH_IN hold is mutually exclusive with it (AGG5-20): two owners
+     * that each snapshot the live field snapshot each other's transient value, and whichever restores
+     * last latches a loupe nobody owns — which the next save then persists.
+     */
     override fun onAutoPunchIn(enabled: Boolean) {
-        if (enabled) {
-            // Snapshot what the operator had, so a save landing mid-assist writes THAT.
-            if (!autoPunchInActive) punchInBeforeAuto = _state.value.punchIn
+        val target = if (enabled) {
+            // Snapshot what the OPERATOR had (a hold's pre-press value, not its transient `true`),
+            // so a save landing mid-assist writes THAT; the assist then takes the field over from
+            // any hold, whose release must not restore over it.
+            if (!autoPunchInActive) punchInBeforeAuto = momentaryPunchIn.persistedValue(_state.value.punchIn)
+            momentaryPunchIn.cancel()
             autoPunchInActive = true
+            true
         } else {
+            // A release is a no-op unless the assist still owns the field: an explicit toggle, a
+            // recall/restore, or a momentary hold pressed meanwhile took it over, and the ruler
+            // closing must not switch THEIR loupe off (DB5-5 / TR5-12).
+            if (!autoPunchInActive) return
             autoPunchInActive = false
+            punchInBeforeAuto
         }
-        engine.setPunchIn(enabled)
-        _state.update { it.copy(punchIn = enabled) }
+        engine.setPunchIn(target)
+        _state.update { it.copy(punchIn = target) }
         // Deliberately no markChanged and no scheduleSettingsSave: the assist is not a setting.
     }
     override fun onToggleTeleFinder(enabled: Boolean) {
@@ -3498,7 +3517,17 @@ class CameraViewModel private constructor(
                 target?.let(::applyMomentaryAeLock)
             }
             HardwareKeyAction.PUNCH_IN -> {
-                val target = if (active) momentaryPunchIn.press(_state.value.punchIn) else momentaryPunchIn.release()
+                val target = if (active) {
+                    // AGG5-20 / CR5-2: snapshot the OPERATOR's value. Mid-assist the live field is
+                    // the assist's transient `true`; restoring that on release latched a loupe the
+                    // operator never enabled. The hold takes the field over from the assist, so the
+                    // ruler's later close is a no-op and this release restores the operator value.
+                    val operatorValue = if (autoPunchInActive) punchInBeforeAuto else _state.value.punchIn
+                    autoPunchInActive = false
+                    momentaryPunchIn.press(operatorValue)
+                } else {
+                    momentaryPunchIn.release()
+                }
                 target?.let(::applyMomentaryPunchIn)
             }
             HardwareKeyAction.ZOOM_IN -> if (active) onPinchZoom(HARDWARE_ZOOM_STEP)

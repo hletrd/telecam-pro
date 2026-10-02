@@ -154,4 +154,96 @@ class MomentaryHoldRobolectricTest {
         v.onHardwareFullKey(false)
         assertTrue(v.state.value.controls.aeLock)
     }
+
+    // ---- AGG5-20: the focus-ruler assist and the PUNCH_IN hold / toggle / recall ----
+    // ManualDials engages the assist only while `!punchIn` and releases it on ruler close while the
+    // loupe is up; every ordering below drives the VM doors the way that composable does.
+
+    private fun punchInVm(): CameraViewModel = vm().also {
+        it.onHalfPressAction(HardwareKeyAction.PUNCH_IN)
+        idle(600)
+    }
+
+    private fun persistedPunchIn(v: CameraViewModel): Boolean? {
+        saveNow(v)
+        return SettingsStore(app).load()?.extras?.punchIn
+    }
+
+    @Test fun `ruler then hold - the release restores the operator value, not the assist's`() {
+        val v = punchInVm()
+        v.onAutoPunchIn(true) // ruler opens over an off loupe
+        v.onHardwareHalfPress(true)
+        v.onAutoPunchIn(false) // ruler closes while the key is held: the hold owns the loupe now
+        assertTrue("the held loupe stays up", v.state.value.punchIn)
+        v.onHardwareHalfPress(false)
+        assertFalse("CR5-2: the release restored the assist's transient true", v.state.value.punchIn)
+        assertEquals(false, persistedPunchIn(v))
+    }
+
+    @Test fun `ruler then hold then release then ruler close leaves the loupe off`() {
+        val v = punchInVm()
+        v.onAutoPunchIn(true)
+        v.onHardwareHalfPress(true)
+        v.onHardwareHalfPress(false)
+        assertFalse(v.state.value.punchIn)
+        v.onAutoPunchIn(false) // the composable's close (it may still think it owns the loupe)
+        assertFalse(v.state.value.punchIn)
+        assertEquals(false, persistedPunchIn(v))
+    }
+
+    @Test fun `hold then ruler - the assist snapshots the operator value and owns the field`() {
+        val v = punchInVm()
+        v.onHardwareHalfPress(true) // loupe up by the hold (operator value off)
+        v.onAutoPunchIn(true) // defensive: the composable does not engage over an up loupe
+        assertEquals("a save mid-assist writes the operator value", false, persistedPunchIn(v))
+        v.onHardwareHalfPress(false) // the assist took the field over; the release restores nothing
+        assertTrue(v.state.value.punchIn)
+        v.onAutoPunchIn(false)
+        assertFalse(v.state.value.punchIn)
+        assertEquals(false, persistedPunchIn(v))
+    }
+
+    @Test fun `hold then ruler open and close - the composable never engages, the hold restores`() {
+        val v = punchInVm()
+        v.onHardwareHalfPress(true)
+        // Ruler opens over an up loupe: no assist. Ruler closes: the composable never engaged.
+        v.onHardwareHalfPress(false)
+        assertFalse(v.state.value.punchIn)
+        assertEquals(false, persistedPunchIn(v))
+    }
+
+    @Test fun `an explicit toggle during the assist survives the ruler close`() {
+        val v = vm()
+        v.onAutoPunchIn(true)
+        v.onTogglePunchIn(false)
+        v.onTogglePunchIn(true) // operator-owned on, with the ruler still open
+        v.onAutoPunchIn(false)
+        assertTrue("DB5-5 A: the ruler close switched the operator's loupe off", v.state.value.punchIn)
+        assertEquals(true, persistedPunchIn(v))
+    }
+
+    @Test fun `a recall during the assist owns punch-in and survives the ruler close`() {
+        val v = vm()
+        v.onTogglePunchIn(true)
+        v.onStoreMemorySlot(MemorySlot.MR3) // MR3 carries punchIn = true
+        v.onTogglePunchIn(false)
+        idle(600)
+        v.onAutoPunchIn(true)
+        v.onRecallMemorySlot(MemorySlot.MR3)
+        assertTrue(v.state.value.punchIn)
+        assertEquals("saves write the recalled value, not the pre-assist snapshot", true, persistedPunchIn(v))
+        v.onAutoPunchIn(false)
+        assertTrue("TR5-12: the ruler close switched the recalled loupe off", v.state.value.punchIn)
+    }
+
+    @Test fun `the assist alone restores the pre-assist value and a stray release is a no-op`() {
+        val v = vm()
+        v.onAutoPunchIn(false) // never engaged
+        assertFalse(v.state.value.punchIn)
+        v.onAutoPunchIn(true)
+        assertTrue(v.state.value.punchIn)
+        assertEquals(false, persistedPunchIn(v))
+        v.onAutoPunchIn(false)
+        assertFalse(v.state.value.punchIn)
+    }
 }
