@@ -1135,12 +1135,11 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         def remove_e2_from_dashboard(root: Path) -> None:
             path = root / "docs/FIELD_CHECKS.md"
             text = path.read_text(encoding="utf-8")
-            # F1 is the current terminal dashboard entry. Keep it intact while removing only E2 so
-            # this mutation continues to prove one missing open body check, and also fails fast if a
-            # future field-check addition leaves this fixture stale again.
-            marker = " · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘."
+            # Remove only E2, keeping its neighbours intact, so this mutation proves one missing
+            # open body check; the assertion fails fast if a ledger edit leaves the fixture stale.
+            marker = " · E1 ☐ · E2 ☐ · E3 ☐ ·"
             self.assertIn(marker, text)
-            path.write_text(text.replace(marker, " · E3 ☐ · E4 ☐ · F1 ⊘.", 1), encoding="utf-8")
+            path.write_text(text.replace(marker, " · E1 ☐ · E3 ☐ ·", 1), encoding="utf-8")
 
         result, private_docs_present = run_documentation_gate_from_committed_export(
             remove_e2_from_dashboard,
@@ -1163,9 +1162,9 @@ class ConsolidatedHostGateTest(unittest.TestCase):
         def mark_host_only_passed(root: Path) -> None:
             path = root / "docs/FIELD_CHECKS.md"
             text = path.read_text(encoding="utf-8")
-            marker = " · F1 ⊘."
+            marker = " · F1 ⊘ ·"
             self.assertIn(marker, text)
-            path.write_text(text.replace(marker, " · F1 ✅.", 1), encoding="utf-8")
+            path.write_text(text.replace(marker, " · F1 ✅ ·", 1), encoding="utf-8")
 
         result, private_docs_present = run_documentation_gate_from_committed_export(
             mark_host_only_passed,
