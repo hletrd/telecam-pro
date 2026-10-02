@@ -58,6 +58,32 @@ class CameraEngineDriveHeadTest {
         assertFalse(CameraStatusMessage.RAW_UNAVAILABLE in statuses)
     }
 
+    // AGG6-27: the DNG-only substitution is announced by the Ready fold's rising edge and kept by
+    // the Output caption; a press on that session must not repeat it.
+    @Test
+    fun `a press on a DNG-only session repeats no processed-still notice`() {
+        val engine = acceptedEngine(PhotoSessionOutputs(raw = true))
+        val statuses = mutableListOf<CameraStatusMessage>()
+        engine.onStatus = { it?.message?.let(statuses::add) }
+        // Stop the press at the DNG allocator: there is no opened camera behind this controller.
+        val release = java.util.concurrent.CountDownLatch(1)
+        try {
+            var held = 0
+            val deadline = System.nanoTime() + 5_000_000_000L
+            while (held < RECORDING_PRE_NATIVE_WORKER_COUNT + RECORDING_PRE_NATIVE_BACKLOG_CAPACITY) {
+                check(System.nanoTime() < deadline) { "the shared allocator never freed its slots" }
+                val submission = ProcessPreNativeMediaAllocator.dispatch { release.await() }
+                if (submission.dispatch == RecordingPreNativeDispatch.ACCEPTED) held++ else Thread.yield()
+            }
+            engine.capturePhoto(PhotoFormats(heif = true, dngRaw = true))
+        } finally {
+            release.countDown()
+        }
+
+        assertTrue("the press reached the DNG head", CameraStatusMessage.DNG_SAVE_FAILED in statuses)
+        assertFalse(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY in statuses)
+    }
+
     private fun assertHeadRefused(drive: DriveMode) {
         val engine = acceptedEngine()
         engine.setDriveMode(drive)
@@ -72,7 +98,7 @@ class CameraEngineDriveHeadTest {
         assertTrue(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO in statuses)
     }
 
-    private fun acceptedEngine(): CameraEngine {
+    private fun acceptedEngine(outputs: PhotoSessionOutputs = PhotoSessionOutputs(processed = true)): CameraEngine {
         val engine = CameraEngine(app).also(engines::add)
         val controller = CameraController(app)
         val generation = (getField(engine, "cameraSessionGeneration") as AtomicLong).get()
@@ -80,7 +106,7 @@ class CameraEngineDriveHeadTest {
             .single { it.simpleName == "AcceptedCameraSession" }
         val accepted = acceptedType.declaredConstructors.single { it.parameterCount == 4 }
             .apply { isAccessible = true }
-            .newInstance(controller, generation, PhotoSessionOutputs(processed = true), false)
+            .newInstance(controller, generation, outputs, false)
         setField(engine, "controller", controller)
         setField(engine, "readyController", controller)
         setField(engine, "acceptedCameraSession", accepted)

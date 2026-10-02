@@ -686,6 +686,11 @@ class CameraEngine internal constructor(
         val rawWantedDirectWrites: Long,
     )
 
+    // The RAW-loss facts commitOpticsReady computed for one exact accepted session (identity, not
+    // data-class equality). A later Ready of that session — the first real preview frame —
+    // re-publishes them (AGG6-13).
+    @Volatile private var acceptedRawLoss: Pair<AcceptedCameraSession, RawLossReadyFacts>? = null
+
     private data class AcceptedCameraSession(
         val controller: CameraController,
         val sessionGeneration: Long,
@@ -888,6 +893,7 @@ class CameraEngine internal constructor(
                 ),
                 shape = "$acceptedCameraId|$photoOutputs",
             )
+            acceptedRawLoss = acceptedCameraSession?.let { it to rawLoss }
             publication = nextCameraReadyPublication(
                 ready = effectiveReady,
                 opticsGeneration = expectedGeneration,
@@ -2429,6 +2435,11 @@ class CameraEngine internal constructor(
                 opticsGeneration = opticsIntentGeneration.get(),
                 sessionGeneration = accepted.sessionGeneration,
                 photoOutputs = accepted.outputs,
+                // The SAME session's facts (AGG6-13). When the preview had not yet swapped a real
+                // frame at commit (cold start, a resume rebind, preview recovery), the commit
+                // published Not-Ready and THIS is the session's Ready; without them the fold, which
+                // reads facts only from a Ready, never announced a drop-RAW rung on these paths.
+                rawLoss = acceptedRawLoss?.takeIf { it.first === accepted }?.second,
             )
         }
         publication?.let { onCameraReadyChange?.invoke(it) }
@@ -5238,16 +5249,15 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
             return false
         }
-        when {
-            formats.wantsProcessedStill && !effFormats.wantsProcessedStill && effFormats.dngRaw ->
-                // Word for word the caption PhotoFormatToggles shows for the same output mask.
-                onStatus?.invoke(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY.status())
-            // No per-press RAW_UNAVAILABLE (AGG5-10). On a structurally RAW-less route (FRONT,
-            // hi-res, 10-bit video) the OSD and the Output caption already carry the state, and on
-            // a RAW-capable route that lost RAW (a drop-RAW ladder rung) the ViewModel's Ready fold
-            // announces it once per session shape, from the facts commitOpticsReady publishes.
-            // The per-press ERROR fired on every selfie.
-        }
+        // No per-press format-loss notice, in either direction. RAW_UNAVAILABLE went first (AGG5-10):
+        // on a structurally RAW-less route (FRONT, hi-res, 10-bit video) the OSD and the Output
+        // caption already carry the state, and on a RAW-capable route that lost RAW (a drop-RAW
+        // ladder rung) the ViewModel's Ready fold announces it once per session shape, from the
+        // facts every Ready publication carries. The per-press ERROR fired on every selfie.
+        // PROCESSED_STILL_UNAVAILABLE_DNG_ONLY follows the same law (AGG6-27): the Ready fold
+        // announces its rising edge once it is shown, the Output caption keeps it, and the shot
+        // itself succeeds (the DNG is written) — repeating the warning for 2.5 s on every press of
+        // a session that already said so made a working shutter read as failing.
         val effectiveDrive = captureDriveMode(driveMode, singleShot)
         when (effectiveDrive) {
             DriveMode.SINGLE -> {
