@@ -1980,43 +1980,8 @@ class CameraEngine internal constructor(
                         startupTraceOwnership.revoke(startupTraceOwner)
                         return@start
                     }
-                    terminalAcquisitionGate.runIfOpen inputReady@{
-                        if (!glOwners.owns(ownedGl)) {
-                            startupTraceOwnership.revoke(startupTraceOwner)
-                            return@inputReady
-                        }
-                        glInputPending = false
-                        if (paused || UnsafeRecorderQuarantine.isActive()) {
-                            startupTraceOwnership.revoke(startupTraceOwner)
-                            return@inputReady
-                        }
-                        ownedGl.setEisProvider { gyro.currentCorrection() }
-                        ownedGl.setAnalysisCallback { h, w, f, m ->
-                            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f, m)
-                        }
-                        // Re-seed desired GL state that may have been set before the handler existed.
-                        ownedGl.setTransfer(transfer)
-                        ownedGl.setPreviewDigitalGain(lastPreviewDigitalGain)
-                        rendererAssists.replayAll(ownedGl)
-                        gyro.start()
-                        // Resolve device-static route truth before the first optics snapshot. This
-                        // leaves ordinary BACK-first phones unchanged, but lets a front-only device
-                        // avoid a known-impossible rear retry and admits a plain GENERIC external
-                        // camera when it is the sole route.
-                        resolveInitialCameraRouteAvailability()
-                        // Capture route + token after GL input exists. A newer intent invalidates it.
-                        val desired = currentOpticsReconfiguration()
-                        reconfigureCamera(
-                            desired.overrideId,
-                            desired.transaction,
-                            startup = true,
-                            startupTraceOwner = startupTraceOwner,
-                        )
-                        // Enumerated AFTER the route/open task is queued, like the debug capability
-                        // scan below it: the rail can render its pre-enumeration default for the
-                        // few hundred ms this costs, but the first camera open must not wait on it.
-                        setupExecutor.execute { runCatching { publishLensInventoryOnce() } }
-                        maybeLogCameraCapabilities()
+                    terminalAcquisitionGate.runIfOpen {
+                        completeGlInputReady(ownedGl, startupTraceOwner)
                     }
                 }
                 if (!glOwners.owns(ownedGl)) {
@@ -2049,6 +2014,61 @@ class CameraEngine internal constructor(
             startupTraceOwnership.revoke(startupTraceOwner)
             synchronized(this) { starting = false }
         }
+    }
+
+    /**
+     * The GL generation's one-shot input-ready continuation (runs inside the terminal gate).
+     *
+     * Split by what each step OWNS, because this callback fires exactly once per GL generation and
+     * nothing replays it (AGG5-1). The generation-local re-seed — EIS provider, the analysis
+     * callback that feeds app-side AE / scopes / focus confidence, the transfer, the digital gain,
+     * and the renderer-assist replay — and the lens-inventory enqueue acquire NO camera, so they run
+     * even when a pause landed between bind and this callback. They used to sit behind the `paused`
+     * return: a pause inside that window (EGL surface creation + renderer init wide) left the
+     * generation with no analysis callback for its whole life — exposure frozen at the restored
+     * ISO/shutter in app-side PROGRAM, dead histogram/waveform, missing assists and log curve —
+     * while resume() still reached Ready because the input Surface existed. Only gyro, the route
+     * resolve, and the camera open stay behind `paused`; resume() owns those for a paused generation.
+     */
+    private fun completeGlInputReady(ownedGl: GlPipeline, startupTraceOwner: StartupTrace.Owner?) {
+        if (!glOwners.owns(ownedGl)) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        glInputPending = false
+        ownedGl.setEisProvider { gyro.currentCorrection() }
+        ownedGl.setAnalysisCallback { h, w, f, m ->
+            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f, m)
+        }
+        // Re-seed desired GL state that may have been set before the handler existed.
+        ownedGl.setTransfer(transfer)
+        ownedGl.setPreviewDigitalGain(lastPreviewDigitalGain)
+        rendererAssists.replayAll(ownedGl)
+        if (paused || UnsafeRecorderQuarantine.isActive()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            // Enumeration only (CameraManager reads, no device open) and idempotent, so the
+            // unpaused order below is unchanged and this paused branch simply cannot lose it.
+            runCatching { setupExecutor.execute { runCatching { publishLensInventoryOnce() } } }
+            return
+        }
+        gyro.start()
+        // Resolve device-static route truth before the first optics snapshot. This leaves ordinary
+        // BACK-first phones unchanged, but lets a front-only device avoid a known-impossible rear
+        // retry and admits a plain GENERIC external camera when it is the sole route.
+        resolveInitialCameraRouteAvailability()
+        // Capture route + token after GL input exists. A newer intent invalidates it.
+        val desired = currentOpticsReconfiguration()
+        reconfigureCamera(
+            desired.overrideId,
+            desired.transaction,
+            startup = true,
+            startupTraceOwner = startupTraceOwner,
+        )
+        // Enumerated AFTER the route/open task is queued, like the debug capability scan below it:
+        // the rail can render its pre-enumeration default for the few hundred ms this costs, but the
+        // first camera open must not wait on it.
+        setupExecutor.execute { runCatching { publishLensInventoryOnce() } }
+        maybeLogCameraCapabilities()
     }
 
     /**
@@ -7675,6 +7695,29 @@ class CameraEngine internal constructor(
             onPreviewSurfaceAvailable(surface, previewSurfaceW, previewSurfaceH)
             return
         }
+        // A bind dropped while paused is never replayed by anything else (AGG5-1 / AGG5-26):
+        // backgrounding keeps the TextureView surface alive, so no availability callback follows.
+        // Two paths drop one — the cold-start bind task that found `paused` (no input Surface is
+        // ever created, so every later reconfigure returns at the glInputPending guard: a black
+        // viewfinder for the process) and a preview-recovery rebind whose 200 ms delay spanned the
+        // pause (`previewReady` stays false, so every reopen publishes Not-Ready). Re-bind the
+        // retained surface on the same serial lane, AHEAD of the reconfigure below. Re-binding a
+        // surface the GL thread already owns is harmless: GlPipeline's same-surface/same-size path
+        // only swaps the health signal, and a superseded in-flight bind is a stale generation that
+        // cancels. The ordinary foreground return (Ready preview, live input) takes neither branch.
+        val retainedSurface = previewSurface
+        if (retainedSurface != null && resumePreviewRebindWanted(
+                inputSurfacePresent = glOwners.current().inputSurface != null,
+                previewReady = previewReady,
+            )
+        ) {
+            bindPreviewSurface(
+                surface = retainedSurface,
+                width = previewSurfaceW,
+                height = previewSurfaceH,
+                surfaceGeneration = previewSurfaceGeneration.get(),
+            )
+        }
         // Serialized on setupExecutor like every other open path (the GL-start continuation,
         // reopenForSession, setCameraOverride). resume() used to call openCamera directly on the
         // main thread — the one remaining unserialized open: it raced a queued reopen's
@@ -8713,6 +8756,14 @@ internal enum class ColdStartRetryOutcome {
     /** Nothing will retry (an active recorder, or no GL input with none pending): a real park. */
     BLOCKED,
 }
+
+/**
+ * Whether resume() must re-bind the retained preview surface of an already-started Engine
+ * (AGG5-1 / AGG5-26). False on the ordinary foreground return, where the GL input exists and the
+ * preview already presented a real frame, so that path stays byte-identical.
+ */
+internal fun resumePreviewRebindWanted(inputSurfacePresent: Boolean, previewReady: Boolean): Boolean =
+    !inputSurfacePresent || !previewReady
 
 /** Why [CameraEngine]'s bounded retry refused to schedule; pure so the classification is pinned. */
 internal fun coldStartRetryRefusal(
