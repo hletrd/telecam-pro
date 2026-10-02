@@ -240,6 +240,7 @@ class BilingualPresentationComposeTest {
                             onSetPhotoFormats = {},
                             sessionOutputs = PhotoSessionOutputs(hlg = true),
                             cameraReady = true,
+                            reopenInProgress = false,
                             rawAvailable = false,
                         )
                         SpeedAngleToggle(

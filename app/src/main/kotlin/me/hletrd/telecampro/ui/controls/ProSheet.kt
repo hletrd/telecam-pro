@@ -882,6 +882,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // the 10-bit trade caption (AGG2-35/AGG3-17), and a reopen reads as "reconfiguring".
         sessionOutputs = state.photoSessionOutputs,
         cameraReady = state.cameraReady,
+        reopenInProgress = state.cameraCondition in me.hletrd.telecampro.camera.CAMERA_REOPEN_CONDITION_MESSAGES,
         // Neither pure session truth nor pure device capability — see [rawSelectable]. Session truth
         // alone made the chip unreachable on the logical photo route (the route only moves BECAUSE
         // DNG is chosen); capability alone left it live in a 10-bit video session that drops both

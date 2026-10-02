@@ -87,6 +87,7 @@ class SelectorRoleSemanticsComposeTest {
                         onSetPhotoFormats = {},
                         sessionOutputs = PhotoSessionOutputs(processed = true, raw = true),
                         cameraReady = true,
+                        reopenInProgress = false,
                         rawAvailable = true,
                     )
                     MemoryPresetAction(saved = false, enabled = true, onClick = clicks::incrementAndGet)

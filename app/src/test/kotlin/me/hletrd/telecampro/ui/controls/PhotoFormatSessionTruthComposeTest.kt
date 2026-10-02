@@ -34,6 +34,7 @@ class PhotoFormatSessionTruthComposeTest {
                     onSetPhotoFormats = { edited = it },
                     sessionOutputs = PhotoSessionOutputs(processed = true),
                     cameraReady = true,
+                    reopenInProgress = false,
                     rawAvailable = false,
                 )
             }
@@ -41,7 +42,8 @@ class PhotoFormatSessionTruthComposeTest {
         chip("HEIF").assertIsSelected().assertIsNotEnabled()
         chip("JPEG").assertIsNotSelected().assertIsEnabled().performClick()
         compose.waitForIdle()
-        assertEquals(PhotoFormats(heif = false, jpeg = true, dngRaw = true), edited)
+        // AGG5-54: a tap beside the lit stand-in adds JPEG to what the row shows (pick-many).
+        assertEquals(PhotoFormats(heif = true, jpeg = true, dngRaw = true), edited)
         compose.onNodeWithText("RAW unavailable").fetchSemanticsNode()
     }
 
@@ -53,6 +55,7 @@ class PhotoFormatSessionTruthComposeTest {
                     onSetPhotoFormats = {},
                     sessionOutputs = PhotoSessionOutputs(),
                     cameraReady = false,
+                    reopenInProgress = true,
                     rawAvailable = true,
                 )
             }

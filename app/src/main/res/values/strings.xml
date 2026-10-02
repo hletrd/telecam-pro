@@ -344,7 +344,6 @@
     <string name="action_move_down">Move %1$s down</string>
     <string name="action_remove_named">Remove %1$s</string>
     <string name="output_raw_unavailable">RAW unavailable</string>
-    <string name="output_switching_single_lens">Switching to a single lens for RAW</string>
     <string name="output_processed_unavailable_dng_only">HEIF/JPEG unavailable · DNG only</string>
     <string name="output_10_bit_video_stills_off">10-bit video · stills off</string>
     <string name="stabilization_ois_eis">OIS+EIS</string>

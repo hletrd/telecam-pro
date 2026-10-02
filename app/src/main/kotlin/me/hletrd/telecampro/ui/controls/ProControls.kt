@@ -1061,6 +1061,8 @@ internal fun PhotoFormatToggles(
     onSetPhotoFormats: (PhotoFormats) -> Unit,
     sessionOutputs: PhotoSessionOutputs,
     cameraReady: Boolean,
+    // Whether a reopen/recovery condition holds (AGG5-55): the only not-Ready state the row names.
+    reopenInProgress: Boolean,
     // [me.hletrd.telecampro.camera.rawSelectable]: neither pure session truth nor bare capability.
     rawAvailable: Boolean,
     // `modifier` stays the FIRST optional parameter (Compose convention, enforced by the
@@ -1076,6 +1078,7 @@ internal fun PhotoFormatToggles(
         request = formats,
         outputs = sessionOutputs,
         cameraReady = cameraReady,
+        reopenInProgress = reopenInProgress,
         rawAvailable = rawAvailable,
         heifAvailable = heifAvailable,
     )

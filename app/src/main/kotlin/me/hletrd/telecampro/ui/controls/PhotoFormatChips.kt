@@ -23,13 +23,15 @@ internal enum class PhotoFormatAxis { HEIF, JPEG, DNG }
  * - [displayed]: the processed axes (HEIF/JPEG) come from the accepted session's effective set;
  *   the DNG axis stays the request, because DNG is intent that MOVES the route (wanting it is what
  *   brings RAW into force), and the caption below explains a DNG that is not in force yet.
- * - While the camera is reconfiguring (`!cameraReady`) the accepted outputs are deliberately
- *   cleared (no stale reader may admit a capture), which is NOT a statement about the route: the
- *   row keeps the request, keeps its chips enabled, and says "Camera reconfiguring…" — the app's
- *   one name for that state — instead of "HEIF/JPEG unavailable · DNG only" or "Still capture
- *   unavailable" for the length of every aspect/fps/lens reopen.
+ * - While the camera is not Ready the accepted outputs are deliberately cleared (no stale reader
+ *   may admit a capture), which is NOT a statement about the route: the row keeps the request and
+ *   keeps its chips enabled instead of "HEIF/JPEG unavailable · DNG only" or "Still capture
+ *   unavailable". It says "Camera reconfiguring…" — the app's one name for that state — only while
+ *   a reopen/recovery condition actually holds (AGG5-55); cold start, pause and the terminal
+ *   "reopen the app" error are not a reconfigure, and the plate already names them.
  * - [toggled] folds a tap on the DISPLAYED set back into the request through [withEdit], the same
- *   merge the pre-inventory path uses, so a tap on a session stand-in edits only the tapped axis.
+ *   merge the pre-inventory path uses, so a tap on a session stand-in edits only the tapped axis —
+ *   except that a tap BESIDE a stand-in on a DNG-only request adopts the stand-in too (AGG5-54).
  */
 internal data class PhotoFormatChipModel(
     val displayed: PhotoFormats,
@@ -45,7 +47,17 @@ internal data class PhotoFormatChipModel(
             PhotoFormatAxis.JPEG -> displayed.copy(jpeg = !displayed.jpeg)
             PhotoFormatAxis.DNG -> displayed.copy(dngRaw = !displayed.dngRaw)
         }
-        return request.withEdit(displayed, edited)
+        // AGG5-54 / UX5-6: the chips are pick-many (leading check marks). On a DNG-only request the
+        // session's processed stand-in (FRONT / drop-RAW HEIF) is lit; a tap on JPEG beside it kept
+        // the request's untouched `heif = false`, so the row re-rendered HEIF unlit and the tap acted
+        // like a radio button. A processed-axis tap on a request with NO processed axis therefore
+        // adopts the displayed stand-in into the request with the tapped axis.
+        val base = if (axis != PhotoFormatAxis.DNG && !request.wantsProcessedStill) {
+            request.copy(heif = displayed.heif, jpeg = displayed.jpeg)
+        } else {
+            request
+        }
+        return base.withEdit(displayed, edited)
     }
 }
 
@@ -54,11 +66,14 @@ internal data class PhotoFormatChipModel(
  *
  * [rawAvailable] is the caller's [me.hletrd.telecampro.camera.rawSelectable] answer (neither pure
  * session truth nor bare capability). [heifAvailable] is the device's HEIF encoder fact.
+ * [reopenInProgress] is whether a reopen/recovery condition holds right now
+ * ([me.hletrd.telecampro.camera.CAMERA_REOPEN_CONDITION_MESSAGES]); only it earns "reconfiguring".
  */
 internal fun photoFormatChipModel(
     request: PhotoFormats,
     outputs: PhotoSessionOutputs,
     cameraReady: Boolean,
+    reopenInProgress: Boolean,
     rawAvailable: Boolean,
     heifAvailable: Boolean,
 ): PhotoFormatChipModel {
@@ -83,14 +98,19 @@ internal fun photoFormatChipModel(
     val jpegEnabled = processedAvailable && (!displayed.jpeg || displayed.heif || rawSelected)
     val dngEnabled = rawAvailable && (!displayed.dngRaw || processedRequested)
     val caption = when {
-        reconfiguring -> R.string.status_camera_reconfiguring
+        // Not Ready: only a live reopen/recovery is "reconfiguring" (AGG5-55). Cold start, pause and
+        // the exhausted-retry terminal are named by the plate; the row adds no claim of its own.
+        reconfiguring -> R.string.status_camera_reconfiguring.takeIf { reopenInProgress }
         // Same reasoning as the Ready-publication status: in VIDEO an accepted 10-bit session drops
         // the still readers by design, so the row says what it BOUGHT rather than what it lost.
         !outputs.processed && !rawAvailable -> noStillOutputCaption(outputs.hlg)
         // BEFORE the "switching" line: on a route that structurally cannot carry RAW (front, hi-res,
         // 10-bit video) nothing is switching. The DNG request itself survives as intent.
-        !rawAvailable -> R.string.output_raw_unavailable
-        !outputs.raw && request.dngRaw -> R.string.output_switching_single_lens
+        // AGG5-52 / UX5-4: this branch runs only on a READY session, where the route move DNG
+        // triggers has already finished. A settled session without RAW (the ladder's drop-RAW rung,
+        // or a standalone lens with no RAW output) is not "switching to a single lens" — nothing is
+        // switching, and every shot raises RAW_UNAVAILABLE meanwhile. Say what is true.
+        !rawAvailable || (!outputs.raw && request.dngRaw) -> R.string.output_raw_unavailable
         // Word for word the status CameraEngine emits for the same accepted-output mask.
         !outputs.processed -> R.string.output_processed_unavailable_dng_only
         else -> null

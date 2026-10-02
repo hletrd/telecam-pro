@@ -27,7 +27,8 @@ class PhotoFormatChipModelTest {
         outputs: PhotoSessionOutputs,
         cameraReady: Boolean = true,
         rawAvailable: Boolean,
-    ) = photoFormatChipModel(request, outputs, cameraReady, rawAvailable, heifAvailable = true)
+        reopenInProgress: Boolean = !cameraReady,
+    ) = photoFormatChipModel(request, outputs, cameraReady, reopenInProgress, rawAvailable, heifAvailable = true)
 
     @Test fun `FRONT DNG-only request shows the HEIF the session writes and keeps DNG intent`() {
         // FRONT: rawSelectable is false, the session has a processed reader only.
@@ -37,9 +38,10 @@ class PhotoFormatChipModelTest {
         assertTrue(m.jpegEnabled)
         assertFalse(m.dngEnabled)
         assertEquals(R.string.output_raw_unavailable, m.caption)
-        // A JPEG tap edits only that axis of the REQUEST: HEIF (a session stand-in) is not adopted
-        // into the rear DNG-only workflow — the outcome AGG3-18 exists to prevent.
-        assertEquals(PhotoFormats(heif = false, jpeg = true, dngRaw = true), m.toggled(PhotoFormatAxis.JPEG))
+        // AGG5-54 / UX5-6: the chips are pick-many. A JPEG tap BESIDE the lit stand-in adds JPEG to
+        // what the row shows; keeping the request's untouched `heif = false` re-rendered HEIF unlit,
+        // so "add JPEG" acted like a radio button and silently stopped the HEIF this route writes.
+        assertEquals(PhotoFormats(heif = true, jpeg = true, dngRaw = true), m.toggled(PhotoFormatAxis.JPEG))
     }
 
     @Test fun `hi-res session shows the passthrough JPEG it writes and offers no HEIF`() {
@@ -49,10 +51,12 @@ class PhotoFormatChipModelTest {
         assertFalse("the only written format stays on", m.jpegEnabled)
     }
 
-    @Test fun `drop-RAW rung shows the processed stand-in and the switching caption`() {
+    // AGG5-52 / UX5-4: on a READY session the DNG route move has already happened; a settled
+    // session without RAW is not "switching to a single lens".
+    @Test fun `drop-RAW rung shows the processed stand-in and says RAW is unavailable`() {
         val m = model(dngOnly, processedOnly, rawAvailable = true)
         assertEquals(PhotoFormats(heif = true, jpeg = false, dngRaw = true), m.displayed)
-        assertEquals(R.string.output_switching_single_lens, m.caption)
+        assertEquals(R.string.output_raw_unavailable, m.caption)
         // The HEIF is a session stand-in, not a requested sibling: switching DNG off would leave
         // the request with no format at all, so the DNG chip stays locked on.
         assertFalse(m.dngEnabled)
@@ -76,6 +80,29 @@ class PhotoFormatChipModelTest {
         )
     }
 
+    // AGG5-55 / UX5-7: not-Ready is broader than a reopen. Cold start, pause and the exhausted
+    // "reopen the app" terminal keep the request and the chips but make no "reconfiguring" claim.
+    @Test fun `not ready without a reopen condition carries no reconfiguring caption`() {
+        val request = PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+        val m = model(request, PhotoSessionOutputs(), cameraReady = false, rawAvailable = true, reopenInProgress = false)
+        assertNull(m.caption)
+        assertEquals(request, m.displayed)
+        assertTrue(m.heifEnabled && m.jpegEnabled && m.dngEnabled)
+        assertNull(model(heifOnly, PhotoSessionOutputs(), cameraReady = false, rawAvailable = false, reopenInProgress = false).caption)
+        // The condition only matters while not Ready: a Ready session keeps its own caption.
+        assertNull(model(heifOnly, processedOnly, cameraReady = true, rawAvailable = true, reopenInProgress = true).caption)
+    }
+
+    @Test fun `a tap beside a stand-in on a DNG-only request adopts the stand-in, other taps do not`() {
+        val dropRaw = model(dngOnly, processedOnly, rawAvailable = true)
+        assertEquals(PhotoFormats(heif = true, jpeg = true, dngRaw = true), dropRaw.toggled(PhotoFormatAxis.JPEG))
+        // A request that already names a processed axis keeps per-axis editing (AGG3-18).
+        val hiRes = model(heifOnly, PhotoSessionOutputs(processed = true, hiRes = true), rawAvailable = false)
+        assertEquals(PhotoFormats(heif = true, jpeg = false, dngRaw = true), hiRes.toggled(PhotoFormatAxis.DNG))
+        val both = model(PhotoFormats(heif = true, dngRaw = true), PhotoSessionOutputs(processed = true, raw = true), rawAvailable = true)
+        assertEquals(PhotoFormats(heif = true, jpeg = true, dngRaw = true), both.toggled(PhotoFormatAxis.JPEG))
+    }
+
     @Test fun `accepted sessions keep the established captions`() {
         assertEquals(
             R.string.output_10_bit_video_stills_off,
@@ -96,7 +123,7 @@ class PhotoFormatChipModelTest {
         assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = true), both.toggled(PhotoFormatAxis.HEIF))
         // No HEIF encoder: the chip is not offered even when the session could carry it.
         assertFalse(
-            photoFormatChipModel(PhotoFormats(heif = false, jpeg = true), processedOnly, true, false, heifAvailable = false)
+            photoFormatChipModel(PhotoFormats(heif = false, jpeg = true), processedOnly, true, false, false, heifAvailable = false)
                 .heifEnabled,
         )
     }

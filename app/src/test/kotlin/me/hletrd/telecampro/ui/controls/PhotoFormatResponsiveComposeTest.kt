@@ -62,6 +62,7 @@ class PhotoFormatResponsiveComposeTest {
                             onSetPhotoFormats = { formats.value = it },
                             sessionOutputs = PhotoSessionOutputs(processed = true, raw = true),
                             cameraReady = cameraReady,
+                            reopenInProgress = !cameraReady,
                             rawAvailable = true,
                         )
                     }

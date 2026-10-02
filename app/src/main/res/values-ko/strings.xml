@@ -327,7 +327,6 @@
     <string name="action_move_down">%1$s 아래로 이동</string>
     <string name="action_remove_named">%1$s 제거</string>
     <string name="output_raw_unavailable">RAW 사용 불가</string>
-    <string name="output_switching_single_lens">RAW를 위해 단일 렌즈로 전환 중</string>
     <string name="output_processed_unavailable_dng_only">HEIF/JPEG 사용 불가 · DNG만 가능</string>
     <string name="output_10_bit_video_stills_off">10비트 동영상 · 사진 꺼짐</string>
     <string name="stabilization_ois_eis">OIS+EIS</string>
