@@ -5242,8 +5242,23 @@ class CameraEngine internal constructor(
                 }
                 if (!dispatched.getOrDefault(false)) return false
             }
-            DriveMode.BURST -> captureBurst(accepted, effFormats)
-            DriveMode.AEB -> captureAeb(accepted, effFormats)
+            // The HEAD dispatch answers the press, exactly like SINGLE (AGG5-45): a refused head
+            // ("Finishing previous photo") used to return true and blink the shutter anyway.
+            DriveMode.BURST, DriveMode.AEB -> {
+                val head = runCatching {
+                    if (effectiveDrive == DriveMode.BURST) {
+                        captureBurst(accepted, effFormats)
+                    } else {
+                        captureAeb(accepted, effFormats)
+                    }
+                }
+                if (head.isFailure) {
+                    Log.e("CameraEngine", "Photo dispatch failed", head.exceptionOrNull())
+                    onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+                    return false
+                }
+                if (!head.getOrDefault(false)) return false
+            }
             // Press-to-START, press-again-to-STOP — the universal interval-shooting idiom (review
             // 2026-08-01: the old unconditional restart fired an immediate extra frame, reset the
             // interval phase mid-assembly, and left NO discoverable way to end a run; drive-mode
@@ -5258,13 +5273,14 @@ class CameraEngine internal constructor(
      * tracks a single in-flight capture (one `pending` slot), so shots are chained rather than fired
      * in a tight loop, which would clobber that slot while a capture is still resolving its images.
      */
-    private fun captureBurst(accepted: AcceptedCameraSession, formats: PhotoFormats) {
+    /** Returns the HEAD shot's dispatch result: false when the press was refused. */
+    private fun captureBurst(accepted: AcceptedCameraSession, formats: PhotoFormats): Boolean {
         // One optics identity for the whole chain: continuations run from save completions off
         // the main thread, where re-reading the live fields raced the optics doors (T1).
         val chainOptics = snapshotShotOptics()
-        fun fire(shot: Int) {
-            if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return
-            dispatchStillCapture(
+        fun fire(shot: Int): Boolean {
+            if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return false
+            return dispatchStillCapture(
                 accepted = accepted,
                 formats = formats,
                 shotControls = controls,
@@ -5274,7 +5290,7 @@ class CameraEngine internal constructor(
                 onDone = { fire(shot + 1) },
             )
         }
-        fire(0)
+        return fire(0)
     }
 
     /**
@@ -5285,7 +5301,8 @@ class CameraEngine internal constructor(
      * [manualAebExposuresNs]). Either way the original controls are restored when the bracket
      * finishes, and shots are chained for the same single-`pending` reason as BURST.
      */
-    private fun captureAeb(accepted: AcceptedCameraSession, formats: PhotoFormats) {
+    /** Returns the HEAD bracket step's dispatch result: false when the press was refused. */
+    private fun captureAeb(accepted: AcceptedCameraSession, formats: PhotoFormats): Boolean {
         val ctrl = accepted.controller
         val chainOptics = snapshotShotOptics()
         val c = chainOptics.caps
@@ -5294,28 +5311,28 @@ class CameraEngine internal constructor(
             val base = original.effectiveExposureNs()
             val range = c.exposureTimeRange
             val steps = manualAebExposuresNs(base, range?.lower ?: base, range?.upper ?: base)
-            fun fire(i: Int) {
+            fun fire(i: Int): Boolean {
                 if (!acceptedSessionIsCurrent(accepted)) {
                     ctrl.updateControls(controls)
-                    return
+                    return false
                 }
-                if (i >= steps.size) { ctrl.updateControls(controls); return }
+                if (i >= steps.size) { ctrl.updateControls(controls); return false }
                 // SPEED override so the bracketed time applies even when the user dials ANGLE.
                 val stepControls = manualAebStepControls(controls, steps[i])
                 ctrl.updateControls(stepControls)
-                val dispatched = dispatchStillCapture(
-                    accepted = accepted,
-                    formats = formats,
-                    shotControls = stepControls,
-                    hiRes = accepted.outputs.hiRes,
-                    optics = chainOptics,
-                    chainHead = i == 0,
-                    onDone = { fire(i + 1) },
-                )
-                if (!dispatched) ctrl.updateControls(controls)
+                return dispatchAebStep(ctrl) {
+                    dispatchStillCapture(
+                        accepted = accepted,
+                        formats = formats,
+                        shotControls = stepControls,
+                        hiRes = accepted.outputs.hiRes,
+                        optics = chainOptics,
+                        chainHead = i == 0,
+                        onDone = { fire(i + 1) },
+                    )
+                }
             }
-            fire(0)
-            return
+            return fire(0)
         }
         val range = c?.evRange
         val evStep = c?.evStep?.let {
@@ -5325,26 +5342,43 @@ class CameraEngine internal constructor(
             aeCompAebSteps(original.exposureCompensation, range.lower, range.upper, evStep)
         }
         else listOf(original.exposureCompensation)
-        fun fire(i: Int) {
+        fun fire(i: Int): Boolean {
             if (!acceptedSessionIsCurrent(accepted)) {
                 ctrl.updateControls(controls)
-                return
+                return false
             }
-            if (i >= steps.size) { ctrl.updateControls(controls); return }
+            if (i >= steps.size) { ctrl.updateControls(controls); return false }
             val stepControls = autoAebStepControls(controls, steps[i])
             ctrl.updateControls(stepControls)
-            val dispatched = dispatchStillCapture(
-                accepted = accepted,
-                formats = formats,
-                shotControls = stepControls,
-                hiRes = accepted.outputs.hiRes,
-                optics = chainOptics,
-                chainHead = i == 0,
-                onDone = { fire(i + 1) },
-            )
-            if (!dispatched) ctrl.updateControls(controls)
+            return dispatchAebStep(ctrl) {
+                dispatchStillCapture(
+                    accepted = accepted,
+                    formats = formats,
+                    shotControls = stepControls,
+                    hiRes = accepted.outputs.hiRes,
+                    optics = chainOptics,
+                    chainHead = i == 0,
+                    onDone = { fire(i + 1) },
+                )
+            }
         }
-        fire(0)
+        return fire(0)
+    }
+
+    /**
+     * One AEB step's dispatch: the preview returns to base controls whenever the step will not
+     * continue itself — a refusal OR a throw (the head's throw now reaches capturePhoto's status
+     * instead of leaving the bracket's step controls on the wire).
+     */
+    private inline fun dispatchAebStep(ctrl: CameraController, dispatch: () -> Boolean): Boolean {
+        val dispatched = try {
+            dispatch()
+        } catch (failure: Throwable) {
+            ctrl.updateControls(controls)
+            throw failure
+        }
+        if (!dispatched) ctrl.updateControls(controls)
+        return dispatched
     }
 
     /**
