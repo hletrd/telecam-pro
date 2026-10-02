@@ -1,9 +1,11 @@
 package me.hletrd.telecampro.ui
 
+import android.Manifest
 import android.app.Application
 import android.app.PendingIntent
 import android.content.ContentResolver
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -12,6 +14,7 @@ import android.provider.MediaStore
 import me.hletrd.telecampro.camera.DiagnosticLog as Log
 import android.util.Size
 import android.view.Surface
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import me.hletrd.telecampro.camera.Antibanding
 import me.hletrd.telecampro.camera.AfIndication
@@ -39,6 +42,7 @@ import me.hletrd.telecampro.camera.DeferredStatusEvent
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
 import me.hletrd.telecampro.hardwareActionAdmitted
 import me.hletrd.telecampro.AudioDenialReasonStore
+import me.hletrd.telecampro.MemoryBankAudioProvenance
 import me.hletrd.telecampro.bankAudioOffByDenial
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.dngOnlySubstitution
@@ -772,6 +776,22 @@ class CameraViewModel private constructor(
     // The ONE owner of the audio-denial reason (AGG4-49): the memory-bank store reads it here, so a
     // bank's provenance never depends on which UI layer happened to reach this door.
     private val audioDenialReason = AudioDenialReasonStore(app)
+    // The microphone grant, read LIVE (AGG5-22): a recall right after a grant must reconcile against
+    // the truth, not a cached mirror. A test seam, never reassigned in production.
+    internal var microphonePermissionCheck: () -> Boolean = {
+        ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+    // BOTH halves of the memory-bank audio provenance live in the VM now (AGG5-22 / CT5-4): the store
+    // half moved here in AGG4-49, but the recall half (write the reason, reconcile the grant) lived
+    // only in the Activity's CameraActions wrapper, so any other door reaching onRecallMemorySlot —
+    // a test harness, a future Fn/hardware recall — silently reverted to the provenance-blind rule.
+    private val memoryBankAudioProvenance = MemoryBankAudioProvenance(
+        reason = audioDenialReason,
+        recordAudio = { _state.value.recordAudio },
+        hasMicrophonePermission = { microphonePermissionCheck() },
+        restoreAudio = ::restoreRecordAudioFromGrant,
+    )
     private var encoderInventory: CodecInventory = CodecInventory.EMPTY
     private var pendingCodecUntilInventory: VideoCodec? = null
     private var pendingTransferUntilInventory: ColorTransfer? = null
@@ -2686,6 +2706,27 @@ class CameraViewModel private constructor(
         refreshStandbyAudioMeter()
         saveSettingsIfEnabled()
     }
+
+    /**
+     * A grant handing denial-disabled audio back (AGG5-21): NOT the operator's toggle. Routed through
+     * [onToggleRecordAudio] it cleared the `activeMemorySlot` a recall had just lit — "MR1 loaded"
+     * with no slot lit — and forced an immediate full-prefs save on the recall press. Restoring is
+     * exactly what the bank's provenance says the bank means, so the slot stays lit and the save is
+     * the ordinary debounced one. [announce] is the resume/grant leg's "Microphone allowed — audio
+     * on"; a recall restores silently because the bank-loaded status owns the plate.
+     */
+    private fun restoreRecordAudioFromGrant(announce: Boolean) {
+        _state.update { it.copy(recordAudio = true) }
+        refreshStandbyAudioMeter()
+        scheduleSettingsSave()
+        if (announce) showStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
+    }
+
+    /**
+     * The Activity's resume/grant reconciliation (a Settings grant observed on resume): the same
+     * provenance rule the recall leg applies, announced. True when audio came back.
+     */
+    fun reconcileMicrophoneGrant(): Boolean = memoryBankAudioProvenance.restoreIfGranted(announce = true)
     override fun onAudioGain(gain: Float) {
         if (rejectIfRecording()) return
         val normalized = normalizeAudioGain(gain)
@@ -3769,24 +3810,45 @@ class CameraViewModel private constructor(
     // The applied bank's audio-off provenance, captured at the same exit (AGG3-8).
     private var appliedAudioOffByDenial: Boolean? = null
 
-    /** What an APPLIED MR recall restored, for the Activity's audio-denial reason (AGG3-8). */
+    /** What an APPLIED MR recall restored, for the audio-denial reason (AGG3-8). */
     data class AppliedMemoryRecall(val recordAudio: Boolean, val recordAudioOffByDenial: Boolean?)
+
+    // The last recall's applied answer, captured BEFORE the grant reconciliation can change audio.
+    private var lastAppliedRecall: AppliedMemoryRecall? = null
 
     /**
      * [onRecallMemorySlot] that also answers whether the recall APPLIED, and with what audio
-     * provenance; null when refused. The Activity needs that truth for the audio-denial reason
-     * ([me.hletrd.telecampro.audioDenialReasonAfterRecall]); the old `activeMemorySlot == slot`
-     * check after the fact was also true for a REFUSED re-recall of the slot that was already
-     * active (AGG2-26).
+     * provenance; null when refused. The old `activeMemorySlot == slot` check after the fact was also
+     * true for a REFUSED re-recall of the slot that was already active (AGG2-26).
      */
     fun recallMemorySlot(slot: MemorySlot): AppliedMemoryRecall? {
-        val before = appliedLoadCount
+        lastAppliedRecall = null
         onRecallMemorySlot(slot)
-        if (appliedLoadCount == before) return null
-        return AppliedMemoryRecall(_state.value.recordAudio, appliedAudioOffByDenial)
+        return lastAppliedRecall
     }
 
     override fun onRecallMemorySlot(slot: MemorySlot) {
+        val before = appliedLoadCount
+        applyMemorySlotRecall(slot)
+        val applied = if (appliedLoadCount == before) {
+            null
+        } else {
+            AppliedMemoryRecall(_state.value.recordAudio, appliedAudioOffByDenial)
+        }
+        lastAppliedRecall = applied
+        // The reason follows the APPLIED bank's own provenance (AGG3-8): denial-silent sets it,
+        // operator-silent or audio-on clears it. A provenance-blind rule protected one of those banks
+        // only by breaking the other (AGG-37 vs AGG2-26). The reconciliation against the CURRENT
+        // grant runs right here too (AGG4-9): a denial-silent bank recalled while the mic is already
+        // granted otherwise recorded silent clips until a later onResume.
+        memoryBankAudioProvenance.afterRecall(
+            recallApplied = applied != null,
+            recalledRecordAudio = applied?.recordAudio ?: false,
+            recalledOffByDenial = applied?.recordAudioOffByDenial,
+        )
+    }
+
+    private fun applyMemorySlotRecall(slot: MemorySlot) {
         if (_state.value.isRecording) {
             // The canonical REC refusal, word for word: every other site in the VM and the engine
             // says exactly this, and StatusUrgencyTest pins it. One refusal, one voice.

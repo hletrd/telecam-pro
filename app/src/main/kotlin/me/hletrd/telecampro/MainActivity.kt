@@ -60,7 +60,6 @@ import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.HardwareKeyDiagnosticLogGate
-import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.processDiagnosticLogBudget
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraInputBlockOwner
@@ -518,23 +517,9 @@ class MainActivity : ComponentActivity() {
                             // audio-off provenance from the shared AudioDenialReasonStore itself
                             // (AGG4-49), so no caller can store a bank with "unknown" provenance.
 
-                            override fun onRecallMemorySlot(slot: MemorySlot) {
-                                val applied = vm.recallMemorySlot(slot)
-                                // The reason follows the APPLIED bank's own provenance (AGG3-8):
-                                // denial-silent sets it, operator-silent or audio-on clears it. A
-                                // provenance-blind rule protected one of those banks only by
-                                // breaking the other (AGG-37 vs AGG2-26). `applied` is the recall's
-                                // own answer: the post-hoc activeMemorySlot check was also true for
-                                // a refused re-recall of the slot already active.
-                                // The reconciliation against the CURRENT grant runs right here too
-                                // (AGG4-9): a denial-silent bank recalled while the mic is already
-                                // granted otherwise recorded silent clips until a later onResume.
-                                memoryBankAudioProvenance.afterRecall(
-                                    recallApplied = applied != null,
-                                    recalledRecordAudio = applied?.recordAudio ?: false,
-                                    recalledOffByDenial = applied?.recordAudioOffByDenial,
-                                )
-                            }
+                            // onRecallMemorySlot is NOT wrapped either (AGG5-22): the ViewModel
+                            // applies the recalled bank's audio provenance and reconciles it against
+                            // the live grant itself, so no CameraActions binding can skip it.
 
                             override fun onToggleRecordAudio(enabled: Boolean) {
                                 if (!enabled) {
@@ -973,7 +958,7 @@ class MainActivity : ComponentActivity() {
             // prevents a future Android auto-reset from inheriting an obsolete pre-grant denial.
             permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false) }
         }
-        memoryBankAudioProvenance.restoreIfGranted(announce = true)
+        vm.reconcileMicrophoneGrant()
         cameraPermanentlyDenied = classifyCameraPermission(
             granted = hasCameraPermission,
             requestedBefore = requestedBefore && !hasCameraPermission,
@@ -1049,22 +1034,6 @@ class MainActivity : ComponentActivity() {
 
     // The one owner of WHY audio is off (AGG4-49); every denial-reason write goes through it.
     private val audioDenialReason by lazy { AudioDenialReasonStore(permissionPreferences) }
-
-    // Memory-bank recall provenance + the grant reconciliation, one host-tested owner (AGG4-49/9).
-    // The permission is read LIVE, not from the Compose mirror, so a recall right after a grant
-    // reconciles against the truth even before the next onResume refresh.
-    private val memoryBankAudioProvenance by lazy {
-        MemoryBankAudioProvenance(
-            reason = audioDenialReason,
-            recordAudio = { vm.state.value.recordAudio },
-            hasMicrophonePermission = { hasPermission(Manifest.permission.RECORD_AUDIO) },
-            restoreAudio = { announce ->
-                vm.onToggleRecordAudio(true)
-                if (announce) vm.onAppStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
-            },
-        )
-    }
-
 }
 
 @Composable

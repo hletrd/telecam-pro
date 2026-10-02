@@ -236,6 +236,58 @@ class OpticsRecallTransactionRobolectricTest {
         assertEquals(false, requireNotNull(vm.recallMemorySlot(MemorySlot.MR2)).recordAudioOffByDenial)
     }
 
+    // AGG5-21 / AGG5-22: the recall leg of the audio provenance runs in the VM door itself, and its
+    // silent restore keeps the slot the recall just lit (it used to go through the operator's audio
+    // toggle, which cleared `activeMemorySlot`; and only the Activity wrapper ran it at all).
+    @Test
+    fun `recalling a denial-silent bank with the mic granted restores audio and keeps the slot lit`() {
+        val (vm, engine) = createViewModel()
+        setAcceptedTeleBaseline(vm, engine)
+        val reason = AudioDenialReasonStore(app)
+        reason.write(true)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(recordAudio = false)
+        vm.onStoreMemorySlot(MemorySlot.MR3) // denial-silent provenance
+        var granted = false
+        vm.microphonePermissionCheck = { granted }
+
+        // Not granted: the bank's silence and its reason come back as stored.
+        vm.onRecallMemorySlot(MemorySlot.MR3)
+        assertEquals(MemorySlot.MR3, vm.state.value.activeMemorySlot)
+        assertFalse(vm.state.value.recordAudio)
+        assertTrue(reason.read())
+
+        // Granted: the plain CameraActions door (no Activity wrapper) reconciles at once.
+        granted = true
+        vm.onRecallMemorySlot(MemorySlot.MR3)
+        assertTrue("the grant hands the denial-disabled track back", vm.state.value.recordAudio)
+        assertEquals("the recalled slot stays lit", MemorySlot.MR3, vm.state.value.activeMemorySlot)
+        assertFalse(reason.read())
+        assertEquals(CameraStatusMessage.MEMORY_SLOT_LOADED, vm.state.value.status?.message)
+
+        // An operator-silent bank is NOT overridden by the grant.
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(recordAudio = false)
+        vm.onStoreMemorySlot(MemorySlot.MR1) // reason is false now: operator-chosen silence
+        vm.onRecallMemorySlot(MemorySlot.MR1)
+        assertFalse(vm.state.value.recordAudio)
+        assertEquals(MemorySlot.MR1, vm.state.value.activeMemorySlot)
+    }
+
+    @Test
+    fun `the resume grant reconciliation restores denial-disabled audio and announces it`() {
+        val (vm, _) = createViewModel()
+        val reason = AudioDenialReasonStore(app)
+        reason.write(true)
+        ViewModelTestAccess.state(vm).value = vm.state.value.copy(recordAudio = false)
+        vm.microphonePermissionCheck = { false }
+        assertFalse(vm.reconcileMicrophoneGrant())
+        vm.microphonePermissionCheck = { true }
+        assertTrue(vm.reconcileMicrophoneGrant())
+        assertTrue(vm.state.value.recordAudio)
+        assertFalse(reason.read())
+        assertEquals(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON, vm.state.value.status?.message)
+        assertFalse("consumed: a second resume does nothing", vm.reconcileMicrophoneGrant())
+    }
+
     // AGG4-10: a failed recall lit its slot on the optimistic apply; the rollback restores a
     // baseline that is not the bank, so the indicator must go out with it.
     @Test

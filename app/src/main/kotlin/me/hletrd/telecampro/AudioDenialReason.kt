@@ -37,11 +37,14 @@ internal class AudioDenialReasonStore(private val preferences: SharedPreferences
 /**
  * The memory-bank half of the audio-denial provenance (AGG3-8) as one testable owner, so the
  * composition — which key is read, which value is written, and when a grant is re-evaluated — is
- * executed by host tests instead of living only inside the Activity (AGG4-49).
+ * executed by host tests instead of living only inside the Activity (AGG4-49). The ViewModel owns the
+ * one instance (AGG5-22): its own `onRecallMemorySlot` runs [afterRecall], so no `CameraActions`
+ * binding can skip the recall leg, and the Activity's resume/grant reconciliation calls into it.
  *
- * [restoreAudio] receives `announce`: the Activity's resume/grant reconciliation announces the
- * restore ("Microphone allowed — audio on"), while a recall restores silently because the
- * bank-loaded status already owns the plate and the restored toggle is what the operator recalled.
+ * [restoreAudio] receives `announce`: the resume/grant reconciliation announces the restore
+ * ("Microphone allowed — audio on"), while a recall restores silently because the bank-loaded
+ * status already owns the plate and the restored toggle is what the operator recalled — which is
+ * why that write must not clear the recalled slot (AGG5-21).
  */
 internal class MemoryBankAudioProvenance(
     private val reason: AudioDenialReasonStore,
