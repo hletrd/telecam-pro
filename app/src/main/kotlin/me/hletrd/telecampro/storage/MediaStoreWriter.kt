@@ -2893,11 +2893,8 @@ internal fun recoveryVideoVerdict(
         parseFailure.addSuppressed(walkFailure)
         throw parseFailure
     }
-    return when (presence) {
-        Mp4MoovPresence.ABSENT -> PendingProbe.INVALID
-        Mp4MoovPresence.PRESENT -> PendingProbe.INDETERMINATE
-        Mp4MoovPresence.UNKNOWN -> throw parseFailure
-    }
+    if (presence == Mp4MoovPresence.UNKNOWN) throw parseFailure
+    return moovPresenceVerdict(presence)
 }
 
 /** Verdict a parse throw may take once the walk has spoken (shared by the live tail and recovery). */
