@@ -2129,7 +2129,9 @@ class CameraEngine internal constructor(
             desired.overrideId,
             desired.transaction,
             startup = true,
-            startupTraceOwner = startupTraceOwnership.adoptForInputReady(),
+            // Whichever owner is live NOW, not the one GL started under (AGG6-18): a pause in the
+            // GL window revoked that capture, and resume's attempt handed this open its own owner.
+            startupTraceOwner = startupTraceOwnership.current(),
         )
         // Enumerated AFTER the route/open task is queued, like the debug capability scan below it:
         // the rail can render its pre-enumeration default for the few hundred ms this costs, but the
@@ -5138,9 +5140,10 @@ class CameraEngine internal constructor(
             fun cleanLateAllocation(allocation: PendingOutputAllocation) {
                 // The owner hands a late row here BEFORE it can release the shot's reserved
                 // cleanup capacity (AGG6-24), so the row spends that reservation rather than racing
-                // for unreserved capacity. A refused submit still retains the exact identity for
-                // bounded retry; REGISTERED is already durable, so launch recovery owns anything
-                // further. Provider work never falls back inline on the allocator/cancel caller.
+                // for unreserved capacity. A refused submit means the reservation is already
+                // terminal (spent by onError's cleanup, or cancelled) or its owner shut down, so
+                // this call retains nothing; REGISTERED is already durable, so launch recovery
+                // owns the row. Provider work never falls back inline on the allocator/cancel caller.
                 val submitted = rejectedCleanup.submit(
                     MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
                 ) { _ ->
@@ -5999,9 +6002,6 @@ class CameraEngine internal constructor(
                 )
             },
         )
-        val finishSequence: () -> Unit = lanes::finishSequence
-        val finishProcessed: () -> Unit = lanes::finishProcessed
-        val finishDng: () -> Unit = lanes::finishDng
         fun releaseDngAdmission() {
             if (dngPreCaptureLease?.release() == true) {
                 publishProcessStillAdmission()
@@ -6019,7 +6019,7 @@ class CameraEngine internal constructor(
                 runCatching {
                     publishProcessStillAdmission()
                 }
-                finishDng()
+                lanes.finishDng()
             }
         }
         // Status observers are UI-owned and must never strand a retained-snapshot lease or a
@@ -6041,7 +6041,7 @@ class CameraEngine internal constructor(
             stillPublicationDispatcher.dispatchRecoverable(
                 publication = { stillPipeline.publishDng(pending) },
                 onRejected = { retainCompletedDngForRecovery(pending) },
-                onTerminal = finishDng,
+                onTerminal = lanes::finishDng,
             )
         }
         return object : CameraController.PhotoCallback {
@@ -6094,7 +6094,7 @@ class CameraEngine internal constructor(
                                                 )
                                             }
                                         } finally {
-                                            finishProcessed()
+                                            lanes.finishProcessed()
                                         }
                                     }
                                 }
@@ -6202,9 +6202,9 @@ class CameraEngine internal constructor(
                     // DNG branches already released before their handoff; this exactly-once
                     // release is the backstop for every other exit (processed-only, a throw).
                     releaseDngAdmission()
-                    if (!processedQueued) finishProcessed()
-                    if (!dngPublishQueued) finishDng()
-                    finishSequence()
+                    if (!processedQueued) lanes.finishProcessed()
+                    if (!dngPublishQueued) lanes.finishDng()
+                    lanes.finishSequence()
                 }
             }
 
@@ -6227,9 +6227,9 @@ class CameraEngine internal constructor(
                     reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
                     releaseDngAdmission()
-                    finishProcessed()
-                    if (!dngCleanupQueued) finishDng()
-                    finishSequence()
+                    lanes.finishProcessed()
+                    if (!dngCleanupQueued) lanes.finishDng()
+                    lanes.finishSequence()
                 }
             }
         }

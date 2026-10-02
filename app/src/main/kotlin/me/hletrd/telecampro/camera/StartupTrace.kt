@@ -153,17 +153,6 @@ internal class EngineStartupTraceOwnership(
         return null
     }
 
-    /**
-     * The owner a GL generation's input-ready continuation opens under (AGG6-18). That continuation
-     * captured the owner of the cold start that STARTED GL; a pause inside the GL window revoked it,
-     * and the replayed open is resume's attempt — whose own reopen task returned at the input-
-     * pending guard and handed it over. Opening under the revoked capture left the real cold start
-     * unmeasured and resume's owner armed with zero marks. The continuation therefore opens under
-     * whichever owner is live NOW: the capture itself when no pause intervened, resume's otherwise,
-     * or none.
-     */
-    fun adoptForInputReady(): StartupTrace.Owner? = current()
-
     /** Returns the owner only to its first installed controller. A replacement revokes it. */
     fun claimController(expected: StartupTrace.Owner?): StartupTrace.Owner? {
         var revoked: StartupTrace.Owner? = null

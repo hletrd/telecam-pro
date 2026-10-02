@@ -162,13 +162,13 @@ class StartupTraceTest {
     fun `input-ready adopts the live resume owner over a revoked capture`() {
         val engine = EngineStartupTraceOwnership()
         val coldStart = checkNotNull(engine.begin())
-        assertSame("no pause: the capture is still live", coldStart, engine.adoptForInputReady())
+        assertSame("no pause: the capture is still live", coldStart, engine.current())
 
         assertTrue(engine.revoke()) // pause inside the GL window
         val resume = checkNotNull(engine.begin())
 
-        assertSame(resume, engine.adoptForInputReady())
-        assertSame(resume, engine.claimController(engine.adoptForInputReady()))
+        assertSame(resume, engine.current())
+        assertSame(resume, engine.claimController(engine.current()))
         StartupTrace.mark(resume, "open")
         StartupTrace.finish(resume, "first-result")
         assertEquals(listOf("open", "first-result"), StartupTrace.marksForTest().map { it.first })
