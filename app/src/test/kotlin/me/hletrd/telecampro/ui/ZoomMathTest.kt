@@ -34,20 +34,14 @@ class ZoomMathTest {
                 teleconverter = false,
                 teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
                 equivalentFocalMm = LensChoice.TELE10X.targetEquivMm,
+                frontFacing = false,
                 activeRoute = CameraRoute.EXTERNAL,
+                standaloneRoute = true,
+                measuredMainEquivMm = null,
             ),
             0f,
         )
-        assertEquals(
-            "2.0×",
-            formatDisplayZoom(
-                2f,
-                false,
-                TELECONVERTER_MAGNIFICATION,
-                LensChoice.TELE10X.targetEquivMm,
-                activeRoute = CameraRoute.EXTERNAL,
-            ),
-        )
+        assertEquals("2.0×", formatDisplayZoom(2f, 1f))
 
         val modeFlip = remapModeOptics(
             fromMode = CaptureMode.PHOTO,
@@ -66,11 +60,8 @@ class ZoomMathTest {
         try {
             Locale.setDefault(Locale.GERMANY)
             assertEquals("1.5×", formatZoomMultiplier(1.5f))
-            assertEquals(
-                "10.0×",
-                formatDisplayZoom(1f, false, TELECONVERTER_MAGNIFICATION, LensChoice.TELE10X.targetEquivMm),
-            )
-            assertEquals("13.0×", formatDisplayZoom(1f, true, TELECONVERTER_MAGNIFICATION, null))
+            assertEquals("10.0×", formatDisplayZoom(1f, rearMultiplier(LensChoice.TELE10X.targetEquivMm)))
+            assertEquals("13.0×", formatDisplayZoom(1f, rearMultiplier(null, teleconverter = true)))
         } finally {
             Locale.setDefault(previous)
         }
@@ -479,19 +470,17 @@ class ZoomMathTest {
     @Test fun `front zoom displays lens-local, never main-relative`() {
         // front-equiv ÷ main-equiv would read "0.9×" at the selfie 1× — the honest front display
         // is the plain local ratio.
-        assertEquals(1f, zoomDisplayMultiplier(
+        val front = zoomDisplayMultiplier(
             teleconverter = false,
             teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             equivalentFocalMm = 20f,
             frontFacing = true,
-        ), 0f)
-        assertEquals("2.0×", formatDisplayZoom(
-            2f,
-            teleconverter = false,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
-            equivalentFocalMm = 20f,
-            frontFacing = true,
-        ))
+            activeRoute = CameraRoute.FRONT,
+            standaloneRoute = true,
+            measuredMainEquivMm = 23.4f,
+        )
+        assertEquals(1f, front, 0f)
+        assertEquals("2.0×", formatDisplayZoom(2f, front))
     }
 
     @Test fun `front mode flip keeps lens-local zoom and the retained rear band`() {
@@ -567,7 +556,15 @@ class ZoomMathTest {
         // A generic 2x on the 70 mm host: local 1.0 reads 2x70/23 ≈ 6.09x, not the kit's 13x.
         assertEquals(
             teleDisplayBase(2f),
-            zoomDisplayMultiplier(teleconverter = true, teleconverterMagnification = 2f, equivalentFocalMm = null),
+            zoomDisplayMultiplier(
+                teleconverter = true,
+                teleconverterMagnification = 2f,
+                equivalentFocalMm = null,
+                frontFacing = false,
+                activeRoute = CameraRoute.BACK,
+                standaloneRoute = true,
+                measuredMainEquivMm = null,
+            ),
             0f,
         )
         // The 60x cap is on TOTAL magnification, so a weaker optic earns MORE digital headroom.
@@ -601,17 +598,66 @@ class ZoomMathTest {
     }
 
     @Test
-    fun `rear-route callers omitting frontFacing get the rear main-relative scale`() {
-        // The frontFacing parameter defaults to false: the many rear-only call sites use the
-        // synthetic default bridge, which must resolve to exactly the rear display scale.
-        assertEquals(kitBase, zoomDisplayMultiplier(true, TELECONVERTER_MAGNIFICATION, null), 0f)
-        assertEquals(1f, zoomDisplayMultiplier(false, TELECONVERTER_MAGNIFICATION, null), 0f)
+    fun `rear standalone routes divide by the main lens, TELE by the converter`() {
+        assertEquals(kitBase, rearMultiplier(null, teleconverter = true), 0f)
+        assertEquals(1f, rearMultiplier(null), 0f)
         assertEquals(
             LensChoice.TELE10X.targetEquivMm / LensChoice.MAIN.targetEquivMm,
-            zoomDisplayMultiplier(false, TELECONVERTER_MAGNIFICATION, LensChoice.TELE10X.targetEquivMm),
+            rearMultiplier(LensChoice.TELE10X.targetEquivMm),
             0f,
         )
     }
+
+    // AGG5-49 / RG5-2: the LOGICAL seamless route's wire zoom is already main-relative, so its own
+    // measured equivalent must not scale it again — PMA110's 23.4 mm logical camera read "3.1×" at
+    // the 3× preset. Every route-input combination that lands on the logical camera stays 1:1.
+    @Test
+    fun `logical seamless route displays its wire zoom 1 to 1 at any measured equivalent`() {
+        for (equiv in floatArrayOf(23f, 23.4f, 26f)) {
+            val logical = zoomDisplayMultiplier(
+                teleconverter = false,
+                teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+                equivalentFocalMm = equiv,
+                frontFacing = false,
+                activeRoute = CameraRoute.BACK,
+                standaloneRoute = false,
+                measuredMainEquivMm = equiv,
+            )
+            assertEquals(1f, logical, 0f)
+            assertEquals("3.0×", formatDisplayZoom(3f, logical))
+            assertEquals("10.0×", formatDisplayZoom(10f, logical))
+        }
+    }
+
+    // AGG5-49 / CT5-6: a standalone route divides by the MEASURED main, so the main lens itself
+    // reads "1.0×" on a 26 mm tablet (it read "1.1×" against the PMA110 nominal 23 mm) and the
+    // 23.4 mm PMA110 main keeps the 69.4 mm periscope at "3.0×".
+    @Test
+    fun `standalone route divides by the measured main equivalent`() {
+        assertEquals("1.0×", formatDisplayZoom(1f, rearMultiplier(26f, measuredMain = 26f)))
+        assertEquals("3.0×", formatDisplayZoom(1f, rearMultiplier(78f, measuredMain = 26f)))
+        assertEquals("1.0×", formatDisplayZoom(1f, rearMultiplier(23.4f, measuredMain = 23.4f)))
+        assertEquals("3.0×", formatDisplayZoom(1f, rearMultiplier(69.4f, measuredMain = 23.4f)))
+        // Pre-inventory (no measured main) falls back to the nominal 23 mm, and a missing caps
+        // equivalent reads the main itself rather than dividing by zero or NaN.
+        assertEquals(26f / 23f, rearMultiplier(26f, measuredMain = null), 1e-6f)
+        assertEquals(1f, rearMultiplier(null, measuredMain = 26f), 0f)
+        assertEquals(1f, rearMultiplier(Float.NaN, measuredMain = 0f), 0f)
+    }
+
+    private fun rearMultiplier(
+        equivalentFocalMm: Float?,
+        teleconverter: Boolean = false,
+        measuredMain: Float? = null,
+    ): Float = zoomDisplayMultiplier(
+        teleconverter = teleconverter,
+        teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+        equivalentFocalMm = equivalentFocalMm,
+        frontFacing = false,
+        activeRoute = CameraRoute.BACK,
+        standaloneRoute = true,
+        measuredMainEquivMm = measuredMain,
+    )
 
     // ---------------------------------------------------------------------------
     // TELE rail marks: the rail's TELE face is a digital-zoom picker whose numbers come from the

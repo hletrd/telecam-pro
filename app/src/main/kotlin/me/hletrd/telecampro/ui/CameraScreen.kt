@@ -1199,13 +1199,7 @@ fun CameraScreen(
                     enter = fadeIn(tween(120)),
                     exit = fadeOut(tween(300)),
                 ) {
-                    val mul = zoomDisplayMultiplier(
-                        state.teleconverterMode,
-                        state.teleconverterMagnification,
-                        state.caps?.equivalentFocalMm,
-                        frontFacing = state.facing == CameraFacing.FRONT,
-                        activeRoute = state.activeCameraRoute,
-                    )
+                    val mul = state.mainRelativeZoomMultiplier
                     ZoomIndicator(
                         zoom = state.controls.zoomRatio * mul,
                         range = state.caps?.zoomRatioRange?.let {

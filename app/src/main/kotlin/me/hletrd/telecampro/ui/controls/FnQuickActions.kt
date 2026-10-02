@@ -13,6 +13,7 @@ import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.formatDisplayZoom
+import me.hletrd.telecampro.ui.mainRelativeZoomMultiplier
 import java.util.Locale
 
 /**
@@ -68,14 +69,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? =
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else context?.localizedLabel(c.wbMode) ?: wbModeLabel(c.wbMode)
         FnSlot.EV -> formatEvComp(evCompStops(state))
         // Same main-relative display scale and formatter as the HUD pill and persistent Fn row.
-        FnSlot.ZOOM -> formatDisplayZoom(
-            c.zoomRatio,
-            state.teleconverterMode,
-            state.teleconverterMagnification,
-            state.caps?.equivalentFocalMm,
-            frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
-            activeRoute = state.activeCameraRoute,
-        )
+        FnSlot.ZOOM -> formatDisplayZoom(c.zoomRatio, state.mainRelativeZoomMultiplier)
         FnSlot.STABILIZATION -> context?.localizedLabel(state.videoStabMode) ?: videoStabModeLabel(state.videoStabMode)
         FnSlot.DRIVE -> context?.localizedLabel(state.driveMode) ?: driveModeLabel(state.driveMode)
         FnSlot.METERING -> context?.localizedLabel(c.meteringMode) ?: meteringModeLabel(c.meteringMode)

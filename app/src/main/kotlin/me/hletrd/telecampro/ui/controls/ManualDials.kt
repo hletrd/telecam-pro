@@ -116,7 +116,7 @@ import me.hletrd.telecampro.ui.fnEntryAnchor
 import me.hletrd.telecampro.ui.formatDisplayZoom
 import me.hletrd.telecampro.ui.formatZoomMultiplier
 import me.hletrd.telecampro.ui.zoomRulerScale
-import me.hletrd.telecampro.ui.zoomDisplayMultiplier
+import me.hletrd.telecampro.ui.mainRelativeZoomMultiplier
 import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.hudGlyph
@@ -296,13 +296,7 @@ fun ManualDialCluster(
                         caps = caps,
                         teleconverter = state.teleconverterMode,
                         // The SAME multiplier the ZOOM chip above it and the HUD pill read (AGG4-73).
-                        displayMultiplier = zoomDisplayMultiplier(
-                            teleconverter = state.teleconverterMode,
-                            teleconverterMagnification = state.teleconverterMagnification,
-                            equivalentFocalMm = caps?.equivalentFocalMm,
-                            frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
-                            activeRoute = state.activeCameraRoute,
-                        ),
+                        displayMultiplier = state.mainRelativeZoomMultiplier,
                         onZoomRatio = actions::onZoomRatio,
                     )
                     null -> Unit
@@ -577,14 +571,7 @@ private fun FnDialChip(
         )
         FnSlot.ZOOM -> DialChip(
             label = stringResource(R.string.label_zoom),
-            value = formatDisplayZoom(
-                controls.zoomRatio,
-                state.teleconverterMode,
-                state.teleconverterMagnification,
-                state.caps?.equivalentFocalMm,
-                frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
-                activeRoute = state.activeCameraRoute,
-            ),
+            value = formatDisplayZoom(controls.zoomRatio, state.mainRelativeZoomMultiplier),
             active = openDial == DialType.ZOOM,
             enabled = policyEnabled && quickManualDialEnabled(DialType.ZOOM, availability),
             onClick = { onSelect(DialType.ZOOM) },

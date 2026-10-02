@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.ui
 
+import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
@@ -22,31 +24,67 @@ internal data class ZoomBounds(val lower: Float, val upper: Float)
 /**
  * The ONE main-relative zoom DISPLAY multiplier (DES4-1): TELE uses the converter scale (13–60×
  * round numbers on the kit optic; the caps-measured 69.4 mm would read 59.5× at the 60× ceiling),
- * other routes use openedLensEquiv ÷ mainEquiv (≈3.0× at the 3× tele's native position). The HUD
- * pill and the Fn/My-Menu ZOOM value MUST both read through this — the Fn tile used to show the raw
- * lens-local ratio ("2.3×") while the pill showed "30.0×" for the identical physical state. The
- * Quick Zoom ruler reads and drags on this scale too ([zoomRulerScale], AGG4-73): it opens directly
- * under the ZOOM chip, and a "1.0×" ruler under a "3.0×" chip was two magnifications for one framing.
+ * other standalone routes use openedLensEquiv ÷ measured mainEquiv (≈3.0× at the 3× tele's native
+ * position). The HUD pill, the Fn/My-Menu ZOOM value, the Quick Zoom ruler ([zoomRulerScale],
+ * AGG4-73) and the Shoot-tab Zoom slider (AGG5-12) MUST all read through this — the Fn tile used to
+ * show the raw lens-local ratio ("2.3×") while the pill showed "30.0×" for the identical physical
+ * state, and a "1.0×" slider under a "3.0×" chip was two magnifications for one framing. UI call
+ * sites read it through [mainRelativeZoomMultiplier] so no surface can assemble its own inputs.
+ *
+ * The LOGICAL seamless route is 1:1 (AGG5-49 / RG5-2): its wire zoom is ALREADY main-relative
+ * (`unifiedZoomOf` returns it unchanged), so multiplying it by the logical camera's own measured
+ * equivalent ÷ the nominal 23 mm read "3.1×" at the 3× preset on PMA110 (23.4 mm) — a scale
+ * applied twice. On a standalone route the divisor is the MEASURED main lens ([measuredMainEquivMm],
+ * the inventory's MAIN preset focal), never the PMA110 nominal: a 26 mm tablet main read "1.1×" at
+ * the very lens the rail calls "1×" (CT5-6). The nominal survives only as the pre-inventory fallback.
  *
  * [teleconverterMagnification] is the SELECTED converter's magnification (CameraUiState.
  * teleconverterMagnification). It is an explicit parameter, never a global read, so this whole file
  * stays pure and JVM-testable — and so a caller can never silently display the kit optic's scale
- * while a different converter is mounted.
+ * while a different converter is mounted. No parameter has a default (AGG4-47 / AGG5-50): an
+ * omitted route input used to compile into the PMA110 answer.
  */
 internal fun zoomDisplayMultiplier(
     teleconverter: Boolean,
     teleconverterMagnification: Float,
     equivalentFocalMm: Float?,
-    frontFacing: Boolean = false,
-    activeRoute: CameraRoute? = null,
+    frontFacing: Boolean,
+    activeRoute: CameraRoute?,
+    standaloneRoute: Boolean,
+    measuredMainEquivMm: Float?,
 ): Float = when {
     // The main-relative scale is a REAR concept (which rear lens the unified zoom sits on). The
     // front camera has no place on it — front-equiv ÷ main-equiv would read "0.9×" at the selfie
     // 1× — so front zoom displays as its honest lens-local ratio.
     activeRoute?.lensLocalZoom == true || frontFacing -> 1f
     teleconverter -> teleDisplayBase(teleconverterMagnification)
-    else -> (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
+    !standaloneRoute -> 1f
+    else -> {
+        val main = measuredMainEquivMm?.takeIf { it.isFinite() && it > 0f } ?: LensChoice.MAIN.targetEquivMm
+        (equivalentFocalMm?.takeIf { it.isFinite() && it > 0f } ?: main) / main
+    }
 }
+
+/**
+ * [zoomDisplayMultiplier] for the live UI state: the ONE place its seven inputs are read, so the
+ * pill, chip, Fn value, ruler and Shoot-tab slider cannot disagree about the route they are on.
+ * The standalone answer is the same [standaloneRouteWanted] law `CameraUiState.unifiedZoom`
+ * converts with.
+ */
+internal val CameraUiState.mainRelativeZoomMultiplier: Float
+    get() = zoomDisplayMultiplier(
+        teleconverter = teleconverterMode,
+        teleconverterMagnification = teleconverterMagnification,
+        equivalentFocalMm = caps?.equivalentFocalMm,
+        frontFacing = facing == CameraFacing.FRONT,
+        activeRoute = activeCameraRoute,
+        standaloneRoute = standaloneRouteWanted(
+            videoMode = mode == CaptureMode.VIDEO,
+            rawWanted = photoFormats.dngRaw,
+            rawForcesStandalone = rawForcesStandalone,
+        ),
+        measuredMainEquivMm = lensInventory.presetEquivMm[LensChoice.MAIN],
+    )
 
 /**
  * The Quick Zoom ruler's mapping between its displayed main-relative scale and the LENS-LOCAL ratio
@@ -91,23 +129,9 @@ internal fun zoomRulerScale(
 /** Camera-style zoom typography shared by every read-only zoom surface. */
 internal fun formatZoomMultiplier(zoom: Float): String = "%.1f×".format(Locale.US, zoom)
 
-/** Main-relative display value for a lens-local zoom request. */
-internal fun formatDisplayZoom(
-    localZoomRatio: Float,
-    teleconverter: Boolean,
-    teleconverterMagnification: Float,
-    equivalentFocalMm: Float?,
-    frontFacing: Boolean = false,
-    activeRoute: CameraRoute? = null,
-): String = formatZoomMultiplier(
-    localZoomRatio * zoomDisplayMultiplier(
-        teleconverter,
-        teleconverterMagnification,
-        equivalentFocalMm,
-        frontFacing,
-        activeRoute,
-    ),
-)
+/** Main-relative display value for a lens-local zoom request, on [zoomDisplayMultiplier]'s scale. */
+internal fun formatDisplayZoom(localZoomRatio: Float, displayMultiplier: Float): String =
+    formatZoomMultiplier(localZoomRatio * displayMultiplier)
 
 /**
  * One zoom range shared by input targets and the value that can actually be applied.

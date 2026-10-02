@@ -14,19 +14,26 @@ import org.junit.Test
  * ([zoomDisplayMultiplier]) and writes `display / base` back lens-local.
  */
 class ZoomRulerScaleTest {
-    private fun multiplier(equivMm: Float?, teleconverter: Boolean = false, route: CameraRoute = CameraRoute.BACK) =
-        zoomDisplayMultiplier(
-            teleconverter = teleconverter,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
-            equivalentFocalMm = equivMm,
-            frontFacing = route == CameraRoute.FRONT,
-            activeRoute = route,
-        )
+    private fun multiplier(
+        equivMm: Float?,
+        teleconverter: Boolean = false,
+        route: CameraRoute = CameraRoute.BACK,
+        standalone: Boolean = true,
+        measuredMain: Float? = 23f,
+    ) = zoomDisplayMultiplier(
+        teleconverter = teleconverter,
+        teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+        equivalentFocalMm = equivMm,
+        frontFacing = route == CameraRoute.FRONT,
+        activeRoute = route,
+        standaloneRoute = standalone,
+        measuredMainEquivMm = measuredMain,
+    )
 
     @Test fun `standalone 70 mm lens reads 3x like the chip, not 1x`() {
         val base = multiplier(69f)
         val scale = zoomRulerScale(1f, 10f, base, teleconverter = false)
-        val chip = formatDisplayZoom(1f, false, TELECONVERTER_MAGNIFICATION, 69f, false, CameraRoute.BACK)
+        val chip = formatDisplayZoom(1f, base)
         assertEquals(chip, formatZoomMultiplier(scale.display(1f)))
         assertEquals("3.0×", chip)
         assertEquals(3f, scale.lo, 1e-4f)
@@ -43,7 +50,11 @@ class ZoomRulerScaleTest {
     }
 
     @Test fun `logical route and FRONT stay 1 to 1`() {
-        val logical = zoomRulerScale(0.6f, 20f, multiplier(23f), teleconverter = false)
+        // AGG5-49: 23.4 mm is PMA110's MEASURED logical equivalent; the old 23 mm fixture could
+        // not see the "3.1×" the nominal divisor produced.
+        val logical = zoomRulerScale(0.6f, 20f, multiplier(23.4f, standalone = false, measuredMain = 23.4f), teleconverter = false)
+        assertEquals(1f, logical.base, 0f)
+        assertEquals("3.0×", formatZoomMultiplier(logical.display(3f)))
         assertEquals(0.6f, logical.lo, 1e-4f)
         assertEquals(20f, logical.hi, 1e-4f)
         assertEquals(4f, logical.localFor(logical.fraction(4f)), 1e-4f)
