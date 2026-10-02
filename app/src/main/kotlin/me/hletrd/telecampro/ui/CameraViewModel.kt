@@ -123,6 +123,7 @@ import me.hletrd.telecampro.camera.reconcileConverter
 import me.hletrd.telecampro.camera.teleDisplayBase
 import me.hletrd.telecampro.camera.teleconverterDeclaration
 import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
@@ -828,6 +829,16 @@ class CameraViewModel private constructor(
     // into Open Gate's 2560×1920 after one Open Gate trip and a relaunch, and then into 4K once Open
     // Gate was off — the pick silently lost across persistence (tracer T2 / AGG-36). Null = auto.
     private var requestedVideoResolution: Size? = null
+    // The operator's video stabilization and frame-rate REQUESTS (AGG5-4 / TR5-3), kept apart from
+    // the displayed `videoStabMode` / `videoFrameRate` exactly like [requestedVideoResolution].
+    // Caps reconciliation used to narrow the state value on EVERY route — Photo's logical camera, a
+    // FRONT visit — then push it as the request and persist it: ENHANCED ratcheted to STANDARD/OFF
+    // and 60 fps to 30 for good, so every later 300 mm clip on the tele (which advertises both)
+    // recorded without the Active OIS+EIS profile. A route that cannot honour the request narrows
+    // only what is SHOWN and what reaches the wire; the request is what is persisted and what the
+    // next capable route restores.
+    private var requestedVideoStabMode: VideoStabMode = CameraUiState().videoStabMode
+    private var requestedVideoFrameRate: VideoFrameRate = CameraUiState().videoFrameRate
 
     init {
         engine.onStatus = ::publishStatus
@@ -1623,6 +1634,9 @@ class CameraViewModel private constructor(
         }
         // Mirrors setResolvedOptics: a recalled size becomes the request; none keeps the current one.
         restoredVideoSize?.let { requestedVideoResolution = it }
+        // A recalled/restored stabilization and frame rate are the operator's requests (AGG5-4).
+        requestedVideoStabMode = e.videoStabMode
+        requestedVideoFrameRate = safeFrameRate
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
         // These callbacks share the main queue, so cancelling immediately after synchronous
         // admission still precedes any stale trailing apply without mutating a rejected recall.
@@ -1793,7 +1807,7 @@ class CameraViewModel private constructor(
             phoneModel = s.phoneModel,
             teleconverterProfile = s.teleconverterProfile,
             teleconverterCustomMagnification = s.teleconverterCustomMagnification,
-            videoStabMode = s.videoStabMode,
+            videoStabMode = requestedVideoStabMode,
             aspectRatio = s.aspectRatio,
             timer = s.timer,
             driveMode = s.driveMode,
@@ -1820,7 +1834,7 @@ class CameraViewModel private constructor(
             hiResStill = s.hiResStill,
             videoCodec = pendingCodecUntilInventory?.takeIf { inventoryPending } ?: s.videoCodec,
             bitrateLevel = s.bitrateLevel,
-            videoFrameRate = s.videoFrameRate,
+            videoFrameRate = requestedVideoFrameRate,
             // The REQUEST only; "" (never chosen -> auto-pick the largest) when there is none. The
             // delivered `s.videoResolution` fallback pinned an auto user to whatever the current
             // route delivered (Open Gate's 2560×1920, a 1080p-max lens) after one save (AGG2-6).
@@ -3302,6 +3316,18 @@ class CameraViewModel private constructor(
     }
     override fun onVideoFrameRate(rate: VideoFrameRate) {
         if (rejectIfRecording()) return
+        requestedVideoFrameRate = rate
+        applyVideoFrameRate(rate)
+        _state.update { it.copy(activeMemorySlot = null) }
+        scheduleSettingsSave()
+    }
+
+    /**
+     * Puts [rate] on the wire and on screen: the engine rate, the exposure fps, and the displayed
+     * `videoFrameRate`. NOT the request and NOT a setting change — [reconcileFrameRate] uses it to
+     * narrow for a route that cannot deliver the request, which must not clear the MR slot or persist.
+     */
+    private fun applyVideoFrameRate(rate: VideoFrameRate) {
         engine.setVideoFrameRate(rate)
         // Keep the exposure fps in step so the AE target-fps range, cine shutter angle and sensor
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
@@ -3315,8 +3341,7 @@ class CameraViewModel private constructor(
         pendingControls = pendingControls
             ?.copy(fps = rate.fps)
             ?.normalizedForCaptureMode(current.mode)
-        _state.update { it.copy(videoFrameRate = rate, controls = controls, activeMemorySlot = null) }
-        scheduleSettingsSave()
+        _state.update { it.copy(videoFrameRate = rate, controls = controls) }
     }
     override fun onToggleOpenGate(enabled: Boolean) {
         if (rejectIfRecording()) return
@@ -3327,23 +3352,33 @@ class CameraViewModel private constructor(
     }
 
     /**
-     * After a change to resolution / codec / open-gate, ensure the selected [VideoFrameRate] is still
-     * one the current camera can deliver for the new size+codec; if not, snap to the nearest valid
-     * rate (preferring the same rounded fps) so the encoder is never handed an impossible rate.
+     * After a change to caps / resolution / codec / open-gate, put on the wire the REQUESTED
+     * [VideoFrameRate] when the current camera can deliver it for this size+codec, else the nearest
+     * valid rate (preferring the same rounded fps) so the encoder is never handed an impossible rate.
+     * The narrowing is display + wire only (AGG5-4): the request survives, is what is persisted, and
+     * comes back on the next route that can deliver it.
      */
     private fun reconcileFrameRate() {
         val s = _state.value
+        if (s.isRecording) return
         val allowed = VideoFrameRate.availableFor(s.caps, s.videoResolution, s.videoCodec)
-        if (s.videoFrameRate in allowed) return
-        val replacement = allowed.minByOrNull { kotlin.math.abs(it.fps - s.videoFrameRate.fps) } ?: return
-        onVideoFrameRate(replacement)
+        val target = if (requestedVideoFrameRate in allowed) {
+            requestedVideoFrameRate
+        } else {
+            allowed.minByOrNull { kotlin.math.abs(it.fps - requestedVideoFrameRate.fps) } ?: return
+        }
+        if (target != s.videoFrameRate) applyVideoFrameRate(target)
     }
 
     private fun reconcileZoomToCaps(caps: CameraCaps) {
         val current = _state.value
         val videoStabChoices = availableVideoStabModes(caps.videoStabModes)
+        // Display only (AGG5-4): the REQUEST stays as the operator set it. The Engine keeps the
+        // request too and resolves it per route at the request seam (`videoStabControlModeFor`:
+        // ENHANCED falls back to ON where PREVIEW_STABILIZATION is absent), so the wire is the same
+        // HAL mode the old narrowed push produced — without ratcheting the request down for good.
         val normalizedVideoStabMode =
-            current.videoStabMode.normalizedForAvailableModes(caps.videoStabModes)
+            requestedVideoStabMode.normalizedForAvailableModes(caps.videoStabModes)
         val range = caps.zoomRatioRange
         // Carry the outgoing lens's exposure across the aperture change before normalizing, exactly
         // as the engine already did at its own caps-install seam (same pure seed, same inputs — the
@@ -3381,10 +3416,6 @@ class CameraViewModel private constructor(
                 videoStabMode = normalizedVideoStabMode,
                 videoStabChoices = videoStabChoices,
             )
-        }
-        if (normalizedVideoStabMode != current.videoStabMode) {
-            engine.setVideoStabMode(normalizedVideoStabMode)
-            scheduleSettingsSave()
         }
         pendingControls = pendingControls?.let { pending ->
             normalizeControlsForRoute(
@@ -3427,8 +3458,10 @@ class CameraViewModel private constructor(
         val normalized = current.caps?.let {
             mode.normalizedForAvailableModes(it.videoStabModes)
         } ?: return
-        if (normalized == current.videoStabMode) return
-        engine.setVideoStabMode(normalized)
+        if (mode == requestedVideoStabMode && normalized == current.videoStabMode) return
+        // The pick IS the request (AGG5-4); the Engine resolves it per route like a restored one.
+        requestedVideoStabMode = mode
+        engine.setVideoStabMode(mode)
         _state.update { it.copy(videoStabMode = normalized) }
         markChanged(FnSlot.STABILIZATION)
         scheduleSettingsSave()

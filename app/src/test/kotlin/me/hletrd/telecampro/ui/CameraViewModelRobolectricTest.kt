@@ -1013,6 +1013,50 @@ class CameraViewModelRobolectricTest {
         assertNull("the condition does not come back after Ready", v.state.value.status)
     }
 
+    // AGG5-4 / TR5-3: a route that cannot honour the stabilization / frame-rate REQUEST (Photo's
+    // logical camera, FRONT) narrows only what is shown and what reaches the wire. It used to
+    // narrow, push and PERSIST the request, so one FRONT visit downgraded every later tele clip.
+    @Test fun `caps narrowing keeps the stabilization and frame-rate request for the next route`() {
+        val (v, e) = createViewModel()
+        val tele = ViewModelTestAccess.caps(equivalentFocalMm = 69.4f).copy(
+            videoStabModes = intArrayOf(0, 1, 2),
+            availableFpsRanges = arrayOf(android.util.Range(30, 30), android.util.Range(60, 60)),
+        )
+        val front = ViewModelTestAccess.caps(equivalentFocalMm = 21.5f).copy(
+            videoStabModes = intArrayOf(0, 1),
+            availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+        )
+        fun deliver(caps: me.hletrd.telecampro.camera.CameraCaps) {
+            e.onCapsReady!!.invoke(caps, e.currentOpticsGeneration())
+            idleFor(0)
+        }
+        fun extras() = ViewModelTestAccess.invoke(v, "currentExtras") as me.hletrd.telecampro.storage.ExtraSettings
+        fun engineStab() = CameraEngine::class.java.getDeclaredField("videoStabMode")
+            .apply { isAccessible = true }
+            .get(e)
+
+        deliver(tele)
+        v.onVideoStabMode(me.hletrd.telecampro.camera.VideoStabMode.ENHANCED)
+        v.onVideoFrameRate(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60)
+        idleFor(600)
+        val slotBefore = v.state.value.activeMemorySlot
+
+        deliver(front)
+        assertEquals(me.hletrd.telecampro.camera.VideoStabMode.STANDARD, v.state.value.videoStabMode)
+        assertEquals(30, v.state.value.videoFrameRate.fps)
+        assertEquals("the encoder is never handed an impossible rate", 30, v.state.value.controls.fps)
+        assertEquals("the Engine keeps the request and resolves it per route",
+            me.hletrd.telecampro.camera.VideoStabMode.ENHANCED, engineStab())
+        assertEquals(me.hletrd.telecampro.camera.VideoStabMode.ENHANCED, extras().videoStabMode)
+        assertEquals(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60, extras().videoFrameRate)
+        assertEquals("a narrowing is not a setting change", slotBefore, v.state.value.activeMemorySlot)
+
+        deliver(tele)
+        assertEquals(me.hletrd.telecampro.camera.VideoStabMode.ENHANCED, v.state.value.videoStabMode)
+        assertEquals(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60, v.state.value.videoFrameRate)
+        assertEquals(60, v.state.value.controls.fps)
+    }
+
     // AGG4-65: the plate is priority-aware. "MR1 loaded" must not wipe a 6 s retained-take
     // instruction, and a progress condition published meanwhile waits and then takes the plate.
     @Test fun `status plate keeps a retained-take line over lower statuses`() {
