@@ -1699,7 +1699,8 @@ class CameraViewModel private constructor(
         // size is no longer offered (lens change, aspect mismatch with openGate).
         cameraReadyPublicationGate.serializedStatus { statusOwner ->
             // The recall's own status competes for the plate like any other (AGG4-65): "MR1 loaded"
-            // must not wipe a retained-take instruction or an error that is still being read.
+            // is a RESPONSE (AGG5-11), so it shows, and a retained-take instruction or an error that
+            // is still being read is only covered and returns for its remaining time.
             val statusPublication = arbitrateStatus(status)
             _state.update {
                 it.copy(
