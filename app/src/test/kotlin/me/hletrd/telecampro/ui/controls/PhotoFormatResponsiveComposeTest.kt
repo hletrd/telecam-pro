@@ -64,6 +64,7 @@ class PhotoFormatResponsiveComposeTest {
                             cameraReady = cameraReady,
                             reopenInProgress = !cameraReady,
                             rawAvailable = true,
+                            heifStandIn = true,
                         )
                     }
                 }

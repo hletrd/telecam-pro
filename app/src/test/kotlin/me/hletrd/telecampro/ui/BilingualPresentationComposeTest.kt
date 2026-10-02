@@ -242,6 +242,7 @@ class BilingualPresentationComposeTest {
                             cameraReady = true,
                             reopenInProgress = false,
                             rawAvailable = false,
+                            heifStandIn = true,
                         )
                         SpeedAngleToggle(
                             mode = ShutterMode.SPEED,

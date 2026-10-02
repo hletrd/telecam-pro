@@ -11,7 +11,7 @@ class PhotoFormatsTest {
 
         assertEquals(
             requested,
-            requested.normalizedFor(PhotoSessionOutputs(processed = true, raw = true)),
+            requested.normalizedFor(PhotoSessionOutputs(processed = true, raw = true), heifStandIn = true),
         )
     }
 
@@ -20,7 +20,7 @@ class PhotoFormatsTest {
         assertEquals(
             PhotoFormats(heif = false, jpeg = true, dngRaw = false),
             PhotoFormats(heif = false, jpeg = true, dngRaw = true)
-                .normalizedFor(PhotoSessionOutputs(processed = true)),
+                .normalizedFor(PhotoSessionOutputs(processed = true), heifStandIn = true),
         )
     }
 
@@ -29,7 +29,7 @@ class PhotoFormatsTest {
         assertEquals(
             PhotoFormats(heif = true, jpeg = false, dngRaw = false),
             PhotoFormats(heif = false, jpeg = false, dngRaw = true)
-                .normalizedFor(PhotoSessionOutputs(processed = true)),
+                .normalizedFor(PhotoSessionOutputs(processed = true), heifStandIn = true),
         )
     }
 
@@ -38,7 +38,7 @@ class PhotoFormatsTest {
         assertEquals(
             PhotoFormats(heif = false, jpeg = false, dngRaw = true),
             PhotoFormats(heif = true, jpeg = true, dngRaw = false)
-                .normalizedFor(PhotoSessionOutputs(raw = true)),
+                .normalizedFor(PhotoSessionOutputs(raw = true), heifStandIn = true),
         )
     }
 
@@ -47,7 +47,7 @@ class PhotoFormatsTest {
         assertEquals(
             PhotoFormats(heif = false, jpeg = false, dngRaw = false),
             PhotoFormats(heif = true, jpeg = true, dngRaw = true)
-                .normalizedFor(PhotoSessionOutputs()),
+                .normalizedFor(PhotoSessionOutputs(), heifStandIn = true),
         )
     }
 
@@ -56,7 +56,7 @@ class PhotoFormatsTest {
         assertEquals(
             PhotoFormats(heif = true, jpeg = false, dngRaw = false),
             PhotoFormats(heif = false, jpeg = false, dngRaw = false)
-                .normalizedFor(PhotoSessionOutputs(processed = true, raw = true)),
+                .normalizedFor(PhotoSessionOutputs(processed = true, raw = true), heifStandIn = true),
         )
     }
 
@@ -68,11 +68,11 @@ class PhotoFormatsTest {
 
         assertEquals(
             PhotoFormats(heif = false, jpeg = true, dngRaw = false),
-            PhotoFormats(heif = true, jpeg = false, dngRaw = true).normalizedFor(hiRes),
+            PhotoFormats(heif = true, jpeg = false, dngRaw = true).normalizedFor(hiRes, heifStandIn = true),
         )
         assertEquals(
             PhotoFormats(heif = false, jpeg = true, dngRaw = false),
-            PhotoFormats(heif = false, jpeg = false, dngRaw = true).normalizedFor(hiRes),
+            PhotoFormats(heif = false, jpeg = false, dngRaw = true).normalizedFor(hiRes, heifStandIn = true),
         )
     }
 
@@ -81,7 +81,7 @@ class PhotoFormatsTest {
         assertEquals(
             PhotoFormats(heif = false, jpeg = false, dngRaw = false),
             PhotoFormats(heif = true, jpeg = true, dngRaw = true)
-                .normalizedFor(PhotoSessionOutputs(processed = false, raw = false, hiRes = true)),
+                .normalizedFor(PhotoSessionOutputs(processed = false, raw = false, hiRes = true), heifStandIn = true),
         )
     }
 

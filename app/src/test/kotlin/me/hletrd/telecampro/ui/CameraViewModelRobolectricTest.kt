@@ -858,7 +858,8 @@ class CameraViewModelRobolectricTest {
         val optics = generation("opticsIntentGeneration")
         val session = generation("cameraSessionGeneration")
         val dngOnly = PhotoFormats(heif = false, jpeg = false, dngRaw = true)
-        setState(v) { it.copy(photoFormats = dngOnly) }
+        idleFor(0) // let the init-time codec inventory land before staging an HEVC-capable device
+        setState(v) { it.copy(photoFormats = dngOnly, encoderInventoryLoaded = true, heifAvailable = true) }
         e.onCameraReadyChange!!.invoke(
             CameraReadyPublication(
                 sequence = 1L,

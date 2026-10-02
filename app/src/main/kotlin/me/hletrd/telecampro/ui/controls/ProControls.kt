@@ -1065,6 +1065,8 @@ internal fun PhotoFormatToggles(
     reopenInProgress: Boolean,
     // [me.hletrd.telecampro.camera.rawSelectable]: neither pure session truth nor bare capability.
     rawAvailable: Boolean,
+    // `CameraUiState.heifStandInAvailable`: the processed stand-in the shot writes (AGG5-53).
+    heifStandIn: Boolean,
     // `modifier` stays the FIRST optional parameter (Compose convention, enforced by the
     // ModifierParameter lint).
     modifier: Modifier = Modifier,
@@ -1081,6 +1083,7 @@ internal fun PhotoFormatToggles(
         reopenInProgress = reopenInProgress,
         rawAvailable = rawAvailable,
         heifAvailable = heifAvailable,
+        heifStandIn = heifStandIn,
     )
     val shown = model.displayed
     val optionScroll = rememberScrollState()

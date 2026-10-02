@@ -89,6 +89,7 @@ class SelectorRoleSemanticsComposeTest {
                         cameraReady = true,
                         reopenInProgress = false,
                         rawAvailable = true,
+                        heifStandIn = true,
                     )
                     MemoryPresetAction(saved = false, enabled = true, onClick = clicks::incrementAndGet)
                     MemoryPresetAction(saved = true, enabled = false, onClick = clicks::incrementAndGet)

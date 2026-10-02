@@ -4955,6 +4955,16 @@ class CameraEngine internal constructor(
 
     // ---- Photo ----
 
+    /**
+     * The processed stand-in a capture may use for a request with no processed axis (AGG5-53): HEIF
+     * only with an HEVC encoder, kept while the codec walk has not landed (the ViewModel's
+     * `CameraUiState.heifStandInAvailable` answers the same way, so the readout matches the file).
+     */
+    private fun heifStandIn(): Boolean = heifStandInAvailable(
+        inventoryLoaded = me.hletrd.telecampro.video.EncoderCaps.isLoaded(),
+        heifEncodeAvailable = me.hletrd.telecampro.video.EncoderCaps.heifEncodeAvailable(),
+    )
+
     private fun currentAcceptedCameraSession(): AcceptedCameraSession? {
         if (UnsafeRecorderQuarantine.isActive()) return null
         if (opticsRollbackEffectsGeneration != 0L) return null
@@ -5202,7 +5212,7 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             return false
         }
-        val effFormats = formats.normalizedFor(accepted.outputs)
+        val effFormats = formats.normalizedFor(accepted.outputs, heifStandIn())
         if (!effFormats.wantsProcessedStill && !effFormats.dngRaw) {
             onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
             return false
@@ -5435,7 +5445,7 @@ class CameraEngine internal constructor(
                             }
                             return@action
                         }
-                        val formats = requestedFormats.normalizedFor(accepted.outputs)
+                        val formats = requestedFormats.normalizedFor(accepted.outputs, heifStandIn())
                         if (!formats.wantsProcessedStill && !formats.dngRaw) {
                             onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
                             stopTimelapseIfOwns(generation)

@@ -28,7 +28,7 @@ class PhotoFormatChipModelTest {
         cameraReady: Boolean = true,
         rawAvailable: Boolean,
         reopenInProgress: Boolean = !cameraReady,
-    ) = photoFormatChipModel(request, outputs, cameraReady, reopenInProgress, rawAvailable, heifAvailable = true)
+    ) = photoFormatChipModel(request, outputs, cameraReady, reopenInProgress, rawAvailable, heifAvailable = true, heifStandIn = true)
 
     @Test fun `FRONT DNG-only request shows the HEIF the session writes and keeps DNG intent`() {
         // FRONT: rawSelectable is false, the session has a processed reader only.
@@ -60,8 +60,26 @@ class PhotoFormatChipModelTest {
         // The HEIF is a session stand-in, not a requested sibling: switching DNG off would leave
         // the request with no format at all, so the DNG chip stays locked on.
         assertFalse(m.dngEnabled)
-        // Tapping the stand-in HEIF off folds to "no processed axis" — the request is unchanged.
+        // Tapping the stand-in HEIF off folds to "no processed axis" — the request is unchanged — so
+        // the stand-in is not offered at all (AGG6-26): it was enabled and "checked" with a tap that
+        // did nothing. FRONT already disabled it; now every RAW-less route agrees.
         assertEquals(dngOnly, m.toggled(PhotoFormatAxis.HEIF))
+        assertFalse(m.heifEnabled)
+        assertTrue("a tap BESIDE the stand-in stays live (AGG5-54)", m.jpegEnabled)
+    }
+
+    // AGG5-53: the stand-in follows the processed encoder this device has — HEIF needs HEVC.
+    @Test fun `without an HEVC encoder the stand-in is JPEG and is not offered either`() {
+        val m = photoFormatChipModel(
+            dngOnly, processedOnly, true, false, true, heifAvailable = false, heifStandIn = false,
+        )
+        assertEquals(PhotoFormats(heif = false, jpeg = true, dngRaw = true), m.displayed)
+        assertFalse(m.heifEnabled)
+        assertFalse(m.jpegEnabled)
+        assertEquals(dngOnly, m.toggled(PhotoFormatAxis.JPEG))
+        assertTrue(CameraUiState(encoderInventoryLoaded = false, heifAvailable = false).heifStandInAvailable)
+        assertFalse(CameraUiState(encoderInventoryLoaded = true, heifAvailable = false).heifStandInAvailable)
+        assertTrue(CameraUiState(encoderInventoryLoaded = true, heifAvailable = true).heifStandInAvailable)
     }
 
     @Test fun `a reopen reads as reconfiguring and keeps the chips on the request`() {
@@ -123,7 +141,7 @@ class PhotoFormatChipModelTest {
         assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = true), both.toggled(PhotoFormatAxis.HEIF))
         // No HEIF encoder: the chip is not offered even when the session could carry it.
         assertFalse(
-            photoFormatChipModel(PhotoFormats(heif = false, jpeg = true), processedOnly, true, false, false, heifAvailable = false)
+            photoFormatChipModel(PhotoFormats(heif = false, jpeg = true), processedOnly, true, false, false, heifAvailable = false, heifStandIn = false)
                 .heifEnabled,
         )
     }

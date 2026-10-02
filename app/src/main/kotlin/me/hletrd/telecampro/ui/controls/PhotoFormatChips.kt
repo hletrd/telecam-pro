@@ -67,7 +67,8 @@ internal data class PhotoFormatChipModel(
  * [rawAvailable] is the caller's [me.hletrd.telecampro.camera.rawSelectable] answer (neither pure
  * session truth nor bare capability). [heifAvailable] is the device's HEIF encoder fact.
  * [reopenInProgress] is [me.hletrd.telecampro.camera.CameraUiState.reopenInProgress]; only it earns
- * "reconfiguring".
+ * "reconfiguring". [heifStandIn] is `CameraUiState.heifStandInAvailable`: which processed format a
+ * session stands in with for a request that names none (AGG5-53) — the one the shot will write.
  */
 internal fun photoFormatChipModel(
     request: PhotoFormats,
@@ -76,11 +77,12 @@ internal fun photoFormatChipModel(
     reopenInProgress: Boolean,
     rawAvailable: Boolean,
     heifAvailable: Boolean,
+    heifStandIn: Boolean,
 ): PhotoFormatChipModel {
     val reconfiguring = !cameraReady
     val processedAvailable = reconfiguring || outputs.processed
     val displayed = if (!reconfiguring && outputs.hasStillTarget) {
-        val effective = request.effectiveFor(outputs)
+        val effective = request.effectiveFor(outputs, heifStandIn)
         PhotoFormats(heif = effective.heif, jpeg = effective.jpeg, dngRaw = request.dngRaw)
     } else {
         request
@@ -92,10 +94,18 @@ internal fun photoFormatChipModel(
     // An accepted hi-res session's only still lane is the passthrough JPEG: a HEIF tap there could
     // never be written, so the chip is not offered rather than silently doing nothing.
     val hiResSession = !reconfiguring && outputs.hiRes
+    // A lit processed chip the REQUEST does not name is the session's stand-in for a DNG-only
+    // request (FRONT, a drop-RAW rung). Turning it off is not an edit: the request already has no
+    // processed axis, so the tap folded back into the unchanged request and the chip re-rendered lit
+    // under TalkBack's "checked" (AGG6-26 / UX6-4). It is shown, but not offered, on every route —
+    // as FRONT already did — and the Output caption says why. A tap BESIDE it still adopts it
+    // (AGG5-54), so the other processed chip stays live.
+    val standIn = !reconfiguring && !request.wantsProcessedStill
     // At least one processed format must survive unless RAW is on.
     val heifEnabled = heifAvailable && processedAvailable && !hiResSession &&
-        (!displayed.heif || displayed.jpeg || rawSelected)
-    val jpegEnabled = processedAvailable && (!displayed.jpeg || displayed.heif || rawSelected)
+        (!displayed.heif || displayed.jpeg || rawSelected) && !(standIn && displayed.heif)
+    val jpegEnabled = processedAvailable && (!displayed.jpeg || displayed.heif || rawSelected) &&
+        !(standIn && displayed.jpeg)
     val dngEnabled = rawAvailable && (!displayed.dngRaw || processedRequested)
     val caption = when {
         // Not Ready: only a live reopen/recovery is "reconfiguring" (AGG5-55 / AGG6-9). Cold start,

@@ -115,6 +115,7 @@ class AcceptedPhotoFormatsTest {
             photoOutputs = outputs,
             preTeleUnifiedZoom = Float.NaN,
             photoFormats = formats,
+            heifStandIn = true,
         ).effectivePhotoFormats
 
     @Test

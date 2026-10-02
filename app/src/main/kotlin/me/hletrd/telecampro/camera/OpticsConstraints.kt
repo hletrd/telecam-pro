@@ -55,6 +55,7 @@ internal fun acceptedOpticsAuxState(
     photoOutputs: PhotoSessionOutputs,
     preTeleUnifiedZoom: Float,
     photoFormats: PhotoFormats,
+    heifStandIn: Boolean,
 ): AcceptedOpticsAuxState = AcceptedOpticsAuxState(
     preTeleUnifiedZoom = if (teleconverter) preTeleUnifiedZoom else Float.NaN,
     // An accepted session edits NOTHING in the operator's format request (AGG3-18 / VER3-2). Each
@@ -72,7 +73,7 @@ internal fun acceptedOpticsAuxState(
     // The session's answer is still real, so it is returned as a READOUT ([effectiveFor]); and
     // capture-time normalisation in CameraEngine refuses to shoot a missing output, so keeping the
     // request here can never produce a bogus capture.
-    effectivePhotoFormats = photoFormats.effectiveFor(photoOutputs),
+    effectivePhotoFormats = photoFormats.effectiveFor(photoOutputs, heifStandIn),
 )
 
 /**

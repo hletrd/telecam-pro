@@ -1528,10 +1528,16 @@ internal fun PhotoFormats.withDefaultIfEmpty(): PhotoFormats =
 
 /**
  * Resolves a request against readers that actually survived session fallback. Available requested
- * outputs win; otherwise prefer processed HEIF, then RAW-only DNG, and represent preview-only as an
- * empty set instead of inventing an unavailable capture target.
+ * outputs win; otherwise prefer the processed stand-in, then RAW-only DNG, and represent
+ * preview-only as an empty set instead of inventing an unavailable capture target.
+ *
+ * [heifStandIn] picks that processed stand-in (AGG5-53): HEIF only where the HEVC encoder HeifWriter
+ * needs exists, else JPEG. It used to be HEIF unconditionally, so a DNG-only request on a session
+ * that lost RAW (FRONT, the drop-RAW rung) on a device with no HEVC encoder shot a HEIF that could
+ * never be written. Required, never defaulted (AGG5-50): callers pass [heifStandInAvailable] /
+ * `CameraUiState.heifStandInAvailable`, which keep HEIF while the inventory is still unknown.
  */
-internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoFormats {
+internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs, heifStandIn: Boolean): PhotoFormats {
     // Hi-res session: the ONLY still lane is the passthrough HAL JPEG. HEIF would decode the
     // ~200MP JPEG into an ~800 MB ARGB bitmap for its pixel-rotate re-encode (guaranteed OOM),
     // and RAW was force-dropped by the session plan (a 200MP blob + RAW in one session is the
@@ -1544,7 +1550,7 @@ internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoForm
     )
     if (supported.wantsProcessedStill || supported.dngRaw) return supported
     return when {
-        outputs.processed -> PhotoFormats(heif = true)
+        outputs.processed -> PhotoFormats(heif = heifStandIn, jpeg = !heifStandIn)
         outputs.raw -> PhotoFormats(heif = false, dngRaw = true)
         else -> PhotoFormats(heif = false, jpeg = false, dngRaw = false)
     }
@@ -1564,8 +1570,20 @@ internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoForm
  * REQUEST keeps `dngRaw` regardless — wanting DNG is what moves the route (DNG rule 4 in CLAUDE.md),
  * and this readout is never written back.
  */
-fun PhotoFormats.effectiveFor(outputs: PhotoSessionOutputs): PhotoFormats =
-    if (outputs.hasStillTarget) normalizedFor(outputs).copy(dngRaw = dngRaw && outputs.raw) else this
+fun PhotoFormats.effectiveFor(outputs: PhotoSessionOutputs, heifStandIn: Boolean): PhotoFormats =
+    if (outputs.hasStillTarget) {
+        normalizedFor(outputs, heifStandIn).copy(dngRaw = dngRaw && outputs.raw)
+    } else {
+        this
+    }
+
+/**
+ * Whether the processed stand-in may be HEIF ([normalizedFor]): the HEVC encoder exists, or the
+ * inventory is not known yet — then the pre-AGG5-53 HEIF stands, so a device that has the encoder
+ * (PMA110) never shoots differently in the cold-start window before the codec walk lands.
+ */
+internal fun heifStandInAvailable(inventoryLoaded: Boolean, heifEncodeAvailable: Boolean): Boolean =
+    !inventoryLoaded || heifEncodeAvailable
 
 /**
  * True when an accepted session SUBSTITUTES DNG-only for a request that wants a processed still —
@@ -1574,7 +1592,9 @@ fun PhotoFormats.effectiveFor(outputs: PhotoSessionOutputs): PhotoFormats =
  * request is never normalized, so this stays true on every later Ready of the same session shape.
  */
 internal fun dngOnlySubstitution(request: PhotoFormats, outputs: PhotoSessionOutputs): Boolean {
-    val effective = request.effectiveFor(outputs)
+    // The stand-in choice cannot matter here: a request that wants a processed still keeps its own
+    // processed axes wherever a processed reader exists, so no stand-in is ever substituted for it.
+    val effective = request.effectiveFor(outputs, heifStandIn = true)
     return request.wantsProcessedStill && !effective.wantsProcessedStill && effective.dngRaw
 }
 
@@ -1847,7 +1867,11 @@ data class CameraUiState(
 
     /** [photoFormats] is the REQUEST; this is what the accepted session writes ([effectiveFor]). */
     val effectivePhotoFormats: PhotoFormats
-        get() = photoFormats.effectiveFor(photoSessionOutputs)
+        get() = photoFormats.effectiveFor(photoSessionOutputs, heifStandInAvailable)
+
+    /** See [me.hletrd.telecampro.camera.heifStandInAvailable]. */
+    val heifStandInAvailable: Boolean
+        get() = heifStandInAvailable(encoderInventoryLoaded, heifAvailable)
 
     /**
      * The OSD's output readout (AGG4-70): the accepted session's answer, NOTHING ("--") for a Ready

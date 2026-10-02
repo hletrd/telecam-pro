@@ -36,6 +36,7 @@ class OpticsTransitionPolicyTest {
             photoOutputs = PhotoSessionOutputs(processed = true, raw = true),
             preTeleUnifiedZoom = 8f,
             photoFormats = formats,
+            heifStandIn = true,
         )
 
         assertEquals(8f, rolledBack.preTeleUnifiedZoom)
@@ -49,6 +50,7 @@ class OpticsTransitionPolicyTest {
             photoOutputs = PhotoSessionOutputs(processed = true),
             preTeleUnifiedZoom = 8f,
             photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true),
+            heifStandIn = true,
         )
 
         assertTrue(accepted.preTeleUnifiedZoom.isNaN())
@@ -70,6 +72,7 @@ class OpticsTransitionPolicyTest {
             photoOutputs = PhotoSessionOutputs(),
             preTeleUnifiedZoom = 8f,
             photoFormats = PhotoFormats(heif = false, jpeg = false, dngRaw = true),
+            heifStandIn = true,
         )
 
         assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = true), accepted.effectivePhotoFormats)

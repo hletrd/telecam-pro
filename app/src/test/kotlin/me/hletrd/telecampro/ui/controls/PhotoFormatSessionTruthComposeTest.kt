@@ -36,6 +36,7 @@ class PhotoFormatSessionTruthComposeTest {
                     cameraReady = true,
                     reopenInProgress = false,
                     rawAvailable = false,
+                    heifStandIn = true,
                 )
             }
         }
@@ -57,6 +58,7 @@ class PhotoFormatSessionTruthComposeTest {
                     cameraReady = false,
                     reopenInProgress = true,
                     rawAvailable = true,
+                    heifStandIn = true,
                 )
             }
         }

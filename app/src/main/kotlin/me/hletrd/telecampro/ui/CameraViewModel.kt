@@ -1031,6 +1031,7 @@ class CameraViewModel private constructor(
                             photoOutputs = publication.photoOutputs,
                             preTeleUnifiedZoom = preTeleUnifiedZoom,
                             photoFormats = current.photoFormats,
+                            heifStandIn = current.heifStandInAvailable,
                         )
                         acceptedPreTele = accepted.preTeleUnifiedZoom
                         acceptedApplied = true
