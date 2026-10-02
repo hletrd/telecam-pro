@@ -12,6 +12,7 @@ import me.hletrd.telecampro.storage.PendingProbe
 import me.hletrd.telecampro.storage.orphanDisposition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -438,6 +439,22 @@ class RetainedStillDeletionOwnerTest {
         owner.markCaptureProducersTerminal(502)
 
         owner.markCaptureDeleted(502)
+
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    // MRG5-5: the third order. A tombstoned id whose family was evicted gets its terminal edge FIRST
+    // and the failed marker after; no later edge will come, so the marker must not close admission.
+    @Test
+    fun `terminal edge first then a failed marker leaves admission open without a family`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+        owner.markCaptureDeletedInMemory(601)
+
+        assertNull(owner.markCaptureProducersTerminal(601))
+        owner.completeDeletionDurability(601, durable = false)
 
         assertTrue(owner.canAdmitCapture())
     }

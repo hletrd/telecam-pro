@@ -59,6 +59,12 @@ internal class RetainedStillDeletionOwner<T>(
     // though the reason — an unowned late tail — ends the moment that capture's producers are
     // terminal. Per-id, it clears at that edge or when a later durable marker succeeds.
     private val nonDurableLiveDeletions = LinkedHashSet<Int>()
+    // Every id whose producers reached terminal, family-registered or not (MRG5-5), bounded to
+    // [maxTombstones] oldest-first. [producerTerminalCaptures] is coupled to the family registry for
+    // retirement, so a tombstoned id whose family was already evicted never entered it: its terminal
+    // edge arrived FIRST, the failed marker after, and admission closed for the process because no
+    // further edge for that id would ever come. This set answers only "can it still produce?".
+    private val producerTerminalIds = LinkedHashSet<Int>()
 
     init {
         require(maxTombstones > 0)
@@ -108,12 +114,12 @@ internal class RetainedStillDeletionOwner<T>(
         if (durable) {
             durableDeletedCaptures.add(captureId)
             nonDurableLiveDeletions.remove(captureId)
-        } else if (captureId !in producerTerminalCaptures) {
+        } else if (captureId !in producerTerminalIds) {
             // A failed durability boundary cannot be papered over by evicting its in-memory owner.
             // Close still admission while THIS capture can still produce an unowned tail; a capture
-            // whose producers are already terminal has no tail left to own, so nothing closes. An
-            // unregistered (evicted) id cannot prove terminality and stays fail-closed until its
-            // producer edge arrives.
+            // whose producers are already terminal has no tail left to own, so nothing closes —
+            // registered family or not (MRG5-5). Any other id stays fail-closed until its producer
+            // edge arrives.
             nonDurableLiveDeletions.add(captureId)
         }
         trimTombstonesLocked(captureId)
@@ -123,6 +129,9 @@ internal class RetainedStillDeletionOwner<T>(
     fun markCaptureProducersTerminal(captureId: Int): CaptureFamilyKey? = synchronized(lock) {
         // No later sibling can appear, so a failed marker for this id no longer guards anything.
         nonDurableLiveDeletions.remove(captureId)
+        producerTerminalIds.remove(captureId)
+        producerTerminalIds.add(captureId)
+        while (producerTerminalIds.size > maxTombstones) producerTerminalIds.remove(producerTerminalIds.first())
         if (captureId !in familiesByCapture) return@synchronized null
         producerTerminalCaptures.add(captureId)
         familiesByCapture[captureId].takeIf { captureId in durableDeletedCaptures }
