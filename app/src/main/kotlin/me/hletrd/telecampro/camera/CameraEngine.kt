@@ -5295,8 +5295,8 @@ class CameraEngine internal constructor(
      * BURST: [BURST_COUNT] stills, each started only after the previous completes. The controller
      * tracks a single in-flight capture (one `pending` slot), so shots are chained rather than fired
      * in a tight loop, which would clobber that slot while a capture is still resolving its images.
+     * Returns the HEAD shot's dispatch result: false when the press was refused.
      */
-    /** Returns the HEAD shot's dispatch result: false when the press was refused. */
     private fun captureBurst(accepted: AcceptedCameraSession, formats: PhotoFormats): Boolean {
         // One optics identity for the whole chain: continuations run from save completions off
         // the main thread, where re-reading the live fields raced the optics doors (T1).
@@ -5322,9 +5322,9 @@ class CameraEngine internal constructor(
      * is OFF), which used to fire three identical frames — so the manual path brackets the
      * exposure TIME instead (×¼ / ×1 / ×4, clamped to the sensor range, ISO untouched; see
      * [manualAebExposuresNs]). Either way the original controls are restored when the bracket
-     * finishes, and shots are chained for the same single-`pending` reason as BURST.
+     * finishes, and shots are chained for the same single-`pending` reason as BURST. Returns the
+     * HEAD bracket step's dispatch result: false when the press was refused.
      */
-    /** Returns the HEAD bracket step's dispatch result: false when the press was refused. */
     private fun captureAeb(accepted: AcceptedCameraSession, formats: PhotoFormats): Boolean {
         val ctrl = accepted.controller
         val chainOptics = snapshotShotOptics()
