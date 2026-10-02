@@ -299,7 +299,8 @@ private fun autoFlashAvailable(mode: FlashMode, caps: CameraControlCapabilities)
 
 /**
  * PASM-style exposure mode. No aperture-priority: the tele's aperture is fixed, so there is nothing
- * to prioritize. [letter] is the compact dial badge; [label] the settings-row name.
+ * to prioritize. The enum carries no display text: the compact dial badge is
+ * [me.hletrd.telecampro.ui.controls.exposureModeLetter], so this camera-layer type stays free of UI copy.
  */
 enum class ExposureMode { PROGRAM, SHUTTER, ISO, MANUAL }
 

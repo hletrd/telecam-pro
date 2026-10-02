@@ -309,6 +309,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   crop of the 1× lens, so using the band double-counts it (the first fix did exactly that and broke
   the tablets while looking right on PMA110). Device-verified on all three: PMA110 23/69/230 mm,
   TB336ZU 26/78 mm, TB331FC 27/81 mm — the tablets' ×3 readings are the crop, and are correct.
+  **The DISPLAY multiplier is a separate law with ONE owner (cycle 5, AGG5-49 + MRG5-4).**
+  `zoomDisplayMultiplier`, read only through `CameraUiState.mainRelativeZoomMultiplier`, feeds the
+  pill, Fn chip/value, ruler and Shoot-tab slider. It is 1:1 on the logical seamless route (its wire
+  zoom is already main-relative; multiplying by measured 23.4 ÷ nominal 23 read "3.1×" at the 3×
+  preset — a scale applied twice). On a standalone route it divides by the nominal 23 mm while the
+  measured main is within `LENS_CAPTION_ROUNDING_BAND` (10 %) of it, so PMA110 stays on 23, and by
+  the measured main otherwise (a 26 mm tablet main reads "1.0×", not "1.1×"). The focal
+  readings above predate this display law; its readouts are `docs/FIELD_CHECKS.md` A10.
 - **setRepeatingRequest STALLS this HAL's preview ~180 ms per swap (measured 2026-07-14) — live
   zoom is GL-rendered.** Swapping the repeating request (zoom tick, control change, AE-OFF manual
   values, HAL-AE alike) gaps the stream 170–250 ms; per-tick zoom submits made zoom read as ~5 fps
@@ -841,7 +849,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   re-probe without cause. On a capable device: hi-res rides the PREPENDED ladder rung (RAW forced
   off on that one attempt; a rejected hi-res session falls back to full-with-RAW), fast commits
   compare intent against the CONFIGURED session (`hiResConfigured`), the still saves via the
-  EXIF-orientation-only passthrough-JPEG lane, and the `HR` OSD tag keys on accepted-session truth.
+  passthrough-JPEG lane (pixels verbatim, no 200 MP decode; the shot's composed EXIF APP1, with
+  orientation, is spliced in before the single write, and the HAL-seeded identifying tags —
+  GPS, serials, owner, unique id, MakerNote — are stripped, AGG5-51), and the `HR` OSD tag keys on
+  accepted-session truth.
 - **300 mm teleconverter OIS would depend on OPPO CameraUnit, which is NOT integrated and NEVER
   WILL BE — the authenticated path was DECLINED by the owner 2026-08-04. Do not re-add the SDK,
   do not re-probe, do not plan around it.** The 4.3× teleconverter
@@ -1042,7 +1053,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   provider. Declining keeps own-rows-only behavior; a partial "Select photos" grant counts as
   access (`hasVisualMediaAccess`). There is still NO location permission and no
   location code, so captures carry no GPS tags** (verified by parsing a saved HEIF's TIFF IFDs: no
-  GPS IFD pointer in IFD0 or ExifIFD). Adding geotagging would be a new permission, a new Data
+  GPS IFD pointer in IFD0 or ExifIFD). The one lane seeded from a HAL's own EXIF, the dormant-on-PMA110
+  hi-res passthrough JPEG, strips the HAL's GPS directory, serials, owner name, unique id and
+  MakerNote before composing (`PASSTHROUGH_PRIVACY_STRIPPED_TAGS`). A saved DNG's tags come from
+  `DngCreator`, and its serial/unique-id absence remains a field check: `docs/FIELD_CHECKS.md` A14. Adding geotagging would be a new permission, a new Data
   Safety declaration, and a privacy-policy change — a feature, not a fix.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
@@ -1175,7 +1189,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   tidiness: per-mark logging gets silently eaten before it reaches logcat. Same rule for the
   `FocusConfidence` trace (change-gated with at least 3 s between changes, plus a 15 s heartbeat). The debug 3A trace likewise samples a
   bucketed state tuple, paces changes to at least 3 s, and uses a 15 s stable heartbeat (41 rows over
-  the ten-minute A5 soak; no more than 201 under continuous tuple changes). The sustained-YUV probe
+  the ten-minute A5 soak). Under continuous tuple changes its pacing alone would allow ~201 rows,
+  MORE than the whole 168-row shared pool below, so 3A can exhaust that pool and starve every other
+  shared producer; the pool, not the pacing, is the bound. The sustained-YUV probe
   accumulates cadence in constant memory and emits only enable + terminal summary rows. **Any new
   per-frame or per-tick log must be change-gated or thresholded.** (This quota is also what made the removed OPPO CameraUnit SDK's
   200+ startup rows decisive — see that bullet.)
@@ -1247,8 +1263,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   digital-gain-SIMULATED signal (up to ×16) while HAL-AE video is unboosted, so raw luma is not even
   comparable across modes. The DEBUG 3A line logs `flashMode` (what our request carried) and
   `flashState` (what the HAL claims) so wire truth stays separable from lamp truth.
-- **Debug capability diagnostics queue behind initial camera work.** The debug-only broad capability
-  and vendor-tag scan runs on `setupExecutor` only after the initial route/open task is enqueued, so
+- **Debug capability diagnostics queue behind initial camera work.** The debug-only camera inventory
+  dump (`VendorTagInspector`: facing, focals, sensor size, physical ids, and the concurrent/physical
+  finder feasibility probes — no request/session/vendor-key dump any more) runs on `setupExecutor` only after the initial route/open task is enqueued, so
   diagnostics cannot delay the first Camera2 setup task. It runs ONCE per process at INFO through the
   recurring door: the rows are facts, not faults, and at warning level per Engine start they used to
   spend the 120-row reserved owner that real onError/configure warnings need.

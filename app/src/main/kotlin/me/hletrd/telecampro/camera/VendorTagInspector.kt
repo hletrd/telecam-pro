@@ -14,8 +14,10 @@ import me.hletrd.telecampro.BuildConfig
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Debug-only camera capability logger. It records each camera's facing, focal lengths, sensor size
- * and physical ids, plus the read-only concurrent/physical finder probes, to Logcat under [TAG].
+ * Debug-only camera inventory logger. It records each camera's facing, focal lengths, sensor size
+ * and physical ids, plus the concurrent-stream and physical-pair finder feasibility probes, to Logcat
+ * under tag [TAG]. It does NOT dump capture-request, session or vendor keys (that dump was removed),
+ * so a key missing from this output says nothing about whether the device advertises it.
  *
  * Run `adb logcat -s TeleCamProVendor` while the app is open to confirm which Camera2 capabilities are
  * available on the device.

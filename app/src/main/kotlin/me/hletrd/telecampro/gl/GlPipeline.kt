@@ -968,8 +968,10 @@ class GlPipeline(
             // DESIGNED 66.7 ms cadence, so a >50 ms rule logged EVERY frame (~15 rows/s) and spent
             // ColorOS's 300-row per-process quota in ~20 s — after which the device silently drops
             // every other diagnostic this app emits (LOG_FLOWCTRL, device-observed 2026-07-25:
-            // it ate the startup trace and the focus-verdict trace outright). 200 ms still catches
-            // what this line exists for: the ~180 ms setRepeatingRequest stalls and real stream
+            // it ate the startup trace and the focus-verdict trace outright). The threshold is
+            // STRICT (`gap > 200`): a setRepeatingRequest swap stall at or under 200 ms (the low
+            // part of the measured 170–250 ms band) is NOT counted; the line catches the longer
+            // swap stalls and real stream
             // wedges. Normal cadence is NOT news.
             producerGapMs?.let { gap ->
                 frameGapAccumulator.record(now, gap) { emitFrameGapSummary(it, terminal = false) }

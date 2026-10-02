@@ -81,7 +81,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. Only live still families enter this gate; video and restored families carry durable delete identity without claiming a late-still producer. The in-memory tombstone is synchronous, while family-journal durability runs on the ordered I/O lane. |
 | `RetainedStillDiscardDispatcher.kt` | Per-Engine closeable admission facade over one process-lifetime finite provider lane (two daemon workers + eight backlog slots) for retained deleted-still rows. Accepted tasks keep their exact old-Engine deletion identity; overflow/shutdown never run ContentResolver inline. Retirement overflow uses one process-conflated rescan, while accepted retryable provider/journal uncertainty uses one process-owned exponentially backed-off rescan; authoritative surviving rows wait for a mutation edge rather than spin. The reconciliation registry bounds 64 distinct families in the same unit as the durable journal plus four local listeners per family. A released Engine unregisters its listener, and retry closures retain application context only. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
-| `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys; dumps once per process at INFO through the recurring owner, never the reserved warning owner. |
+| `VendorTagInspector.kt` | Debug-only camera inventory logger: per-camera facing, focal lengths, sensor size and physical ids, plus the concurrent-stream and physical-pair finder feasibility probes. It no longer dumps request/session or vendor keys. Logs once per process at INFO through the recurring owner, never the reserved warning owner. |
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
 | `FrameNotificationCoalescer.kt` | Latest-frame backpressure owner between `SurfaceTexture` notifications and GL draws. At most one scheduled drain represents any burst; a concurrent notification records one pending edge, and generation retirement makes every stale drain inert rather than posting one draw per producer callback. |
@@ -96,8 +96,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. Its explicit motion-evidence reset clears timestamped gyro history without changing an already-armed sensor-registration intent. |
 | **capture/** | |
 | `StillSnapshot.kt` | YUV_420_888→NV21 repack (row-wise arraycopy fast paths + generic fallback) and lazy JPEG encode for logical-camera stills, which cannot use the HAL JPEG path. |
-| `StillCapturePipeline.kt` | Owns processed-still decode/crop/rotation, isolated HEIF/JPEG encoders, shared shot EXIF composition, DNG write orchestration, and MediaStore write-state transitions. Processed work runs on ioExecutor; DNG bytes are written synchronously while the RAW Image is live, then every completed DNG publication crosses to the process-finite still-publication owner. Mixed-output ordering is preserved by queueing only the transfer behind processed completion. Hi-res shots take the passthrough-JPEG lane (`writePassthroughJpeg`): HAL bytes go to disk verbatim with the capture rotation as an EXIF orientation TAG only — no decode/crop/pixel-rotate (a ~200MP pixel-upright pass is a guaranteed OOM); in-app review honors that EXIF orientation when decoding. |
-| `HeifExif.kt` | Pure JPEG APP1 EXIF payload extraction (`Exif\0\0` + TIFF data) for `HeifWriter.addExifData`; the marker walk is host-tested independently of Android's ExifInterface. |
+| `StillCapturePipeline.kt` | Owns processed-still decode/crop/rotation, isolated HEIF/JPEG encoders, shared shot EXIF composition, DNG write orchestration, and MediaStore write-state transitions. Processed work runs on ioExecutor; DNG bytes are written synchronously while the RAW Image is live, then every completed DNG publication crosses to the process-finite still-publication owner. Mixed-output ordering is preserved by queueing only the transfer behind processed completion. Hi-res shots take the passthrough-JPEG lane (`writePassthroughJpeg`): the HAL's PIXELS go to disk verbatim — no decode/crop/pixel-rotate (a ~200MP pixel-upright pass is a guaranteed OOM) — and the capture rotation travels as the EXIF orientation tag; in-app review honors it when decoding. The bytes themselves are not verbatim: the shot's composed EXIF APP1 (the same shot attributes as the processed lanes, plus orientation and dimensions) is spliced in before the single write, seeded from the HAL's own APP1 with its identifying tags stripped (`PASSTHROUGH_PRIVACY_STRIPPED_TAGS`: the GPS directory, body/lens serials, owner name, unique image id, MakerNote; AGG5-51). |
+| `HeifExif.kt` | Pure JPEG APP1 EXIF helpers: payload extraction (`Exif\0\0` + TIFF data) for `HeifWriter.addExifData`, and the JPEG splice lane every JPEG writer depends on (`exifSplicePlan`, `spliceExifApp1`, `writeJpegWithExifApp1`, `exifApp1WithoutThumbnailIfd`), which replaces the encoded buffer's Exif APP1 with the shot's composed one before the single write. The marker walks are host-tested independently of Android's ExifInterface. |
 | `HeifCapture.kt` | Encodes HEIF from a Bitmap after crop and `captureRotationDegrees()` pixel rotation, injecting the same shot EXIF APP1 payload used for JPEG. Writes via the ioExecutor off the camera thread. |
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
@@ -682,8 +682,9 @@ advertises a size, and the `HR` OSD tag keys on ACCEPTED session truth —
 that survived configure is the full-sensor one. Same-route fast commits compare the resolved intent
 against the CONFIGURED intent (`AcceptedCameraSession.hiResConfigured`), so a ladder-dropped hi-res
 does not force a full ~0.5 s reconfigure on every later fast door. The saved still takes
-`StillCapturePipeline`'s passthrough-JPEG lane (bytes verbatim, EXIF orientation TAG only — no
-200MP decode); RAW is mutually exclusive with hi-res on the session plan. PMA110 exposes none of
+`StillCapturePipeline`'s passthrough-JPEG lane (pixels verbatim with no 200MP decode; the shot's
+composed EXIF APP1, orientation included and identifying HAL tags stripped, is spliced in before the
+single write); RAW is mutually exclusive with hi-res on the session plan. PMA110 exposes none of
 this to third-party Camera2 (probed 2026-07-22 — see CLAUDE.md), so on the target device the
 toggle never appears and the ladder runs without the hi-res rung.
 
@@ -798,6 +799,18 @@ start/move/quiet/repinch/end and route-specific request counts. Scale-remap inva
 `onToggleTeleconverter`, `onLens`, `onToggleFrontCamera`, `onStop`, **`onOpticsRollback`,
 `applyLoaded` (settings/MR recall), and the debug `onCameraOverride`** — the last three were the
 doors 6affe20 originally missed. The glide's per-tick math is the pure `zoomEaseStep` (`ui/ZoomMath.kt`, unit-tested).
+
+**Display zoom has one owner, separate from the wire scale.** `unifiedZoomOf`/`localZoomOf` convert
+the WIRE value between main-relative and lens-local scales; what the operator READS is the wire value
+times `zoomDisplayMultiplier` (`ui/ZoomMath.kt`), and every readout — the pill, Fn chip/value, zoom
+ruler and Shoot-tab slider — takes it only through `CameraUiState.mainRelativeZoomMultiplier`, the one
+place its route inputs are assembled. FRONT and lens-local-zoom routes display 1:1; TELE with the
+converter displays `teleDisplayBase(magnification)`; the LOGICAL seamless route displays 1:1 because
+its wire zoom is already main-relative (AGG5-49 — PMA110's measured 23.4 mm ÷ nominal 23 mm used to
+read "3.1×" at the 3× preset). A standalone route divides its measured equivalent by
+`standaloneMainDivisorMm`: the nominal 23 mm while the measured main is within
+`LENS_CAPTION_ROUNDING_BAND` of it (PMA110 stays byte-identical), the measured main otherwise (a 26 mm
+tablet main reads "1.0×"; MRG5-4). Device readouts are `docs/FIELD_CHECKS.md` A10.
 
 This zoom coalescer is separate from the general `ManualControls` packet throttle, which applies the
 newest full-control snapshot every 40 ms (25 Hz) during continuous dial input. The controller pairs
@@ -1075,8 +1088,9 @@ binds capture admission to the accepted controller/session identity.
 JPEG runs the SAME processed-pixel pipeline as HEIF (`StillCapturePipeline.saveProcessedStills`): decode the ImageReader bytes →
 center-crop to the selected aspect → rotate (afocal 180° + device) → re-encode at
 `ManualControls.jpegQuality`. The mandatory pixel rotation means it is NOT a byte passthrough — the
-output is a second lossy JPEG generation (accepted; keeping HEIF/JPEG framing identical wins). The
-exposure EXIF is re-stamped after `Bitmap.compress` from the shot's own TotalCaptureResult. Physical
+output is a second lossy JPEG generation (accepted; keeping HEIF/JPEG framing identical wins). `Bitmap.compress`
+strips metadata, so the shot's EXIF APP1 is composed ONCE from its own TotalCaptureResult and
+spliced into the encoded buffer before the single write (no in-place rewrite of the pending row). Physical
 lens focal/aperture metadata comes from a setup-thread-prefetched immutable cache; the camera callback
 does not query CameraService and copies the processed Image before resolving it.
 
