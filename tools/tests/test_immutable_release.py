@@ -534,7 +534,9 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             (home / "init.d/inject.gradle.kts").write_text("// unsealed\n", encoding="utf-8")
 
         def project_property(home: Path) -> None:
-            (home / "gradle.properties").write_text("org.gradle.caching=true\nfoo.bar=1\n", encoding="utf-8")
+            (home / "gradle.properties").write_text(
+                "org.gradle.caching=true\nfoo.bar=1\nsystemProp.http.proxyPassword=x\n", encoding="utf-8"
+            )
 
         def agent_jvmargs(home: Path) -> None:
             (home / "gradle.properties").write_text(
@@ -543,7 +545,10 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
 
         for setup, expected in (
             (init_script, "init.d is not empty"),
-            (project_property, "foo.bar, org.gradle.caching"),
+            (
+                project_property,
+                "keys a sealed build cannot carry: foo.bar, systemProp.http.proxyPassword. Remove or comment out",
+            ),
             (agent_jvmargs, "org.gradle.jvmargs (agent or project property)"),
         ):
             with self.subTest(case=setup.__name__):
@@ -562,6 +567,29 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             )
 
         commands, error = self.gradle_home_case(inert)
+        self.assertIsNone(error)
+        self.assertEqual(
+            ["./gradlew", "--no-build-cache", "--no-configuration-cache", "--no-daemon", ":app:bundleRelease"],
+            commands[0],
+        )
+
+    def test_sealed_run_admits_keys_the_sealed_flags_neutralize_and_proxies(self) -> None:
+        # MRG4-10: these were refused although the fixed flags already override the first two and a
+        # proxy only routes dependency downloads.
+        def developer_home(home: Path) -> None:
+            (home / "gradle.properties").write_text(
+                "org.gradle.caching=true\n"
+                "org.gradle.configuration-cache=true\n"
+                "systemProp.http.proxyHost=proxy.example\n"
+                "systemProp.http.proxyPort=3128\n"
+                "systemProp.http.nonProxyHosts=localhost\n"
+                "systemProp.https.proxyHost=proxy.example\n"
+                "systemProp.https.proxyPort=3128\n"
+                "systemProp.https.nonProxyHosts=localhost\n",
+                encoding="utf-8",
+            )
+
+        commands, error = self.gradle_home_case(developer_home)
         self.assertIsNone(error)
         self.assertEqual(
             ["./gradlew", "--no-build-cache", "--no-configuration-cache", "--no-daemon", ":app:bundleRelease"],

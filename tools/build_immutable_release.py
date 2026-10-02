@@ -159,6 +159,19 @@ USER_GRADLE_PROPERTY_ALLOWLIST = frozenset({
     "org.gradle.warning.mode",
     "org.gradle.vfs.watch",
     "kotlin.daemon.jvmargs",
+    # MRG4-10: inert under the sealed run. Command-line flags win over gradle.properties, so
+    # SEALED_GRADLE_FLAGS already turn these two off for this build; refusing them only made an
+    # ordinary developer setup fail the release gate.
+    "org.gradle.caching",
+    "org.gradle.configuration-cache",
+    # A proxy only routes dependency downloads (TLS-verified as usual); behind one, a dependency
+    # refresh cannot run without these. Proxy CREDENTIALS are deliberately not admitted.
+    "systemProp.http.proxyHost",
+    "systemProp.http.proxyPort",
+    "systemProp.http.nonProxyHosts",
+    "systemProp.https.proxyHost",
+    "systemProp.https.proxyPort",
+    "systemProp.https.nonProxyHosts",
 })
 _JVM_ARGUMENT_INJECTION = re.compile(r"-javaagent|-agentpath|-agentlib|-Dorg\.gradle\.project\.|-Dandroid\.")
 
@@ -212,6 +225,9 @@ def require_sealed_gradle_user_home(environment: Mapping[str, str]) -> None:
         raise RuntimeError(
             f"refusing a sealed release build: {properties} sets keys a sealed build cannot carry: "
             + ", ".join([*unexpected, *(f"{key} (agent or project property)" for key in injected)])
+            + ". Remove or comment out those keys (or point GRADLE_USER_HOME at a directory without "
+            "them) for the release run; build caching, the configuration cache, and "
+            "systemProp.http(s).proxyHost/proxyPort/nonProxyHosts may stay."
         )
 
 
