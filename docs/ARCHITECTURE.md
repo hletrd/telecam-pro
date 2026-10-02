@@ -430,8 +430,10 @@ Accessed from GL + audio/video threads:
   with restart status. A codec/audio drain still alive after the bounded join returns a typed
   quarantine-required result without clearing owners or the pending row; strict finalization never
   releases that process lease. An `IllegalStateException`/`CodecException` from
-  `signalEndOfInputStream()`/`stop()` on a codec whose drain or setup already threw is MediaCodec's
-  Error-state check, not an unproven release (`codecCleanupDecision`): it skips to `release()`, whose
+  `signalEndOfInputStream()`/`stop()` on a codec that already threw from a call ON it (setup, or a
+  drain-loop codec call — not a mic read or muxer fault), or that is itself a `CodecException`, or a
+  state throw at EOS after the drain thread joined and latched, is MediaCodec's Error-state check,
+  not an unproven release (`RecorderCodecTeardown`): it skips to `release()`, whose
   own failure still quarantines, and an EOS failure that does quarantine stops the `AudioRecord`
   first so the microphone is not held process-long. After every native owner is checked released, first-wins native
   classification releases the process REC lease, `recorderTeardownInFlight`, and microphone handoff
