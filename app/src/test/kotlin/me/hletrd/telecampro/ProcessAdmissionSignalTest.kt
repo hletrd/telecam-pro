@@ -48,7 +48,9 @@ class ProcessAdmissionSignalTest {
             closeReturned.set(true)
         }.apply { start() }
 
-        closer.join(50L)
+        // AGG5-64 (TE5-14): prove the closer is actually parked on the in-flight callback's monitor
+        // instead of inferring it from a 50 ms join, which passed vacuously on a slow scheduler.
+        assertTrue("close must block behind the in-flight callback", awaitBlocked(closer))
         assertFalse(closeReturned.get())
         release.countDown()
         publisher.join(2_000L)
@@ -100,14 +102,19 @@ class ProcessAdmissionSignalTest {
         }.apply { start() }
         assertTrue(t1Read.await(5, TimeUnit.SECONDS))
         live.set(false) // T2's reserve
+        val t2AboutToRefresh = CountDownLatch(1)
         val t2 = Thread {
+            t2AboutToRefresh.countDown()
             signal.refresh {
                 t2Reads.incrementAndGet()
                 live.get()
             }
         }.apply { start() }
-        // T2's read cannot begin while T1 holds the read-and-publish monitor.
-        Thread.sleep(100)
+        // T2's read cannot begin while T1 holds the read-and-publish monitor. AGG5-64 (TE5-14): a
+        // fixed sleep let an UNLOCKED refresh pass whenever T2 was simply not scheduled yet; T2 must
+        // now be observed parked on the monitor before the negative is asserted.
+        assertTrue(t2AboutToRefresh.await(5, TimeUnit.SECONDS))
+        assertTrue("T2 must block on the read-and-publish monitor", awaitBlocked(t2))
         assertEquals(0, t2Reads.get())
         t1Resume.countDown()
         t1.join(5_000)
@@ -123,5 +130,16 @@ class ProcessAdmissionSignalTest {
         assertTrue(signal.current())
         assertEquals(listOf(false, true, false, true), events.toList())
         subscription.close()
+    }
+
+    /** Bounded poll for [thread] parking on a monitor; false if it never does within 5 s. */
+    private fun awaitBlocked(thread: Thread): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            if (thread.state == Thread.State.BLOCKED) return true
+            if (!thread.isAlive) return false
+            Thread.onSpinWait()
+        }
+        return false
     }
 }
