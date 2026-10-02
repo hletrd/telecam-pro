@@ -204,4 +204,42 @@ class AfOverrideTest {
         assertTrue(stillCompletionMissingCharacteristics(wantRaw = true, charsPresent = false))
         assertFalse(stillCompletionMissingCharacteristics(wantRaw = true, charsPresent = true))
     }
+
+    private val afModes = intArrayOf(
+        CameraMetadata.CONTROL_AF_MODE_OFF,
+        CameraMetadata.CONTROL_AF_MODE_AUTO,
+        CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+    )
+
+    /** AGG5-29: the override follows the REQUEST packet (a still's frozen shutter-time controls). */
+    @Test
+    fun `a frozen AF-locked packet keeps its lock whatever the live controls became`() {
+        val frozen = ManualControls(focusMode = FocusMode.CONTINUOUS, afLock = true)
+        assertEquals(
+            AfOverride.LockAt(2.5f),
+            afOverrideForRequest(
+                requestControls = frozen,
+                touchAfActive = false,
+                maxAfRegions = 1,
+                afModes = afModes,
+                supportsManualFocus = true,
+                lastFocusDistance = 2.5f,
+            ),
+        )
+    }
+
+    @Test
+    fun `a frozen MANUAL packet is never overridden by a lock engaged after the press`() {
+        val frozen = ManualControls(focusMode = FocusMode.MANUAL, afLock = false)
+        assertNull(
+            afOverrideForRequest(
+                requestControls = frozen,
+                touchAfActive = true,
+                maxAfRegions = 1,
+                afModes = afModes,
+                supportsManualFocus = true,
+                lastFocusDistance = 2.5f,
+            ),
+        )
+    }
 }

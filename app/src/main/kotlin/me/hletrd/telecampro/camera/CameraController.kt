@@ -1057,7 +1057,7 @@ class CameraController internal constructor(
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
                 // drift class that produced the c928eac/f61594a regression pair). The tap region
                 // is set by applyMetering above; the trigger below drives the one-shot scan.
-                applyAfOverrides(this)
+                applyAfOverrides(this, controls)
             }
             // A fresh repeating request means the HAL may ramp its zoom again (session reopen ramps
             // from 1.0). Reset the change gate so the FIRST result after every rebuild forwards —
@@ -1761,7 +1761,7 @@ class CameraController internal constructor(
             // (ARCH4-5). This also covers the queued-trailing-task ordering (a tap can land
             // between queueing and firing): re-applying beats the old wholesale refusal, which
             // starved the preview to ~5 fps under app-side AE with a held tap-AF.
-            applyAfOverrides(b)
+            applyAfOverrides(b, controls)
             s.setRepeatingRequest(b.build(), cb, handler)
             publishPreviewDigitalGain()
         }.onFailure {
@@ -1781,18 +1781,13 @@ class CameraController internal constructor(
      * hold is meant to freeze); AF lock pins AF_MODE_OFF at the last AF-resolved distance and
      * WINS when both are set (the pure [afOverrideFor] pins that precedence under test).
      */
-    private fun applyAfOverrides(builder: CaptureRequest.Builder) {
-        val override = afOverrideFor(
-            touchAfUsesAuto = touchAfMayTrigger(
-                touchAfActive = touchAfActive,
-                maxAfRegions = caps.maxAfRegions,
-                focusMode = controls.focusMode,
-                afModes = caps.afModes,
-            ),
-            afLock = controls.afLock,
-            focusMode = controls.focusMode,
+    private fun applyAfOverrides(builder: CaptureRequest.Builder, requestControls: ManualControls) {
+        val override = afOverrideForRequest(
+            requestControls = requestControls,
+            touchAfActive = touchAfActive,
+            maxAfRegions = caps.maxAfRegions,
+            afModes = caps.afModes,
             supportsManualFocus = caps.supportsManualFocus,
-            afOffAdvertised = exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, caps.afModes) != null,
             lastFocusDistance = lastFocusDistance,
         )
         when (override) {
@@ -2127,7 +2122,11 @@ class CameraController internal constructor(
                     // the exposure the lock protects), and a tap-AF hold fires the still in
                     // CONTINUOUS instead of the held AUTO (cycle-6 code-review F6). Regions rode in
                     // via applyMetering; this adds only the mode/distance override, never a trigger.
-                    applyAfOverrides(this)
+                    // From the SAME frozen packet as every other key of this still (AGG5-29): a DNG
+                    // still dispatches after an up-to-8 s pre-allocation, and reading the live AF
+                    // lock there fired a locked press in CONTINUOUS (or pinned a frozen MANUAL
+                    // focus to AF_MODE_OFF at a lock engaged after the press).
+                    applyAfOverrides(this, requestControls)
                     // We rotate pixels ourselves (HEIF) / tag DNG + hi-res-JPEG orientation; keep
                     // the HAL out of rotation entirely.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
@@ -2970,6 +2969,31 @@ internal fun meteringRect(
 /** Whether a completed still must fail for a missing characteristics read: only DNG needs it. */
 internal fun stillCompletionMissingCharacteristics(wantRaw: Boolean, charsPresent: Boolean): Boolean =
     wantRaw && !charsPresent
+
+/**
+ * The AF override for one request, read entirely from that request's control packet (AGG5-29):
+ * the repeating paths pass the live controls, a still passes its frozen shutter-time packet.
+ */
+internal fun afOverrideForRequest(
+    requestControls: ManualControls,
+    touchAfActive: Boolean,
+    maxAfRegions: Int,
+    afModes: IntArray,
+    supportsManualFocus: Boolean,
+    lastFocusDistance: Float,
+): AfOverride? = afOverrideFor(
+    touchAfUsesAuto = touchAfMayTrigger(
+        touchAfActive = touchAfActive,
+        maxAfRegions = maxAfRegions,
+        focusMode = requestControls.focusMode,
+        afModes = afModes,
+    ),
+    afLock = requestControls.afLock,
+    focusMode = requestControls.focusMode,
+    supportsManualFocus = supportsManualFocus,
+    afOffAdvertised = exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, afModes) != null,
+    lastFocusDistance = lastFocusDistance,
+)
 
 /**
  * The AF-override key state both request-build paths must apply identically (ARCH4-5): the full
