@@ -1104,6 +1104,42 @@ class CameraViewModelRobolectricTest {
         assertFalse("a resume is a cold start again", v.state.value.reopenInProgress)
     }
 
+    // AGG6-12: the setup-thread route fold resets zoom to the lens-local 1× but used to POST the
+    // glide invalidation, never cancel the throttled controls packet, and never end the Engine's
+    // zoom interaction. A pinch queued before that post compounded from the rear 3× pending ratio.
+    @Test fun `a route fold settles old-scale zoom before the next main zoom input`() {
+        val (v, e) = createViewModel()
+        val routes = me.hletrd.telecampro.camera.CameraRouteInventory(back = true, front = true, external = false)
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.BACK)
+        e.onCapsReady!!.invoke(
+            ViewModelTestAccess.caps(zoomRatioRange = android.util.Range(0.6f, 10f)),
+            e.currentOpticsGeneration(),
+        )
+        idleFor(0)
+        v.onZoomRatio(3f)
+        v.onJpegQuality(90) // a throttled whole-controls packet carrying the rear 3×
+        fun engineInteraction(): Boolean {
+            val state = CameraEngine::class.java.getDeclaredField("zoomInteractionState")
+                .apply { isAccessible = true }
+                .get(e)
+            return state.javaClass.getDeclaredMethod("getActive").invoke(state) as Boolean
+        }
+        assertTrue(engineInteraction())
+
+        // The fold lands (setup thread); a pinch is handled on main BEFORE the fold's post.
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.FRONT)
+        assertEquals(1f, v.state.value.controls.zoomRatio, 0f)
+        v.onPinchZoom(1.1f)
+        assertEquals("compounds from the new route's 1×", 1.1f, v.state.value.controls.zoomRatio, 1e-4f)
+
+        idleFor(1_000)
+        val engineControls = CameraEngine::class.java.getDeclaredField("controls")
+            .apply { isAccessible = true }
+            .get(e) as me.hletrd.telecampro.camera.ManualControls
+        assertEquals("the stale 3× packet never reached the wire", 1.1f, engineControls.zoomRatio, 1e-4f)
+        assertFalse("the new pinch's end still reaches the Engine", engineInteraction())
+    }
+
     // AGG5-4 / TR5-3: a route that cannot honour the stabilization / frame-rate REQUEST (Photo's
     // logical camera, FRONT) narrows only what is shown and what reaches the wire. It used to
     // narrow, push and PERSIST the request, so one FRONT visit downgraded every later tele clip.

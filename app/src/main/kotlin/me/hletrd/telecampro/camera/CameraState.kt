@@ -1808,6 +1808,10 @@ data class CameraUiState(
     val cameraReadyEstablished: Boolean = false,
     // The exhausted-retry terminal ("reopen the app") was published and no Ready has followed.
     val cameraTerminal: Boolean = false,
+    // Bumped by the setup-thread route fold whenever the ACTIVE route changes, in the same atomic
+    // state write that resets zoom onto the new scale, so main can tell its glide/pending-controls
+    // values predate that reset (AGG6-12).
+    val routeFoldEpoch: Long = 0L,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
     val lastMediaUri: android.net.Uri? = null,
     // Owner-null restore candidates match a TeleCam format but cannot claim TeleCam authorship.

@@ -325,7 +325,10 @@ class CameraViewModel private constructor(
     // refresh pendingControls.
     private var pendingControls: ManualControls? = null
     private var applyScheduled = false
+    // The last [CameraUiState.routeFoldEpoch] whose main-thread hygiene ran ([settleRouteFold]).
+    private var settledRouteFoldEpoch = 0L
     private val applyControlsRunnable = Runnable {
+        settleRouteFold()
         applyScheduled = false
         pendingControls?.let { engine.setControls(it) }
         pendingControls = null
@@ -425,6 +428,7 @@ class CameraViewModel private constructor(
     // access NPE'd on the null delegate — device-caught 2026-07-18). Field initializers run
     // strictly top-to-bottom, so everything here is real by the time init executes.
     private val zoomTrailingFlush = Runnable {
+        settleRouteFold()
         zoomGlide.flushScheduled = false
         if (!zoomGlide.pendingRatio.isNaN() && zoomGlide.pendingRatio != _state.value.controls.zoomRatio) flushZoom()
     }
@@ -456,6 +460,7 @@ class CameraViewModel private constructor(
     private val zoomEaseTicker = object : Runnable {
         override fun run() {
             if (cleared) return
+            settleRouteFold()
             val target = zoomGlide.easeTarget ?: return
             val cur = currentZoomBase()
             // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
@@ -908,8 +913,10 @@ class CameraViewModel private constructor(
             // lens-local route's 1×), exactly like every VM optics door — so it takes the same
             // remap hygiene. Left alone, `ZoomGlideState.pendingRatio` / `easeTarget` kept the rear
             // route's absolute ratio and the next pinch compounded from it and jumped. The glide
-            // state and its runnables are main-confined; this callback arrives on the setup thread.
-            if (routeChanged) mainHandler.post { invalidateOpticsDerivedState() }
+            // state and its runnables are main-confined; this callback arrives on the setup thread,
+            // so the hygiene is settled on main by [settleRouteFold] — here, and FIRST at every main
+            // zoom/controls entry that could otherwise run before this post (AGG6-12).
+            if (routeChanged) mainHandler.post { settleRouteFold() }
         }
         // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
         // selected camera's authoritative range on main before any delayed input can reuse it.
@@ -2634,6 +2641,7 @@ class CameraViewModel private constructor(
 
     /** One hardware zoom-key repeat: nudge the ease target and make sure the glide ticker runs. */
     fun onHardwareZoomStep(factor: Float) {
+        settleRouteFold()
         val s = _state.value
         val range = s.caps?.zoomRatioRange ?: return
         val bounds = effectiveZoomBounds(
@@ -2679,7 +2687,10 @@ class CameraViewModel private constructor(
      * lags it by up to 16 ms), else the state value. Every compounding zoom input (pinch factor,
      * hardware-key step, ease ticker) must use THIS as its base.
      */
-    private fun currentZoomBase(): Float = zoomGlide.base(_state.value.controls.zoomRatio)
+    private fun currentZoomBase(): Float {
+        settleRouteFold()
+        return zoomGlide.base(_state.value.controls.zoomRatio)
+    }
 
     /**
      * One-shot teardown of every piece of ROUTE-SCOPED derived state, called from EVERY optics-SCALE
@@ -2709,6 +2720,27 @@ class CameraViewModel private constructor(
      * `commitRetainedOpticsControls`, which folds exact controls and boost removal into its one
      * camera-thread request update. `resume()` covers an onStop-mid-gesture lifecycle return.
      */
+    /**
+     * Main-thread half of a setup-thread route fold (AGG6-12), exactly once per
+     * [CameraUiState.routeFoldEpoch]. The fold resets zoom onto the new route's scale on the setup
+     * thread; until this runs, main still holds values in the OLD scale. A queued 16 ms flush, ease
+     * tick or pinch compounded from the old pending ratio and wrote it to the NEW route, and the 40 ms
+     * throttled controls packet pushed the old zoom wholesale. So every main entry that reads or
+     * submits those values settles first, and the fold's own post is then a no-op. Unlike the
+     * synchronous doors, this one also ENDS an Engine zoom interaction it cancels: the route change
+     * has already happened, so there is no outgoing controller to spare, and a posted invalidation
+     * that removed `zoomInteractionEnd` without telling the Engine left its boost and HAL-submit
+     * suppression on until the next zoom input.
+     */
+    private fun settleRouteFold() {
+        val epoch = _state.value.routeFoldEpoch
+        if (epoch == settledRouteFoldEpoch) return
+        settledRouteFoldEpoch = epoch
+        cancelPendingControls()
+        if (zoomGlide.interacting) engine.setZoomInteraction(false)
+        invalidateOpticsDerivedState()
+    }
+
     private fun invalidateOpticsDerivedState() {
         zoomGlide.invalidateForRemap()
         mainHandler.removeCallbacks(zoomEaseTicker)
@@ -5020,6 +5052,7 @@ internal fun cameraRoutePublishedState(
         activeCameraRoute = activeRoute,
         teleconverterMode = current.teleconverterMode && activeRoute == CameraRoute.BACK,
         rawForcesStandalone = rawForcesStandalone,
+        routeFoldEpoch = if (routeChanged) current.routeFoldEpoch + 1 else current.routeFoldEpoch,
         controls = if (routeChanged && activeRoute.lensLocalZoom) {
             current.controls.copy(zoomRatio = 1f)
         } else {
