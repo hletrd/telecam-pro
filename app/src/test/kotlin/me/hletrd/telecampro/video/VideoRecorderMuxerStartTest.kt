@@ -364,4 +364,30 @@ class VideoRecorderMuxerStartTest {
             audioWorkerLoopDisposition(terminallyQuarantined = true, audioDegraded = true),
         )
     }
+
+    @Test
+    fun `video track opens only on a key frame so a stop-dropped IDR cannot publish`() {
+        val key = android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME
+        // Before any key frame is muxed, a dependent frame is skipped (the PMA110 0.13 s REC→Stop
+        // clip that published an empty video sample table) and the key frame opens the track.
+        assertFalse(videoSampleMuxable(keyFrameMuxed = false, bufferFlags = 0))
+        assertTrue(videoSampleMuxable(keyFrameMuxed = false, bufferFlags = key))
+        // Once a key frame is in, every later sample muxes, including the EOS-flagged tail.
+        assertTrue(videoSampleMuxable(keyFrameMuxed = true, bufferFlags = 0))
+        assertTrue(
+            videoSampleMuxable(
+                keyFrameMuxed = true,
+                bufferFlags = android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+            ),
+        )
+        // No key frame ever muxed → wroteVideoSample stays false → the publish gate deletes.
+        assertFalse(
+            shouldPublishRecording(
+                muxerStarted = true,
+                wroteVideoSample = false,
+                hasFailure = false,
+                hasUri = true,
+            ),
+        )
+    }
 }

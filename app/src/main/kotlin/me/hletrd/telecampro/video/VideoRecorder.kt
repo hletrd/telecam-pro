@@ -686,7 +686,9 @@ class VideoRecorder(private val context: Context) {
                 idx >= 0 -> {
                     val buf = onCodec(teardown.videoFault) { codec.getOutputBuffer(idx) }
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
-                    if (info.size > 0 && buf != null && awaitMuxerStart()) {
+                    if (info.size > 0 && buf != null &&
+                        videoSampleMuxable(wroteVideoSample, info.flags) && awaitMuxerStart()
+                    ) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
                         muxerLock.withLock {
@@ -2639,6 +2641,22 @@ internal fun shouldPublishRecording(
     hasUri &&
     (finalizedValidation == FinalizedRecordingValidation.NOT_REQUIRED ||
         finalizedValidation == FinalizedRecordingValidation.PASSED)
+
+/**
+ * The video track must OPEN on a sync sample (device-found on PMA110 2026-10-04). A Stop that lands
+ * while the drain worker holds the encoder's first output (the IDR) inside the muxer rendezvous flips
+ * `running` false and `awaitMuxerStart()` returns false, dropping that IDR with the muxer still
+ * unstarted; the audio worker then adds its track and starts the muxer while draining to EOS, so only
+ * the IDR's dependent frames reach the video track. `wroteVideoSample` read true, the stop did not
+ * fail the take, and a ~0.13 s REC→Stop PUBLISHED a gallery clip whose video track had an EMPTY
+ * sample table (MPEG4Writer writes no stbl children for a track without a sync frame) — 2 of 8
+ * presses at a 120–150 ms gap.
+ * Skipping every non-key sample until the first key frame is muxed keeps `wroteVideoSample` an honest
+ * "decodable video exists" bit, so [shouldPublishRecording] deletes that take instead. Ordinary takes
+ * are untouched: an encoder's first output after CODEC_CONFIG is its key frame.
+ */
+internal fun videoSampleMuxable(keyFrameMuxed: Boolean, bufferFlags: Int): Boolean =
+    keyFrameMuxed || bufferFlags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
 
 /**
  * [INDETERMINATE] is a reopen that proved nothing: the provider open failed, OR the file opened but
