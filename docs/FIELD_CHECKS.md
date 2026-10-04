@@ -556,6 +556,16 @@ meter is a real `AudioRecord` and its re-arm has not been seen on a device.
 left running (no tally, no timer), and any clip that was created is published or reported. No
 audio-off pair shows "Microphone busy". Record each pair's outcome and keep the debug logcat.
 
+**Partial result 2026-10-04 (still OPEN — the meter half needs a person speaking).** PMA110, Android
+16 (API 36), face-down on a desk, TELE, 4K 59.94 HEVC S-Log3, audio on, adb-driven taps. On the
+`355f6b67` immutable debug APK, 2 of 8 REC→Stop pairs at a 120–150 ms gap PUBLISHED a clip whose
+video track had an empty sample table (`RecordingStored ... saved=true storage=PUBLISHED`; ffprobe
+`codec_name=unknown`, 0×0; only two AAC frames in `mdat`): a Stop inside the muxer rendezvous dropped
+the IDR and only its dependent frames were muxed. On the `5848b462` immutable debug APK (video track
+opens only on a key frame), 24 pairs at 20–150 ms gaps gave 19 published clips that all decode
+end to end in ffmpeg (1–6 HEVC frames each) and 5 discarded takes (`saved=false
+storage=NOT_APPLICABLE`), no pending rows left behind, no tally or timer left running, no crash.
+
 ### D5. Recorder cleanup classification on ordinary stops — ◯ OPEN 2026-10-02
 
 Cycle 6 (plan B.1) extends the cycle-5 cleanup classification (F8). The audio-encoder SETUP failure
