@@ -755,8 +755,25 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   not a platform rule — the official MediaMuxer reference lists APV-in-MP4 as supported from SDK 36 —
   so the exclusion stays, and re-enabling APV on any device needs a measurement first. Resolutions come from
   the selected camera's `StreamConfigurationMap`, with the shipping selector capped at 3840 pixels
-  wide; PMA110 tops out at 4K UHD in the UI. Standard and NTSC drop-frame rates are gated against the
-  selected size. High-speed 120 fps is excluded because its constrained session crashes this HAL.
+  wide; PMA110 tops out at 4K UHD in the UI. A rate is offered when the camera advertises its
+  rounded parent as a FIXED AE target-fps range (corrected 2026-10-05 — this said "gated against the
+  selected size"; the only size term is the defensive 8K ≤30 cap, and `availableFor` never reads
+  per-size minimum frame durations). PMA110's TELE advertises a 33.3 ms minimum for 3840×2160 yet
+  delivers ~60 fps there, so gating on that table would remove a working mode; on other handsets the
+  same gap could offer a rate the camera cannot reach. High-speed 120 fps is excluded because its
+  constrained session crashes this HAL.
+- **The recorded cadence is the SENSOR's, and PMA110 cannot be asked for an NTSC rate (device-
+  measured 2026-10-05, TELE 4K and 1080p).** Encoder PTS are the SurfaceTexture sensor timestamps,
+  so a file's frame interval is exactly what the camera delivered. That cadence is a fixed sensor
+  mode chosen from the `[fps,fps]` range and the AE mode: HAL-AE video (P) runs 16.80 ms (59.52 fps)
+  for "59.94" and 33.44 ms (29.90 fps) for "29.97"; AE-off (S/ISO/M) runs 16.66 ms (60.04) and
+  33.32 ms (30.01). `SENSOR_FRAME_DURATION` is IGNORED inside that range: M-mode 29.97 (requesting
+  33.367 ms) and 30 (33.333 ms) produced byte-identical cadences, so making the app-side frame
+  interval exact for drop-frame rates was measured, changed nothing, and was reverted. The container
+  still tags the selected rate; players and NLEs follow the real timestamps. Separately, recording
+  (not idle preview, which loses nothing) misses single frames at the CAMERA stream — `dumpsys
+  media.camera` "Frames produced" falls short by the same count the file does, so the GL coalescer
+  is not where they go: ~0.5–0.9 % in P, ~0.2–0.3 % in M at 1/1250 s, unaffected by stabilization.
 - **PROPRIETARY / LICENSED HDR FORMATS ARE OUT OF SCOPE — do not add them, do not probe for them
   (owner decision 2026-08-04).** The video ladder is HEVC and AVC only. Some vendor encoders on this
   SoC advertise trademarked HDR formats and the platform muxer will accept them, so this is
