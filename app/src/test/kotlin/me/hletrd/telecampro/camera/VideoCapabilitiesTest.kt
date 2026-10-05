@@ -145,4 +145,27 @@ class VideoCapabilitiesTest {
         // A Long-GOP codec keeps its base bpp.
         assertEquals(BitrateLevel.MEDIUM.bpp, effectiveBpp(BitrateLevel.MEDIUM, VideoCodec.HEVC), 1e-6f)
     }
+
+    @Test
+    fun `an advertised per-size minimum frame duration drops rates the size cannot sustain`() {
+        fun rates(minFrameDurationNs: Long) = VideoFrameRate.availableFor(
+            teleNormalFps,
+            highSpeedMaxFps = 0,
+            width = 3840,
+            height = 2160,
+            codec = VideoCodec.HEVC,
+            minFrameDurationNs = minFrameDurationNs,
+        )
+        // 33.3 ms (the PMA110 TELE's 4K entry): 60/59.94 go, 30 and below stay.
+        val thirty = rates(33_333_333L)
+        assertFalse(thirty.contains(VideoFrameRate.FPS_60))
+        assertFalse(thirty.contains(VideoFrameRate.FPS_59_94))
+        assertTrue(thirty.containsAll(listOf(VideoFrameRate.FPS_30, VideoFrameRate.FPS_29_97, VideoFrameRate.FPS_24)))
+        // A HAL that rounds 1/60 s UP still offers 60 and its drop-frame child.
+        val sixty = rates(16_666_667L)
+        assertTrue(sixty.containsAll(listOf(VideoFrameRate.FPS_60, VideoFrameRate.FPS_59_94)))
+        // Unknown (0) is ungated: exactly the fixed-range answer, which is also the PMA110 path.
+        assertEquals(rates(0L), VideoFrameRate.availableFor(teleNormalFps, 0, 3840, 2160, VideoCodec.HEVC))
+        assertTrue(rates(0L).contains(VideoFrameRate.FPS_59_94))
+    }
 }

@@ -756,12 +756,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   so the exclusion stays, and re-enabling APV on any device needs a measurement first. Resolutions come from
   the selected camera's `StreamConfigurationMap`, with the shipping selector capped at 3840 pixels
   wide; PMA110 tops out at 4K UHD in the UI. A rate is offered when the camera advertises its
-  rounded parent as a FIXED AE target-fps range (corrected 2026-10-05 — this said "gated against the
-  selected size"; the only size term is the defensive 8K ≤30 cap, and `availableFor` never reads
-  per-size minimum frame durations). PMA110's TELE advertises a 33.3 ms minimum for 3840×2160 yet
-  delivers ~60 fps there, so gating on that table would remove a working mode; on other handsets the
-  same gap could offer a rate the camera cannot reach. High-speed 120 fps is excluded because its
-  constrained session crashes this HAL.
+  rounded parent as a FIXED AE target-fps range AND (on spec devices) the selected size's advertised
+  SurfaceTexture minimum frame duration sustains it (2026-10-05; until then only the defensive 8K
+  ≤30 cap looked at size, although this bullet claimed size gating). PMA110's TELE advertises a
+  33.3 ms minimum for 3840×2160 yet records ~60 fps there, so `DeviceProfile.
+  videoMinFrameDurationsUnderstated` skips that gate on PMA110 — and, by owner decision on shared
+  hardware rather than measurement, on the global CPH2841. High-speed 120 fps is excluded because
+  its constrained session crashes this HAL.
 - **The recorded cadence is the SENSOR's, and PMA110 cannot be asked for an NTSC rate (device-
   measured 2026-10-05, TELE 4K and 1080p).** Encoder PTS are the SurfaceTexture sensor timestamps,
   so a file's frame interval is exactly what the camera delivered. That cadence is a fixed sensor

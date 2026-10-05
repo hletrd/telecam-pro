@@ -1123,6 +1123,9 @@ enum class VideoFrameRate(
         /** The default: 29.97 fps NTSC drop-frame (the standard cine/broadcast rate). */
         val DEFAULT = FPS_29_97
 
+        /** One second plus 0.1 % slack: the product bound for `fps × minFrameDuration`. */
+        private const val MIN_FRAME_DURATION_GATE_NS = 1_001_000_000L
+
         /**
          * The frame rates the [caps] camera can actually deliver at [size] with [codec], honoring:
          *  - 8K (height ≥ 4320) is capped to ≤30 fps (encoder + thermal reality). DEFENSIVE and
@@ -1131,6 +1134,9 @@ enum class VideoFrameRate(
          *  - normal (non-high-speed) rates require the camera to advertise the integer [fps] as a
          *    fixed AE target-fps range (this device exposes 24/30/60 → 25/50 are correctly dropped),
          *    so a drop-frame rate rides on its integer parent (29.97 needs 30, etc.);
+         *  - that parent must also fit the size's advertised SurfaceTexture minimum frame duration,
+         *    unless the device profile marks that table understated (PMA110/CPH2841: the TELE lists
+         *    30 fps at 4K yet records ~60), in which case [CameraCaps.videoMinFrameDurationsNs] is empty;
          *  - high-speed rates (120) are NEVER offered — the constrained high-speed session SIGABRTs
          *    this device's HAL (QA-confirmed), so [FPS_120] is intentionally unselectable.
          * Returns an empty list when capabilities are missing or advertise no compatible normal
@@ -1138,7 +1144,14 @@ enum class VideoFrameRate(
          */
         fun availableFor(caps: CameraCaps?, size: Size, codec: VideoCodec): List<VideoFrameRate> {
             if (caps == null) return emptyList()
-            return availableFor(caps.availableFps.toSet(), caps.highSpeedFpsFor(size), size.width, size.height, codec)
+            return availableFor(
+                caps.availableFps.toSet(),
+                caps.highSpeedFpsFor(size),
+                size.width,
+                size.height,
+                codec,
+                minFrameDurationNs = caps.videoMinFrameDurationsNs[size] ?: 0L,
+            )
         }
 
         /** Pure core of [availableFor] (no Android types), so the gating rules are unit-testable. */
@@ -1148,11 +1161,18 @@ enum class VideoFrameRate(
             width: Int,
             height: Int,
             codec: VideoCodec,
+            // The size's advertised SurfaceTexture minimum frame duration; <= 0 = ungated (unknown,
+            // or a device profile that marks the table understated, e.g. PMA110's 4K TELE).
+            minFrameDurationNs: Long = 0L,
         ): List<VideoFrameRate> {
             val is8k = height >= 4320
             val out = entries.filter { r ->
                 when {
                     is8k && r.fps > 30 -> false
+                    // Judged on the rounded parent with 0.1 % slack, so a HAL rounding 1/60 s up to
+                    // 16_666_667 ns still offers 60 (and 59.94) while 33.3 ms rejects both.
+                    minFrameDurationNs > 0L &&
+                        r.fps.toLong() * minFrameDurationNs > MIN_FRAME_DURATION_GATE_NS -> false
                     // High-speed (≥120 fps constrained session) is disabled outright: it SIGABRTs the
                     // HAL on this device (QA-confirmed), so no high-speed rate is ever selectable —
                     // [highSpeedMaxFps] is ignored on purpose.

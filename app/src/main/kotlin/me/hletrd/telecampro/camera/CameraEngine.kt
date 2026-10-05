@@ -1387,6 +1387,8 @@ class CameraEngine internal constructor(
                     logicalId,
                     physicalId,
                     stillExposureCeilingNs = activeDeviceProfile().stillExposureCeilingNs,
+                    gateVideoRatesOnMinFrameDuration =
+                        !activeDeviceProfile().videoMinFrameDurationsUnderstated,
                     // A process-lifetime cache must never memoize the logical-fallback read
                     // (review 2026-08-01): a transient service outage during the first physical
                     // read otherwise stamps the LOGICAL camera's focal into every later still on

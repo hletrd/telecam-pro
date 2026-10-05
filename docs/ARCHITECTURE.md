@@ -713,8 +713,9 @@ FOCUSED on device.
 
 ## DeviceProfile Quirk Flags
 
-`camera/DeviceProfile.kt`: `DeviceProfile.resolve(Build.MODEL)` returns `PMA110` for that model and
-`GENERIC` for every other handset; `deviceProfileForRoute` gives EXTERNAL routes `GENERIC` even on
+`camera/DeviceProfile.kt`: `DeviceProfile.resolve(Build.MODEL)` returns `PMA110` for that model,
+`FIND_X9_ULTRA_GLOBAL` for CPH2841 (GENERIC plus `videoMinFrameDurationsUnderstated` only — an owner
+decision of 2026-10-05 by shared hardware, not a measurement), and `GENERIC` for every other handset; `deviceProfileForRoute` gives EXTERNAL routes `GENERIC` even on
 PMA110. Each PMA110 value is a MEASURED HAL deviation; GENERIC is Android-as-specified. Statements elsewhere in this document and
 in CLAUDE.md about these behaviours describe the PMA110 profile unless they say otherwise.
 
@@ -725,6 +726,7 @@ in CLAUDE.md about these behaviours describe the PMA110 profile unless they say 
 | `stillExposureCeilingNs` | `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) | `null` (trust the advertised range) | `CaptureCapabilities` caps seam, fed from `CameraEngine` caps publication |
 | `vendorOplusRequestHints` | `true` | `false` | `CameraController` `applyVideoStab` / `applyTeleconverterHints` and the zoom fast path (`com.oplus.*` request keys) |
 | `logicalStillRequiresYuv` | `true` | `false` | `resolveMustUseYuvStill` → `sessionAttemptPlan` (YUV still on the logical rear route; FRONT's YUV lane stays an optimisation) |
+| `videoMinFrameDurationsUnderstated` | `true` (also CPH2841) | `false` | `CameraCaps.read(gateVideoRatesOnMinFrameDuration)` fills `videoMinFrameDurationsNs`, which `VideoFrameRate.availableFor` uses to drop rates the selected size's advertised SurfaceTexture minimum frame duration cannot sustain; PMA110's TELE advertises 30 fps at 3840×2160 yet records ~60 |
 | `rawRequiresStandalone` | `true` | `false` | `sessionAttemptPlan` `rawStandaloneOnly`, `standaloneRouteWanted` (engine `resolveNonTeleId`; every UI route decision reads `CameraEngine.rawForcesStandalone` via `CameraViewModel.standaloneRouteFor`, while `CameraUiState.rawForcesStandalone` is display copy only, PMA110 default until the first inventory) |
 
 ---

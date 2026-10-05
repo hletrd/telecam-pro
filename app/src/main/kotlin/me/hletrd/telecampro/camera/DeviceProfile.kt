@@ -59,6 +59,14 @@ internal data class DeviceProfile(
      * candidate at all, so applying this law universally silently removed DNG there.
      */
     val rawRequiresStandalone: Boolean,
+    /**
+     * The per-size SurfaceTexture minimum frame durations UNDERSTATE what this HAL records: the
+     * PMA110 TELE advertises 33.3 ms (30 fps) for 3840×2160 yet delivers ~60 fps there (device-
+     * measured 2026-10-05, 16.66–16.80 ms per frame). Gating on that table would remove a working
+     * 4K60 mode, so these devices keep the fixed-fps-range rule alone. Spec devices also drop any
+     * rate the selected size's advertised minimum duration cannot sustain.
+     */
+    val videoMinFrameDurationsUnderstated: Boolean,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -68,6 +76,7 @@ internal data class DeviceProfile(
             vendorOplusRequestHints = true,
             logicalStillRequiresYuv = true,
             rawRequiresStandalone = true,
+            videoMinFrameDurationsUnderstated = true,
         )
 
         val GENERIC = DeviceProfile(
@@ -77,11 +86,23 @@ internal data class DeviceProfile(
             vendorOplusRequestHints = false,
             logicalStillRequiresYuv = false,
             rawRequiresStandalone = false,
+            videoMinFrameDurationsUnderstated = false,
         )
 
+        /**
+         * The Find X9 Ultra's global model (CPH2841, the same phone [detectPhone] already names).
+         * Owner decision 2026-10-05: the video-rate exception is extended to it by inference from
+         * the shared hardware, not by measurement. Every OTHER flag stays spec until CPH2841 is
+         * measured — the rest of the PMA110 set guards crashes and lies that must not be assumed.
+         */
+        val FIND_X9_ULTRA_GLOBAL = GENERIC.copy(videoMinFrameDurationsUnderstated = true)
+
         /** Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL]. */
-        fun resolve(model: String?): DeviceProfile =
-            if (model?.trim()?.equals("PMA110", ignoreCase = true) == true) PMA110 else GENERIC
+        fun resolve(model: String?): DeviceProfile = when (model?.trim()?.uppercase()) {
+            "PMA110" -> PMA110
+            "CPH2841" -> FIND_X9_ULTRA_GLOBAL
+            else -> GENERIC
+        }
     }
 }
 

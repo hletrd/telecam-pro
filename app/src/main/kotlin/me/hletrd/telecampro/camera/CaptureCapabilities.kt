@@ -222,6 +222,13 @@ data class CameraCaps(
      * camera exposes no high-speed configs.
      */
     val highSpeedConfigs: Map<Size, Int>,
+    /**
+     * SurfaceTexture size → advertised minimum frame duration (ns), for the video-rate gate in
+     * [VideoFrameRate.availableFor]. EMPTY when the device profile marks that table as understated
+     * ([DeviceProfile.videoMinFrameDurationsUnderstated]) or nothing positive was advertised; a size
+     * absent here is not gated by duration.
+     */
+    val videoMinFrameDurationsNs: Map<Size, Long> = emptyMap(),
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
@@ -283,6 +290,9 @@ data class CameraCaps(
             // (review 2026-08-01): one transient service hiccup otherwise pinned the wrong lens's
             // focals/ranges/EXIF metadata under the physical key for the rest of the process.
             allowLogicalFallback: Boolean = true,
+            // [DeviceProfile.videoMinFrameDurationsUnderstated] inverted. Default false keeps every
+            // existing caller/test on the PMA110 truth (no duration gate), like the ceiling above.
+            gateVideoRatesOnMinFrameDuration: Boolean = false,
         ): CameraCaps {
             val chars: CameraCharacteristics = runCatching {
                 manager.getCameraCharacteristics(physicalId ?: logicalId)
@@ -465,6 +475,14 @@ data class CameraCaps(
                 noiseReductionModes = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: IntArray(0),
                 availableFpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray(),
                 availableVideoSizes = videoSizes,
+                videoMinFrameDurationsNs = if (!gateVideoRatesOnMinFrameDuration) emptyMap() else {
+                    (videoSizes + openGateSizes).distinct().mapNotNull { size ->
+                        // Zero is Camera2's "unavailable" sentinel; leave such a size ungated.
+                        runCatching {
+                            map?.getOutputMinFrameDuration(android.graphics.SurfaceTexture::class.java, size)
+                        }.getOrNull()?.takeIf { it > 0L }?.let { size to it }
+                    }.toMap()
+                },
                 openGateVideoSizes = openGateSizes,
                 highSpeedConfigs = highSpeed,
             )

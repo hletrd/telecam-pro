@@ -23,6 +23,18 @@ class DeviceProfileTest {
             assertTrue(model, p.logicalStillRequiresYuv)
             assertTrue(model, p.rawRequiresStandalone)
             assertEquals(model, HAL_SAFE_MAX_STILL_EXPOSURE_NS, p.stillExposureCeilingNs)
+            assertTrue(model, p.videoMinFrameDurationsUnderstated)
+        }
+    }
+
+    @Test
+    fun `the global Find X9 Ultra carries only the video-rate exception`() {
+        for (model in listOf("CPH2841", "cph2841", " CPH2841 ")) {
+            assertEquals(
+                model,
+                DeviceProfile.GENERIC.copy(videoMinFrameDurationsUnderstated = true),
+                DeviceProfile.resolve(model),
+            )
         }
     }
 
@@ -36,6 +48,7 @@ class DeviceProfileTest {
             assertFalse("$model", p.logicalStillRequiresYuv)
             assertFalse("$model", p.rawRequiresStandalone)
             assertNull("$model", p.stillExposureCeilingNs)
+            assertFalse("$model", p.videoMinFrameDurationsUnderstated)
         }
     }
 
