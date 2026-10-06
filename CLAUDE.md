@@ -37,7 +37,9 @@ deprecated APIs, latest stable everything.
   NewApi audit found zero unguarded sub-35 APIs). PMA110 behavior must stay byte-identical; every
   measured HAL workaround is gated by `camera/DeviceProfile.kt` (the SECOND sanctioned
   model-string seam beside `detectPhone`), and other devices take spec paths resolved by
-  ENUMERATED Camera2 capability. Still no CameraX — **Camera2** directly for physical-lens
+  ENUMERATED Camera2 capability. The global Find X9 Ultra (CPH2841) resolves to the SAME PMA110
+  profile by owner decision (2026-10-06) — inferred from shared hardware, never measured on
+  CPH2841, so a contradicting CPH2841 report reopens the affected flag for that model. Still no CameraX — **Camera2** directly for physical-lens
   routing, `LENS_FOCUS_DISTANCE`, manual sensor, RAW/DNG, 10-bit HDR. Non-PMA110 handsets are
   UNVALIDATED until measured on-device; add quirks only with measurements, never speculatively.
 - **Latest toolchain, no deprecated APIs.** See versions below; bump when newer stable ships.
@@ -760,9 +762,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   SurfaceTexture minimum frame duration sustains it (2026-10-05; until then only the defensive 8K
   ≤30 cap looked at size, although this bullet claimed size gating). PMA110's TELE advertises a
   33.3 ms minimum for 3840×2160 yet records ~60 fps there, so `DeviceProfile.
-  videoMinFrameDurationsUnderstated` skips that gate on PMA110 — and, by owner decision on shared
-  hardware rather than measurement, on the global CPH2841. High-speed 120 fps is excluded because
-  its constrained session crashes this HAL.
+  videoMinFrameDurationsUnderstated` skips that gate on the PMA110 profile. High-speed 120 fps is
+  excluded because its constrained session crashes this HAL.
 - **The recorded cadence is the SENSOR's, and PMA110 cannot be asked for an NTSC rate (device-
   measured 2026-10-05, TELE 4K and 1080p).** Encoder PTS are the SurfaceTexture sensor timestamps,
   so a file's frame interval is exactly what the camera delivered. That cadence is a fixed sensor

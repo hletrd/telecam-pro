@@ -687,7 +687,7 @@ the eventual recut, because there is no current upload candidate.
 | Physical capture, owner report | `21061110AG` | Owner-verified capture; preview/layout and API-33/MediaTek behavior separately measured | Remote harness could not actuate the shutter itself |
 | Preview/layout-only | None currently | POCO initially occupied this class | Elevated by the 2026-08-12 owner capture; do not invent a replacement |
 | Emulator | `sdk_gphone64_arm64`, API 33 | API floor, enumeration, session, save/encoder mechanics, layout | Synthetic camera; no optics, image-quality, or HAL evidence |
-| Unvalidated equivalent | `CPH2841` | Same-hardware expectation only | Not measured and not capture-verified |
+| Unvalidated equivalent | `CPH2841` | Same-hardware expectation only; runs the PMA110 `DeviceProfile` by owner decision (2026-10-06) | Not measured and not capture-verified |
 | Unvalidated catalog population | Other Android 13+ devices and named preset hosts | Installability/catalog coverage only | No device validation implied |
 
 The rollout choice remains open catalog versus staged widening, but it must be made from this matrix

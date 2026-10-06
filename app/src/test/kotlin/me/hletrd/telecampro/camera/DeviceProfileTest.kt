@@ -28,13 +28,9 @@ class DeviceProfileTest {
     }
 
     @Test
-    fun `the global Find X9 Ultra carries only the video-rate exception`() {
+    fun `the global Find X9 Ultra takes the whole PMA110 profile`() {
         for (model in listOf("CPH2841", "cph2841", " CPH2841 ")) {
-            assertEquals(
-                model,
-                DeviceProfile.GENERIC.copy(videoMinFrameDurationsUnderstated = true),
-                DeviceProfile.resolve(model),
-            )
+            assertEquals(model, DeviceProfile.PMA110, DeviceProfile.resolve(model))
         }
     }
 

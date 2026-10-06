@@ -90,17 +90,13 @@ internal data class DeviceProfile(
         )
 
         /**
-         * The Find X9 Ultra's global model (CPH2841, the same phone [detectPhone] already names).
-         * Owner decision 2026-10-05: the video-rate exception is extended to it by inference from
-         * the shared hardware, not by measurement. Every OTHER flag stays spec until CPH2841 is
-         * measured — the rest of the PMA110 set guards crashes and lies that must not be assumed.
+         * Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL].
+         * CPH2841 is the Find X9 Ultra's global model (the same phone [detectPhone] names) and takes
+         * the WHOLE PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT
+         * measured there. A CPH2841 report that contradicts a flag reopens that flag for it.
          */
-        val FIND_X9_ULTRA_GLOBAL = GENERIC.copy(videoMinFrameDurationsUnderstated = true)
-
-        /** Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL]. */
         fun resolve(model: String?): DeviceProfile = when (model?.trim()?.uppercase()) {
-            "PMA110" -> PMA110
-            "CPH2841" -> FIND_X9_ULTRA_GLOBAL
+            "PMA110", "CPH2841" -> PMA110
             else -> GENERIC
         }
     }
