@@ -772,10 +772,21 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   33.32 ms (30.01). `SENSOR_FRAME_DURATION` is IGNORED inside that range: M-mode 29.97 (requesting
   33.367 ms) and 30 (33.333 ms) produced byte-identical cadences, so making the app-side frame
   interval exact for drop-frame rates was measured, changed nothing, and was reverted. The container
-  still tags the selected rate; players and NLEs follow the real timestamps. Separately, recording
-  (not idle preview, which loses nothing) misses single frames at the CAMERA stream — `dumpsys
-  media.camera` "Frames produced" falls short by the same count the file does, so the GL coalescer
-  is not where they go: ~0.5–0.9 % in P, ~0.2–0.3 % in M at 1/1250 s, unaffected by stabilization.
+  still tags the selected rate; players and NLEs follow the real timestamps.
+- **Recorded single-frame drops have two sources (perfetto-bisected on PMA110, 2026-10-13).**
+  (1) STEADY STATE, camera side: the HAL's sensor timestamps skip a slot when its 3A nodes run long
+  (AWB p50 0.2 ms / p99 33 ms / max 69 ms; AF p99 13 ms) and the next request is admitted late —
+  the request thread SLEEPS, it is not CPU-starved, and the camera→app queue never exceeds one
+  buffer, so the app is not back-pressuring it. Video sessions therefore request
+  `CONTROL_AF_MODE_CONTINUOUS_VIDEO` for continuous AF (`requestAfMode`; it was the picture variant):
+  file-only A/B, four 12 s TELE 4K 59.94 P takes each, mean 1.12 % → 0.70 %, and after the first 3 s
+  ~13 → 1 drop across the four takes. A fixed WB preset also roughly halves the rate (AWB is the
+  heaviest node) but stays the operator's choice. (2) STARTUP, app side: ~1.3–3.5 s into every take
+  the GL thread blocks 14–31 ms in `dequeueBuffer` on the encoder input surface
+  (GraphicBufferSource), so the coalescer skips frames the camera DID deliver. Measured NOT to be the
+  audio rendezvous (audio off keeps it) and NOT fixed by KEY_PRIORITY 0 + KEY_OPERATING_RATE
+  (tried, no gain, reverted). Root cause still open. Measure drops from the FILE only: a
+  `dumpsys media.camera` during REC is itself heavy enough to cause GL-side drops.
 - **PROPRIETARY / LICENSED HDR FORMATS ARE OUT OF SCOPE — do not add them, do not probe for them
   (owner decision 2026-08-04).** The video ladder is HEVC and AVC only. Some vendor encoders on this
   SoC advertise trademarked HDR formats and the platform muxer will accept them, so this is
