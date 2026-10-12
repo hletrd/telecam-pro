@@ -1051,6 +1051,7 @@ class CameraController internal constructor(
                     pinAutoFps = pinAutoFps || smoothPreviewBoost,
                     previewExposureCap = true,
                     enforceFrameRate = pinAutoFps,
+                    videoMode = pinAutoFps,
                 )
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -1757,6 +1758,7 @@ class CameraController internal constructor(
                 pinAutoFps = pinAutoFps || smoothPreviewBoost,
                 previewExposureCap = true,
                 enforceFrameRate = pinAutoFps,
+                videoMode = pinAutoFps,
             )
             // applyFocus above rewrote CONTROL_AF_MODE per the base focus mode; a live tap-AF /
             // AF-lock override must be restored on top, exactly as the full rebuild applies it
@@ -2131,6 +2133,7 @@ class CameraController internal constructor(
                         // The STILL keeps its true exposure; only repeating requests are capped.
                         previewExposureCap = false,
                         enforceFrameRate = pinAutoFps,
+                        videoMode = pinAutoFps,
                     )
                     // Keep stills consistent with the session's pipeline: with the log session active the
                     // HAL processes everything scene-referred, so an unset key mid-session is undefined.

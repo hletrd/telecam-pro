@@ -468,4 +468,19 @@ class ExposureMathTest {
         assertFalse(ManualControls(exposureMode = ExposureMode.MANUAL).autoIsoDriven)
         assertFalse(ManualControls(exposureMode = ExposureMode.MANUAL).autoShutterDriven)
     }
+
+    @Test
+    fun `continuous AF takes the video variant only on a video session that advertises it`() {
+        val pic = android.hardware.camera2.CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        val vid = android.hardware.camera2.CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+        val auto = android.hardware.camera2.CameraMetadata.CONTROL_AF_MODE_AUTO
+        val both = intArrayOf(0, auto, pic, vid)
+        assertEquals(vid, requestAfMode(FocusMode.CONTINUOUS, videoMode = true, afModes = both))
+        assertEquals(pic, requestAfMode(FocusMode.CONTINUOUS, videoMode = false, afModes = both))
+        // No advertised video variant: the picture mapping, exactly as before.
+        assertEquals(pic, requestAfMode(FocusMode.CONTINUOUS, videoMode = true, afModes = intArrayOf(0, auto, pic)))
+        // Only CONTINUOUS is remapped.
+        assertEquals(auto, requestAfMode(FocusMode.AUTO, videoMode = true, afModes = both))
+        assertEquals(null, requestAfMode(FocusMode.MACRO, videoMode = true, afModes = both))
+    }
 }

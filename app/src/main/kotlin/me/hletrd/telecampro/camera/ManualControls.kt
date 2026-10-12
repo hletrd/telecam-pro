@@ -681,8 +681,10 @@ fun CaptureRequest.Builder.applyManualControls(
     previewExposureCap: Boolean,
     // VIDEO only: app-owned S/ISO/M exposure may not stretch the sensor frame beyond 1/fps.
     enforceFrameRate: Boolean,
+    // The session's capture mode: continuous AF takes the video variant here ([requestAfMode]).
+    videoMode: Boolean,
 ) {
-    applyFocus(c, caps)
+    applyFocus(c, caps, videoMode)
     applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
     applyWhiteBalance(c, caps)
     applyProcessing(c, caps)
@@ -808,8 +810,9 @@ internal fun CaptureRequest.Builder.applySensorValueControls(
     pinAutoFps: Boolean,
     previewExposureCap: Boolean,
     enforceFrameRate: Boolean,
+    videoMode: Boolean,
 ) {
-    applyFocus(c, caps)
+    applyFocus(c, caps, videoMode)
     applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
 }
 
@@ -836,13 +839,26 @@ internal val FlashMode.autoAeMetadata: Int
         FlashMode.ON -> CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH
     }
 
-private fun CaptureRequest.Builder.applyFocus(c: ManualControls, caps: CameraCaps) {
+/**
+ * The CONTROL_AF_MODE a request carries for [focusMode], or null when the camera advertises none
+ * of it. Continuous AF on a VIDEO session takes CONTINUOUS_VIDEO where advertised: Camera2's
+ * recording variant, which moves the lens smoothly instead of the picture variant's fast hunting
+ * scans. Every other mode, and a camera without the video variant, keeps the exact mapping.
+ */
+internal fun requestAfMode(focusMode: FocusMode, videoMode: Boolean, afModes: IntArray): Int? =
+    if (videoMode && focusMode == FocusMode.CONTINUOUS) {
+        exactAdvertisedMode(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, afModes)
+            ?: exactAdvertisedMode(focusMode.afMetadata, afModes)
+    } else {
+        exactAdvertisedMode(focusMode.afMetadata, afModes)
+    }
+
+private fun CaptureRequest.Builder.applyFocus(c: ManualControls, caps: CameraCaps, videoMode: Boolean) {
     // Expression-position `when` so the compiler enforces exhaustiveness: a statement-position enum
     // `when` compiles fine with a missing case and silently no-ops it — the session would keep the
     // PREVIOUS AF mode while the UI shows the new one (the exact silent-drift trap a future 5th
     // FocusMode would spring).
-    val afMode = c.focusMode.afMetadata
-    exactAdvertisedMode(afMode, caps.afModes)?.let { set(CaptureRequest.CONTROL_AF_MODE, it) }
+    requestAfMode(c.focusMode, videoMode, caps.afModes)?.let { set(CaptureRequest.CONTROL_AF_MODE, it) }
     if (c.focusMode == FocusMode.MANUAL && caps.supportsManualFocus &&
         exactAdvertisedMode(CameraMetadata.CONTROL_AF_MODE_OFF, caps.afModes) != null
     ) {
