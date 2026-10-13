@@ -18,6 +18,7 @@ import java.io.EOFException
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -64,10 +65,33 @@ fun interface GyroLogFirstFrameSink {
  * No per-sample logging (ColorOS 300-row quota): only terminal failures reach the reserved
  * [DiagnosticLog] door.
  */
-class GyroLogRecorder(
+class GyroLogRecorder internal constructor(
     context: Context,
     private val onSidecarFailed: () -> Unit,
+    // Host-test seams. Production values come from the public constructor below; a test injects
+    // a sensor thread it can idle, an inline finalizer, a failing temp stream, a small byte cap,
+    // and a fresh stale-sweep latch (the production latch is process-wide, so only the first
+    // recorder in a JVM would ever sweep).
+    private val sensorThreadFactory: () -> HandlerThread,
+    private val finalizerFactory: () -> ExecutorService,
+    private val openTempStream: (File) -> OutputStream,
+    private val maxTempBytes: Long,
+    private val staleSweepDone: AtomicBoolean,
 ) : RollingShutterSkewSink {
+
+    constructor(context: Context, onSidecarFailed: () -> Unit) : this(
+        context = context,
+        onSidecarFailed = onSidecarFailed,
+        sensorThreadFactory = { HandlerThread("gyro-log") },
+        finalizerFactory = {
+            Executors.newSingleThreadExecutor { task ->
+                Thread(task, "gyro-log-publish").apply { isDaemon = true }
+            }
+        },
+        openTempStream = ::FileOutputStream,
+        maxTempBytes = MAX_TEMP_BYTES,
+        staleSweepDone = STALE_SWEEP_DONE,
+    )
 
     /** Everything fixed at REC admission. */
     data class Spec(
@@ -103,13 +127,14 @@ class GyroLogRecorder(
     private inner class Session(val spec: Spec, val file: File?) : SensorEventListener, GyroLogFirstFrameSink {
         val firstFrameNs = AtomicLong(0L)
         val skewNs = AtomicLong(0L)
-        // Sensor-thread state.
+        // Sensor-thread state. The pairing/byte-count fields are private: nothing outside the
+        // listener reads them, so they compile to bare fields with no dead accessors.
         var out: DataOutputStream? = null
-        var hasAccel = false
-        var ax = 0f
-        var ay = 0f
-        var az = 0f
-        var bytes = 0L
+        private var hasAccel = false
+        private var ax = 0f
+        private var ay = 0f
+        private var az = 0f
+        private var bytes = 0L
         var rows = 0L
         // Written on the sensor thread, read by the finalizer after the end task (happens-before
         // through the executor hand-off).
@@ -131,7 +156,7 @@ class GyroLogRecorder(
                 }
                 Sensor.TYPE_GYROSCOPE -> {
                     if (!hasAccel) return
-                    if (bytes + RECORD_BYTES > MAX_TEMP_BYTES) return // truncated, still valid
+                    if (bytes + RECORD_BYTES > maxTempBytes) return // truncated, still valid
                     val t = GyroflowLog.sensorEventToCameraClockNs(
                         event.timestamp,
                         spec.cameraTimestampRealtime,
@@ -209,7 +234,7 @@ class GyroLogRecorder(
             if (session.ended.get()) return@post
             try {
                 tempDir.mkdirs()
-                session.out = DataOutputStream(BufferedOutputStream(FileOutputStream(file), 64 * 1024))
+                session.out = DataOutputStream(BufferedOutputStream(openTempStream(file), 64 * 1024))
             } catch (failure: java.io.IOException) {
                 session.writeFailed = true
                 DiagnosticLog.w(TAG, "gyro temp open failed", failure)
@@ -312,14 +337,12 @@ class GyroLogRecorder(
 
     private fun ensureThreadsLocked(): Handler {
         sensorHandler?.let { return it }
-        val thread = HandlerThread("gyro-log").also { it.start() }
+        val thread = sensorThreadFactory().also { it.start() }
         val handler = Handler(thread.looper)
         sensorThread = thread
         sensorHandler = handler
-        finalizer = Executors.newSingleThreadExecutor { task ->
-            Thread(task, "gyro-log-publish").apply { isDaemon = true }
-        }
-        if (STALE_SWEEP_DONE.compareAndSet(false, true)) {
+        finalizer = finalizerFactory()
+        if (staleSweepDone.compareAndSet(false, true)) {
             // A previous PROCESS's temp files (killed mid-take or mid-verdict) can never be claimed:
             // sweep anything not carrying this pid's prefix. Off the caller's thread.
             val ownPrefix = "p${android.os.Process.myPid()}-"
@@ -415,12 +438,12 @@ class GyroLogRecorder(
 
     companion object {
         private const val TAG = "GyroLog"
-        private const val TEMP_DIR = "gyrolog"
+        internal const val TEMP_DIR = "gyrolog"
         private const val SAMPLING_PERIOD_US = 5_000
-        private const val RECORD_BYTES = 8L + 6L * 4L
+        internal const val RECORD_BYTES = 8L + 6L * 4L
         // ~3 h at 200 Hz; past it sampling keeps the file it has (a truncated log is still valid).
-        private const val MAX_TEMP_BYTES = 72L * 1024L * 1024L
-        private const val MAX_AWAITING_VERDICT = 4
+        internal const val MAX_TEMP_BYTES = 72L * 1024L * 1024L
+        internal const val MAX_AWAITING_VERDICT = 4
         internal const val SIDECAR_MIME = "application/octet-stream"
         internal val SIDECAR_RELATIVE_PATH = "${Environment.DIRECTORY_DOCUMENTS}/TeleCamPro/"
         private val INSTANCE_SEQUENCE = AtomicLong(0L)
