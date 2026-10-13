@@ -75,6 +75,9 @@ import androidx.compose.foundation.focusable
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
@@ -1222,6 +1225,11 @@ fun MediaReviewOverlay(
         playbackUiState = VideoPlaybackUiState.PREPARING
     }
 
+    // Leaving the app (Home, Recents, screen off) pauses the clip, and it stays paused on return:
+    // the operator resumes it. Before this the review kept playing — with sound — behind the
+    // launcher until the process was trimmed.
+    val reviewLifecycle = LocalLifecycleOwner.current.lifecycle
+
     fun toggleVideoPlayback(): Boolean {
         val player = playerRef.value ?: return false
         val target = videoPlaybackToggleTarget(playbackUiState) ?: return false
@@ -1237,6 +1245,10 @@ fun MediaReviewOverlay(
             playbackUiState = VideoPlaybackUiState.PAUSED
             replaceMediaState(ReviewMediaState.Error(R.string.review_error_play_video))
         }.isSuccess
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (videoPlaybackPausesOnStop(playbackUiState)) toggleVideoPlayback()
     }
 
     BoxWithConstraints(
@@ -1555,6 +1567,15 @@ fun MediaReviewOverlay(
                                                         mp.setOnPreparedListener { p ->
                                                             playbackSetupScope.launch prepared@{
                                                                 if (!playbackOwner.prepared(handle)) {
+                                                                    return@prepared
+                                                                }
+                                                                // Prepared while backgrounded: hold it
+                                                                // paused instead of starting unseen.
+                                                                if (!reviewLifecycle.currentState.isAtLeast(
+                                                                        Lifecycle.State.STARTED,
+                                                                    )
+                                                                ) {
+                                                                    playbackUiState = VideoPlaybackUiState.PAUSED
                                                                     return@prepared
                                                                 }
                                                                 runCatching { p.start() }
@@ -2430,6 +2451,10 @@ internal fun videoPlaybackActionResource(state: VideoPlaybackUiState): Int? = wh
     VideoPlaybackUiState.PLAYING -> R.string.a11y_pause_video
     VideoPlaybackUiState.PAUSED -> R.string.a11y_play_video
 }
+
+/** ON_STOP pauses only a clip that is actually playing; paused and preparing clips are left alone. */
+internal fun videoPlaybackPausesOnStop(state: VideoPlaybackUiState): Boolean =
+    state == VideoPlaybackUiState.PLAYING
 
 internal fun videoPlaybackToggleTarget(state: VideoPlaybackUiState): VideoPlaybackUiState? =
     when (state) {

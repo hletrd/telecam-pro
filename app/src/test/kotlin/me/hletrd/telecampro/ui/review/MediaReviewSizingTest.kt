@@ -191,6 +191,15 @@ class MediaReviewSizingTest {
     }
 
     @Test
+    fun `leaving the app pauses only a playing clip`() {
+        assertTrue(videoPlaybackPausesOnStop(VideoPlaybackUiState.PLAYING))
+        assertFalse(videoPlaybackPausesOnStop(VideoPlaybackUiState.PAUSED))
+        assertFalse(videoPlaybackPausesOnStop(VideoPlaybackUiState.PREPARING))
+        // The pause it issues is the ordinary transport toggle.
+        assertEquals(VideoPlaybackUiState.PAUSED, videoPlaybackToggleTarget(VideoPlaybackUiState.PLAYING))
+    }
+
+    @Test
     fun `video playback resources withhold transport while preparing`() {
         assertNull(videoPlaybackActionResource(VideoPlaybackUiState.PREPARING))
         assertNull(videoPlaybackToggleTarget(VideoPlaybackUiState.PREPARING))
