@@ -459,6 +459,9 @@ fun FocusReticle(
     point: Pair<Float, Float>?,
     modifier: Modifier = Modifier,
     indication: AfIndication = AfIndication.IDLE,
+    // The screen's glyph counter-rotation (`overlayRotation`): the ✓/✗ verdict is a glyph and must
+    // read upright when the phone is held in landscape. The square bracket is symmetric and stays.
+    cueRotationDegrees: Float = 0f,
 ) {
     if (point == null) return
     // Sony-style AF confirmation: the bracket turns GREEN on lock and RED on a failed scan — at
@@ -518,14 +521,16 @@ fun FocusReticle(
             inkWidthPx = strokeWidth,
             keylineWidthPx = outlineWidth,
         )
-        cueGeometry.segments.forEach { segment ->
-            drawOutlinedLine(
-                start = Offset(segment.start.x, segment.start.y),
-                end = Offset(segment.end.x, segment.end.y),
-                rounded = true,
-                inkWidthPx = cueGeometry.inkWidthPx,
-                keylineWidthPx = cueGeometry.keylineWidthPx,
-            )
+        rotate(degrees = cueRotationDegrees, pivot = Offset(cx, cy)) {
+            cueGeometry.segments.forEach { segment ->
+                drawOutlinedLine(
+                    start = Offset(segment.start.x, segment.start.y),
+                    end = Offset(segment.end.x, segment.end.y),
+                    rounded = true,
+                    inkWidthPx = cueGeometry.inkWidthPx,
+                    keylineWidthPx = cueGeometry.keylineWidthPx,
+                )
+            }
         }
     }
 }

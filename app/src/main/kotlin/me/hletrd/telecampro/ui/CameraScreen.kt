@@ -949,7 +949,12 @@ fun CameraScreen(
 
             AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
 
-            FocusReticle(point = state.tapPoint, indication = state.afIndication, modifier = Modifier.fillMaxSize())
+            FocusReticle(
+                point = state.tapPoint,
+                indication = state.afIndication,
+                modifier = Modifier.fillMaxSize(),
+                cueRotationDegrees = overlayRotation,
+            )
             FocusResultLiveRegion(
                 indication = state.afIndication,
                 active = state.tapFocusHeld,
