@@ -483,4 +483,22 @@ class ExposureMathTest {
         assertEquals(auto, requestAfMode(FocusMode.AUTO, videoMode = true, afModes = both))
         assertEquals(null, requestAfMode(FocusMode.MACRO, videoMode = true, afModes = both))
     }
+
+    @Test
+    fun `user-owned ISO snaps to 1-3-stop marks and a nominal bound survives normalization`() {
+        assertEquals(12800, snapIsoToStandardStop(12750))
+        assertEquals(1250, snapIsoToStandardStop(1253))
+        assertEquals(25, snapIsoToStandardStop(0))
+        // 12800 is the nominal name of a 12700 ceiling (1/90 stop over): kept; the wire clamps.
+        assertEquals(12800, isoWithinRangeOrNominalBound(12800, 50, 12700))
+        // A non-mark, or a mark further than 1/6 stop out, still clamps.
+        assertEquals(12700, isoWithinRangeOrNominalBound(12750, 50, 12700))
+        assertEquals(12700, isoWithinRangeOrNominalBound(16000, 50, 12700))
+        assertEquals(50, isoWithinRangeOrNominalBound(40, 50, 12700))
+        // Leaving HAL-AE video P for M or ISO priority seeds a snapped ISO; staying auto does not snap.
+        val halAeP = ManualControls(exposureMode = ExposureMode.PROGRAM, programAppSide = false)
+        assertEquals(12800, halAeP.exposureModeHandoff(ExposureMode.MANUAL, 12750, 16_000_000L).iso)
+        assertEquals(12800, halAeP.exposureModeHandoff(ExposureMode.ISO, 12750, 16_000_000L).iso)
+        assertEquals(12750, halAeP.exposureModeHandoff(ExposureMode.SHUTTER, 12750, 16_000_000L).iso)
+    }
 }

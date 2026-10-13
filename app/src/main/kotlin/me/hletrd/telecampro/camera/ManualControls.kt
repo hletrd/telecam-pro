@@ -230,7 +230,7 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         ?.let { finiteFocusDistance.coerceIn(0f, it) }
         ?: finiteFocusDistance
     val normalizedIso = if (caps.isoMin != null && caps.isoMax != null && caps.isoMin <= caps.isoMax) {
-        iso.coerceIn(caps.isoMin, caps.isoMax)
+        isoWithinRangeOrNominalBound(iso, caps.isoMin, caps.isoMax)
     } else {
         iso
     }
@@ -471,6 +471,40 @@ fun ManualControls.withShutterMode(mode: ShutterMode): ManualControls {
 }
 
 /**
+ * Conventional 1/3-stop ISO marks (100, 125, 160, 200, …), the only values a user-owned ISO takes.
+ * Spans 25–102400 so a sensor advertising either end still reaches it in thirds (AGG4-75).
+ */
+internal val STANDARD_ISO_LADDER = intArrayOf(
+    25, 32, 40,
+    50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
+    2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600,
+    32000, 40000, 51200, 64000, 80000, 102400,
+)
+
+/** The [STANDARD_ISO_LADDER] mark nearest [iso] in stops (log distance); ISO <= 0 maps to the lowest. */
+internal fun snapIsoToStandardStop(iso: Int): Int {
+    if (iso <= 0) return STANDARD_ISO_LADDER.first()
+    return STANDARD_ISO_LADDER.minBy { kotlin.math.abs(kotlin.math.ln(it.toDouble() / iso)) }
+}
+
+/**
+ * Marks are 1/3 stop apart, so every hardware bound sits within 1/6 stop of one. A mark that far
+ * past a bound (ISO 12800 on a sensor whose ceiling is 12700) is that bound's NOMINAL name: the
+ * packet keeps it and the request build clamps the wire value into the advertised range, so the
+ * file's EXIF still records the sensitivity actually applied. Anything further out clamps.
+ */
+internal const val ISO_NOMINAL_BOUND_TOLERANCE_STOPS = 1.0 / 6.0
+
+internal fun isoWithinRangeOrNominalBound(iso: Int, isoMin: Int, isoMax: Int): Int {
+    if (iso in isoMin..isoMax) return iso
+    val bound = if (iso < isoMin) isoMin else isoMax
+    val nominal = bound > 0 && iso in STANDARD_ISO_LADDER &&
+        kotlin.math.abs(kotlin.math.ln(iso.toDouble() / bound) / kotlin.math.ln(2.0)) <=
+        ISO_NOMINAL_BOUND_TOLERANCE_STOPS + 1e-9
+    return if (nominal) iso else iso.coerceIn(isoMin, isoMax)
+}
+
+/**
  * One exposure-mode handoff. Two seeds were wrong before (RPL cycle 1):
  *
  * - Only an outgoing HAL-AE PROGRAM ([ManualControls.autoExposure]) may seed from the live result
@@ -493,7 +527,15 @@ fun ManualControls.exposureModeHandoff(
     } else {
         unit
     }
-    return seeded.copy(exposureMode = mode)
+    // A user-owned ISO (ISO priority, MANUAL) is always a conventional 1/3-stop mark (owner request
+    // 2026-10-13): the carried value — a HAL-AE result like 12750 or the app-side loop's continuous
+    // ISO — snaps to the nearest one instead of surfacing as an odd dial value.
+    val ownedIso = if (mode == ExposureMode.ISO || mode == ExposureMode.MANUAL) {
+        snapIsoToStandardStop(seeded.iso)
+    } else {
+        seeded.iso
+    }
+    return seeded.copy(exposureMode = mode, iso = ownedIso)
 }
 
 /**

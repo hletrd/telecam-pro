@@ -55,15 +55,16 @@ class DialStopsTest {
         )
     }
 
-    // Hardware bounds that don't land on a standard stop (90 sits between the ladder's 80 and 100;
-    // 9000 sits between 8000 and 10000) must still be individually reachable — the ladder gets the
-    // two odd endpoints ADDED verbatim alongside the nearest standard stops between them, never
-    // rounded away, so the full advertised device range stays reachable.
+    // Owner request 2026-10-13: ISO snaps to 1/3-stop marks, so hardware bounds that miss a mark
+    // (90 between 80 and 100; 9000 between 8000 and 10000) become their nearest mark — within 1/6
+    // stop, so the range stays reachable — instead of surfacing as odd dial values.
     @Test
-    fun `isoStops keeps non-standard hardware endpoints reachable alongside standard stops`() {
+    fun `isoStops snaps non-standard hardware endpoints to their nearest 1-3-stop marks`() {
         val stops = isoStops(90, 9000, 1f / 3f)
-        assertEquals(90, stops.first())
-        assertEquals(9000, stops.last())
+        assertEquals(100, stops.first())
+        assertEquals(10000, stops.last())
+        assertTrue(stops.all { it in me.hletrd.telecampro.camera.STANDARD_ISO_LADDER })
+        assertEquals(12800, isoStops(50, 12700, 1f / 3f).last())
         assertTrue(stops.contains(100))
         assertTrue(stops.contains(6400))
         assertTrue(stops.contains(8000))
@@ -111,12 +112,12 @@ class DialStopsTest {
     @Test(timeout = 2_000)
     fun `non-positive lower bounds return a finite ladder that keeps both bounds`() {
         val iso = isoStops(0, 3200, 1f / 3f)
-        assertEquals(0, iso.first())
+        assertEquals(25, iso.first())
         assertEquals(3200, iso.last())
         assertTrue(iso.size < 64)
         assertTrue(iso.contains(100) && iso.contains(1600))
         val negIso = isoStops(-5, 800, 1f)
-        assertEquals(-5, negIso.first())
+        assertEquals(25, negIso.first())
         assertEquals(800, negIso.last())
 
         val shutter = shutterStops(0L, 1_000_000_000L, 1f / 3f)

@@ -85,6 +85,9 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.hletrd.telecampro.camera.STANDARD_ISO_LADDER
+import me.hletrd.telecampro.camera.isoWithinRangeOrNominalBound
+import me.hletrd.telecampro.camera.snapIsoToStandardStop
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.FlashMode
@@ -1089,42 +1092,27 @@ private fun ManualControls.effectiveExposureNsForDisplay(): Long =
 // pinning math it had stopped shipping — same shape as the metre focus formatter in
 // ControlLabels.kt.)
 
-// Standard 1/3-stop ISO ladder (ISO 12232 conventional sensitivities, the values every real camera
-// body shows). AGG3-7/CR-12: snapping each `100·2^(k·stepEv)` candidate to 2 significant figures
-// instead of this table produced non-standard values a photographer never sees on a body — 130,
-// 630, 1300, 5100, 8100 — contradicting the very comment that used to sit here. Mirrors the
-// NICE_SHUTTER_DENOM nearest-match pattern in ProControls.kt. The ladder spans 25–102400 (AGG4-75):
-// when it ended at 50/25600, every candidate beyond an end snapped onto that end and was
-// de-duplicated away, so a sensor advertising 102400 offered 25600 then a one-to-two-stop jump to
-// its raw upper bound, with 32000/40000/51200 unreachable. Candidates inside 50–25600 are unchanged.
-private val STANDARD_ISO_LADDER = intArrayOf(
-    25, 32, 40,
-    50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
-    2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600,
-    32000, 40000, 51200, 64000, 80000, 102400,
-)
-
-/** ISO values [stepEv] EV apart across [[lower], [upper]], anchored at 100, each snapped to the
- *  nearest [STANDARD_ISO_LADDER] entry so they read as conventional stops (100, 125, 160, 200, …)
- *  rather than a generic significant-figure round. Hardware bounds always included (kept exactly
- *  even when they fall between two standard stops, so the full advertised range stays reachable).
+/** ISO values [stepEv] EV apart across [[lower], [upper]], anchored at 100, every one a conventional
+ *  1/3-stop mark from [STANDARD_ISO_LADDER] (owner request 2026-10-13: ISO snaps to thirds). The
+ *  hardware bounds are no longer offered verbatim: each becomes its nearest mark, which lies within
+ *  1/6 stop of it ([isoWithinRangeOrNominalBound] keeps such a nominal bound and the request clamps
+ *  the wire value), so the full advertised range stays reachable without an odd dial value.
  *  Plain-bounds core: android.util.Range getters throw "not mocked" on the JVM, so the testable
  *  seam takes Int lower/upper directly (the sessionAttemptPlan/centerCropBox house pattern); the
  *  Range overload below is a thin wrapper. */
 internal fun isoStops(lower: Int, upper: Int, stepEv: Float): IntArray {
-    if (lower >= upper || stepEv <= 0f) return intArrayOf(lower)
-    val set = sortedSetOf(lower, upper)
+    if (lower >= upper || stepEv <= 0f) return intArrayOf(snapIsoToStandardStop(lower))
+    // AGG5-32: a malformed HAL lower bound of 0 must not reach log(); snapIsoToStandardStop maps
+    // every non-positive value to the lowest mark, so the candidate window below stays finite.
+    val lo = snapIsoToStandardStop(lower)
+    val hi = snapIsoToStandardStop(upper)
+    val set = sortedSetOf(lo, hi)
     val ln2 = Math.log(2.0)
-    // AGG5-32: the bounds are the RAW advertised SENSITIVITY_RANGE. A malformed HAL lower bound of 0
-    // made log(0) = -Infinity → ceil().toInt() = Int.MIN_VALUE → ~2^31 iterations in composition (an
-    // ANR). Only a non-positive bound's CANDIDATE window starts at ISO 1 (every positive bound is
-    // byte-identical); the raw bound itself stays in [set].
-    val kLo = Math.ceil(Math.log((if (lower > 0) lower else 1) / 100.0) / ln2 / stepEv).toInt()
-    val kHi = Math.floor(Math.log(upper / 100.0) / ln2 / stepEv).toInt()
+    val kLo = Math.ceil(Math.log(lo / 100.0) / ln2 / stepEv - 1e-6).toInt()
+    val kHi = Math.floor(Math.log(hi / 100.0) / ln2 / stepEv + 1e-6).toInt()
     for (k in kLo..kHi) {
-        val raw = 100.0 * Math.pow(2.0, k * stepEv.toDouble())
-        val nice = STANDARD_ISO_LADDER.minByOrNull { kotlin.math.abs(it - raw) } ?: raw.roundToInt()
-        if (nice > lower && nice < upper) set.add(nice)
+        val nice = snapIsoToStandardStop((100.0 * Math.pow(2.0, k * stepEv.toDouble())).roundToInt())
+        if (nice in lo..hi) set.add(nice)
     }
     return set.toIntArray()
 }
