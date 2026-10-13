@@ -1037,6 +1037,22 @@ internal fun TransferSelector(
 }
 
 /**
+ * The one-line source caveat under the Transfer selector, or null for SDR (no curve to caveat).
+ *
+ * A log transfer on a camera that takes the native ISP curve ([nativeLogCurveSupported], the same
+ * capability answer the Engine routes on) is NOT applied to an already tone-mapped stream — the ISP
+ * encodes it in place of its tone curve — so the old caveat would now be false there. Its own
+ * caveat keeps the two honesty limits that remain: an 8-bit source, and no latitude above the
+ * sensor clip. HLG, and log on the GL fallback, keep the tone-mapped caveat.
+ */
+@StringRes
+internal fun transferSourceCaption(transfer: ColorTransfer, nativeLogCurveSupported: Boolean): Int? = when {
+    transfer == ColorTransfer.SDR -> null
+    transfer.isLog && nativeLogCurveSupported -> R.string.video_native_log_source
+    else -> R.string.video_tone_mapped_source
+}
+
+/**
  * Caption for a session with NO still reader. Only an ACCEPTED HLG10 session earns the trade wording.
  *
  * Keyed on accepted-session truth ([me.hletrd.telecampro.camera.PhotoSessionOutputs.hlg]), not the

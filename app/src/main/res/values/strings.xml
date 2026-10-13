@@ -353,6 +353,7 @@
     <string name="stabilization_ois_eis">OIS+EIS</string>
     <string name="stabilization_ois_eis_crop">OIS+EIS · crop</string>
     <string name="video_tone_mapped_source">Applied to the camera’s already tone-mapped stream</string>
+    <string name="video_native_log_source">Encoded by the camera’s ISP from its linear signal · 8-bit, clips at sensor white</string>
     <string name="mr_default_photo_name">Photo %1$s</string>
     <string name="mr_default_video_name">Video %1$s</string>
     <string name="label_output">Output</string>

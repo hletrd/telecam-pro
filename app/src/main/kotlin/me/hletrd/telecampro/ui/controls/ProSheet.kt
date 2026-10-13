@@ -1496,9 +1496,14 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // a non-SDR selection because the caveat is about a CURVE: printed under Transfer = SDR it
     // asserted a curve was applied where none is.
     // "SDR stream" stopped being true when video gained a 10-bit session; the honesty point was
-    // never the bit depth but that the ISP has ALREADY tone-mapped what the curve is applied to.
+    // never the bit depth but that the ISP has ALREADY tone-mapped what the curve is applied to —
+    // which in turn stopped being true for log on a native-curve camera (2026-10-14), so the
+    // caption is chosen by [transferSourceCaption] from the route's capability.
     Captioned(
-        if (state.transfer != ColorTransfer.SDR) stringResource(R.string.video_tone_mapped_source) else null,
+        transferSourceCaption(
+            state.transfer,
+            me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
+        )?.let { stringResource(it) },
     ) {
         // Transfer is part of the encoded image format, so keep it with codec/rate controls instead
         // of below the unrelated audio controls.

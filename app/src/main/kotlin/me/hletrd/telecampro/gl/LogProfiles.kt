@@ -103,6 +103,22 @@ internal object LogProfiles {
         (x * (SLOG3_CUT_CODE - SLOG3_BLACK_CODE) / SLOG3_CUT + SLOG3_BLACK_CODE) / SLOG3_CODE_SCALE
     }
 
+    /**
+     * Exact inverse of [slog3Oetf]: normalized code value -> linear reflection (Sony technical
+     * summary's S-Log3 -> reflection formula, same constants). This is the decode the shader runs on
+     * a NATIVE-LOG camera stream, where the ISP itself encoded S-Log3 through a programmed
+     * TONEMAP_CURVE ([me.hletrd.telecampro.camera.nativeLogToneCurve]), so the GL chain can recover the
+     * ISP's linear signal before re-encoding the selected profile. The segment switch sits at the
+     * cut's CODE value ([SLOG3_CUT_CODE] / [SLOG3_CODE_SCALE]), which is exactly where the forward
+     * curve switches — pinned by NativeLogCurveTest's round trip.
+     */
+    fun slog3Inverse(y: Double): Double = if (y >= SLOG3_CUT_CODE / SLOG3_CODE_SCALE) {
+        kotlin.math.exp((y * SLOG3_CODE_SCALE - SLOG3_LOG_OFFSET_CODE) / SLOG3_LOG_SLOPE / INV_LN10) *
+            SLOG3_GREY_PLUS_OFFSET - SLOG3_LIN_OFFSET
+    } else {
+        (y * SLOG3_CODE_SCALE - SLOG3_BLACK_CODE) * SLOG3_CUT / (SLOG3_CUT_CODE - SLOG3_BLACK_CODE)
+    }
+
     /** LogC3 EI800 OETF for one component. Caller keeps x ≥ [GAMUT_LINEAR_FLOOR] (log arg defined). */
     fun logc3Oetf(x: Double): Double = if (x > LOGC3_CUT) {
         LOGC3_C * ln(LOGC3_A * x + LOGC3_B) * INV_LN10 + LOGC3_D

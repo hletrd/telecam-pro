@@ -229,6 +229,16 @@ data class CameraCaps(
      * absent here is not gated by duration.
      */
     val videoMinFrameDurationsNs: Map<Size, Long> = emptyMap(),
+    /**
+     * TONEMAP_AVAILABLE_TONE_MAP_MODES. Read for the native-log decision
+     * ([nativeLogCurveSupported]): a caller-programmed CONTRAST_CURVE is what lets the ISP encode
+     * S-Log3 itself instead of its stock tone curve. Every PMA110 camera (HAL 0–5) advertises
+     * [CONTRAST_CURVE, FAST, HIGH_QUALITY] (device-read 2026-10-14). Defaulted because only the
+     * capability read and the native-log seams consume it.
+     */
+    val toneMapModes: IntArray = IntArray(0),
+    /** TONEMAP_MAX_CURVE_POINTS (512 on every PMA110 camera); 0 when unreported. */
+    val maxCurvePoints: Int = 0,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
@@ -485,6 +495,8 @@ data class CameraCaps(
                 },
                 openGateVideoSizes = openGateSizes,
                 highSpeedConfigs = highSpeed,
+                toneMapModes = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: IntArray(0),
+                maxCurvePoints = chars.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 0,
             )
         }
     }

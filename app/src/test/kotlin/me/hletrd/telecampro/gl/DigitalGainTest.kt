@@ -22,11 +22,13 @@ class DigitalGainTest {
     fun `gain applies in linear light before base forms`() {
         val shader = Shaders.FRAGMENT
         assertTrue("uDigitalGain uniform must exist", shader.contains("uniform float uDigitalGain;"))
-        // The boost wraps the very first texture sample, so `base` — and with it the display, the
-        // zebra/false-color `meter`, and peaking — all read the simulated brightness.
+        // The boost wraps the very first (source-decoded) sample, so `base` — and with it the
+        // display, the zebra/false-color `meter`, and peaking — all read the simulated brightness.
+        // sampleSource is the native-log decode seam; it returns the raw sample on every other
+        // session, so on those `base` is exactly the old dgain(texture2D(...)).
         assertTrue(
             "base must form from the boosted sample",
-            shader.contains("vec3 base = dgain(texture2D(uTexture, vTexCoord).rgb);"),
+            shader.contains("vec3 base = dgain(sampleSource(vTexCoord));"),
         )
         // Linear-domain multiply: BT.1886 decode -> gain -> clamp -> re-encode.
         val body = shader.substringAfter("vec3 dgain(vec3 c)").substringBefore("}")
@@ -43,9 +45,11 @@ class DigitalGainTest {
         // A boosted center against raw neighbors would fabricate gradients everywhere; raw-vs-raw
         // would under-fire the threshold exactly in the low light the simulation exists for.
         val peakingBlock = Shaders.FRAGMENT.substringAfter("if (uPeaking == 1)").substringBefore("if (uZebra")
-        assertTrue(peakingBlock.contains("luma(dgain(texture2D(uTexture, vTexCoord + vec2(uTexel.x, 0.0)).rgb))"))
-        assertTrue(peakingBlock.contains("luma(dgain(texture2D(uTexture, vTexCoord + vec2(0.0, uTexel.y)).rgb))"))
-        assertTrue("no raw neighbor sample may remain", !peakingBlock.contains("luma(texture2D"))
+        // Neighbours also pass through the same source decode, or a decoded centre against raw
+        // native-log neighbours would fabricate edges everywhere.
+        assertTrue(peakingBlock.contains("luma(dgain(sampleSource(vTexCoord + vec2(uTexel.x, 0.0))))"))
+        assertTrue(peakingBlock.contains("luma(dgain(sampleSource(vTexCoord + vec2(0.0, uTexel.y))))"))
+        assertTrue("no raw neighbor sample may remain", !peakingBlock.contains("texture2D"))
     }
 
     // ---- display LUT ----

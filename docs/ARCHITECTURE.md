@@ -25,7 +25,7 @@
 
 ## Overview
 
-A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3), or SDR profiles. Non-SDR video first requests an HLG10 Camera2 session with still readers removed; the accepted stream is still ISP-tone-mapped and display-referred. GL applies a source-aware decode and the selected HLG/log mapping through the release build's 8-bit EGL target, then HEVC writes Main10 output (SDR video uses the standard 8-bit session and Main output). This does not recover ISP-removed highlights and does not make the log profiles scene-referred camera log.
+A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3), or SDR profiles. Log video on a camera that takes a programmed `CONTRAST_CURVE` (every PMA110 camera) is NATIVE ISP log: the ordinary 8-bit session with stills, whose repeating request swaps the stock tone curve for S-Log3. HLG video, and log on a camera without that capability, request an HLG10 Camera2 session with still readers removed; that stream is still ISP-tone-mapped and display-referred. GL applies a source-aware decode and the selected HLG/log mapping through the release build's 8-bit EGL target, then HEVC writes Main10 output (SDR video uses the standard 8-bit session and Main output). This does not recover ISP-removed highlights and does not make the log profiles scene-referred camera log.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -56,7 +56,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraStatus.kt` | Typed user-status identity, arguments, urgency/live-region policy, lifecycle, and duration. Camera bring-up/reconfiguration/recovery/retry conditions are untimed `PROGRESS`; exact Ready, terminal, pause, or replacement events retire them. |
 | `DeviceProfile.kt` | The second sanctioned model seam: resolves measured per-device HAL quirks only. `detectPhone` remains the separate catalog-preselection seam; capability availability otherwise comes from Camera2 enumeration. |
 | `DeviceExifLabels.kt` | Derives truthful EXIF make/model/lens labels from the active enumerated camera and device identity; no vendor or camera-id catalog string is stamped onto another device. |
-| `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`). |
+| `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`), and the tone-map modes / max curve points the native-log gate reads. |
+| `NativeLogCurve.kt` | Native ISP log: the capability gate (`nativeLogCurveSupported`), the S-Log3 `TONEMAP_CURVE` control points the repeating request programs, and `stillToneMapMode`, which keeps every still in a native-log session on the stock tone map. Pure and host-tested. |
 | `NumericBounds.kt` | Fail-open clamp against a finite, ordered vendor range: a transiently malformed HAL range returns the requested value instead of throwing on the camera thread. |
 | `ProcessedSnapshotBudget.kt` | Android-free, process-wide admission budget for every retained processed still snapshot: one running save plus one waiting full-resolution snapshot across SINGLE, BURST, AEB, timelapse, and Engine replacement. Sequence drives additionally retain their per-Engine completion chaining for order. |
 | `StillPublicationDispatcher.kt` | Per-Engine closeable facade over one process-lifetime finite owner for every completed DNG publication: two daemon workers plus two queued tails. RAW-only shots transfer directly; mixed-output shots queue only a lightweight transfer behind processed-sibling completion before entering the same owner. `transferCompletedDngFromCameraCallback` is the tested production composition of actual formats, processed-queue truth, ordered Engine enqueue, process dispatch, and retained recovery. Accepted work retains exact family/callback identity across Engine replacement; overflow/shutdown/transfer rejection never publishes inline or deletes complete bytes, and launch recovery owns the private row. |
@@ -93,7 +94,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `MotionInversion.kt` | Pure sign-of-motion evidence classifier with conservative `UNJUDGEABLE` behavior and epoch-safe publication. |
 | `AtomicOwnerSlot.kt` | Identity-owned atomic slot for replaceable native-resource facades: a late completion may replace only the exact object it stopped, so a stale generation cannot displace its replacement. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports an experimental 10-bit config, while release builds deliberately start the stable 8-bit config even when Camera2 supplied an HLG10 source. |
-| `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Source-aware standard/HLG decode plus BT.2408-9 HLG and S-Log3/LogC3 mappings, peaking/zebra, and punch-in. O-Log2 is removed in both directions; shader code 3 stays vacant and Gamma Assist is a preview-only log-curve bypass. |
+| `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Source-aware standard/HLG/native-S-Log3 decode (S-Log3 decoded at sample time via `sampleSource`, `LogProfiles.slog3Inverse` its host-tested twin) plus BT.2408-9 HLG and S-Log3/LogC3 mappings, peaking/zebra, and punch-in. O-Log2 is removed in both directions; shader code 3 stays vacant and Gamma Assist is a preview-only log-curve bypass. |
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. Its explicit motion-evidence reset clears timestamped gyro history without changing an already-armed sensor-registration intent. |
 | **capture/** | |
@@ -639,11 +640,15 @@ device proof. The optional private `docs/BACKLOG.md`, when present, may carry ma
 
 **Shipping session fallback plan (`CameraController.configureSession`):**
 
-For non-SDR VIDEO, `tenBitSessionWanted(videoMode, transfer)` requests HLG10. Attempt 0 is a
+For HLG VIDEO, and log VIDEO on a camera without the native curve,
+`tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported)` requests HLG10. Attempt 0 is a
 video-only rung: both processed and RAW still readers are absent because combining HLG10 with the
-full-resolution still readers crashes this HAL. Photo and SDR video use the standard 8-bit session.
-`hlgConfigured` records accepted session truth after fallback, and GL uses that truth to select the
-HLG or BT.1886 source decode; requested transfer alone is not enough to describe the incoming buffer.
+full-resolution still readers crashes this HAL. Photo, SDR video, and NATIVE-LOG video
+(`nativeLogSessionWanted`) use the standard 8-bit session with its still readers; native log differs
+only in its repeating request's tone map. `videoSessionShape` (SDR / NATIVE_LOG / TEN_BIT) is the
+reopen boundary for transfer and mode doors. `hlgConfigured` and `nativeLogConfigured` record
+accepted session truth after fallback, and GL uses that truth to select the HLG, S-Log3 or BT.1886
+source decode; requested transfer alone is not enough to describe the incoming buffer.
 
 - On PMA110 a logical photo session uses preview + `YUV_420_888` processed stills
   (`DeviceProfile.logicalStillRequiresYuv`) and never requests RAW
@@ -939,7 +944,7 @@ unused.
 
 | Codec | Encoder profile | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR | MP4 | Primary HW encoder. Non-SDR video first requests an HLG10 Camera2 source; release EGL remains 8-bit. Main/Main10 names the encoded output, not every upstream stage. |
+| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR | MP4 | Primary HW encoder. HLG (and log without the native curve) first requests an HLG10 Camera2 source; native log rides the 8-bit session with an ISP S-Log3 curve; release EGL remains 8-bit. Main/Main10 names the encoded output, not every upstream stage. |
 | AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; forces GL SDR (no HLG/Log); HW. |
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
@@ -987,14 +992,35 @@ EGL_RECORDABLE_ANDROID = EGL_TRUE
 ```
 
 Color-profile rendering happens in the fragment shader:
-- **Camera2 session**: non-SDR VIDEO first requests HLG10 with no still readers. Photo and SDR
-  video request the standard 8-bit profile. The accepted fallback rung, not intent, is authoritative.
-- **Input**: normalized [0, 1] RGBA sampled from the camera SurfaceTexture. It is HLG-encoded when
-  the accepted session reports HLG and BT.1886/SDR-encoded otherwise. In both cases it is the ISP's
-  display-referred, already tone-mapped rendition, not a RAW or scene-linear video source.
-- **Source decode**: `uSourceHlg` follows accepted `hlgConfigured`. HLG input takes inverse HLG OETF
-  plus inverse reference-white scaling; standard input takes BT.1886 2.4 decode. Both arrive at the
-  common display-light scale used by the subsequent gamut matrix and OETF.
+- **Camera2 session**: HLG VIDEO (and fallback log VIDEO) first requests HLG10 with no still
+  readers. Photo, SDR video and native-log video request the standard 8-bit profile. The accepted
+  fallback rung, not intent, is authoritative.
+- **Native ISP log** (`camera/NativeLogCurve.kt`, measured PMA110 2026-10-14): gated by
+  `nativeLogCurveSupported(caps)` = MANUAL_POST_PROCESSING && `TONEMAP_MODE_CONTRAST_CURVE`
+  advertised && `TONEMAP_MAX_CURVE_POINTS` ≥ 32 — capability, never model. The repeating request
+  (full rebuild; the zoom/sensor fast paths reuse that cached builder) sets `TONEMAP_MODE_CONTRAST_CURVE`
+  and `TONEMAP_CURVE` = the S-Log3 OETF sampled at 128 output-uniform points over the ISP's linear
+  input (1.0 = sensor clip), one point snapped onto the linear/log cut; R=G=B, so the ISP's 709
+  primaries are untouched and the gamut matrix stays in GL. All three log transfers program this one
+  transport curve. Still requests (including the in-REC snapshot) are fresh STILL_CAPTURE templates
+  and, inside a native-log session only, name `TONEMAP_MODE_HIGH_QUALITY` (else FAST) explicitly;
+  pseudo-ZSL refuses the session. The HAL was measured to honour the curve on the repeating request
+  in both the 8-bit and the HLG10 session.
+- **Input**: normalized [0, 1] RGBA sampled from the camera SurfaceTexture. It is S-Log3-encoded
+  (by the ISP) when the accepted session reports native log, HLG-encoded when it reports HLG, and
+  BT.1886/SDR-encoded otherwise. Only the native-log stream escapes the ISP's GLOBAL tone curve; the
+  other two are its display-referred, already tone-mapped rendition. None is RAW or scene-referred:
+  native log still clips at the sensor (code ≈ 0.596, no exposure offset), QTI local tone mapping
+  under a programmed curve is unmeasured (its tags are not public request keys), and the stream is
+  8-bit.
+- **Source decode**: `uSourceLog` follows accepted `nativeLogConfigured`, `uSourceHlg` follows
+  accepted `hlgConfigured` (never both). Native-log input is decoded at SAMPLE time
+  (`sampleSource`: exact S-Log3 inverse → clamp [0, 1] → BT.1886 encode), so `base` and every
+  consumer of it — display, Gamma Display Assist, digital gain, meter/zebra/false-color, peaking,
+  analysis readback — work unchanged, and the transfer branches' BT.1886 decode returns the ISP's
+  linear signal exactly. HLG input takes inverse HLG OETF plus inverse reference-white scaling;
+  standard input takes BT.1886 2.4 decode. All arrive at the common display-light scale used by the
+  subsequent gamut matrix and OETF.
 - **Transfer mapping / OETF**:
   - **HLG (Hybrid Log-Gamma)**: simplified display-referred mapping from ITU-R BT.2408-9
     §5.1.3.4: source-aware display-light decode → linear BT.709-to-BT.2020 conversion →
@@ -1002,12 +1028,14 @@ Color-profile rendering happens in the fragment shader:
     This preserves a valid HLG signal but cannot recover highlights removed by the ISP's SDR tone map.
     CPU/shader anchors are host-tested; final appearance after this mapping still requires playback on
     a real HDR display and is not inferred from compilation or container tags.
-  - **Log profiles (SLOG3 / SLOG3_CINE / LOGC3)**: standard curves applied to the display-referred,
-    tone-mapped stream — source-aware decode → linear BT.709→gamut 3×3 matrix (S-Gamut3, S-Gamut3.Cine, or
+  - **Log profiles (SLOG3 / SLOG3_CINE / LOGC3)**: standard curves applied to the decoded source —
+    the ISP's linear signal on a native-log session, else the display-referred tone-mapped stream —
+    source-aware decode → linear BT.709→gamut 3×3 matrix (S-Gamut3, S-Gamut3.Cine, or
     ARRI Wide Gamut 3) → defensive lower clamp → the S-Log3 or LogC3 EI800 OETF (constants
-    single-sourced from `LogProfiles.kt`). Grades with standard S-Log3/LogC3 workflows, but the
-    source is the ISP's tone-mapped display rendition, so there is no scene latitude to recover — this is NOT
-    scene-referred camera log (HAL-native log is vendor-gated — see CLAUDE.md). Replaced the
+    single-sourced from `LogProfiles.kt`). Grades with standard S-Log3/LogC3 workflows. On the GL
+    fallback the source is the ISP's tone-mapped display rendition, so there is no scene latitude to
+    recover; on native log the global S-curve is gone but latitude still ends at the sensor clip.
+    Neither is scene-referred camera log (the vendor log key stays inert — see CLAUDE.md). Replaced the
     former GL O-Log2 option (persisted "LOG" migrates to SLOG3_CINE).
   - **SDR**: no shader curve; HEVC Main 8-bit BT.709 limited-range for zero-grading footage.
 - **EGL output**: release builds render through an 8-bit RGBA EGL config. The optional RGBA1010102

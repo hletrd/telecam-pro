@@ -16,6 +16,7 @@ import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.TonemapCurve
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
@@ -158,6 +159,12 @@ class CameraController internal constructor(
     // @Volatile for visibility; updateControls confines the actual write to the handler thread.
     @Volatile private var controls = ManualControls()
     private var tenBitHlg = false
+    // Native ISP log intent for this controller's session (NativeLogCurve.kt): the repeating request
+    // programs the S-Log3 TONEMAP_CURVE instead of the stock tone curve. Set once per open(), like
+    // [tenBitHlg]; the engine reopens on any change of session shape (`videoSessionShape`).
+    private var nativeLogCurve = false
+    // The curve's control points, sized to this camera's advertised budget. Built once per open().
+    private var nativeLogCurvePoints: FloatArray? = null
     // Written by open() on setupExecutor, lazily re-read on the camera handler (tryComplete).
     @Volatile private var rawChars: CameraCharacteristics? = null
     @Volatile private var rawCharsCameraId: String? = null
@@ -193,6 +200,15 @@ class CameraController internal constructor(
      * carries the same profile, so this decides how GL must linearise the frames it samples.
      */
     @Volatile var hlgConfigured = false
+        private set
+
+    /**
+     * Whether the session that actually CONFIGURED streams the native S-Log3 curve — accepted truth
+     * the engine pushes to GL as the source decode (`setSourceLog`), exactly like [hlgConfigured].
+     * Every regular rung is the 8-bit session, so the curve does not depend on which rung landed;
+     * the (dormant) constrained high-speed session never carries it and leaves this false.
+     */
+    @Volatile var nativeLogConfigured = false
         private set
     // True only while the CURRENT configure attempt built its processed reader at the full-sensor
     // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
@@ -281,6 +297,9 @@ class CameraController internal constructor(
         glInputSurface: Surface,
         controls: ManualControls,
         tenBitHlg: Boolean,
+        // No default, same rule as the route terms below: an open path that forgot it would compile
+        // into a session whose GL decode and wire curve disagree.
+        nativeLogCurve: Boolean,
         highSpeedFps: Int = 0,
         // No defaults on the route terms (AGG6-37): a default is a fix-off switch — a new open path
         // that forgot one compiled and silently opened with stabilization off, the TC hints off,
@@ -327,6 +346,10 @@ class CameraController internal constructor(
             )
         }
         this.tenBitHlg = tenBitHlg
+        // Re-checked against THIS camera's caps: the engine resolves the same predicate from the
+        // same caps, so this only matters if a future caller passes intent instead of a decision.
+        this.nativeLogCurve = nativeLogCurve && nativeLogCurveSupported(caps)
+        this.nativeLogCurvePoints = if (this.nativeLogCurve) nativeLogToneCurve(caps.maxCurvePoints) else null
         this.highSpeedFps = highSpeedFps
         this.videoStabHalMode = videoStabHalMode
         this.teleconverterMode = teleconverterMode
@@ -511,6 +534,20 @@ class CameraController internal constructor(
         if (deviceProfile.vendorOplusRequestHints) {
             runCatching { set(vendorVideoStabKey, videoStabHalMode) }
         }
+    }
+
+    /**
+     * Programs the native S-Log3 tone curve (NativeLogCurve.kt) on a native-log session's REPEATING
+     * request; a no-op otherwise, so every non-log request stays byte-identical. Not guarded by
+     * runCatching: TONEMAP_CURVE is a guaranteed key under MANUAL_POST_PROCESSING (the gate), and a
+     * silently dropped curve would leave GL decoding a stock-curve stream as S-Log3 — a wrong image
+     * that looks plausible. A real rejection surfaces through the ordinary submit failure instead.
+     * Edge/NR are deliberately untouched: they remain the operator's controls.
+     */
+    private fun CaptureRequest.Builder.applyNativeLogToneCurve() {
+        val points = nativeLogCurvePoints ?: return
+        set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_CONTRAST_CURVE)
+        set(CaptureRequest.TONEMAP_CURVE, TonemapCurve(points, points, points))
     }
 
     /**
@@ -767,8 +804,9 @@ class CameraController internal constructor(
                     session = s
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = useHlg
+                    nativeLogConfigured = nativeLogCurve
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
+                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, nativeLog=$nativeLogCurve, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
                     }
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
@@ -1061,7 +1099,11 @@ class CameraController internal constructor(
                 applyVideoStab()
                 applyTeleconverterHints()
                 applyMetering(this, controls)
-                DebugToneCurveExperiment.apply(this)
+                // Native ISP log: the stock tone curve becomes S-Log3 on the REPEATING request only.
+                // The cached fast-path builders ARE this builder, so zoom/sensor submits inherit it
+                // without a second applier; stills are built from a fresh template and name the
+                // stock curve explicitly (stillToneMapMode).
+                applyNativeLogToneCurve()
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
@@ -1545,7 +1587,11 @@ class CameraController internal constructor(
         !zslStreamingBroken && zslReaderDeep && zslDriveServePossible && !pinAutoFps &&
             (caps.isLogicalMultiCamera || caps.lensFacingFront) &&
             zslStreamKeepsPreviewFluid(caps.largestYuvMinFrameDurationNs) &&
-            !hiResReaderActive && jpegReader != null
+            !hiResReaderActive && jpegReader != null &&
+            // A served ZSL frame IS a repeating-request frame; under the native log curve it would
+            // be a log-encoded "still". Unreachable today (native log is video-only and video pins
+            // [pinAutoFps]); kept so the two facts cannot drift into a log JPEG.
+            !nativeLogConfigured
 
     /**
      * "Now" in the SENSOR_TIMESTAMP clock domain THIS camera advertises, not an assumed one. Frame
@@ -2144,9 +2190,13 @@ class CameraController internal constructor(
                         enforceFrameRate = pinAutoFps,
                         videoMode = pinAutoFps,
                     )
-                    // Keep stills consistent with the session's pipeline: with the log session active the
-                    // HAL processes everything scene-referred, so an unset key mid-session is undefined.
-                        applyTeleconverterHints()
+                    // A still is NEVER log-encoded: inside a native-log session it names the stock
+                    // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).
+                    // Null — no key written — in every other session, so the photo path is unchanged.
+                    stillToneMapMode(nativeLogConfigured, caps.toneMapModes)?.let {
+                        set(CaptureRequest.TONEMAP_MODE, it)
+                    }
+                    applyTeleconverterHints()
                     applyMetering(this, requestControls)
                     // The still must carry the SAME AF key state the repeating request holds — the
                     // one applier both repeating paths use (full rebuild + sensor fast path). Without

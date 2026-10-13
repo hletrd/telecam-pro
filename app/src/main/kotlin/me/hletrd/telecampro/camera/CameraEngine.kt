@@ -883,6 +883,9 @@ class CameraEngine internal constructor(
             // 8-bit SDR. Through rendererAssists so it enters the replayed snapshot and survives a
             // GL generation replacement.
             rendererAssists.setSourceHlg(expectedController.hlgConfigured)
+            // Same accepted-session rule for the native ISP log curve: GL must decode S-Log3 only
+            // from frames the CONFIGURED session's repeating request actually tone-mapped that way.
+            rendererAssists.setSourceLog(expectedController.nativeLogConfigured)
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = expectedController.takeIf { effectiveReady }
@@ -959,10 +962,16 @@ class CameraEngine internal constructor(
         // transaction's monitor). Compared against the CONFIGURED intent, not accepted truth: a
         // ladder-dropped hi-res (intent true, truth false) must not force a full — and identically
         // failing — reconfigure on every subsequent fast door (tracer T9 / code-review F12).
-        val sessionTransferChanged = tenBitSessionWanted(
+        // Session SHAPE, not just bit depth (2026-10-14): native log is an 8-bit session like SDR,
+        // but its repeating request and GL source decode are bound to the accepted session, so an
+        // SDR <-> native-log flip must reconfigure exactly as a 10-bit flip does. Same-route door,
+        // so the installed route's caps answer the capability for both sides.
+        val nativeLogSupported = nativeLogCurveSupported(caps)
+        val sessionTransferChanged = videoSessionShape(
             transaction.before.videoMode,
             transaction.before.transfer,
-        ) != tenBitSessionWanted(videoMode, transfer)
+            nativeLogSupported,
+        ) != videoSessionShape(videoMode, transfer, nativeLogSupported)
         if ((resolvedHiResStill() != transaction.before.hiResConfigured || sessionTransferChanged) &&
             ownsOpticsTransaction(transaction) && !paused && recorder == null
         ) {
@@ -2694,8 +2703,10 @@ class CameraEngine internal constructor(
                 caps = c,
                 glInputSurface = input,
                 controls = controls,
-                // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
-                tenBitHlg = tenBitSessionWanted(videoMode, transfer),
+                // 10-bit exactly when the bits are spent on something: VIDEO + HLG, or a log
+                // transfer this camera cannot encode natively (the GL-log fallback).
+                tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -3226,10 +3237,12 @@ class CameraEngine internal constructor(
             requestedTransfer = resolved,
             activeTransfer = activeTransfer,
         )
-        val tenBitChanged = tenBitSessionWanted(videoMode, transfer) !=
-            tenBitSessionWanted(videoMode, activeTransfer)
+        // Session-shape boundary (SDR / native log / 10-bit), against the installed route's caps.
+        val nativeLogSupported = nativeLogCurveSupported(caps)
+        val sessionShapeChanged = videoSessionShape(videoMode, transfer, nativeLogSupported) !=
+            videoSessionShape(videoMode, activeTransfer, nativeLogSupported)
         val publish = { publishVideoPipelineLocked(targetPipeline) }
-        if (tenBitChanged && recorder == null) {
+        if (sessionShapeChanged && recorder == null) {
             val transaction = beginOpticsTransaction(publish).first
             postGlTransfer(activeTransfer)
             reopenForSession(transaction)
@@ -4646,8 +4659,10 @@ class CameraEngine internal constructor(
                     caps = c,
                     glInputSurface = input,
                     controls = controls,
-                    // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
-                tenBitHlg = tenBitSessionWanted(videoMode, transfer),
+                    // 10-bit exactly when the bits are spent on something: VIDEO + HLG, or a log
+                    // transfer this camera cannot encode natively (the GL-log fallback).
+                    tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                    nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
@@ -7984,7 +7999,6 @@ class CameraEngine internal constructor(
 
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
-        refreshDebugExperiments()
         // Cold-start stopwatch origin (cycle 8 S6): resume is the earliest point the app itself
         // controls — everything before it is process/Activity bring-up the system owns. Idempotent,
         // so a resume that finds the camera already live cannot restart a running measurement.
@@ -8244,8 +8258,6 @@ class CameraEngine internal constructor(
      * into the session's `tenBitHlg`, so a leftover flag file turned PHOTO into the still-less HLG10
      * rung — a debug photo mode that could not shoot, contradicting this very doc; AGG-45.)
      */
-    internal fun refreshDebugExperiments() = DebugToneCurveExperiment.refresh(context.getExternalFilesDir(null))
-
     internal fun tenBitExperimentEnabled(): Boolean =
         BuildConfig.DEBUG &&
             runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }

@@ -28,6 +28,13 @@ internal data class RendererConfig(
      */
     val sourceHlg: Boolean = false,
     /**
+     * Whether the CAMERA stream is S-Log3-encoded by the ISP's own programmed tone curve (a native-log
+     * session — NativeLogCurve.kt). Route state replayed with [sourceHlg] for the same reason: a fresh
+     * GL generation defaulting to false would encode the log stream as if it were display-referred
+     * 709 — log applied twice, a plausible-looking wrong file.
+     */
+    val sourceLog: Boolean = false,
+    /**
      * The Loupe Overview's pretend-field scale (see loupeHintRect's fieldScale): the selected
      * converter's magnification while TELE, 1 otherwise. Route state in the replayed snapshot for
      * the same reason as [sourceHlg] — a fresh GL generation must not fall back to 1 and quietly

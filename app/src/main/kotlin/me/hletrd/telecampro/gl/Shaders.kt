@@ -9,6 +9,7 @@ internal object ShaderBindings {
     const val U_TEXTURE = "uTexture"
     const val U_TRANSFER = "uTransfer"
     const val U_SOURCE_HLG = "uSourceHlg"
+    const val U_SOURCE_LOG = "uSourceLog"
     const val U_PEAKING = "uPeaking"
     const val U_PEAK_THRESHOLD = "uPeakThreshold"
     const val U_PEAK_COLOR = "uPeakColor"
@@ -25,6 +26,7 @@ internal object ShaderBindings {
         U_TEXTURE,
         U_TRANSFER,
         U_SOURCE_HLG,
+        U_SOURCE_LOG,
         U_PEAKING,
         U_PEAK_THRESHOLD,
         U_PEAK_COLOR,
@@ -48,8 +50,14 @@ internal object ShaderBindings {
  *    S-Log3/S-Gamut3.Cine, ARRI LogC3 EI800/AWG3) for the video encoder path,
  *  - focus peaking (edge highlight) and zebra (clipping stripes) for the preview path.
  *
- * NOTE: the camera signal is display-referred (already non-linear). Accepted HLG10 input is
- * inverse-HLG decoded; standard input is BT.1886 decoded. HLG then follows the simplified
+ * NOTE: the camera signal is non-linear, in one of three accepted-session encodings. A NATIVE-LOG
+ * session's stream is S-Log3 written by the ISP's own programmed tone curve (NativeLogCurve.kt): it
+ * is decoded at SAMPLE time (`sampleSource`: exact S-Log3 inverse -> clamp -> BT.1886-encode), so
+ * `base` is an un-tone-mapped display-referred rendition and every consumer below — display, Gamma
+ * Display Assist, dgain, meter/zebra/false-color, peaking and the transfer branches' sourceLinear —
+ * runs unchanged, now on the ISP's linear signal rather than its S-curve. Otherwise the stream is
+ * display-referred (already tone-mapped): accepted HLG10 input is inverse-HLG decoded; standard
+ * input is BT.1886 decoded. HLG then follows the simplified
  * ITU-R BT.2408-9 display-referred mapping: linear BT.709→BT.2020,
  * reference-white/inverse-OOTF adjustment, then the BT.2100 HLG OETF. Each log profile follows the
  * same chain shape: BT.1886 decode, linear BT.709→target-gamut 3×3 matrix, defensive lower clamp,
@@ -79,6 +87,9 @@ object Shaders {
         uniform samplerExternalOES ${ShaderBindings.U_TEXTURE};
         // 1 when the CAMERA stream is a 10-bit HLG-encoded buffer (HLG10 / DV session).
         uniform int ${ShaderBindings.U_SOURCE_HLG};
+        // 1 when the CAMERA stream is S-Log3 (709 primaries) encoded by the ISP's programmed native
+        // tone curve. Never together with uSourceHlg: native log is the 8-bit session by design.
+        uniform int ${ShaderBindings.U_SOURCE_LOG};
         uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
                                  // 5 = LogC3/AWG3, 3 = vacant (removed O-Log2 branch)
         uniform int ${ShaderBindings.U_PEAKING};    // 0/1  (preview only)
@@ -113,6 +124,30 @@ object Shaders {
             if (uDigitalGain <= 1.001) return c;
             vec3 lin = pow(clamp(c, 0.0, 1.0), vec3(SDR_EOTF_GAMMA)) * uDigitalGain;
             return pow(min(lin, vec3(1.0)), vec3(1.0 / SDR_EOTF_GAMMA));
+        }
+
+        // Exact S-Log3 inverse (code value -> linear reflection), the CPU twin of
+        // LogProfiles.slog3Inverse with the same constants; pinned against it and against the forward
+        // slog3() below by NativeLogCurveTest. log10 inverse = exp(ln10 * v), written as / INV_LN10.
+        vec3 slog3Inverse(vec3 y) {
+            vec3 logX = exp((y * ${LogProfiles.SLOG3_CODE_SCALE} - ${LogProfiles.SLOG3_LOG_OFFSET_CODE})
+                / ${LogProfiles.SLOG3_LOG_SLOPE} / ${LogProfiles.INV_LN10})
+                * ${LogProfiles.SLOG3_GREY_PLUS_OFFSET} - ${LogProfiles.SLOG3_LIN_OFFSET};
+            vec3 linX = (y * ${LogProfiles.SLOG3_CODE_SCALE} - ${LogProfiles.SLOG3_BLACK_CODE})
+                * ${LogProfiles.SLOG3_CUT} / (${LogProfiles.SLOG3_CUT_CODE} - ${LogProfiles.SLOG3_BLACK_CODE});
+            return mix(logX, linX, step(y, vec3(${LogProfiles.SLOG3_CUT_CODE} / ${LogProfiles.SLOG3_CODE_SCALE})));
+        }
+
+        // One camera sample in the DISPLAY-REFERRED domain every consumer below was written for. On a
+        // native-log session the ISP wrote S-Log3: decode it to the ISP's linear signal, clamp to the
+        // sensor-clip range the curve was programmed over (1.0 = clip), and BT.1886-encode it, so the
+        // later sourceLinear() BT.1886 decode returns exactly that linear value. Peaking neighbours
+        // come through here too, or a decoded centre against raw log neighbours would fabricate edges.
+        vec3 sampleSource(vec2 uv) {
+            vec3 c = texture2D(uTexture, uv).rgb;
+            if (uSourceLog == 0) return c;
+            vec3 lin = clamp(slog3Inverse(c), 0.0, 1.0);
+            return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));
         }
 
         // BT.2100 HLG OETF. Input is normalized scene light from the BT.2408 mapping below.
@@ -214,7 +249,7 @@ object Shaders {
         }
 
         void main() {
-            vec3 base = dgain(texture2D(uTexture, vTexCoord).rgb);
+            vec3 base = dgain(sampleSource(vTexCoord));
             vec3 color = base;
             // Exposure signal for the zebra / false-color overlays: ALWAYS the display-referred
             // rendition, never the encode curve. The log OETFs compress display white to ~0.57-0.60
@@ -269,8 +304,8 @@ object Shaders {
             // threshold exactly in the low light the simulation exists for).
             if (uPeaking == 1) {
                 float c  = luma(base);
-                float rx = luma(dgain(texture2D(uTexture, vTexCoord + vec2(uTexel.x, 0.0)).rgb));
-                float ry = luma(dgain(texture2D(uTexture, vTexCoord + vec2(0.0, uTexel.y)).rgb));
+                float rx = luma(dgain(sampleSource(vTexCoord + vec2(uTexel.x, 0.0))));
+                float ry = luma(dgain(sampleSource(vTexCoord + vec2(0.0, uTexel.y))));
                 float edge = abs(c - rx) + abs(c - ry);
                 if (edge > uPeakThreshold) {
                     color = mix(color, uPeakColor, 0.85);

@@ -191,6 +191,12 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setSourceHlg(enabled)
     }
 
+    /** Whether the ACCEPTED session streams the native S-Log3 curve; selects the GL log decode. */
+    fun setSourceLog(enabled: Boolean) {
+        config.update { it.copy(sourceLog = enabled) }
+        currentGl().setSourceLog(enabled)
+    }
+
     fun setTeleFinderResolved(enabled: Boolean) {
         config.update { it.copy(teleFinder = enabled) }
         currentGl().setTeleFinder(enabled)
@@ -251,6 +257,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setPunchIn(snapshot.punchIn)
         gl.setTeleFinder(snapshot.teleFinder)
         gl.setSourceHlg(snapshot.sourceHlg)
+        gl.setSourceLog(snapshot.sourceLog)
         gl.setFinderFieldScale(snapshot.finderFieldScale)
         gl.setFinderBottomClearanceFraction(snapshot.finderBottomClearanceFraction)
         gl.setWindowRotation(snapshot.windowRotationDeg)

@@ -94,10 +94,14 @@ internal enum class CaptureFamilyDeleteDurability { NOT_REQUIRED, DURABLE, FAILE
  * SettingsStore migrates the persisted "LOG" name to [SLOG3_CINE]). All three share one log-class
  * behavior: encoder gets the curve, preview renders it flat, Gamma Display Assist skips the forward
  * curve on the monitor only, and the container is tagged BT.2020 full-range with an explicit
- * SDR-class transfer (see [me.hletrd.telecampro.video.hevcColorTagsFor]). Like the old option,
- * these are display-referred curves — the accepted standard or HLG10 source is decoded first, and
- * the ISP has already tone-mapped either stream, so
- * this is grading convenience, NOT scene-referred camera log with recovered highlight latitude.
+ * SDR-class transfer (see [me.hletrd.telecampro.video.hevcColorTagsFor]).
+ *
+ * Two sources feed the same GL encode (2026-10-14). On a camera that takes a programmed
+ * CONTRAST_CURVE ([nativeLogSessionWanted]) the ISP itself encodes S-Log3 in place of its stock
+ * tone curve, on the ordinary 8-bit session with stills; GL decodes that back to linear and applies
+ * the selected profile. Elsewhere the GL fallback decodes the ISP's already tone-mapped HLG10 or
+ * standard stream instead, which is grading convenience only. Neither recovers highlight latitude
+ * beyond the sensor clip (S-Log3 code ≈ 0.596), and neither is a scene-referred camera log claim.
  */
 enum class ColorTransfer(val isLog: Boolean = false) {
     HLG,
@@ -556,22 +560,62 @@ fun standaloneRouteWanted(
 ): Boolean = videoMode || (rawWanted && rawForcesStandalone)
 
 /**
+ * Whether a VIDEO session carries the NATIVE ISP log curve (see NativeLogCurve.kt): a log transfer
+ * is selected and the selected camera can take a programmed CONTRAST_CURVE. Such a session is the
+ * ordinary 8-bit SDR one — stills and the in-REC snapshot stay available — and only its repeating
+ * request swaps the stock tone curve for S-Log3. [nativeLogCurveSupported] is the route's
+ * capability answer, passed in (no default, AGG4-47) so a forgotten argument cannot compile into
+ * either path.
+ */
+fun nativeLogSessionWanted(
+    videoMode: Boolean,
+    transfer: ColorTransfer,
+    nativeLogCurveSupported: Boolean,
+): Boolean = videoMode && transfer.isLog && nativeLogCurveSupported
+
+/**
  * Whether to ask the HAL for a 10-bit HLG10 session.
  *
- * VIDEO only, and only when a non-SDR transfer is selected — i.e. exactly when the extra bits are
- * spent on something. HLG and the log curves are graded or displayed wide; SDR is not, and eight
- * bits through a display-referred 709 chain is what it has always been.
+ * VIDEO only, and only when a non-SDR transfer is selected that the native ISP log path does NOT
+ * already serve — i.e. HLG always, and the log curves only on a camera without a programmable
+ * CONTRAST_CURVE (the GL-log fallback, whose HLG10 source keeps two more bits under the GL curve).
+ * SDR is not graded wide, and eight bits through a display-referred 709 chain is what it has always
+ * been.
  *
  * The cost is real and is why this is not simply always-on: the 10-bit rung drops the JPEG and RAW
  * readers (HLG10 + full-res JPEG + RAW together CRASH this HAL — a crash, not a rejection, so the
  * fallback ladder cannot rescue it), which costs the in-REC snapshot while a 10-bit clip is
- * recording. Photo mode never pays that, because photo never asks.
+ * recording. Photo mode never pays that, because photo never asks; native log never pays it either
+ * (corrected 2026-10-14 — "log ⇒ 10-bit, stills off" was true only while log was GL-only).
  *
  * Correctness of what the extra bits carry is pinned away from any device by LogFromHlgSourceTest:
  * 18% grey must reach the S-Log3 anchor from an HLG source exactly as it does from an SDR one.
  */
-fun tenBitSessionWanted(videoMode: Boolean, transfer: ColorTransfer): Boolean =
-    videoMode && transfer != ColorTransfer.SDR
+fun tenBitSessionWanted(
+    videoMode: Boolean,
+    transfer: ColorTransfer,
+    nativeLogCurveSupported: Boolean,
+): Boolean = videoMode && transfer != ColorTransfer.SDR &&
+    !nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported)
+
+/**
+ * The session SHAPE a video transfer asks for. Any change of shape needs a session reopen (the
+ * 10-bit one changes the stream profile and drops the still readers; the native-log one changes the
+ * repeating request's tone map and the GL source decode, both bound to the accepted session);
+ * moving between transfers of the SAME shape — S-Log3 ↔ S-Log3.Cine ↔ LogC3 — is a GL-only change,
+ * because every native-log transfer programs the same S-Log3 transport curve.
+ */
+enum class VideoSessionShape { SDR, NATIVE_LOG, TEN_BIT }
+
+fun videoSessionShape(
+    videoMode: Boolean,
+    transfer: ColorTransfer,
+    nativeLogCurveSupported: Boolean,
+): VideoSessionShape = when {
+    nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported) -> VideoSessionShape.NATIVE_LOG
+    tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported) -> VideoSessionShape.TEN_BIT
+    else -> VideoSessionShape.SDR
+}
 
 /**
  * The zoom the OPERATOR sees: always MAIN-RELATIVE, whichever route the session is on.

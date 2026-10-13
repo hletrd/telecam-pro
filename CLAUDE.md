@@ -147,15 +147,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`ChiMulticameraBase::configureStreams` → `Broken pipe -32` / SIGSEGV). `CameraSelector2` picks the
   35 mm-equiv **closest to 70 mm** (NOT the longest lens — that's the 230 mm 10×), and **prefers
   `physicalId == null`** on ties. Opening standalone `4` works and permits RAW.
-- **A session that carries STILLS is SDR/8-bit; a video session with a transfer is REALLY 10-bit,
-  and it buys that by dropping the stills (corrected 2026-08-05 — this bullet said "SDR/8-bit
-  shipping session … `tenBit = false`" flatly, which stopped being true when video gained its own
-  session and was still being quoted as a hard constraint months later).** The HAL fact is unchanged
-  and is the whole reason for the split: HLG10 preview + full-res JPEG + RAW together crash it. So
-  the trade is structural, not a limitation — `tenBitSessionWanted(videoMode, transfer) = videoMode
-  && transfer != SDR` (`CameraState.kt`) feeds `wantHlg`/`tenBitVideoOnly`
-  (`CameraController.kt`), whose ladder rung configures HLG10 with **no still readers at all**.
-  That is exactly what the UI means by `"10-bit video · stills off"` — on the ladder's attempt 0
+- **A session that carries STILLS is SDR/8-bit; an HLG video session (and log on the GL fallback)
+  is REALLY 10-bit, and it buys that by dropping the stills (corrected 2026-08-05 — this bullet said
+  "SDR/8-bit shipping session … `tenBit = false`" flatly, which stopped being true when video gained
+  its own session and was still being quoted as a hard constraint months later; narrowed again
+  2026-10-14 — native ISP log is the 8-bit session WITH stills, see the log bullet).** The HAL fact
+  is unchanged and is the whole reason for the split: HLG10 preview + full-res JPEG + RAW together
+  crash it. So the trade is structural, not a limitation — `tenBitSessionWanted(videoMode, transfer,
+  nativeLogCurveSupported) = videoMode && transfer != SDR && !nativeLogSessionWanted(...)`
+  (`CameraState.kt`) feeds `wantHlg`/`tenBitVideoOnly` (`CameraController.kt`), whose ladder rung
+  configures HLG10 with **no still readers at all**. `videoSessionShape` (SDR / NATIVE_LOG /
+  TEN_BIT) is the reopen boundary: any change of shape reconfigures; S-Log3 ↔ S-Log3.Cine ↔ LogC3
+  on a native camera does not.
+  That is exactly what the UI means by `"10-bit video · stills off"` — HLG (or GL-fallback log)
+  only, and on the ladder's attempt 0
   only: if that rung fails, attempt 1 is HLG10 WITH the processed still reader (no RAW), so a session
   landing there is 10-bit with stills, and attempt 2 drops HLG (8-bit). It is also why
   `acceptedOpticsAuxState` must not normalize `photoFormats` in a still-less session (see the DNG
@@ -164,7 +169,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   **What is still NOT claimable, and this is the part that must survive any rewrite of this bullet:**
   the SOURCE is the ISP's display-referred, already tone-mapped stream. Ten-bit video is a real
   10-bit *encode* of that stream, NOT recovered HDR and NOT scene-referred capture — see the next
-  two bullets, which remain correct as written. Photo, and any video left on SDR, stay 8-bit.
+  two bullets, which remain correct as written. Photo, any video left on SDR, and native-log video
+  stay 8-bit (native log is un-S-curved, not un-clipped — see the log bullet).
 - **HLG is a display-referred mapping, not recovered HDR.** The input stage follows accepted session
   truth: standard photo/SDR-video input takes the BT.1886 2.4 decode, while non-SDR video first takes
   the inverse HLG decode/reference-white normalization from its HLG10 Camera2 stream. The common
@@ -804,7 +810,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   reachable — which is exactly why the rule is written down rather than left to judgement. Two
   independent reasons stand:
   1. **Honesty.** Camera2 supplies the ISP's display-referred, already tone-mapped rendition: 8-bit
-     standard input for photo/SDR video, or an HLG10 still-less input for non-SDR video. A
+     standard input for photo/SDR video, or an HLG10 still-less input for HLG/fallback-log video;
+     native log replaces the global curve but is still 8-bit, sensor-clip-bounded input. A
      proprietary HDR-branded container would still assert latitude/format rights this pipeline
      cannot back — the same rule that keeps HLG and the log profiles described as display-referred
      mappings rather than recovered HDR.
@@ -820,14 +827,47 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
   main lens with TELE off; separate default-on Setup toggles preserve the last lens selection and
   TELE mode when restoring saved settings.
-- **Log = GL S-Log3 / S-Log3.Cine / LogC3; the native log key is INERT for third-party Camera2
-  (settled 2026-07-09).** `com.oplus.log.video.mode` is advertised in the tele's request+session
+- **Log = NATIVE ISP S-Log3 where the camera takes a programmed tone curve; GL log otherwise
+  (rewritten 2026-10-14 — this bullet's title said "GL-only" until the public tone-map path was
+  measured).** Device facts, PMA110, 2026-10-14: every camera (HAL 0–5) advertises
+  MANUAL_POST_PROCESSING, `tonemap.availableToneMapModes` [CONTRAST_CURVE, FAST, HIGH_QUALITY],
+  `maxCurvePoints` 512, EDGE_MODE_OFF, NOISE_REDUCTION_MODE_OFF and face detect [OFF, SIMPLE] max
+  10. The HAL HONOURS `TONEMAP_MODE_CONTRAST_CURVE` on the repeating request in BOTH the 8-bit SDR
+  and the HLG10 session — same grey wall, video P (HAL AE meters pre-curve), standalone camera 4,
+  preview mean luma: stock 64.2 (std 9.5), linear curve 18.1 (3.0), S-Log3 curve 79.5 (4.4),
+  gamma-2.4 curve 83.6 (6.7), stock again 64.4 (9.3); HLG10 session stock 79.7 vs linear 32.4.
+  So `nativeLogCurveSupported(caps)` (`NativeLogCurve.kt`: MANUAL_POST_PROCESSING && CONTRAST_CURVE
+  advertised && maxCurvePoints ≥ 32 — CAPABILITY-gated, never a model string) routes VIDEO + a log
+  transfer onto the ordinary 8-bit session WITH stills and RAW; the REPEATING request (full
+  rebuild, and therefore the cached zoom/sensor fast-path builder that IS it) carries
+  `TONEMAP_CURVE` = the S-Log3 OETF over the ISP's linear input (1.0 = clip), 128 output-uniform
+  points with one snapped onto the linear/log cut. Every log transfer programs that SAME transport
+  curve; GL decodes it at sample time (`uSourceLog`, accepted-session truth via
+  `CameraController.nativeLogConfigured` → `RendererAssists.setSourceLog`, replayed per GL
+  generation): exact S-Log3 inverse → clamp → BT.1886 encode, so `base` — display, Gamma Display
+  Assist, dgain, meter/zebra/false-color, peaking — and the unchanged transfer branches below run
+  on the ISP's un-S-curved linear signal and re-encode S-Log3/S-Gamut3(.Cine) or LogC3/AWG3. Stills
+  and the in-REC snapshot never carry the curve: in a native-log session they name TONEMAP_MODE
+  HIGH_QUALITY (else FAST) explicitly (`stillToneMapMode`); photo requests are untouched. Pseudo-ZSL
+  additionally refuses a native-log session. The GL-log path below (HLG10 source, stills off) is
+  the FALLBACK for a camera without the capability. **Honesty limits that remain:** the curve
+  removes the GLOBAL tone curve, but highlight headroom is still the sensor clip, mapped at S-Log3
+  code ≈ 0.596 — there is no exposure offset yet; whether QTI local tone mapping (ADRC/LTM — tags
+  QTI-internal, absent from `availableRequestKeys`, so no public key controls them) still runs
+  under a programmed curve is UNMEASURED; and the 8-bit stream plus the 8-bit EGL target limit
+  precision (S-Log3 spends ~130 of 256 codes). The recorded-file and in-REC-still behaviour of
+  this product path remains a field check (`docs/FIELD_CHECKS.md` A15). The owner's "file doesn't look like log" on the GL
+  path was the ISP's S-curve UNDER a correctly applied GL log (S-Log3 clip of the wall: file centre
+  Y10 p50 = 0.318 vs preview 0.31), not a missing curve. The debug `tonecurve` experiment hook that
+  established all this (de1d1a03) is removed now that the product path exists.
+  **The vendor native log key is still INERT for third-party Camera2 (settled 2026-07-09).**
+  `com.oplus.log.video.mode` is advertised in the tele's request+session
   keys and the HAL ACCEPTS it ("applied" logs), but it changes NOTHING a third-party session can
   see: with the key set (as session parameter + on every request), the preview AND the recorded clip
   stay display-referred 709 — tested with both `TEMPLATE_PREVIEW` and `TEMPLATE_RECORD` repeating
   requests on device, judged in a lit scene. (Earlier "the file recorded as log" was the BT.2020
   full-range container tag being misread by players as a washed look; an "applied" log line only
-  means the HAL didn't reject the key.) So the log profiles bake standard curves in GL
+  means the HAL didn't reject the key.) So on the GL fallback the log profiles bake standard curves in GL
   (`LogProfiles.kt` single-sources constants into `Shaders.kt`): BT.1886 2.4 decode → linear
   BT.709→gamut 3×3 (S-Gamut3 / S-Gamut3.Cine / ARRI Wide Gamut 3, D65→D65 so rows sum to 1) →
   defensive −0.0099 floor → the S-Log3 (uTransfer=2/4; 18 % grey → 420/1023 ≈ 0.4106) or LogC3

@@ -128,29 +128,76 @@ class RearReturnZoomTest {
 
 /**
  * 10-bit costs the in-REC snapshot (its session rung drops JPEG/RAW because HLG10 + full-res JPEG +
- * RAW crashes this HAL), so it must be asked for only where the bits buy something.
+ * RAW crashes this HAL), so it must be asked for only where the bits buy something — and, since
+ * native ISP log (2026-10-14), NOT for a log transfer on a camera that encodes S-Log3 itself: that
+ * session is the ordinary 8-bit one with stills.
  */
 class TenBitSessionWantedTest {
 
+    private val logTransfers = ColorTransfer.entries.filter { it.isLog }
+
     @Test
-    fun videoWithANonSdrTransferWantsTenBit() {
-        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.HLG))
-        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SLOG3))
-        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SLOG3_CINE))
-        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.LOGC3))
+    fun hlgVideoWantsTenBitWhateverTheCurveCapability() {
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.HLG, nativeLogCurveSupported = false))
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.HLG, nativeLogCurveSupported = true))
     }
 
     @Test
-    fun sdrVideoStaysEightBit() {
-        assertFalse(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SDR))
+    fun logVideoWithoutTheNativeCurveKeepsTheTenBitGlFallback() {
+        logTransfers.forEach {
+            assertTrue("$it fallback", tenBitSessionWanted(videoMode = true, transfer = it, nativeLogCurveSupported = false))
+            assertFalse("$it fallback is not native", nativeLogSessionWanted(true, it, nativeLogCurveSupported = false))
+        }
+    }
+
+    @Test
+    fun logVideoWithTheNativeCurveIsTheEightBitSessionWithStills() {
+        logTransfers.forEach {
+            assertFalse("$it native", tenBitSessionWanted(videoMode = true, transfer = it, nativeLogCurveSupported = true))
+            assertTrue("$it native", nativeLogSessionWanted(true, it, nativeLogCurveSupported = true))
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, it, nativeLogCurveSupported = true))
+        }
+    }
+
+    @Test
+    fun sdrVideoStaysEightBitAndNeverNative() {
+        listOf(false, true).forEach { supported ->
+            assertFalse(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SDR, nativeLogCurveSupported = supported))
+            assertFalse(nativeLogSessionWanted(true, ColorTransfer.SDR, supported))
+            assertEquals(VideoSessionShape.SDR, videoSessionShape(true, ColorTransfer.SDR, supported))
+        }
     }
 
     /** Photo must never pay the cost, whatever transfer happens to be remembered from video. */
     @Test
-    fun photoNeverWantsTenBit() {
+    fun photoNeverWantsTenBitOrTheNativeCurve() {
         ColorTransfer.entries.forEach {
-            assertFalse("photo asked for 10-bit with $it", tenBitSessionWanted(videoMode = false, transfer = it))
+            listOf(false, true).forEach { supported ->
+                assertFalse("photo asked for 10-bit with $it", tenBitSessionWanted(false, it, supported))
+                assertFalse("photo asked for native log with $it", nativeLogSessionWanted(false, it, supported))
+                assertEquals(VideoSessionShape.SDR, videoSessionShape(false, it, supported))
+            }
         }
+    }
+
+    /**
+     * The reopen boundary: switching between log profiles on a native camera keeps the SAME shape
+     * (one S-Log3 transport curve; only the GL encode changes), while SDR <-> log and log <-> HLG
+     * cross a shape and must reconfigure.
+     */
+    @Test
+    fun shapeBoundariesMatchWhatTheSessionActuallyChanges() {
+        assertEquals(
+            videoSessionShape(true, ColorTransfer.SLOG3, true),
+            videoSessionShape(true, ColorTransfer.LOGC3, true),
+        )
+        assertTrue(videoSessionShape(true, ColorTransfer.SDR, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
+        assertTrue(videoSessionShape(true, ColorTransfer.HLG, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
+        // Fallback camera: log and HLG share the 10-bit shape, exactly the pre-native behaviour.
+        assertEquals(
+            videoSessionShape(true, ColorTransfer.HLG, false),
+            videoSessionShape(true, ColorTransfer.SLOG3_CINE, false),
+        )
     }
 }
 

@@ -9,15 +9,16 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-one remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-two remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
 **A9** needs a pause (and a fast return) during cold start, **A10** needs zoom readouts on PMA110 and
 both tablets, **A11** needs a Video→Photo→FRONT→Video trip and a clip's frame rate, **A12** needs a
 few FRONT presses with DNG on, **A13** needs the status plate watched through reopens and a mic-less
-REC press, **A14** needs one pulled DNG per device, **D1** needs an off-axis sound source,
+REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log REC take with a still
+inside it, **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
 run of ordinary clips plus one more take, and **E1/E2/E3/E4** need real MediaProvider ownership,
@@ -398,6 +399,31 @@ image id (AGG6-34). `setLocation` is never called, so no GPS directory is expect
 **Pass:** no file carries `CameraSerialNumber`, `BodySerialNumber`, `LensSerialNumber`,
 `ImageUniqueID` or any GPS tag. Record the full tag list for each device. A present identifying tag is
 a fail that needs a strip in the DNG lane plus a matching `CLAUDE.md` correction.
+
+### A15. Native ISP log reaches the file, stills stay normal — ◯ OPEN 2026-10-14
+
+Native log (`camera/NativeLogCurve.kt`) programs an S-Log3 `TONEMAP_CURVE` on the repeating request
+of the ordinary 8-bit video session and GL decodes it back before the selected log encode. The HAL
+was measured honouring a programmed curve on the PREVIEW (debug experiment, 2026-10-14); the
+product path itself — curve in the RECORDED file, stills inside the same session, and the decoded
+preview — has host tests only.
+
+- PMA110, **VIDEO**, transfer **S-Log3**, exposure **PROGRAM**, aimed at an evenly lit grey wall (the
+  2026-10-14 reference scene). Confirm logcat `Session configured (... hlg=false, nativeLog=true ...)`
+  and `sourceLog -> true`.
+- Record 5 s. Take one **in-REC snapshot** during it. Stop. Repeat once with **Gamma Display Assist**
+  on, and once with zebra + false color on (screenshot each).
+- Switch to **LogC3** (no reopen expected) and record 5 s; switch to **HLG** (reopen expected) and
+  confirm the session reports `hlg=true, nativeLog=false` with the "10-bit video · stills off" caption.
+- Pull the clips and the still. Measure the clip's centre Y10 median (as in the 2026-10-14 baseline:
+  GL-log file 0.318).
+
+**Pass:** the native S-Log3 clip's wall reads near the S-Log3 grey anchor without the stock S-curve
+(flatter mid-tone contrast than the GL-log baseline clip of the same wall; record the number); the
+in-REC still looks like an ordinary photo (not flat), and its EXIF exposure matches the clip; the
+assist preview reads as a plausible un-S-curved image; zebra/false-color trigger on the bright areas
+rather than going dead; no CAMERA_ERROR and no preview stall beyond the ordinary reopen. Record
+whether highlights show local-tone-mapping halos (LTM under a programmed curve is unmeasured).
 
 ---
 

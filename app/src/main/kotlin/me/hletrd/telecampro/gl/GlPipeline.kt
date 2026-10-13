@@ -632,6 +632,13 @@ class GlPipeline(
      */
     fun setSourceHlg(enabled: Boolean) = post { renderer.setSourceHlg(enabled) }
 
+    /**
+     * Whether the accepted session's repeating request carries the native S-Log3 tone curve. Same
+     * replay discipline as [setSourceHlg]: called through RendererAssists, whose snapshot the
+     * `gl.start` path replays into every fresh GL generation.
+     */
+    fun setSourceLog(enabled: Boolean) = post { renderer.setSourceLog(enabled) }
+
     /** Loupe Overview: with the resolved flag on and the punch-in loupe active, draw a small
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
      *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
