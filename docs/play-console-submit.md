@@ -19,10 +19,8 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > only after the final source commit is built, verified without inventing device evidence, copied to
 > a commit-and-digest-qualified path, and accepted by `tools/check_release_artifact.py` against a
 > SHA-256-protected attestation. Until then this sheet is preparation material, not upload approval.
-> Independently, the documented upload key is **SECURITY-BLOCKED** pending owner rotation/reset.
-> No signed candidate may be cut or uploaded until the owner explicitly
-> approves a strong-key rotation or completes Google's upload-key reset and records the new public
-> certificate fingerprint in the local fail-closed prerequisite described below.
+> The upload key that `keystore.properties` configures is the current upload key and is KEPT with
+> its current password (owner decision 2026-10-13); the next cut signs with it as-is.
 > `versionCode 1` (v1.0, from `ca3d33c`) and `versionCode 3` (v1.0.1) are BOTH spent — Play
 > rejects a re-used versionCode outright (see the note in `app/build.gradle.kts`). Release notes live in
 > `docs/play-store-listing.md`.
@@ -713,7 +711,7 @@ and must not turn historical device evidence into exact-current-artifact verific
      "version_name": "1.0.2",
      "aab_path": "releases/telecam-pro-1.0.2-<commit>-<digest>.aab",
      "aab_sha256": "<64 lowercase hex characters>",
-     "signer_sha256": "<the approved uploadKeyCertificateSha256, never a blocked certificate>",
+     "signer_sha256": "<SHA-256 of the certificate the configured keystore exports>",
      "release_evidence_path": "app/build/immutable-release/<unique-child>/release-evidence.json"
    }
    ```
@@ -726,9 +724,8 @@ and must not turn historical device evidence into exact-current-artifact verific
    The checker fails unless the tree is clean; HEAD and source/package versions match; the AAB name
    carries its commit and digest; the bytes match the schema-2 wrapper receipt's unique AAB output
    and `source_authority=sealed-wrapper-export-v1`;
-   `jarsigner` succeeds; and the certificate is the owner-approved `uploadKeyCertificateSha256` that
-   the release gate reads from `keystore.properties` and is not on the shared deny-list
-   (`tools/blocked-upload-certificates.txt`, which the gate and Gradle also enforce). It rejects
+   `jarsigner` succeeds; and the certificate is the one the configured keystore exports (keytool
+   export of the `keystore.properties` alias, using the same password precedence as Gradle). It rejects
    `app/build/outputs` and any missing/out-of-namespace wrapper receipt. After every verifier,
    digest, source-identity recheck, and private inspection-file cleanup has finished, one
    NUL-delimited Git porcelain-v2 status process supplies a final best-effort observation of HEAD plus
@@ -789,47 +786,31 @@ These files are intentionally gitignored and stay only on the local machine:
 >    recovery — the RETIRED key's password — showed up as an untracked, committable file. The rules
 >    now match by extension AND by name shape (`*password*`, `*secret*`, `telecampro-upload-*`,
 >    `.bak`, `.orig`). Fixed in `fc43953`.
-> 2. **Historical incident, now an active security block:** the July-25 upload key is
->    security-blocked pending owner rotation/reset. The original note said nothing was on Play yet;
->    that is historical truth, not current truth — v1.0.1 is now published. The credential is
->    therefore unusable for the next upload. Do not rotate or reset it from this checklist: the
->    owner must explicitly approve either a strong-key rotation (only if Play has not registered the
->    certificate) or Google's upload-key reset workflow. Until that external action is confirmed,
->    `uploadKeyRotationApproved` must remain absent/false and the scoped helper refuses to build.
+> 2. **The July-25 upload key is KEPT (owner decision 2026-10-13).** An automated review loop had
+>    marked it security-blocked and added a certificate deny-list, a password-strength floor, and a
+>    self-attested rotation-approval flag in front of every signed build. The owner reversed that:
+>    the key and its current password stay, all three gates were removed, and review findings about
+>    upload-key custody are recorded as accepted risk rather than implemented.
 >
 > Whenever the keystore is rotated, verify with
 > `keytool -list -keystore telecampro-upload.jks -alias telecampro` — the certificate SHA-256 must
 > match whatever this sheet records as the upload certificate, or the wrong keystore is in place.
 
-Generate each new store/key secret rather than choosing it, for example with
-`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`; that output clears the floor the
-helper, the immutable wrapper, and the Gradle release gate all enforce.
-
-After the separately approved rotation/reset is complete, add these **non-secret** fields to the
-gitignored `keystore.properties`: `uploadKeyRotationApproved=true` and
-`uploadKeyCertificateSha256=<the new 64-hex public certificate SHA-256>`. The helper verifies that
-the configured keystore actually exports that certificate before it runs Gradle. Merely setting the
-Boolean cannot bless the old key.
-
-To rebuild the signed AAB locally after that prerequisite:
+To rebuild the signed AAB locally:
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$PATH"
 
-# Non-secret preflight. This fails before a release attempt unless owner approval and the exact
-# replacement certificate fingerprint are present.
+# Non-secret preflight: confirms keystore.properties names a regular store file and an alias.
 python3 tools/run_scoped_signed_release.py --check-prerequisites
 
 release_root="app/build/immutable-release/$(git rev-parse --short=12 HEAD)-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
 # The decrypted payload travels only through this pipe. The short-lived helper validates the exact
-# storePassword/keyPassword field set and the machine-checkable generated-secret floor (20+
-# characters, at least three character classes, at least twelve distinct characters, no surrounding
-# whitespace, no run of four identical characters, no whole-value repeating block, no alphabetic or
-# numeric walk; this rejects obvious weak shapes but does not claim to prove randomness), verifies the certificate with
-# keytool's -storepass:env form (the VALUE never enters argv), runs the immutable wrapper, and clears
-# its child environment on every success/failure terminal. It writes no transient secret file and
-# cannot export anything into this caller shell.
+# storePassword/keyPassword field set, passes the values to the immutable wrapper only through its
+# child environment (the VALUE never enters argv), and clears that environment on every
+# success/failure terminal. It writes no transient secret file and cannot export anything into this
+# caller shell.
 gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg | \
   python3 tools/run_scoped_signed_release.py --output "$release_root" \
     :app:lintRelease :app:assembleRelease :app:bundleRelease

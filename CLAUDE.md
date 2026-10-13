@@ -42,6 +42,11 @@ deprecated APIs, latest stable everything.
   CPH2841, so a contradicting CPH2841 report reopens the affected flag for that model. Still no CameraX — **Camera2** directly for physical-lens
   routing, `LENS_FOCUS_DISTANCE`, manual sensor, RAW/DNG, 10-bit HDR. Non-PMA110 handsets are
   UNVALIDATED until measured on-device; add quirks only with measurements, never speculatively.
+- **The upload key is KEPT, as configured (owner decision 2026-10-13, explicit and final).** The current
+  upload key (certificate SHA-256 `9dfdb903…`) and its current password stay. Do NOT add upload-key
+  deny-lists, password-strength floors, rotation-approval flags, or any other gate that blocks signing
+  with the configured keystore. Review findings about upload-key custody are recorded as accepted
+  risk, not implemented. `tools/tests/test_no_upload_key_gates.py` fails if such a gate comes back.
 - **Latest toolchain, no deprecated APIs.** See versions below; bump when newer stable ships.
 - **User-facing text is ENGLISH + KOREAN (corrected 2026-08-08 — this said "everything user-facing
   in English", which stopped being true when v1.0.1 shipped 126 Korean strings and `localeConfig`).**
@@ -99,14 +104,12 @@ python3 tools/verify_host.py --release
 # Direct Gradle release outputs are developer-only; caller-authored immutableRelease* properties are
 # rejected rather than treated as authentication. Only this outer wrapper seals the exported inputs,
 # rechecks them after build, freezes allowlisted outputs, and publishes release-evidence.json plus the
-# verified commit/tree/output hashes in a unique immutable-release namespace. Any non-lint task is
-# refused unless keystore.properties carries uploadKeyRotationApproved=true, keytool proves the
-# signing alias's certificate matches uploadKeyCertificateSha256, and neither value is on the shared
-# deny-list tools/blocked-upload-certificates.txt. The scoped helper (run_scoped_signed_release.py)
-# and a plain-Gradle doFirst on every release package/sign task enforce the same three checks, and
-# check_release_artifact.py reads the approved fingerprint through that gate. The approval is
-# SELF-ATTESTED (it lives in the local file it guards): this proves the keystore matches the approved,
-# non-blocked fingerprint — NOT that the owner's rotation/reset actually happened.
+# verified commit/tree/output hashes in a unique immutable-release namespace. Signing is ordinary:
+# Gradle signs with the keystore that keystore.properties configures (TELECAMPRO_* env fallback for
+# alias/passwords); the scoped helper (run_scoped_signed_release.py) only pipes the passwords to the
+# wrapper's child environment; check_release_artifact.py derives the expected signer from that same
+# keystore via keytool. Gradle still refuses release package/sign tasks with no signing config or
+# with IDE-injected android.injected.signing.* properties.
 python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # Device evidence must use the exact immutable debug APK printed by the wrapper.

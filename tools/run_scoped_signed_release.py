@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify an owner-approved upload key and run one release with scoped secrets."""
+"""Run one immutable release build with upload-key secrets scoped to the child processes."""
 
 from __future__ import annotations
 
@@ -14,22 +14,17 @@ _TOOLS_DIR = pathlib.Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
-# The approval + certificate gate is SHARED with build_immutable_release.py, so the documented
-# release wrapper cannot sign with a key this helper refuses.
+# Store-file/alias resolution is SHARED with build_immutable_release.py, so this helper and the
+# wrapper it runs resolve the same configured keystore. Owner decision 2026-10-13: there is no
+# approval flag, deny-list, or password floor here — the configured upload key is used as-is.
 from build_immutable_release import (
-    APPROVAL_PROPERTY,
-    FINGERPRINT_PROPERTY,
     KEY_ALIAS_ENV,
     KEY_PASSWORD_ENV,
     STORE_PASSWORD_ENV,
     UploadKeyGateError,
-    UploadKeyPrerequisite,
     keytool_environment,
     load_upload_key_prerequisite,
-    verify_upload_key_certificate,
 )
-# The generated-secret floor is the SAME rule the immutable wrapper applies (SEC3-2).
-from upload_key_policy import meets_generated_secret_floor
 
 
 STORE_FILE_ENV = "TELECAMPRO_STORE_FILE"
@@ -60,8 +55,6 @@ def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
             raise ScopedReleaseError("scoped signing credentials have an invalid field set")
         if not value or any(ord(character) < 0x20 for character in value):
             raise ScopedReleaseError("scoped signing credentials contain an invalid value")
-        if not meets_generated_secret_floor(value):
-            raise ScopedReleaseError("scoped signing credentials do not meet the strong-key policy")
         values[key] = value
     if values.keys() != SECRET_FIELDS.keys():
         values.clear()
@@ -80,16 +73,15 @@ def run_scoped_signed_release(
     child_environment: dict[str, str] | None = None
     try:
         prerequisite = load_upload_key_prerequisite(root, base_environment)
-        # SR5-3 (AGG5-17): the secrets share this environment with keytool and the inner wrapper
-        # (the evidence boundary), so it is the sealed allowlist, never the caller's whole shell:
-        # an ambient JAVA_TOOL_OPTIONS agent would read the password inside keytool, and a
+        # SR5-3 (AGG5-17): the secrets share this environment with the inner wrapper (the evidence
+        # boundary) and its Gradle JVM, so it is the sealed allowlist, never the caller's whole
+        # shell: an ambient JAVA_TOOL_OPTIONS agent would read the password inside the JVM, and a
         # PYTHONPATH sitecustomize could patch the wrapper's seal before it runs. The allowlist
         # already omits TELECAMPRO_STORE_FILE.
         child_environment = keytool_environment(base_environment)
         child_environment[STORE_PASSWORD_ENV] = credentials["storePassword"]
         child_environment[KEY_PASSWORD_ENV] = credentials["keyPassword"]
         child_environment[KEY_ALIAS_ENV] = prerequisite.alias
-        verify_upload_key_certificate(root, prerequisite, child_environment, run)
 
         # `-I -S`: isolated mode ignores every PYTHON* variable, the user site and the script
         # directory on sys.path; `-S` also skips site-packages' sitecustomize. The wrapper imports
@@ -137,7 +129,7 @@ def main() -> int:
     try:
         load_upload_key_prerequisite(args.root, os.environ)
         if args.check_prerequisites:
-            print("owner-approved upload-key prerequisite satisfied")
+            print("upload-key prerequisite satisfied (keystore.properties store file and alias resolve)")
             return 0
         credentials = parse_scoped_credentials(sys.stdin.buffer.read(MAX_CREDENTIAL_BYTES + 1))
         run_scoped_signed_release(

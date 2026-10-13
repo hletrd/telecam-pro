@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import os
 import subprocess
@@ -20,29 +19,29 @@ scoped = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = scoped
 SPEC.loader.exec_module(scoped)
 
+STORE = "store-secret"
+KEY = "key-secret"
+
 
 class ScopedSignedReleaseTest(unittest.TestCase):
-    def test_credentials_require_exact_strong_fields_without_echoing_values(self) -> None:
-        store = "Store-password-with-Entropy-7!"
-        key = "Key-password-with-Entropy-8!"
+    def test_credentials_require_exact_fields_without_echoing_values(self) -> None:
         self.assertEqual(
-            {"storePassword": store, "keyPassword": key},
+            {"storePassword": STORE, "keyPassword": KEY},
             scoped.parse_scoped_credentials(
-                f"# encrypted backup payload\nstorePassword={store}\nkeyPassword={key}\n".encode(),
+                f"# encrypted backup payload\nstorePassword={STORE}\nkeyPassword={KEY}\n".encode(),
             ),
+        )
+        # Owner decision 2026-10-13: no password-strength floor, so a short value is accepted.
+        self.assertEqual(
+            {"storePassword": "123456", "keyPassword": "123456"},
+            scoped.parse_scoped_credentials(b"storePassword=123456\nkeyPassword=123456\n"),
         )
         invalid = (
             b"",
-            b"storePassword=123456\nkeyPassword=123456\n",
-            b"storePassword=00000000000000000000\nkeyPassword=11111111111111111111\n",
-            b"storePassword=aaaaaaaaaaaaaaaaaaaa\nkeyPassword=bbbbbbbbbbbbbbbbbbbb\n",
-            b"storePassword=abcdefghijklmnopqrst\nkeyPassword=zyxwvutsrqponmlkjihg\n",
-            b"storePassword=only-two-classes-long\nkeyPassword=another-two-class-value\n",
-            b"storePassword= Strong-password-Value-7!\nkeyPassword=Key-password-with-Entropy-8!\n",
-            b"storePassword=Strong-password-Value-7! \nkeyPassword=Key-password-with-Entropy-8!\n",
-            b"storePassword=Strong-password-Value-7!\n",
-            b"storePassword=Strong-password-Value-7!\nstorePassword=Duplicate-password-Value-9!\nkeyPassword=Key-password-with-Entropy-8!\n",
-            b"storePassword=Strong-password-Value-7!\nkeyPassword=Key-password-with-Entropy-8!\nunknown=value\n",
+            b"storePassword=\nkeyPassword=123456\n",
+            b"storePassword=123456\n",
+            b"storePassword=123456\nstorePassword=654321\nkeyPassword=123456\n",
+            b"storePassword=123456\nkeyPassword=123456\nunknown=value\n",
         )
         for payload in invalid:
             with self.subTest(payload_length=len(payload)):
@@ -50,36 +49,28 @@ class ScopedSignedReleaseTest(unittest.TestCase):
                     scoped.parse_scoped_credentials(payload)
                 self.assertNotIn("123456", str(caught.exception))
 
-    def test_prerequisite_is_fail_closed_until_owner_approval_and_exact_certificate(self) -> None:
+    def test_prerequisite_needs_only_store_file_and_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "telecampro-upload.jks").write_bytes(b"not-a-real-keystore")
             (root / "keystore.properties").write_text(
-                "storeFile=telecampro-upload.jks\nkeyAlias=telecampro\n",
-                encoding="utf-8",
+                "storeFile=telecampro-upload.jks\n", encoding="utf-8",
             )
             with self.assertRaisesRegex(scoped.ScopedReleaseError, "prerequisite"):
                 scoped.load_upload_key_prerequisite(root, {})
 
             (root / "keystore.properties").write_text(
-                "storeFile=telecampro-upload.jks\n"
-                "keyAlias=telecampro\n"
-                "uploadKeyRotationApproved=true\n"
-                "uploadKeyCertificateSha256=" + "a" * 64 + "\n",
-                encoding="utf-8",
+                "storeFile=telecampro-upload.jks\nkeyAlias=telecampro\n", encoding="utf-8",
             )
             prerequisite = scoped.load_upload_key_prerequisite(root, {})
-            self.assertEqual("a" * 64, prerequisite.certificate_sha256)
+            self.assertEqual("telecampro", prerequisite.alias)
+            self.assertEqual(root.resolve() / "telecampro-upload.jks", prerequisite.store_path)
 
     def test_secret_values_exist_only_in_child_environment_and_are_cleared_on_success(self) -> None:
-        certificate = b"public-certificate-der"
         calls: list[tuple[list[str], dict[str, str]]] = []
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = self.fixture(Path(temp_dir), hashlib.sha256(certificate).hexdigest())
-            credentials = {
-                "storePassword": "Store-password-with-Entropy-7!",
-                "keyPassword": "Key-password-with-Entropy-8!",
-            }
+            root = self.fixture(Path(temp_dir))
+            credentials = {"storePassword": STORE, "keyPassword": KEY}
             ambient = {
                 "PATH": os.environ.get("PATH", ""),
                 "JAVA_HOME": "",
@@ -90,8 +81,6 @@ class ScopedSignedReleaseTest(unittest.TestCase):
 
             def run(command, **kwargs):
                 calls.append((list(command), dict(kwargs["env"])))
-                if "-exportcert" in command:
-                    return subprocess.CompletedProcess(command, 0, stdout=certificate)
                 return subprocess.CompletedProcess(command, 0, stdout=b"")
 
             scoped.run_scoped_signed_release(
@@ -107,33 +96,30 @@ class ScopedSignedReleaseTest(unittest.TestCase):
             self.assertNotIn(scoped.STORE_PASSWORD_ENV, ambient)
             self.assertNotIn(scoped.KEY_PASSWORD_ENV, ambient)
             all_arguments = [argument for command, _ in calls for argument in command]
-            self.assertNotIn("Store-password-with-Entropy-7!", all_arguments)
-            self.assertNotIn("Key-password-with-Entropy-8!", all_arguments)
-            self.assertIn("-storepass:env", calls[0][0])
-            self.assertIn(scoped.STORE_PASSWORD_ENV, calls[0][0])
-            self.assertEqual(2, len(calls))
+            self.assertNotIn(STORE, all_arguments)
+            self.assertNotIn(KEY, all_arguments)
+            # Only the inner wrapper runs; there is no keytool pre-gate.
+            self.assertEqual(1, len(calls))
             # SR5-3 (AGG5-17): the inner wrapper is the evidence boundary; it runs isolated from
             # PYTHON* variables and site customization, with the sealed allowlist only.
-            inner_command, inner_environment = calls[1]
+            inner_command, inner_environment = calls[0]
             self.assertEqual([sys.executable, "-I", "-S"], inner_command[:3])
-            for _, environment in calls:
-                self.assertNotIn("PYTHONPATH", environment)
-                self.assertNotIn("MY_UNRELATED_TOKEN", environment)
-                self.assertNotIn(scoped.STORE_FILE_ENV, environment)
+            self.assertEqual(STORE, inner_environment[scoped.STORE_PASSWORD_ENV])
+            self.assertEqual(KEY, inner_environment[scoped.KEY_PASSWORD_ENV])
+            self.assertEqual("telecampro", inner_environment[scoped.KEY_ALIAS_ENV])
+            self.assertNotIn("PYTHONPATH", inner_environment)
+            self.assertNotIn("MY_UNRELATED_TOKEN", inner_environment)
+            self.assertNotIn(scoped.STORE_FILE_ENV, inner_environment)
 
-    def test_ambient_jvm_launcher_options_refuse_before_keytool(self) -> None:
-        certificate = b"public-certificate-der"
+    def test_ambient_jvm_launcher_options_refuse_before_the_build(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = self.fixture(Path(temp_dir), hashlib.sha256(certificate).hexdigest())
-            credentials = {
-                "storePassword": "Store-password-with-Entropy-7!",
-                "keyPassword": "Key-password-with-Entropy-8!",
-            }
+            root = self.fixture(Path(temp_dir))
+            credentials = {"storePassword": STORE, "keyPassword": KEY}
             calls: list[list[str]] = []
 
             def run(command, **kwargs):
                 calls.append(list(command))
-                return subprocess.CompletedProcess(command, 0, stdout=certificate)
+                return subprocess.CompletedProcess(command, 0, stdout=b"")
 
             with self.assertRaisesRegex(scoped.ScopedReleaseError, "JAVA_TOOL_OPTIONS"):
                 scoped.run_scoped_signed_release(
@@ -150,14 +136,10 @@ class ScopedSignedReleaseTest(unittest.TestCase):
             self.assertEqual([], calls)
             self.assertEqual({}, credentials)
 
-    def test_keytool_failure_clears_mutable_credentials_and_never_runs_build(self) -> None:
-        certificate = b"public-certificate-der"
+    def test_build_failure_clears_mutable_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = self.fixture(Path(temp_dir), hashlib.sha256(certificate).hexdigest())
-            credentials = {
-                "storePassword": "Store-password-with-Entropy-7!",
-                "keyPassword": "Key-password-with-Entropy-8!",
-            }
+            root = self.fixture(Path(temp_dir))
+            credentials = {"storePassword": STORE, "keyPassword": KEY}
             calls = 0
 
             def run(command, **kwargs):
@@ -165,7 +147,7 @@ class ScopedSignedReleaseTest(unittest.TestCase):
                 calls += 1
                 return subprocess.CompletedProcess(command, 1, stdout=b"")
 
-            with self.assertRaisesRegex(scoped.ScopedReleaseError, "verification failed"):
+            with self.assertRaisesRegex(scoped.ScopedReleaseError, "build failed"):
                 scoped.run_scoped_signed_release(
                     root=root,
                     tasks=[":app:bundleRelease"],
@@ -178,15 +160,12 @@ class ScopedSignedReleaseTest(unittest.TestCase):
             self.assertEqual(1, calls)
 
     @staticmethod
-    def fixture(root: Path, fingerprint: str) -> Path:
+    def fixture(root: Path) -> Path:
         (root / "tools").mkdir()
         (root / "tools" / "build_immutable_release.py").write_text("# fixture\n", encoding="utf-8")
         (root / "telecampro-upload.jks").write_bytes(b"not-a-real-keystore")
         (root / "keystore.properties").write_text(
-            "storeFile=telecampro-upload.jks\n"
-            "keyAlias=telecampro\n"
-            "uploadKeyRotationApproved=true\n"
-            f"uploadKeyCertificateSha256={fingerprint}\n",
+            "storeFile=telecampro-upload.jks\nkeyAlias=telecampro\n",
             encoding="utf-8",
         )
         return root

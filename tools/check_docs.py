@@ -1717,7 +1717,7 @@ check(
     and 'USER_INIT_SCRIPTS = ("init.gradle", "init.gradle.kts")' in release_wrapper
     and "require_sealed_gradle_distribution(snapshot, child_environment)" in release_wrapper
     and "not jvm_arguments_admitted(value)" in release_wrapper
-    and "gate_environment = keytool_environment(environment)" in release_wrapper
+    and "key_environment = keytool_environment(environment)" in release_wrapper
     and "child_environment = keytool_environment(base_environment)" in read(
         "tools/run_scoped_signed_release.py"
     )
@@ -1745,11 +1745,9 @@ check(
     f"Gradle signing environment values={sorted(signing_environment_values)}",
 )
 play_console_submit = read("docs/play-console-submit.md")
-upload_key_policy_source = read("tools/upload_key_policy.py")
 check(
-    "SECURITY-BLOCKED** pending owner rotation/reset" in play_console_submit
-    and "owner explicitly\n> approves a strong-key rotation or completes Google's upload-key reset" in play_console_submit
-    and "uploadKeyRotationApproved` must remain absent/false" in play_console_submit
+    "KEPT with\n> its current password (owner decision 2026-10-13)" in play_console_submit
+    and "SECURITY-BLOCKED" not in play_console_submit
     and "python3 tools/run_scoped_signed_release.py --check-prerequisites" in play_console_submit
     and "gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg |" in play_console_submit
     and "python3 tools/run_scoped_signed_release.py --output" in play_console_submit
@@ -1759,60 +1757,16 @@ check(
     and '"-storepass:env"' in release_wrapper
     and '"-storepass",' not in release_wrapper
     and '"-storepass",' not in scoped_release_helper
-    and "verify_upload_key_certificate(root, prerequisite, child_environment, run)" in scoped_release_helper
-    and "require_approved_upload_key(args.root, args.tasks, os.environ)" in release_wrapper
-    and release_wrapper.index("require_approved_upload_key(args.root, args.tasks, os.environ)") <
-        release_wrapper.index("commit, tree = build_immutable_release(args.root, args.tasks, output)")
     and "credentials.clear()" in scoped_release_helper
     and "child_environment.pop(name, None)" in scoped_release_helper
     and scoped_release_helper.index("load_upload_key_prerequisite(args.root, os.environ)") <
         scoped_release_helper.index("sys.stdin.buffer.read")
-    # SEC3-2: ONE generated-secret floor in the shared policy module, applied by BOTH wrappers.
-    and "MIN_STRONG_PASSWORD_LENGTH = 20" in upload_key_policy_source
-    and "MIN_STRONG_PASSWORD_CLASSES = 3" in upload_key_policy_source
-    and "_has_monotonic_run(value)" in upload_key_policy_source
-    and "if not meets_generated_secret_floor(value):" in scoped_release_helper
-    and "if not meets_generated_secret_floor(password):" in release_wrapper
-    and "if not meets_generated_secret_floor(key_password):" in release_wrapper
-    and "uploadKeyRotationApproved=false" in keystore_example
-    and "uploadKeyCertificateSha256=<64 lowercase hex characters>" in keystore_example
+    # Owner decision 2026-10-13: no approval flag, deny-list, or strength rule anywhere; the
+    # executable guard is tools/tests/test_no_upload_key_gates.py.
+    and "owner decision 2026-10-13" in claude.lower()
     and "export TELECAMPRO_STORE_PASSWORD" not in keystore_example
     and "export TELECAMPRO_KEY_PASSWORD" not in keystore_example,
-    "signed release procedure scopes secrets and requires owner-approved key replacement",
-)
-
-# SEC4-2 / AGG4-38: the Gradle release gate carries a Kotlin port of the generated-secret floor. One
-# rule, two languages: every Python constant must have a Kotlin twin with the SAME value, and the
-# gate must apply it to both effective passwords. tools/tests/test_upload_key_floor_gradle.py runs
-# the port itself over shared vectors; this check catches a constant edited on one side only.
-SECRET_FLOOR_CONSTANTS = {
-    "MIN_STRONG_PASSWORD_LENGTH": "uploadKeyMinStrongPasswordLength",
-    "MIN_STRONG_PASSWORD_CLASSES": "uploadKeyMinStrongPasswordClasses",
-    "MAX_MONOTONIC_RUN": "uploadKeyMaxMonotonicRun",
-    "MIN_DISTINCT_CHARACTERS": "uploadKeyMinDistinctCharacters",
-    "MAX_REPEAT_RUN": "uploadKeyMaxRepeatRun",
-}
-
-
-def secret_floor_constant_mismatches(python_source: str, kotlin_source: str) -> list[str]:
-    mismatches = []
-    for python_name, kotlin_name in SECRET_FLOOR_CONSTANTS.items():
-        python_value = re.findall(rf"(?m)^{python_name} = (\d+)$", python_source)
-        kotlin_value = re.findall(rf"(?m)^val {kotlin_name} = (\d+)$", kotlin_source)
-        if len(python_value) != 1 or python_value != kotlin_value:
-            mismatches.append(f"{python_name}={python_value} vs {kotlin_name}={kotlin_value}")
-    return mismatches
-
-
-secret_floor_mismatches = secret_floor_constant_mismatches(upload_key_policy_source, gradle)
-check(
-    not secret_floor_mismatches
-    and "val storePasswordMeetsFloor = meetsGeneratedSecretFloor(signingStorePassword)" in gradle
-    and "val keyPasswordMeetsFloor = meetsGeneratedSecretFloor(releaseKeyPassword!!)" in gradle
-    and "if (!storePasswordMeetsFloor) {" in gradle
-    and "if (!keyPasswordMeetsFloor) {" in gradle,
-    "Gradle release gate enforces the same generated-secret floor as tools/upload_key_policy.py",
-    "; ".join(secret_floor_mismatches),
+    "signed release procedure scopes secrets and signs with the configured keystore",
 )
 
 
@@ -1820,9 +1774,8 @@ check(
 # region (and only this region, only in this file) is excluded from its own scan; see RULE_SOURCE.
 # A credential's PROPERTIES are secret too (SEC2-1): stating a password's length, character class,
 # or how it was delivered turns an offline brute force over a stolen keystore into a trivial search.
-# Tracked prose may say only that the upload key is security-blocked pending owner rotation/reset.
-# The generated-secret FLOOR the helper enforces ("20+ characters, at least three character
-# classes") is policy, not a property of any live credential, and is deliberately not matched.
+# Tracked prose may name the upload key and its certificate fingerprint, never its password's
+# properties.
 PASSWORD_SUBJECT = re.compile(
     r"\b(?:password|passphrase|passcode|credential|upload[- ]key)s?\b", re.I
 )

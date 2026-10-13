@@ -24,7 +24,6 @@ if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 from android_sdk import android_sdk_environment
 from immutable_outputs import FrozenOutputSet
-from upload_key_policy import is_blocked_upload_certificate, meets_generated_secret_floor
 
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
@@ -60,9 +59,6 @@ class _SealedPath(NamedTuple):
 
 class ReleaseLocalInputs(NamedTuple):
     sealed_paths: tuple[str, ...]
-    # The exact keystore.properties bytes written into the sealed checkout (None when absent): the
-    # floor re-check reads THESE, never the live file again (SEC4-2 / AGG4-38).
-    signing_properties: bytes | None
 
 
 class ReleaseSnapshotSeal:
@@ -896,46 +892,28 @@ def release_store_file(properties_payload: bytes) -> str:
     return relative.as_posix()
 
 
-# ---- Upload-key approval gate (shared with run_scoped_signed_release.py) -----------------------
-# The owner blocked the current upload key until a strong-key rotation or Play upload-key reset is
-# confirmed. That refusal used to live only in the scoped helper, so this wrapper (the documented
-# Play-release command) and plain Gradle still signed upload-ready bundles with the blocked key.
-# Both wrappers now cross this ONE gate before any signing-capable Gradle task runs.
-#
-# The approval below is SELF-ATTESTED (it lives in the same local file it protects), so on its own it
-# proves only "the configured keystore exports the certificate this file names". What it CANNOT be
-# talked into is the shared deny-list (tools/blocked-upload-certificates.txt): a listed certificate is
-# refused even with approval set and even when the keystore really exports it, so copying the blocked
-# key's public fingerprint into keystore.properties no longer passes. check_release_artifact.py reads
-# the approved fingerprint through `approved_upload_certificate_sha256` below, so gate and checker
-# share one authority instead of the checker pinning a constant.
+# ---- Configured upload key (shared with run_scoped_signed_release.py and the artifact checker) --
+# OWNER DECISION 2026-10-13: release signing uses whatever keystore.properties configures, like any
+# Android project. There is NO approval flag, certificate deny-list, or password-strength floor, and
+# none may be re-added (tools/tests/test_no_upload_key_gates.py). These helpers only RESOLVE the
+# configured key: the store path and alias Gradle will use, and — for check_release_artifact.py's
+# expected signer — the SHA-256 of that alias's certificate, exported with keytool.
 
 STORE_PASSWORD_ENV = "TELECAMPRO_STORE_PASSWORD"
 KEY_PASSWORD_ENV = "TELECAMPRO_KEY_PASSWORD"
 KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
-APPROVAL_PROPERTY = "uploadKeyRotationApproved"
-FINGERPRINT_PROPERTY = "uploadKeyCertificateSha256"
 _UNSET_SIGNING_VALUE = "CHANGE_ME"
-_NON_SIGNING_TASK = re.compile(r"(?:.*:)?lint[A-Za-z0-9]*")
 
 GateRun = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
 class UploadKeyGateError(RuntimeError):
-    """Expected fail-closed refusal whose message never includes a credential value."""
+    """Expected refusal whose message never includes a credential value."""
 
 
 class UploadKeyPrerequisite(NamedTuple):
     store_path: pathlib.Path
     alias: str
-    certificate_sha256: str
-
-
-def _single_property(entries: Sequence[tuple[str, str]], name: str) -> str:
-    matches = [value.strip() for key, value in entries if key == name]
-    if len(matches) != 1 or not matches[0]:
-        raise UploadKeyGateError(f"release signing prerequisite {name} is missing or ambiguous")
-    return matches[0]
 
 
 def _no_follow_regular(root: pathlib.Path, relative: str) -> pathlib.Path:
@@ -956,46 +934,28 @@ def _no_follow_regular(root: pathlib.Path, relative: str) -> pathlib.Path:
     return current
 
 
-def approved_upload_certificate_from_entries(entries: Sequence[tuple[str, str]]) -> str:
-    approved = _single_property(entries, APPROVAL_PROPERTY).casefold()
-    if approved != "true":
-        raise UploadKeyGateError(
-            "upload key is blocked until owner-confirmed strong-key rotation or Play reset",
-        )
-    fingerprint = _single_property(entries, FINGERPRINT_PROPERTY).replace(":", "").casefold()
-    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-        raise UploadKeyGateError("approved upload certificate fingerprint is invalid")
-    if is_blocked_upload_certificate(fingerprint):
-        raise UploadKeyGateError("approved upload certificate is on the blocked deny-list")
-    return fingerprint
-
-
-def approved_upload_certificate_sha256(root: pathlib.Path) -> str:
-    """The owner-approved upload certificate as the gate reads it; shared with the artifact checker."""
+def _read_signing_entries(root: pathlib.Path) -> tuple[bytes, list[tuple[str, str]]]:
     try:
-        properties_payload, _ = read_regular_beneath(root.resolve(), "keystore.properties")
-        entries = parse_java_properties(properties_payload)
+        properties_payload, _ = read_regular_beneath(root, "keystore.properties")
+        return properties_payload, list(parse_java_properties(properties_payload))
     except (OSError, RuntimeError, UnicodeError) as error:
         raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
-    return approved_upload_certificate_from_entries(entries)
 
 
 def load_upload_key_prerequisite(
     root: pathlib.Path,
     environment: Mapping[str, str],
 ) -> UploadKeyPrerequisite:
+    """Resolve the store file and alias exactly as app/build.gradle.kts will."""
     root = root.resolve()
+    properties_payload, entries = _read_signing_entries(root)
     try:
-        properties_payload, _ = read_regular_beneath(root, "keystore.properties")
-        entries = parse_java_properties(properties_payload)
         store_relative = release_store_file(properties_payload)
-    except (OSError, RuntimeError, UnicodeError) as error:
+    except (RuntimeError, UnicodeError) as error:
         raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
-    fingerprint = approved_upload_certificate_from_entries(entries)
     # SEC3-5 / AGG3-35: resolve the alias with GRADLE's precedence (`signingValue`: the properties
-    # file wins over TELECAMPRO_KEY_ALIAS). Env-first made the scoped helper prove alias B's
-    # certificate while Gradle signed with the file's alias A; only the inner gates caught it. A
-    # repeated keyAlias stays refused as ambiguous rather than silently taking the last one.
+    # file wins over TELECAMPRO_KEY_ALIAS). A repeated keyAlias is refused as ambiguous rather than
+    # silently taking the last one.
     if sum(1 for key, _ in entries if key == "keyAlias") > 1:
         raise UploadKeyGateError("release signing prerequisite keyAlias is missing or ambiguous")
     alias = _gradle_signing_value(entries, "keyAlias", environment, KEY_ALIAS_ENV)
@@ -1006,7 +966,6 @@ def load_upload_key_prerequisite(
     return UploadKeyPrerequisite(
         store_path=_no_follow_regular(root, store_relative),
         alias=alias,
-        certificate_sha256=fingerprint,
     )
 
 
@@ -1022,13 +981,13 @@ def keytool_path(environment: Mapping[str, str]) -> str:
     return resolved
 
 
-def verify_upload_key_certificate(
+def export_upload_certificate_sha256(
     root: pathlib.Path,
     prerequisite: UploadKeyPrerequisite,
     environment: Mapping[str, str],
     run: GateRun = subprocess.run,
-) -> None:
-    """Export the approved alias's certificate and require its exact SHA-256.
+) -> str:
+    """Export the configured alias's certificate and return its SHA-256 (lowercase hex).
 
     The store password reaches keytool only through `-storepass:env`, never argv or output.
     """
@@ -1042,7 +1001,7 @@ def verify_upload_key_certificate(
         "-storepass:env",
         STORE_PASSWORD_ENV,
     ]
-    verified = run(
+    exported = run(
         keytool_command,
         cwd=root,
         env=environment,
@@ -1050,14 +1009,30 @@ def verify_upload_key_certificate(
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    if verified.returncode != 0:
-        raise UploadKeyGateError("approved upload keystore verification failed")
-    certificate = verified.stdout if isinstance(verified.stdout, bytes) else b""
-    actual = hashlib.sha256(certificate).hexdigest()
-    if is_blocked_upload_certificate(actual):
-        raise UploadKeyGateError("configured upload keystore exports a blocked certificate")
-    if actual != prerequisite.certificate_sha256:
-        raise UploadKeyGateError("approved upload certificate fingerprint does not match")
+    certificate = exported.stdout if isinstance(exported.stdout, bytes) else b""
+    if exported.returncode != 0 or not certificate:
+        raise UploadKeyGateError("configured upload keystore could not be read")
+    return hashlib.sha256(certificate).hexdigest()
+
+
+def configured_upload_certificate_sha256(
+    root: pathlib.Path,
+    environment: Mapping[str, str] = os.environ,
+    run: GateRun = subprocess.run,
+) -> str:
+    """The configured upload key's certificate SHA-256; the artifact checker's expected signer."""
+    root = root.resolve()
+    _, entries = _read_signing_entries(root)
+    key_environment = keytool_environment(environment)
+    prerequisite = load_upload_key_prerequisite(root, environment)
+    password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
+    if password is None:
+        raise UploadKeyGateError("release store password is unavailable")
+    key_environment[STORE_PASSWORD_ENV] = password
+    try:
+        return export_upload_certificate_sha256(root, prerequisite, key_environment, run)
+    finally:
+        key_environment.pop(STORE_PASSWORD_ENV, None)
 
 
 # SEC3-1 / AGG3-31: `tasks` is copied straight onto the Gradle command line, so before this check
@@ -1078,11 +1053,6 @@ def validate_gradle_tasks(tasks: Sequence[str]) -> None:
                 f"immutable release task argument {index + 1} is not a plain Gradle task path; "
                 "options such as -P, -D, -I, --init-script, and -x are refused"
             )
-
-
-def signing_capable(tasks: Sequence[str]) -> bool:
-    """Fail closed: every task except an explicit lint task may sign (abbreviations included)."""
-    return any(_NON_SIGNING_TASK.fullmatch(task) is None for task in tasks)
 
 
 def _gradle_signing_value(
@@ -1115,58 +1085,13 @@ def keytool_environment(environment: Mapping[str, str]) -> dict[str, str]:
         # RG6-13 (AGG6-33): name the remedy. The common `-Dfile.encoding=UTF-8` setting is harmless
         # but indistinguishable from an agent by NAME alone, and the release run does not need it.
         raise UploadKeyGateError(
-            "refusing to verify the upload key while a JVM launcher option variable is set: "
+            "refusing to hand the upload-key password to a JVM while a launcher option variable is set: "
             + ", ".join(present)
             + ". Unset it for the release run (for example `env -u "
             + " -u ".join(present)
             + " python3 tools/...`); a -Dfile.encoding setting is not needed there"
         )
     return release_child_environment(environment)
-
-
-def require_approved_upload_key(
-    root: pathlib.Path,
-    tasks: Sequence[str],
-    environment: Mapping[str, str],
-    run: GateRun = subprocess.run,
-) -> None:
-    """Refuse signing-capable release builds unless the owner-approved upload key is in use."""
-    if not signing_capable(tasks):
-        return
-    root = root.resolve()
-    try:
-        entries = parse_java_properties(read_regular_beneath(root, "keystore.properties")[0])
-    except (OSError, RuntimeError, UnicodeError) as error:
-        raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
-    gate_environment = keytool_environment(environment)
-    # Verify the SAME alias and store password Gradle will sign with.
-    alias = _gradle_signing_value(entries, "keyAlias", environment, KEY_ALIAS_ENV)
-    gate_environment.pop(KEY_ALIAS_ENV, None)
-    if alias is not None:
-        gate_environment[KEY_ALIAS_ENV] = alias
-    password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
-    if password is None:
-        raise UploadKeyGateError("release store password is unavailable")
-    # SEC3-2: the deny-list blocks the retired CERTIFICATE, not the weakness that retired it, so a
-    # rotation could install an equally weak key and pass every other gate. Apply the shared floor to
-    # the EFFECTIVE values Gradle will sign with (`keyPassword ?: storePassword`, file over env).
-    # The refusal names which secret failed, never its value or why.
-    key_password = (
-        _gradle_signing_value(entries, "keyPassword", environment, KEY_PASSWORD_ENV) or password
-    )
-    gate_environment[STORE_PASSWORD_ENV] = password
-    try:
-        # Approval and the approved fingerprint are checked first, so an operator without an approved
-        # rotation is told THAT before the password policy (MRG3-4); the floor still runs before
-        # keytool ever receives the password.
-        prerequisite = load_upload_key_prerequisite(root, gate_environment)
-        if not meets_generated_secret_floor(password):
-            raise UploadKeyGateError("release store password does not meet the strong-key policy")
-        if not meets_generated_secret_floor(key_password):
-            raise UploadKeyGateError("release key password does not meet the strong-key policy")
-        verify_upload_key_certificate(root, prerequisite, gate_environment, run)
-    finally:
-        gate_environment.pop(STORE_PASSWORD_ENV, None)
 
 
 def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> ReleaseLocalInputs:
@@ -1188,36 +1113,7 @@ def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> Relea
         payload, mode = read_regular_beneath(root, store_file)
         write_regular_exclusive(snapshot / relative_store, payload, mode)
         copied.append(store_file)
-    return ReleaseLocalInputs(tuple(copied), signing_payload)
-
-
-def require_frozen_secret_floor(
-    signing_properties: bytes | None,
-    tasks: Sequence[str],
-    environment: Mapping[str, str],
-) -> None:
-    """Re-apply the generated-secret floor to the keystore.properties bytes Gradle will sign from.
-
-    SEC4-2 / AGG4-38: `require_approved_upload_key` reads the LIVE work tree; the snapshot copy is
-    a second read, so a swap between the two (a concurrent editor, a sync tool) let the floor approve
-    one file while Gradle signed with another. This runs against the frozen copy itself, with the
-    same effective-value rule (file over environment, `keyPassword ?: storePassword`). An absent
-    password is left to Gradle, which then has no signing config and refuses every signing task.
-    """
-    if signing_properties is None or not signing_capable(tasks):
-        return
-    try:
-        entries = parse_java_properties(signing_properties)
-    except (RuntimeError, UnicodeError) as error:
-        raise UploadKeyGateError("frozen release signing properties are unreadable") from error
-    store_password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
-    key_password = (
-        _gradle_signing_value(entries, "keyPassword", environment, KEY_PASSWORD_ENV) or store_password
-    )
-    if store_password is not None and not meets_generated_secret_floor(store_password):
-        raise UploadKeyGateError("frozen release store password does not meet the strong-key policy")
-    if key_password is not None and not meets_generated_secret_floor(key_password):
-        raise UploadKeyGateError("frozen release key password does not meet the strong-key policy")
+    return ReleaseLocalInputs(tuple(copied))
 
 
 def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
@@ -1279,8 +1175,6 @@ def build_immutable_release(
         seal = seal_release_snapshot(snapshot, (*expected, *local_inputs.sealed_paths))
         try:
             require_sealed_gradle_distribution(snapshot, child_environment)
-            # After the seal: the bytes checked here are the bytes the seal then keeps immutable.
-            require_frozen_secret_floor(local_inputs.signing_properties, tasks, child_environment)
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
             # Gradle receives no wrapper-origin or immutable-evidence claim. It records only the
@@ -1384,11 +1278,6 @@ def main() -> int:
         )
     else:
         output = args.output
-    try:
-        require_approved_upload_key(args.root, args.tasks, os.environ)
-    except UploadKeyGateError as error:
-        print(f"immutable release build refused: {error}", file=sys.stderr)
-        return 1
     try:
         commit, tree = build_immutable_release(args.root, args.tasks, output)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:

@@ -1433,9 +1433,11 @@ attribute conversion cannot make the export differ from the commit. The unpacked
 deletes the zip); the evidence lists that under `unverified_inputs`.
 keytool receives the same allowlisted environment and is refused outright while
 `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`/`_JAVA_OPTIONS` is set; the scoped signing helper launches the
-inner wrapper as `python -I -S` with that allowlist; `release-evidence.json` records that argv and the environment NAMES it passed. The
-wrapper also re-applies the generated-secret floor to the frozen `keystore.properties` copy, and the
-Gradle release gate applies the same floor (a Kotlin port pinned by `check_docs.py`).
+inner wrapper as `python -I -S` with that allowlist; `release-evidence.json` records that argv and the environment NAMES it passed.
+Signing itself is ordinary: Gradle signs with the keystore that `keystore.properties` configures (owner
+decision 2026-10-13 — no approval flag, certificate deny-list, or password-strength floor; guarded by
+`tools/tests/test_no_upload_key_gates.py`), and `check_release_artifact.py` derives the expected signer
+from that keystore with keytool.
 
 **Focused Android test subset:** `app/src/test/` is the JVM/Robolectric/Compose source of truth. Run
 `./gradlew :app:testDebugUnitTest` while iterating on that surface, then run the authoritative

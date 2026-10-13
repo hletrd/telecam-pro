@@ -2,7 +2,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
-import java.security.KeyStore
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Properties
@@ -399,122 +398,6 @@ val releaseStoreFile = configuredReleaseStoreFile
 val releaseKeyAlias = signingValue("keyAlias", "TELECAMPRO_KEY_ALIAS")
 val releaseStorePassword = signingValue("storePassword", "TELECAMPRO_STORE_PASSWORD")
 val releaseKeyPassword = signingValue("keyPassword", "TELECAMPRO_KEY_PASSWORD") ?: releaseStorePassword
-// SEC4-2 / AGG4-38: the generated-secret floor, ported from tools/upload_key_policy.py so plain
-// `./gradlew bundleRelease` (and Android Studio's Build menu) refuses a freshly rotated but weak key
-// exactly as both Python wrappers do. ONE rule: tools/check_docs.py pins every constant below to its
-// Python twin, and tools/tests/test_upload_key_gate.py runs this function over the same vectors as
-// the Python one (`verifyUploadKeySecretFloorFixture`). It answers only yes/no, never why.
-val uploadKeyMinStrongPasswordLength = 20
-val uploadKeyMinStrongPasswordClasses = 3
-val uploadKeyMaxMonotonicRun = 5
-val uploadKeyMinDistinctCharacters = 12
-val uploadKeyMaxRepeatRun = 3
-
-// MRG4-7: value-for-value equal to the Python floor OUTSIDE ASCII too. Every count runs over CODE
-// POINTS (a String's length and toSet() count UTF-16 units, so one non-BMP character counted as two
-// characters and two "distinct" surrogates), and every class test is ASCII-only on both sides
-// (Kotlin's isDigit/isLetterOrDigit/lowercase and Python's isdigit/isalnum/casefold disagree on
-// superscripts, `ß`, the Kelvin sign, ...). Any non-ASCII code point counts as a symbol. The edge
-// whitespace is Python's `str.isspace()` set, spelled out identically in tools/upload_key_policy.py.
-val uploadKeyEdgeWhitespace: Set<Int> =
-    (0x09..0x0D).toSet() + (0x1C..0x20) + setOf(0x85, 0xA0, 0x1680) + (0x2000..0x200A) +
-        setOf(0x2028, 0x2029, 0x202F, 0x205F, 0x3000)
-
-fun uploadKeyAsciiLower(codePoint: Int): Boolean = codePoint in 'a'.code..'z'.code
-fun uploadKeyAsciiUpper(codePoint: Int): Boolean = codePoint in 'A'.code..'Z'.code
-fun uploadKeyAsciiDigit(codePoint: Int): Boolean = codePoint in '0'.code..'9'.code
-fun uploadKeyAsciiLetter(codePoint: Int): Boolean = uploadKeyAsciiLower(codePoint) || uploadKeyAsciiUpper(codePoint)
-
-fun uploadKeyHasMonotonicRun(codePoints: IntArray): Boolean {
-    var run = 1
-    var direction = 0
-    var previous: Int? = null
-    for (raw in codePoints) {
-        // ASCII-only lowering, exactly like the Python `_ascii_lower`.
-        val character = if (uploadKeyAsciiUpper(raw)) raw + 32 else raw
-        val prior = previous
-        val comparable = prior != null && (
-            (uploadKeyAsciiLetter(prior) && uploadKeyAsciiLetter(character)) ||
-                (uploadKeyAsciiDigit(prior) && uploadKeyAsciiDigit(character))
-            )
-        if (!comparable) {
-            run = 1
-            direction = 0
-        } else {
-            val step = character - prior!!
-            if (step == 1 || step == -1) {
-                if (step == direction) {
-                    run += 1
-                } else {
-                    direction = step
-                    run = 2
-                }
-                if (run > uploadKeyMaxMonotonicRun) return true
-            } else {
-                run = 1
-                direction = 0
-            }
-        }
-        previous = character
-    }
-    return false
-}
-
-fun uploadKeyHasLongRepeatRun(codePoints: IntArray): Boolean {
-    var run = 0
-    var previous: Int? = null
-    for (character in codePoints) {
-        run = if (character == previous) run + 1 else 1
-        if (run > uploadKeyMaxRepeatRun) return true
-        previous = character
-    }
-    return false
-}
-
-fun uploadKeyHasShortPeriod(codePoints: IntArray): Boolean =
-    (1..codePoints.size / 2).any { period ->
-        (0 until codePoints.size - period).all { index -> codePoints[index] == codePoints[index + period] }
-    }
-
-fun meetsGeneratedSecretFloor(value: String): Boolean {
-    val codePoints = value.codePoints().toArray()
-    if (codePoints.size < uploadKeyMinStrongPasswordLength ||
-        codePoints.first() in uploadKeyEdgeWhitespace ||
-        codePoints.last() in uploadKeyEdgeWhitespace
-    ) {
-        return false
-    }
-    val classes = listOf(
-        codePoints.any(::uploadKeyAsciiLower),
-        codePoints.any(::uploadKeyAsciiUpper),
-        codePoints.any(::uploadKeyAsciiDigit),
-        codePoints.any { !uploadKeyAsciiLetter(it) && !uploadKeyAsciiDigit(it) },
-    ).count { it }
-    return classes >= uploadKeyMinStrongPasswordClasses &&
-        codePoints.toSet().size >= uploadKeyMinDistinctCharacters &&
-        !uploadKeyHasLongRepeatRun(codePoints) &&
-        !uploadKeyHasShortPeriod(codePoints) &&
-        !uploadKeyHasMonotonicRun(codePoints)
-}
-
-// Executable tools-suite seam for the floor above, shaped like `verifyCleanReleaseGitFixture`: it
-// exists only when a test supplies a vectors file (one UTF-8 value per line, synthetic values only)
-// and writes one accept/reject verdict per line, so tools/tests can prove the Kotlin port agrees
-// with tools/upload_key_policy.py value for value. Release tasks never depend on it.
-providers.gradleProperty("uploadKeyFloorFixtureVectors").orNull?.let { vectorsPath ->
-    val verdicts = file(vectorsPath).readText(Charsets.UTF_8).split('\n').dropLast(1).map { value ->
-        if (meetsGeneratedSecretFloor(value)) "accept" else "reject"
-    }
-    val verdictFile = file(
-        providers.gradleProperty("uploadKeyFloorFixtureOutput").orNull
-            ?: error("uploadKeyFloorFixtureOutput is required with uploadKeyFloorFixtureVectors"),
-    )
-    tasks.register("verifyUploadKeySecretFloorFixture") {
-        outputs.upToDateWhen { false }
-        doLast { verdictFile.writeText(verdicts.joinToString("") { "$it\n" }, Charsets.UTF_8) }
-    }
-}
-
 val hasReleaseSigning =
     keystorePropsFile.exists() &&
         releaseStoreFile != null &&
@@ -899,10 +782,10 @@ dependencies {
 // SEC3-1 / AGG3-31: AGP REPLACES the variant's signingConfig whenever the IDE "injected signing"
 // Gradle properties are present (`-Pandroid.injected.signing.store.file`, `.store.password`,
 // `.key.alias`, `.key.password`, and their siblings) — Android Studio's "Generate Signed Bundle/APK"
-// wizard signs through exactly that path. The upload-key gate below proves only the
-// keystore.properties key, so with an injected key it would approve one key while AGP signed with
-// another (possibly the blocked one). There is no honest way to verify a key the gate never opens,
-// so every task that PACKAGES OR SIGNS release bytes refuses outright while any such property is
+// wizard signs through exactly that path. Release signing has ONE source, keystore.properties (with
+// the TELECAMPRO_* environment fallback for alias/passwords), and the immutable release wrapper
+// seals exactly that file; an injected key would sign release bytes with a keystore nothing records.
+// So every task that PACKAGES OR SIGNS release bytes refuses outright while any such property is
 // set, with or without keystore.properties. Only the property NAMES are captured: they are not
 // secrets, and the refusal never echoes a value. The names are also a task input so an UP-TO-DATE
 // signed output can never satisfy a run that carries injected signing.
@@ -911,9 +794,8 @@ val injectedSigningPropertyNames: List<String> =
 // SEC4-1 / AGG4-39: AGP 9.4.1 also registers the bundle-to-APK pair for every app variant —
 // `makeApkFromBundleForRelease` (BundleToApkTask: bundletool build-apks WITH the variant's signing
 // config) and `extractApksFromBundleForRelease` (ExtractApksTask: unpacks those signed APKs for the
-// IDE's deploy-from-bundle path). Neither was gated, so re-pointing keyAlias inside an approved
-// keystore signed an APK set with a blocked key while every gated task stayed UP-TO-DATE.
-// tools/tests/test_upload_key_policy.py reads the AGP jar and fails when a release APK/bundle task
+// IDE's deploy-from-bundle path), so both belong to the refusal set below.
+// tools/tests/test_release_signing_tasks.py reads the AGP jar and fails when a release APK/bundle task
 // prefix appears that is neither listed here nor reviewed as non-signing.
 val releaseSigningTasks = setOf(
     "packageRelease",
@@ -932,7 +814,7 @@ tasks.matching { it.name in releaseSigningTasks || it.name == "bundleRelease" ||
                 throw GradleException(
                     "Release signing refused: IDE-injected signing properties are present " +
                         "(${injectedNames.joinToString()}). Sign only through keystore.properties " +
-                        "and the upload-key gate; remove every android.injected.signing.* property.",
+                        "only; remove every android.injected.signing.* property.",
                 )
             }
         }
@@ -954,104 +836,4 @@ if (!hasReleaseSigning) {
                 )
             }
         }
-}
-
-// SEC2-2 / AGG2-37: plain Gradle used to sign with whatever keystore.properties named, so
-// `./gradlew bundleRelease` produced a bundle under the security-blocked upload key while only the
-// Python wrappers refused it. Every task that actually PACKAGES OR SIGNS release bytes now crosses
-// the same three checks the immutable-release gate makes, BEFORE it writes a signed file:
-//   1. `uploadKeyRotationApproved=true` (owner-attested, and only that — it is a local file),
-//   2. `uploadKeyCertificateSha256` is not on tools/blocked-upload-certificates.txt (the ONE shared
-//      deny-list; tools/upload_key_policy.py reads the same file), and
-//   3. the configured alias's certificate, opened in-process, hashes to that approved value and is
-//      itself not on the deny-list — so copying the blocked key's PUBLIC fingerprint into the
-//      properties file cannot pass.
-// Lint and compile tasks are untouched; debug builds never configure release signing at all.
-// Everything the action needs is copied into locals first: a task action that referenced
-// script-level vals would capture the script object and break the configuration cache.
-if (hasReleaseSigning) {
-    val approvalValue = keystoreProps.getProperty("uploadKeyRotationApproved")?.trim().orEmpty()
-    val approvedCertificate = keystoreProps.getProperty("uploadKeyCertificateSha256")
-        ?.trim()?.replace(":", "")?.lowercase().orEmpty()
-    val blockedListFile = rootProject.file("tools/blocked-upload-certificates.txt")
-    val blockedCertificates: Set<String>? = blockedListFile.takeIf { it.isFile }?.readLines()
-        ?.map { it.substringBefore('#').trim() }
-        ?.filter { it.isNotEmpty() }
-        ?.toSet()
-    val signingStorePath = releaseStoreFile!!
-    val signingStoreFile = rootProject.file(signingStorePath)
-    val signingAlias = releaseKeyAlias!!
-    val signingStorePassword = releaseStorePassword!!
-    // SEC4-2 / AGG4-38: the floor applies to the EFFECTIVE values AGP signs with — storePassword and
-    // `keyPassword ?: storePassword` (`releaseKeyPassword`), file over environment exactly like the
-    // wrappers. Only the two yes/no answers enter the task action and its inputs, never a value.
-    val storePasswordMeetsFloor = meetsGeneratedSecretFloor(signingStorePassword)
-    val keyPasswordMeetsFloor = meetsGeneratedSecretFloor(releaseKeyPassword!!)
-    val injectedNames = injectedSigningPropertyNames
-    tasks.matching { it.name in releaseSigningTasks }.configureEach {
-        // A doFirst never runs for an UP-TO-DATE or FROM-CACHE task, so the gate state itself is a
-        // task input: changing the approval, the approved fingerprint, the deny-list, the injected
-        // signing property names (SEC3-1), or the keystore bytes re-executes the task (and therefore
-        // the gate). Without this, a signed output produced before the gate existed was reported as
-        // a successful build afterwards.
-        // The floor verdicts (SEC4-2) ride along so a weakened secret also re-executes the gate.
-        // SEC4-1 / AGG4-39: so do the alias and the store path (both non-secret). Re-pointing
-        // keyAlias at another alias inside the SAME keystore changed none of the other inputs, so a
-        // gated task stayed UP-TO-DATE and its doFirst never ran while a downstream signer used it.
-        inputs.property(
-            "uploadKeyApprovalState",
-            "$approvalValue|$approvedCertificate|${blockedCertificates?.sorted()}|$injectedNames|" +
-                "$storePasswordMeetsFloor|$keyPasswordMeetsFloor|$signingAlias|$signingStorePath",
-        )
-        inputs.file(signingStoreFile).withPropertyName("uploadKeystore").withPathSensitivity(PathSensitivity.NONE)
-        doFirst {
-            val sha256 = Regex("[0-9a-f]{64}")
-            val blocked = blockedCertificates
-            if (blocked.isNullOrEmpty() || blocked.any { !sha256.matches(it) }) {
-                throw GradleException(
-                    "Release signing refused: tools/blocked-upload-certificates.txt is missing or malformed.",
-                )
-            }
-            if (!approvalValue.equals("true", ignoreCase = true)) {
-                throw GradleException(
-                    "Release signing refused: the upload key is security-blocked until the owner approves a " +
-                        "strong-key rotation or Play upload-key reset (uploadKeyRotationApproved=true plus " +
-                        "uploadKeyCertificateSha256 in keystore.properties; docs/play-console-submit.md).",
-                )
-            }
-            if (!sha256.matches(approvedCertificate) || approvedCertificate in blocked) {
-                throw GradleException(
-                    "Release signing refused: uploadKeyCertificateSha256 is invalid or names a blocked certificate.",
-                )
-            }
-            // Approval and fingerprint are reported first (MRG3-4), and the floor still runs before
-            // the store password ever opens the keystore — the same order as the Python wrappers.
-            if (!storePasswordMeetsFloor) {
-                throw GradleException("Release signing refused: the store password does not meet the strong-key policy.")
-            }
-            if (!keyPasswordMeetsFloor) {
-                throw GradleException("Release signing refused: the key password does not meet the strong-key policy.")
-            }
-            val actualCertificate = try {
-                val keyStore = KeyStore.getInstance(signingStoreFile, signingStorePassword.toCharArray())
-                val encoded = keyStore.getCertificate(signingAlias)?.encoded
-                    ?: throw GradleException("Release signing refused: the configured alias has no certificate.")
-                MessageDigest.getInstance("SHA-256").digest(encoded)
-                    .joinToString("") { byte -> "%02x".format(byte) }
-            } catch (error: GradleException) {
-                throw error
-            } catch (error: Exception) {
-                // The message stays value-free: never echo the store password or keystore bytes.
-                throw GradleException("Release signing refused: the upload keystore could not be verified.")
-            }
-            if (actualCertificate in blocked) {
-                throw GradleException("Release signing refused: the configured upload key is a blocked certificate.")
-            }
-            if (actualCertificate != approvedCertificate) {
-                throw GradleException(
-                    "Release signing refused: the configured upload key does not match uploadKeyCertificateSha256.",
-                )
-            }
-        }
-    }
 }

@@ -377,83 +377,6 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode)
 
-    def test_frozen_signing_properties_are_rechecked_against_the_secret_floor(self) -> None:
-        # SEC4-2 / AGG4-38: the floor re-runs on the COPIED keystore.properties, before Gradle.
-        # Synthetic values only.
-        weak = "a" * 18 + "A1"
-        strong = "Zk4!mR9#vT2$wQ8%nnnB"
-        cases = (
-            (f"storeFile=release-key.jks\nstorePassword={weak}\n", {}, "store password"),
-            (
-                f"storeFile=release-key.jks\nstorePassword={strong}\nkeyPassword={weak}\n",
-                {},
-                "key password",
-            ),
-            # No file value: the environment value is the effective one (Gradle's precedence).
-            ("storeFile=release-key.jks\n", {"TELECAMPRO_STORE_PASSWORD": weak}, "store password"),
-            # A strong keyPassword cannot hide a weak storePassword.
-            (
-                f"storeFile=release-key.jks\nstorePassword={weak}\nkeyPassword={strong}\n",
-                {},
-                "store password",
-            ),
-        )
-        for properties, environment, refused in cases:
-            with self.subTest(properties=properties, environment=sorted(environment)):
-                with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-                    os.environ,
-                    {"TELECAMPRO_STORE_PASSWORD": "", "TELECAMPRO_KEY_PASSWORD": "", **environment},
-                ):
-                    root = Path(temp_dir) / "fixture"
-                    root.mkdir()
-                    self.fixture(root)
-                    self.signing_fixture(root, properties.encode("ascii"))
-                    output = root / "app/build/immutable-release/test-output"
-                    commands: list[list[str]] = []
-
-                    def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
-                        commands.append(command)
-                        return subprocess.CompletedProcess(command, 0, "", "")
-
-                    with self.assertRaisesRegex(release.UploadKeyGateError, refused) as raised:
-                        release.build_immutable_release(root, [":app:bundleRelease"], output, run=package)
-                    self.assertNotIn(weak, str(raised.exception))
-                    self.assertEqual([], commands)
-                    self.assertFalse(output.exists())
-
-    def test_frozen_floor_recheck_passes_strong_values_and_skips_lint(self) -> None:
-        strong = "Zk4!mR9#vT2$wQ8%nnnB"
-        with patch.dict(os.environ, {"TELECAMPRO_STORE_PASSWORD": "", "TELECAMPRO_KEY_PASSWORD": ""}):
-            release.require_frozen_secret_floor(
-                f"storePassword={strong}\n".encode("ascii"), [":app:bundleRelease"], os.environ
-            )
-            release.require_frozen_secret_floor(b"storePassword=weak\n", [":app:lintRelease"], os.environ)
-            release.require_frozen_secret_floor(None, [":app:bundleRelease"], os.environ)
-            with self.assertRaises(release.UploadKeyGateError):
-                release.require_frozen_secret_floor(
-                    b"storePassword=weak\n", [":app:bundleRelease"], os.environ
-                )
-
-    def test_frozen_floor_recheck_reads_the_copy_not_the_live_file(self) -> None:
-        # The live file is swapped to a weak value after the copy; only the frozen bytes count.
-        strong = "Zk4!mR9#vT2$wQ8%nnnB"
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-            os.environ, {"TELECAMPRO_STORE_PASSWORD": "", "TELECAMPRO_KEY_PASSWORD": ""}
-        ):
-            root = Path(temp_dir) / "fixture"
-            root.mkdir()
-            self.fixture(root)
-            self.signing_fixture(
-                root, f"storeFile=release-key.jks\nstorePassword={strong}\n".encode("ascii")
-            )
-            snapshot = Path(temp_dir) / "snapshot"
-            snapshot.mkdir()
-            inputs = release.copy_local_build_inputs(root, snapshot)
-            (root / "keystore.properties").write_bytes(b"storeFile=release-key.jks\nstorePassword=weak\n")
-            self.assertIn(strong.encode("ascii"), inputs.signing_properties or b"")
-            self.assertEqual(inputs.signing_properties, (snapshot / "keystore.properties").read_bytes())
-            release.require_frozen_secret_floor(inputs.signing_properties, [":app:bundleRelease"], os.environ)
-
     def test_child_environment_is_an_allowlist(self) -> None:
         # SEC4-4 / AGG4-41: ambient Gradle/JVM channels never reach the sealed child.
         ambient = {
@@ -1153,13 +1076,11 @@ class GradleTaskArgumentTest(unittest.TestCase):
         with (
             patch.object(sys, "argv", argv),
             patch.object(release, "android_sdk_environment") as sdk,
-            patch.object(release, "require_approved_upload_key") as gate,
             patch.object(release, "build_immutable_release") as build,
             patch("sys.stderr") as stderr,
         ):
             self.assertEqual(1, release.main())
         sdk.assert_not_called()
-        gate.assert_not_called()
         build.assert_not_called()
         written = "".join(call.args[0] for call in stderr.write.call_args_list)
         self.assertIn("immutable release build refused", written)

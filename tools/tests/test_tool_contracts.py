@@ -75,7 +75,7 @@ def run_documentation_gate_from_committed_export(
             "tools/build_immutable_debug.py",
             "tools/build_immutable_release.py",
             "tools/run_scoped_signed_release.py",
-            "tools/upload_key_policy.py",
+            "tools/tests/test_no_upload_key_gates.py",
             "app/build.gradle.kts",
             "keystore.properties.example",
             "README.md",
@@ -1848,7 +1848,7 @@ class ConsolidatedHostGateTest(unittest.TestCase):
             result.stdout,
         )
 
-    def test_committed_export_rejects_unscoped_or_unapproved_signing_procedures(self) -> None:
+    def test_committed_export_rejects_unscoped_signing_procedures(self) -> None:
         fixtures = (
             (
                 "docs/play-console-submit.md",
@@ -1861,19 +1861,14 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 '"-storepass",',
             ),
             (
-                "tools/build_immutable_release.py",
-                "        require_approved_upload_key(args.root, args.tasks, os.environ)\n",
-                "        pass\n",
-            ),
-            (
                 "tools/run_scoped_signed_release.py",
-                "verify_upload_key_certificate(root, prerequisite, child_environment, run)",
+                "credentials.clear()",
                 "None",
             ),
             (
                 "docs/play-console-submit.md",
-                "upload key is **SECURITY-BLOCKED**",
-                "upload key is ready",
+                "KEPT with\n> its current password (owner decision 2026-10-13)",
+                "**SECURITY-BLOCKED** pending rotation",
             ),
         )
         for relative, current, stale in fixtures:
@@ -1887,32 +1882,7 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 result, _ = run_documentation_gate_from_committed_export(regress)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn(
-                    "FAIL  signed release procedure scopes secrets and requires owner-approved key replacement",
-                    result.stdout,
-                )
-
-    def test_committed_export_rejects_a_secret_floor_constant_edited_on_one_side(self) -> None:
-        # SEC4-2 / AGG4-38: the Gradle floor is a port; a one-sided edit must turn the gate red.
-        for relative, current, stale in (
-            ("app/build.gradle.kts", "val uploadKeyMinDistinctCharacters = 12", "val uploadKeyMinDistinctCharacters = 2"),
-            ("tools/upload_key_policy.py", "MAX_REPEAT_RUN = 3", "MAX_REPEAT_RUN = 30"),
-            (
-                "app/build.gradle.kts",
-                "            if (!keyPasswordMeetsFloor) {",
-                "            if (false) {",
-            ),
-        ):
-            with self.subTest(relative=relative, stale=stale):
-                def regress(root: Path) -> None:
-                    path = root / relative
-                    text = path.read_text(encoding="utf-8")
-                    self.assertIn(current, text)
-                    path.write_text(text.replace(current, stale, 1), encoding="utf-8")
-
-                result, _ = run_documentation_gate_from_committed_export(regress)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(
-                    "FAIL  Gradle release gate enforces the same generated-secret floor",
+                    "FAIL  signed release procedure scopes secrets and signs with the configured keystore",
                     result.stdout,
                 )
 
