@@ -864,8 +864,9 @@ check(
 )
 
 # Launcher, Play, feature, and README assets must carry one recognizable public mark. The launcher
-# used to ship an unrelated cyan-gradient lens/chevron while every public surface used this
-# black/blue telescope and barrel.
+# once shipped an unrelated cyan-gradient lens/chevron while every public surface used a different
+# mark. Since 2026-10-13 that mark is the machined-glass telephoto barrel; every surface embeds the
+# same barrel outline path and teal glass.
 launcher_bg = read("app/src/main/res/drawable/ic_launcher_background.xml")
 launcher_fg = read("app/src/main/res/drawable/ic_launcher_foreground.xml")
 launcher_mono = read("app/src/main/res/drawable/ic_launcher_monochrome.xml")
@@ -882,19 +883,20 @@ for label, vector in (
         'android:width="108dp"' in vector and 'android:height="108dp"' in vector,
         f"{label} keeps the adaptive-icon 108dp viewport",
     )
+BARREL_OUTLINE = "M29.6,59.8 L51.2,33.6"
 check(
-    "#FF0B0B0D" in launcher_bg and "gradient" not in launcher_bg.casefold(),
-    "launcher uses the public mark black field",
+    "#FF101A20" in launcher_bg and "gradient" not in launcher_bg.casefold(),
+    "launcher uses the public mark field",
 )
 check(
-    all(marker in launcher_fg for marker in ("#FF4C9AFF", "M48.6,70.2", "M44.55,82.35"))
-    and all(marker in store_icon for marker in ("#4C9AFF", 'x="72" y="104"', 'x="66" y="122"'))
-    and all(marker in feature_graphic for marker in ("#4C9AFF", 'x="72" y="104"', 'x="66" y="122"')),
-    "launcher and public assets share the blue telescope barrel mark",
+    all(BARREL_OUTLINE in asset for asset in (launcher_fg, store_icon, feature_graphic, readme_logo))
+    and "#FF4BBBAF" in launcher_fg
+    and all("#4BBBAF" in asset for asset in (store_icon, feature_graphic, readme_logo)),
+    "launcher and public assets share the machined-glass barrel mark",
 )
 check(
-    "M48.6,70.2" in launcher_mono and "M44.55,82.35" in launcher_mono,
-    "themed launcher keeps the telescope barrel silhouette",
+    BARREL_OUTLINE in launcher_mono and "#FFFFFFFF" in launcher_mono,
+    "themed launcher keeps the barrel silhouette",
 )
 check(
     'aria-label="TeleCam Pro logo"' in readme_logo and "300mm tick marks" not in readme_logo,
