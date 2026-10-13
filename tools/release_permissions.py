@@ -33,6 +33,20 @@ def packaged_permissions(manifest: str) -> frozenset[str]:
     )
 
 
+# bundletool >= 1.18 prints android:protectionLevel as its integer value ("0x00000002") rather than
+# the attribute name ("signature"). Only a bare base level is translated; any added flag bits keep the
+# raw value, so a "signature|privileged"-style declaration can never pass as plain "signature".
+_PROTECTION_LEVEL_NAMES = {0: "normal", 1: "dangerous", 2: "signature", 3: "signatureOrSystem"}
+
+
+def normalized_protection_level(value: str) -> str:
+    try:
+        number = int(value, 0)
+    except ValueError:
+        return value
+    return _PROTECTION_LEVEL_NAMES.get(number, value)
+
+
 def packaged_permission_declarations(manifest: str) -> dict[str, str]:
     """Return permission declarations and protection levels from bundletool XML output."""
     declarations: dict[str, str] = {}
@@ -40,5 +54,7 @@ def packaged_permission_declarations(manifest: str) -> dict[str, str]:
         name = re.search(r'\bandroid:name="([^"]+)"', tag)
         protection = re.search(r'\bandroid:protectionLevel="([^"]+)"', tag)
         if name is not None:
-            declarations[name.group(1)] = protection.group(1) if protection is not None else ""
+            declarations[name.group(1)] = (
+                normalized_protection_level(protection.group(1)) if protection is not None else ""
+            )
     return declarations
