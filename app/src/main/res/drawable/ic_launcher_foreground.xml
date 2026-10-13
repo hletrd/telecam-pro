@@ -1,31 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The public TeleCam Pro telescope/barrel mark, adapted to the 108dp safe zone. -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <!-- outer lens ring -->
-    <path
-        android:strokeColor="#FFE6E6EA"
-        android:strokeWidth="3.375"
-        android:fillColor="#00000000"
-        android:pathData="M54,24.3 a22.95,22.95 0 1,0 0.01,0 Z" />
-    <!-- blue aperture and highlight -->
-    <path
-        android:fillColor="#FF4C9AFF"
-        android:pathData="M54,36.45 a10.8,10.8 0 1,0 0.01,0 Z" />
-    <path
-        android:fillColor="#D9BCDCFF"
-        android:pathData="M49.95,39.825 a3.375,3.375 0 1,0 0.01,0 Z" />
-    <!-- periscope barrel and blue base -->
-    <path
-        android:fillColor="#FFE6E6EA"
-        android:pathData="M48.6,70.2 h10.8 v14.85 h-10.8 Z" />
-    <path
-        android:fillColor="#FF4C9AFF"
-        android:pathData="M44.55,82.35 h18.9 v5.4 h-18.9 Z" />
-    <!-- barrel index marks -->
-    <path android:fillColor="#FF8A8A93" android:pathData="M27,44.55 h6.75 v2.7 H27 Z" />
-    <path android:fillColor="#FF8A8A93" android:pathData="M74.25,44.55 H81 v2.7 h-6.75 Z" />
+<!-- TeleCam Pro "machined glass" mark: a 3/4-view telephoto barrel (grip grooves, machined rim,
+     teal glass) inside the 66dp adaptive-icon safe zone. Designed 2026-10-13; the same paths drive
+     docs/assets/logo.svg, play/icon-512.svg and the feature graphic. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+  <path android:pathData="M29.6,59.8 L51.2,33.6 C56.06,29.955 64.8354,33.4472 70.8,41.4 C76.7646,49.3528 77.66,58.755 72.8,62.4 L41.6,75.8 C39.8328,77.1254 35.7138,74.6184 32.4,70.2 C29.0862,65.7816 27.8328,61.1254 29.6,59.8 Z M68.48,43.14 C73.318,49.5907 74.3388,56.9959 70.76,59.68 C67.1812,62.3641 60.358,59.3107 55.52,52.86 C50.682,46.4093 49.6612,39.0041 53.24,36.32 C56.8188,33.6359 63.642,36.6893 68.48,43.14 Z M34.12,59.16 L35.26,57.68 L45.22,70.96 L43.48,71.64 Z M38.52,55.86 L39.66,54.38 L49.62,67.66 L47.88,68.34 Z M42.92,52.56 L44.06,51.08 L54.02,64.36 L52.28,65.04 Z" android:fillType="evenOdd">
+    <aapt:attr name="android:fillColor">
+      <gradient android:type="linear" android:tileMode="clamp" android:startX="35" android:startY="36" android:endX="68" android:endY="76">
+        <item android:offset="0" android:color="#FFDCE5E6"/>
+        <item android:offset="0.5" android:color="#FFA7BBBF"/>
+        <item android:offset="1" android:color="#FF617980"/>
+      </gradient>
+    </aapt:attr>
+  </path>
+  <path android:pathData="M70.8,41.4 C76.7647,49.3529 77.6601,58.7549 72.8,62.4 C67.9399,66.0451 59.1647,62.5529 53.2,54.6 C47.2353,46.6471 46.3399,37.2451 51.2,33.6 C56.0601,29.9549 64.8353,33.4471 70.8,41.4 Z M68.48,43.14 C73.318,49.5907 74.3388,56.9959 70.76,59.68 C67.1812,62.3641 60.358,59.3107 55.52,52.86 C50.682,46.4093 49.6612,39.0041 53.24,36.32 C56.8188,33.6359 63.642,36.6893 68.48,43.14 Z" android:fillType="evenOdd" android:fillColor="#FFDCE5E6"/>
+  <path android:pathData="M66.56,44.58 C70.1388,49.3517 70.9984,54.7512 68.48,56.64 C65.9616,58.5288 61.0188,56.1917 57.44,51.42 C53.8612,46.6483 53.0016,41.2488 55.52,39.36 C58.0384,37.4712 62.9812,39.8083 66.56,44.58 Z" android:fillType="evenOdd">
+    <aapt:attr name="android:fillColor">
+      <gradient android:type="radial" android:tileMode="clamp" android:centerX="62" android:centerY="42" android:gradientRadius="19">
+        <item android:offset="0" android:color="#FF9CEBDD"/>
+        <item android:offset="0.55" android:color="#FF4BBBAF"/>
+        <item android:offset="1" android:color="#FF277A80"/>
+      </gradient>
+    </aapt:attr>
+  </path>
+  <path android:pathData="M44.72,44.96 L46.7,42.6 L49.88,46.84 L47.9,49.2 Z" android:fillType="evenOdd" android:fillColor="#FF4BBBAF"/>
+  <path android:pathData="M59.56,44.58 C60.5872,45.9497 60.8827,47.4629 60.22,47.96 C59.5573,48.4571 58.1872,47.7497 57.16,46.38 C56.1328,45.0103 55.8373,43.4971 56.5,43 C57.1627,42.5029 58.5328,43.2103 59.56,44.58 Z" android:fillType="evenOdd" android:fillColor="#FFC7FFF0"/>
 </vector>
