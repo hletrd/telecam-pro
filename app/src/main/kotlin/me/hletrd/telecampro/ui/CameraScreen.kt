@@ -204,6 +204,9 @@ import me.hletrd.telecampro.ui.overlays.HistogramOverlay
 import me.hletrd.telecampro.ui.overlays.HudPlate
 import me.hletrd.telecampro.ui.overlays.HorizonAccessibilityDirection
 import me.hletrd.telecampro.ui.overlays.LevelOverlay
+import me.hletrd.telecampro.camera.effectiveExposureNs
+import me.hletrd.telecampro.ui.overlays.manualExposureReadout
+import me.hletrd.telecampro.ui.overlays.ManualExposureReadout
 import me.hletrd.telecampro.ui.overlays.RecordingIndicator
 import me.hletrd.telecampro.ui.overlays.StatusBar
 import me.hletrd.telecampro.ui.overlays.TimerCountdown
@@ -1392,6 +1395,17 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // M shows its exposure triple at all times; with the info overlay open the Fn chips
+                // already carry the same values, so the line would only duplicate them.
+                if (!detailsVisible && state.controls.exposureMode == ExposureMode.MANUAL) {
+                    ManualExposureReadout(
+                        text = manualExposureReadout(
+                            apertureF = state.caps?.lensApertureF,
+                            exposureNs = state.controls.effectiveExposureNs(),
+                            iso = state.controls.iso,
+                        ),
+                    )
+                }
                 Box(modifier = Modifier.fillMaxWidth()) {
                     // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
                     // concepts — the selfie route has exactly one lens, so a disabled rail would

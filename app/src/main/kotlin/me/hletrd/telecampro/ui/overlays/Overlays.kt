@@ -75,6 +75,8 @@ import me.hletrd.telecampro.ui.controls.trailingEdgeFadeScrollHint
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.fillMaxWidth
 
 /**
  * Small HUD text must remain readable over a white frame. At 82% black, opaque secondary text
@@ -1362,6 +1364,38 @@ fun TimerCountdown(
                     stateDescription = accessibilityStateDescription
                     liveRegion = LiveRegionMode.Polite
                 },
+        )
+    }
+}
+
+/**
+ * The M-mode exposure line ("F2.6  1/250s  ISO 800"): in MANUAL every value is the operator's own,
+ * so it is shown at all times rather than only behind the info toggle (owner request 2026-10-14).
+ * The aperture is the active lens's fixed f-number; an afocal converter scales focal length and
+ * entrance pupil together, so the phone lens's f-number is the honest figure. A missing or
+ * non-positive aperture (no caps yet) drops that field instead of printing "F0.0".
+ */
+internal fun manualExposureReadout(apertureF: Float?, exposureNs: Long, iso: Int): String {
+    val fields = buildList {
+        if (apertureF != null && apertureF > 0f) add("F" + "%.1f".format(java.util.Locale.US, apertureF))
+        add(me.hletrd.telecampro.ui.controls.formatShutterSpeed(exposureNs))
+        add("ISO $iso")
+    }
+    return fields.joinToString("   ")
+}
+
+/** Screen-fixed (a wide row, like the OSD — CLAUDE.md glyph rules), centred above the focal rail. */
+@Composable
+fun ManualExposureReadout(text: String, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Text(
+            text = text,
+            color = Color.White,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 4.dp),
         )
     }
 }
