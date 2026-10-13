@@ -426,9 +426,14 @@ def isolated_git(
     *,
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run one export git child under the isolated configuration (bytes; raises on failure)."""
+    """Run one export git child under the isolated configuration (bytes; raises on failure).
+
+    GIT_CONFIG_GLOBAL=/dev/null also drops the user's `safe.directory` entries, so a checkout owned
+    by another uid (a shared volume) fails `rev-parse` with "dubious ownership". Command-line config
+    is a protected scope git honours for that key, so trust exactly the directory this child runs in.
+    """
     return subprocess.run(
-        ["git", *ISOLATED_GIT_CONFIG, *arguments],
+        ["git", *ISOLATED_GIT_CONFIG, "-c", f"safe.directory={cwd.resolve()}", *arguments],
         cwd=cwd,
         env=git_child_environment(os.environ if environment is None else environment, isolated=True),
         capture_output=True,
