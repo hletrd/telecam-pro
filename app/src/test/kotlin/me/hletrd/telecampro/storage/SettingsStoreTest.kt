@@ -371,6 +371,7 @@ class SettingsStoreTest {
         volumeKeyAction = HardwareKeyAction.AF_ON,
         halfPressAction = HardwareKeyAction.AEL,
         gammaAssist = true,
+        gyroLog = true,
         frameLines = FrameLineType.CINEMA,
         preserveLensSelection = false,
         preserveTeleconverter = false,
@@ -381,6 +382,29 @@ class SettingsStoreTest {
         val store = SettingsStore(FakePrefs())
         store.save(nonDefaultControls, nonDefaultExtras)
         assertEquals(SettingsStore.Loaded(nonDefaultControls, nonDefaultExtras), store.load())
+    }
+
+    @Test
+    fun `gyro log defaults OFF and an older blob or MR bank without the key restores OFF`() {
+        assertEquals(false, ExtraSettings().gyroLog)
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "preset_MR1_hasSaved" to true,
+            ),
+        )
+        val store = SettingsStore(prefs)
+        assertEquals(false, store.load()?.extras?.gyroLog)
+        assertEquals(false, store.loadPreset(MemorySlot.MR1)?.extras?.gyroLog)
+    }
+
+    @Test
+    fun `gyro log round-trips through the main blob and an MR bank`() {
+        val store = SettingsStore(FakePrefs())
+        store.save(ManualControls(), ExtraSettings(gyroLog = true))
+        assertEquals(true, store.load()?.extras?.gyroLog)
+        store.savePreset(MemorySlot.MR2, ManualControls(), ExtraSettings(gyroLog = true), "n", "s")
+        assertEquals(true, store.loadPreset(MemorySlot.MR2)?.extras?.gyroLog)
     }
 
     @Test

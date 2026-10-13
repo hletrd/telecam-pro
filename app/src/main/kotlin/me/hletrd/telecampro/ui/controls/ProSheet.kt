@@ -1510,6 +1510,16 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             tenBitEncodeAvailable = state.tenBitEncodeAvailable,
         )
     }
+    // Opt-in Gyroflow sidecar (video/GyroLogRecorder.kt). The caption names WHERE the file lands,
+    // because it is not beside the clip: MediaStore refuses non-media types under DCIM.
+    Captioned(stringResource(R.string.caption_gyro_log)) {
+        ToggleRow(
+            label = stringResource(R.string.label_gyro_log),
+            checked = state.gyroLog,
+            onCheckedChange = actions::onToggleGyroLog,
+            enabled = recordingMutable,
+        )
+    }
 
     SectionHeader(stringResource(R.string.label_audio))
     ToggleRow(

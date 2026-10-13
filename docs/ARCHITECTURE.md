@@ -15,10 +15,11 @@
 8. [Zoom & the Hybrid Camera Routes (2026-07-14)](#zoom--the-hybrid-camera-routes-2026-07-14)
 9. [Stabilization and Orientation](#stabilization-and-orientation)
 10. [Color & Video Pipeline](#color--video-pipeline)
-11. [Capture & Storage](#capture--storage)
-12. [Pro Controls Surface](#pro-controls-surface)
-13. [Build & Toolchain](#build--toolchain)
-14. [See Also](#see-also)
+11. [Gyro Log Sidecar](#gyro-log-sidecar)
+12. [Capture & Storage](#capture--storage)
+13. [Pro Controls Surface](#pro-controls-surface)
+14. [Build & Toolchain](#build--toolchain)
+15. [See Also](#see-also)
 
 ---
 
@@ -104,6 +105,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **video/** | |
 | `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
 | `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases. If detach cannot prove native release, an independent watchdog terminally quarantines the complete native graph process-long, ends Java/audio work without releasing codec/muxer/fd/Surface, and refuses another camera/REC graph until process restart. `stopNative` checks container/native finalization and freezes only provider-safe values into `RecordingStorageTail`; extractor validation, durable COMPLETE marking, publish, or invalid-row deletion run later without retaining a codec, muxer, fd, Surface, AudioRecord, or REC lease. Video input comes from GL already flipped; audio runs separately with normalized software PCM gain. A mid-REC negative `AudioRecord.read` degrades to video-only; only VIDEO faults delete. The one tolerated sample-less-audio `muxer.stop()` failure is published only after native owners close and MediaExtractor reopens an actual video track. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field. The vendor audio-HAL key `vendor_audiorecord_orientation` (which aims the Sound Focus beam / Sound Stage field) is a DIFFERENT DOMAIN from the muxer hint despite the shared input: it takes the RAW gravity device orientation, NOT `RotationMath.videoOrientationHint`. The two were the same function only while the hint was the identity; making the hint −dev on rear routes silently fed the audio HAL the mirrored landscape until they were split. |
+| `GyroflowLog.kt` / `GyroLogRecorder.kt` | Optional Gyroflow `.gcsv` v1.3 sidecar per video take (Video tab toggle, default OFF, persisted + MR-banked). `GyroflowLog` is pure and host-tested: axis map (`Xyz` rear, `xyZ` un-mirrored front, none for EXTERNAL), rolling-shutter readout direction in the ENCODED image, SensorEvent→camera-clock conversion, header/row formatting. `GyroLogRecorder` samples gyro+accel at 200 Hz on its own thread into a cacheDir temp file and writes `Documents/TeleCamPro/<stem>.gcsv` only for a SAVED clip. See § Gyro Log Sidecar. |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `AudioLevels.kt` | Pure PCM peak/RMS aggregation, channel projection, and software-gain math shared by standby metering and recording. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log), HEVC Main SDR, and AVC 8-bit SDR. Tags encoded-output profile, color space, range, and transfer; these tags do not describe the precision of every upstream stage. |
@@ -288,6 +290,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **review latest-wins work** (one shared four-daemon pool; two consumers + one conflated pending request per lane) | `MediaReview` / `ProgressiveLatestWorkLane` | Descriptor, thumbnail, full-screen still decode, and synchronous player setup. New identity supersedes pending publication immediately; Back/disposal invalidates exact ownership; late results are released instead of published. The atomic request stage makes a 5 s started-call deadline retryable while only a still-queued request reports poisoned capacity; a completion on that boundary is claimed or disposed exactly once. After synchronous player setup returns, `ExactHandlePrepareOwner` independently bounds `prepareAsync()` on the composition scope and retires/releases only the matching handle. Requests retain application Context only. Published still bitmaps transfer to Compose/GC ownership rather than being recycled while a draw node may still reference them. |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
+| **gyro-log** (HandlerThread) + **gyro-log-publish** (single daemon) | `GyroLogRecorder` | Sensor callbacks append fixed 32-byte records to the take's temp file; the publish thread converts a SAVED take's file into its MediaStore row. Neither ever runs on main, GL, encoder, recorder, or storage lanes. |
 | **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap only while the detailed armed-Video meter is visible, unobscured, and not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Invalid buffer, construction/state, start, thread-launch, and terminal-read failures consume one shared bounded generation budget with backed-off recreation; any successful PCM read resets it and clears unavailable UI. Retries recheck visible intent/paused/REC ownership and typed unavailability is surfaced only after exhaustion. |
 
 **Cross-thread visibility and ownership seams:**
@@ -1057,6 +1060,34 @@ standby exhaustion does likewise until successful PCM or explicit route intent. 
 `Starting...` before engine callbacks so that terminal label is not overwritten.
 
 ---
+
+## Gyro Log Sidecar
+
+Opt-in (`CameraUiState.gyroLog`, `ExtraSettings.gyroLog`, default OFF). The engine reads the intent
+once per take, right after recorder admission (`CameraEngine.beginGyroLog`), and freezes the geometry
+from the same route facts the encoder draw uses.
+
+- **Time base.** Rows are microseconds from the first ENCODED frame: `GlPipeline` reports the
+  SurfaceTexture timestamp it rebases the video PTS on (the encoder base) through a per-output
+  `GyroLogFirstFrameSink`, once, on the GL thread. SensorEvent times (elapsedRealtime) are moved
+  into the camera SENSOR_TIMESTAMP domain: unchanged for a REALTIME source, otherwise minus
+  `elapsedRealtimeNanos − nanoTime` sampled once at admission (the screen stays on during REC, so it
+  cannot drift). Samples are kept from 0.5 s before the first frame through stop; earlier ones drop.
+- **Axes.** The encoder buffer is device-fixed in the natural orientation (`encoderSurfaceSize`;
+  landscape holding changes only the muxer hint), so rear = `Xyz` and the true-scene front = `xyZ`.
+  The TELE afocal 180° is undone in the file and does not change the mapping. EXTERNAL writes no log.
+- **Readout.** `frame_readout_time` is the first non-null `SENSOR_ROLLING_SHUTTER_SKEW` seen during
+  the take (read in the controller's result callback only while wanted). The direction is the CW
+  rotation of the sensor's top edge into the file: PMA110 rear 3 (right→left), TELE and front 2
+  (left→right). Gyroflow documents support for 0/1 only.
+- **Lifecycle.** Every recorder claim ends sampling in `detachAndFinalizeRecording`; the storage
+  verdict (`presentRecordingStorageResult`) publishes the sidecar only for `SAVED` and deletes the
+  temp file otherwise; quarantine and `release()` drop it. At most four takes await a verdict.
+  Stale temp files from an earlier process are swept once per process.
+- **Storage.** `MediaStore.Files` row in `Documents/TeleCamPro/`, MIME `application/octet-stream`
+  (a typed `text/csv` makes MediaProvider append `.csv` to the `.gcsv` name), written under
+  `IS_PENDING=1` and deleted on any failure. A failure leaves the video published and shows one
+  `GYRO_LOG_NOT_SAVED` warning.
 
 ## Capture & Storage
 

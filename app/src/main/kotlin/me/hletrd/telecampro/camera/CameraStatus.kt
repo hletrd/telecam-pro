@@ -51,6 +51,7 @@ enum class CameraStatusMessage {
     VIDEO_SAVE_DELAYED,
     VIDEO_KEPT_UNVERIFIED,
     VIDEO_SAVE_FAILED,
+    GYRO_LOG_NOT_SAVED,
     RECORDING_WITHOUT_AUDIO,
     MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO,
     MICROPHONE_DENIED_AUDIO_OFF,
@@ -163,6 +164,8 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.USE_AUTO_WB,
         CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT,
         CameraStatusMessage.MEMORY_SLOT_EMPTY,
+        // The clip itself published; only its optional Gyroflow sidecar is missing.
+        CameraStatusMessage.GYRO_LOG_NOT_SAVED,
         -> CameraStatusSeverity.WARNING
 
         CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,

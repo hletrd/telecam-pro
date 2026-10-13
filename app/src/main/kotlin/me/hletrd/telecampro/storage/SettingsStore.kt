@@ -108,6 +108,9 @@ data class ExtraSettings(
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
     val quickButtonAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val gammaAssist: Boolean = false,
+    // Default OFF: the gyro sidecar is an opt-in workflow (Gyroflow), and a missing key — every blob
+    // or MR bank saved before it existed — must restore exactly that.
+    val gyroLog: Boolean = false,
     val frameLines: FrameLineType = FrameLineType.OFF,
     // Default ON, matching CameraUiState and the menu contract. This value is also the schema
     // migration fallback for saved blobs written before the key existed, so it must not silently
@@ -411,6 +414,7 @@ class SettingsStore(
                 halfPressAction = enumOr(safeString("${prefix}halfPressAction", null), ed.halfPressAction),
                 quickButtonAction = enumOr(safeString("${prefix}quickButtonAction", null), ed.quickButtonAction),
                 gammaAssist = safeBoolean("${prefix}gammaAssist", ed.gammaAssist),
+                gyroLog = safeBoolean("${prefix}gyroLog", ed.gyroLog),
                 frameLines = enumOr(safeString("${prefix}frameLines", null), ed.frameLines),
                 preserveLensSelection = safeBoolean("${prefix}preserveLensSelection", ed.preserveLensSelection),
                 preserveTeleconverter = safeBoolean("${prefix}preserveTeleconverter", ed.preserveTeleconverter),
@@ -501,6 +505,7 @@ class SettingsStore(
         putString("${prefix}halfPressAction", e.halfPressAction.name)
         putString("${prefix}quickButtonAction", e.quickButtonAction.name)
         putBoolean("${prefix}gammaAssist", e.gammaAssist)
+        putBoolean("${prefix}gyroLog", e.gyroLog)
         putString("${prefix}frameLines", e.frameLines.name)
         putBoolean("${prefix}preserveLensSelection", e.preserveLensSelection)
         putBoolean("${prefix}preserveTeleconverter", e.preserveTeleconverter)

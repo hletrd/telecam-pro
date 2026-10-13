@@ -267,6 +267,13 @@ class CameraEngine internal constructor(
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Optional Gyroflow .gcsv sidecar (video/GyroLogRecorder.kt). Owns its own sensor HandlerThread
+    // and publish thread, so neither REC timing nor the GL/encoder/recorder lanes ever wait on it.
+    // The operator's intent is read once per take at REC admission.
+    @Volatile private var gyroLogEnabled = false
+    private val gyroLog = me.hletrd.telecampro.video.GyroLogRecorder(context) {
+        onStatus?.invoke(CameraStatusMessage.GYRO_LOG_NOT_SAVED.status())
+    }
     // Every completed DNG publication tail uses finite process-wide capacity. Mixed-output shots
     // enqueue only the cheap transfer behind their processed sibling on [ioExecutor], while RAW-only
     // SINGLE/BURST/AEB/timelapse — and a mixed shot whose sibling was never queued — transfer
@@ -2567,6 +2574,14 @@ class CameraEngine internal constructor(
         }
         ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
+        ctrl.rollingShutterSkewSink = object : me.hletrd.telecampro.video.RollingShutterSkewSink {
+            override fun wantsRollingShutterSkew(): Boolean =
+                controller === ctrl && gyroLog.wantsRollingShutterSkew()
+
+            override fun offerRollingShutterSkew(skewNs: Long) {
+                if (controller === ctrl) gyroLog.offerRollingShutterSkew(skewNs)
+            }
+        }
         // Replay the cached debug fps-logging intent (a pre-controller toggle must not be lost).
         if (me.hletrd.telecampro.BuildConfig.DEBUG && zslSpikeLoggingWanted) ctrl.setZslSpike(true)
         // Replay the drive-side ZSL streaming gate (perf review #8): a fresh controller defaults to
@@ -6940,6 +6955,9 @@ class CameraEngine internal constructor(
         // late tail from an older clip may still finish/recover, but it cannot replace this take's
         // review or transient save verdict while this take is active.
         recordingStoragePresentation.observeCapture(recordingCaptureId)
+        // After admission so every take that starts sampling also owns a teardown that ends it
+        // (detachAndFinalizeRecording / quarantine) and a storage verdict that settles it.
+        val gyroFirstFrameSink = beginGyroLog(recordingCaptureId, name)
         ownedGl.setTransfer(glTransfer)
         fun ownsEncoderAttach(): Boolean {
             val acquisitionOpen = terminalAcquisitionGate.isOpen()
@@ -7005,6 +7023,7 @@ class CameraEngine internal constructor(
             acceptedEncoderSize.height,
             admission = encoderAdmission,
             onRuntimeFailure = reportRecorderFailure,
+            firstFrameSink = gyroFirstFrameSink,
         ) { result ->
             // GlPipeline guarantees exactly-once result delivery, so a plain atomic publication is
             // sufficient and avoids identity-CAS semantics on Kotlin's boxed Result value class.
@@ -7050,6 +7069,51 @@ class CameraEngine internal constructor(
             )
         }
         return true
+    }
+
+    /** Operator intent for the optional Gyroflow gyro log; read at the next REC admission. */
+    fun setGyroLogEnabled(enabled: Boolean) {
+        gyroLogEnabled = enabled
+    }
+
+    /**
+     * Starts the optional gyro log for an ADMITTED take, or returns null (disabled, EXTERNAL route
+     * with no fixed IMU relationship, or a released recorder). Geometry is frozen here from the same
+     * route facts the encoder draw uses: route + front mirror convention (file = true scene), sensor
+     * orientation, and the afocal content rotation ([previewRotationDegrees] is the renderer's
+     * content term, 180 on TELE). The clock offset is sampled once; see
+     * [me.hletrd.telecampro.video.GyroflowLog.sensorEventToCameraClockNs].
+     */
+    private fun beginGyroLog(
+        captureId: Int,
+        videoDisplayName: String,
+    ): me.hletrd.telecampro.video.GyroLogFirstFrameSink? {
+        if (!gyroLogEnabled) return null
+        val route = activeCameraRoute
+        val fileMirrored = me.hletrd.telecampro.video.GyroflowLog.encodedFileMirroredX(
+            frontRoute = route == CameraRoute.FRONT,
+            streamPreMirrored = activeDeviceProfile().frontStreamPreMirrored,
+        )
+        val orientation = me.hletrd.telecampro.video.GyroflowLog.orientation(route, fileMirrored) ?: return null
+        val currentCaps = caps
+        val readoutDirection = currentCaps?.sensorOrientation?.let { sensor ->
+            me.hletrd.telecampro.video.GyroflowLog.readoutDirection(sensor, previewRotationDegrees(), fileMirrored)
+        }
+        val realtime = currentCaps?.timestampSource ==
+            android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+        return gyroLog.begin(
+            me.hletrd.telecampro.video.GyroLogRecorder.Spec(
+                captureId = captureId,
+                videoDisplayName = videoDisplayName,
+                orientation = orientation,
+                readoutDirection = readoutDirection,
+                cameraTimestampRealtime = realtime,
+                realtimeMinusMonotonicNs = android.os.SystemClock.elapsedRealtimeNanos() - System.nanoTime(),
+                unixStartSeconds = System.currentTimeMillis() / 1_000L,
+                note = BuildConfig.VERSION_NAME,
+                vendor = android.os.Build.MANUFACTURER.orEmpty(),
+            ),
+        )
     }
 
     private fun completeRecorderSetup(owner: RecorderSetupOwner) {
@@ -7240,6 +7304,9 @@ class CameraEngine internal constructor(
         captureId: Int,
     ) {
         recorderTeardownInFlight = true
+        // Every claim (stop, failure, pause, camera error, release) funnels here: the take is over,
+        // so the IMU stream stops now; its sidecar waits for the storage verdict.
+        gyroLog.endSampling(captureId)
         val finalizationOwner = RecorderFinalizationOwner(
             recorder = rec,
             captureId = captureId,
@@ -7790,6 +7857,12 @@ class CameraEngine internal constructor(
     private fun presentRecordingStorageResult(
         terminal: RecordingStorageTerminalResult<android.net.Uri>,
     ) {
+        // Only a SAVED (public) clip earns its gyro sidecar; retained/unvalidated/failed takes drop
+        // it, so a .gcsv can never describe a file the gallery does not show.
+        gyroLog.complete(
+            terminal.captureId,
+            published = terminal.disposition == RecordingStorageTerminalDisposition.SAVED,
+        )
         fun present(result: RecordingStorageTerminalResult<android.net.Uri>, current: Boolean) {
             val presentation = recordingStoragePresentationFor(
                 disposition = result.disposition,
@@ -7820,6 +7893,9 @@ class CameraEngine internal constructor(
         // Close process admission before recorder callbacks or AudioRecord.stop can re-enter app
         // work. A fresh Engine observes the same irreversible gate.
         if (!UnsafeRecorderQuarantine.retain(rec)) return
+        // A quarantined graph never reaches a live storage verdict; launch recovery may adopt the
+        // clip later, but its gyro log is dropped (no sidecar without a live publication).
+        gyroLog.complete(captureId, published = false)
         terminalAcquisitionGate.close()
         startupTraceOwnership.revoke()
         synchronized(this) {
@@ -8254,6 +8330,7 @@ class CameraEngine internal constructor(
             }
         }
         gyro.stop()
+        gyroLog.release()
         val ctrl = synchronized(this) {
             val current = controller
             controller = null

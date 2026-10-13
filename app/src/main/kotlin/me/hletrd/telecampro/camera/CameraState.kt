@@ -1779,6 +1779,9 @@ data class CameraUiState(
     // Gamma Display Assist (Sony): while shooting a log profile, the MONITOR shows the normal
     // 709-ish image and only the FILE stays log. Off = judge the flat log directly.
     val gammaAssist: Boolean = false,
+    // Optional Gyroflow .gcsv sidecar per video take (Documents/TeleCamPro). No viewfinder chrome:
+    // the Video menu row is its only surface, and a failed sidecar is one status line.
+    val gyroLog: Boolean = false,
     // Delivery-framing markers over the viewfinder.
     val frameLines: FrameLineType = FrameLineType.OFF,
     // Battery % and free storage for the OSD info pill (refreshed by a slow ticker; -1 = unknown).

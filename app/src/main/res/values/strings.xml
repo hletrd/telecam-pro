@@ -42,6 +42,8 @@
     <string name="label_bitrate">Bitrate</string>
     <string name="label_recording">Recording</string>
     <string name="label_record_audio">Record Audio</string>
+    <string name="label_gyro_log">Gyro Log (Gyroflow)</string>
+    <string name="caption_gyro_log">Saves a .gcsv gyro log for each clip to Documents/TeleCamPro</string>
     <string name="label_mic_input">Mic Input</string>
     <string name="label_gain">Gain</string>
     <string name="label_directionality">Directionality</string>
@@ -234,6 +236,7 @@
     <string name="status_video_save_delayed">Video kept privately. It is saved after the app is fully closed and opened again.</string>
     <string name="status_video_kept_unverified">Video kept privately. It is checked after the app is fully closed and opened again.</string>
     <string name="status_video_save_failed">Video save failed</string>
+    <string name="status_gyro_log_not_saved">Gyro log not saved</string>
     <string name="status_recording_without_audio">Recording without audio</string>
     <string name="status_microphone_denied_recording_without_audio">Microphone denied — recording without audio</string>
     <string name="status_microphone_denied_audio_off">Microphone denied — audio off</string>

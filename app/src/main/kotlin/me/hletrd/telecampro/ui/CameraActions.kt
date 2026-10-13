@@ -150,6 +150,8 @@ interface CameraActions {
     fun onToggleHistogram(enabled: Boolean)
     fun onToggleWaveform(enabled: Boolean)
     fun onToggleGammaAssist(enabled: Boolean)
+    /** Optional Gyroflow .gcsv sidecar per video take (Video tab). */
+    fun onToggleGyroLog(enabled: Boolean)
     fun onFrameLines(type: FrameLineType)
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)

@@ -107,6 +107,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onToggleHistogram(enabled: Boolean) = Unit
     override fun onToggleWaveform(enabled: Boolean) = Unit
     override fun onToggleGammaAssist(enabled: Boolean) = Unit
+    override fun onToggleGyroLog(enabled: Boolean) = Unit
     override fun onFrameLines(type: FrameLineType) = Unit
     override fun onAfSpotSize(size: me.hletrd.telecampro.camera.AfSpotSize) = Unit
     override fun onCaptureCustomWb() = Unit

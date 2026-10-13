@@ -1791,6 +1791,7 @@ class CameraViewModel private constructor(
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(exposureAnalysisRequired(cSynced))
         engine.setGammaAssist(e.gammaAssist)
+        engine.setGyroLogEnabled(e.gyroLog)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
         engine.setDriveMode(e.driveMode)
@@ -1874,6 +1875,7 @@ class CameraViewModel private constructor(
                 audioGain = normalizeAudioGain(e.audioGain),
                 audioScene = e.audioScene,
                 gammaAssist = e.gammaAssist,
+                gyroLog = e.gyroLog,
                 frameLines = e.frameLines,
                 audioInputPreference = e.audioInputPreference,
                 audioRoute = audioInputStatus(e.audioInputPreference).route,
@@ -1971,6 +1973,7 @@ class CameraViewModel private constructor(
             halfPressAction = s.halfPressAction,
             quickButtonAction = s.quickButtonAction,
             gammaAssist = s.gammaAssist,
+            gyroLog = s.gyroLog,
             frameLines = s.frameLines,
             preserveLensSelection = s.preserveLensSelection,
             preserveTeleconverter = s.preserveTeleconverter,
@@ -2940,6 +2943,15 @@ class CameraViewModel private constructor(
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
+    override fun onToggleGyroLog(enabled: Boolean) {
+        // Read once per take at REC admission; refusing mid-take keeps the row honest about the
+        // clip that is rolling (the same rule as Record Audio).
+        if (rejectIfRecording()) return
+        engine.setGyroLogEnabled(enabled)
+        _state.update { it.copy(gyroLog = enabled, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
+    }
+
     override fun onToggleRecordAudio(enabled: Boolean) {
         if (rejectIfRecording()) return
         _state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }

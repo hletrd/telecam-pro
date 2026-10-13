@@ -790,6 +790,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   audio rendezvous (audio off keeps it) and NOT fixed by KEY_PRIORITY 0 + KEY_OPERATING_RATE
   (tried, no gain, reverted). Root cause still open. Measure drops from the FILE only: a
   `dumpsys media.camera` during REC is itself heavy enough to cause GL-side drops.
+- **The Gyroflow gyro log (`.gcsv`, opt-in) lands in `Documents/TeleCamPro/`, not beside the clip,
+  and is typed `application/octet-stream` (2026-10-14, UNVERIFIED on device).** MediaProvider refuses
+  non-media MIME types under DCIM, and a typed `text/csv` makes it append `.csv` to the `.gcsv` name
+  (`FileUtils.splitFileName`), which breaks Gyroflow's same-stem lookup. Rows are timed against the
+  encoder's first-frame SurfaceTexture timestamp (video PTS 0) in the camera clock domain. The
+  written readout direction is the true geometry (PMA110 rear 3, TELE/front 2), but Gyroflow
+  documents support for 0/1 only. Sync, axis signs, and readout behaviour still need an on-device
+  Gyroflow import (rear, TELE, front) before any of it is claimed.
 - **PROPRIETARY / LICENSED HDR FORMATS ARE OUT OF SCOPE — do not add them, do not probe for them
   (owner decision 2026-08-04).** The video ladder is HEVC and AVC only. Some vendor encoders on this
   SoC advertise trademarked HDR formats and the platform muxer will accept them, so this is

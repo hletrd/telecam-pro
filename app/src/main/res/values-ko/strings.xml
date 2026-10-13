@@ -38,6 +38,8 @@
     <string name="label_bitrate">비트레이트</string>
     <string name="label_recording">녹화</string>
     <string name="label_record_audio">오디오 녹음</string>
+    <string name="label_gyro_log">자이로 로그 (Gyroflow)</string>
+    <string name="caption_gyro_log">클립마다 자이로 기록(.gcsv)을 Documents/TeleCamPro 폴더에 저장합니다</string>
     <string name="label_mic_input">마이크 입력</string>
     <string name="label_gain">게인</string>
     <string name="label_directionality">지향성</string>
@@ -225,6 +227,7 @@
     <string name="status_video_save_delayed">동영상을 임시 보관했습니다. 앱을 완전히 종료한 뒤 다시 열면 저장됩니다.</string>
     <string name="status_video_kept_unverified">동영상을 임시 보관했습니다. 앱을 완전히 종료한 뒤 다시 열면 확인합니다.</string>
     <string name="status_video_save_failed">동영상 저장에 실패했습니다</string>
+    <string name="status_gyro_log_not_saved">자이로 로그를 저장하지 못했습니다</string>
     <string name="status_recording_without_audio">오디오 없이 녹화합니다</string>
     <string name="status_microphone_denied_recording_without_audio">마이크 권한이 거부되어 오디오 없이 녹화합니다</string>
     <string name="status_microphone_denied_audio_off">마이크 권한이 거부되어 오디오를 끕니다</string>

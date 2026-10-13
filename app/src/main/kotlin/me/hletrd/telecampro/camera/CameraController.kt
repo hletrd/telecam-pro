@@ -266,6 +266,11 @@ class CameraController internal constructor(
     // lock/fail distinction is the point of tap-AF). Raw CONTROL_AF_STATE int, reported ~3 Hz,
     // change-gated like the exposure readout; the engine maps it to the UI enum.
     @Volatile var onAfState: ((Int) -> Unit)? = null
+    // Optional Gyroflow gyro-log readout probe. SENSOR_ROLLING_SHUTTER_SKEW is read ONLY while the
+    // sink asks (one volatile read per result otherwise): result.get boxes a Long, and this is the
+    // hottest callback in the app, so an unconditional read would be steady-state garbage for a
+    // value the log needs once per take.
+    @Volatile var rollingShutterSkewSink: me.hletrd.telecampro.video.RollingShutterSkewSink? = null
     private var lastReportedFocus = Float.NaN
     private var lastReportedAfState = -1
 
@@ -1099,6 +1104,9 @@ class CameraController internal constructor(
                         }
                     }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                    rollingShutterSkewSink?.takeIf { it.wantsRollingShutterSkew() }?.let { sink ->
+                        result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)?.let(sink::offerRollingShutterSkew)
+                    }
                     // Custom WB deliberately does not retain or read a cached value: it owns a
                     // fresh tagged unlocked-AUTO request and accepts only its converged result.
                     // The gains .get lives INSIDE the sample gate (PERF4-3): result.get for an

@@ -16,6 +16,7 @@ import me.hletrd.telecampro.camera.MotionInversionData
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.WaveformData
+import me.hletrd.telecampro.video.GyroLogFirstFrameSink
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
 import me.hletrd.telecampro.video.NativeAcquisitionRefusedException
 import me.hletrd.telecampro.video.NativeAcquisitionRefusalPhase
@@ -124,6 +125,9 @@ class GlPipeline(
     // recorded frame so both tracks start near 0 (see docs/reviews record-pipeline #9).
     private var encoderBaseNs = 0L
     private var encoderBaseSet = false
+    // GL-thread only. Told the encoder base exactly once per output (the optional Gyroflow gyro
+    // log rebases its IMU rows onto the same first-frame timestamp the video PTS starts from).
+    private var encoderFirstFrameSink: GyroLogFirstFrameSink? = null
 
     private var transfer: ColorTransfer? = null
     // Front-route stream-mirror fact. ROUTE state like the rotation/sensor-orientation pair (NOT a
@@ -706,6 +710,7 @@ class GlPipeline(
         height: Int,
         admission: EncoderOutputAdmission? = null,
         onRuntimeFailure: ((Throwable) -> Unit)? = null,
+        firstFrameSink: GyroLogFirstFrameSink? = null,
         onApplied: ((Result<Unit>) -> Unit)? = null,
     ) {
         val h = handler
@@ -793,6 +798,7 @@ class GlPipeline(
                         encoderH = height
                         encoderEgl = accepted
                         encoderSignal = signal
+                        encoderFirstFrameSink = firstFrameSink
                     },
                     discard = { revoked ->
                         try {
@@ -830,6 +836,7 @@ class GlPipeline(
         // Each output owns an independent sensor-clock rebase.
         encoderBaseSet = false
         encoderBaseNs = 0L
+        encoderFirstFrameSink = null
     }
 
     /** Releases the current encoder EGLSurface before resolving its pending attachment. */
@@ -1281,7 +1288,12 @@ class GlPipeline(
                 renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontRoute, frontStreamPreMirrored))
                 // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
                 val ts = st.timestamp
-                if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
+                if (!encoderBaseSet && ts > 0L) {
+                    encoderBaseNs = ts
+                    encoderBaseSet = true
+                    // One atomic store on the sink side; never blocks the encoder draw.
+                    encoderFirstFrameSink?.let { sink -> runCatching { sink.onFirstEncodedFrame(ts) } }
+                }
                 core.setPresentationTime(ownedEncoder, if (encoderBaseSet) ts - encoderBaseNs else 0L)
                 core.swapBuffers(ownedEncoder)
                 encoderFrameSwapped = true
