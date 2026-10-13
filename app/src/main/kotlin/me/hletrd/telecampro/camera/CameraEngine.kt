@@ -7984,6 +7984,7 @@ class CameraEngine internal constructor(
 
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
+        refreshDebugExperiments()
         // Cold-start stopwatch origin (cycle 8 S6): resume is the earliest point the app itself
         // controls — everything before it is process/Activity bring-up the system owns. Idempotent,
         // so a resume that finds the camera already live cannot restart a running measurement.
@@ -8243,6 +8244,8 @@ class CameraEngine internal constructor(
      * into the session's `tenBitHlg`, so a leftover flag file turned PHOTO into the still-less HLG10
      * rung — a debug photo mode that could not shoot, contradicting this very doc; AGG-45.)
      */
+    internal fun refreshDebugExperiments() = DebugToneCurveExperiment.refresh(context.getExternalFilesDir(null))
+
     internal fun tenBitExperimentEnabled(): Boolean =
         BuildConfig.DEBUG &&
             runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }

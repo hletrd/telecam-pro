@@ -1061,6 +1061,7 @@ class CameraController internal constructor(
                 applyVideoStab()
                 applyTeleconverterHints()
                 applyMetering(this, controls)
+                DebugToneCurveExperiment.apply(this)
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
