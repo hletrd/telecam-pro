@@ -79,6 +79,7 @@ class PerformQuickFnTest {
         override fun onToggleAwbLock(locked: Boolean) = hit("onToggleAwbLock")
         override fun onMeteringMode(mode: MeteringMode) = hit("onMeteringMode($mode)")
         override fun onAfSpotSize(size: AfSpotSize) = hit("onAfSpotSize")
+        override fun onToggleFacePriorityAf(enabled: Boolean) = hit("onToggleFacePriorityAf")
         override fun onCaptureCustomWb() = hit("onCaptureCustomWb")
         override fun onEdge(level: ProcessingLevel) = hit("onEdge")
         override fun onNoiseReduction(level: ProcessingLevel) = hit("onNoiseReduction")

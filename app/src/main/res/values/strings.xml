@@ -28,6 +28,9 @@
     <string name="label_awb_lock">AWB Lock</string>
     <string name="label_spot_size">Spot Size</string>
     <string name="label_af_lock">AF Lock</string>
+    <string name="label_face_priority_af">Face Priority AF</string>
+    <string name="caption_face_priority_af">Focuses on detected faces in Auto and Continuous AF</string>
+    <string name="caption_face_priority_af_unavailable">Not available on this camera</string>
     <string name="label_tap_focus">Tap Focus</string>
     <string name="label_peaking">Peaking</string>
     <string name="label_peaking_level">Peaking Level</string>

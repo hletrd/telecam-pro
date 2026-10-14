@@ -151,6 +151,7 @@ class SettingsStoreTest {
         awbLock = true,
         meteringMode = MeteringMode.SPOT,
         afSpotSize = AfSpotSize.LARGE,
+        facePriorityAf = true,
         edge = ProcessingLevel.HIGH_QUALITY,
         noiseReduction = ProcessingLevel.FAST,
         colorEffect = ColorEffect.MONO,
@@ -396,6 +397,32 @@ class SettingsStoreTest {
         val store = SettingsStore(prefs)
         assertEquals(false, store.load()?.extras?.gyroLog)
         assertEquals(false, store.loadPreset(MemorySlot.MR1)?.extras?.gyroLog)
+    }
+
+    @Test
+    fun `face priority AF defaults OFF and an older blob or MR bank without the key restores OFF`() {
+        assertEquals(false, ManualControls().facePriorityAf)
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "preset_MR1_hasSaved" to true,
+            ),
+        )
+        val store = SettingsStore(prefs)
+        assertEquals(false, store.load()?.controls?.facePriorityAf)
+        assertEquals(false, store.loadPreset(MemorySlot.MR1)?.controls?.facePriorityAf)
+    }
+
+    @Test
+    fun `face priority AF round-trips through the main blob and an MR bank`() {
+        val store = SettingsStore(FakePrefs())
+        store.save(ManualControls(facePriorityAf = true), ExtraSettings())
+        assertEquals(true, store.load()?.controls?.facePriorityAf)
+        store.savePreset(MemorySlot.MR3, ManualControls(facePriorityAf = true), ExtraSettings(), "n", "s")
+        assertEquals(true, store.loadPreset(MemorySlot.MR3)?.controls?.facePriorityAf)
+        // An MR bank saved with the feature OFF recalls OFF even while the live blob holds ON.
+        store.savePreset(MemorySlot.MR1, ManualControls(), ExtraSettings(), "n", "s")
+        assertEquals(false, store.loadPreset(MemorySlot.MR1)?.controls?.facePriorityAf)
     }
 
     @Test

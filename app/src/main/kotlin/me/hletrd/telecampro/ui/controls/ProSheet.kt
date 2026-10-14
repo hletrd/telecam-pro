@@ -1174,6 +1174,24 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
             enabled = availability.afLockEnabled,
         )
     }
+    // Face Priority AF (FacePriority.kt). The switch shows the preference only where the route can
+    // honor it — an unsupported route reads OFF with the unavailable caption, while the persisted
+    // choice survives for the next route that can. Enabled only in Auto/Continuous AF; MF owns the
+    // lens. No caption before caps arrive: "unavailable" would be a guess.
+    Captioned(
+        when {
+            availability.facePriorityAfAvailable -> stringResource(R.string.caption_face_priority_af)
+            state.caps != null -> stringResource(R.string.caption_face_priority_af_unavailable)
+            else -> null
+        },
+    ) {
+        ToggleRow(
+            label = stringResource(R.string.label_face_priority_af),
+            checked = controls.facePriorityAf && availability.facePriorityAfAvailable,
+            onCheckedChange = actions::onToggleFacePriorityAf,
+            enabled = availability.facePriorityAfEnabled,
+        )
+    }
     LabelValueRow(
         label = stringResource(R.string.label_tap_focus),
         // "None", not "No point": in a value slot that phrase reads as "there is no point". The

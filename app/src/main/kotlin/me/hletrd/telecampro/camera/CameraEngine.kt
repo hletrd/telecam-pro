@@ -1942,6 +1942,12 @@ class CameraEngine internal constructor(
     var onFocusDistance: ((Float) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.FOCUS_DISTANCE)
         set(value) = callbackSink.install(EngineCallbackKey.FOCUS_DISTANCE, value)
+    // Face Priority AF frames, already mapped to VIEW-normalized coordinates (FacePriority.kt).
+    // Fired from the camera thread at most 10 Hz and only on a material change; an empty list
+    // clears the overlay (detection off, controller replaced).
+    var onFaceBoxes: ((List<FaceBox>) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.FACE_BOXES)
+        set(value) = callbackSink.install(EngineCallbackKey.FACE_BOXES, value)
     // The most recently saved displayable media (HEIF/JPEG/video) URI + its capture-sequence id, for
     // the gallery thumbnail + in-app review. Fired from the io thread after the file publishes. The
     // id groups every output of one shutter press so review-Delete can remove the whole shot.
@@ -2583,6 +2589,10 @@ class CameraEngine internal constructor(
         }
         ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
+        ctrl.onFaces = { frame -> if (controller === ctrl) publishFaceFrame(frame) }
+        // A replacement controller starts with no faces; frames from the outgoing route's geometry
+        // must not linger over the new one until its first readout.
+        onFaceBoxes?.invoke(emptyList())
         ctrl.rollingShutterSkewSink = object : me.hletrd.telecampro.video.RollingShutterSkewSink {
             override fun wantsRollingShutterSkew(): Boolean =
                 controller === ctrl && gyroLog.wantsRollingShutterSkew()
@@ -3469,6 +3479,35 @@ class CameraEngine internal constructor(
             return@synchronized true
         }
         submitTapFocusLocked(attempt)
+    }
+
+    /**
+     * Camera thread (via the controller's identity-gated callback): maps one face readout onto the
+     * preview with the SAME geometry sources [setTapPoint] composes — sensor orientation, afocal
+     * 180°, loupe crop + center, front metering mirror, window rotation — plus the stream crop the
+     * tap path does not model (a 16:9 video stream shows only the middle of the 4:3 array). Every
+     * input is a lock-free volatile read; nothing here takes the engine monitor, so the camera
+     * thread never waits on main. Pure geometry lives in FacePriority.kt (host-tested).
+     */
+    private fun publishFaceFrame(frame: FaceFrame) {
+        val sink = onFaceBoxes ?: return
+        if (frame.faces.isEmpty()) { sink(emptyList()); return }
+        val c = caps ?: return
+        val front = activeCameraRoute == CameraRoute.FRONT
+        val stream = previewStreamSize
+        val geometry = FaceViewGeometry(
+            sensorOrientation = c.sensorOrientation,
+            afocal180 = teleconverterMode,
+            punchActive = rendererAssists.isPunchInEnabled(),
+            loupeSensorCenter = loupeCenterSensorX to loupeCenterSensorY,
+            meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
+                front,
+                activeDeviceProfile().frontStreamPreMirrored,
+            ),
+            windowRotationDeg = rendererAssists.windowRotationDegrees(),
+            streamCrop = streamSourceCrop(stream.width, stream.height, frame.arrayWidth, frame.arrayHeight),
+        )
+        sink(faceBoxesForView(frame.faces, geometry))
     }
 
     /** Engine-monitor-only: submits a mapped point after exact accepted-session revalidation. */

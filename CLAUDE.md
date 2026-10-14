@@ -758,6 +758,23 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   frontFacing)` suppresses the loupe (toggle kept, restored on the rear). The RAW exclusion is a
   scope decision, not a measured HAL fault — the front route KEEPS its processed still readers
   (deep YUV → shallow YUV → HAL-JPEG); front RAW is simply unmeasured on every device.
+- **Face Priority AF is the HAL's FACE_PRIORITY scene mode, never app-steered regions
+  (2026-10-14; on-device behaviour UNVERIFIED — `docs/FIELD_CHECKS.md` A16).** Device-read facts:
+  every PMA110 camera advertises `availableFaceDetectModes = [OFF, SIMPLE]`, `maxFaceCount = 10`, and
+  `availableSceneModes` containing FACE_PRIORITY (1). With the persisted Focus-tab toggle on (default
+  OFF writes no key — the request stays byte-identical) and AF-S/AF-C, `facePriorityKeysFor` puts
+  `STATISTICS_FACE_DETECT_MODE = SIMPLE` + `CONTROL_MODE = USE_SCENE_MODE` + `CONTROL_SCENE_MODE =
+  FACE_PRIORITY` on the repeating AND still requests through `applyAfOverrides` (the one applier all
+  three paths share); a held tap-AF or AF Lock keeps precedence by writing AUTO/DISABLED there instead.
+  Per spec FACE_PRIORITY is the one scene mode that keeps `aeMode`/`awbMode`/`afMode` active, so it
+  also rides AE-OFF (S/ISO/M, app-side P) requests and manual exposure must stay in force — A16 checks
+  exactly that, and a failure means restricting the scene half to HAL-AE packets. **Do not add
+  per-frame AF/AE regions from face results**: every repeating-request swap stalls this HAL ~180 ms,
+  so app-steered face AF would make a moving face a slideshow. `STATISTICS_FACES` is read only to draw
+  frames: time-gated to 10 Hz BEFORE the metadata read, change-gated, never logged, mapped to the view
+  as the exact inverse of `mapTapFocusGeometry`'s metering half (round-trip host-tested) plus the
+  stream crop the tap path does not model; the HAL-EIS crop of a stabilized video stream is not
+  modelled either.
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.
   Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
   `c2.android.av1.encoder` — too slow/low-res to ship). **APV** (`VideoCodec.APV`, HW
@@ -1373,6 +1390,7 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ ZslAdmission     pure pseudo-ZSL serve/refuse predicate (logical/front photo routes)
+             ├─ FacePriority     Face Priority AF gate/request keys/readout gate/sensor→view map (pure)
              ├─ StartupTrace     buffered debug cold-start stopwatch (one line; quota-safe)
              ├─ focus/MacroProximity focus-confidence proofs + hold + OSD wording (pure+tested)
              ├─ capture/StillCapturePipeline (processed + RAW save orchestration)

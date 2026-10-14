@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-two remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -18,7 +18,8 @@ capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the expos
 both tablets, **A11** needs a Video→Photo→FRONT→Video trip and a clip's frame rate, **A12** needs a
 few FRONT presses with DNG on, **A13** needs the status plate watched through reopens and a mic-less
 REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log REC take with a still
-inside it, **D1** needs an off-axis sound source,
+inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
+**D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
 run of ordinary clips plus one more take, and **E1/E2/E3/E4** need real MediaProvider ownership,
@@ -424,6 +425,36 @@ in-REC still looks like an ordinary photo (not flat), and its EXIF exposure matc
 assist preview reads as a plausible un-S-curved image; zebra/false-color trigger on the bright areas
 rather than going dead; no CAMERA_ERROR and no preview stall beyond the ordinary reopen. Record
 whether highlights show local-tone-mapping halos (LTM under a programmed curve is unmeasured).
+
+### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
+
+Face Priority AF (`camera/FacePriority.kt`) puts `CONTROL_MODE = USE_SCENE_MODE`,
+`CONTROL_SCENE_MODE = FACE_PRIORITY` and `STATISTICS_FACE_DETECT_MODE = SIMPLE` on the repeating and
+still requests and draws the HAL's `STATISTICS_FACES` as corner frames. Only the capability facts are
+device-read (every PMA110 camera advertises `[OFF, SIMPLE]`, 10 faces, FACE_PRIORITY — dumpsys
+2026-10-14); the HAL's behaviour under those keys, and the frame geometry, have host tests only. The
+geometry is the exact inverse of the tap → metering mapping, which itself carries an uncalibrated
+note, and the HAL-EIS crop of a stabilized video stream is not modelled.
+
+- PMA110, Focus tab → **Face Priority AF** on, AF-C. A person (or a printed face) ~1–2 m away.
+- **Rear PHOTO, portrait:** frames sit on the face and move with it; the largest face turns green
+  once AF settles. Repeat held in **both landscape directions**.
+- **TELE** (converter on, or TELE mode without glass at a distant face): the frame stays on the face
+  (afocal 180° term). **FRONT:** frame on the face, moving the same way as the face in the mirrored
+  preview. **VIDEO 16:9** with stabilization **Active**: note any vertical/scale offset (stream crop
+  is modelled, the EIS margin is not). Record one clip and confirm frames stay up during REC.
+- **AF:** two faces at different distances — the focus lands on the green one; a tap elsewhere holds
+  the tap (frames turn white) and Reset returns AF to faces.
+- **Manual exposure unaffected:** M mode, ISO 400 · 1/125 s, a face in frame. Take one still with the
+  feature off and one with it on; both EXIF must read ISO 400 / 1/125 s and look equally bright.
+  Repeat in photo P (app-side) and compare the settled ISO/shutter with the feature on and off.
+- `adb logcat -d | grep -E "FrameGap|CAMERA_ERROR"` across the session.
+
+**Pass:** frames track the face upright in every route and orientation (record any offset per route);
+AF settles on a face; M-mode EXIF matches the dial values with the feature on; no `CAMERA_ERROR` and
+no `FrameGap` summary beyond the ordinary one-swap toggle edge. A manual-exposure mismatch is a fail
+that means this HAL does not keep aeMode active under FACE_PRIORITY: restrict the scene half of
+`facePriorityKeysFor` to HAL-AE packets (detection and frames stay) and correct `CLAUDE.md`.
 
 ---
 

@@ -239,6 +239,15 @@ data class CameraCaps(
     val toneMapModes: IntArray = IntArray(0),
     /** TONEMAP_MAX_CURVE_POINTS (512 on every PMA110 camera); 0 when unreported. */
     val maxCurvePoints: Int = 0,
+    /**
+     * STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES / _MAX_FACE_COUNT and CONTROL_AVAILABLE_SCENE_MODES,
+     * the three facts behind the Face Priority AF gate ([facePriorityAfAvailable]). PMA110: [OFF,
+     * SIMPLE], 10, and FACE_PRIORITY present on every camera (dumpsys 2026-10-14). Defaulted (absent)
+     * so every capability fixture that predates the feature reads "unavailable".
+     */
+    val faceDetectModes: IntArray = IntArray(0),
+    val maxFaceCount: Int = 0,
+    val sceneModes: IntArray = IntArray(0),
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
@@ -247,6 +256,9 @@ data class CameraCaps(
     // bug. Effect support is likewise not a helper here: ControlAvailability and ManualControls both
     // resolve effects through the exact-advertised-value seam, which is what request normalization
     // uses, so a second contains() shortcut could only drift from it.
+
+    /** The Face Priority AF gate's inputs for this route. */
+    internal fun faceCapability(): FaceCapability = FaceCapability(faceDetectModes, maxFaceCount, sceneModes)
 
     internal fun lensExifMetadata(): LensExifMetadata =
         LensExifMetadata(lensFocalLengthMm, lensApertureF, equivalentFocalMm, minFocusDistanceDiopters)
@@ -497,6 +509,10 @@ data class CameraCaps(
                 highSpeedConfigs = highSpeed,
                 toneMapModes = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: IntArray(0),
                 maxCurvePoints = chars.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 0,
+                faceDetectModes = chars.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)
+                    ?: IntArray(0),
+                maxFaceCount = chars.get(CameraCharacteristics.STATISTICS_INFO_MAX_FACE_COUNT) ?: 0,
+                sceneModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES) ?: IntArray(0),
             )
         }
     }
@@ -543,6 +559,8 @@ internal data class CameraControlCapabilities(
     // multicamera whose gralloc rejects the big blob). Folds the standalone+advertised axes of
     // [hiResAdmitted]; the LIVE mode/aspect axes stay with the UI via [hiResToggleEnabled].
     val hiResAdvertisedStandalone: Boolean = false,
+    // Face Priority AF gate facts ([facePriorityAfAvailable]); absent = unavailable.
+    val face: FaceCapability = FaceCapability(IntArray(0), 0, IntArray(0)),
 )
 
 // Per-instance cache (perf review #9): CameraCaps is an immutable per-route snapshot, but this
@@ -584,6 +602,7 @@ private fun CameraCaps.buildControlCapabilities(): CameraControlCapabilities = C
     edgeModes = edgeModes,
     noiseReductionModes = noiseReductionModes,
     hiResAdvertisedStandalone = hiResJpegSize != null && physicalId == null && !isLogicalMultiCamera,
+    face = faceCapability(),
 )
 
 /**

@@ -154,6 +154,8 @@ import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.finderRect
 import me.hletrd.telecampro.camera.finderContainsTopLeftPoint
 import me.hletrd.telecampro.camera.teleFinderVisible
+import me.hletrd.telecampro.camera.faceFrameFocused
+import me.hletrd.telecampro.camera.faceFramesVisible
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.ShutterTimer
@@ -198,6 +200,7 @@ import me.hletrd.telecampro.ui.overlays.AspectMask
 import me.hletrd.telecampro.ui.overlays.AudioMeter
 import me.hletrd.telecampro.ui.overlays.FrameLinesOverlay
 import me.hletrd.telecampro.ui.overlays.FocusReticle
+import me.hletrd.telecampro.ui.overlays.FaceFrameOverlay
 import me.hletrd.telecampro.ui.overlays.FocusResultLiveRegion
 import me.hletrd.telecampro.ui.overlays.GridOverlay
 import me.hletrd.telecampro.ui.overlays.HistogramOverlay
@@ -952,6 +955,25 @@ fun CameraScreen(
 
             AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
 
+            // Face Priority AF frames: inside the aspect box (view-normalized like the tap reticle),
+            // below the reticle so a tap's bracket stays on top. Kept while recording, as Sony does.
+            if (faceFramesVisible(
+                    enabled = state.controls.facePriorityAf,
+                    cap = state.caps?.faceCapability(),
+                    focusMode = state.controls.focusMode,
+                    cameraReady = state.cameraReady,
+                    modalOpen = state.cameraInputBlocked,
+                    boxes = state.faceBoxes,
+                )
+            ) {
+                FaceFrameOverlay(
+                    boxes = state.faceBoxes,
+                    focusedPrimary = state.faceBoxes.any {
+                        faceFrameFocused(it, state.afIndication, state.tapFocusHeld, state.controls.afLock)
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
             FocusReticle(
                 point = state.tapPoint,
                 indication = state.afIndication,

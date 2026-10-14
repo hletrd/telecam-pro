@@ -24,6 +24,9 @@
     <string name="label_awb_lock">AWB 잠금</string>
     <string name="label_spot_size">스팟 크기</string>
     <string name="label_af_lock">AF 잠금</string>
+    <string name="label_face_priority_af">얼굴 우선 AF</string>
+    <string name="caption_face_priority_af">자동·연속 AF에서 감지한 얼굴에 초점을 맞춥니다</string>
+    <string name="caption_face_priority_af_unavailable">이 카메라에서는 사용할 수 없습니다</string>
     <string name="label_tap_focus">탭 초점</string>
     <string name="label_peaking">피킹</string>
     <string name="label_peaking_level">피킹 레벨</string>

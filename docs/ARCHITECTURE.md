@@ -69,6 +69,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Loupe Overview intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. Motion arming, provider, and evidence epoch publish as one atomic replay record. |
 | `StandbyAudioController.kt` | Owns the armed-video standby meter lifecycle, bounded AudioRecord recreation, and exact `StandbyMeterOwnership` handoff to REC. Native create/start/stop/release use one process-gate publication token: every constructed input (including validation failures) is bound before acquisition returns current, and any timeout, exception, rejected return, or unproven release quarantines and strongly retains it before abandonment or waiter release. All engine dependencies are live lambdas so a retired meter generation cannot reclaim a newer intent. |
 | `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
+| `FacePriority.kt` | Face Priority AF, pure and host-tested: the capability gate (non-OFF face-detect mode + face count + `CONTROL_SCENE_MODE_FACE_PRIORITY`), the request-key decision (`facePriorityKeysFor` — null writes nothing, so default OFF is byte-identical; a held tap-AF/AF Lock drops only the scene half), the 10 Hz change-gated `STATISTICS_FACES` readout gate, and the sensor → view mapping that is the exact inverse of `mapTapFocusGeometry`'s metering half plus the stream crop. |
 | `ZslAdmission.kt` | Pure serve/refuse predicate for the LOGICAL/FRONT-route pseudo-ZSL ring: a buffered frame is served only when its ACTUAL sensor values match the still's INTENDED values within 1/6 stop (plus zoom within 2%, age <= 400 ms, app-side AE-OFF, processed-only, no AE-flash, no live gesture, SINGLE drive). Refusal in low light is the DESIGN — the fluidity cap deliberately diverges preview from intent there, so a real full-quality capture must run (see CLAUDE.md). |
 | `StartupTrace.kt` | Debug-only cold-start stopwatch against a `resume`-origin clock. BUFFERS its marks and emits ONE line at `finish()`. `EngineStartupTraceOwnership` binds a fresh opaque owner to one exact Engine resume/open transaction, passes it explicitly into the installed controller, and revokes it on pause/release/supersession/replacement; no wiring path samples global current state. Exact-owner mark/finish/disarm plus latest-preview-request admission make stale controller/request callbacks inert. |
 | `DiagnosticTelemetry.kt` | Executable process-wide quota policy for the complete production log surface. Repeatable information shares a 180-row recurring class (168 shared rows plus a 12-row evidence reserve, split into separate 6-row slices for the cold-start line and the terminal FrameGap summary, reached only after the shared rows are gone); every warning/error crosses a separate 120-row owner, so the runtime maximum is the measured ColorOS 300-row cap rather than arithmetic in a test. A row a caller already admitted through a recurring gate is emitted through `android.util.Log`, never charged again through the `DiagnosticLog` door. `PreviewFrameTiming` separates cached render cadence from real SurfaceTexture frames, and `FrameGapAccumulator` emits constant-memory 15-second/terminal count, maximum, and duration-bucket summaries through the recurring owner (the terminal one may fall back to its evidence slice); a window clears only after its row is admitted, so a refused summary's stalls carry into the next admitted row. |
@@ -1345,8 +1346,8 @@ The fixed settings panel has nine left-rail tabs:
    size; dormant on PMA110).
 3. **Exposure** — PASM-like mode, AE lock, flicker, shutter mode/step, ISO, metering, WB/custom WB,
    and AWB lock. EV remains on the quick Fn surface.
-4. **Focus** — AF/MF mode, tap-AF spot size/lock, and peaking level/color. Manual focus distance
-   remains on the quick Fn dial rather than this tab.
+4. **Focus** — AF/MF mode, tap-AF spot size/lock, Face Priority AF, and peaking level/color.
+   Manual focus distance remains on the quick Fn dial rather than this tab.
 5. **Lens** — device-enumerated lens presets (0.6x/1x/3x/10x on PMA110), TELE mode, the phone +
    teleconverter declaration (two dropdowns, the converter list narrowed to that phone, plus the
    custom magnification field and converter-host captions), stabilization mode, and OIS.
@@ -1403,6 +1404,23 @@ fun CaptureRequest.Builder.applyManualControls(c: ManualControls, caps: CameraCa
 ```
 
 All values clamped to hardware ranges (CameraCaps gates what's supported).
+
+**Face Priority AF (2026-10-14, device behaviour UNVERIFIED — `docs/FIELD_CHECKS.md` A16):**
+`ManualControls.facePriorityAf` (default OFF, persisted with the focus settings and every MR bank)
+is turned into request keys in exactly one place, `CameraController.applyAfOverrides`, the applier
+the full rebuild, the sensor fast path and every still already share — so repeating and still
+requests carry one decision. In AF-S/AF-C on a supporting route the request carries
+`STATISTICS_FACE_DETECT_MODE = SIMPLE` and `CONTROL_MODE = USE_SCENE_MODE` +
+`CONTROL_SCENE_MODE = FACE_PRIORITY`; a held tap-AF or AF Lock writes `CONTROL_MODE_AUTO` /
+`SCENE_MODE_DISABLED` instead and keeps detection. The HAL steers AF itself: the app writes no
+per-frame regions from faces (each repeating swap stalls the preview ~180 ms). FACE_PRIORITY keeps
+`aeMode`/`awbMode`/`afMode` active by spec, so it applies in AE-OFF modes too. Faces flow
+controller (`readFaces`: time gate first, then `STATISTICS_FACES`, normalized against the metering
+active array, change-gated) → `CameraEngine.publishFaceFrame` (view mapping from the same volatile
+geometry sources `setTapPoint` reads; never takes the engine monitor) → `CameraUiState.faceBoxes` →
+`FaceFrameOverlay` inside the preview aspect box, gated by `faceFramesVisible` (hidden in MF, before
+Ready, and behind any full-screen modal; kept during REC). A route without support shows the row
+disabled with an unavailable caption while keeping the persisted preference.
 
 ---
 

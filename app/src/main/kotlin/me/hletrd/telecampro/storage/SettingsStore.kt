@@ -301,6 +301,8 @@ class SettingsStore(
                 awbLock = safeBoolean("${prefix}awbLock", d.awbLock),
                 meteringMode = enumOr(safeString("${prefix}meteringMode", null), d.meteringMode),
                 afSpotSize = enumOr(safeString("${prefix}afSpotSize", null), d.afSpotSize),
+                // Absent key (every pre-feature save and MR bank) restores the default OFF.
+                facePriorityAf = safeBoolean("${prefix}facePriorityAf", d.facePriorityAf),
                 customWbGains = if (safeBoolean("${prefix}hasCustomWb", false)) {
                     WbGains(
                         r = safeFloat("${prefix}customWbR", 1f).coerceIn(1f, MAX_PERSISTED_WB_GAIN),
@@ -443,6 +445,7 @@ class SettingsStore(
         putBoolean("${prefix}awbLock", c.awbLock)
         putString("${prefix}meteringMode", c.meteringMode.name)
         putString("${prefix}afSpotSize", c.afSpotSize.name)
+        putBoolean("${prefix}facePriorityAf", c.facePriorityAf)
         putBoolean("${prefix}hasCustomWb", c.customWbGains != null)
         c.customWbGains?.let { g ->
             putFloat("${prefix}customWbR", g.r)

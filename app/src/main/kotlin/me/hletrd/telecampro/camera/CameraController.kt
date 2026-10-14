@@ -287,6 +287,11 @@ class CameraController internal constructor(
     // hottest callback in the app, so an unconditional read would be steady-state garbage for a
     // value the log needs once per take.
     @Volatile var rollingShutterSkewSink: me.hletrd.telecampro.video.RollingShutterSkewSink? = null
+    // Face Priority AF frames (FacePriority.kt). Camera-thread callback, at most 10 Hz and only on a
+    // MATERIAL change ([FaceReadoutGate]); an empty frame clears the overlay. Never drives a request.
+    @Volatile var onFaces: ((FaceFrame) -> Unit)? = null
+    // Camera-thread confined: paces the STATISTICS_FACES read and change-gates publication.
+    private val faceReadoutGate = FaceReadoutGate()
     private var lastReportedFocus = Float.NaN
     private var lastReportedAfState = -1
 
@@ -1080,6 +1085,10 @@ class CameraController internal constructor(
         // this cycle" instead of crashing the camera thread.
         var tapRequestStarted = false
         val zslTargetAttached = zslStreamingActive()
+        // Read face statistics only on a request that asked for them. The answer depends on the
+        // packet and the route alone (an AF override only drops the SCENE half, never detection),
+        // so it is stable for every fast-path resubmit of this builder.
+        val faceReadout = facePriorityKeysFor(controls, caps.faceCapability(), afOverrideActive = false) != null
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
@@ -1147,6 +1156,11 @@ class CameraController internal constructor(
                         }
                     }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                    // Superseded requests stay silent: a late result from a face-reading request
+                    // must not repaint frames after the newer request cleared them.
+                    if (faceReadout && requestGeneration == latestPreviewRequestGeneration) {
+                        readFaces(result)
+                    }
                     rollingShutterSkewSink?.takeIf { it.wantsRollingShutterSkew() }?.let { sink ->
                         result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)?.let(sink::offerRollingShutterSkew)
                     }
@@ -1292,6 +1306,7 @@ class CameraController internal constructor(
             previewBuilder = builder
             previewCallback = callback
             publishPreviewDigitalGain()
+            if (!faceReadout) clearPublishedFaces()
             val tapTrigger = if (tapPointRequested) {
                 TapTriggerSubmission.ACCEPTED
             } else {
@@ -1832,6 +1847,37 @@ class CameraController internal constructor(
         }
     }
 
+    /**
+     * Camera-thread, from the preview callback. The time gate runs BEFORE any metadata read:
+     * `result.get(STATISTICS_FACES)` allocates a Face[] and this callback runs 30-60 Hz. Normalized
+     * against the SAME active array [applyMetering] uses, so the engine's view mapping is that
+     * region mapping's inverse. No logging here (ColorOS 300-row quota).
+     */
+    private fun readFaces(result: CaptureResult) {
+        if (!faceReadoutGate.shouldSample(android.os.SystemClock.uptimeMillis())) return
+        val active = chars(shot = false)?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        val raw = result.get(CaptureResult.STATISTICS_FACES) ?: return
+        val faces = ArrayList<SensorFace>(minOf(raw.size, FACE_MAX_PUBLISHED))
+        for (face in raw) {
+            if (faces.size >= FACE_MAX_PUBLISHED) break
+            val b = face.bounds
+            normalizeFaceRect(
+                b.left, b.top, b.right, b.bottom,
+                active.left, active.top, active.width(), active.height(),
+            )?.let { faces += SensorFace(it, face.score) }
+        }
+        if (faceReadoutGate.offer(faces)) {
+            onFaces?.invoke(FaceFrame(faces, active.width(), active.height()))
+        }
+    }
+
+    /** A request without face detection owes the overlay one empty frame if any face was shown. */
+    private fun clearPublishedFaces() {
+        val owed = faceReadoutGate.clearOwed()
+        faceReadoutGate.reset()
+        if (owed) onFaces?.invoke(FaceFrame(emptyList(), 0, 0))
+    }
+
     /** This instant's AF override inputs; a still freezes them with its controls at the press. */
     internal fun afInputsNow(): StillAfInputs = StillAfInputs(
         touchAfActive = touchAfActive,
@@ -1869,6 +1915,22 @@ class CameraController internal constructor(
             }
             null -> Unit
         }
+        // Face Priority AF rides THIS applier on purpose: it is the one site the full rebuild, the
+        // sensor fast path and the still all share, so the scene/face keys of a still and of every
+        // repeating submit come from one decision and cannot drift (the ARCH4-5 rule). A held tap
+        // or AF Lock keeps precedence: the scene half falls back to AUTO/DISABLED while detection
+        // keeps the frames drawn. Null writes nothing — the default-OFF request is byte-identical.
+        facePriorityKeysFor(requestControls, caps.faceCapability(), afOverrideActive = override != null)
+            ?.let { keys ->
+                builder.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, keys.faceDetectMode)
+                if (keys.sceneModeFacePriority) {
+                    builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
+                    builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)
+                } else {
+                    builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                    builder.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
+                }
+            }
     }
 
     // While a zoom gesture is live, pin the HAL-AE fps floor so the preview doesn't idle at its

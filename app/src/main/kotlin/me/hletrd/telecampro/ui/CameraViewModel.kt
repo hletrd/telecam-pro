@@ -1299,6 +1299,11 @@ class CameraViewModel private constructor(
             _state.update { it.copy(afIndication = ind) }
             mainHandler.post(focusConfidenceRefreshRunnable)
         }
+        // Face Priority AF frames (camera thread → StateFlow is thread-safe). The controller already
+        // throttles to 10 Hz and change-gates; the equality check keeps a repeat clear from emitting.
+        engine.onFaceBoxes = { boxes ->
+            _state.update { if (it.faceBoxes == boxes) it else it.copy(faceBoxes = boxes) }
+        }
         engine.onAnalysis = { h, w, f, m ->
             // Publish scope data into UI state only when something actually renders it: the
             // histogram/waveform overlays while ACTUALLY COMPOSED (scope settings alone are not
@@ -2471,6 +2476,9 @@ class CameraViewModel private constructor(
     }
     override fun onMeteringMode(mode: MeteringMode) = updateControls(FnSlot.METERING) { it.copy(meteringMode = mode) }
     override fun onAfSpotSize(size: AfSpotSize) = updateControls(persist = true) { it.copy(afSpotSize = size) }
+    // A full rebuild by construction (not a sensor-only delta): one ~180 ms swap per toggle, never per frame.
+    override fun onToggleFacePriorityAf(enabled: Boolean) =
+        updateControls(persist = true) { it.copy(facePriorityAf = enabled) }
     override fun onCaptureCustomWb() {
         val current = _state.value
         val availability = controlAvailability(current.caps?.controlCapabilities(), current.controls)

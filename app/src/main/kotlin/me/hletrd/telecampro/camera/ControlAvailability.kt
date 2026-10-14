@@ -24,6 +24,10 @@ internal data class ControlAvailability(
     val evDialEnabled: Boolean,
     val zoomDialEnabled: Boolean,
     val afSpotSizeEnabled: Boolean,
+    /** Route supports Face Priority AF at all ([facePriorityAfAvailable]). */
+    val facePriorityAfAvailable: Boolean,
+    /** Row enablement: supported AND an AF focus mode (MANUAL/MACRO leave nothing to steer). */
+    val facePriorityAfEnabled: Boolean,
     val afLockEnabled: Boolean,
     val aeLockEnabled: Boolean,
     val awbLockEnabled: Boolean,
@@ -59,6 +63,8 @@ internal fun controlAvailability(
             evDialEnabled = false,
             zoomDialEnabled = false,
             afSpotSizeEnabled = false,
+            facePriorityAfAvailable = false,
+            facePriorityAfEnabled = false,
             afLockEnabled = false,
             aeLockEnabled = false,
             awbLockEnabled = false,
@@ -138,6 +144,9 @@ internal fun controlAvailability(
         evDialEnabled = caps.hasEvCompensationRange && evPathAvailable,
         zoomDialEnabled = caps.hasZoomRatioRange,
         afSpotSizeEnabled = caps.maxAfRegions > 0 && normalized.focusMode != FocusMode.MANUAL,
+        facePriorityAfAvailable = facePriorityAfAvailable(caps.face),
+        facePriorityAfEnabled = facePriorityAfAvailable(caps.face) &&
+            facePriorityFocusMode(normalized.focusMode),
         afLockEnabled = manualFocusAvailable && normalized.focusMode != FocusMode.MANUAL,
         aeLockEnabled = normalized.exposureMode == ExposureMode.PROGRAM &&
             !normalized.programAppSide && caps.aeModes.has(normalized.flash.autoAeMetadata),

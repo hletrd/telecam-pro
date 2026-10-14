@@ -1843,6 +1843,9 @@ data class CameraUiState(
     // Functional tap-owned AF/AE region. Kept separate from tapPoint so the 2 s visual fade cannot
     // turn a still-active hold into invisible state; the UI exposes a persistent reset affordance.
     val tapFocusHeld: Boolean = false,
+    // Face Priority AF frames in VIEW-normalized coordinates (FacePriority.kt); empty = none. Drawn
+    // only through [faceFramesVisible], so a stale list can never show with the feature off.
+    val faceBoxes: List<FaceBox> = emptyList(),
     // AE-resolved exposure while in auto (from CaptureResult); null in manual or before the first
     // result. Lets the Shutter/ISO chips show what AE actually chose instead of just "Auto".
     val liveIso: Int? = null,

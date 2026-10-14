@@ -81,6 +81,7 @@ interface CameraActions {
     fun onToggleAwbLock(locked: Boolean)
     fun onMeteringMode(mode: MeteringMode)
     fun onAfSpotSize(size: AfSpotSize)
+    fun onToggleFacePriorityAf(enabled: Boolean)
     fun onCaptureCustomWb()
 
     // Processing

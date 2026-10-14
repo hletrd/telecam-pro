@@ -47,6 +47,10 @@ data class ManualControls(
     val meteringMode: MeteringMode = MeteringMode.MATRIX,
     // Tap-AF / spot region size (Sony Spot S/M/L).
     val afSpotSize: AfSpotSize = AfSpotSize.MEDIUM,
+    // Face Priority AF (FacePriority.kt): the HAL's FACE_PRIORITY scene mode steers AF to detected
+    // faces in AF-S/AF-C. Default OFF keeps the pre-feature request byte-identical. The preference
+    // is never normalized away on a route without face detection; the request/UI gate decides.
+    val facePriorityAf: Boolean = false,
     // Processing — OFF by default: pros want a clean, un-sharpened, un-denoised signal to grade
     // themselves (and it keeps the afocal-tele image honest). The user opts into edge/NR per shot.
     val edge: ProcessingLevel = ProcessingLevel.OFF,

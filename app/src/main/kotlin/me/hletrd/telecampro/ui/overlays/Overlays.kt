@@ -537,6 +537,53 @@ fun FocusReticle(
     }
 }
 
+/**
+ * Corner-bracket arm length for one face frame, in px: a quarter of the shorter side, bounded so a
+ * tiny distant face still reads as a frame and a close-up face does not turn into a full box.
+ */
+internal fun faceFrameCornerPx(widthPx: Float, heightPx: Float, minPx: Float, maxPx: Float): Float =
+    (minOf(widthPx, heightPx) / 4f).coerceIn(minPx, maxOf(minPx, maxPx))
+
+/**
+ * Face Priority AF frames (camera/FacePriority.kt): thin Sony-style corner brackets, white, with the
+ * primary face GREEN once the HAL reports FOCUSED and face priority owns AF. [boxes] are already
+ * VIEW-normalized; the caller gates visibility through [me.hletrd.telecampro.camera.faceFramesVisible].
+ * Visual-only like [FocusReticle]: no semantics, so it adds no accessibility focus stop and no
+ * announcement (the viewfinder node keeps the AF state).
+ */
+@Composable
+fun FaceFrameOverlay(
+    boxes: List<me.hletrd.telecampro.camera.FaceBox>,
+    focusedPrimary: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (boxes.isEmpty()) return
+    Canvas(modifier = modifier) {
+        val ink = 1.5.dp.toPx()
+        val keyline = 3.dp.toPx()
+        val minArm = 6.dp.toPx()
+        val maxArm = 20.dp.toPx()
+        for (box in boxes) {
+            val color = if (box.primary && focusedPrimary) FocusReticleFocusedInk else Color.White
+            val l = box.bounds.left * size.width
+            val t = box.bounds.top * size.height
+            val r = box.bounds.right * size.width
+            val b = box.bounds.bottom * size.height
+            val arm = faceFrameCornerPx(r - l, b - t, minArm, maxArm)
+            val segments = arrayOf(
+                Offset(l, t) to Offset(l + arm, t), Offset(l, t) to Offset(l, t + arm),
+                Offset(r, t) to Offset(r - arm, t), Offset(r, t) to Offset(r, t + arm),
+                Offset(l, b) to Offset(l + arm, b), Offset(l, b) to Offset(l, b - arm),
+                Offset(r, b) to Offset(r - arm, b), Offset(r, b) to Offset(r, b - arm),
+            )
+            // Same two-channel contrast as the tap reticle: a black keyline under the ink keeps the
+            // thin frame legible on a bright face or a white wall.
+            for ((start, end) in segments) drawLine(FocusReticleKeylineInk, start, end, keyline)
+            for ((start, end) in segments) drawLine(color, start, end, ink)
+        }
+    }
+}
+
 /** Stable, off-focus status node that announces only terminal tap-AF outcomes. */
 @Composable
 fun FocusResultLiveRegion(

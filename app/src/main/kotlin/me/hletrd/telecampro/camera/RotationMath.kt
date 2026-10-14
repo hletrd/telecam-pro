@@ -127,6 +127,19 @@ object RotationMath {
             else -> nx to ny
         }
 
+    /**
+     * The exact inverse of [unrotateViewPoint]: a point in the device's NATURAL frame → where the
+     * rotated window displays it. Face frames travel this direction (sensor → view); taps travel the
+     * other. Identity at ROTATION_0, so it is inert on the portrait-locked phone.
+     */
+    fun rotateViewPoint(vx: Float, vy: Float, windowRotationDeg: Int): Pair<Float, Float> =
+        when (normalize(windowRotationDeg)) {
+            90 -> vy to (1f - vx)
+            180 -> (1f - vx) to (1f - vy)
+            270 -> (1f - vy) to vx
+            else -> vx to vy
+        }
+
     /** Rear-camera form of [captureRotationDegrees]; kept so existing callers/tests pin the back matrix. */
     fun captureRotationDegrees(sensorOrientation: Int, teleconverterMode: Boolean, deviceOrientation: Int): Int =
         captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation, frontFacing = false)
