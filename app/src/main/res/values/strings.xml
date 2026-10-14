@@ -524,7 +524,7 @@
     <!-- Legal / attribution block (Setup tab). Multi-sentence PROSE, unlike the camera-standard
          abbreviations above: these are translated, because a disclaimer a reader cannot read is not
          a disclaimer. -->
-    <string name="legal_trademark_log">S-Log is a trademark of Sony Group Corporation. LogC is a trademark of Arnold &amp; Richter Cine Technik GmbH &amp; Co. Betriebs KG (ARRI).</string>
+    <string name="legal_trademark_log">S-Log is a trademark of Sony Group Corporation. LogC is a trademark of Arnold &amp; Richter Cine Technik GmbH &amp; Co. Betriebs KG (ARRI). O-Log2 is OPPO’s name for its log format; this option follows the curve OPPO’s published LUTs expect and is not supplied or endorsed by OPPO.</string>
     <string name="legal_trademark_hardware">Hasselblad is a trademark of Victor Hasselblad AB. OPPO is a trademark of Guangdong OPPO Mobile Telecommunications Corp., Ltd. ZEISS is a trademark of Carl Zeiss AG. vivo is a trademark of vivo Mobile Communication Co., Ltd.</string>
     <string name="legal_no_affiliation">This app is independent and is not affiliated with, endorsed by, or sponsored by any of them. Names describe compatibility only.</string>
     <string name="legal_typeface">UI typeface: Inter, © The Inter Project Authors, SIL Open Font License 1.1.</string>

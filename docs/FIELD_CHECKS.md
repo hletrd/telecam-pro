@@ -439,6 +439,17 @@ S-curve, as an un-tone-mapped view should be. No crash, no CAMERA_ERROR. Earlier
 grey wall under HAL AE, the curve visibly replaced the stock one (preview mean 64 → 79.5, std 9.5 →
 4.4; a linear curve read 18).
 
+**O-Log2 clip check — OPEN, added 2026-10-15.** O-Log2 (`ColorTransfer.OLOG2`, shader code 6) is
+back by owner decision with the single-segment curve reverse-engineered from OPPO's official LUTs;
+only host tests pin it. On PMA110, VIDEO, native-log session, switch S-Log3 → **O-Log2** (confirm
+NO reopen: no new `Session configured` line) and record 5 s of the same lit grey-card/wall scene with
+a clipped highlight in frame. **Pass:** clipped highlights read near O-Log2 code 0.69 (Y10 full range
+≈ 710) and never above; an 18 % grey card exposed to the meter reads near 0.49 (≈ 500); the
+container tags read BT.2020 / full range / an SDR-class transfer (ffprobe); and OPPO's official
+O-Log2 → Rec.709 LUT applied in a grading tool yields a plausible normal-contrast image (not crushed,
+not washed out). Record the numbers. A white reading well below 0.69 or a grey far from 0.49 means
+the curve or the source decode is wrong for OPPO's LUT, not a highlight-latitude limit.
+
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 
 Face Priority AF (`camera/FacePriority.kt`) puts `CONTROL_MODE = USE_SCENE_MODE`,

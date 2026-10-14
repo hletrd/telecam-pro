@@ -654,6 +654,9 @@ internal fun shaderTransferCode(transfer: ColorTransfer?): Int = when {
         ColorTransfer.SLOG3 -> 2
         ColorTransfer.SLOG3_CINE -> 4
         ColorTransfer.LOGC3 -> 5
+        // A NEW code, not the vacant 3: O-Log2's return (2026-10-15) is a different curve from the
+        // retired code-3 de-log branch, and reusing a retired number is how a stale reading lies.
+        ColorTransfer.OLOG2 -> 6
         // SDR = no OETF, same as the null path.
         ColorTransfer.SDR -> 0
     }

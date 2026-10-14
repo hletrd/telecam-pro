@@ -1,13 +1,14 @@
 package me.hletrd.telecampro.gl
 
 import kotlin.math.ln
+import kotlin.math.log2
 import kotlin.math.pow
 
 /**
  * Android-free reference for the GL-baked log profiles (S-Log3/S-Gamut3, S-Log3/S-Gamut3.Cine,
- * ARRI LogC3 EI800/AWG3) — the [Shaders.FRAGMENT] string interpolates THESE constants, so the
- * shader and the unit-tested reference cannot drift apart (same single-source pattern as
- * [SdrToHlgMapping]).
+ * ARRI LogC3 EI800/AWG3, OPPO O-Log2/BT.2020) — the [Shaders.FRAGMENT] string interpolates THESE
+ * constants, so the shader and the unit-tested reference cannot drift apart (same single-source
+ * pattern as [SdrToHlgMapping]).
  *
  * Pipeline order per profile (mirrors [Shaders]): source-aware standard/HLG decode into the common
  * display-light domain, linear 3×3 BT.709→target-gamut matrix, defensive
@@ -19,6 +20,9 @@ import kotlin.math.pow
  * Curve sources (constants copied verbatim, pinned by LogProfilesTest):
  *  - Sony "Technical Summary for S-Gamut3.Cine/S-Log3 and S-Gamut3/S-Log3" (S-Log3 OETF).
  *  - ARRI "ALEXA Log C Curve — Usage in VFX" (LogC3 EI800 parameter row).
+ *  - OPPO O-Log2: OPPO has published NO white paper. The curve is the one reverse-engineered from
+ *    OPPO's own official O-Log2 LUTs / ACES DCTL (https://jackchou00.com/en/posts/oppo-log-2-review/),
+ *    which fits a single log segment with no toe, in ITU-R BT.2020 primaries ("O-Gamut").
  *
  * Gamut matrices are M = inv(RGBtoXYZ(target)) × RGBtoXYZ(BT.709), all primaries specified with
  * the D65 white (x=0.3127, y=0.3290) — no chromatic adaptation needed, so every row sums to 1.0
@@ -29,7 +33,8 @@ internal object LogProfiles {
     const val INV_LN10 = 0.4342944819032518
 
     /**
-     * Defensive lower clamp between the gamut matrix and the OETF. All three matrices are strictly
+     * Defensive lower clamp between the gamut matrix and the OETF (S-Log3/LogC3 — O-Log2 has its
+     * own, [OLOG2_LINEAR_FLOOR]). All four matrices are strictly
      * positive (BT.709 sits inside each target gamut), so an in-range SDR decode cannot actually go
      * negative — this floor guards float error and any future matrix change while keeping the log
      * arguments defined: S-Log3's log input is x + 0.01 (≥ 1e-4 at the floor) and LogC3's cut keeps
@@ -62,6 +67,25 @@ internal object LogProfiles {
     const val LOGC3_D = 0.385537
     const val LOGC3_E = 5.367655
     const val LOGC3_F = 0.092809
+
+    // OPPO O-Log2 OETF (owner decision 2026-10-15 brought it back; see the curve-source note above):
+    //   y = OLOG2_A * log2(x + OLOG2_B) + OLOG2_C, one log segment, NO toe/linear segment.
+    // 1.0 (100 % white) encodes to ≈ 0.6946; 18% grey to ≈ 0.4883; 0 to ≈ 0.1208 (its code black).
+    // The O-Log2 that this app shipped until 2026-07-22 (removed in 640532e7) carried a linear TOE
+    // segment that is NOT part of OPPO's curve per that source — it is deliberately not revived.
+    const val OLOG2_A = 0.08550479
+    const val OLOG2_B = 0.00964052
+    const val OLOG2_C = 0.69336945
+
+    /**
+     * O-Log2's own defensive floor, used INSTEAD of [GAMUT_LINEAR_FLOOR]. A pure log has no linear
+     * toe to absorb negatives: at the shared −0.0099 floor `x + OLOG2_B` would itself be negative
+     * (log2 undefined), and anything just above it dives toward −∞ in code value. Its gamut matrix
+     * (BT.709→BT.2020, [SdrToHlgMapping]'s R_FROM_R…B_FROM_B) is all-positive, so an in-range decode
+     * is never negative and a 0.0 floor discards nothing real — it only pins float noise to the
+     * curve's own black (≈ 0.1208) instead of letting it fall below code black.
+     */
+    const val OLOG2_LINEAR_FLOOR = 0.0
 
     // Linear-light BT.709 -> S-Gamut3 (D65→D65, rows sum to 1).
     const val SG3_R_FROM_R = 0.5660490800
@@ -126,6 +150,12 @@ internal object LogProfiles {
         LOGC3_E * x + LOGC3_F
     }
 
+    /**
+     * OPPO O-Log2 OETF for one component (single log segment). Clamps at [OLOG2_LINEAR_FLOOR]
+     * itself, so `x + OLOG2_B` is always ≥ OLOG2_B > 0 and log2 stays defined for any input.
+     */
+    fun olog2Oetf(x: Double): Double = OLOG2_A * log2(x.coerceAtLeast(OLOG2_LINEAR_FLOOR) + OLOG2_B) + OLOG2_C
+
     fun encodeSlog3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
         red, green, blue,
         SG3_R_FROM_R, SG3_R_FROM_G, SG3_R_FROM_B,
@@ -150,6 +180,20 @@ internal object LogProfiles {
         AWG3_G_FROM_R, AWG3_G_FROM_G, AWG3_G_FROM_B,
         AWG3_B_FROM_R, AWG3_B_FROM_G, AWG3_B_FROM_B,
         ::logc3Oetf,
+        sourceHlg,
+    )
+
+    /**
+     * O-Log2 / BT.2020: the same decode → matrix → floor → OETF chain, with the BT.709→BT.2020
+     * matrix the HLG mapping already single-sources ([SdrToHlgMapping]) and O-Log2's own floor
+     * (applied inside [olog2Oetf]; the shared [GAMUT_LINEAR_FLOOR] pass before it is a no-op here).
+     */
+    fun encodeOlog2(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
+        red, green, blue,
+        SdrToHlgMapping.R_FROM_R, SdrToHlgMapping.R_FROM_G, SdrToHlgMapping.R_FROM_B,
+        SdrToHlgMapping.G_FROM_R, SdrToHlgMapping.G_FROM_G, SdrToHlgMapping.G_FROM_B,
+        SdrToHlgMapping.B_FROM_R, SdrToHlgMapping.B_FROM_G, SdrToHlgMapping.B_FROM_B,
+        ::olog2Oetf,
         sourceHlg,
     )
 

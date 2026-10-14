@@ -467,6 +467,8 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
+    // The format's own name, printed in Latin on Korean UIs too (like S-Log3 / LogC3).
+    ColorTransfer.OLOG2 -> "O-Log2"
     ColorTransfer.SDR -> "SDR"
 }
 
@@ -477,5 +479,6 @@ internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfe
     // SG3C = the community-standard shorthand for S-Gamut3.Cine (the full name won't fit the OSD).
     ColorTransfer.SLOG3_CINE -> "SG3C"
     ColorTransfer.LOGC3 -> "LOGC3"
+    ColorTransfer.OLOG2 -> "OLOG2"
     ColorTransfer.SDR -> "SDR"
 }

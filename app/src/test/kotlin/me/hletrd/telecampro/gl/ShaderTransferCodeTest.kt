@@ -20,6 +20,8 @@ class ShaderTransferCodeTest {
         assertEquals(2, shaderTransferCode(ColorTransfer.SLOG3))
         assertEquals(4, shaderTransferCode(ColorTransfer.SLOG3_CINE))
         assertEquals(5, shaderTransferCode(ColorTransfer.LOGC3))
+        // O-Log2 (back 2026-10-15) takes a NEW code: 3 belonged to the retired de-log branch.
+        assertEquals(6, shaderTransferCode(ColorTransfer.OLOG2))
         // SDR = no OETF, deliberately the same branch as the null path.
         assertEquals(0, shaderTransferCode(ColorTransfer.SDR))
     }
@@ -37,12 +39,22 @@ class ShaderTransferCodeTest {
 
     @Test
     fun `forward curves never collide with each other or the vacant code`() {
-        val curveCodes = listOf(ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
-            .map { shaderTransferCode(it) }
+        val curveCodes = listOf(
+            ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.OLOG2,
+        ).map { shaderTransferCode(it) }
         assertEquals(curveCodes.size, curveCodes.toSet().size)
         curveCodes.forEach { code ->
             org.junit.Assert.assertNotEquals("must not alias SDR", 0, code)
             org.junit.Assert.assertNotEquals("must not alias the vacant code", 3, code)
+        }
+    }
+
+    @Test
+    fun `every non-zero code has a shader branch`() {
+        // The mapping and the fragment shader must move in lockstep: a code with no
+        // `uTransfer == N` branch would silently render as the display path.
+        ColorTransfer.entries.map { shaderTransferCode(it) }.filter { it != 0 }.forEach { code ->
+            org.junit.Assert.assertTrue("no branch for code $code", Shaders.FRAGMENT.contains("uTransfer == $code)"))
         }
     }
 }

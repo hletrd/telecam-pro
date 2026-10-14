@@ -295,6 +295,7 @@ class ControlLabelsTest {
             ColorTransfer.SLOG3 to "S-Log3",
             ColorTransfer.SLOG3_CINE to "S-Log3.Cine",
             ColorTransfer.LOGC3 to "LogC3",
+            ColorTransfer.OLOG2 to "O-Log2",
             ColorTransfer.SDR to "SDR",
         ),
         ::transferLabel,
@@ -308,6 +309,7 @@ class ControlLabelsTest {
             // SG3C = the community shorthand for S-Gamut3.Cine.
             ColorTransfer.SLOG3_CINE to "SG3C",
             ColorTransfer.LOGC3 to "LOGC3",
+            ColorTransfer.OLOG2 to "OLOG2",
             ColorTransfer.SDR to "SDR",
         ),
         ::transferLabelShort,

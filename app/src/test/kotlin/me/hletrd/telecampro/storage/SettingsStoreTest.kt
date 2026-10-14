@@ -184,6 +184,27 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun oLog2PersistsByItsOwnNameWhileLegacyLogStillMigrates() {
+        // O-Log2 came back 2026-10-15 under a NEW enum name precisely so these two cannot collide:
+        // "OLOG2" restores as O-Log2 (main settings and an MR bank), while the legacy "LOG" — the
+        // retired, toe-carrying O-Log2 — keeps migrating to S-Log3.Cine exactly as before.
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        assertTrue(store.save(ManualControls(), ExtraSettings(transfer = ColorTransfer.OLOG2)))
+        assertEquals("OLOG2", prefs.getString("transfer", null))
+        assertEquals(ColorTransfer.OLOG2, store.load()?.extras?.transfer)
+
+        prefs.edit()
+            .putBoolean("preset_MR2_hasSaved", true)
+            .putString("preset_MR2_transfer", "OLOG2")
+            .putBoolean("preset_MR1_hasSaved", true)
+            .putString("preset_MR1_transfer", "LOG")
+            .commit()
+        assertEquals(ColorTransfer.OLOG2, store.loadPreset(MemorySlot.MR2)?.extras?.transfer)
+        assertEquals(ColorTransfer.SLOG3_CINE, store.loadPreset(MemorySlot.MR1)?.extras?.transfer)
+    }
+
+    @Test
     fun corruptExposureFpsAndKelvinAreBoundedAtLoad() {
         // AGG-33: like ISO/EV/focus, these raw numbers reach exposure math before any caps clamp.
         val prefs = FakePrefs()

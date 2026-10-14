@@ -3337,7 +3337,7 @@ class CameraEngine internal constructor(
         )
     }
 
-    /** Gamma Display Assist bypasses S-Log3/LogC3 on preview only; the encoded file stays log. */
+    /** Gamma Display Assist bypasses every log curve on preview only; the encoded file stays log. */
     fun setGammaAssist(enabled: Boolean) {
         rendererAssists.setGammaAssist(enabled)
     }

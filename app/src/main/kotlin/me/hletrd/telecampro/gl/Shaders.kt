@@ -47,7 +47,7 @@ internal object ShaderBindings {
  *
  * The fragment shader samples the camera's external OES texture and optionally applies:
  *  - an SDR-to-HLG mapping or one of the standard log profiles (S-Log3/S-Gamut3,
- *    S-Log3/S-Gamut3.Cine, ARRI LogC3 EI800/AWG3) for the video encoder path,
+ *    S-Log3/S-Gamut3.Cine, ARRI LogC3 EI800/AWG3, OPPO O-Log2/BT.2020) for the video encoder path,
  *  - focus peaking (edge highlight) and zebra (clipping stripes) for the preview path.
  *
  * NOTE: the camera signal is non-linear, in one of three accepted-session encodings. A NATIVE-LOG
@@ -61,9 +61,11 @@ internal object ShaderBindings {
  * ITU-R BT.2408-9 display-referred mapping: linear BT.709→BT.2020,
  * reference-white/inverse-OOTF adjustment, then the BT.2100 HLG OETF. Each log profile follows the
  * same chain shape: BT.1886 decode, linear BT.709→target-gamut 3×3 matrix, defensive lower clamp,
- * then the profile's OETF — constants single-sourced from [LogProfiles]. The former O-Log2 forward
- * and inverse paths are both removed and shader code 3 stays vacant. Gamma Display Assist bypasses
- * S-Log3/LogC3 on preview only while encoder output retains the curve. No path can recover
+ * then the profile's OETF — constants single-sourced from [LogProfiles]. O-Log2 is back by owner
+ * decision 2026-10-15 as code 6 (BT.709→BT.2020 matrix, then OPPO's single-segment log curve with
+ * no toe); the pre-2026-07-22 O-Log2 forward (with its toe) and the de-log inverse stay removed and
+ * shader code 3 stays vacant. Gamma Display Assist bypasses every log curve on preview only while
+ * encoder output retains the curve. No path can recover
  * above-white highlights removed by the ISP's SDR tone mapping. Verify on device.
  */
 object Shaders {
@@ -91,7 +93,7 @@ object Shaders {
         // tone curve. Never together with uSourceHlg: native log is the 8-bit session by design.
         uniform int ${ShaderBindings.U_SOURCE_LOG};
         uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
-                                 // 5 = LogC3/AWG3, 3 = vacant (removed O-Log2 branch)
+                                 // 5 = LogC3/AWG3, 6 = O-Log2/BT.2020, 3 = vacant (retired de-log branch)
         uniform int ${ShaderBindings.U_PEAKING};    // 0/1  (preview only)
         uniform float ${ShaderBindings.U_PEAK_THRESHOLD}; // edge magnitude above which peaking paints
         uniform vec3 ${ShaderBindings.U_PEAK_COLOR};      // peaking highlight color
@@ -248,6 +250,15 @@ object Shaders {
             return mix(logY, linY, step(x, vec3(${LogProfiles.LOGC3_CUT})));
         }
 
+        // OPPO O-Log2 OETF (curve reverse-engineered from OPPO's official LUT/DCTL — see LogProfiles):
+        //   y = A * log2(x + B) + C, ONE log segment, no toe. 1.0 -> ≈ 0.6946, 18% grey -> ≈ 0.4883,
+        //   0 -> ≈ 0.1208. The floor is O-Log2's own (LogProfiles.OLOG2_LINEAR_FLOOR = 0), NOT
+        //   gamutFloor's −0.0099: with no linear toe, x + B would go negative there and log2 with it.
+        vec3 olog2(vec3 x) {
+            return ${LogProfiles.OLOG2_A} * log2(max(x, vec3(${LogProfiles.OLOG2_LINEAR_FLOOR})) + ${LogProfiles.OLOG2_B})
+                + ${LogProfiles.OLOG2_C};
+        }
+
         void main() {
             vec3 base = dgain(sampleSource(vTexCoord));
             vec3 color = base;
@@ -283,6 +294,11 @@ object Shaders {
                 // ARRI LogC3 EI800 / ARRI Wide Gamut 3: identical chain.
                 vec3 lin = sourceLinear(color);
                 color = logc3(gamutFloor(toAwg3(lin)));
+            } else if (uTransfer == 6) {
+                // OPPO O-Log2 / BT.2020 ("O-Gamut"): same chain shape, reusing the HLG branch's
+                // linear 709-to-2020 matrix; olog2() carries its own floor (see above).
+                vec3 lin = sourceLinear(color);
+                color = olog2(toRec2020(lin));
             }
 
             // False color: map exposure (luma) to IRE-style bands (display-referred, see meter).

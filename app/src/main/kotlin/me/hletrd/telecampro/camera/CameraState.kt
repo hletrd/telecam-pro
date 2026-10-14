@@ -90,9 +90,12 @@ internal enum class CaptureFamilyDeleteDurability { NOT_REQUIRED, DURABLE, FAILE
  * bakes the industry-standard curve + gamut matrix — see [me.hletrd.telecampro.gl.LogProfiles]);
  * SDR = plain Rec.709 with no GL curve — HEVC Main 8-bit, for footage that needs zero grading.
  *
- * The log profiles replaced the former O-Log2 option (`LOG`, removed 2026-07-22: not a standard —
- * SettingsStore migrates the persisted "LOG" name to [SLOG3_CINE]). All three share one log-class
- * behavior: encoder gets the curve, preview renders it flat, Gamma Display Assist skips the forward
+ * The Sony/ARRI log profiles replaced the former O-Log2 option (`LOG`, removed 2026-07-22: not a
+ * standard — SettingsStore migrates the persisted "LOG" name to [SLOG3_CINE], and still does). O-Log2
+ * came back by owner decision 2026-10-15 as a NEW member, [OLOG2], so that legacy name keeps
+ * migrating exactly as before: the Find X9 Ultra's stock camera records O-Log2 and OPPO ships the
+ * official LUTs / ACES DCTL for it, so owners want files those LUTs apply to. All four share one
+ * log-class behavior: encoder gets the curve, preview renders it flat, Gamma Display Assist skips the forward
  * curve on the monitor only, and the container is tagged BT.2020 full-range with an explicit
  * SDR-class transfer (see [me.hletrd.telecampro.video.hevcColorTagsFor]).
  *
@@ -111,6 +114,13 @@ enum class ColorTransfer(val isLog: Boolean = false) {
     SLOG3_CINE(isLog = true),
     /** ARRI LogC3 (EI 800) transfer in ARRI Wide Gamut 3 primaries. */
     LOGC3(isLog = true),
+    /**
+     * OPPO O-Log2 in BT.2020 primaries — the curve OPPO's official O-Log2 LUTs expect (single log
+     * segment, no toe; see [me.hletrd.telecampro.gl.LogProfiles.olog2Oetf] for the source). A NEW
+     * enum name on purpose: the persisted legacy "LOG" (the old, toe-carrying O-Log2) still
+     * migrates to [SLOG3_CINE]. Declared after LOGC3 because the picker iterates [entries].
+     */
+    OLOG2(isLog = true),
     SDR,
 }
 
@@ -602,8 +612,8 @@ fun tenBitSessionWanted(
  * The session SHAPE a video transfer asks for. Any change of shape needs a session reopen (the
  * 10-bit one changes the stream profile and drops the still readers; the native-log one changes the
  * repeating request's tone map and the GL source decode, both bound to the accepted session);
- * moving between transfers of the SAME shape — S-Log3 ↔ S-Log3.Cine ↔ LogC3 — is a GL-only change,
- * because every native-log transfer programs the same S-Log3 transport curve.
+ * moving between transfers of the SAME shape — S-Log3 ↔ S-Log3.Cine ↔ LogC3 ↔ O-Log2 — is a
+ * GL-only change, because every native-log transfer programs the same S-Log3 transport curve.
  */
 enum class VideoSessionShape { SDR, NATIVE_LOG, TEN_BIT }
 
@@ -1328,7 +1338,7 @@ data class PhotoFormats(
 }
 
 /**
- * The gamma choices this device can encode HONESTLY. HLG and all three log profiles are tagged
+ * The gamma choices this device can encode HONESTLY. HLG and all four log profiles are tagged
  * BT.2020 and carry a 10-bit HEVC profile; on an 8-bit-only encoder they yield a Main/yuv420p stream
  * wearing those tags, so they are withheld rather than offered as a claim the file cannot back.
  * SDR always survives — it is the 8-bit BT.709 case by construction.

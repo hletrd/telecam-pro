@@ -282,6 +282,7 @@ private fun snapshotTransferLabel(transfer: ColorTransfer): String = when (trans
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
+    ColorTransfer.OLOG2 -> "O-Log2"
     ColorTransfer.SDR -> "SDR"
 }
 

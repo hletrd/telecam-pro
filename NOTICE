@@ -35,6 +35,8 @@ and no mark is used in this project's own name, icon, or branding.
       S-Gamut
     ARRI, LogC,         Arnold & Richter Cine Technik GmbH & Co. Betriebs KG
       ARRI Wide Gamut
+    O-Log2              Guangdong OPPO Mobile Telecommunications Corp., Ltd.
+                        (name of OPPO's log format)
     Android,            Google LLC
       Google Play
     Qualcomm            Qualcomm Incorporated
@@ -46,6 +48,12 @@ specifications. They are named so that footage can be matched to an existing
 grading workflow. They are not licensed, certified, or supplied by Sony Group
 Corporation or by Arnold & Richter Cine Technik GmbH & Co. Betriebs KG, and
 neither company has reviewed or approved this implementation.
+
+The O-Log2 option implements the curve that OPPO's published O-Log2 LUTs
+expect. OPPO has published no specification for it; the formula used here was
+reverse-engineered by a third party from OPPO's official LUT/DCTL files. It is
+not licensed, certified, or supplied by Guangdong OPPO Mobile
+Telecommunications Corp., Ltd., which has not reviewed this implementation.
 
 Teleconverter presets name commercially available optics so that an owner can
 recognise their own hardware. The magnification each preset applies is computed

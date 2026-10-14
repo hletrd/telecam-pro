@@ -13,7 +13,8 @@ import org.junit.Test
  * shader (same pattern as [SdrToHlgMappingTest] for the HLG chain). Anchors come from the source
  * documents, NOT from re-running our own formulas: Sony's S-Log3 technical summary (18% grey =
  * 420/1023 ≈ 0.410557, 0 → 95/1023 ≈ 0.092864, 1.0 → ≈ 0.596027) and ARRI's LogC3 EI800 VFX
- * table (18% grey ≈ 0.391007, 0 → f = 0.092809). The row-sum invariant is the wrong-primaries
+ * table (18% grey ≈ 0.391007, 0 → f = 0.092809), and the O-Log2 formula reverse-engineered from
+ * OPPO's official LUT/DCTL (1.0 → ≈ 0.6946, 18% grey → ≈ 0.488, 0 → ≈ 0.120). The row-sum invariant is the wrong-primaries
  * tripwire: every matrix is D65→D65, so white MUST map to white.
  */
 class LogProfilesTest {
@@ -56,10 +57,52 @@ class LogProfilesTest {
         assertEquals(logAtCut, linAtCut, 1e-6)
     }
 
+    // ---- O-Log2 curve ----
+
+    @Test
+    fun `O-Log2 pins the reverse-engineered anchors`() {
+        // The source's literal coefficients, asserted as literals so a transcription slip in the
+        // constants cannot hide behind comparing a constant to itself.
+        assertEquals(0.08550479, LogProfiles.OLOG2_A, 0.0)
+        assertEquals(0.00964052, LogProfiles.OLOG2_B, 0.0)
+        assertEquals(0.69336945, LogProfiles.OLOG2_C, 0.0)
+        // Rounded published anchors, then the exact evaluation of the published formula.
+        assertEquals(0.6946, LogProfiles.olog2Oetf(1.0), 1e-4)
+        assertEquals(0.488, LogProfiles.olog2Oetf(0.18), 1e-3)
+        assertEquals(0.120, LogProfiles.olog2Oetf(0.0), 1e-3)
+        assertEquals(0.694552983055, LogProfiles.olog2Oetf(1.0), 1e-9)
+        assertEquals(0.488272458527, LogProfiles.olog2Oetf(0.18), 1e-9)
+        assertEquals(0.120771804196, LogProfiles.olog2Oetf(0.0), 1e-9)
+    }
+
+    @Test
+    fun `O-Log2 has no toe and its floor keeps log2 defined`() {
+        // Single log segment: the slope in log2 space is A everywhere, including down near black
+        // where the retired toe-carrying O-Log2 went linear.
+        val x1 = 0.001
+        val x2 = 0.002
+        val slope = (LogProfiles.olog2Oetf(x2) - LogProfiles.olog2Oetf(x1)) /
+            (kotlin.math.log2(x2 + LogProfiles.OLOG2_B) - kotlin.math.log2(x1 + LogProfiles.OLOG2_B))
+        assertEquals(LogProfiles.OLOG2_A, slope, 1e-12)
+        // Anything below the floor (including the shared −0.0099 gamut floor, where x + B < 0)
+        // encodes to the curve's own black — finite, never NaN, never below code black.
+        for (x in listOf(LogProfiles.GAMUT_LINEAR_FLOOR, -1.0, -1e-9, Double.NEGATIVE_INFINITY)) {
+            assertEquals(LogProfiles.olog2Oetf(0.0), LogProfiles.olog2Oetf(x), 0.0)
+        }
+    }
+
     @Test
     fun `both OETFs are strictly monotonic from the gamut floor upward`() {
         // 4.0 linear covers anything the [0,1] SDR decode times a row-sum-1 matrix can produce,
         // with headroom; the floor end exercises both linear segments below their cuts.
+        var ox = LogProfiles.OLOG2_LINEAR_FLOOR
+        var oPrevious = LogProfiles.olog2Oetf(ox)
+        while (ox < 4.0) {
+            ox += 1e-3
+            val value = LogProfiles.olog2Oetf(ox)
+            assertTrue("O-Log2 monotonicity broken at x=$ox", value > oPrevious)
+            oPrevious = value
+        }
         for (oetf in listOf(LogProfiles::slog3Oetf, LogProfiles::logc3Oetf)) {
             var x = LogProfiles.GAMUT_LINEAR_FLOOR
             var previous = oetf(x)
@@ -120,6 +163,24 @@ class LogProfilesTest {
         for (channel in LogProfiles.encodeLogc3(grey, grey, grey).toList()) {
             assertEquals(0.391007, channel, 1e-6)
         }
+        // O-Log2's BT.2020 matrix rows sum to 1 at the 4-decimal precision it is published with.
+        for (channel in LogProfiles.encodeOlog2(grey, grey, grey).toList()) {
+            assertEquals(0.488272, channel, 1e-5)
+        }
+        // Sensor/ISP white (1.0 display light) lands at the curve's 100 % white, ≈ 0.6946 — the
+        // clip: nothing above it exists in this chain to encode.
+        for (channel in LogProfiles.encodeOlog2(1.0, 1.0, 1.0).toList()) {
+            assertEquals(0.694553, channel, 1e-5)
+        }
+    }
+
+    @Test
+    fun `O-Log2 primaries go through the BT2020 matrix`() {
+        // Pure BT.709 red: BT.2020 r = 0.6274, g = 0.0691, b = 0.0164 linear, then the OETF.
+        val red = LogProfiles.encodeOlog2(1.0, 0.0, 0.0)
+        assertEquals(LogProfiles.olog2Oetf(SdrToHlgMapping.R_FROM_R), red.red, 1e-12)
+        assertEquals(LogProfiles.olog2Oetf(SdrToHlgMapping.G_FROM_R), red.green, 1e-12)
+        assertEquals(LogProfiles.olog2Oetf(SdrToHlgMapping.B_FROM_R), red.blue, 1e-12)
     }
 
     @Test
@@ -157,6 +218,13 @@ class LogProfilesTest {
         assertTrue(shader.contains("* ${LogProfiles.INV_LN10} + ${LogProfiles.LOGC3_D};"))
         assertTrue(shader.contains("vec3 linY = ${LogProfiles.LOGC3_E} * x + ${LogProfiles.LOGC3_F};"))
         assertTrue(shader.contains("step(x, vec3(${LogProfiles.LOGC3_CUT}))"))
+        // O-Log2 curve with its own floor.
+        assertTrue(
+            shader.contains(
+                "${LogProfiles.OLOG2_A} * log2(max(x, vec3(${LogProfiles.OLOG2_LINEAR_FLOOR})) + ${LogProfiles.OLOG2_B})",
+            ),
+        )
+        assertTrue(shader.contains("+ ${LogProfiles.OLOG2_C};"))
         // Defensive floor between matrix and OETF.
         assertTrue(shader.contains("max(c, vec3(${LogProfiles.GAMUT_LINEAR_FLOOR}))"))
     }
@@ -167,10 +235,13 @@ class LogProfilesTest {
         val slog3Branch = shader.substringAfter("uTransfer == 2) {").substringBefore("} else if")
         val cineBranch = shader.substringAfter("uTransfer == 4) {").substringBefore("} else if")
         val logc3Branch = shader.substringAfter("uTransfer == 5) {").substringBefore("} else if")
+        val olog2Branch = shader.substringAfter("uTransfer == 6) {").substringBefore("}")
         for ((branch, encode) in listOf(
             slog3Branch to "color = slog3(gamutFloor(toSGamut3(lin)));",
             cineBranch to "color = slog3(gamutFloor(toSGamut3Cine(lin)));",
             logc3Branch to "color = logc3(gamutFloor(toAwg3(lin)));",
+            // O-Log2's floor lives inside olog2(): gamutFloor's −0.0099 would leave x + B < 0.
+            olog2Branch to "color = olog2(toRec2020(lin));",
         )) {
             val decode = branch.indexOf("vec3 lin = sourceLinear(color);")
             val apply = branch.indexOf(encode)
@@ -209,7 +280,11 @@ class LogProfilesTest {
     @Test
     fun `the declined vendor-log path leaves no shader residue`() {
         val shader = Shaders.FRAGMENT
-        assertFalse("the removed forward O-Log2 OETF must not resurface", shader.contains("vec3 olog2("))
+        // O-Log2's FORWARD curve is back (owner decision 2026-10-15), but as OPPO's single log
+        // segment: the retired version's toe constants must not come back with it.
+        for (toe in listOf("47.28711236", "0.05641088")) {
+            assertFalse("the retired O-Log2 toe ($toe) must not resurface", shader.contains(toe))
+        }
         // The de-log inverse and its branch existed only for a scene-referred vendor stream that can
         // no longer arrive (path declined 2026-08-04). They were removed with it; re-adding either
         // means re-adding dead code, so this asserts their absence rather than their survival.

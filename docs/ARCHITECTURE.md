@@ -25,7 +25,7 @@
 
 ## Overview
 
-A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3), or SDR profiles. Log video on a camera that takes a programmed `CONTRAST_CURVE` (every PMA110 camera) is NATIVE ISP log: the ordinary 8-bit session with stills, whose repeating request swaps the stock tone curve for S-Log3. HLG video, and log on a camera without that capability, request an HLG10 Camera2 session with still readers removed; that stream is still ISP-tone-mapped and display-referred. GL applies a source-aware decode and the selected HLG/log mapping through the release build's 8-bit EGL target, then HEVC writes Main10 output (SDR video uses the standard 8-bit session and Main output). This does not recover ISP-removed highlights and does not make the log profiles scene-referred camera log.
+A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3 / OPPO O-Log2), or SDR profiles. Log video on a camera that takes a programmed `CONTRAST_CURVE` (every PMA110 camera) is NATIVE ISP log: the ordinary 8-bit session with stills, whose repeating request swaps the stock tone curve for S-Log3. HLG video, and log on a camera without that capability, request an HLG10 Camera2 session with still readers removed; that stream is still ISP-tone-mapped and display-referred. GL applies a source-aware decode and the selected HLG/log mapping through the release build's 8-bit EGL target, then HEVC writes Main10 output (SDR video uses the standard 8-bit session and Main output). This does not recover ISP-removed highlights and does not make the log profiles scene-referred camera log.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -89,13 +89,13 @@ Two critical consequences of the afocal converter drive the entire design:
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
 | `FrameNotificationCoalescer.kt` | Latest-frame backpressure owner between `SurfaceTexture` notifications and GL draws. At most one scheduled drain represents any burst; a concurrent notification records one pending edge, and generation retirement makes every stale drain inert rather than posting one draw per producer callback. |
-| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`); which draws set it derives from `DeviceProfile.frontStreamPreMirrored` — the PMA110 front HAL PRE-mirrors its stream (device-diagnosed 2026-07-23), so the PREVIEW draw never sets it and only the ENCODER/ANALYSIS draws do, un-mirroring files and scopes back to the true scene. |
+| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3 / O-Log2) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`); which draws set it derives from `DeviceProfile.frontStreamPreMirrored` — the PMA110 front HAL PRE-mirrors its stream (device-diagnosed 2026-07-23), so the PREVIEW draw never sets it and only the ENCODER/ANALYSIS draws do, un-mirroring files and scopes back to the true scene. |
 | `FocusDetail.kt` | Pure curvature-ratio frame-detail metric (RMS second difference at a fine lag vs coarse lags {4,8,16,32}, per 16x16 tile, per axis). Rides the EXISTING scopes/AE analysis readback as a CPU rider — no second readback, no new GL pass. Takes NO `lut` parameter by design, so the digital-gain display simulation cannot move an optics verdict. |
 | `FrontMirrorConvention.kt` | Derives preview, encoder/analysis, texture-tap, and active-array metering mirror roles from the active route plus `DeviceProfile.frontStreamPreMirrored`. PMA110 and GENERIC conventions therefore remain explicit and testable. |
 | `MotionInversion.kt` | Pure sign-of-motion evidence classifier with conservative `UNJUDGEABLE` behavior and epoch-safe publication. |
 | `AtomicOwnerSlot.kt` | Identity-owned atomic slot for replaceable native-resource facades: a late completion may replace only the exact object it stopped, so a stale generation cannot displace its replacement. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports an experimental 10-bit config, while release builds deliberately start the stable 8-bit config even when Camera2 supplied an HLG10 source. |
-| `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Source-aware standard/HLG/native-S-Log3 decode (S-Log3 decoded at sample time via `sampleSource`, `LogProfiles.slog3Inverse` its host-tested twin) plus BT.2408-9 HLG and S-Log3/LogC3 mappings, peaking/zebra, and punch-in. O-Log2 is removed in both directions; shader code 3 stays vacant and Gamma Assist is a preview-only log-curve bypass. |
+| `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Source-aware standard/HLG/native-S-Log3 decode (S-Log3 decoded at sample time via `sampleSource`, `LogProfiles.slog3Inverse` its host-tested twin) plus BT.2408-9 HLG and S-Log3/LogC3/O-Log2 mappings, peaking/zebra, and punch-in. O-Log2 returned 2026-10-15 as shader code 6 (OPPO's single-segment curve, no toe, BT.2020); the retired toe-carrying O-Log2 and the de-log inverse stay removed, shader code 3 stays vacant, and Gamma Assist is a preview-only log-curve bypass. |
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. Its explicit motion-evidence reset clears timestamped gyro history without changing an already-armed sensor-registration intent. |
 | **capture/** | |
@@ -945,7 +945,7 @@ unused.
 
 | Codec | Encoder profile | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR | MP4 | Primary HW encoder. HLG (and log without the native curve) first requests an HLG10 Camera2 source; native log rides the 8-bit session with an ISP S-Log3 curve; release EGL remains 8-bit. Main/Main10 names the encoded output, not every upstream stage. |
+| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / S-Log3 / S-Log3.Cine / LogC3 / O-Log2 / SDR | MP4 | Primary HW encoder. HLG (and log without the native curve) first requests an HLG10 Camera2 source; native log rides the 8-bit session with an ISP S-Log3 curve; release EGL remains 8-bit. Main/Main10 names the encoded output, not every upstream stage. |
 | AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; forces GL SDR (no HLG/Log); HW. |
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
@@ -973,7 +973,7 @@ HEVC Main10 profile → MediaCodec configured with:
 ColorProfiles.videoFormat(
     codec=VideoCodec.HEVC,
     width, height, fps, bitRate,
-    transfer=ColorTransfer.HLG or a log profile (SLOG3 / SLOG3_CINE / LOGC3)
+    transfer=ColorTransfer.HLG or a log profile (SLOG3 / SLOG3_CINE / LOGC3 / OLOG2)
 )
 // Sets:
 //   MediaFormat.KEY_MIME = "video/hevc"
@@ -1002,7 +1002,7 @@ Color-profile rendering happens in the fragment shader:
   (full rebuild; the zoom/sensor fast paths reuse that cached builder) sets `TONEMAP_MODE_CONTRAST_CURVE`
   and `TONEMAP_CURVE` = the S-Log3 OETF sampled at 128 output-uniform points over the ISP's linear
   input (1.0 = sensor clip), one point snapped onto the linear/log cut; R=G=B, so the ISP's 709
-  primaries are untouched and the gamut matrix stays in GL. All three log transfers program this one
+  primaries are untouched and the gamut matrix stays in GL. All four log transfers program this one
   transport curve. Still requests (including the in-REC snapshot) are fresh STILL_CAPTURE templates
   and, inside a native-log session only, name `TONEMAP_MODE_HIGH_QUALITY` (else FAST) explicitly;
   pseudo-ZSL refuses the session. The HAL was measured to honour the curve on the repeating request
@@ -1037,7 +1037,19 @@ Color-profile rendering happens in the fragment shader:
     fallback the source is the ISP's tone-mapped display rendition, so there is no scene latitude to
     recover; on native log the global S-curve is gone but latitude still ends at the sensor clip.
     Neither is scene-referred camera log (the vendor log key stays inert — see CLAUDE.md). Replaced the
-    former GL O-Log2 option (persisted "LOG" migrates to SLOG3_CINE).
+    former GL O-Log2 option (persisted "LOG" migrates to SLOG3_CINE, unchanged).
+  - **O-Log2 (OLOG2, shader code 6; owner decision 2026-10-15)**: the curve OPPO's official O-Log2
+    LUTs / ACES DCTL expect, so stock-camera grading LUTs apply. OPPO publishes no specification;
+    the formula is reverse-engineered from those LUT/DCTL files
+    (https://jackchou00.com/en/posts/oppo-log-2-review/): one log segment, no toe,
+    `y = 0.08550479·log2(x + 0.00964052) + 0.69336945` (1.0 → ≈ 0.6946, 18 % grey → ≈ 0.4883,
+    0 → ≈ 0.1208) in BT.2020 primaries. Chain: source-aware decode → the HLG branch's BT.709→BT.2020
+    matrix → O-Log2's own floor of 0 (the shared −0.0099 floor would make `x + 0.00964` negative) →
+    the OETF; constants in `LogProfiles.kt` (`OLOG2_A/B/C`, `olog2Oetf`, host-tested). Same
+    container policy and same `isLog` behaviour as the other logs; on a native-log camera it rides
+    the same S-Log3 ISP transport (GL-only switch, no reopen). Same honesty limit: sensor white clips
+    at ≈ 0.6946 with no extra headroom (no EI offset), so the stock camera's latitude is not claimed;
+    device clip check pending (`docs/FIELD_CHECKS.md` A15).
   - **SDR**: no shader curve; HEVC Main 8-bit BT.709 limited-range for zero-grading footage.
 - **EGL output**: release builds render through an 8-bit RGBA EGL config. The optional RGBA1010102
   config remains debug/experimental and is not part of the release claim.
@@ -1064,6 +1076,8 @@ if (transfer == HLG) {
     color = slog3(gamutFloor(toSGamut3Cine(linear)));
 } else if (transfer == LOGC3) {
     color = logc3(gamutFloor(toAwg3(linear)));
+} else if (transfer == OLOG2) {             // uTransfer 6; 3 stays vacant
+    color = olog2(toBt2020(linear));         // olog2() floors at 0 itself
 }
 // Release EGL output precision remains 8-bit for stability
 ```

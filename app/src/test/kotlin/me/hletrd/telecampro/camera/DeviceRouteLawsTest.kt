@@ -293,7 +293,7 @@ class TransferEncoderHonestyTest {
 
     @Test
     fun `a persisted HLG or log selection falls back to SDR on an 8-bit encoder`() {
-        listOf(ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
+        listOf(ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.OLOG2)
             .forEach {
                 assertEquals(
                     ColorTransfer.SDR,

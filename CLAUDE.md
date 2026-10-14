@@ -863,7 +863,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `CameraController.nativeLogConfigured` → `RendererAssists.setSourceLog`, replayed per GL
   generation): exact S-Log3 inverse → clamp → BT.1886 encode, so `base` — display, Gamma Display
   Assist, dgain, meter/zebra/false-color, peaking — and the unchanged transfer branches below run
-  on the ISP's un-S-curved linear signal and re-encode S-Log3/S-Gamut3(.Cine) or LogC3/AWG3. Stills
+  on the ISP's un-S-curved linear signal and re-encode S-Log3/S-Gamut3(.Cine), LogC3/AWG3 or
+  O-Log2/BT.2020. Stills
   and the in-REC snapshot never carry the curve: in a native-log session they name TONEMAP_MODE
   HIGH_QUALITY (else FAST) explicitly (`stillToneMapMode`); photo requests are untouched. Pseudo-ZSL
   additionally refuses a native-log session. The GL-log path below (HLG10 source, stills off) is
@@ -877,6 +878,28 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   path was the ISP's S-curve UNDER a correctly applied GL log (S-Log3 clip of the wall: file centre
   Y10 p50 = 0.318 vs preview 0.31), not a missing curve. The debug `tonecurve` experiment hook that
   established all this (de1d1a03) is removed now that the product path exists.
+  **O-Log2 is BACK as `ColorTransfer.OLOG2` (owner decision 2026-10-15), reversing the 2026-07-22
+  removal below.** Reason: the PMA110 stock camera records O-Log2 and OPPO ships official O-Log2
+  LUTs / an ACES DCTL, so owners want files those LUTs apply to. OPPO has published NO white paper;
+  the curve is the one reverse-engineered from OPPO's own LUT/DCTL
+  (https://jackchou00.com/en/posts/oppo-log-2-review/): ONE log segment, no toe,
+  `y = 0.08550479·log2(x + 0.00964052) + 0.69336945` (x = scene-linear reflectance; 1.0 → ≈ 0.6946,
+  18 % grey → ≈ 0.4883, 0 → ≈ 0.1208), BT.2020 primaries ("O-Gamut"). Shader code **6** (a NEW
+  code — 3 stays vacant): `sourceLinear` → the existing BT.709→BT.2020 matrix (`toRec2020`) →
+  `olog2()`, whose own floor is 0 (`OLOG2_LINEAR_FLOOR`) rather than the shared −0.0099, because
+  with no toe `x + 0.00964` would go negative there and log2 with it. It is NOT the old app O-Log2:
+  that one (removed in 640532e7) carried a linear TOE (47.28711236 / 0.05641088 / 0.006) that is
+  not part of OPPO's curve; do not revive it. It is a fourth `isLog` member and changes nothing
+  structural: on a native-log camera it rides the SAME S-Log3 ISP transport curve (switching among
+  S-Log3/S-Log3.Cine/LogC3/O-Log2 is a GL-only change, no reopen), on the GL fallback the same
+  HLG10/BT.1886 source decode; Gamma Display Assist, meter, zebra and false color behave as for the
+  other logs; the container takes the shared log policy (BT.2020 full range + explicit SDR-class
+  transfer), which also matches the stock O-Log2 stream's dataspace (STANDARD_BT2020 |
+  TRANSFER_SMPTE_170M | RANGE_FULL). **Same honesty limit as every log here:** it is the same
+  ISP-linear mapping, so sensor white (1.0) clips at ≈ 0.6946 and there is no extra headroom without
+  an EI/exposure offset — the stock camera's latitude is not claimed. Device clip check (white near
+  0.69, grey near 0.49, OPPO's LUT applies sensibly) is pending in `docs/FIELD_CHECKS.md` A15. The
+  persisted legacy `"LOG"` still migrates to `SLOG3_CINE`; `"OLOG2"` persists under its own name.
   **The vendor native log key is still INERT for third-party Camera2 (settled 2026-07-09).**
   `com.oplus.log.video.mode` is advertised in the tele's request+session
   keys and the HAL ACCEPTS it ("applied" logs), but it changes NOTHING a third-party session can
@@ -888,13 +911,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`LogProfiles.kt` single-sources constants into `Shaders.kt`): BT.1886 2.4 decode → linear
   BT.709→gamut 3×3 (S-Gamut3 / S-Gamut3.Cine / ARRI Wide Gamut 3, D65→D65 so rows sum to 1) →
   defensive −0.0099 floor → the S-Log3 (uTransfer=2/4; 18 % grey → 420/1023 ≈ 0.4106) or LogC3
-  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF. Like O-Log2 before them these are
+  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF, or O-Log2 (uTransfer=6, BT.2020; above). Like
+  the retired O-Log2 before them these are
   display-referred SDR-source curves, NOT scene-referred camera log — the ISP has already
   tone-mapped the stream and no highlight latitude is recovered. The encoder gets the curve, the
   preview renders it flat, and **Gamma Display Assist** shows the normal display-referred image
   instead (assist = skip the forward curve; the file always gets it; `ColorTransfer.isLog` is the
-  one gate for all three). The user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
-  2026-07-22 ("not a standard"); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
+  one gate for all four). The original user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
+  2026-07-22 ("not a standard"; superseded 2026-10-15 by `OLOG2` above); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
   its forward OETF left `Shaders.kt` with it. **The dormant native-log plumbing that survived that
   removal is now GONE TOO (2026-08-04)**, because the vendor-SDK path it was waiting for was
   declined: the O-Log2-shaped de-log shader branch (`uTransfer == 3`) with its `olog2Inv`/`toRec709`
@@ -907,12 +931,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `getExternalFilesDir(null)/nativelog` and is `BuildConfig.DEBUG &&`-guarded, so release builds
   always read false. Either delete that gate too or leave it; do not re-delete it from the DOC while
   the code keeps it. **Shader code 3 is now permanently VACANT and the surviving codes keep their
-  numbers** (0/1/2/4/5) — renumbering would silently re-map every branch and the shader's own
+  numbers** (0/1/2/4/5, plus 6 = O-Log2 since 2026-10-15) — renumbering would silently re-map every branch and the shader's own
   `uTransfer == N` comparisons; a test asserts the gap stays unused. Do not re-add any of it.
   NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
   tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
-  explicitly, always; all three log profiles share one container policy (BT.2020 full-range +
-  explicit SDR-class transfer). A trademark footnote for Sony/ARRI sits in the Setup tab.
+  explicitly, always; all four log profiles share one container policy (BT.2020 full-range +
+  explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO O-Log2 attribution
+  (EN+KO) sit in the Setup tab.
 
 - **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
