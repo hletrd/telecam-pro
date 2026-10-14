@@ -426,6 +426,19 @@ assist preview reads as a plausible un-S-curved image; zebra/false-color trigger
 rather than going dead; no CAMERA_ERROR and no preview stall beyond the ordinary reopen. Record
 whether highlights show local-tone-mapping halos (LTM under a programmed curve is unmeasured).
 
+**Partial result 2026-10-14 (still OPEN — zebra/false-color and the LTM halo look were not checked).**
+PMA110, Android 16, immutable debug `a55a4129`, TELE route (no converter), VIDEO S-Log3, M 1/30 s ISO
+12800 (wire 12650), lit poster scene. Logcat: `Session configured (fallback=0, hlg=false,
+nativeLog=true, jpeg=true, raw=true …)` and `FlipRenderer: sourceLog -> true`. The 4 s clip's Y10
+(full range) read p1 108 / p5 167 / p50 439 / p95 609 / max 619 — black near the S-Log3 floor (95)
+and every highlight capped at the S-Log3 code of linear 1.0 (0.596 → 610), i.e. the ISP's own
+output is S-Log3. An in-REC "Take photo while recording" press wrote DNG+HEIF+JPEG; the JPEG is an
+ordinary contrasty photo, not flat. Gamma Display Assist turned the flat preview (mean 123, std 41)
+into a display-referred image (mean 190, std 78) — more saturated and harder-clipping than the stock
+S-curve, as an un-tone-mapped view should be. No crash, no CAMERA_ERROR. Earlier the same day, on a
+grey wall under HAL AE, the curve visibly replaced the stock one (preview mean 64 → 79.5, std 9.5 →
+4.4; a linear curve read 18).
+
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 
 Face Priority AF (`camera/FacePriority.kt`) puts `CONTROL_MODE = USE_SCENE_MODE`,
@@ -457,6 +470,15 @@ that means this HAL does not keep aeMode active under FACE_PRIORITY: restrict th
 `facePriorityKeysFor` to HAL-AE packets (detection and frames stay) and correct `CLAUDE.md`.
 
 ---
+
+
+**Partial result 2026-10-14 (still OPEN — portrait/landscape/front/16:9-EIS routes, the tap
+override, and the M-mode EXIF A/B were not run).** PMA110, immutable debug `4813a245`, TELE (no
+converter, so the 180° correction is live), VIDEO S-Log3, AF-C, M 1/30 s ISO 12800, phone held in
+landscape, a poster with six faces. Six frames landed on the six faces, upright and on target through
+the 180° flip; the largest turned green with `afState=2` (PASSIVE_FOCUSED), `afMode=3`. Manual
+exposure held under FACE_PRIORITY: `aeState=0 iso=12650 expNs=33319161` (the nominal 12800 clamped to
+the hardware ceiling, as designed). No FrameGap summary, no CAMERA_ERROR.
 
 ## B. Held in hand — 3 min
 
