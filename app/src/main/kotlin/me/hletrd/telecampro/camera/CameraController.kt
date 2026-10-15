@@ -1149,7 +1149,9 @@ class CameraController internal constructor(
                 // without a second applier; stills are built from a fresh template and name the
                 // stock curve explicitly (stillToneMapMode). The curve takes the EI factor the
                 // exposure keys above ACHIEVED, so wire and curve cannot disagree.
-                applyNativeLogToneCurve(builtNativeLogEi.factor)
+                // The curve is ALWAYS the plain S-Log3: GL applies the EI lift after decoding (a
+                // k-scaled curve was measured not to lift on PMA110, see Shaders.nativeSceneLinear).
+                applyNativeLogToneCurve(1.0)
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
@@ -1876,7 +1878,7 @@ class CameraController internal constructor(
             // offset into the shutter, or the floor refuses part of it). The curve rides the SAME
             // cached builder and the SAME single submit below — never a second swap — and only
             // when the factor actually moved, so a steady offset rewrites nothing.
-            if (ei.factor != acceptedNativeLogEi.factor) b.applyNativeLogToneCurve(ei.factor)
+            // EI lift lives in GL; the plain S-Log3 curve on this cached builder never changes.
             // applyFocus above rewrote CONTROL_AF_MODE per the base focus mode; a live tap-AF /
             // AF-lock override must be restored on top, exactly as the full rebuild applies it
             // AFTER applyManualControls — the SAME applier, so the two paths cannot drift

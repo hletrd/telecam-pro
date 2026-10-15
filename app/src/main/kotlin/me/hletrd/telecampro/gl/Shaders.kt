@@ -162,16 +162,21 @@ object Shaders {
         vec3 sampleSource(vec2 uv) {
             vec3 c = texture2D(uTexture, uv).rgb;
             if (uSourceLog == 0) return c;
-            vec3 lin = clamp(slog3Inverse(c), 0.0, 1.0);
+            vec3 lin = clamp(slog3Inverse(c) * uSourceLogHeadroom, 0.0, 1.0);
             return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));
         }
 
         // Log EI offset: the native-log sample as SCENE-linear light for the LOG encode branches,
         // NOT clamped at 1.0 — only at the headroom k the wire actually bought — so detail above the
-        // display white survives into the file. Brightness simulation follows dgain's rule (linear
+        // display white survives into the file. The ISP curve stays the PLAIN S-Log3 (k is never
+        // programmed into it: PMA110 measured 2026-10-15 — a k-scaled TONEMAP_CURVE, confirmed on
+        // the wire via dumpsys "Last request sent", left mid-tones ~1.7 stops dark under −2 EV, as
+        // if unscaled), so the k lift is applied HERE, after the exact S-Log3 decode, and `base`
+        // (sampleSource) takes the same lift before its display clamp. Brightness simulation follows dgain's rule (linear
         // multiply, clip at the ceiling); encoder draws pass gain 1 so files never carry it.
         vec3 nativeSceneLinear(vec2 uv) {
-            vec3 lin = clamp(slog3Inverse(texture2D(uTexture, uv).rgb), 0.0, uSourceLogHeadroom);
+            vec3 lin = clamp(
+                slog3Inverse(texture2D(uTexture, uv).rgb) * uSourceLogHeadroom, 0.0, uSourceLogHeadroom);
             if (uDigitalGain > 1.001) lin = min(lin * uDigitalGain, vec3(uSourceLogHeadroom));
             return lin;
         }

@@ -30,9 +30,9 @@ class NativeLogSourceDecodeTest {
         return if (cut < y) logX else linX
     }
 
-    /** Transliteration of sampleSource's native-log branch (decode -> clamp -> BT.1886 encode). */
-    private fun glslSampleSource(raw: Double): Double =
-        glslSlog3Inverse(raw).coerceIn(0.0, 1.0).pow(1.0 / SdrToHlgMapping.SDR_EOTF_GAMMA)
+    /** Transliteration of sampleSource's native-log branch (decode -> ×k -> clamp -> BT.1886 encode). */
+    private fun glslSampleSource(raw: Double, headroom: Double = 1.0): Double =
+        (glslSlog3Inverse(raw) * headroom).coerceIn(0.0, 1.0).pow(1.0 / SdrToHlgMapping.SDR_EOTF_GAMMA)
 
     @Test
     fun `shader declares and wires the native-log source uniform`() {
@@ -40,7 +40,7 @@ class NativeLogSourceDecodeTest {
         assertTrue(shader.contains("uniform int uSourceLog;"))
         val sample = shader.substringAfter("vec3 sampleSource(vec2 uv) {").substringBefore("}")
         assertTrue(sample.contains("if (uSourceLog == 0) return c;"))
-        assertTrue(sample.contains("vec3 lin = clamp(slog3Inverse(c), 0.0, 1.0);"))
+        assertTrue(sample.contains("vec3 lin = clamp(slog3Inverse(c) * uSourceLogHeadroom, 0.0, 1.0);"))
         assertTrue(sample.contains("return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));"))
         // The decode happens BEFORE base forms, so display/meter/peaking/transfers all see it.
         assertTrue(shader.contains("vec3 base = dgain(sampleSource(vTexCoord));"))
@@ -113,7 +113,7 @@ class NativeLogSourceDecodeTest {
 
     /** Transliteration of `nativeSceneLinear` for one channel at the encoder's unit gain. */
     private fun glslNativeSceneLinear(raw: Double, headroom: Double, gain: Double = 1.0): Double {
-        var lin = glslSlog3Inverse(raw).coerceIn(0.0, headroom)
+        var lin = (glslSlog3Inverse(raw) * headroom).coerceIn(0.0, headroom)
         if (gain > 1.001) lin = minOf(lin * gain, headroom)
         return lin
     }
@@ -152,7 +152,7 @@ class NativeLogSourceDecodeTest {
         assertTrue(ShaderBindings.U_SOURCE_LOG_HEADROOM in ShaderBindings.uniforms)
         assertTrue(shader.contains("uniform float uSourceLogHeadroom;"))
         val scene = shader.substringAfter("vec3 nativeSceneLinear(vec2 uv) {").substringBefore("\n        }")
-        assertTrue(scene.contains("vec3 lin = clamp(slog3Inverse(texture2D(uTexture, uv).rgb), 0.0, uSourceLogHeadroom);"))
+        assertTrue(scene.contains("slog3Inverse(texture2D(uTexture, uv).rgb) * uSourceLogHeadroom, 0.0, uSourceLogHeadroom);"))
         assertTrue(scene.contains("if (uDigitalGain > 1.001) lin = min(lin * uDigitalGain, vec3(uSourceLogHeadroom));"))
         val input = shader.substringAfter("vec3 logInputLinear(vec3 color) {").substringBefore("\n        }")
         assertTrue(input.contains("if (uSourceLog == 0 || uSourceLogHeadroom <= 1.0) return sourceLinear(color);"))
@@ -171,7 +171,7 @@ class NativeLogSourceDecodeTest {
         for (k in listOf(1.0, 2.0, 4.0, 8.0)) {
             var y = 0.0
             while (y <= 1.0) {
-                assertEquals(LogProfiles.slog3Inverse(y).coerceIn(0.0, k), glslNativeSceneLinear(y, k), 1e-12)
+                assertEquals((LogProfiles.slog3Inverse(y) * k).coerceIn(0.0, k), glslNativeSceneLinear(y, k), 1e-12)
                 y += 0.0005
             }
         }
@@ -191,8 +191,9 @@ class NativeLogSourceDecodeTest {
     fun `grey lands on every profile's grey code for every N`() {
         for (stops in 0..3) {
             val k = (1 shl stops).toDouble()
-            // ISP sees 0.18 / k; its programmed curve writes slog3(k · that) = slog3(0.18).
-            val raw = LogProfiles.slog3Oetf(k * (0.18 / k))
+            // The sensor is underexposed by k, so the ISP's PLAIN S-Log3 curve writes slog3(0.18 / k);
+            // GL's ×k after the decode puts grey back on 0.18.
+            val raw = LogProfiles.slog3Oetf(0.18 / k)
             val encoded = encodeAll(glslLogInputLinear(raw, k))
             for ((name, code) in encoded) {
                 assertEquals("$name at N=$stops", greyCodes.getValue(name), code, 1e-6)
@@ -202,8 +203,9 @@ class NativeLogSourceDecodeTest {
 
     @Test
     fun `two stops over the old clip keeps detail at N 2 and clips at N 0`() {
-        // Scene 4.0 = 2 stops above the N = 0 sensor clip. At N = 2 the ISP sees 4.0 / 4 = 1.0.
-        val rawN2 = LogProfiles.slog3Oetf(4.0 * 1.0) // curve slog3(k · x_isp), k = 4, x_isp = 1.0
+        // Scene 4.0 = 2 stops above the N = 0 sensor clip. At N = 2 the ISP sees 4.0 / 4 = 1.0 and
+        // its plain S-Log3 curve writes slog3(1.0); GL lifts the decode back by k = 4.
+        val rawN2 = LogProfiles.slog3Oetf(1.0)
         val linN2 = glslLogInputLinear(rawN2, 4.0)
         assertEquals(4.0, linN2, 1e-9)
         val atN2 = encodeAll(linN2)
@@ -225,13 +227,19 @@ class NativeLogSourceDecodeTest {
     @Test
     fun `the display rendition stays clamped at white under any offset`() {
         // base = sampleSource: no matter how much headroom the wire bought, display/meter top out at 1.
-        assertEquals(1.0, glslSampleSource(LogProfiles.slog3Oetf(8.0)), 1e-12)
+        assertEquals(1.0, glslSampleSource(LogProfiles.slog3Oetf(1.0), headroom = 8.0), 1e-12)
+        // Grey under any offset displays at grey: the ×k lift precedes the display clamp.
+        assertEquals(
+            0.18.pow(1.0 / SdrToHlgMapping.SDR_EOTF_GAMMA),
+            glslSampleSource(LogProfiles.slog3Oetf(0.18 / 4.0), headroom = 4.0),
+            1e-9,
+        )
         assertEquals(0.18.pow(1.0 / SdrToHlgMapping.SDR_EOTF_GAMMA), glslSampleSource(LogProfiles.slog3Oetf(0.18)), 1e-9)
     }
 
     @Test
     fun `preview brightness simulation on the scene path clips at the headroom, files carry none`() {
-        val raw = LogProfiles.slog3Oetf(1.5)
+        val raw = LogProfiles.slog3Oetf(1.5 / 4.0)
         assertEquals(1.5, glslNativeSceneLinear(raw, 4.0), 1e-9)
         assertEquals(3.0, glslNativeSceneLinear(raw, 4.0, gain = 2.0), 1e-9)
         assertEquals(4.0, glslNativeSceneLinear(raw, 4.0, gain = 16.0), 1e-9)
