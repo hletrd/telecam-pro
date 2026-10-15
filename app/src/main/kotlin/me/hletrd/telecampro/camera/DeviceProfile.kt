@@ -77,6 +77,18 @@ internal data class DeviceProfile(
      * The models per flavor and their sources are in [resolve].
      */
     val nativeLogFlavor: ColorTransfer? = null,
+    /**
+     * Whether the ISP's output under the programmed S-Log3 curve scales LINEARLY with sensor
+     * exposure, which the Log EI offset needs (it underexposes by k and lifts the decode by the
+     * same k). Spec behaviour (TONEMAP_CURVE maps linear input) is assumed elsewhere. PMA110 is
+     * MEASURED false (2026-10-15, M mode, AE off, fixed ISO, a lit wall, preview p98 decoded): at
+     * exposure ×1/×½/×¼/×⅛ the S-Log3-decoded output fell to 1 / 0.28 / 0.11 / 0.052 instead of
+     * 1 / 0.5 / 0.25 / 0.125 — an exposure-dependent gain before the curve (QTI ADRC/GTM; the
+     * vendor tags `disableADRC` / `GTMManualCurveTag` exist but are not request keys), so no fixed k
+     * restores grey: +2 read ~1.2 stops dark, banded and desaturated. Owner decision: hide the
+     * offset where false; the persisted value is ignored (wire offset 0).
+     */
+    val nativeLogEiSupported: Boolean = true,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -88,6 +100,7 @@ internal data class DeviceProfile(
             rawRequiresStandalone = true,
             videoMinFrameDurationsUnderstated = true,
             nativeLogFlavor = ColorTransfer.OLOG2,
+            nativeLogEiSupported = false,
         )
 
         val GENERIC = DeviceProfile(

@@ -587,7 +587,11 @@ class CameraController internal constructor(
      * native-log session, 0 everywhere else (photo, HLG/SDR video, the GL-log fallback, high speed).
      */
     private fun repeatingNativeLogEiStops(c: ManualControls): Int =
-        if (nativeLogCurvePoints != null && highSpeedFps == 0) c.logEiOffsetStops else 0
+        if (nativeLogCurvePoints != null && highSpeedFps == 0 && deviceProfile.nativeLogEiSupported) {
+            c.logEiOffsetStops
+        } else {
+            0
+        }
 
     /**
      * Best-effort hints for the external 300 mm converter.

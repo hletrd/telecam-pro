@@ -529,6 +529,16 @@ risk**, record it); the finder, zebra and false color read the same brightness a
 M chips keep showing ISO 800 · 1/50 s; at base ISO the logcat/result shows a shorter wire shutter, not
 a longer one. Record the numbers and any partial offset (EV-comp range clamp) observed.
 
+
+**Result 2026-10-15 — FAILED on PMA110; the offset is now hidden there (owner decision).** PMA110,
+immutable debug `17e50cd1`, TELE no converter, VIDEO O-Log2, a sunlit wall. The wire was right
+(dumpsys "Last request sent": EI +2 carried the k = 4 curve and `aeExposureCompensation -12` = −2 EV
+at the 1/6 step; P exposure 8.30 → 2.08 ms; M at ISO 100 8.30 → 2.07 ms) and GL received
+`sourceLogHeadroom -> 4.0`, yet the file and finder stayed dark. Alternating EI quickly (sun drift
+excluded) in M: preview p98 decoded to 0.206 / 0.057 / 0.023 / 0.011 for EI 0 / +1 / +2 / +3 —
+the ISP output is not exposure-linear under the programmed curve (an adaptive pre-curve gain). +2
+also showed banding and desaturation. A GENERIC device would need its own run of this check.
+
 ## B. Held in hand — 3 min
 
 ### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)

@@ -140,4 +140,13 @@ class DeviceProfileTest {
             assertNull(model, deviceProfileForRoute(DeviceProfile.resolve(model), externalRoute = true).nativeLogFlavor)
         }
     }
+
+    @Test
+    fun `the Log EI offset is withheld on the PMA110 profile only`() {
+        // Measured 2026-10-15: PMA110's ISP output is not exposure-linear under the programmed curve.
+        assertFalse(DeviceProfile.PMA110.nativeLogEiSupported)
+        for (model in listOf("PMA110", "CPH2841", "PMA120")) assertFalse(model, DeviceProfile.resolve(model).nativeLogEiSupported)
+        assertTrue(DeviceProfile.GENERIC.nativeLogEiSupported)
+        assertTrue(DeviceProfile.resolve("CPH2791").nativeLogEiSupported)
+    }
 }

@@ -979,8 +979,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO / Xiaomi native-log
   attribution (EN+KO) sit in the Setup tab.
 
+- **Log EI offset — HIDDEN on the PMA110 profile (device-measured 2026-10-15, owner decision).**
+  On PMA110 the ISP's output under the programmed S-Log3 curve is NOT exposure-linear: M mode, AE
+  off, fixed ISO 100, a lit wall, exposure ×1 / ×½ / ×¼ / ×⅛ decoded to 1 / 0.28 / 0.11 / 0.052 of
+  the ×1 level (expected 0.5 / 0.25 / 0.125) — an exposure-dependent gain BEFORE the curve (QTI
+  ADRC/GTM; `disableADRC` / `GTMManualCurveTag` exist as vendor tags but are not request keys). No
+  fixed k restores grey: +2 read ~1.2 stops dark, banded and desaturated (8-bit source stretched).
+  A k-scaled ISP curve was ALSO tried and gave the same darkening, so the k lift now lives in GL
+  after the exact plain-S-Log3 decode (`sampleSource`/`nativeSceneLinear` multiply by
+  `uSourceLogHeadroom`); the ISP curve is always the plain S-Log3. `DeviceProfile.nativeLogEiSupported`
+  = false on PMA110/CPH2841/PMA120 hides the row and forces wire offset 0 (persisted value ignored);
+  GENERIC keeps it (spec: TONEMAP_CURVE input is linear), UNVERIFIED. The same measurement means
+  PMA110's native log itself is NOT scene-linear log: the stock S-curve is gone, but an adaptive
+  gain still shapes the input. The original design follows (where it says "the curve becomes
+  slog3(k·x)", read "GL multiplies the decode by k").
 - **Log EI offset = highlight headroom bought with shadow noise, NATIVE log only (owner request
-  2026-10-15; UNVERIFIED on device — `docs/FIELD_CHECKS.md` A17).** `ManualControls.logEiOffsetStops`
+  2026-10-15; `docs/FIELD_CHECKS.md` A17).** `ManualControls.logEiOffsetStops`
   ∈ {0,1,2,3}, default 0, persisted with the controls packet (main blob + MR banks, corrupt values
   clamped); Video tab row "Log EI Offset" under Transfer, shown only for a log transfer on a
   `nativeLogCurveSupported` camera (`logEiOffsetSettingVisible`), locked while recording; the OSD log

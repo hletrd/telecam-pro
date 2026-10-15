@@ -1539,7 +1539,10 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Log EI offset (NativeLogCurve.kt): directly under the curve it modifies, and only where it
     // can act (logEiOffsetSettingVisible). Locked while recording like Gamma — it moves the wire
     // exposure and the curve of the clip that is rolling.
-    if (logEiOffsetSettingVisible(state.transfer, me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps))) {
+    if (
+        state.nativeLogEiSupported &&
+        logEiOffsetSettingVisible(state.transfer, me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps))
+    ) {
         Captioned(stringResource(R.string.caption_log_ei_offset)) {
             SegmentedSelector(
                 label = stringResource(R.string.label_log_ei_offset),

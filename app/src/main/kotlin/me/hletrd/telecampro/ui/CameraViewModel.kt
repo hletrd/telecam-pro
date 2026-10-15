@@ -239,7 +239,12 @@ class CameraViewModel private constructor(
     private val settingsStore = SettingsStore(app) { detectedPhone ?: PhoneModel.OTHER }
     // nativeLogFlavor is device-static (DeviceProfile seam 2, host handset) and must be in the state
     // BEFORE init's settings restore normalizes the persisted transfer against it.
-    private val _state = MutableStateFlow(CameraUiState(nativeLogFlavor = engine.nativeLogFlavor))
+    private val _state = MutableStateFlow(
+        CameraUiState(
+            nativeLogFlavor = engine.nativeLogFlavor,
+            nativeLogEiSupported = engine.nativeLogEiSupported,
+        ),
+    )
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
     private val _ownerlessMediaDeleteLaunch = MutableStateFlow<OwnerlessMediaDeleteLaunch?>(null)
     internal val ownerlessMediaDeleteLaunch: StateFlow<OwnerlessMediaDeleteLaunch?> =

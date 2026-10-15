@@ -1920,6 +1920,8 @@ data class CameraUiState(
      * REC admission all answer from the same fact.
      */
     val nativeLogFlavor: ColorTransfer? = null,
+    /** [DeviceProfile.nativeLogEiSupported] of the host handset; false hides the Log EI offset. */
+    val nativeLogEiSupported: Boolean = true,
     /**
      * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
      * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a

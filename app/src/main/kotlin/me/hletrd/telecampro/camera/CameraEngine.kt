@@ -1906,6 +1906,9 @@ class CameraEngine internal constructor(
      */
     val nativeLogFlavor: ColorTransfer? get() = deviceProfile.nativeLogFlavor
 
+    /** The HOST handset's [DeviceProfile.nativeLogEiSupported]: gates the Log EI offset setting. */
+    val nativeLogEiSupported: Boolean get() = deviceProfile.nativeLogEiSupported
+
     /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
     val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
     // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s

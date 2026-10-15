@@ -1018,7 +1018,8 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 Text(
                     transferLabelShort(state.transfer) + logEiOsdSuffix(
                         state.transfer,
-                        me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
+                        state.nativeLogEiSupported &&
+                            me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
                         state.controls.logEiOffsetStops,
                     ),
                     color = CameraColors.Accent,
