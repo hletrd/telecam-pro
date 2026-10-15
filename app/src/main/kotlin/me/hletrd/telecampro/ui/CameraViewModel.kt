@@ -2951,6 +2951,18 @@ class CameraViewModel private constructor(
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
+    override fun onLogEiOffset(stops: Int) {
+        // Moves the wire exposure and the curve of a rolling clip; refuse mid-take like the Gamma row.
+        if (rejectIfRecording()) return
+        // A controls field (it changes the repeating request's exposure keys), so it rides the
+        // ordinary packet: one full rebuild on change, persistence, MR banks.
+        updateControls(persist = true) {
+            it.copy(logEiOffsetStops = me.hletrd.telecampro.camera.normalizedLogEiOffsetStops(stops))
+        }
+        // The recalled MR bank no longer describes the live packet (same rule as the Gyro Log row).
+        _state.update { it.copy(activeMemorySlot = null) }
+    }
+
     override fun onToggleGyroLog(enabled: Boolean) {
         // Read once per take at REC admission; refusing mid-take keeps the row honest about the
         // clip that is rolling (the same rule as Record Audio).

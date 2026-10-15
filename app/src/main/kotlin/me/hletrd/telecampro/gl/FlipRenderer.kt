@@ -17,6 +17,7 @@ internal data class ShaderLocations(
     val uTransfer: Int,
     val uSourceHlg: Int,
     val uSourceLog: Int,
+    val uSourceLogHeadroom: Int,
     val uPeaking: Int,
     val uPeakThreshold: Int,
     val uPeakColor: Int,
@@ -46,6 +47,7 @@ internal fun resolveShaderLocations(
         uTransfer = uniform(ShaderBindings.U_TRANSFER),
         uSourceHlg = uniform(ShaderBindings.U_SOURCE_HLG),
         uSourceLog = uniform(ShaderBindings.U_SOURCE_LOG),
+        uSourceLogHeadroom = uniform(ShaderBindings.U_SOURCE_LOG_HEADROOM),
         uPeaking = uniform(ShaderBindings.U_PEAKING),
         uPeakThreshold = uniform(ShaderBindings.U_PEAK_THRESHOLD),
         uPeakColor = uniform(ShaderBindings.U_PEAK_COLOR),
@@ -209,6 +211,7 @@ class FlipRenderer internal constructor(
     private var uTransfer = 0
     private var uSourceHlg = 0
     private var uSourceLog = 0
+    private var uSourceLogHeadroom = 0
     private var uPeaking = 0
     private var uPeakThreshold = 0
     private var uPeakColor = 0
@@ -239,6 +242,7 @@ class FlipRenderer internal constructor(
     private var rotationDeg = 0
     private var sourceHlg = false
     private var sourceLog = false
+    private var sourceLogHeadroom = 1f
     // Rotation the camera SurfaceTexture transform already bakes into the sampled image (the sensor
     // orientation). It is NOT re-applied to texcoords (stMatrix does that), but it DOES decide the
     // displayed aspect: a ~90° sensor rotation swaps the shown width/height. Combined with rotationDeg
@@ -308,6 +312,7 @@ class FlipRenderer internal constructor(
             uTransfer = locations.uTransfer
             uSourceHlg = locations.uSourceHlg
             uSourceLog = locations.uSourceLog
+            uSourceLogHeadroom = locations.uSourceLogHeadroom
             uPeaking = locations.uPeaking
             uPeakThreshold = locations.uPeakThreshold
             uPeakColor = locations.uPeakColor
@@ -358,6 +363,15 @@ class FlipRenderer internal constructor(
             android.util.Log.i("FlipRenderer", "sourceLog -> $enabled (uniformLoc=$uSourceLog)")
         }
         sourceLog = enabled
+    }
+
+    /**
+     * The ACHIEVED Log EI offset factor (≥ 1) of the native-log repeating request: how far above
+     * 1.0 the scene-linear decode the log encode branches read may reach. Route state like
+     * [setSourceLog]; every draw role reads the same frames.
+     */
+    fun setSourceLogHeadroom(factor: Float) {
+        sourceLogHeadroom = factor.coerceAtLeast(1f)
     }
 
     /** Extra CW rotation applied to texcoords on top of the SurfaceTexture transform (afocal flip). */
@@ -458,6 +472,7 @@ class FlipRenderer internal constructor(
         // argument — preview, encoder, analysis and finder all read the same camera buffers.
         GLES20.glUniform1i(uSourceHlg, if (sourceHlg) 1 else 0)
         GLES20.glUniform1i(uSourceLog, if (sourceLog) 1 else 0)
+        GLES20.glUniform1f(uSourceLogHeadroom, sourceLogHeadroom)
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
         GLES20.glUniform1f(uPeakThreshold, peakThreshold)
         GLES20.glUniform3f(uPeakColor, peakR, peakG, peakB)

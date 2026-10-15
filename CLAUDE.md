@@ -870,7 +870,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   additionally refuses a native-log session. The GL-log path below (HLG10 source, stills off) is
   the FALLBACK for a camera without the capability. **Honesty limits that remain:** the curve
   removes the GLOBAL tone curve, but highlight headroom is still the sensor clip, mapped at S-Log3
-  code ≈ 0.596 — there is no exposure offset yet; whether QTI local tone mapping (ADRC/LTM — tags
+  code ≈ 0.596 at the default Log EI offset 0 (headroom above it only through the offset — next
+  bullet); whether QTI local tone mapping (ADRC/LTM — tags
   QTI-internal, absent from `availableRequestKeys`, so no public key controls them) still runs
   under a programmed curve is UNMEASURED; and the 8-bit stream plus the 8-bit EGL target limit
   precision (S-Log3 spends ~130 of 256 codes). The recorded-file and in-REC-still behaviour of
@@ -897,7 +898,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   transfer), which also matches the stock O-Log2 stream's dataspace (STANDARD_BT2020 |
   TRANSFER_SMPTE_170M | RANGE_FULL). **Same honesty limit as every log here:** it is the same
   ISP-linear mapping, so sensor white (1.0) clips at ≈ 0.6946 and there is no extra headroom without
-  an EI/exposure offset — the stock camera's latitude is not claimed. Device clip check (white near
+  the Log EI offset (next bullet) — the stock camera's latitude is not claimed. Device clip check (white near
   0.69, grey near 0.49, OPPO's LUT applies sensibly) is pending in `docs/FIELD_CHECKS.md` A15. The
   persisted legacy `"LOG"` still migrates to `SLOG3_CINE`; `"OLOG2"` persists under its own name.
   **The vendor native log key is still INERT for third-party Camera2 (settled 2026-07-09).**
@@ -939,6 +940,41 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO O-Log2 attribution
   (EN+KO) sit in the Setup tab.
 
+- **Log EI offset = highlight headroom bought with shadow noise, NATIVE log only (owner request
+  2026-10-15; UNVERIFIED on device — `docs/FIELD_CHECKS.md` A17).** `ManualControls.logEiOffsetStops`
+  ∈ {0,1,2,3}, default 0, persisted with the controls packet (main blob + MR banks, corrupt values
+  clamped); Video tab row "Log EI Offset" under Transfer, shown only for a log transfer on a
+  `nativeLogCurveSupported` camera (`logEiOffsetSettingVisible`), locked while recording; the OSD log
+  tag gains " +N". **0 is byte-identical to the previous behaviour** (curve array, wire keys, shader
+  path — host-pinned). With N > 0 on a native-log session's REPEATING request only
+  (`previewExposureCap = true`; the controller passes 0 for every still and the in-REC snapshot, which
+  keep the operator's exposure under the stock tone map): (1) exposure is cut by k = 2^N — AE-OFF
+  (S/ISO/M, app-side or manual) divides the FINAL N = 0 wire ISO by k (rounded up), and only what the
+  ISO floor refuses comes out of a SHORTER exposure (never longer; frame duration unchanged — so at
+  base ISO the offset shortens the shutter, a stated cost); HAL AE (video P) moves
+  `CONTROL_AE_EXPOSURE_COMPENSATION` −N stops in the advertised step, clamped to the advertised range;
+  (2) the curve becomes `slog3(k·x)` (`nativeLogToneCurve(points, k)`, same output-uniform sampling,
+  knee snapped at x = cut/k, slog3(8) ≈ 0.83 < 1); (3) GL: `slog3Inverse(code)` is already
+  scene-linear k·x, so the four LOG branches read `nativeSceneLinear` — the same decode clamped to
+  [0, k] (`uSourceLogHeadroom`) instead of [0, 1] — while `base` (display, Gamma Display Assist,
+  meter/zebra/false color, peaking, dgain, the analysis/AE readback) keeps the [0, 1] clamp, so the
+  finder and the app-side AE meter stay at normal brightness and the loop does NOT chase the offset;
+  `logInputLinear` takes the historical `sourceLinear(base)` path whenever k ≤ 1. **ACHIEVED, not
+  requested, drives curve and GL:** every clamp (ISO floor + minimum exposure, the EV-comp range)
+  can deliver less than k, and `applyExposure` returns the factor the wire actually carries
+  (`NativeLogEiApplied`); the controller programs the curve for THAT factor and publishes it
+  change-gated (`onNativeLogEiFactor` → `RendererAssists.setSourceLogHeadroom`, replayed per GL
+  generation). Changing N is a controls delta → one full rebuild; a sensor fast-path tick that moves
+  the achieved factor rewrites the curve on the SAME cached builder in the SAME single submit — never
+  a second swap, never per frame. The live ISO/shutter readout (`onExposure`) is scaled back to EI
+  values (`eiRatedReadout`; HAL AE attributes the whole factor to ISO) so the auto-mode chips and the
+  P→M handoff seed never read the deliberately dark wire. **Honesty:** it is not free latitude — the
+  sensor sees N stops less light (N stops more shadow noise), the stream and EGL target stay 8-bit
+  (the extra stops share the same code budget), QTI local tone mapping under the curve stays
+  unmeasured, and HAL AE may not reach the compensated target in every scene. **Known risk:** under
+  HAL AE the in-REC snapshot is AE-ON at the operator's EV while the AE has converged at EV − N; a
+  single still may not re-converge, so a dark in-REC still in video P is plausible until A17 says
+  otherwise.
 - **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
   (which moves the lens DURING the exposure) can cut it — app-side gyro EIS only warps whole frames

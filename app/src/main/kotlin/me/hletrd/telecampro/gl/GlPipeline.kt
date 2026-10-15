@@ -639,6 +639,9 @@ class GlPipeline(
      */
     fun setSourceLog(enabled: Boolean) = post { renderer.setSourceLog(enabled) }
 
+    /** Log EI offset: the native decode's scene-linear ceiling for the log encode branches. */
+    fun setSourceLogHeadroom(factor: Float) = post { renderer.setSourceLogHeadroom(factor) }
+
     /** Loupe Overview: with the resolved flag on and the punch-in loupe active, draw a small
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
      *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the

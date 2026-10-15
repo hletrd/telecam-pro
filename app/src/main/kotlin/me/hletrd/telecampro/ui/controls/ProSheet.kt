@@ -1533,6 +1533,21 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             tenBitEncodeAvailable = state.tenBitEncodeAvailable,
         )
     }
+    // Log EI offset (NativeLogCurve.kt): directly under the curve it modifies, and only where it
+    // can act (logEiOffsetSettingVisible). Locked while recording like Gamma — it moves the wire
+    // exposure and the curve of the clip that is rolling.
+    if (logEiOffsetSettingVisible(state.transfer, me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps))) {
+        Captioned(stringResource(R.string.caption_log_ei_offset)) {
+            SegmentedSelector(
+                label = stringResource(R.string.label_log_ei_offset),
+                options = LOG_EI_OFFSET_OPTIONS,
+                selected = state.controls.logEiOffsetStops,
+                labelFor = ::logEiOffsetLabel,
+                onSelect = actions::onLogEiOffset,
+                enabled = recordingMutable,
+            )
+        }
+    }
     // Opt-in Gyroflow sidecar (video/GyroLogRecorder.kt). The caption names WHERE the file lands,
     // because it is not beside the clip: MediaStore refuses non-media types under DCIM.
     Captioned(stringResource(R.string.caption_gyro_log)) {

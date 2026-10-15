@@ -287,6 +287,11 @@ class SettingsStore(
                 shutterAngle = safeFloat("${prefix}shutterAngle", d.shutterAngle).coerceIn(1f, 360f),
                 exposureCompensation = safeInt("${prefix}exposureCompensation", d.exposureCompensation)
                     .coerceIn(MIN_PERSISTED_EV_INDEX, MAX_PERSISTED_EV_INDEX),
+                // Absent key (every pre-feature save) = 0, the byte-identical default; a corrupt
+                // value is clamped into the offered 0..3 domain rather than trusted.
+                logEiOffsetStops = me.hletrd.telecampro.camera.normalizedLogEiOffsetStops(
+                    safeInt("${prefix}logEiOffsetStops", d.logEiOffsetStops),
+                ),
                 aeLock = safeBoolean("${prefix}aeLock", d.aeLock),
                 antibanding = enumOr(safeString("${prefix}antibanding", null), d.antibanding),
                 fps = safeInt("${prefix}fps", d.fps).coerceIn(MIN_PERSISTED_FPS, MAX_PERSISTED_FPS),
@@ -435,6 +440,7 @@ class SettingsStore(
         putString("${prefix}shutterMode", c.shutterMode.name)
         putFloat("${prefix}shutterAngle", c.shutterAngle)
         putInt("${prefix}exposureCompensation", c.exposureCompensation)
+        putInt("${prefix}logEiOffsetStops", c.logEiOffsetStops)
         putBoolean("${prefix}aeLock", c.aeLock)
         putString("${prefix}antibanding", c.antibanding.name)
         putInt("${prefix}fps", c.fps)

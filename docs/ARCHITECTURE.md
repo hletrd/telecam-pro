@@ -1007,6 +1007,16 @@ Color-profile rendering happens in the fragment shader:
   and, inside a native-log session only, name `TONEMAP_MODE_HIGH_QUALITY` (else FAST) explicitly;
   pseudo-ZSL refuses the session. The HAL was measured to honour the curve on the repeating request
   in both the 8-bit and the HLG10 session.
+- **Log EI offset** (`ManualControls.logEiOffsetStops`, 0..3, default 0 = byte-identical; UNVERIFIED
+  on device, `FIELD_CHECKS.md` A17): on a native-log session's REPEATING request only, `applyExposure`
+  cuts the final wire exposure by k = 2^N — AE-OFF: ISO ÷ k (rounded up), the ISO floor's refusal
+  from a shorter exposure (never longer); HAL AE: EV-comp index −N stops in the advertised step,
+  clamped — and returns the ACHIEVED factor (`NativeLogEiApplied`). The controller programs
+  `TONEMAP_CURVE` = `slog3(k·x)` for that factor (`nativeLogToneCurve(points, k)`) and publishes it
+  change-gated to GL (`onNativeLogEiFactor` → `RendererAssists.setSourceLogHeadroom` → uniform
+  `uSourceLogHeadroom`, replayed per generation). A changed N is one full rebuild; a sensor fast-path
+  tick that moves the achieved factor rewrites the curve inside its single submit. Stills and the
+  in-REC snapshot pass 0. The live ISO/shutter readout is scaled back to EI values.
 - **Input**: normalized [0, 1] RGBA sampled from the camera SurfaceTexture. It is S-Log3-encoded
   (by the ISP) when the accepted session reports native log, HLG-encoded when it reports HLG, and
   BT.1886/SDR-encoded otherwise. Only the native-log stream escapes the ISP's GLOBAL tone curve; the
@@ -1019,7 +1029,12 @@ Color-profile rendering happens in the fragment shader:
   (`sampleSource`: exact S-Log3 inverse → clamp [0, 1] → BT.1886 encode), so `base` and every
   consumer of it — display, Gamma Display Assist, digital gain, meter/zebra/false-color, peaking,
   analysis readback — work unchanged, and the transfer branches' BT.1886 decode returns the ISP's
-  linear signal exactly. HLG input takes inverse HLG OETF plus inverse reference-white scaling;
+  linear signal exactly. With a Log EI offset (`uSourceLogHeadroom` k > 1) the four LOG branches
+  (codes 2/4/5/6) read `logInputLinear` → `nativeSceneLinear` instead: the same S-Log3 inverse,
+  which under the `slog3(k·x)` curve is already scene-linear, clamped to [0, k] rather than [0, 1],
+  so the highlights the underexposed wire kept reach the file; `base` keeps the [0, 1] clamp, so
+  display, meter, overlays, Gamma Display Assist and the AE readback stay at normal brightness.
+  At k = 1 `logInputLinear` IS the historical `sourceLinear(base)`. HLG input takes inverse HLG OETF plus inverse reference-white scaling;
   standard input takes BT.1886 2.4 decode. All arrive at the common display-light scale used by the
   subsequent gamut matrix and OETF.
 - **Transfer mapping / OETF**:

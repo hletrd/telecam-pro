@@ -139,6 +139,7 @@ class SettingsStoreTest {
         shutterMode = ShutterMode.ANGLE,
         shutterAngle = 172.8f,
         exposureCompensation = 2,
+        logEiOffsetStops = 2,
         aeLock = true,
         antibanding = Antibanding.HZ60,
         fps = 60,
@@ -444,6 +445,45 @@ class SettingsStoreTest {
         // An MR bank saved with the feature OFF recalls OFF even while the live blob holds ON.
         store.savePreset(MemorySlot.MR1, ManualControls(), ExtraSettings(), "n", "s")
         assertEquals(false, store.loadPreset(MemorySlot.MR1)?.controls?.facePriorityAf)
+    }
+
+    @Test
+    fun `log EI offset defaults to 0 and an older blob or MR bank without the key restores 0`() {
+        assertEquals(0, ManualControls().logEiOffsetStops)
+        val store = SettingsStore(FakePrefs(mutableMapOf("hasSaved" to true, "preset_MR1_hasSaved" to true)))
+        assertEquals(0, store.load()?.controls?.logEiOffsetStops)
+        assertEquals(0, store.loadPreset(MemorySlot.MR1)?.controls?.logEiOffsetStops)
+    }
+
+    @Test
+    fun `log EI offset round-trips through the main blob and every MR bank value`() {
+        val store = SettingsStore(FakePrefs())
+        for (stops in 0..3) {
+            store.save(ManualControls(logEiOffsetStops = stops), ExtraSettings())
+            assertEquals(stops, store.load()?.controls?.logEiOffsetStops)
+            store.savePreset(MemorySlot.MR2, ManualControls(logEiOffsetStops = stops), ExtraSettings(), "n", "s")
+            assertEquals(stops, store.loadPreset(MemorySlot.MR2)?.controls?.logEiOffsetStops)
+        }
+        // A bank saved at 0 recalls 0 while the live blob holds an offset.
+        store.save(ManualControls(logEiOffsetStops = 3), ExtraSettings())
+        store.savePreset(MemorySlot.MR1, ManualControls(), ExtraSettings(), "n", "s")
+        assertEquals(0, store.loadPreset(MemorySlot.MR1)?.controls?.logEiOffsetStops)
+    }
+
+    @Test
+    fun `a corrupt log EI offset is clamped into the offered domain`() {
+        val store = SettingsStore(
+            FakePrefs(
+                mutableMapOf(
+                    "hasSaved" to true,
+                    "logEiOffsetStops" to 99,
+                    "preset_MR1_hasSaved" to true,
+                    "preset_MR1_logEiOffsetStops" to -4,
+                ),
+            ),
+        )
+        assertEquals(3, store.load()?.controls?.logEiOffsetStops)
+        assertEquals(0, store.loadPreset(MemorySlot.MR1)?.controls?.logEiOffsetStops)
     }
 
     @Test

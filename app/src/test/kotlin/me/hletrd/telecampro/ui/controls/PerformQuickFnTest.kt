@@ -121,6 +121,7 @@ class PerformQuickFnTest {
         override fun onToggleHistogram(enabled: Boolean) = hit("onToggleHistogram")
         override fun onToggleWaveform(enabled: Boolean) = hit("onToggleWaveform")
         override fun onToggleGammaAssist(enabled: Boolean) = hit("onToggleGammaAssist")
+        override fun onLogEiOffset(stops: Int) = hit("onLogEiOffset($stops)")
         override fun onToggleGyroLog(enabled: Boolean) = hit("onToggleGyroLog($enabled)")
         override fun onFrameLines(type: FrameLineType) = hit("onFrameLines($type)")
         override fun onGridType(type: GridType) = hit("onGridType($type)")

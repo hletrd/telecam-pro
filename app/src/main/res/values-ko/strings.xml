@@ -41,6 +41,8 @@
     <string name="label_bitrate">비트레이트</string>
     <string name="label_recording">녹화</string>
     <string name="label_record_audio">오디오 녹음</string>
+    <string name="label_log_ei_offset">로그 EI 오프셋</string>
+    <string name="caption_log_ei_offset">센서를 이 단계만큼 어둡게 노출한 뒤 로그 커브에서 다시 끌어올립니다. 하이라이트 여유는 늘고 암부 노이즈도 늘어납니다.</string>
     <string name="label_gyro_log">자이로 로그 (Gyroflow)</string>
     <string name="caption_gyro_log">클립마다 자이로 기록(.gcsv)을 Documents/TeleCamPro 폴더에 저장합니다</string>
     <string name="label_mic_input">마이크 입력</string>

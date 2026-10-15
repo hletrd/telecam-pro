@@ -151,6 +151,8 @@ interface CameraActions {
     fun onToggleHistogram(enabled: Boolean)
     fun onToggleWaveform(enabled: Boolean)
     fun onToggleGammaAssist(enabled: Boolean)
+    /** Native-log highlight headroom, whole stops 0..3 (Video tab; NativeLogCurve.kt). */
+    fun onLogEiOffset(stops: Int)
     /** Optional Gyroflow .gcsv sidecar per video take (Video tab). */
     fun onToggleGyroLog(enabled: Boolean)
     fun onFrameLines(type: FrameLineType)

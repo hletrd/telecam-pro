@@ -45,6 +45,8 @@
     <string name="label_bitrate">Bitrate</string>
     <string name="label_recording">Recording</string>
     <string name="label_record_audio">Record Audio</string>
+    <string name="label_log_ei_offset">Log EI Offset</string>
+    <string name="caption_log_ei_offset">Underexposes the sensor by this many stops and lifts it back in the log curve: more highlight headroom, more shadow noise.</string>
     <string name="label_gyro_log">Gyro Log (Gyroflow)</string>
     <string name="caption_gyro_log">Saves a .gcsv gyro log for each clip to Documents/TeleCamPro</string>
     <string name="label_mic_input">Mic Input</string>

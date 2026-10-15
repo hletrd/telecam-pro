@@ -197,6 +197,14 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setSourceLog(enabled)
     }
 
+    /** The achieved Log EI offset factor of the accepted native-log repeating request (≥ 1). */
+    fun setSourceLogHeadroom(factor: Float) {
+        val k = factor.coerceAtLeast(1f)
+        if (config.snapshot().sourceLogHeadroom == k) return
+        config.update { it.copy(sourceLogHeadroom = k) }
+        currentGl().setSourceLogHeadroom(k)
+    }
+
     fun setTeleFinderResolved(enabled: Boolean) {
         config.update { it.copy(teleFinder = enabled) }
         currentGl().setTeleFinder(enabled)
@@ -258,6 +266,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setTeleFinder(snapshot.teleFinder)
         gl.setSourceHlg(snapshot.sourceHlg)
         gl.setSourceLog(snapshot.sourceLog)
+        gl.setSourceLogHeadroom(snapshot.sourceLogHeadroom)
         gl.setFinderFieldScale(snapshot.finderFieldScale)
         gl.setFinderBottomClearanceFraction(snapshot.finderBottomClearanceFraction)
         gl.setWindowRotation(snapshot.windowRotationDeg)

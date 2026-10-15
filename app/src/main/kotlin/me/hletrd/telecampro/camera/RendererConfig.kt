@@ -35,6 +35,13 @@ internal data class RendererConfig(
      */
     val sourceLog: Boolean = false,
     /**
+     * The ACHIEVED Log EI offset factor k (≥ 1) of the native-log repeating request: the scene-linear
+     * ceiling of the GL native decode the log encode branches read (NativeLogCurve.kt). 1 = no
+     * offset, which takes the historical decode path exactly. Replayed with [sourceLog] for the
+     * same reason: a fresh generation defaulting to 1 would re-clip the headroom the wire bought.
+     */
+    val sourceLogHeadroom: Float = 1f,
+    /**
      * The Loupe Overview's pretend-field scale (see loupeHintRect's fieldScale): the selected
      * converter's magnification while TELE, 1 otherwise. Route state in the replayed snapshot for
      * the same reason as [sourceHlg] — a fresh GL generation must not fall back to 1 and quietly

@@ -66,6 +66,7 @@ import me.hletrd.telecampro.camera.largestCenteredRect
 import me.hletrd.telecampro.camera.teleFinderVisible
 import me.hletrd.telecampro.camera.videoBitRate
 import me.hletrd.telecampro.ui.controls.transferLabelShort
+import me.hletrd.telecampro.ui.controls.logEiOsdSuffix
 import me.hletrd.telecampro.ui.controls.videoCodecLabelShort
 import me.hletrd.telecampro.ui.controls.videoResolutionLabel
 import me.hletrd.telecampro.ui.controls.videoFrameRateLabel
@@ -1013,7 +1014,16 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // units apart for one meaning. Accent is the lighter of the two, so HUD contrast
                 // rises. (The histogram's blue CHANNEL curve below stays a literal: it names a
                 // colour channel, not a UI accent.)
-                Text(transferLabelShort(state.transfer), color = CameraColors.Accent, style = MaterialTheme.typography.labelMedium)
+                // A Log EI offset rides the SAME tag as a compact "+N" ("SLOG3 +2") — no new chrome.
+                Text(
+                    transferLabelShort(state.transfer) + logEiOsdSuffix(
+                        state.transfer,
+                        me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
+                        state.controls.logEiOffsetStops,
+                    ),
+                    color = CameraColors.Accent,
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
             if (state.transfer.isLog && state.gammaAssist) {
                 // Gamma Display Assist active: the monitor is corrected, the file stays log.

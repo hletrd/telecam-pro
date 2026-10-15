@@ -472,6 +472,16 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SDR -> "SDR"
 }
 
+/** Log EI offset value label: "0", "+1 EV", "+2 EV", "+3 EV" (EV stays Latin, like the EV ruler). */
+internal fun logEiOffsetLabel(stops: Int): String = if (stops <= 0) "0" else "+$stops EV"
+
+/**
+ * The OSD transfer tag's Log EI suffix: " +N" only when the offset can actually apply — a log
+ * transfer on a native-curve camera with N > 0 — else empty, so every other tag is unchanged.
+ */
+internal fun logEiOsdSuffix(transfer: ColorTransfer, nativeLogCurveSupported: Boolean, stops: Int): String =
+    if (logEiOffsetSettingVisible(transfer, nativeLogCurveSupported) && stops > 0) " +$stops" else ""
+
 /** Compact transfer name for the video-mode quick chip and the OSD. */
 internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"

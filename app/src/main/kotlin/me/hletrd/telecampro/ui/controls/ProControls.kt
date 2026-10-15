@@ -1053,6 +1053,17 @@ internal fun transferSourceCaption(transfer: ColorTransfer, nativeLogCurveSuppor
 }
 
 /**
+ * Whether the Video tab offers the Log EI offset row: only where it can act — a log transfer on a
+ * camera that takes the native ISP curve (the same capability answer the Engine routes on). The GL
+ * fallback bakes log onto an already tone-mapped stream, where an underexposure would only add noise.
+ */
+internal fun logEiOffsetSettingVisible(transfer: ColorTransfer, nativeLogCurveSupported: Boolean): Boolean =
+    transfer.isLog && nativeLogCurveSupported
+
+/** The offered offsets, 0..LOG_EI_OFFSET_MAX_STOPS whole stops. */
+internal val LOG_EI_OFFSET_OPTIONS: List<Int> = (0..me.hletrd.telecampro.camera.LOG_EI_OFFSET_MAX_STOPS).toList()
+
+/**
  * Caption for a session with NO still reader. Only an ACCEPTED HLG10 session earns the trade wording.
  *
  * Keyed on accepted-session truth ([me.hletrd.telecampro.camera.PhotoSessionOutputs.hlg]), not the

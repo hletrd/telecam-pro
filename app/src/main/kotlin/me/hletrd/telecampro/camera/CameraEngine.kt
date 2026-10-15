@@ -2587,6 +2587,12 @@ class CameraEngine internal constructor(
                 ownedGl.setPreviewDigitalGain(gain)
             }
         }
+        // Log EI offset (NativeLogCurve.kt): the factor the accepted repeating request ACHIEVED is
+        // the GL native decode's headroom. Through rendererAssists so it enters the replayed
+        // snapshot and survives a GL generation replacement, like setSourceLog.
+        ctrl.onNativeLogEiFactor = { factor ->
+            if (controller === ctrl) rendererAssists.setSourceLogHeadroom(factor)
+        }
         ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         ctrl.onFaces = { frame -> if (controller === ctrl) publishFaceFrame(frame) }

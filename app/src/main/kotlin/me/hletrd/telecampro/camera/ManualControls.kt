@@ -32,6 +32,12 @@ data class ManualControls(
     val shutterAngle: Float = 180f, // cine ANGLE mode: exposure = (angle/360)/fps
     val exposureCompensation: Int = 0,
     val aeLock: Boolean = false,
+    // Log EI offset, whole stops 0..LOG_EI_OFFSET_MAX_STOPS (NativeLogCurve.kt): on a NATIVE-log
+    // video session only, the REPEATING request is underexposed by 2^N and the S-Log3 tone curve
+    // lifts it back, buying N stops of highlight headroom for N stops of shadow noise. A preference,
+    // never normalized away by route (the request gate decides, like [facePriorityAf]); 0 keeps
+    // every request byte-identical. Stills never take it.
+    val logEiOffsetStops: Int = 0,
     val antibanding: Antibanding = Antibanding.AUTO,
     val fps: Int = 30,
     // Snap increment (in EV/stops) for the manual ISO and shutter dials.
@@ -258,6 +264,7 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         iso = normalizedIso,
         exposureTimeNs = normalizedExposureNs,
         exposureCompensation = normalizedEv,
+        logEiOffsetStops = normalizedLogEiOffsetStops(logEiOffsetStops),
         focusMode = normalizedFocus,
         afLock = afLock && normalizedFocus != FocusMode.MANUAL && caps.supportsManualFocus &&
             caps.hasFocusDistanceRange &&
@@ -713,7 +720,7 @@ internal fun sensorRequestTiming(
  * is owned by [CameraController], which sets it on the repeating preview/video request per the
  * selected [VideoStabMode] — not here, so it isn't forced onto still captures.
  */
-fun CaptureRequest.Builder.applyManualControls(
+internal fun CaptureRequest.Builder.applyManualControls(
     c: ManualControls,
     caps: CameraCaps,
     // No defaults on these three (AGG5-50): each one IS a measured HAL guard, and an omitted
@@ -729,9 +736,13 @@ fun CaptureRequest.Builder.applyManualControls(
     enforceFrameRate: Boolean,
     // The session's capture mode: continuous AF takes the video variant here ([requestAfMode]).
     videoMode: Boolean,
-) {
+    // Log EI offset stops to put on THIS request's wire (NativeLogCurve.kt). Non-zero only on a
+    // native-log session's REPEATING request — the controller passes 0 for every still. No default,
+    // same rule as above: a still that inherited a default offset would come out N stops dark.
+    nativeLogEiStops: Int,
+): NativeLogEiApplied {
     applyFocus(c, caps, videoMode)
-    applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
+    val ei = applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate, nativeLogEiStops)
     applyWhiteBalance(c, caps)
     applyProcessing(c, caps)
     // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
@@ -749,6 +760,7 @@ fun CaptureRequest.Builder.applyManualControls(
             else CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
         )
     }
+    return ei
 }
 
 /**
@@ -857,9 +869,10 @@ internal fun CaptureRequest.Builder.applySensorValueControls(
     previewExposureCap: Boolean,
     enforceFrameRate: Boolean,
     videoMode: Boolean,
-) {
+    nativeLogEiStops: Int,
+): NativeLogEiApplied {
     applyFocus(c, caps, videoMode)
-    applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
+    return applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate, nativeLogEiStops)
 }
 
 internal val FocusMode.afMetadata: Int
@@ -1089,7 +1102,12 @@ private fun CaptureRequest.Builder.applyExposure(
     pinAutoFps: Boolean,
     previewExposureCap: Boolean,
     enforceFrameRate: Boolean,
-) {
+    nativeLogEiStops: Int,
+): NativeLogEiApplied {
+    // The offset only ever rides a REPEATING request (previewExposureCap) — belt and braces on top
+    // of the controller passing 0 for stills.
+    val eiStops = if (previewExposureCap) normalizedLogEiOffsetStops(nativeLogEiStops) else 0
+    var ei = NativeLogEiApplied.NONE
     val isoRange = caps.isoRange
     val manualAe = manualAeAdmitted(c, caps)
     if (manualAe) {
@@ -1120,10 +1138,7 @@ private fun CaptureRequest.Builder.applyExposure(
             wantExposureNs = traded.exposureNs
             iso = traded.iso
         }
-        set(
-            CaptureRequest.SENSOR_SENSITIVITY,
-            iso.coerceIn(admittedIsoRange.lower, admittedIsoRange.upper),
-        )
+        val wireIso = iso.coerceIn(admittedIsoRange.lower, admittedIsoRange.upper)
         val admittedExposureNs = clampExposureNs(
             requestedNs = wantExposureNs,
             minNs = admittedExposureRange.lower,
@@ -1135,7 +1150,19 @@ private fun CaptureRequest.Builder.applyExposure(
             maxFrameDurationNs = caps.maxFrameDurationNs,
             enforceFrameRate = enforceFrameRate,
         )
-        set(CaptureRequest.SENSOR_EXPOSURE_TIME, timing.exposureNs)
+        // Log EI offset (native-log repeating request only): divide the FINAL N = 0 wire values,
+        // ISO first, the floor's refusal from a SHORTER exposure. The frame duration below keeps the
+        // N = 0 timing — a shorter exposure always fits inside it, so the cadence is untouched.
+        val eiWire = nativeLogEiSensorWire(
+            offsetStops = eiStops,
+            iso = wireIso,
+            isoMin = admittedIsoRange.lower,
+            exposureNs = timing.exposureNs,
+            exposureMinNs = admittedExposureRange.lower,
+        )
+        ei = eiWire.applied
+        set(CaptureRequest.SENSOR_SENSITIVITY, eiWire.iso)
+        set(CaptureRequest.SENSOR_EXPOSURE_TIME, eiWire.exposureNs)
         // Stills may stretch to a long exposure; video enforces the selected delivery cadence.
         set(CaptureRequest.SENSOR_FRAME_DURATION, timing.frameDurationNs)
     } else {
@@ -1144,10 +1171,17 @@ private fun CaptureRequest.Builder.applyExposure(
         exactAdvertisedMode(c.flash.autoAeMetadata, caps.aeModes)?.let { aeMode ->
             set(CaptureRequest.CONTROL_AE_MODE, aeMode)
             set(CaptureRequest.CONTROL_AE_LOCK, c.aeLock)
-            set(
-                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-                c.exposureCompensation.coerceIn(caps.evRange.lower, caps.evRange.upper),
+            // Log EI offset under HAL AE: the compensation index moves −N stops in the advertised
+            // step, clamped to the advertised range; at N = 0 this is exactly the clamped user index.
+            val comp = nativeLogEiCompensation(
+                offsetStops = eiStops,
+                userIndex = c.exposureCompensation,
+                evStepStops = caps.evStep.toDouble(),
+                evMin = caps.evRange.lower,
+                evMax = caps.evRange.upper,
             )
+            ei = comp.applied
+            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, comp.wireIndex)
         }
     }
     // Photo AUTO preview can lower fps for a brighter low-light view. Video AUTO must stay at the
@@ -1161,6 +1195,7 @@ private fun CaptureRequest.Builder.applyExposure(
     exactAdvertisedMode(c.antibanding.antibandingMetadata, caps.antibandingModes)?.let {
         set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, it)
     }
+    return ei
 }
 
 private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: CameraCaps) {

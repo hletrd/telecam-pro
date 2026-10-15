@@ -77,4 +77,33 @@ class NativeLogCaptionTest {
         // HLG is never ISP-encoded: its source is the tone-mapped HLG10 stream either way.
         assertEquals(R.string.video_tone_mapped_source, transferSourceCaption(ColorTransfer.HLG, nativeLogCurveSupported = true))
     }
+
+    // ---- Log EI offset row ----
+
+    @Test
+    fun `the Log EI offset row appears only for a log transfer on a native-curve camera`() {
+        ColorTransfer.entries.filter { it.isLog }.forEach {
+            assertTrue("$it native", logEiOffsetSettingVisible(it, nativeLogCurveSupported = true))
+            assertFalse("$it GL fallback", logEiOffsetSettingVisible(it, nativeLogCurveSupported = false))
+        }
+        listOf(ColorTransfer.SDR, ColorTransfer.HLG).forEach {
+            assertFalse("$it", logEiOffsetSettingVisible(it, nativeLogCurveSupported = true))
+            assertFalse("$it", logEiOffsetSettingVisible(it, nativeLogCurveSupported = false))
+        }
+    }
+
+    @Test
+    fun `the row offers 0 to 3 with EV-labelled lifts`() {
+        assertEquals(listOf(0, 1, 2, 3), LOG_EI_OFFSET_OPTIONS)
+        assertEquals(listOf("0", "+1 EV", "+2 EV", "+3 EV"), LOG_EI_OFFSET_OPTIONS.map(::logEiOffsetLabel))
+    }
+
+    @Test
+    fun `the OSD log tag gains a compact suffix only when the offset can act`() {
+        assertEquals("SLOG3 +2", transferLabelShort(ColorTransfer.SLOG3) + logEiOsdSuffix(ColorTransfer.SLOG3, true, 2))
+        assertEquals("", logEiOsdSuffix(ColorTransfer.SLOG3, true, 0))
+        assertEquals("", logEiOsdSuffix(ColorTransfer.SLOG3, false, 2))
+        assertEquals("", logEiOsdSuffix(ColorTransfer.HLG, true, 2))
+        assertEquals("", logEiOsdSuffix(ColorTransfer.SDR, true, 3))
+    }
 }

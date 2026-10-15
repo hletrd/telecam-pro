@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-three remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -19,6 +19,7 @@ both tablets, **A11** needs a Video→Photo→FRONT→Video trip and a clip's fr
 few FRONT presses with DNG on, **A13** needs the status plate watched through reopens and a mic-less
 REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log REC take with a still
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
+**A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -490,6 +491,31 @@ landscape, a poster with six faces. Six frames landed on the six faces, upright 
 the 180° flip; the largest turned green with `afState=2` (PASSIVE_FOCUSED), `afMode=3`. Manual
 exposure held under FACE_PRIORITY: `aeState=0 iso=12650 expNs=33319161` (the nominal 12800 clamped to
 the hardware ceiling, as designed). No FrameGap summary, no CAMERA_ERROR.
+
+### A17. Log EI offset buys highlight headroom, grey and stills unchanged — ◯ OPEN 2026-10-15
+
+The Log EI offset (`ManualControls.logEiOffsetStops`, NativeLogCurve.kt) underexposes the native-log
+REPEATING request by 2^N (ISO first, then a shorter shutter at the ISO floor; EV comp under HAL AE)
+and programs `slog3(k·x)` for the ACHIEVED factor; GL encodes the unclamped scene-linear decode while
+the finder stays at normal brightness. Host tests only.
+
+- PMA110, **VIDEO**, transfer **S-Log3**, native-log session confirmed (`nativeLog=true`). A bright
+  scene with an 18 % grey card at the meter's exposure AND a highlight that clips (a lamp, a sunlit
+  white surface). Video tab → **Log EI Offset**.
+- **P (HAL AE):** record 5 s at **0**, then 5 s at **+2 EV** (one rebuild; no `CAMERA_ERROR`). Take
+  one **in-REC still** in each. Watch the finder: it must NOT darken by 2 stops at +2.
+- **M:** ISO 800 · 1/50 s. Record 5 s at **0** and at **+2 EV**; take an in-REC still in each. Then
+  repeat at the sensor's base ISO to exercise the shutter remainder. Note the live ISO/shutter chips.
+- Pull the clips and stills; measure centre-of-card and highlight Y10 (full range).
+
+**Pass:** the grey card reads the same S-Log3 grey code (≈ 0.41, Y10 ≈ 420) at 0 and +2 in both P
+and M; highlights that pinned at ≈ 0.596 (Y10 ≈ 610) at 0 show gradation above it at +2 (up to
+≈ 0.75, Y10 ≈ 766, for 2 stops); shadows are visibly noisier at +2 (expected cost); both in-REC stills look like
+ordinary photos and their EXIF exposure matches the operator's values (M: ISO 800 · 1/50 s at both
+offsets; P: the same brightness at both offsets — **a 2-stop-dark P still at +2 is the known HAL-AE
+risk**, record it); the finder, zebra and false color read the same brightness at both offsets; the
+M chips keep showing ISO 800 · 1/50 s; at base ISO the logcat/result shows a shorter wire shutter, not
+a longer one. Record the numbers and any partial offset (EV-comp range clamp) observed.
 
 ## B. Held in hand — 3 min
 

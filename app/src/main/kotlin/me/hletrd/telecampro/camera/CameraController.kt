@@ -165,6 +165,15 @@ class CameraController internal constructor(
     private var nativeLogCurve = false
     // The curve's control points, sized to this camera's advertised budget. Built once per open().
     private var nativeLogCurvePoints: FloatArray? = null
+    // Log EI offset (NativeLogCurve.kt): the curve for the ACHIEVED factor the repeating request's
+    // wire carries, rebuilt only when that factor moves (camera-thread confined). k = 1 reuses
+    // [nativeLogCurvePoints], the historical curve.
+    private var nativeLogEiCurvePoints: FloatArray? = null
+    private var nativeLogEiCurveFactor = 1.0
+    // What the last ACCEPTED repeating request applied — scales the live ISO/shutter readout back to
+    // EI values (eiRatedReadout). Written on the camera thread after an accepted submit, read by
+    // that thread's result callback.
+    @Volatile private var acceptedNativeLogEi = NativeLogEiApplied.NONE
     // Written by open() on setupExecutor, lazily re-read on the camera handler (tryComplete).
     @Volatile private var rawChars: CameraCharacteristics? = null
     @Volatile private var rawCharsCameraId: String? = null
@@ -271,6 +280,10 @@ class CameraController internal constructor(
     // zoom fast path leaves exposure keys untouched). Change-gated; the engine forwards it to
     // GlPipeline.setPreviewDigitalGain and re-seeds it per GL generation.
     @Volatile var onPreviewDigitalGain: ((Float) -> Unit)? = null
+    // The Log EI offset factor the accepted repeating request ACHIEVED (1 when none; NativeLogCurve.kt).
+    // Published after every accepted submit that can move it (full rebuild + sensor fast path),
+    // change-gated; the engine forwards it to the GL native-log decode headroom.
+    @Volatile var onNativeLogEiFactor: ((Float) -> Unit)? = null
     private var lastReportedIso: Int? = null
     private var lastReportedExpNs: Long? = null
     // Live lens focus distance (diopters, from CaptureResult.LENS_FOCUS_DISTANCE) surfaced to the UI:
@@ -355,6 +368,9 @@ class CameraController internal constructor(
         // same caps, so this only matters if a future caller passes intent instead of a decision.
         this.nativeLogCurve = nativeLogCurve && nativeLogCurveSupported(caps)
         this.nativeLogCurvePoints = if (this.nativeLogCurve) nativeLogToneCurve(caps.maxCurvePoints) else null
+        this.nativeLogEiCurvePoints = null
+        this.nativeLogEiCurveFactor = 1.0
+        this.acceptedNativeLogEi = NativeLogEiApplied.NONE
         this.highSpeedFps = highSpeedFps
         this.videoStabHalMode = videoStabHalMode
         this.teleconverterMode = teleconverterMode
@@ -549,11 +565,29 @@ class CameraController internal constructor(
      * that looks plausible. A real rejection surfaces through the ordinary submit failure instead.
      * Edge/NR are deliberately untouched: they remain the operator's controls.
      */
-    private fun CaptureRequest.Builder.applyNativeLogToneCurve() {
-        val points = nativeLogCurvePoints ?: return
+    private fun CaptureRequest.Builder.applyNativeLogToneCurve(eiFactor: Double) {
+        val base = nativeLogCurvePoints ?: return
+        // Log EI offset: the curve lifts the ACHIEVED underexposure back (slog3(k·x)). k = 1 is the
+        // historical array object itself, so an N = 0 request is byte-identical.
+        val points = if (eiFactor <= 1.0) {
+            base
+        } else {
+            if (nativeLogEiCurvePoints == null || nativeLogEiCurveFactor != eiFactor) {
+                nativeLogEiCurvePoints = nativeLogToneCurve(caps.maxCurvePoints, eiFactor)
+                nativeLogEiCurveFactor = eiFactor
+            }
+            checkNotNull(nativeLogEiCurvePoints)
+        }
         set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_CONTRAST_CURVE)
         set(CaptureRequest.TONEMAP_CURVE, TonemapCurve(points, points, points))
     }
+
+    /**
+     * Log EI offset stops for THIS controller's repeating request: the operator's setting on a
+     * native-log session, 0 everywhere else (photo, HLG/SDR video, the GL-log fallback, high speed).
+     */
+    private fun repeatingNativeLogEiStops(c: ManualControls): Int =
+        if (nativeLogCurvePoints != null && highSpeedFps == 0) c.logEiOffsetStops else 0
 
     /**
      * Best-effort hints for the external 300 mm converter.
@@ -1089,6 +1123,7 @@ class CameraController internal constructor(
         // packet and the route alone (an AF override only drops the SCENE half, never detection),
         // so it is stable for every fast-path resubmit of this builder.
         val faceReadout = facePriorityKeysFor(controls, caps.faceCapability(), afOverrideActive = false) != null
+        var builtNativeLogEi = NativeLogEiApplied.NONE
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
@@ -1097,13 +1132,14 @@ class CameraController internal constructor(
                 // (S4a device-measured: no fps/stability/thermal cost). The cached fast-path
                 // builders inherit the target automatically (they ARE this builder).
                 if (zslTargetAttached) jpegReader?.surface?.let(::addTarget)
-                applyManualControls(
+                builtNativeLogEi = applyManualControls(
                     controls,
                     caps,
                     pinAutoFps = pinAutoFps || smoothPreviewBoost,
                     previewExposureCap = true,
                     enforceFrameRate = pinAutoFps,
                     videoMode = pinAutoFps,
+                    nativeLogEiStops = repeatingNativeLogEiStops(controls),
                 )
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -1111,8 +1147,9 @@ class CameraController internal constructor(
                 // Native ISP log: the stock tone curve becomes S-Log3 on the REPEATING request only.
                 // The cached fast-path builders ARE this builder, so zoom/sensor submits inherit it
                 // without a second applier; stills are built from a fresh template and name the
-                // stock curve explicitly (stillToneMapMode).
-                applyNativeLogToneCurve()
+                // stock curve explicitly (stillToneMapMode). The curve takes the EI factor the
+                // exposure keys above ACHIEVED, so wire and curve cannot disagree.
+                applyNativeLogToneCurve(builtNativeLogEi.factor)
                 pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
                 // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
@@ -1193,7 +1230,10 @@ class CameraController internal constructor(
                         if (iso != lastReportedIso || expNs != lastReportedExpNs) {
                             lastReportedIso = iso
                             lastReportedExpNs = expNs
-                            onExposure?.invoke(iso, expNs)
+                            // EI-rated under a Log EI offset (identity otherwise): the chips and the
+                            // P→M handoff seed must not read the deliberately underexposed wire.
+                            val (eiIso, eiExpNs) = eiRatedReadout(iso, expNs, acceptedNativeLogEi)
+                            onExposure?.invoke(eiIso, eiExpNs)
                         }
                         if (lastReportedFocus.isNaN() ||
                             kotlin.math.abs(lastFocusDistance - lastReportedFocus) > 0.005f
@@ -1306,6 +1346,7 @@ class CameraController internal constructor(
             previewBuilder = builder
             previewCallback = callback
             publishPreviewDigitalGain()
+            publishNativeLogEi(builtNativeLogEi)
             if (!faceReadout) clearPublishedFaces()
             val tapTrigger = if (tapPointRequested) {
                 TapTriggerSubmission.ACCEPTED
@@ -1822,14 +1863,20 @@ class CameraController internal constructor(
         val cb = previewCallback
         if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return }
         runCatching {
-            b.applySensorValueControls(
+            val ei = b.applySensorValueControls(
                 controls,
                 caps,
                 pinAutoFps = pinAutoFps || smoothPreviewBoost,
                 previewExposureCap = true,
                 enforceFrameRate = pinAutoFps,
                 videoMode = pinAutoFps,
+                nativeLogEiStops = repeatingNativeLogEiStops(controls),
             )
+            // A sensor delta can move the ACHIEVED EI factor (an ISO drag onto the floor shifts the
+            // offset into the shutter, or the floor refuses part of it). The curve rides the SAME
+            // cached builder and the SAME single submit below — never a second swap — and only
+            // when the factor actually moved, so a steady offset rewrites nothing.
+            if (ei.factor != acceptedNativeLogEi.factor) b.applyNativeLogToneCurve(ei.factor)
             // applyFocus above rewrote CONTROL_AF_MODE per the base focus mode; a live tap-AF /
             // AF-lock override must be restored on top, exactly as the full rebuild applies it
             // AFTER applyManualControls — the SAME applier, so the two paths cannot drift
@@ -1839,6 +1886,7 @@ class CameraController internal constructor(
             applyAfOverrides(b, controls, afInputsNow())
             s.setRepeatingRequest(b.build(), cb, handler)
             publishPreviewDigitalGain()
+            publishNativeLogEi(ei)
         }.onFailure {
             if (BuildConfig.DEBUG) Log.w(TAG, "sensor fast path failed, rebuilding: ${it.message}")
             // The cached builder/session can go invalid during a configure transition; re-derive
@@ -1947,6 +1995,21 @@ class CameraController internal constructor(
      * the camera thread right after an ACCEPTED repeating submit so the gain can never describe a
      * request the wire refused.
      */
+    // Change gate for onNativeLogEiFactor (camera-thread confined; NaN = always publish next).
+    private var lastPublishedNativeLogEiFactor = Double.NaN
+
+    /**
+     * Records and publishes the Log EI offset the ACCEPTED repeating request applied: the readout
+     * scaling reads [acceptedNativeLogEi], and the engine forwards the factor to GL as the native
+     * decode's headroom (`uSourceLogHeadroom`). Change-gated like the digital gain.
+     */
+    private fun publishNativeLogEi(applied: NativeLogEiApplied) {
+        acceptedNativeLogEi = applied
+        if (applied.factor == lastPublishedNativeLogEiFactor) return
+        lastPublishedNativeLogEiFactor = applied.factor
+        onNativeLogEiFactor?.invoke(applied.factor.toFloat())
+    }
+
     private fun publishPreviewDigitalGain() {
         val gain = previewDigitalGain(controls, caps.controlCapabilities())
         if (gain == lastPublishedDigitalGain) return
@@ -2251,6 +2314,9 @@ class CameraController internal constructor(
                         previewExposureCap = false,
                         enforceFrameRate = pinAutoFps,
                         videoMode = pinAutoFps,
+                        // ...and never the Log EI offset: the in-REC snapshot is a normal still at
+                        // the operator's intended exposure, under the stock tone map below.
+                        nativeLogEiStops = 0,
                     )
                     // A still is NEVER log-encoded: inside a native-log session it names the stock
                     // tone map explicitly rather than trusting the template default (NativeLogCurve.kt).

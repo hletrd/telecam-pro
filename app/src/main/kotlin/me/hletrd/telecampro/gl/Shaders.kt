@@ -10,6 +10,7 @@ internal object ShaderBindings {
     const val U_TRANSFER = "uTransfer"
     const val U_SOURCE_HLG = "uSourceHlg"
     const val U_SOURCE_LOG = "uSourceLog"
+    const val U_SOURCE_LOG_HEADROOM = "uSourceLogHeadroom"
     const val U_PEAKING = "uPeaking"
     const val U_PEAK_THRESHOLD = "uPeakThreshold"
     const val U_PEAK_COLOR = "uPeakColor"
@@ -27,6 +28,7 @@ internal object ShaderBindings {
         U_TRANSFER,
         U_SOURCE_HLG,
         U_SOURCE_LOG,
+        U_SOURCE_LOG_HEADROOM,
         U_PEAKING,
         U_PEAK_THRESHOLD,
         U_PEAK_COLOR,
@@ -55,7 +57,12 @@ internal object ShaderBindings {
  * is decoded at SAMPLE time (`sampleSource`: exact S-Log3 inverse -> clamp -> BT.1886-encode), so
  * `base` is an un-tone-mapped display-referred rendition and every consumer below — display, Gamma
  * Display Assist, dgain, meter/zebra/false-color, peaking and the transfer branches' sourceLinear —
- * runs unchanged, now on the ISP's linear signal rather than its S-curve. Otherwise the stream is
+ * runs unchanged, now on the ISP's linear signal rather than its S-curve. Under a Log EI offset
+ * (`uSourceLogHeadroom` k > 1) the LOG encode branches instead read `nativeSceneLinear`: the same
+ * decode, UNclamped up to k, so the highlights the underexposed wire kept are encoded rather than
+ * re-clipped at `base`'s 1.0; `base` itself (and so display, meter, zebra, false color, peaking,
+ * Gamma Display Assist, the AE readback) stays the clamped normal-brightness rendition. At k = 1
+ * the branches take the historical sourceLinear path exactly. Otherwise the stream is
  * display-referred (already tone-mapped): accepted HLG10 input is inverse-HLG decoded; standard
  * input is BT.1886 decoded. HLG then follows the simplified
  * ITU-R BT.2408-9 display-referred mapping: linear BT.709→BT.2020,
@@ -92,6 +99,10 @@ object Shaders {
         // 1 when the CAMERA stream is S-Log3 (709 primaries) encoded by the ISP's programmed native
         // tone curve. Never together with uSourceHlg: native log is the 8-bit session by design.
         uniform int ${ShaderBindings.U_SOURCE_LOG};
+        // Log EI offset (NativeLogCurve.kt): the ACHIEVED underexposure factor k >= 1 the ISP curve
+        // lifted back (slog3(k * x)). The decode slog3Inverse(code) is already scene-linear k * x —
+        // the inverse needs no k — so k is the ceiling of that decode's domain [0, k]. 1 = no offset.
+        uniform float ${ShaderBindings.U_SOURCE_LOG_HEADROOM};
         uniform int ${ShaderBindings.U_TRANSFER};   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
                                  // 5 = LogC3/AWG3, 6 = O-Log2/BT.2020, 3 = vacant (retired de-log branch)
         uniform int ${ShaderBindings.U_PEAKING};    // 0/1  (preview only)
@@ -152,6 +163,16 @@ object Shaders {
             return pow(lin, vec3(1.0 / SDR_EOTF_GAMMA));
         }
 
+        // Log EI offset: the native-log sample as SCENE-linear light for the LOG encode branches,
+        // NOT clamped at 1.0 — only at the headroom k the wire actually bought — so detail above the
+        // display white survives into the file. Brightness simulation follows dgain's rule (linear
+        // multiply, clip at the ceiling); encoder draws pass gain 1 so files never carry it.
+        vec3 nativeSceneLinear(vec2 uv) {
+            vec3 lin = clamp(slog3Inverse(texture2D(uTexture, uv).rgb), 0.0, uSourceLogHeadroom);
+            if (uDigitalGain > 1.001) lin = min(lin * uDigitalGain, vec3(uSourceLogHeadroom));
+            return lin;
+        }
+
         // BT.2100 HLG OETF. Input is normalized scene light from the BT.2408 mapping below.
         vec3 hlg(vec3 x) {
             vec3 lo = sqrt(3.0 * clamp(x, 0.0, 1.0));
@@ -184,6 +205,14 @@ object Shaders {
             // branch's `pow(displayLight * BT2408_HLG_SCALE, 1/HLG_SYSTEM_GAMMA)`, reusing both
             // constants so forward and inverse cannot drift apart.
             return pow(sceneLight, vec3(HLG_SYSTEM_GAMMA)) / BT2408_HLG_SCALE;
+        }
+
+        // Linear input of the LOG encode branches (codes 2/4/5/6). Without an EI offset — and on
+        // every non-native stream — this IS the historical sourceLinear(base) path, byte for byte;
+        // with one, the unclamped native scene-linear above (`base` keeps its clamp for display).
+        vec3 logInputLinear(vec3 color) {
+            if (uSourceLog == 0 || uSourceLogHeadroom <= 1.0) return sourceLinear(color);
+            return nativeSceneLinear(vTexCoord);
         }
 
         // Rec.709 -> Rec.2020 primaries (linear light), for the HLG mapping above.
@@ -221,7 +250,7 @@ object Shaders {
 
         // Defensive floor between the gamut matrix and a log OETF (LogProfiles.GAMUT_LINEAR_FLOOR):
         // keeps both curves' log segments defined at deep negatives. Deliberately NO upper clamp —
-        // row-sum-1 matrices cannot push [0,1] input above 1 (see LogProfiles).
+        // row-sum-1 positive matrices cannot push input above its own max (1, or the EI headroom k).
         vec3 gamutFloor(vec3 c) { return max(c, vec3(${LogProfiles.GAMUT_LINEAR_FLOOR})); }
 
         // Sony S-Log3 OETF (Sony technical summary; constants single-sourced from LogProfiles):
@@ -284,20 +313,20 @@ object Shaders {
                 // S-Log3 / S-Gamut3 from the display-referred SDR stream, same chain shape as the
                 // HLG branch above: BT.1886 decode -> linear 709-to-S-Gamut3 -> defensive floor ->
                 // S-Log3 OETF (see file docs; NOT scene-referred camera log).
-                vec3 lin = sourceLinear(color);
+                vec3 lin = logInputLinear(color);
                 color = slog3(gamutFloor(toSGamut3(lin)));
             } else if (uTransfer == 4) {
                 // S-Log3 / S-Gamut3.Cine: identical chain, smaller grading-friendlier gamut.
-                vec3 lin = sourceLinear(color);
+                vec3 lin = logInputLinear(color);
                 color = slog3(gamutFloor(toSGamut3Cine(lin)));
             } else if (uTransfer == 5) {
                 // ARRI LogC3 EI800 / ARRI Wide Gamut 3: identical chain.
-                vec3 lin = sourceLinear(color);
+                vec3 lin = logInputLinear(color);
                 color = logc3(gamutFloor(toAwg3(lin)));
             } else if (uTransfer == 6) {
                 // OPPO O-Log2 / BT.2020 ("O-Gamut"): same chain shape, reusing the HLG branch's
                 // linear 709-to-2020 matrix; olog2() carries its own floor (see above).
-                vec3 lin = sourceLinear(color);
+                vec3 lin = logInputLinear(color);
                 color = olog2(toRec2020(lin));
             }
 

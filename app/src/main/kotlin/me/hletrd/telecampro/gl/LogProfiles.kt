@@ -39,7 +39,9 @@ internal object LogProfiles {
      * negative — this floor guards float error and any future matrix change while keeping the log
      * arguments defined: S-Log3's log input is x + 0.01 (≥ 1e-4 at the floor) and LogC3's cut keeps
      * its log branch above x = 0.010591. Deliberately NO upper clamp: row-sum-1 matrices cannot
-     * push [0,1] input above 1, and a silent highlight clamp here would be a gamut distortion.
+     * push [0,1] input above 1, and a silent highlight clamp here would be a gamut distortion — and
+     * under a native-log Log EI offset the input legitimately reaches k (up to 8), which every OETF
+     * here encodes below code 1.0 (S-Log3 ≈ 0.83, LogC3 ≈ 0.79, O-Log2 ≈ 0.95 at 8).
      */
     const val GAMUT_LINEAR_FLOOR = -0.0099
 
@@ -156,31 +158,34 @@ internal object LogProfiles {
      */
     fun olog2Oetf(x: Double): Double = OLOG2_A * log2(x.coerceAtLeast(OLOG2_LINEAR_FLOOR) + OLOG2_B) + OLOG2_C
 
-    fun encodeSlog3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
+    fun encodeSlog3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb = encode(
         red, green, blue,
         SG3_R_FROM_R, SG3_R_FROM_G, SG3_R_FROM_B,
         SG3_G_FROM_R, SG3_G_FROM_G, SG3_G_FROM_B,
         SG3_B_FROM_R, SG3_B_FROM_G, SG3_B_FROM_B,
         ::slog3Oetf,
         sourceHlg,
+        sceneLinear,
     )
 
-    fun encodeSlog3Cine(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
+    fun encodeSlog3Cine(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb = encode(
         red, green, blue,
         SG3C_R_FROM_R, SG3C_R_FROM_G, SG3C_R_FROM_B,
         SG3C_G_FROM_R, SG3C_G_FROM_G, SG3C_G_FROM_B,
         SG3C_B_FROM_R, SG3C_B_FROM_G, SG3C_B_FROM_B,
         ::slog3Oetf,
         sourceHlg,
+        sceneLinear,
     )
 
-    fun encodeLogc3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
+    fun encodeLogc3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb = encode(
         red, green, blue,
         AWG3_R_FROM_R, AWG3_R_FROM_G, AWG3_R_FROM_B,
         AWG3_G_FROM_R, AWG3_G_FROM_G, AWG3_G_FROM_B,
         AWG3_B_FROM_R, AWG3_B_FROM_G, AWG3_B_FROM_B,
         ::logc3Oetf,
         sourceHlg,
+        sceneLinear,
     )
 
     /**
@@ -188,13 +193,14 @@ internal object LogProfiles {
      * matrix the HLG mapping already single-sources ([SdrToHlgMapping]) and O-Log2's own floor
      * (applied inside [olog2Oetf]; the shared [GAMUT_LINEAR_FLOOR] pass before it is a no-op here).
      */
-    fun encodeOlog2(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
+    fun encodeOlog2(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false, sceneLinear: Boolean = false): Rgb = encode(
         red, green, blue,
         SdrToHlgMapping.R_FROM_R, SdrToHlgMapping.R_FROM_G, SdrToHlgMapping.R_FROM_B,
         SdrToHlgMapping.G_FROM_R, SdrToHlgMapping.G_FROM_G, SdrToHlgMapping.G_FROM_B,
         SdrToHlgMapping.B_FROM_R, SdrToHlgMapping.B_FROM_G, SdrToHlgMapping.B_FROM_B,
         ::olog2Oetf,
         sourceHlg,
+        sceneLinear,
     )
 
     // The one place the documented order lives on the CPU side: decode → matrix → floor → OETF.
@@ -225,8 +231,12 @@ internal object LogProfiles {
         br: Double, bg: Double, bb: Double,
         oetf: (Double) -> Double,
         sourceHlg: Boolean,
+        sceneLinear: Boolean,
     ): Rgb {
-        val linear709 = Rgb(red, green, blue).map { sourceLinear(it, sourceHlg) }
+        // [sceneLinear]: the inputs ARE linear light already — the native-log Log EI offset path
+        // (Shaders `nativeSceneLinear`), whose values legitimately exceed 1.0 and must not meet
+        // sourceLinear's [0, 1] clamp.
+        val linear709 = if (sceneLinear) Rgb(red, green, blue) else Rgb(red, green, blue).map { sourceLinear(it, sourceHlg) }
         val linearTarget = Rgb(
             red = rr * linear709.red + rg * linear709.green + rb * linear709.blue,
             green = gr * linear709.red + gg * linear709.green + gb * linear709.blue,

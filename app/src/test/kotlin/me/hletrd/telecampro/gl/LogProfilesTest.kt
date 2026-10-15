@@ -243,9 +243,11 @@ class LogProfilesTest {
             // O-Log2's floor lives inside olog2(): gamutFloor's −0.0099 would leave x + B < 0.
             olog2Branch to "color = olog2(toRec2020(lin));",
         )) {
-            val decode = branch.indexOf("vec3 lin = sourceLinear(color);")
+            // logInputLinear IS sourceLinear(color) without a Log EI offset (pinned, with the
+            // headroom path, by NativeLogSourceDecodeTest); HLG alone keeps the direct call.
+            val decode = branch.indexOf("vec3 lin = logInputLinear(color);")
             val apply = branch.indexOf(encode)
-            assertTrue("BT.1886 decode must open the branch", decode >= 0)
+            assertTrue("source decode must open the branch", decode >= 0)
             assertTrue("matrix→floor→OETF must follow the decode", apply > decode)
         }
     }
