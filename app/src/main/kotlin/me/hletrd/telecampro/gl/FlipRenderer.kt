@@ -371,7 +371,14 @@ class FlipRenderer internal constructor(
      * [setSourceLog]; every draw role reads the same frames.
      */
     fun setSourceLogHeadroom(factor: Float) {
-        sourceLogHeadroom = factor.coerceAtLeast(1f)
+        val k = factor.coerceAtLeast(1f)
+        if (
+            sourceLogHeadroom != k &&
+            me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        ) {
+            android.util.Log.i("FlipRenderer", "sourceLogHeadroom -> $k (uniformLoc=$uSourceLogHeadroom)")
+        }
+        sourceLogHeadroom = k
     }
 
     /** Extra CW rotation applied to texcoords on top of the SurfaceTexture transform (afocal flip). */
