@@ -672,6 +672,9 @@ internal fun shaderTransferCode(transfer: ColorTransfer?): Int = when {
         // A NEW code, not the vacant 3: O-Log2's return (2026-10-15) is a different curve from the
         // retired code-3 de-log branch, and reusing a retired number is how a stale reading lies.
         ColorTransfer.OLOG2 -> 6
+        // The other phone-maker logs (2026-10-15) take the next NEW codes on the same rule.
+        ColorTransfer.OLOG -> 7
+        ColorTransfer.MILOG -> 8
         // SDR = no OETF, same as the null path.
         ColorTransfer.SDR -> 0
     }

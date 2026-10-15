@@ -467,8 +467,11 @@ internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.SLOG3 -> "S-Log3"
     ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
     ColorTransfer.LOGC3 -> "LogC3"
-    // The format's own name, printed in Latin on Korean UIs too (like S-Log3 / LogC3).
+    // The phone-maker logs (offered only on their maker's phones): the format's own name, printed
+    // in Latin on Korean UIs too (like S-Log3 / LogC3).
     ColorTransfer.OLOG2 -> "O-Log2"
+    ColorTransfer.OLOG -> "O-Log"
+    ColorTransfer.MILOG -> "Mi-Log"
     ColorTransfer.SDR -> "SDR"
 }
 
@@ -490,5 +493,7 @@ internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfe
     ColorTransfer.SLOG3_CINE -> "SG3C"
     ColorTransfer.LOGC3 -> "LOGC3"
     ColorTransfer.OLOG2 -> "OLOG2"
+    ColorTransfer.OLOG -> "OLOG"
+    ColorTransfer.MILOG -> "MILOG"
     ColorTransfer.SDR -> "SDR"
 }

@@ -206,6 +206,19 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun everyPhoneMakerLogPersistsByItsOwnName() {
+        // The store keeps the operator's name verbatim on every phone; whether THIS device offers it
+        // is decided at restore by normalizedForEncoder (a foreign flavor becomes S-Log3 there).
+        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
+            val prefs = FakePrefs()
+            val store = SettingsStore(prefs)
+            assertTrue(store.save(ManualControls(), ExtraSettings(transfer = flavor)))
+            assertEquals(flavor.name, prefs.getString("transfer", null))
+            assertEquals(flavor, store.load()?.extras?.transfer)
+        }
+    }
+
+    @Test
     fun corruptExposureFpsAndKelvinAreBoundedAtLoad() {
         // AGG-33: like ISO/EV/focus, these raw numbers reach exposure math before any caps clamp.
         val prefs = FakePrefs()

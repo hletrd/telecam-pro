@@ -37,7 +37,7 @@ deprecated APIs, latest stable everything.
   NewApi audit found zero unguarded sub-35 APIs). PMA110 behavior must stay byte-identical; every
   measured HAL workaround is gated by `camera/DeviceProfile.kt` (the SECOND sanctioned
   model-string seam beside `detectPhone`), and other devices take spec paths resolved by
-  ENUMERATED Camera2 capability. The global Find X9 Ultra (CPH2841) resolves to the SAME PMA110
+  ENUMERATED Camera2 capability. The global Find X9 Ultra (CPH2841) and the satellite edition (PMA120) resolve to the SAME PMA110
   profile by owner decision (2026-10-06) — inferred from shared hardware, never measured on
   CPH2841, so a contradicting CPH2841 report reopens the affected flag for that model. Still no CameraX — **Camera2** directly for physical-lens
   routing, `LENS_FOCUS_DISTANCE`, manual sensor, RAW/DNG, 10-bit HDR. Non-PMA110 handsets are
@@ -864,7 +864,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   generation): exact S-Log3 inverse → clamp → BT.1886 encode, so `base` — display, Gamma Display
   Assist, dgain, meter/zebra/false-color, peaking — and the unchanged transfer branches below run
   on the ISP's un-S-curved linear signal and re-encode S-Log3/S-Gamut3(.Cine), LogC3/AWG3 or
-  O-Log2/BT.2020. Stills
+  the phone's own O-Log2 / O-Log / Mi-Log in BT.2020. Stills
   and the in-REC snapshot never carry the curve: in a native-log session they name TONEMAP_MODE
   HIGH_QUALITY (else FAST) explicitly (`stillToneMapMode`); photo requests are untouched. Pseudo-ZSL
   additionally refuses a native-log session. The GL-log path below (HLG10 source, stills off) is
@@ -879,28 +879,66 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   path was the ISP's S-curve UNDER a correctly applied GL log (S-Log3 clip of the wall: file centre
   Y10 p50 = 0.318 vs preview 0.31), not a missing curve. The debug `tonecurve` experiment hook that
   established all this (de1d1a03) is removed now that the product path exists.
-  **O-Log2 is BACK as `ColorTransfer.OLOG2` (owner decision 2026-10-15), reversing the 2026-07-22
-  removal below.** Reason: the PMA110 stock camera records O-Log2 and OPPO ships official O-Log2
-  LUTs / an ACES DCTL, so owners want files those LUTs apply to. OPPO has published NO white paper;
-  the curve is the one reverse-engineered from OPPO's own LUT/DCTL
-  (https://jackchou00.com/en/posts/oppo-log-2-review/): ONE log segment, no toe,
-  `y = 0.08550479·log2(x + 0.00964052) + 0.69336945` (x = scene-linear reflectance; 1.0 → ≈ 0.6946,
-  18 % grey → ≈ 0.4883, 0 → ≈ 0.1208), BT.2020 primaries ("O-Gamut"). Shader code **6** (a NEW
-  code — 3 stays vacant): `sourceLinear` → the existing BT.709→BT.2020 matrix (`toRec2020`) →
-  `olog2()`, whose own floor is 0 (`OLOG2_LINEAR_FLOOR`) rather than the shared −0.0099, because
-  with no toe `x + 0.00964` would go negative there and log2 with it. It is NOT the old app O-Log2:
-  that one (removed in 640532e7) carried a linear TOE (47.28711236 / 0.05641088 / 0.006) that is
-  not part of OPPO's curve; do not revive it. It is a fourth `isLog` member and changes nothing
-  structural: on a native-log camera it rides the SAME S-Log3 ISP transport curve (switching among
-  S-Log3/S-Log3.Cine/LogC3/O-Log2 is a GL-only change, no reopen), on the GL fallback the same
-  HLG10/BT.1886 source decode; Gamma Display Assist, meter, zebra and false color behave as for the
-  other logs; the container takes the shared log policy (BT.2020 full range + explicit SDR-class
-  transfer), which also matches the stock O-Log2 stream's dataspace (STANDARD_BT2020 |
-  TRANSFER_SMPTE_170M | RANGE_FULL). **Same honesty limit as every log here:** it is the same
-  ISP-linear mapping, so sensor white (1.0) clips at ≈ 0.6946 and there is no extra headroom without
-  the Log EI offset (next bullet) — the stock camera's latitude is not claimed. Device clip check (white near
-  0.69, grey near 0.49, OPPO's LUT applies sensibly) is pending in `docs/FIELD_CHECKS.md` A15. The
-  persisted legacy `"LOG"` still migrates to `SLOG3_CINE`; `"OLOG2"` persists under its own name.
+  **The phone's OWN log, per phone (owner decision 2026-10-15, superseding "O-Log2 for everyone"
+  from earlier the same day).** S-Log3 / S-Log3.Cine / LogC3 are UNIVERSAL (every 10-bit-HEVC
+  device). Each maker's native log is offered ONLY on that maker's phones, resolved from
+  `Build.MODEL` by `DeviceProfile.nativeLogFlavor` — a PRODUCT fact riding seam 2, not a HAL quirk,
+  and every mapped model other than the Find X9 Ultra codes (PMA110/CPH2841/PMA120 — the latter two by
+  owner decision on shared hardware) takes GENERIC quirks plus its flavor only (no PMA110 workaround
+  leaks to unmeasured hardware). `ColorTransfer.isNativeLog`
+  marks OLOG2 / OLOG / MILOG; `availableTransfers(codec, tenBit, nativeLog)` (required parameter)
+  offers only the host's flavor, and `normalizedForEncoder` turns a foreign or unoffered flavor
+  (MR bank / settings from another phone, a GENERIC device) into **SLOG3** — the operator asked for a
+  log — falling to SDR only where no log is encodable. Picker, Fn cycle, MR recall, restore and REC
+  admission all read `CameraUiState.nativeLogFlavor` (seeded once from the HOST profile at VM
+  construction). `deviceProfileForRoute(external)` strips the flavor at the profile seam, but the
+  PICKER is deliberately host-keyed: the transfer is a persisted encoder selection like the codec,
+  and route-keying it would rewrite the choice whenever a USB camera came and went. Persisted names
+  are verbatim (`"OLOG2"`, `"OLOG"`, `"MILOG"`); the legacy `"LOG"` still migrates to `SLOG3_CINE`.
+
+  | Flavor (shader code) | Curve source | `Build.MODEL` (Google Play supported-devices CSV, 2026-10-15) |
+  |---|---|---|
+  | `OLOG2` O-Log2 (6) | OPPO "O-Log2 White Paper" 2026-04-17, oppo.com/en/o-log-technical-downloads | Find X9 Ultra PMA110, CPH2841, PMA120 (satellite) — all PMA110 quirks |
+  | `OLOG` O-Log V1 (7) | OPPO "O-Log White Paper" V1 2025-10-22 + its `O-Log_to_ACES_AP0_V1.dctl` | Find X8 Ultra PKJ110, PKU110; OnePlus 15 PLK110, CPH2745, CPH2747, CPH2749; Find X9 PLJ110, CPH2797, OPG07; Find X9 Pro PLG110, PLG120, CPH2791 |
+  | `MILOG` Mi-Log (8) | Xiaomi "Xiaomi Log Profile White Paper" Dec 2024, via colour-science `xiaomi_mi_log.py` | Xiaomi 15 Ultra 25010PN30C/G/I, 25019PNF3C; Xiaomi 17 Ultra 2512BPNDAC/G/I, 25128PNA1C |
+
+  Curves (all BT.2020-2 primaries, D65; GL chain = source decode → `toRec2020` → shared floor →
+  OETF; constants single-sourced in `LogProfiles.kt`, host-pinned in `LogProfilesTest`):
+  **O-Log2** is the paper's TWO-segment Apple-Log-form curve — `0.08550479·log2(x + 0.00964052) +
+  0.69336945` for x ≥ Rt, quadratic toe `47.28711236·(x + 0.05641088)²` down to R0 = −0.05641088, 0
+  below; 18 % grey → 0.48827, 1.0 → 0.69455, 0 → 0.15048. **The paper prints Rt = 0.006; that is a
+  typo** — the segments would step DOWN 0.0037 there (0.18419 vs 0.18047, non-monotonic); at
+  Rt = 0.01 they meet in value (0.208555) AND slope (6.2808), and all six constants then equal Apple
+  Log's. The single-segment toe-less O-Log2 that shipped earlier on 2026-10-15 (reverse-engineered
+  from OPPO's DCTL, which decodes with the log segment only) is SUPERSEDED, and the test that
+  forbade the toe constants now REQUIRES them (forbidding only the 0.006 join). **O-Log V1** is one
+  segment `0.139·ln(R + 0.019) + 0.614`, R ∈ [0, 16], under OPPO's EXPOSURE CONVENTION: R is not
+  reflectance (the paper puts 18 % at R ≈ 0.39, code 0.4902) and OPPO's official DCTL decodes
+  `(exp((P − 0.614)/0.139) − 0.019)/16·7.37235`, so we encode R = s / (7.37235/16) — the exact
+  inverse of OPPO's DCTL, grey → 0.48995 (paper 0.49016; the 0.1 % residual is OPPO's rounding).
+  Without it grey would land ~1.2 stops dark through OPPO's LUT. **Mi-Log** is the Apple-Log form
+  with Xiaomi's constants (R0 −0.09023729, Rt 0.01974185, c 18.10531998, β 0.01384578,
+  γ 0.09271529, δ 0.67291850; 0.18 → 0.45345968, its Rt is a true C¹ join). **Log EI headroom:**
+  every curve stays finite and below code 1.0 up to k = 8 (+3 EI; O-Log2 ≈ 0.950, Mi-Log ≈ 0.951)
+  EXCEPT O-Log V1, whose paper domain ends at R = 16 (scene-linear ≈ 7.37, code ≈ 0.9996): at +3 EI
+  its top ≈ 0.12 stop encodes flat there. Chosen: keep +3 available and document, rather than cap
+  the offset for one profile — everything below that is kept. Structurally nothing else changes:
+  the native ISP curve stays S-Log3 for every log (switching among logs is GL-only, no reopen), the
+  GL fallback uses the same HLG10/BT.1886 decode, Gamma Display Assist / meter / zebra / false
+  color behave as for the other logs, and the container takes the shared log policy (BT.2020 full
+  range + explicit SDR-class transfer, which also matches the PMA110 stock O-Log2 dataspace
+  STANDARD_BT2020 | TRANSFER_SMPTE_170M | RANGE_FULL). **Same honesty limit as every log here:** it
+  is the same ISP-linear mapping, so sensor white clips at the curve's 1.0 code (O-Log2 ≈ 0.6946)
+  with no extra headroom without the Log EI offset — the stock cameras' latitude is not claimed.
+  UI: labels "O-Log2" / "O-Log" / "Mi-Log" (Latin in KO too), a maker caption above the existing
+  source caveat (`video_maker_log_caption`, EN+KO), attribution in the Setup legal block and NOTICE
+  (not supplied or endorsed by OPPO/Xiaomi). Device checks per flavor: `docs/FIELD_CHECKS.md` A15
+  (only O-Log2 on PMA110 is testable in this lab).
+  **Deliberately ABSENT makers — do not add without a public, self-consistent curve:** Samsung Log
+  (constants only from third parties, their slope does not match the published plots, the official
+  paper sits behind a developer login); vivo Log (no public formula); Honor (a patent only; Magic9
+  reportedly records LogC3, which is already offered universally); Huawei and Google Pixel (no
+  native log curve published).
   **The vendor native log key is still INERT for third-party Camera2 (settled 2026-07-09).**
   `com.oplus.log.video.mode` is advertised in the tele's request+session
   keys and the HAL ACCEPTS it ("applied" logs), but it changes NOTHING a third-party session can
@@ -912,14 +950,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`LogProfiles.kt` single-sources constants into `Shaders.kt`): BT.1886 2.4 decode → linear
   BT.709→gamut 3×3 (S-Gamut3 / S-Gamut3.Cine / ARRI Wide Gamut 3, D65→D65 so rows sum to 1) →
   defensive −0.0099 floor → the S-Log3 (uTransfer=2/4; 18 % grey → 420/1023 ≈ 0.4106) or LogC3
-  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF, or O-Log2 (uTransfer=6, BT.2020; above). Like
+  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF, or the per-device phone-maker log (uTransfer=6
+  O-Log2 / 7 O-Log / 8 Mi-Log, BT.2020; above). Like
   the retired O-Log2 before them these are
   display-referred SDR-source curves, NOT scene-referred camera log — the ISP has already
   tone-mapped the stream and no highlight latitude is recovered. The encoder gets the curve, the
   preview renders it flat, and **Gamma Display Assist** shows the normal display-referred image
   instead (assist = skip the forward curve; the file always gets it; `ColorTransfer.isLog` is the
-  one gate for all four). The original user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
-  2026-07-22 ("not a standard"; superseded 2026-10-15 by `OLOG2` above); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
+  one gate for all six). The original user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
+  2026-07-22 ("not a standard"; superseded 2026-10-15 by the per-device `OLOG2` above); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
   its forward OETF left `Shaders.kt` with it. **The dormant native-log plumbing that survived that
   removal is now GONE TOO (2026-08-04)**, because the vendor-SDK path it was waiting for was
   declined: the O-Log2-shaped de-log shader branch (`uTransfer == 3`) with its `olog2Inv`/`toRec709`
@@ -932,13 +971,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `getExternalFilesDir(null)/nativelog` and is `BuildConfig.DEBUG &&`-guarded, so release builds
   always read false. Either delete that gate too or leave it; do not re-delete it from the DOC while
   the code keeps it. **Shader code 3 is now permanently VACANT and the surviving codes keep their
-  numbers** (0/1/2/4/5, plus 6 = O-Log2 since 2026-10-15) — renumbering would silently re-map every branch and the shader's own
+  numbers** (0/1/2/4/5, plus 6 = O-Log2, 7 = O-Log, 8 = Mi-Log since 2026-10-15) — renumbering would silently re-map every branch and the shader's own
   `uTransfer == N` comparisons; a test asserts the gap stays unused. Do not re-add any of it.
   NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
   tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
-  explicitly, always; all four log profiles share one container policy (BT.2020 full-range +
-  explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO O-Log2 attribution
-  (EN+KO) sit in the Setup tab.
+  explicitly, always; all six log profiles share one container policy (BT.2020 full-range +
+  explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO / Xiaomi native-log
+  attribution (EN+KO) sit in the Setup tab.
 
 - **Log EI offset = highlight headroom bought with shadow noise, NATIVE log only (owner request
   2026-10-15; UNVERIFIED on device — `docs/FIELD_CHECKS.md` A17).** `ManualControls.logEiOffsetStops`
@@ -955,7 +994,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `CONTROL_AE_EXPOSURE_COMPENSATION` −N stops in the advertised step, clamped to the advertised range;
   (2) the curve becomes `slog3(k·x)` (`nativeLogToneCurve(points, k)`, same output-uniform sampling,
   knee snapped at x = cut/k, slog3(8) ≈ 0.83 < 1); (3) GL: `slog3Inverse(code)` is already
-  scene-linear k·x, so the four LOG branches read `nativeSceneLinear` — the same decode clamped to
+  scene-linear k·x, so the six LOG branches read `nativeSceneLinear` — the same decode clamped to
   [0, k] (`uSourceLogHeadroom`) instead of [0, 1] — while `base` (display, Gamma Display Assist,
   meter/zebra/false color, peaking, dgain, the analysis/AE readback) keeps the [0, 1] clamp, so the
   finder and the app-side AE meter stay at normal brightness and the loop does NOT chase the offset;

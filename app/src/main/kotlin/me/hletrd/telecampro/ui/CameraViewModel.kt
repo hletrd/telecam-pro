@@ -237,7 +237,9 @@ class CameraViewModel private constructor(
     private val tapFocusPublicationGate = TapFocusPublicationGate()
     // A blob with no phone key falls back to the same detected-or-OTHER seed as a fresh launch.
     private val settingsStore = SettingsStore(app) { detectedPhone ?: PhoneModel.OTHER }
-    private val _state = MutableStateFlow(CameraUiState())
+    // nativeLogFlavor is device-static (DeviceProfile seam 2, host handset) and must be in the state
+    // BEFORE init's settings restore normalizes the persisted transfer against it.
+    private val _state = MutableStateFlow(CameraUiState(nativeLogFlavor = engine.nativeLogFlavor))
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
     private val _ownerlessMediaDeleteLaunch = MutableStateFlow<OwnerlessMediaDeleteLaunch?>(null)
     internal val ownerlessMediaDeleteLaunch: StateFlow<OwnerlessMediaDeleteLaunch?> =
@@ -1582,6 +1584,7 @@ class CameraViewModel private constructor(
         val safeTransfer = e.transfer.normalizedForEncoder(
             safeCodec,
             inventoryLoaded && _state.value.tenBitEncodeAvailable,
+            _state.value.nativeLogFlavor,
         )
         // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
         // restoring them independently let the AE/shutter-angle math run at a stale fps).
@@ -2818,6 +2821,7 @@ class CameraViewModel private constructor(
                 _state.value.transfer.normalizedForEncoder(
                     _state.value.videoCodec,
                     _state.value.tenBitEncodeAvailable,
+                    _state.value.nativeLogFlavor,
                 )
             } else {
                 ColorTransfer.SDR
@@ -2840,6 +2844,7 @@ class CameraViewModel private constructor(
         val safeTransfer = transfer.normalizedForEncoder(
             current.videoCodec,
             current.tenBitEncodeAvailable,
+            current.nativeLogFlavor,
         )
         if (!current.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
         if (current.encoderInventoryLoaded) {
@@ -3237,6 +3242,7 @@ class CameraViewModel private constructor(
         val safeTransfer = requestedTransfer.normalizedForEncoder(
             safeCodec,
             inventory.tenBitEncodeAvailable,
+            _state.value.nativeLogFlavor,
         )
         val safeFormats = requestedFormats.normalizedForEncoder(inventory.heifEncodeAvailable)
         engine.setVideoPipeline(
@@ -3342,7 +3348,11 @@ class CameraViewModel private constructor(
                 ?.takeIf { it in encoderInventory.availableVideoCodecs } ?: shown.codec
             nextCodec = safeCodec
             nextTransfer = safeCodec?.let { c ->
-                (transfer ?: shown.transfer)?.normalizedForEncoder(c, encoderInventory.tenBitEncodeAvailable)
+                (transfer ?: shown.transfer)?.normalizedForEncoder(
+                    c,
+                    encoderInventory.tenBitEncodeAvailable,
+                    _state.value.nativeLogFlavor,
+                )
             } ?: nextTransfer
         }
         val formats = prior.formats
@@ -3593,6 +3603,7 @@ class CameraViewModel private constructor(
         val safeTransfer = current.transfer.normalizedForEncoder(
             codec,
             current.tenBitEncodeAvailable,
+            current.nativeLogFlavor,
         )
         val candidates = encoderInventory.candidatesFor(codec, safeTransfer)
         if (candidates.isEmpty()) return

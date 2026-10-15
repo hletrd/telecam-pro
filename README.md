@@ -57,7 +57,10 @@ shooting needs.
   camera when that camera advertises RAW.
 - Video: HEVC/AVC up to 4K UHD, 24/25/30/60 fps plus NTSC drop-frame, bitrate presets to ~99 Mbps at 4K30,
   Open Gate 4:3, AAC 48 kHz stereo.
-- Colour profiles for HLG, S-Log3, S-Log3.Cine, LogC3 and OPPO O-Log2 — see the honesty note below.
+- Colour profiles for HLG, S-Log3, S-Log3.Cine and LogC3 on every device, plus the phone maker's own
+  log on that maker's phones (OPPO O-Log2 on the Find X9 Ultra; OPPO O-Log on the Find X8 Ultra,
+  Find X9, Find X9 Pro and OnePlus 15; Xiaomi Mi-Log on the Xiaomi 15 Ultra and 17 Ultra) — see the
+  honesty note below.
 - Video stabilization uses the device's own OIS + EIS path. At 300 mm, OIS is what cuts per-frame
   motion blur; frame-warping EIS cannot.
 
@@ -84,7 +87,7 @@ are combined.
 
 That has a consequence worth stating plainly: **the log and HLG profiles are mappings of that
 tone-mapped rendition, not scene-referred camera log.** GL decodes the accepted source transfer,
-matrices to the target gamut, and applies the S-Log3 / LogC3 / O-Log2 / HLG transfer function. The release GL
+matrices to the target gamut, and applies the S-Log3 / LogC3 / maker-log / HLG transfer function. The release GL
 render target remains 8-bit; HEVC then writes Main for SDR or Main10 for non-SDR output. Main10 is a
 real encoded-output fact, but it does **not** recover highlights the ISP has already removed, extend
 dynamic range, or make the pipeline end-to-end 10-bit.
@@ -95,9 +98,11 @@ device with both preview and record templates.
 
 > S-Log is a trademark of Sony Group Corporation; LogC is a trademark of ARRI. The profiles are this
 > app's own implementations of the published curve specifications, named to describe grading-workflow
-> compatibility. O-Log2 is OPPO's name for its log format; OPPO has published no specification, so
-> that option follows the curve reverse-engineered from OPPO's official LUTs, which it is meant to
-> work with.
+> compatibility. O-Log2 and O-Log are OPPO's names for its log formats and Mi-Log is Xiaomi's; each
+> is offered only on that maker's phones and follows the curve in the maker's published white paper
+> (O-Log2 with the paper's printed segment threshold 0.006 corrected to 0.01, the only value at which
+> its two segments meet), so the maker's own LUTs apply. None is supplied or endorsed by OPPO or
+> Xiaomi.
 
 ## Device support
 

@@ -106,4 +106,18 @@ class NativeLogCaptionTest {
         assertEquals("", logEiOsdSuffix(ColorTransfer.HLG, true, 2))
         assertEquals("", logEiOsdSuffix(ColorTransfer.SDR, true, 3))
     }
+
+    @Test
+    fun `only the phone-maker logs carry the maker caption, above the same source caveat`() {
+        for (t in ColorTransfer.entries) {
+            if (t.isNativeLog) {
+                assertEquals("$t", R.string.video_maker_log_caption, transferMakerCaption(t))
+                // The maker caption ADDS to the honesty caveat; it never replaces it.
+                assertEquals("$t", R.string.video_native_log_source, transferSourceCaption(t, nativeLogCurveSupported = true))
+                assertEquals("$t", R.string.video_tone_mapped_source, transferSourceCaption(t, nativeLogCurveSupported = false))
+            } else {
+                assertNull("$t", transferMakerCaption(t))
+            }
+        }
+    }
 }

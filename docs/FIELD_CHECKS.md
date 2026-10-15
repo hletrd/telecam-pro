@@ -440,16 +440,28 @@ S-curve, as an un-tone-mapped view should be. No crash, no CAMERA_ERROR. Earlier
 grey wall under HAL AE, the curve visibly replaced the stock one (preview mean 64 → 79.5, std 9.5 →
 4.4; a linear curve read 18).
 
-**O-Log2 clip check — OPEN, added 2026-10-15.** O-Log2 (`ColorTransfer.OLOG2`, shader code 6) is
-back by owner decision with the single-segment curve reverse-engineered from OPPO's official LUTs;
-only host tests pin it. On PMA110, VIDEO, native-log session, switch S-Log3 → **O-Log2** (confirm
-NO reopen: no new `Session configured` line) and record 5 s of the same lit grey-card/wall scene with
-a clipped highlight in frame. **Pass:** clipped highlights read near O-Log2 code 0.69 (Y10 full range
-≈ 710) and never above; an 18 % grey card exposed to the meter reads near 0.49 (≈ 500); the
-container tags read BT.2020 / full range / an SDR-class transfer (ffprobe); and OPPO's official
-O-Log2 → Rec.709 LUT applied in a grading tool yields a plausible normal-contrast image (not crushed,
-not washed out). Record the numbers. A white reading well below 0.69 or a grey far from 0.49 means
-the curve or the source decode is wrong for OPPO's LUT, not a highlight-latitude limit.
+**Phone-maker log checks — OPEN, added 2026-10-15 (per flavor; only the PMA110 one is testable in
+this lab).** The phone's own log is offered only on its maker's phones (`DeviceProfile.nativeLogFlavor`;
+model table in CLAUDE.md); every curve is host-pinned against its white paper, nothing below is
+device-measured yet. For each check: VIDEO, native-log session, switch S-Log3 → the phone's log
+(confirm NO reopen: no new `Session configured` line), record 5 s of a lit grey card / wall with a
+clipped highlight, read Y10 full-range values from the file and its tags with ffprobe, and record
+the numbers. **Common pass:** container BT.2020 / full range / an SDR-class transfer; the Gamma
+picker on that phone lists S-Log3, S-Log3.Cine, LogC3, its own log and no other maker's; the maker
+caption shows above the source caveat in EN and KO. A white well below the expected code or a grey
+far from it means the curve or the source decode is wrong for the maker's LUT, not a latitude limit.
+
+- **O-Log2 — PMA110 (testable here; also CPH2841, PMA120).** Clipped highlights near code 0.6946
+  (Y10 ≈ 711) and never above; an 18 % card exposed to the meter near 0.488 (≈ 500); deep black
+  near the toe's 0.150 (≈ 154), not the old toe-less 0.121; OPPO's official O-Log2 → Rec.709 LUT
+  gives a plausible normal-contrast image. At Log EI +3 the clip moves up to ≈ 0.950.
+- **O-Log V1 — Find X8 Ultra / Find X9 / Find X9 Pro / OnePlus 15 (no device in the lab).** Grey
+  near 0.490 (≈ 501), clip near 0.723 (Y10 ≈ 740); OPPO's official O-Log_to_ACES_AP0_V1 DCTL or
+  O-Log → Rec.709 LUT lands grey at normal exposure (this is the check for the 7.37235/16 exposure
+  convention). At Log EI +3 the top ≈ 0.12 stop clips flat at ≈ 0.9996 by design.
+- **Mi-Log — Xiaomi 15 Ultra / 17 Ultra (no device in the lab).** Grey near 0.4535 (≈ 464), clip
+  near 0.6748 (≈ 690), black near 0.147; Xiaomi's Mi-Log LUT gives a plausible image. Also confirm
+  the GENERIC quirk profile is adequate there (no PMA110 workaround applies).
 
 ### A16. Face Priority AF frames track a face and AF follows it — ◯ OPEN 2026-10-14
 

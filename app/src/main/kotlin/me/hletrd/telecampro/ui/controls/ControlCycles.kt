@@ -213,7 +213,7 @@ internal fun fnSlotAppliesTo(slot: FnSlot, mode: CaptureMode): Boolean = when (s
  */
 internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlotAppliesTo(slot, state.mode) && when (slot) {
     FnSlot.TRANSFER -> !state.isRecording && state.encoderInventoryLoaded &&
-        availableTransfers(state.videoCodec, state.tenBitEncodeAvailable).size > 1
+        availableTransfers(state.videoCodec, state.tenBitEncodeAvailable, state.nativeLogFlavor).size > 1
     // The TC toggle is a rear-only optics door: onToggleTeleconverter also refuses while FRONT
     // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
     // only toasts on tap — exactly the drift this predicate's contract forbids.

@@ -22,6 +22,9 @@ class ShaderTransferCodeTest {
         assertEquals(5, shaderTransferCode(ColorTransfer.LOGC3))
         // O-Log2 (back 2026-10-15) takes a NEW code: 3 belonged to the retired de-log branch.
         assertEquals(6, shaderTransferCode(ColorTransfer.OLOG2))
+        // The other phone-maker logs (2026-10-15) take the next NEW codes.
+        assertEquals(7, shaderTransferCode(ColorTransfer.OLOG))
+        assertEquals(8, shaderTransferCode(ColorTransfer.MILOG))
         // SDR = no OETF, deliberately the same branch as the null path.
         assertEquals(0, shaderTransferCode(ColorTransfer.SDR))
     }
@@ -40,7 +43,8 @@ class ShaderTransferCodeTest {
     @Test
     fun `forward curves never collide with each other or the vacant code`() {
         val curveCodes = listOf(
-            ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.OLOG2,
+            ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3,
+            ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG,
         ).map { shaderTransferCode(it) }
         assertEquals(curveCodes.size, curveCodes.toSet().size)
         curveCodes.forEach { code ->

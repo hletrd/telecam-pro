@@ -67,6 +67,16 @@ internal data class DeviceProfile(
      * rate the selected size's advertised minimum duration cannot sustain.
      */
     val videoMinFrameDurationsUnderstated: Boolean,
+    /**
+     * The phone maker's OWN log format for this handset, offered beside the universal
+     * S-Log3 / S-Log3.Cine / LogC3 (owner decision 2026-10-15: native log per phone, never one
+     * maker's log for everyone). Unlike every flag above this is not a HAL quirk but a PRODUCT fact
+     * — which maker log this phone's owners grade with — so it is keyed from the same model string
+     * and needs no measurement. It never changes the camera session: every log rides the same
+     * S-Log3 ISP transport curve or GL fallback, and only the GL re-encode differs. Null = none.
+     * The models per flavor and their sources are in [resolve].
+     */
+    val nativeLogFlavor: ColorTransfer? = null,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -77,6 +87,7 @@ internal data class DeviceProfile(
             logicalStillRequiresYuv = true,
             rawRequiresStandalone = true,
             videoMinFrameDurationsUnderstated = true,
+            nativeLogFlavor = ColorTransfer.OLOG2,
         )
 
         val GENERIC = DeviceProfile(
@@ -94,14 +105,58 @@ internal data class DeviceProfile(
          * CPH2841 is the Find X9 Ultra's global model (the same phone [detectPhone] names) and takes
          * the WHOLE PMA110 set by owner decision 2026-10-06 — inferred from shared hardware, NOT
          * measured there. A CPH2841 report that contradicts a flag reopens that flag for it.
+         *
+         * PMA120, the Find X9 Ultra satellite edition (same device codename and camera hardware),
+         * follows the same owner reasoning as CPH2841 (2026-10-15) and takes the whole PMA110 set.
+         *
+         * Every other mapped model takes [GENERIC] quirks plus ONLY its [nativeLogFlavor]: no PMA110
+         * HAL workaround is extended to hardware it was never measured on.
+         *
+         * Model codes are the `Build.MODEL` column of Google Play's supported-devices list
+         * (https://storage.googleapis.com/play_public/supported_devices.csv, fetched 2026-10-15);
+         * which phones carry which log is from the makers' white papers:
+         *  - O-Log2 — OPPO "O-Log2 White Paper" (2026-04-17) for the Find X9 Ultra:
+         *    PMA110 / PMA120 (China, satellite), CPH2841 (global).
+         *  - O-Log (V1) — OPPO "O-Log White Paper" V1 (2025-10-22) lists Find X8 Ultra, OnePlus 15,
+         *    Find X9, Find X9 Pro: Find X8 Ultra PKJ110 / PKU110 (China, satellite); OnePlus 15
+         *    PLK110 (China), CPH2745 / CPH2747 / CPH2749 (India / global / North America); Find X9
+         *    PLJ110 (China), CPH2797 (global), OPG07 (Japan); Find X9 Pro PLG110 / PLG120 (China,
+         *    satellite), CPH2791 (global). Both papers: https://www.oppo.com/en/o-log-technical-downloads/
+         *  - Mi-Log — Xiaomi "Xiaomi Log Profile White Paper" (Dec 2024) curve, on the owner's model
+         *    list (2026-10-15): Xiaomi 15 Ultra 25010PN30C / 25010PN30G / 25010PN30I, 25019PNF3C
+         *    (China satellite); Xiaomi 17 Ultra 2512BPNDAC / 2512BPNDAG / 2512BPNDAI, 25128PNA1C
+         *    ("by Leica", China). 2512BPNDAG is also Play-listed as "Leitzphone powered by Xiaomi".
+         * Deliberately NOT here: OnePlus 15R / Find X9s (different phones with different codes), and
+         * any maker without a public curve (CLAUDE.md: Samsung, vivo, Honor, Huawei, Pixel).
          */
-        fun resolve(model: String?): DeviceProfile = when (model?.trim()?.uppercase()) {
-            "PMA110", "CPH2841" -> PMA110
-            else -> GENERIC
+        fun resolve(model: String?): DeviceProfile {
+            val key = model?.trim()?.uppercase()
+            return when (key) {
+                "PMA110", "CPH2841", "PMA120" -> PMA110
+                in OLOG_MODELS -> GENERIC.copy(nativeLogFlavor = ColorTransfer.OLOG)
+                in MILOG_MODELS -> GENERIC.copy(nativeLogFlavor = ColorTransfer.MILOG)
+                else -> GENERIC
+            }
         }
+
+        // Sourced per [resolve]'s KDoc. Every Find X9 Ultra code carries OLOG2 through [PMA110].
+        private val OLOG_MODELS = setOf(
+            "PKJ110", "PKU110", // OPPO Find X8 Ultra
+            "PLK110", "CPH2745", "CPH2747", "CPH2749", // OnePlus 15
+            "PLJ110", "CPH2797", "OPG07", // OPPO Find X9
+            "PLG110", "PLG120", "CPH2791", // OPPO Find X9 Pro
+        )
+        private val MILOG_MODELS = setOf(
+            "25010PN30C", "25010PN30G", "25010PN30I", "25019PNF3C", // Xiaomi 15 Ultra
+            "2512BPNDAC", "2512BPNDAG", "2512BPNDAI", "25128PNA1C", // Xiaomi 17 Ultra
+        )
     }
 }
 
-/** External camera devices never inherit quirks keyed from the host handset's model string. */
+/**
+ * External camera devices never inherit quirks keyed from the host handset's model string — and
+ * that includes [DeviceProfile.nativeLogFlavor]: a USB camera is not the phone maker's camera. (The
+ * transfer PICKER is keyed on the host profile, see [CameraEngine.nativeLogFlavor].)
+ */
 internal fun deviceProfileForRoute(base: DeviceProfile, externalRoute: Boolean): DeviceProfile =
     if (externalRoute) DeviceProfile.GENERIC else base

@@ -1898,6 +1898,14 @@ class CameraEngine internal constructor(
         get() = callbackSink.function1(EngineCallbackKey.CAMERA_POLICY)
         set(value) = callbackSink.install(EngineCallbackKey.CAMERA_POLICY, value)
 
+    /**
+     * The HOST handset's [DeviceProfile.nativeLogFlavor] for the transfer picker. Deliberately the
+     * host profile, not [activeDeviceProfile]: the transfer is a persisted ENCODER selection (like
+     * the codec), not route state, and keying it on the route would rewrite the operator's choice
+     * every time an external camera came and went. It changes no session either way.
+     */
+    val nativeLogFlavor: ColorTransfer? get() = deviceProfile.nativeLogFlavor
+
     /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
     val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
     // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s

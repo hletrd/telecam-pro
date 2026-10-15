@@ -196,9 +196,13 @@ class TenBitSessionWantedTest {
             videoSessionShape(true, ColorTransfer.SLOG3, true),
             videoSessionShape(true, ColorTransfer.OLOG2, true),
         )
-        assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, ColorTransfer.OLOG2, true))
-        // ...and on the GL fallback it shares the 10-bit HLG10 source shape like the other logs.
-        assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, ColorTransfer.OLOG2, false))
+        // All three phone-maker logs (O-Log2 / O-Log / Mi-Log) are one more GL encode of that
+        // transport: the native ISP curve stays S-Log3, so switching among logs never reopens...
+        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, flavor, true))
+            // ...and on the GL fallback each shares the 10-bit HLG10 source shape like the other logs.
+            assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, flavor, false))
+        }
         assertTrue(videoSessionShape(true, ColorTransfer.SDR, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
         assertTrue(videoSessionShape(true, ColorTransfer.HLG, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
         // Fallback camera: log and HLG share the 10-bit shape, exactly the pre-native behaviour.

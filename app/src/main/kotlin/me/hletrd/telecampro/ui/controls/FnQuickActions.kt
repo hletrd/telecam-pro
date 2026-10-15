@@ -126,7 +126,7 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.TRANSFER -> actions.onTransfer(
             nextAvailable(
                 state.transfer,
-                availableTransfers(state.videoCodec, state.tenBitEncodeAvailable),
+                availableTransfers(state.videoCodec, state.tenBitEncodeAvailable, state.nativeLogFlavor),
             ),
         )
         FnSlot.AUDIO_SCENE -> actions.onAudioScene(nextAudioScene(state.audioScene))

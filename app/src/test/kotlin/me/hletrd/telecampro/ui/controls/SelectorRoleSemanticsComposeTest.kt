@@ -58,6 +58,7 @@ class SelectorRoleSemanticsComposeTest {
                     TransferSelector(
                         transfer = ColorTransfer.SDR,
                         onTransfer = {},
+                        nativeLogFlavor = ColorTransfer.OLOG2,
                     )
                 }
             }
@@ -69,7 +70,13 @@ class SelectorRoleSemanticsComposeTest {
         compose.onNode(hasContentDescription("$gamma ${transferLabel(ColorTransfer.SDR)}"))
             .assert(SemanticsMatcher.expectValue(role, Role.RadioButton))
         compose.onAllNodes(SemanticsMatcher.expectValue(role, Role.RadioButton))
-            .assertCountEquals(Option.entries.size + ColorTransfer.entries.size)
+            // Every universal transfer plus only this phone's own log (O-Log2 here).
+            .assertCountEquals(
+                Option.entries.size + ColorTransfer.entries.count { !it.isNativeLog || it == ColorTransfer.OLOG2 },
+            )
+        compose.onNode(hasContentDescription("$gamma ${transferLabel(ColorTransfer.OLOG2)}"))
+            .assert(SemanticsMatcher.expectValue(role, Role.RadioButton))
+        compose.onAllNodes(hasContentDescription("$gamma ${transferLabel(ColorTransfer.MILOG)}")).assertCountEquals(0)
     }
 
     @Test

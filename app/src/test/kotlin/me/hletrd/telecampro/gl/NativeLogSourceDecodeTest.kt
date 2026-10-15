@@ -128,12 +128,14 @@ class NativeLogSourceDecodeTest {
     private fun glslLogInputLinear(raw: Double, headroom: Double): Double =
         if (headroom <= 1.0) glslSourceLinear(glslSampleSource(raw)) else glslNativeSceneLinear(raw, headroom)
 
-    /** Every log encode branch (codes 2/4/5/6) on a neutral scene-linear input. */
+    /** Every log encode branch (codes 2/4/5/6/7/8) on a neutral scene-linear input. */
     private fun encodeAll(lin: Double): Map<String, Double> = mapOf(
         "S-Log3" to LogProfiles.encodeSlog3(lin, lin, lin, sceneLinear = true).green,
         "S-Log3.Cine" to LogProfiles.encodeSlog3Cine(lin, lin, lin, sceneLinear = true).green,
         "LogC3" to LogProfiles.encodeLogc3(lin, lin, lin, sceneLinear = true).green,
         "O-Log2" to LogProfiles.encodeOlog2(lin, lin, lin, sceneLinear = true).green,
+        "O-Log" to LogProfiles.encodeOlog(lin, lin, lin, sceneLinear = true).green,
+        "Mi-Log" to LogProfiles.encodeMilog(lin, lin, lin, sceneLinear = true).green,
     )
 
     private val greyCodes = mapOf(
@@ -141,6 +143,8 @@ class NativeLogSourceDecodeTest {
         "S-Log3.Cine" to LogProfiles.slog3Oetf(0.18),
         "LogC3" to LogProfiles.logc3Oetf(0.18),
         "O-Log2" to LogProfiles.olog2Oetf(0.18),
+        "O-Log" to LogProfiles.ologOetf(0.18),
+        "Mi-Log" to LogProfiles.milogOetf(0.18),
     )
 
     @Test
@@ -153,9 +157,9 @@ class NativeLogSourceDecodeTest {
         val input = shader.substringAfter("vec3 logInputLinear(vec3 color) {").substringBefore("\n        }")
         assertTrue(input.contains("if (uSourceLog == 0 || uSourceLogHeadroom <= 1.0) return sourceLinear(color);"))
         assertTrue(input.contains("return nativeSceneLinear(vTexCoord);"))
-        // The four LOG branches read it; HLG (code 1) keeps the display-referred sourceLinear.
-        val main = shader.substringAfter("void main() {")
-        assertEquals(4, Regex("""vec3 lin = logInputLinear\(color\);""").findAll(main).count())
+        // The six LOG branches read it; HLG (code 1) keeps the display-referred sourceLinear.
+        val main = shader.substringAfter("void main() {\n            vec3 base")
+        assertEquals(6, Regex("""vec3 lin = logInputLinear\(color\);""").findAll(main).count())
         assertTrue(main.contains("vec3 sdrDisplayLight = sourceLinear(color);"))
         // `base` (display, meter, zebra, false color, peaking, AE readback) keeps the CLAMPED decode.
         assertTrue(shader.contains("vec3 base = dgain(sampleSource(vTexCoord));"))
@@ -208,6 +212,11 @@ class NativeLogSourceDecodeTest {
             assertTrue("$name: 4.0 must encode below code 1.0, got $code", code < 1.0)
             assertTrue("$name: 4.0 must encode above its 1.0 code", code > whiteCodes.getValue(name) + 1e-3)
         }
+        // At +3 EI (k = 8) every profile stays finite and at or below code 1.0; O-Log V1 alone
+        // reaches its white-paper domain top (R = 16 ≈ 7.37 scene-linear) and encodes 8.0 flat there.
+        val atN3 = encodeAll(8.0)
+        for ((name, code) in atN3) assertTrue("$name at k=8: $code", code.isFinite() && code < 1.0)
+        assertEquals(LogProfiles.ologOetf(16.0 * LogProfiles.OLOG_DCTL_SCALE), atN3.getValue("O-Log"), 1e-12)
         // At N = 0 the same scene clipped at the sensor: the ISP saw 1.0, i.e. code slog3(1.0).
         val linN0 = glslLogInputLinear(LogProfiles.slog3Oetf(1.0), 1.0)
         assertEquals(1.0, linN0, 1e-9)

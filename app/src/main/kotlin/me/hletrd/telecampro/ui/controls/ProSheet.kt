@@ -1517,12 +1517,14 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // never the bit depth but that the ISP has ALREADY tone-mapped what the curve is applied to —
     // which in turn stopped being true for log on a native-curve camera (2026-10-14), so the
     // caption is chosen by [transferSourceCaption] from the route's capability.
-    Captioned(
-        transferSourceCaption(
-            state.transfer,
-            me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
-        )?.let { stringResource(it) },
-    ) {
+    // A phone-maker log (O-Log2 / O-Log / Mi-Log) additionally says WHOSE format it is — the
+    // reason it is offered only on this phone — above the same source caveat every curve carries.
+    val sourceCaption = transferSourceCaption(
+        state.transfer,
+        me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
+    )?.let { stringResource(it) }
+    val makerCaption = transferMakerCaption(state.transfer)?.let { stringResource(it) }
+    Captioned(listOfNotNull(makerCaption, sourceCaption).joinToString("\n").ifEmpty { null }) {
         // Transfer is part of the encoded image format, so keep it with codec/rate controls instead
         // of below the unrelated audio controls.
         TransferSelector(
@@ -1531,6 +1533,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             codec = codec,
             enabled = codec == VideoCodec.HEVC && recordingMutable,
             tenBitEncodeAvailable = state.tenBitEncodeAvailable,
+            nativeLogFlavor = state.nativeLogFlavor,
         )
     }
     // Log EI offset (NativeLogCurve.kt): directly under the curve it modifies, and only where it

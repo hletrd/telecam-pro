@@ -633,7 +633,7 @@ private fun FnDialChip(
         )
         FnSlot.TRANSFER -> {
             val transferMutable = policyEnabled
-            val transfers = availableTransfers(state.videoCodec, state.tenBitEncodeAvailable)
+            val transfers = availableTransfers(state.videoCodec, state.tenBitEncodeAvailable, state.nativeLogFlavor)
             DialChip(
                 // "Gamma" is the standard camera term for the transfer curve (HLG / O-Log / SDR);
                 // the old "TF" abbreviation read as nonsense (feedback).

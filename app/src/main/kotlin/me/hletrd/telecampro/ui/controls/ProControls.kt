@@ -972,6 +972,8 @@ internal fun TransferSelector(
      * than mislabel; same shape as the lens rail refusing to draw presets the optics cannot reach.
      */
     tenBitEncodeAvailable: Boolean = true,
+    /** The host phone's own log ([me.hletrd.telecampro.camera.DeviceProfile.nativeLogFlavor]). */
+    nativeLogFlavor: ColorTransfer? = null,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // "Gamma", matching the Fn tile, dial chip, My Menu entry, and "Gamma Disp. Assist" — the row
@@ -999,7 +1001,7 @@ internal fun TransferSelector(
                 .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            availableTransfers(codec, tenBitEncodeAvailable).forEach { option ->
+            availableTransfers(codec, tenBitEncodeAvailable, nativeLogFlavor).forEach { option ->
                 val isSelected = transfer == option
                 val optionName = segmentedOptionName(stringResource(R.string.label_gamma), transferLabel(option))
                 MinTouchTarget48 {
@@ -1051,6 +1053,15 @@ internal fun transferSourceCaption(transfer: ColorTransfer, nativeLogCurveSuppor
     transfer.isLog && nativeLogCurveSupported -> R.string.video_native_log_source
     else -> R.string.video_tone_mapped_source
 }
+
+/**
+ * The "this is the phone maker's own log" caption for the [ColorTransfer.isNativeLog] members, or
+ * null for the universal curves. One generic line (no maker name in the string): the label already
+ * names the format, and the caption's job is to say why it appears on this phone and what it is for.
+ */
+@StringRes
+internal fun transferMakerCaption(transfer: ColorTransfer): Int? =
+    if (transfer.isNativeLog) R.string.video_maker_log_caption else null
 
 /**
  * Whether the Video tab offers the Log EI offset row: only where it can act — a log transfer on a

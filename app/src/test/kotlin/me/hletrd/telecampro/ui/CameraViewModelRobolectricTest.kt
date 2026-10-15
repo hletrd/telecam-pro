@@ -828,6 +828,69 @@ class CameraViewModelRobolectricTest {
         assertEquals(ColorTransfer.SDR, v.state.value.transfer)
     }
 
+    // ---- Per-device phone-maker log (owner decision 2026-10-15) ----
+
+    private fun applyMain10Inventory(v: CameraViewModel) {
+        val inventory = buildCodecInventory(
+            listOf(
+                CodecComponent(
+                    name = "vendor.hevc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = setOf(android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
+                ),
+            ),
+        )
+        CameraViewModel::class.java.getDeclaredMethod("applyEncoderInventory", CodecInventory::class.java)
+            .apply { isAccessible = true }
+            .invoke(v, inventory)
+    }
+
+    @Test fun `a Find X9 offers its own O-Log and turns another maker's log into S-Log3`() {
+        org.robolectric.shadows.ShadowBuild.setModel("PLJ110")
+        val (v, _) = createViewModel()
+        assertEquals(ColorTransfer.OLOG, v.state.value.nativeLogFlavor)
+        applyMain10Inventory(v)
+        v.onTransfer(ColorTransfer.OLOG)
+        assertEquals(ColorTransfer.OLOG, v.state.value.transfer)
+        v.onTransfer(ColorTransfer.OLOG2)
+        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer)
+        v.onTransfer(ColorTransfer.MILOG)
+        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer)
+        v.onTransfer(ColorTransfer.LOGC3)
+        assertEquals(ColorTransfer.LOGC3, v.state.value.transfer)
+    }
+
+    @Test fun `an unmapped device offers no phone-maker log at all`() {
+        val (v, _) = createViewModel() // Robolectric's Build.MODEL resolves GENERIC
+        assertNull(v.state.value.nativeLogFlavor)
+        applyMain10Inventory(v)
+        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
+            v.onTransfer(flavor)
+            assertEquals("$flavor", ColorTransfer.SLOG3, v.state.value.transfer)
+        }
+    }
+
+    @Test fun `a restored foreign maker log normalizes to S-Log3 and the phone's own survives`() {
+        org.robolectric.shadows.ShadowBuild.setModel("PMA110")
+        val (v, _) = createViewModel()
+        assertEquals(ColorTransfer.OLOG2, v.state.value.nativeLogFlavor)
+        // Restore and MR recall before the encoder inventory park the persisted transfer in
+        // pendingTransferUntilInventory; its landing is where the device's offer is applied. (Driven
+        // directly: a process-cached inventory from an earlier test may already have landed.)
+        for ((persisted, expected) in listOf(
+            ColorTransfer.MILOG to ColorTransfer.SLOG3,
+            ColorTransfer.OLOG to ColorTransfer.SLOG3,
+            ColorTransfer.OLOG2 to ColorTransfer.OLOG2,
+        )) {
+            setState(v) { it.copy(encoderInventoryLoaded = false) }
+            ViewModelTestAccess.setField(v, "pendingTransferUntilInventory", persisted)
+            applyMain10Inventory(v)
+            assertEquals("$persisted", expected, v.state.value.transfer)
+        }
+    }
+
     // ---- Status auto-clear (Handler-timed, deterministic via the shadow main looper) ----
 
     @Test fun `engine status publications auto-clear after the ordinary display duration`() {
