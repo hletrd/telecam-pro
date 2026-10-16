@@ -414,11 +414,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   status bar went effectively BLANK over the dark viewfinder: clock, wifi, 5G, signal bars and the
   charging bolt all black-on-black, with only the green-backed battery pill showing through. It
   survived to v1 because every device in the lab sits in dark mode, where `auto()` and the fix agree.
-  `MainActivity` now passes `SystemBarStyle.dark(...)` for BOTH bars — **"dark" names the BACKGROUND,
-  so it yields WHITE icons** (`dark` sets `detectDarkMode = { true }`, and `setUp()` applies
-  `isAppearanceLightStatusBars = !isDark`). The theme's `android:windowLightStatusBar=false` CANNOT
-  do this job and never could: it seeds only the STARTING window, and `enableEdgeToEdge()` overwrites
-  the appearance flags in `onCreate`. Device A/B on the PMA110 in light mode, one variable (the APK):
+  `MainActivity` (`enableTeleCamEdgeToEdge`) sets `isAppearanceLightStatusBars` /
+  `isAppearanceLightNavigationBars = false` directly through `WindowCompat.getInsetsController` — WHITE
+  icons regardless of the system night setting — and no longer calls `enableEdgeToEdge()` at all
+  (2026-10-16, Play Console recommendation): its `SystemBarStyle` path writes `Window.setStatusBarColor` /
+  `setNavigationBarColor`, which Android 15 deprecated. API 35+ is edge-to-edge by platform
+  enforcement; API 33–34 opt in with `WindowCompat.setDecorFitsSystemWindows(window, false)` plus
+  `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`, and the theme sets `enforceNavigationBarContrast=false`.
+  Re-verified on PMA110 in light AND dark mode: no `LIGHT_STATUS_BARS` in the appearance region. The
+  theme's `android:windowLightStatusBar=false` CANNOT do this job alone: it seeds only the STARTING
+  window. Original device A/B on the PMA110 in light mode, one variable (the APK):
   `AppearanceRegion{LIGHT_STATUS_BARS bounds=…}` → `AppearanceRegion{ bounds=…}`, bright pixels in the
   status-bar band 0.33 % → 1.77 %. The probe is `dumpsys window | grep -A2
   mLastStatusBarAppearanceRegions`; screenshots alone are weak evidence here because the viewfinder
