@@ -504,9 +504,10 @@ android {
         // PMA110 behavior is byte-identical; other devices run spec paths via DeviceProfile.
         minSdk = 33
         targetSdk = 36
-        // versionCode 1 (v1.0, published 2026-08-04) and 3 (v1.0.1) are both SPENT — both reached
-        // Google Play. Play rejects a re-used versionCode outright, so every upload must be strictly
-        // greater, including a re-upload of otherwise identical bytes. 4 is the candidate.
+        // versionCode 1 (v1.0, published 2026-08-04), 3 (v1.0.1) and 4 (v1.0.2, uploaded
+        // 2026-08-05, active per the owner's Play Console 2026-10-16) are all SPENT. Play rejects a
+        // re-used versionCode outright, so every upload must be strictly greater, including a
+        // re-upload of otherwise identical bytes. 5 is the candidate (v1.0.3).
         //
         // 1.0.1 SHIPPED, which is what makes 1.0.2 a real release rather than a re-cut: its notes
         // told tablet owners they were getting "a landscape layout with a side control rail", and
@@ -514,8 +515,8 @@ android {
         // visible change to something users already have, so it takes its own version and its own
         // release notes, and those notes must not re-announce the Korean UI or the smaller download
         // that 1.0.1 already delivered.
-        versionCode = 4
-        versionName = "1.0.2"
+        versionCode = 5
+        versionName = "1.0.3"
 
         // On-device instrumented smoke tier (app/src/androidTest). The external device-tests/
         // harness owns functional depth; the instrumented suite exists to exercise real code
