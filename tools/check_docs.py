@@ -2083,8 +2083,10 @@ ui_snapshot_activity = read(
 )
 check(
     "internal fun ComponentActivity.enableTeleCamEdgeToEdge()" in main_activity
-    and "statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)" in main_activity
-    and "navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)" in main_activity
+    and "isAppearanceLightStatusBars = false" in main_activity
+    and "isAppearanceLightNavigationBars = false" in main_activity
+    # Play flags androidx.activity's enableEdgeToEdge() internals (deprecated Window setters).
+    and re.search(r"(?m)^\s*enableEdgeToEdge\(", main_activity) is None
     and main_activity.count("enableTeleCamEdgeToEdge()") >= 2
     and "import me.hletrd.telecampro.enableTeleCamEdgeToEdge" in ui_snapshot_activity
     and "enableTeleCamEdgeToEdge()" in ui_snapshot_activity

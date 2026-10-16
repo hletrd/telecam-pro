@@ -9,11 +9,10 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
+import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -199,17 +198,30 @@ internal fun launchOwnerlessMediaDeleteRequest(
 )
 
 /**
- * Pins light system-bar icons over TeleCamPro's unconditionally dark surface.
+ * Edge-to-edge with light (white) system-bar icons over TeleCamPro's unconditionally dark surface,
+ * using NO API that Android 15 deprecated.
  *
- * [SystemBarStyle.dark] describes the bar background, so it selects light icons. The bare
- * [enableEdgeToEdge] overload follows the system night setting instead, which can put black icons
- * over the dark viewfinder and makes debug screenshot evidence depend on device theme state.
+ * androidx.activity's enableEdgeToEdge() reaches Window.setStatusBarColor / setNavigationBarColor /
+ * setStatusBarContrastEnforced and LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES on pre-15 devices, and
+ * Play Console flags those calls ("Your app uses deprecated APIs or parameters for edge-to-edge",
+ * versionCode 4) even though they sit inside the library. Here: Android 15+ (targetSdk >= 35)
+ * already enforces edge-to-edge, so nothing is set; on 13/14 the decor stops fitting system windows
+ * and the cutout mode is ALWAYS. Bar colours stay in the theme (transparent, no contrast scrim).
+ * Icons are pinned light through the insets controller, never derived from the SYSTEM night
+ * setting: a phone in light mode otherwise drew black icons over the viewfinder (device A/B
+ * 2026-08-04, CLAUDE.md "System bar icons are PINNED light").
  */
 internal fun ComponentActivity.enableTeleCamEdgeToEdge() {
-    enableEdgeToEdge(
-        statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-        navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-    )
+    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+    }
+    WindowCompat.getInsetsController(window, window.decorView).apply {
+        isAppearanceLightStatusBars = false
+        isAppearanceLightNavigationBars = false
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -367,13 +379,10 @@ class MainActivity : ComponentActivity() {
             vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, true)
         }
         lockPortraitOnHandsets()
-        // Both bars are pinned DARK — meaning "this bar sits on a dark background", which is how
-        // the system decides to draw LIGHT (white) icons: SystemBarStyle.dark sets
-        // detectDarkMode = { true }, and setUp() applies isAppearanceLightStatusBars = !isDark.
-        // The bare enableEdgeToEdge() default is SystemBarStyle.auto(), which resolves that from the
-        // SYSTEM night setting — but TeleCamProTheme is unconditionally dark (TeleDarkColorScheme,
-        // no isSystemInDarkTheme, no values-night), so a phone in LIGHT mode drew BLACK status and
-        // navigation icons over the viewfinder. A viewfinder is dark at every hour and in every
+        // Both bars' icons are pinned LIGHT (isAppearanceLight* = false) — never resolved from the
+        // SYSTEM night setting: TeleCamProTheme is unconditionally dark (TeleDarkColorScheme, no
+        // isSystemInDarkTheme, no values-night), and the former enableEdgeToEdge() auto style made a
+        // phone in LIGHT mode draw BLACK status and navigation icons over the viewfinder. A viewfinder is dark at every hour and in every
         // scene, so the app's own appearance is the only correct input here, never the system's.
         // The theme's android:windowLightStatusBar=false was aimed at exactly this and cannot reach
         // it: it seeds the starting window, and then this call overwrites the appearance flags.

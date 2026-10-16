@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- These style the STARTING WINDOW only — the frame shown before MainActivity.onCreate runs.
-         From onCreate onward enableEdgeToEdge() owns the system bar appearance and overwrites
-         windowLightStatusBar, so that item cannot be the thing keeping the icons white on the
-         viewfinder; the SystemBarStyle.dark pinning in MainActivity is. statusBarColor and
+         From onCreate onward MainActivity.enableTeleCamEdgeToEdge() owns the icon appearance through
+         the insets controller, so windowLightStatusBar cannot be the thing keeping the icons white
+         on the viewfinder; that pinning is. statusBarColor and
          navigationBarColor are deprecated no-ops at targetSdk 35+, but minSdk is 33 and they are
          still honoured for the starting window on API 33/34 — which is why they stay. -->
     <style name="Theme.TeleCamPro" parent="android:Theme.Material.NoActionBar">
@@ -11,5 +11,9 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
+        <!-- No translucent scrim behind 3-button navigation on 13/14: the transparent bar sits on
+             the dark viewfinder, and MainActivity.enableTeleCamEdgeToEdge no longer calls the
+             deprecated contrast setter that enableEdgeToEdge() used to. -->
+        <item name="android:enforceNavigationBarContrast">false</item>
     </style>
 </resources>
