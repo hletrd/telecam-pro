@@ -1,0 +1,1296 @@
+#!/usr/bin/env python3
+"""Build release tasks from an exact, private export of the current Git commit."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import secrets
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
+from typing import NamedTuple
+
+_TOOLS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from android_sdk import android_sdk_environment
+from immutable_outputs import FrozenOutputSet
+
+
+Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
+AfterSnapshot = Callable[[pathlib.Path, pathlib.Path], None]
+AfterOutputsFrozen = Callable[[pathlib.Path], None]
+
+BUILD_OUTPUT_DIRECTORIES = (".gradle", ".kotlin", "build", "app/build")
+RELEASE_OUTPUT_PREFIXES = (
+    "apk/release/",
+    "bundle/release/",
+    "mapping/release/",
+    "sdk-dependencies/release/",
+)
+RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
+RELEASE_REPORT_PREFIXES = ("resources_config_map_file/release/",)
+STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"
+RELEASE_EVIDENCE_NAME = "release-evidence.json"
+RELEASE_EVIDENCE_SCHEMA = 2
+RELEASE_SOURCE_AUTHORITY = "sealed-wrapper-export-v1"
+
+
+class _SealedPath(NamedTuple):
+    path: pathlib.Path
+    original_mode: int
+    sealed_mode: int
+    device: int
+    inode: int
+    file_type: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+class ReleaseLocalInputs(NamedTuple):
+    sealed_paths: tuple[str, ...]
+
+
+class ReleaseSnapshotSeal:
+    """Read-only release inputs plus metadata a transient content restore cannot reset."""
+
+    def __init__(self, entries: Sequence[_SealedPath]):
+        self._entries = tuple(entries)
+
+    def verify(self) -> None:
+        for entry in self._entries:
+            try:
+                current = entry.path.lstat()
+            except OSError as error:
+                raise RuntimeError(
+                    f"sealed immutable release source owner disappeared: {entry.path}"
+                ) from error
+            observed = (
+                current.st_dev,
+                current.st_ino,
+                stat.S_IFMT(current.st_mode),
+                stat.S_IMODE(current.st_mode),
+                current.st_size,
+                current.st_mtime_ns,
+                current.st_ctime_ns,
+            )
+            expected = (
+                entry.device,
+                entry.inode,
+                entry.file_type,
+                entry.sealed_mode,
+                entry.size,
+                entry.mtime_ns,
+                entry.ctime_ns,
+            )
+            if observed != expected:
+                raise RuntimeError(
+                    "sealed immutable release source owner changed during compilation: "
+                    f"{entry.path}"
+                )
+
+    def release(self) -> None:
+        # Restore ancestors first so TemporaryDirectory can remove the private checkout. Never chmod
+        # an attacker-installed replacement whose identity differs from the sealed owner.
+        for entry in sorted(self._entries, key=lambda item: len(item.path.parts)):
+            try:
+                current = entry.path.lstat()
+                if (current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode)) != (
+                    entry.device,
+                    entry.inode,
+                    entry.file_type,
+                ):
+                    continue
+                os.chmod(entry.path, entry.original_mode, follow_symlinks=False)
+            except OSError:
+                pass
+
+
+# SEC4-4 / CRIT4-6 (AGG4-41): SEC3-1 closed the ARGV form of unsealed build logic, but the child
+# Gradle still inherited every other channel: GRADLE_OPTS / JAVA_TOOL_OPTIONS / _JAVA_OPTIONS
+# (`-javaagent:`, `-Dorg.gradle.project.*`), ORG_GRADLE_PROJECT_*, `$GRADLE_USER_HOME/init.d`, the
+# user gradle.properties, and the shared build cache that every unsealed developer build writes. The
+# child environment is therefore built from an ALLOWLIST (names only below; the three TELECAMPRO_*
+# values are the sole secrets and are values, never paths), init.d must be empty, the user
+# gradle.properties may set only inert JVM/console keys, and the sealed run forces the fixed flags.
+RELEASE_CHILD_ENVIRONMENT_NAMES = frozenset({
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TERM",
+    "LANG",
+    "JAVA_HOME",
+    "ANDROID_HOME",
+    "ANDROID_SDK_ROOT",
+    "ANDROID_USER_HOME",
+    "GRADLE_USER_HOME",
+    "TELECAMPRO_STORE_PASSWORD",
+    "TELECAMPRO_KEY_PASSWORD",
+    "TELECAMPRO_KEY_ALIAS",
+})
+RELEASE_CHILD_ENVIRONMENT_PREFIXES = ("LC_",)
+# A FROM-CACHE task skips its action, so its bytes would not come from the sealed inputs; the
+# configuration cache would persist the signing values; a reused daemon carries JVM state (agents,
+# system properties) from whichever unsealed build started it. `--no-daemon` governs only the GRADLE
+# daemon (SR6-2 / AGG6-32): KGP's default `daemon` compiler strategy discovers and reuses a resident
+# Kotlin compile daemon through its run files, and one started by an ordinary unsealed build — in a
+# shell that carried a JVM agent — would compile the release's Kotlin into the signed APK. In-process
+# compilation runs inside this run's own sealed JVM, which also makes `kotlin.daemon.jvmargs` moot.
+# The wrapper owns this argv; `validate_gradle_tasks` still refuses any caller `-P`.
+SEALED_GRADLE_FLAGS = (
+    "--no-build-cache",
+    "--no-configuration-cache",
+    "--no-daemon",
+    "-Pkotlin.compiler.execution.strategy=in-process",
+)
+# SR6-4 (AGG6-32): Gradle warns that DEBUG logging can print security-sensitive values, and the sealed
+# run streams its console with the signing values in the child environment. A level left at `debug`
+# or `info` in the user home is ambient and persistent, so only the quieter levels are admitted.
+ADMITTED_GRADLE_LOGGING_LEVELS = frozenset({"quiet", "warn", "lifecycle"})
+# SR6-5 (AGG6-32): what the sealed run does NOT re-verify, recorded in the evidence so its claim is no
+# stronger than what the wrapper controlled. The wrapper verifies `distributionSha256Sum` only on
+# download and deletes the zip after unpacking, so the unpacked distribution's `lib/` jars cannot be
+# re-hashed here; only its `init.d` and `gradle.properties` are checked.
+UNVERIFIED_RELEASE_INPUTS = ("gradle-distribution-unpacked-lib",)
+USER_GRADLE_PROPERTY_ALLOWLIST = frozenset({
+    "org.gradle.jvmargs",
+    "org.gradle.daemon",
+    "org.gradle.parallel",
+    "org.gradle.workers.max",
+    "org.gradle.console",
+    "org.gradle.logging.level",
+    "org.gradle.warning.mode",
+    "org.gradle.vfs.watch",
+    "kotlin.daemon.jvmargs",
+    # MRG4-10: inert under the sealed run. Command-line flags win over gradle.properties, so
+    # SEALED_GRADLE_FLAGS already turn these two off for this build; refusing them only made an
+    # ordinary developer setup fail the release gate.
+    "org.gradle.caching",
+    "org.gradle.configuration-cache",
+    # A proxy only routes dependency downloads (TLS-verified as usual); behind one, a dependency
+    # refresh cannot run without these. Proxy CREDENTIALS are deliberately not admitted.
+    "systemProp.http.proxyHost",
+    "systemProp.http.proxyPort",
+    "systemProp.http.nonProxyHosts",
+    "systemProp.https.proxyHost",
+    "systemProp.https.proxyPort",
+    "systemProp.https.nonProxyHosts",
+})
+# SR5-2 / RG5-13 (AGG5-16): the jvmargs screen is an ALLOWLIST of token shapes. The former denylist
+# (`-javaagent|-agentpath|-agentlib|-Dorg.gradle.project.|-Dandroid.`) passed `@argfile` (the launcher
+# expands it, so it can carry `-javaagent:` unseen), `-XX:OnOutOfMemoryError=`/`-XX:OnError=`,
+# `-Xbootclasspath/a:` and `-Djava.system.class.loader=` — every one runs code inside the JVM that
+# compiles or signs the release. Heap sizing, GC choice, encoding/locale and module opens are all an
+# ordinary developer setup needs; a heap-dump flag is NOT admitted, because a dump of the signing
+# JVM writes the store password to disk.
+_JVM_ARGUMENT_ALLOWED = (
+    re.compile(r"-Xm[sx][0-9]+[kKmMgG]?"),
+    re.compile(r"-Xss[0-9]+[kKmMgG]?"),
+    re.compile(r"-XX:(?:MaxMetaspaceSize|MetaspaceSize|ReservedCodeCacheSize)=[0-9]+[kKmMgG]?"),
+    re.compile(r"-XX:(?:MaxRAMPercentage|InitialRAMPercentage)=[0-9]+(?:\.[0-9]+)?"),
+    re.compile(
+        r"-XX:[+-](?:UseParallelGC|UseG1GC|UseSerialGC|UseZGC|ZGenerational"
+        r"|UseStringDeduplication|UseCompressedOops)"
+    ),
+    re.compile(r"-Dfile\.encoding=[A-Za-z0-9_.-]+"),
+    re.compile(r"-Duser\.(?:language|country|variant|region|timezone)=[A-Za-z0-9_/+-]*"),
+    re.compile(r"-Djava\.awt\.headless=(?:true|false)"),
+    re.compile(r"--add-(?:opens|exports)(?:=|\s+)[A-Za-z0-9_.]+/[A-Za-z0-9_.]+=[A-Za-z0-9_.,-]+"),
+)
+
+
+def jvm_arguments_admitted(value: str) -> bool:
+    """True only when every whitespace-separated jvmargs token has an allowlisted shape."""
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError:
+        return False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        # `--add-opens X/Y=Z` may arrive as two tokens.
+        if token in {"--add-opens", "--add-exports"} and index + 1 < len(tokens):
+            token = f"{token}={tokens[index + 1]}"
+            index += 1
+        if not any(pattern.fullmatch(token) for pattern in _JVM_ARGUMENT_ALLOWED):
+            return False
+        index += 1
+    return True
+
+
+def release_child_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """The allowlisted environment the sealed Gradle child receives (never TELECAMPRO_STORE_FILE).
+
+    The wrapper copies keystore.properties and its repository-relative store into the sealed
+    checkout. Password/key-alias values remain available, but an ambient path can never redirect
+    Gradle outside that checkout.
+    """
+    return {
+        name: value
+        for name, value in environment.items()
+        if (name in RELEASE_CHILD_ENVIRONMENT_NAMES or name.startswith(RELEASE_CHILD_ENVIRONMENT_PREFIXES))
+        and name != STORE_FILE_ENVIRONMENT
+    }
+
+
+def gradle_user_home(environment: Mapping[str, str]) -> pathlib.Path:
+    configured = environment.get("GRADLE_USER_HOME", "").strip()
+    if configured:
+        return pathlib.Path(configured)
+    return pathlib.Path(environment.get("HOME") or pathlib.Path.home()) / ".gradle"
+
+
+def _require_inert_init_directory(init_directory: pathlib.Path, stock: frozenset[str]) -> None:
+    if init_directory.exists() and not init_directory.is_dir():
+        raise RuntimeError(f"refusing a sealed release build: {init_directory} is not a directory")
+    if not init_directory.is_dir():
+        return
+    foreign = sorted(entry.name for entry in init_directory.iterdir() if entry.name not in stock)
+    if foreign:
+        raise RuntimeError(
+            f"refusing a sealed release build: {init_directory} is not empty; Gradle would apply "
+            "those init scripts as unsealed build logic"
+        )
+
+
+def _require_inert_gradle_properties(properties: pathlib.Path) -> None:
+    if not properties.exists():
+        return
+    try:
+        entries = parse_java_properties(properties.read_bytes())
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise RuntimeError(f"refusing a sealed release build: {properties} is unreadable") from error
+    unexpected = sorted({key for key, _ in entries if key not in USER_GRADLE_PROPERTY_ALLOWLIST})
+    injected = sorted({
+        key for key, value in entries
+        if key.endswith("jvmargs") and not jvm_arguments_admitted(value)
+    })
+    verbose = sorted({
+        key for key, value in entries
+        if key == "org.gradle.logging.level"
+        and value.strip().lower() not in ADMITTED_GRADLE_LOGGING_LEVELS
+    })
+    if unexpected or injected or verbose:
+        raise RuntimeError(
+            f"refusing a sealed release build: {properties} sets keys a sealed build cannot carry: "
+            + ", ".join([
+                *unexpected,
+                *(f"{key} (non-allowlisted JVM argument)" for key in injected),
+                *(f"{key} (only quiet, warn or lifecycle)" for key in verbose),
+            ])
+            + ". Remove or comment out those keys (or point GRADLE_USER_HOME at a directory without "
+            "them) for the release run; build caching, the configuration cache, and "
+            "systemProp.http(s).proxyHost/proxyPort/nonProxyHosts may stay."
+        )
+
+
+# SR5-1 / RG5-12 (AGG5-15): Gradle auto-applies FOUR init-script sources — `-I` (closed by SEC3-1),
+# `$GRADLE_USER_HOME/init.gradle(.kts)`, `$GRADLE_USER_HOME/init.d/*`, and the DISTRIBUTION's own
+# `init.d/*` — and reads the distribution's `gradle.properties` at the lowest precedence. Only the
+# third was refused, so the evidence's "sealed" claim exceeded what the wrapper controlled.
+USER_INIT_SCRIPTS = ("init.gradle", "init.gradle.kts")
+# The stock binary distribution ships exactly this one file in `init.d`.
+STOCK_DISTRIBUTION_INIT_ENTRIES = frozenset({"readme.txt"})
+
+
+def require_sealed_gradle_user_home(environment: Mapping[str, str]) -> None:
+    """Refuse ambient build logic the sealed run would otherwise auto-apply (names only, no values)."""
+    home = gradle_user_home(environment)
+    for name in USER_INIT_SCRIPTS:
+        script = home / name
+        if os.path.lexists(script):
+            raise RuntimeError(
+                f"refusing a sealed release build: {script} exists; Gradle would apply it as "
+                "unsealed build logic"
+            )
+    _require_inert_init_directory(home / "init.d", frozenset())
+    _require_inert_gradle_properties(home / "gradle.properties")
+
+
+def _base36(value: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        encoded = digits[remainder] + encoded
+    return encoded or "0"
+
+
+def wrapper_distribution_directory(
+    snapshot: pathlib.Path,
+    environment: Mapping[str, str],
+) -> pathlib.Path | None:
+    """The wrapper's unpack directory for the snapshot's `distributionUrl`, as Gradle names it.
+
+    Gradle's `PathAssembler` keys the directory on base-36 MD5 of the URL string. None when the
+    snapshot carries no wrapper properties (nothing for the wrapper to unpack).
+    """
+    properties = snapshot / "gradle/wrapper/gradle-wrapper.properties"
+    if not properties.is_file():
+        return None
+    try:
+        entries = dict(parse_java_properties(properties.read_bytes()))
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise RuntimeError("refusing a sealed release build: wrapper properties are unreadable") from error
+    url = entries.get("distributionUrl", "")
+    base_name = entries.get("distributionBase", "GRADLE_USER_HOME")
+    if not url:
+        raise RuntimeError("refusing a sealed release build: wrapper distributionUrl is missing")
+    if base_name == "GRADLE_USER_HOME":
+        base = gradle_user_home(environment)
+    elif base_name == "PROJECT":
+        base = snapshot
+    else:
+        raise RuntimeError("refusing a sealed release build: unknown wrapper distributionBase")
+    archive = url.rsplit("/", 1)[-1]
+    stem = archive[:-4] if archive.endswith(".zip") else archive
+    digest = int.from_bytes(hashlib.md5(url.encode("utf-8"), usedforsecurity=False).digest(), "big")
+    return base / entries.get("distributionPath", "wrapper/dists") / stem / _base36(digest)
+
+
+def require_sealed_gradle_distribution(
+    snapshot: pathlib.Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Refuse a modified unpacked distribution (its checksum is verified only on download)."""
+    distribution = wrapper_distribution_directory(snapshot, environment)
+    if distribution is None or not distribution.is_dir():
+        return  # Not unpacked yet: the wrapper downloads it and verifies distributionSha256Sum.
+    for installation in sorted(entry for entry in distribution.iterdir() if entry.is_dir()):
+        _require_inert_init_directory(installation / "init.d", STOCK_DISTRIBUTION_INIT_ENTRIES)
+        _require_inert_gradle_properties(installation / "gradle.properties")
+
+
+def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    environment = release_child_environment(os.environ)
+    return subprocess.run(command, cwd=cwd, env=environment, text=True, check=True)
+
+
+# SR6-1 (AGG6-32): git runs user-configured CODE during clone/checkout/status — smudge/clean/process
+# filter drivers selected by `core.attributesFile` or a template `info/attributes`, the
+# `post-checkout` hook from `init.templateDir`/`core.hooksPath`, an fsmonitor hook — and honours
+# environment such as `GIT_CONFIG_COUNT/KEY_n/VALUE_n`, `GIT_CONFIG_PARAMETERS`, `GIT_DIR` and
+# `GIT_ALTERNATE_OBJECT_DIRECTORIES`. A paired smudge/clean filter could write injected source into
+# the export and then report it clean, so the evidence would name a commit the APK was not built
+# from. Every git child of the export therefore runs with no `GIT_*` variable, no system or global
+# config or attributes, no hooks, no fsmonitor and no clone template — and the checked-out bytes are
+# then proven against the commit's own blob ids (`export_commit`), so even an unforeseen channel
+# cannot make the export differ from the commit silently. LFS-tracked Play screenshots stay pointer
+# files under this; they are not build inputs.
+GIT_CHILD_ENVIRONMENT_NAMES = frozenset({"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"})
+ISOLATED_GIT_CONFIG = (
+    "-c", f"core.hooksPath={os.devnull}",
+    "-c", f"core.attributesFile={os.devnull}",
+    "-c", "core.fsmonitor=false",
+)
+
+
+def git_child_environment(environment: Mapping[str, str], *, isolated: bool) -> dict[str, str]:
+    """The environment a git child receives: an allowlist that never carries a `GIT_*` variable.
+
+    `isolated` also drops system/global config and attributes. Only the status of the operator's
+    OWN checkout (`require_clean_commit`) keeps global config, because its global ignore rules and
+    LFS filter describe that working tree; the export's integrity does not rest on that status.
+    """
+    child = {
+        name: value
+        for name, value in environment.items()
+        if name in GIT_CHILD_ENVIRONMENT_NAMES or name.startswith(RELEASE_CHILD_ENVIRONMENT_PREFIXES)
+    }
+    child["GIT_TERMINAL_PROMPT"] = "0"
+    if isolated:
+        child.update({
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+        })
+    return child
+
+
+def isolated_git(
+    arguments: Sequence[str],
+    cwd: pathlib.Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one export git child under the isolated configuration (bytes; raises on failure).
+
+    GIT_CONFIG_GLOBAL=/dev/null also drops the user's `safe.directory` entries, so a checkout owned
+    by another uid (a shared volume) fails `rev-parse` with "dubious ownership". Command-line config
+    is a protected scope git honours for that key, so trust exactly the directory this child runs in.
+    """
+    return subprocess.run(
+        ["git", *ISOLATED_GIT_CONFIG, "-c", f"safe.directory={cwd.resolve()}", *arguments],
+        cwd=cwd,
+        env=git_child_environment(os.environ if environment is None else environment, isolated=True),
+        capture_output=True,
+        check=True,
+    )
+
+
+def git_value(root: pathlib.Path, *arguments: str) -> str:
+    return isolated_git(arguments, root).stdout.decode("utf-8").strip()
+
+
+def require_clean_commit(root: pathlib.Path) -> tuple[str, str]:
+    status = subprocess.run(
+        [
+            "git",
+            "-c", "core.fsmonitor=false",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+        cwd=root,
+        env=git_child_environment(os.environ, isolated=False),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    if status:
+        raise RuntimeError(f"release source is not clean:\n{status.rstrip()}")
+    commit = git_value(root, "rev-parse", "HEAD")
+    tree = git_value(root, "rev-parse", "HEAD^{tree}")
+    if len(commit) != 40 or len(tree) != 40:
+        raise RuntimeError("Git did not return canonical release commit/tree identities")
+    return commit, tree
+
+
+def tracked_entries(root: pathlib.Path) -> list[tuple[str, str]]:
+    """Return exact Git modes and paths; release inputs must be ordinary blob entries."""
+    raw = isolated_git(["ls-files", "--stage", "-z"], root).stdout
+    entries: list[tuple[str, str]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise RuntimeError("Git returned a malformed tracked-source record")
+        mode = fields[0].decode("ascii")
+        relative = raw_path.decode("utf-8")
+        if mode not in {"100644", "100755"}:
+            raise RuntimeError(
+                f"release source is not a regular tracked file: {relative} (mode {mode})"
+            )
+        entries.append((mode, relative))
+    return entries
+
+
+def sha256_regular_beneath(root: pathlib.Path, relative: str) -> str:
+    """Hash one regular file through no-follow directory/file descriptors."""
+    return _digests_regular_beneath(root, relative, None)[0]
+
+
+def _git_blob_hasher(object_format: str, size: int):
+    if object_format not in {"sha1", "sha256"}:
+        raise RuntimeError(f"unsupported Git object format: {object_format!r}")
+    hasher = hashlib.new(object_format)
+    hasher.update(b"blob %d\0" % size)
+    return hasher
+
+
+def _digests_regular_beneath(
+    root: pathlib.Path,
+    relative: str,
+    object_format: str | None,
+) -> tuple[str, str | None]:
+    """SHA-256 of one regular file and, with [object_format], its Git blob id — from ONE read."""
+    parts = pathlib.PurePosixPath(relative).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError(f"release source path is unsafe: {relative!r}")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.open(root, directory_flags | no_follow)
+        descriptors.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags | no_follow, dir_fd=current)
+            descriptors.append(current)
+        file_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | no_follow,
+            dir_fd=current,
+        )
+        descriptors.append(file_fd)
+        attributes = os.fstat(file_fd)
+        if not stat.S_ISREG(attributes.st_mode):
+            raise RuntimeError(f"release source is not a regular file: {relative}")
+        digest = hashlib.sha256()
+        blob = (
+            _git_blob_hasher(object_format, attributes.st_size)
+            if object_format is not None else None
+        )
+        read = 0
+        with os.fdopen(os.dup(file_fd), "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+                if blob is not None:
+                    blob.update(chunk)
+                read += len(chunk)
+        final_attributes = os.fstat(file_fd)
+        identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+            raise RuntimeError(f"release source changed while it was hashed: {relative}")
+        if read != final_attributes.st_size:
+            raise RuntimeError(f"release source read was incomplete: {relative}")
+        return digest.hexdigest(), (blob.hexdigest() if blob is not None else None)
+    except OSError as error:
+        raise RuntimeError(f"could not safely read release source {relative}: {error}") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def read_regular_beneath(root: pathlib.Path, relative: str) -> tuple[bytes, int]:
+    """Read one stable no-follow local input without exposing its content in errors."""
+    parts = pathlib.PurePosixPath(relative).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError(f"release local-input path is unsafe: {relative!r}")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    descriptors: list[int] = []
+    try:
+        current = os.open(root, directory_flags | no_follow)
+        descriptors.append(current)
+        for component in parts[:-1]:
+            current = os.open(component, directory_flags | no_follow, dir_fd=current)
+            descriptors.append(current)
+        file_fd = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | no_follow,
+            dir_fd=current,
+        )
+        descriptors.append(file_fd)
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"release local input is not a regular file: {relative}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(file_fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(file_fd)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in fields):
+            raise RuntimeError(f"release local input changed while it was copied: {relative}")
+        payload = b"".join(chunks)
+        if len(payload) != after.st_size:
+            raise RuntimeError(f"release local input read was incomplete: {relative}")
+        return payload, stat.S_IMODE(after.st_mode)
+    except OSError as error:
+        raise RuntimeError(f"could not safely read release local input {relative}: {error}") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def write_regular_exclusive(path: pathlib.Path, payload: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+        mode & 0o777,
+    )
+    try:
+        view = memoryview(payload)
+        written = 0
+        while written < len(view):
+            count = os.write(descriptor, view[written:])
+            if count <= 0:
+                raise RuntimeError(f"could not copy release local input: {path.name}")
+            written += count
+    finally:
+        os.close(descriptor)
+
+
+def write_release_evidence(
+    staging: pathlib.Path,
+    commit: str,
+    tree: str,
+    frozen_sets: Sequence[tuple[FrozenOutputSet, pathlib.PurePosixPath]],
+    gradle_command: Sequence[str],
+    environment_names: Sequence[str],
+) -> None:
+    """Describe only the outputs already frozen and reverified by this wrapper invocation."""
+    outputs: list[dict[str, object]] = []
+    for frozen, prefix in frozen_sets:
+        for entry in frozen.entries:
+            relative = prefix / entry.relative
+            outputs.append({
+                "path": relative.as_posix(),
+                "sha256": hashlib.sha256(entry.payload).hexdigest(),
+                "size": len(entry.payload),
+            })
+    outputs.sort(key=lambda item: str(item["path"]))
+    document = {
+        "schema": RELEASE_EVIDENCE_SCHEMA,
+        "boundary": "sealed-export-frozen-outputs-v1",
+        "source_authority": RELEASE_SOURCE_AUTHORITY,
+        "commit": commit,
+        "tree": tree,
+        "outputs": outputs,
+        # SEC4-4: what the sealed run controlled — its exact argv and the NAMES (never values) of
+        # the allowlisted environment it passed, so the evidence claim is no stronger than that.
+        "gradle_command": list(gradle_command),
+        "gradle_environment_names": sorted(environment_names),
+        "unverified_inputs": list(UNVERIFIED_RELEASE_INPUTS),
+    }
+    payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    write_regular_exclusive(staging / RELEASE_EVIDENCE_NAME, payload, 0o444)
+
+
+def commit_blob_ids(root: pathlib.Path, commit: str) -> dict[str, tuple[str, str]]:
+    """`path -> (mode, blob id)` for every entry of [commit]'s tree, read from the object store."""
+    raw = isolated_git(["ls-tree", "-r", "-z", "--full-tree", commit], root).stdout
+    blobs: dict[str, tuple[str, str]] = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise RuntimeError("Git returned a malformed commit-tree record")
+        mode, kind, object_id = (field.decode("ascii") for field in fields)
+        relative = raw_path.decode("utf-8")
+        if kind != "blob" or mode not in {"100644", "100755"}:
+            raise RuntimeError(
+                f"release source is not a regular tracked file: {relative} (mode {mode})"
+            )
+        blobs[relative] = (mode, object_id)
+    return blobs
+
+
+def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) -> dict[str, str]:
+    # `--template=` (empty) installs no hooks and no `info/attributes` into the private clone.
+    isolated_git(
+        ["clone", "--quiet", "--shared", "--no-checkout", "--template=", str(root), str(destination)],
+        destination.parent,
+    )
+    isolated_git(["checkout", "--quiet", "--detach", commit], destination)
+    object_format = git_value(destination, "rev-parse", "--show-object-format")
+    committed = commit_blob_ids(destination, commit)
+    tracked = tracked_entries(destination)
+    if sorted(committed) != sorted(relative for _, relative in tracked) or any(
+        committed[relative][0] != mode for mode, relative in tracked
+    ):
+        raise RuntimeError("release export index does not match the commit tree")
+    expected: dict[str, str] = {}
+    mismatched: list[str] = []
+    for _, relative in tracked:
+        sha256, blob_id = _digests_regular_beneath(destination, relative, object_format)
+        if blob_id != committed[relative][1]:
+            mismatched.append(relative)
+        expected[relative] = sha256
+    if mismatched:
+        # A checkout filter, hook or attribute conversion rewrote bytes: the export is not the commit.
+        raise RuntimeError(
+            "release export bytes do not match the commit's blobs: " + ", ".join(sorted(mismatched))
+        )
+    return expected
+
+
+def _release_owner_paths(
+    root: pathlib.Path,
+    tracked_paths: Sequence[str],
+) -> list[pathlib.Path]:
+    paths = {root}
+
+    def include_with_ancestors(path: pathlib.Path) -> None:
+        current = path
+        while True:
+            paths.add(current)
+            if current == root:
+                return
+            current = current.parent
+
+    for relative in tracked_paths:
+        include_with_ancestors(root / relative)
+    return sorted(paths, key=lambda path: (len(path.parts), path.as_posix()))
+
+
+def seal_release_snapshot(
+    root: pathlib.Path,
+    tracked_paths: Sequence[str],
+) -> ReleaseSnapshotSeal:
+    """Seal every tracked compiler/package input while leaving only build roots writable."""
+    for relative in BUILD_OUTPUT_DIRECTORIES:
+        (root / relative).mkdir(parents=True, exist_ok=True)
+    # Gradle requires the configured project directories themselves to remain writable even when
+    # every output directory already exists. Their identity metadata is still sealed, so a rename or
+    # replacement is detected before any artifact can leave the private checkout.
+    gradle_writable_project_directories = {root, root / "app"}
+
+    entries: list[_SealedPath] = []
+    try:
+        for path in _release_owner_paths(root, tracked_paths):
+            before = path.lstat()
+            file_type = stat.S_IFMT(before.st_mode)
+            if file_type not in {stat.S_IFREG, stat.S_IFDIR}:
+                raise RuntimeError(f"release compiler owner path is unsafe: {path}")
+            original_mode = stat.S_IMODE(before.st_mode)
+            sealed_mode = (
+                original_mode
+                if path in gradle_writable_project_directories
+                else original_mode & ~0o222
+            )
+            os.chmod(path, sealed_mode, follow_symlinks=False)
+            sealed = path.lstat()
+            if (sealed.st_dev, sealed.st_ino, stat.S_IFMT(sealed.st_mode)) != (
+                before.st_dev,
+                before.st_ino,
+                file_type,
+            ):
+                raise RuntimeError(f"release compiler owner changed while sealing: {path}")
+            entries.append(
+                _SealedPath(
+                    path=path,
+                    original_mode=original_mode,
+                    sealed_mode=sealed_mode,
+                    device=sealed.st_dev,
+                    inode=sealed.st_ino,
+                    file_type=file_type,
+                    size=sealed.st_size,
+                    mtime_ns=sealed.st_mtime_ns,
+                    ctime_ns=sealed.st_ctime_ns,
+                )
+            )
+    except BaseException:
+        ReleaseSnapshotSeal(entries).release()
+        raise
+    return ReleaseSnapshotSeal(entries)
+
+
+def _java_property_logical_lines(text: str) -> list[str]:
+    """Join physical lines using the continuation rules of ``Properties.load(InputStream)``."""
+    logical: list[str] = []
+    current = ""
+    continuing = False
+    # Properties.LineReader recognizes CR, LF, and CRLF—not Python's wider Unicode splitlines set.
+    for physical in re.split(r"\r\n|\n|\r", text):
+        segment = physical.lstrip(" \t\f") if continuing else physical
+        current += segment
+        trailing_slashes = len(current) - len(current.rstrip("\\"))
+        if trailing_slashes % 2 == 1:
+            current = current[:-1]
+            continuing = True
+            continue
+        logical.append(current)
+        current = ""
+        continuing = False
+    if continuing or current:
+        logical.append(current)
+    return logical
+
+
+def _decode_java_property_token(raw: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    escapes = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
+    while index < len(raw):
+        char = raw[index]
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(raw):
+            # An odd terminal slash is consumed as a continuation marker before this decoder.
+            raise RuntimeError("release signing properties contain an incomplete escape")
+        escaped = raw[index]
+        index += 1
+        if escaped == "u":
+            digits = raw[index:index + 4]
+            if len(digits) != 4 or re.fullmatch(r"[0-9A-Fa-f]{4}", digits) is None:
+                raise RuntimeError("release signing properties contain an invalid Unicode escape")
+            decoded.append(chr(int(digits, 16)))
+            index += 4
+        else:
+            decoded.append(escapes.get(escaped, escaped))
+    return "".join(decoded)
+
+
+def parse_java_properties(payload: bytes) -> list[tuple[str, str]]:
+    """Parse the Java-properties syntax needed to share one exact signing-path decision."""
+    text = payload.decode("iso-8859-1")
+    entries: list[tuple[str, str]] = []
+    for logical in _java_property_logical_lines(text):
+        stripped = logical.lstrip(" \t\f")
+        if not stripped or stripped[0] in "#!":
+            continue
+        escaped = False
+        separator = len(stripped)
+        separator_kind: str | None = None
+        for index, char in enumerate(stripped):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char in "=:" or char in " \t\f":
+                separator = index
+                separator_kind = char
+                break
+        raw_key = stripped[:separator]
+        value_start = separator
+        if separator_kind is not None:
+            if separator_kind in " \t\f":
+                while value_start < len(stripped) and stripped[value_start] in " \t\f":
+                    value_start += 1
+                if value_start < len(stripped) and stripped[value_start] in "=:":
+                    value_start += 1
+            else:
+                value_start += 1
+            while value_start < len(stripped) and stripped[value_start] in " \t\f":
+                value_start += 1
+        raw_value = stripped[value_start:]
+        entries.append((
+            _decode_java_property_token(raw_key),
+            _decode_java_property_token(raw_value),
+        ))
+    return entries
+
+
+def release_store_file(properties_payload: bytes) -> str:
+    matches = [value for key, value in parse_java_properties(properties_payload) if key == "storeFile"]
+    if len(matches) != 1:
+        raise RuntimeError("release signing properties must contain exactly one storeFile")
+    # Gradle applies String.trim() after Properties.load(); resolve the same effective value.
+    value = matches[0].strip()
+    if (
+        not value or
+        any(ord(char) < 0x20 or 0xD800 <= ord(char) <= 0xDFFF for char in value) or
+        "\\" in value or
+        value.startswith("/") or
+        re.match(r"^[A-Za-z]:", value) is not None
+    ):
+        raise RuntimeError("release storeFile must be one repository-relative path")
+    raw_parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise RuntimeError("release storeFile must be one normalized repository-relative path")
+    relative = pathlib.PurePosixPath(*raw_parts)
+    if relative.is_absolute():
+        raise RuntimeError("release storeFile must be repository-relative")
+    return relative.as_posix()
+
+
+# ---- Configured upload key (shared with run_scoped_signed_release.py and the artifact checker) --
+# OWNER DECISION 2026-10-13: release signing uses whatever keystore.properties configures, like any
+# Android project. There is NO approval flag, certificate deny-list, or password-strength floor, and
+# none may be re-added (tools/tests/test_no_upload_key_gates.py). These helpers only RESOLVE the
+# configured key: the store path and alias Gradle will use, and — for check_release_artifact.py's
+# expected signer — the SHA-256 of that alias's certificate, exported with keytool.
+
+STORE_PASSWORD_ENV = "TELECAMPRO_STORE_PASSWORD"
+KEY_PASSWORD_ENV = "TELECAMPRO_KEY_PASSWORD"
+KEY_ALIAS_ENV = "TELECAMPRO_KEY_ALIAS"
+_UNSET_SIGNING_VALUE = "CHANGE_ME"
+
+GateRun = Callable[..., subprocess.CompletedProcess[bytes]]
+
+
+class UploadKeyGateError(RuntimeError):
+    """Expected refusal whose message never includes a credential value."""
+
+
+class UploadKeyPrerequisite(NamedTuple):
+    store_path: pathlib.Path
+    alias: str
+
+
+def _no_follow_regular(root: pathlib.Path, relative: str) -> pathlib.Path:
+    current = root
+    parts = pathlib.PurePosixPath(relative).parts
+    for index, component in enumerate(parts):
+        current = current / component
+        try:
+            attributes = current.lstat()
+        except OSError as error:
+            raise UploadKeyGateError("release upload keystore is unavailable") from error
+        if stat.S_ISLNK(attributes.st_mode):
+            raise UploadKeyGateError("release upload keystore path must not contain symlinks")
+        if index < len(parts) - 1 and not stat.S_ISDIR(attributes.st_mode):
+            raise UploadKeyGateError("release upload keystore parent is not a directory")
+    if not stat.S_ISREG(current.lstat().st_mode):
+        raise UploadKeyGateError("release upload keystore is not a regular file")
+    return current
+
+
+def _read_signing_entries(root: pathlib.Path) -> tuple[bytes, list[tuple[str, str]]]:
+    try:
+        properties_payload, _ = read_regular_beneath(root, "keystore.properties")
+        return properties_payload, list(parse_java_properties(properties_payload))
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
+
+
+def load_upload_key_prerequisite(
+    root: pathlib.Path,
+    environment: Mapping[str, str],
+) -> UploadKeyPrerequisite:
+    """Resolve the store file and alias exactly as app/build.gradle.kts will."""
+    root = root.resolve()
+    properties_payload, entries = _read_signing_entries(root)
+    try:
+        store_relative = release_store_file(properties_payload)
+    except (RuntimeError, UnicodeError) as error:
+        raise UploadKeyGateError("release signing properties are unavailable or unsafe") from error
+    # SEC3-5 / AGG3-35: resolve the alias with GRADLE's precedence (`signingValue`: the properties
+    # file wins over TELECAMPRO_KEY_ALIAS). A repeated keyAlias is refused as ambiguous rather than
+    # silently taking the last one.
+    if sum(1 for key, _ in entries if key == "keyAlias") > 1:
+        raise UploadKeyGateError("release signing prerequisite keyAlias is missing or ambiguous")
+    alias = _gradle_signing_value(entries, "keyAlias", environment, KEY_ALIAS_ENV)
+    if alias is None:
+        raise UploadKeyGateError("release signing prerequisite keyAlias is missing or ambiguous")
+    if any(ord(character) < 0x20 for character in alias):
+        raise UploadKeyGateError("release upload alias is invalid")
+    return UploadKeyPrerequisite(
+        store_path=_no_follow_regular(root, store_relative),
+        alias=alias,
+    )
+
+
+def keytool_path(environment: Mapping[str, str]) -> str:
+    java_home = environment.get("JAVA_HOME", "").strip()
+    if java_home:
+        candidate = pathlib.Path(java_home) / "bin" / "keytool"
+        if candidate.is_file():
+            return str(candidate)
+    resolved = shutil.which("keytool", path=environment.get("PATH"))
+    if resolved is None:
+        raise UploadKeyGateError("keytool is unavailable")
+    return resolved
+
+
+def export_upload_certificate_sha256(
+    root: pathlib.Path,
+    prerequisite: UploadKeyPrerequisite,
+    environment: Mapping[str, str],
+    run: GateRun = subprocess.run,
+) -> str:
+    """Export the configured alias's certificate and return its SHA-256 (lowercase hex).
+
+    The store password reaches keytool only through `-storepass:env`, never argv or output.
+    """
+    keytool_command = [
+        keytool_path(environment),
+        "-exportcert",
+        "-keystore",
+        str(prerequisite.store_path),
+        "-alias",
+        prerequisite.alias,
+        "-storepass:env",
+        STORE_PASSWORD_ENV,
+    ]
+    exported = run(
+        keytool_command,
+        cwd=root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    certificate = exported.stdout if isinstance(exported.stdout, bytes) else b""
+    if exported.returncode != 0 or not certificate:
+        raise UploadKeyGateError("configured upload keystore could not be read")
+    return hashlib.sha256(certificate).hexdigest()
+
+
+def configured_upload_certificate_sha256(
+    root: pathlib.Path,
+    environment: Mapping[str, str] = os.environ,
+    run: GateRun = subprocess.run,
+) -> str:
+    """The configured upload key's certificate SHA-256; the artifact checker's expected signer."""
+    root = root.resolve()
+    _, entries = _read_signing_entries(root)
+    key_environment = keytool_environment(environment)
+    prerequisite = load_upload_key_prerequisite(root, environment)
+    password = _gradle_signing_value(entries, "storePassword", environment, STORE_PASSWORD_ENV)
+    if password is None:
+        raise UploadKeyGateError("release store password is unavailable")
+    key_environment[STORE_PASSWORD_ENV] = password
+    try:
+        return export_upload_certificate_sha256(root, prerequisite, key_environment, run)
+    finally:
+        key_environment.pop(STORE_PASSWORD_ENV, None)
+
+
+# SEC3-1 / AGG3-31: `tasks` is copied straight onto the Gradle command line, so before this check
+# `-P…` (including AGP's `android.injected.signing.*`, which REPLACES the gated signing config),
+# `-I`/`--init-script` (unsealed build logic inside the "sealed" build), `-D…`, and `-x` all rode
+# through the positional argv into a build whose evidence claims a sealed export. Only bare Gradle
+# task paths are accepted; any option, abbreviation-with-flag, or empty element is refused.
+_GRADLE_TASK_PATH = re.compile(r"(?::?[A-Za-z][A-Za-z0-9_-]*)+")
+
+
+def validate_gradle_tasks(tasks: Sequence[str]) -> None:
+    """Refuse every argv element that is not a plain Gradle task path (never echoes the value)."""
+    if not tasks:
+        raise RuntimeError("immutable release build needs at least one Gradle task")
+    for index, task in enumerate(tasks):
+        if task.startswith("-") or _GRADLE_TASK_PATH.fullmatch(task) is None:
+            raise RuntimeError(
+                f"immutable release task argument {index + 1} is not a plain Gradle task path; "
+                "options such as -P, -D, -I, --init-script, and -x are refused"
+            )
+
+
+def _gradle_signing_value(
+    entries: Sequence[tuple[str, str]],
+    name: str,
+    environment: Mapping[str, str],
+    env_name: str,
+) -> str | None:
+    """Mirror app/build.gradle.kts `signingValue`: the properties file wins over the environment."""
+    for key, value in reversed(entries):
+        if key == name:
+            stripped = value.strip()
+            if stripped and stripped != _UNSET_SIGNING_VALUE:
+                return stripped
+            break
+    from_environment = environment.get(env_name, "").strip()
+    return from_environment or None
+
+
+# SR5-3 (AGG5-17): keytool holds the decrypted store password in-process, and every JDK launcher
+# honours these variables (`-javaagent:` included). They are REFUSED rather than silently dropped,
+# so an operator learns their shell carries a JVM agent instead of having it ignored once.
+JVM_LAUNCHER_INJECTION_ENVIRONMENT = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
+
+
+def keytool_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """The allowlisted environment keytool receives (the sealed Gradle child's allowlist)."""
+    present = [name for name in JVM_LAUNCHER_INJECTION_ENVIRONMENT if environment.get(name)]
+    if present:
+        # RG6-13 (AGG6-33): name the remedy. The common `-Dfile.encoding=UTF-8` setting is harmless
+        # but indistinguishable from an agent by NAME alone, and the release run does not need it.
+        raise UploadKeyGateError(
+            "refusing to hand the upload-key password to a JVM while a launcher option variable is set: "
+            + ", ".join(present)
+            + ". Unset it for the release run (for example `env -u "
+            + " -u ".join(present)
+            + " python3 tools/...`); a -Dfile.encoding setting is not needed there"
+        )
+    return release_child_environment(environment)
+
+
+def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> ReleaseLocalInputs:
+    """Descriptor-copy local inputs and resolve the sole effective release store-file path."""
+    copied: list[str] = []
+    frozen_properties: dict[str, bytes] = {}
+    for name in ("local.properties", "keystore.properties"):
+        source = root / name
+        if os.path.lexists(source):
+            payload, mode = read_regular_beneath(root, name)
+            write_regular_exclusive(snapshot / name, payload, mode)
+            copied.append(name)
+            frozen_properties[name] = payload
+    signing_payload = frozen_properties.get("keystore.properties")
+    store_file: str | None = None
+    if signing_payload is not None:
+        store_file = release_store_file(signing_payload)
+        relative_store = pathlib.Path(*pathlib.PurePosixPath(store_file).parts)
+        payload, mode = read_regular_beneath(root, store_file)
+        write_regular_exclusive(snapshot / relative_store, payload, mode)
+        copied.append(store_file)
+    return ReleaseLocalInputs(tuple(copied))
+
+
+def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
+    changed: list[str] = []
+    for relative, digest in expected.items():
+        try:
+            actual = sha256_regular_beneath(snapshot, relative)
+        except RuntimeError:
+            changed.append(relative)
+            continue
+        if actual != digest:
+            changed.append(relative)
+    if changed:
+        raise RuntimeError("immutable release snapshot changed during build: " + ", ".join(changed))
+    status = isolated_git(
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        snapshot,
+    ).stdout.decode("utf-8")
+    ignored_sources = isolated_git(
+        [
+            "ls-files", "--others", "--ignored", "--exclude-standard", "--",
+            "app/src/main", "app/src/release",
+        ],
+        snapshot,
+    ).stdout.decode("utf-8")
+    if status or ignored_sources:
+        details = "\n".join(part.rstrip() for part in (status, ignored_sources) if part)
+        raise RuntimeError(f"release build created or changed source inputs:\n{details}")
+
+
+def build_immutable_release(
+    root: pathlib.Path,
+    tasks: Sequence[str],
+    output_root: pathlib.Path,
+    *,
+    run: Run = run_checked,
+    after_snapshot: AfterSnapshot | None = None,
+    after_outputs_frozen: AfterOutputsFrozen | None = None,
+) -> tuple[str, str]:
+    root = root.resolve()
+    output_root = output_root.resolve()
+    validate_gradle_tasks(tasks)
+    evidence_namespace = (root / "app/build/immutable-release").resolve()
+    if output_root.parent != evidence_namespace:
+        raise RuntimeError(
+            "immutable release output must be one unique child of "
+            f"{evidence_namespace}"
+        )
+    commit, tree = require_clean_commit(root)
+    if os.path.lexists(output_root):
+        raise RuntimeError(f"refusing to overwrite immutable release output: {output_root}")
+    child_environment = release_child_environment(os.environ)
+    require_sealed_gradle_user_home(child_environment)
+
+    with tempfile.TemporaryDirectory(prefix="telecam-release-source-") as temp_dir:
+        snapshot = pathlib.Path(temp_dir) / "source"
+        expected = export_commit(root, snapshot, commit)
+        local_inputs = copy_local_build_inputs(root, snapshot)
+        seal = seal_release_snapshot(snapshot, (*expected, *local_inputs.sealed_paths))
+        try:
+            require_sealed_gradle_distribution(snapshot, child_environment)
+            if after_snapshot is not None:
+                after_snapshot(root, snapshot)
+            # Gradle receives no wrapper-origin or immutable-evidence claim. It records only the
+            # clean checkout identity it can observe itself. The outer process is the evidence
+            # boundary: it owns this sealed export and publishes only after all checks below pass.
+            command = ["./gradlew", *SEALED_GRADLE_FLAGS, *tasks]
+            run(command, snapshot)
+            # Digest equality cannot detect A -> B -> A. The seal additionally proves the exact
+            # input/ancestor identities and their unforgeable ctime transitions stayed unchanged.
+            seal.verify()
+            verify_export(snapshot, expected)
+
+            frozen_sets: list[tuple[FrozenOutputSet, pathlib.PurePosixPath]] = []
+            built_outputs = snapshot / "app/build/outputs"
+            reports = snapshot / "app/build/reports"
+            try:
+                if os.path.lexists(built_outputs):
+                    frozen_sets.append((
+                        FrozenOutputSet.capture_tree(
+                            built_outputs,
+                            allow_file=lambda relative: (
+                                relative.as_posix() in RELEASE_OUTPUT_FILES or
+                                relative.as_posix().startswith(RELEASE_OUTPUT_PREFIXES)
+                            ),
+                            label="immutable release",
+                        ),
+                        pathlib.PurePosixPath(),
+                    ))
+                if os.path.lexists(reports):
+                    frozen_sets.append((
+                        FrozenOutputSet.capture_tree(
+                            reports,
+                            allow_file=lambda relative: (
+                                len(relative.parts) == 1 and
+                                relative.name.startswith("lint-results-release.")
+                                or relative.as_posix().startswith(RELEASE_REPORT_PREFIXES)
+                            ),
+                            label="immutable release report",
+                        ),
+                        pathlib.PurePosixPath("logs"),
+                    ))
+                if not frozen_sets:
+                    raise RuntimeError("release build produced no allowlisted outputs")
+                if after_outputs_frozen is not None:
+                    after_outputs_frozen(snapshot)
+                output_root.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(
+                    prefix=f".{output_root.name}-staging-",
+                    dir=output_root.parent,
+                ) as staging_text:
+                    staging = pathlib.Path(staging_text)
+                    for frozen, prefix in frozen_sets:
+                        frozen.export_into(staging.joinpath(*prefix.parts))
+                    for frozen, _ in frozen_sets:
+                        frozen.verify()
+                    seal.verify()
+                    write_release_evidence(
+                        staging, commit, tree, frozen_sets, command, list(child_environment)
+                    )
+                    if os.path.lexists(output_root):
+                        raise RuntimeError(
+                            f"refusing to overwrite immutable release output: {output_root}"
+                        )
+                    os.rename(staging, output_root)
+            finally:
+                for frozen, _ in frozen_sets:
+                    frozen.close()
+        finally:
+            seal.release()
+    return commit, tree
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--root",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parent.parent,
+    )
+    parser.add_argument("--output", type=pathlib.Path)
+    parser.add_argument(
+        "tasks",
+        nargs="*",
+        default=[":app:lintRelease", ":app:assembleRelease", ":app:bundleRelease"],
+    )
+    args = parser.parse_args()
+    try:
+        validate_gradle_tasks(args.tasks)
+    except RuntimeError as error:
+        print(f"immutable release build refused: {error}", file=sys.stderr)
+        return 1
+    try:
+        os.environ.update(android_sdk_environment(args.root.resolve()))
+    except (OSError, RuntimeError) as error:
+        print(f"immutable release build failed: {error}", file=sys.stderr)
+        return 1
+    if args.output is None:
+        commit = git_value(args.root.resolve(), "rev-parse", "HEAD")
+        output = args.root / "app/build/immutable-release" / (
+            f"{commit[:12]}-{secrets.token_hex(4)}"
+        )
+    else:
+        output = args.output
+    try:
+        commit, tree = build_immutable_release(args.root, args.tasks, output)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"immutable release build failed: {error}", file=sys.stderr)
+        return 1
+    print(f"immutable release build complete: commit={commit} tree={tree} outputs={output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,62 @@
+# Privacy Policy — TeleCam Pro
+
+_Last updated: 2026-08-24_
+
+TeleCam Pro is a camera app for Android phones and tablets. This policy covers its permissions, captured
+media, and data handling.
+
+## Summary
+
+TeleCam Pro does not collect or share personal data. It has no ads, analytics, tracking, accounts,
+cloud sync, or `INTERNET` permission.
+
+## Permissions the app requests
+
+| Permission | Use |
+|---|---|
+| **Camera** | Shows the viewfinder and captures photos and videos. |
+| **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. Before recording, it is also used while the input level meter is visible in armed Video mode. |
+| **Photos and videos** (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`) | Lets the in-app gallery find package-owned media and ownerless files in `DCIM/TeleCamPro` whose path, TeleCam filename format, media collection, extension, and MIME type all match. Those checks recognize a legacy TeleCam-format file but cannot verify who created it; the review labels its origin unverified and limits deletion to that file. Asked only when you tap the gallery button with nothing to review; declining keeps the app working with media from the current installation. Reading happens on this device only. |
+
+Microphone input is processed locally. The visible standby meter reduces its input to a level reading
+and does not save that audio; recorded audio remains in the video file on your device. Neither is
+uploaded, collected by the developer, or shared with third parties.
+
+TeleCam Pro rejects touch events that Android marks as fully or partially obscured by another
+window before they reach camera, settings, permission, or delete controls. Ordinary unmarked touch,
+stylus, mouse, accessibility, and system input continues through Android normally.
+
+## Photos and videos you capture
+
+Photos and videos are saved in `DCIM/TeleCamPro` through Android MediaStore. Uninstalling TeleCam Pro
+removes its settings but leaves captures in shared media storage. TeleCam Pro does not upload or
+back up captures. Delete them in TeleCam Pro, a gallery app, or a file manager.
+
+Captures carry ordinary photographic metadata — camera make and model, lens, exposure, and the time
+of the shot — and no location. The app requests no location permission and writes no GPS tags, so a
+photo taken with it cannot record where you were.
+
+## Data collection and sharing
+
+The app has no analytics, crash reporting, advertising, or tracking SDKs. It does not collect names,
+contacts, location, identifiers, or usage data.
+
+Granting photo and video access lets the app READ your library on this device; it does not send
+anything anywhere. The app has no Internet permission at all, so it has no way to transmit what it
+reads. The gallery applies the owner and legacy-format limits described above.
+
+## Children
+
+The app is a general-purpose camera tool and is not directed at children. It collects no data from any
+user, including children.
+
+## Changes to this policy
+
+Policy changes will appear at this URL with a new last-updated date.
+
+TeleCam Pro is an independent app and is not affiliated with, endorsed by, or sponsored by OPPO,
+Hasselblad, or any hardware maker.
+
+## Contact
+
+Questions about this policy: `01@0101010101.com`

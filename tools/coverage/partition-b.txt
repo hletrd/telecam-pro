@@ -1,0 +1,130 @@
+# Partition B — device-bound glue (methodology + honest-number contract: docs/TESTING.md).
+# Matched against JaCoCo class names in app/build/reports/coverage/test/debug/report.xml by
+# tools/coverage/partition_report.py. Syntax: class glob | !Class (force-A exception). Every entry
+# must match the current report or the analyzer fails. Method rules are forbidden: JaCoCo method
+# LINE counters overlap and cannot be subtracted from a class's unique source-line union.
+# Every entry's justification is FRAMEWORK-BOUNDEDNESS on the host JVM
+# (android.jar throwing stubs) — never test difficulty. Class-level entries are wholly framework
+# glue (or Compose emission files whose remaining pure helpers are conservatively surrendered to B;
+# that direction can only understate Partition A). Mixed classes stay wholly in B until their
+# framework glue is extracted into a separate class-level owner.
+
+# ---- top-level: Activity/Application/Compose glue -------------------------------------------
+me/hletrd/telecampro/MainActivity
+me/hletrd/telecampro/MainActivity$*
+me/hletrd/telecampro/MainActivityKt
+me/hletrd/telecampro/ComposableSingletons$MainActivityKt
+me/hletrd/telecampro/TeleCameraApp
+
+# ---- camera: Camera2 session/HAL/GL/audio glue ----------------------------------------------
+me/hletrd/telecampro/camera/CameraEngine
+me/hletrd/telecampro/camera/CameraEngine$*
+me/hletrd/telecampro/camera/CameraController
+me/hletrd/telecampro/camera/CameraController$*
+me/hletrd/telecampro/camera/CameraCaps
+me/hletrd/telecampro/camera/CameraCaps$*
+me/hletrd/telecampro/camera/VendorTagInspector
+me/hletrd/telecampro/camera/VendorTagInspector$*
+# RendererAssists depends on concrete GlPipeline (ctor throws on host: EGL stubs); a renderer-sink
+# interface seam would convert it to A — deferred, tracked in docs/TESTING.md future work.
+me/hletrd/telecampro/camera/RendererAssists
+me/hletrd/telecampro/camera/AndroidStandbyAudioInput
+# Mixed owners conservatively surrendered whole-class to B; this can understate, never inflate A:
+me/hletrd/telecampro/camera/ManualControlsKt
+me/hletrd/telecampro/camera/CaptureCapabilitiesKt
+me/hletrd/telecampro/camera/VideoFrameRate$Companion
+me/hletrd/telecampro/camera/CameraSelector2
+me/hletrd/telecampro/camera/StandbyAudioController
+# Process lifetime owner constructs an Android-Context MediaStore rescan and a real scheduled
+# executor. Its registry and retry state machines remain separate host-tested Partition-A classes.
+me/hletrd/telecampro/camera/ProcessRetainedStillDiscardOwner
+# Compiler-generated closure bodies OF that Context constructor, which JaCoCo attributes as
+# separate `_init_$lambda$N` methods: the onAvailable {} and Log.w onUnavailable defaults
+# (android.util.Log throws on host), Context.checkSelfPermission, the meter Thread launcher,
+# the Handler(Looper.getMainLooper()) retry scheduler, and the UnsafeRecorderQuarantine wiring.
+# Context is unconstructable on the host JVM (stub ctor throws), so none of these closures can
+# ever be created or invoked by a host test — the same framework-boundedness as the ctor entry.
+# ($lambda$0/$lambda$1 are the PRIMARY ctor's defaults and stay A: host tests execute them.)
+me/hletrd/telecampro/camera/StandbyAudioControllerKt
+
+# ---- gl: EGL/GLES glue (pure seams live in *Kt facades, which stay A) -----------------------
+me/hletrd/telecampro/gl/EglCore
+# Concrete GLES20 bridge: every method calls android.jar's native/static GL surface. The injected
+# FlipRendererGlApi contract and all ownership/error policy remain host-tested in Partition A.
+me/hletrd/telecampro/gl/AndroidFlipRendererGlApi
+me/hletrd/telecampro/gl/FlipRenderer
+me/hletrd/telecampro/gl/FlipRenderer$*
+me/hletrd/telecampro/gl/GlPipeline
+me/hletrd/telecampro/gl/GlPipeline$*
+
+# ---- capture: Image/Bitmap/DngCreator/HeifWriter glue ---------------------------------------
+me/hletrd/telecampro/capture/DngCapture
+me/hletrd/telecampro/capture/HeifCapture
+me/hletrd/telecampro/capture/HeifCaptureKt
+me/hletrd/telecampro/capture/StillCapturePipeline
+me/hletrd/telecampro/capture/StillSnapshot
+me/hletrd/telecampro/capture/StillSnapshot$*
+me/hletrd/telecampro/capture/PendingDngPublication
+
+# ---- storage: ContentResolver/MediaStore glue (decision fns in MediaStoreWriterKt stay A) ---
+me/hletrd/telecampro/storage/MediaStoreWriter
+# Exact async cleanup payload retains Android Context solely for the worker's ContentResolver call.
+# Capacity, retry, and disposition policy remain generic Partition-A owners with host coverage.
+me/hletrd/telecampro/storage/MediaStoreWriter$RejectedOutput
+# Concrete identity reader calls static MediaStore volume/version APIs and exact ContentResolver
+# queries. Replay comparison, fail-closed classification, schema migration, and journal ownership
+# remain separate host-tested Partition-A classes.
+me/hletrd/telecampro/storage/MediaStorePendingDiscardIdentityReader
+me/hletrd/telecampro/storage/SettingsStore
+
+# ---- video: MediaCodec/MediaMuxer/AudioRecord glue ------------------------------------------
+!me/hletrd/telecampro/video/VideoRecorder$StopResult
+me/hletrd/telecampro/video/VideoRecorder
+me/hletrd/telecampro/video/VideoRecorder$*
+# Concrete post-native tail constructs Android Context/Uri effects and calls MediaStoreWriter's
+# ContentResolver/MediaExtractor glue. Its frozen decision function remains in VideoRecorderKt (A).
+me/hletrd/telecampro/video/RecordingStorageTail
+# Top-level setup owner directly retains framework MediaCodec + Surface instances. Neither type can
+# be constructed or driven against android.jar's throwing host stubs; its generic attempt-order
+# state machine remains separately host-tested in VideoRecorderKt.
+me/hletrd/telecampro/video/MediaCodecAttemptOwner
+me/hletrd/telecampro/video/UnsafeRecorderQuarantine
+me/hletrd/telecampro/video/EncoderCaps
+me/hletrd/telecampro/video/AudioInputInspector
+
+# ---- stab: SensorManager glue (math seams in GyroEisKt stay A) ------------------------------
+me/hletrd/telecampro/stab/GyroEis
+me/hletrd/telecampro/stab/GyroEis$*
+
+# ---- ui: ViewModel (Handler/Looper/engine glue) + Compose emission files --------------------
+# CameraViewModel pure policy lives in CameraViewModelKt (A); the class body is Robolectric/device
+# territory (see docs/TESTING.md phase notes).
+me/hletrd/telecampro/ui/CameraViewModel
+me/hletrd/telecampro/ui/CameraViewModel$*
+me/hletrd/telecampro/ui/CameraScreenKt
+me/hletrd/telecampro/ui/CameraScreenKt$*
+me/hletrd/telecampro/ui/ComposableSingletons$CameraScreenKt
+me/hletrd/telecampro/ui/controls/FnIconsKt
+me/hletrd/telecampro/ui/controls/ManualDialsKt
+me/hletrd/telecampro/ui/controls/ManualDialsKt$*
+me/hletrd/telecampro/ui/controls/ProControlsKt
+me/hletrd/telecampro/ui/controls/ProControlsKt$*
+me/hletrd/telecampro/ui/controls/ComposableSingletons$ProControlsKt
+me/hletrd/telecampro/ui/controls/ProSheetKt
+me/hletrd/telecampro/ui/controls/ProSheetKt$*
+me/hletrd/telecampro/ui/overlays/OverlaysKt
+me/hletrd/telecampro/ui/review/MediaReviewKt
+me/hletrd/telecampro/ui/review/MediaReviewKt$*
+me/hletrd/telecampro/ui/review/ComposableSingletons$MediaReviewKt
+me/hletrd/telecampro/ui/review/VideoPlaybackHandle
+# These setup owners directly retain Android Context/Uri/Surface/MediaPlayer instances. The generic
+# latest-wins state machine is separately host-tested as LatestReviewSetupLane and stays in A.
+me/hletrd/telecampro/ui/review/VideoPlaybackSetupRequest
+me/hletrd/telecampro/ui/review/VideoPlaybackSetupResult
+me/hletrd/telecampro/ui/review/VideoPlaybackSetupResult$*
+me/hletrd/telecampro/ui/review/VideoInfo
+me/hletrd/telecampro/ui/review/ReviewMetadata
+me/hletrd/telecampro/ui/review/GalleryThumbRequest
+me/hletrd/telecampro/ui/review/ReviewMediaState
+me/hletrd/telecampro/ui/review/ReviewMediaState$*
+me/hletrd/telecampro/ui/theme/ThemeKt

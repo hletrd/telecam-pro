@@ -1,5 +1,6 @@
 # Gradle / Android
 .gradle/
+.kotlin/
 build/
 */build/
 local.properties
@@ -13,9 +14,29 @@ captures/
 .externalNativeBuild/
 
 # Signing / secrets
+#
+# These are PATTERNS, not exact names, on purpose: the rules used to name
+# `telecampro-upload-passwords.txt.gpg` literally, so every ordinary variant escaped them — a
+# `.2026-07-07.bak` copy of that very file showed up as committable during the 2026-08-02 keystore
+# recovery. A secret that leaks because it was renamed is still a leaked secret.
 *.jks
 *.keystore
-keystore.properties
+*.gpg
+*.asc
+*.p12
+*.pem
+*.pfx
+keystore.properties*
+!keystore.properties.example
+# Extension patterns alone are not enough: a `*.gpg.2026-07-07.bak` copy ends in `.bak`, so it
+# matched none of them. Match on the NAME too, and on the archive suffixes people reach for when
+# they set a secret aside "for a moment".
+*password*
+*secret*
+*credential*
+telecampro-upload-*
+*.bak
+*.orig
 
 # OS
 .DS_Store
@@ -25,3 +46,32 @@ keystore.properties
 
 # OMC
 .omc/
+
+# Local agent/context scaffolding (not part of the shipped project)
+.context/
+.claude/
+
+# Local reference sample photos from the stock camera (EXIF reference only — never commit)
+IMG2*.heic
+IMG2*.jpg
+device-tests/reports/
+.tool-state/
+__pycache__/
+*.jks.*
+*.keystore.*
+
+# Internal working docs and agent artifacts — kept locally, not part of the open-source tree.
+# docs/assets/ and docs/licenses/ stay tracked: the Pages logo, Play art, and the Inter OFL
+# (which must ship with the bundled font) are public on purpose.
+/docs/*.md
+/docs/plans/
+/docs/reviews/
+/docs/superpowers/
+# Device-harness source is versioned; only generated evidence and caches stay local.
+/device-tests/reports/
+/device-tests/**/__pycache__/
+/device-tests/**/.pytest_cache/
+
+# Signed release artifacts kept locally so a `gradle clean` cannot destroy the exact bytes
+# that were device-verified. Binaries never enter git history — Play distributes them.
+releases/

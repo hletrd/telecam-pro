@@ -1,17 +1,41 @@
 [versions]
-agp = "9.2.0"
-# Matches AGP 9.2's built-in Kotlin (KGP 2.3.10); the Compose compiler plugin must track it.
-kotlin = "2.3.10"
-coreKtx = "1.19.0"
+# AGP 9.4 supports API 37 and requires Gradle 9.6+; the wrapper is 9.8.0.
+# Ships the baseline profile so ART AOT-compiles the hot paths at install instead of
+# leaving the app on `status=verify` (device-measured: settings-open p99 61 ms -> 26 ms).
+profileinstaller = "1.4.1"
+agp = "9.4.1"
+# Matches the latest stable Compose compiler plugin; AGP 9 supplies Kotlin Android support.
+kotlin = "2.4.20"
+coreKtx = "1.19.1"
 activityCompose = "1.13.0"
 lifecycle = "2.11.0"
-composeBom = "2026.06.01"
-coroutines = "1.10.2"
-heifwriter = "1.2.0-alpha01"
+composeBom = "2026.09.00"
+coroutines = "1.11.0"
+# Latest STABLE (per the always-latest-stable policy). A stable 1.1.0 exists on Google Maven —
+# the earlier "no stable 1.1.0 exists" note that justified the 1.2.0-alpha01 pin was wrong.
+heifwriter = "1.1.0"
 junit = "4.13.2"
+# Latest stable (verified against Maven Central 2026-10-02). 4.17 also knows simulated SDK 37, which
+# stays unused while targetSdk is 36. Simulated SDK 36 requires JDK 21 (met).
+robolectric = "4.17"
+# The android-all runtime jar Robolectric 4.17 pins for simulated SDK 36 (DefaultSdkProvider:
+# BAKLAVA -> "16" / "13921718", PREINSTRUMENTED_VERSION 7 — unchanged from 4.16.1).
+# Declared as a REAL Gradle dependency (see app/build.gradle.kts robolectricJars) so the ~40 MB
+# framework jar rides gradle/verification-metadata.xml instead of Robolectric's own side-channel
+# Maven fetch. MUST be bumped in lockstep with the robolectric version above (a mismatch fails the
+# unit-test task with the expected coordinate in the message).
+robolectricAndroidAll = "16-robolectric-13921718-i7"
+androidxTestCore = "1.7.0"
+# Newest STABLE androidx.test on Google Maven (verified 2026-07; only alphas exist beyond these).
+# runner supplies AndroidJUnitRunner for the on-device instrumented smoke tier; ext-junit supplies
+# the AndroidJUnit4 runner class. androidx.test:rules is intentionally absent — no rule is used
+# (GrantPermissionRule is BANNED for CAMERA/RECORD_AUDIO here: grants are hand-managed on ColorOS).
+androidxTestRunner = "1.7.0"
+androidxTestExtJunit = "1.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
@@ -21,9 +45,22 @@ androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graph
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+# BOM-managed. R8 keeps only the referenced vectors, so the Fn tile icons cost ~KBs in release.
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 androidx-heifwriter = { group = "androidx.heifwriter", name = "heifwriter", version.ref = "heifwriter" }
+androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version = "1.4.2" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+robolectric-android-all-instrumented = { group = "org.robolectric", name = "android-all-instrumented", version.ref = "robolectricAndroidAll" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
+# BOM-managed (androidx-compose-bom above): ui-test-junit4 supplies createComposeRule for host
+# (Robolectric) Compose tests; ui-test-manifest supplies the ComponentActivity it launches.
+androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 
 [plugins]
 # Kotlin support is built into AGP 9+, so the org.jetbrains.kotlin.android plugin is intentionally omitted.

@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="TeleCam Pro does not collect or share personal data. No ads, analytics, tracking, accounts, cloud sync, or Internet permission.">
+  <link rel="canonical" href="https://hletrd.github.io/telecam-pro/privacy-policy/">
+  <link rel="alternate" hreflang="en" href="https://hletrd.github.io/telecam-pro/privacy-policy/#en">
+  <link rel="alternate" hreflang="ko" href="https://hletrd.github.io/telecam-pro/privacy-policy/#ko">
+  <link rel="alternate" hreflang="x-default" href="https://hletrd.github.io/telecam-pro/privacy-policy/">
+  <title>Privacy Policy · TeleCam Pro</title>
+  <!--
+    Self-contained by design: a privacy policy must not hand a visitor's IP to a third party, so
+    there is no webfont CDN, no analytics, and no external request of any kind on this page.
+    Inter is the app's own face and leads the stack for visitors who already have it; everyone else
+    gets the platform UI face rather than an 830 KB download of two unsubsetted TTFs.
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f4;
+      --fg: #171717;
+      --muted: #5b5f66;
+      --line: #d8d8d2;
+      --panel: #ffffff;
+      /* Same hue family as the app's accent (213° vs 217°), darkened for light-background text:
+         the app's own #8AB4F8 is tuned for a black UI and scores 1.96:1 here. This is 5.86:1. */
+      --accent: #1a5fb4;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121312;
+        --fg: #eeeeea;
+        --muted: #b5b8bd;
+        --line: #333631;
+        --panel: #1b1c1a;
+        /* On dark, the app's literal CameraColors.Accent — 8.84:1. */
+        --accent: #8ab4f8;
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+      font-size: 1rem;
+      line-height: 1.65;
+      /* Optical, not decorative: UI faces are drawn a touch loose for small sizes, and running
+         prose at 16px reads tighter with a hair of negative tracking. */
+      letter-spacing: -0.003em;
+      -webkit-text-size-adjust: 100%;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      /* Measure, not a pixel box: ~68 characters is the readable band. The old 760px ran to ~90. */
+      width: min(68ch, 100% - 2.5rem);
+      margin-inline: auto;
+      padding-block: clamp(2.5rem, 7vw, 4rem) 4rem;
+    }
+
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: clamp(2rem, 5vw, 2.75rem);
+      /* The app ships Inter at 400/500/600 and no bold; headings here match that ceiling. */
+      font-weight: 600;
+      line-height: 1.08;
+      /* Display sizes need NEGATIVE tracking — default spacing is set for text, and at 2.75rem it
+         reads visibly loose. This is the single biggest legibility win on the page. */
+      letter-spacing: -0.022em;
+      text-wrap: balance;
+    }
+
+    h2 {
+      margin: 2.75rem 0 0.6rem;
+      font-size: 1.1875rem;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: -0.011em;
+      text-wrap: balance;
+    }
+
+    p { margin: 0 0 1rem; text-wrap: pretty; }
+
+    .updated {
+      margin-bottom: 2rem;
+      color: var(--muted);
+      font-size: 0.9375rem;
+    }
+
+    /* One device, not four. The previous callout stacked a border, a 4px accent bar, a panel fill
+       and a radius to say "this is the summary" — the accent-bar-callout is the most over-used
+       shape on the web. A quiet panel and a hairline carry it. */
+    .summary {
+      margin: 0 0 2rem;
+      padding: 1.15rem 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+
+    .summary p { margin: 0; }
+
+    table {
+      width: 100%;
+      margin-bottom: 1rem;
+      border-collapse: collapse;
+      /* `anywhere` breaks words even when the line would have fit; `break-word` only when needed. */
+      overflow-wrap: break-word;
+    }
+
+    th, td {
+      padding: 0.75rem 0.625rem;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: baseline;
+    }
+
+    /* COLUMN headers get the micro-label treatment, echoing the app's own capitalised OSD tags
+       (TELE / STEADY / LOUPE). Caps at this size need POSITIVE tracking or the letters jam
+       together — the inverse of the display rule above. */
+    thead th {
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    /* ROW headers are content, not labels: `th scope="row"` is the correct semantics for the
+       permission name, but it must read as body text, so it opts out of the label styling. */
+    tbody th {
+      font-weight: 400;
+      white-space: nowrap;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.15em;
+    }
+
+    a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
+
+    .colophon {
+      margin-top: 2.75rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.9375rem;
+    }
+
+    .language-nav {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 2rem;
+      font-size: 0.9375rem;
+    }
+
+    .policy-language { scroll-margin-top: 1rem; }
+
+    .policy-language + .policy-language {
+      margin-top: 4rem;
+      padding-top: 3rem;
+      border-top: 1px solid var(--line);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <nav class="language-nav" aria-label="Policy language">
+      <a href="#en" lang="en" hreflang="en">English</a>
+      <a href="#ko" lang="ko" hreflang="ko">한국어</a>
+    </nav>
+
+    <section id="en" class="policy-language" lang="en" aria-labelledby="en-title">
+    <h1 id="en-title">Privacy Policy</h1>
+    <p class="updated">TeleCam Pro — last updated 24 August 2026</p>
+
+    <section class="summary">
+      <p>
+        TeleCam Pro does not collect or share personal data. It has no ads, analytics, tracking,
+        accounts, cloud sync, or Internet permission.
+      </p>
+    </section>
+
+    <p>
+      TeleCam Pro is a camera app for Android phones and tablets. This policy covers its permissions,
+      captured media, and data handling.
+    </p>
+
+    <h2>Permissions the app requests</h2>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Permission</th>
+          <th scope="col">Use</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Camera</th>
+          <td>Shows the viewfinder and captures photos and videos.</td>
+        </tr>
+        <tr>
+          <th scope="row">Microphone</th>
+          <td>
+            Adds audio to videos when enabled. Before recording, it is also used while the input
+            level meter is visible in armed Video mode.
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">Photos and videos</th>
+          <td>
+            Lets the in-app gallery find package-owned media and ownerless files in DCIM/TeleCamPro
+            whose path, TeleCam filename format, media collection, extension, and MIME type all
+            match. Those checks recognize a legacy TeleCam-format file but cannot verify who created
+            it; the review labels its origin unverified and limits deletion to that file. It is
+            requested only when you tap the gallery button and there is nothing to show; declining
+            keeps the app working with media from the current installation. Reading happens on this
+            device only.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>
+      Microphone input is processed locally. The visible standby meter reduces its input to a level
+      reading and does not save that audio; recorded audio remains in the video file on your device.
+      Neither is uploaded, collected by the developer, or shared with third parties.
+    </p>
+
+    <p>
+      TeleCam Pro rejects touch events that Android marks as fully or partially obscured by another
+      window before they reach camera, settings, permission, or delete controls. Ordinary unmarked
+      touch, stylus, mouse, accessibility, and system input continues through Android normally.
+    </p>
+
+    <h2>Photos and videos you capture</h2>
+    <p>
+      Photos and videos are saved in DCIM/TeleCamPro through Android MediaStore. Uninstalling TeleCam Pro
+      removes its settings but leaves captures in shared media storage. TeleCam Pro does not upload
+      or back up captures. Delete them in TeleCam Pro, a gallery app, or a file manager.
+    </p>
+    <p>
+      Captures carry ordinary photographic metadata — camera make and model, lens, exposure, and the
+      time of the shot — and no location. The app requests no location permission and writes no GPS
+      tags, so a photo taken with it cannot record where you were.
+    </p>
+
+    <h2>Data collection and sharing</h2>
+    <p>
+      The app has no analytics, crash reporting, advertising, or tracking SDKs. It does not collect
+      names, contacts, location, identifiers, or usage data.
+    </p>
+    <p>
+      Granting photo and video access lets the app READ your library on this device; it does not send
+      anything anywhere. The app has no Internet permission at all, so it has no way to transmit what
+      it reads. The gallery looks for package-owned media and matching ownerless legacy TeleCam-format
+      candidates in DCIM/TeleCamPro. It cannot verify who created an ownerless match, so the review
+      labels its origin unverified and limits deletion to that file.
+    </p>
+
+    <h2>Children</h2>
+    <p>
+      The app is a general-purpose camera tool and is not directed at children. It collects no data
+      from any user, including children.
+    </p>
+
+    <h2>Changes to this policy</h2>
+    <p>
+      Policy changes will appear at this URL with a new last-updated date.
+    </p>
+
+    <h2>The app</h2>
+    <p>
+      TeleCam Pro on
+      <a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro">Google Play</a>,
+      source on <a href="https://github.com/hletrd/telecam-pro">GitHub</a>. Every claim on this page
+      is checkable against that source.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      Questions about this policy: <a href="mailto:01@0101010101.com">01@0101010101.com</a>
+    </p>
+
+    <p class="colophon">
+      TeleCam Pro is an independent app and is not affiliated with, endorsed by, or sponsored by
+      OPPO, Hasselblad, or any hardware maker.
+    </p>
+    </section>
+
+    <section id="ko" class="policy-language" lang="ko" aria-labelledby="ko-title">
+      <h1 id="ko-title">개인정보처리방침</h1>
+      <p class="updated">TeleCam Pro — 최종 업데이트: 2026년 8월 24일</p>
+
+      <section class="summary">
+        <p>
+          TeleCam Pro는 개인정보를 수집하거나 공유하지 않습니다. 광고, 분석, 추적, 계정,
+          클라우드 동기화, 인터넷 권한도 없습니다.
+        </p>
+      </section>
+
+      <p>
+        TeleCam Pro는 Android 휴대폰과 태블릿용 카메라 앱입니다. 이 방침은 앱이 요청하는
+        권한, 촬영 미디어, 데이터 처리 방법을 설명합니다.
+      </p>
+
+      <h2>앱이 요청하는 권한</h2>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">권한</th>
+            <th scope="col">사용 목적</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">카메라</th>
+            <td>뷰파인더를 표시하고 사진과 동영상을 촬영합니다.</td>
+          </tr>
+          <tr>
+            <th scope="row">마이크</th>
+            <td>
+              사용자가 오디오 녹음을 켜면 동영상에 소리를 담습니다. 동영상 모드에서 녹화
+              대기 중 입력 레벨 미터가 보일 때에도 마이크를 사용합니다.
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">사진 및 동영상</th>
+            <td>
+              앱 내 갤러리에서 현재 패키지가 소유한 미디어와 DCIM/TeleCamPro에 있는 소유자
+              없는 파일을 찾습니다. 소유자 없는 파일은 경로, TeleCam 파일명 형식, 미디어
+              컬렉션, 확장자, MIME 형식이 모두 맞아야 합니다. 이 조건으로 기존 TeleCam 형식
+              파일임은 확인할 수 있지만 만든 앱은 확인할 수 없습니다. 따라서 리뷰 화면에
+              출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다. 리뷰할 항목이
+              없는 상태에서 갤러리 버튼을 눌렀을 때만 권한을 요청합니다. 거부해도 현재 설치에서
+              만든 미디어는 계속 사용할 수 있습니다. 라이브러리는 이 기기에서만 읽습니다.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        마이크 입력은 기기에서 처리합니다. 화면에 보이는 대기 레벨 미터는 입력을 음량 값으로만
+        바꾸며 오디오를 저장하지 않습니다. 녹음한 오디오는 기기의 동영상 파일에 남습니다.
+        개발자는 이 데이터를 업로드하거나 수집하지 않으며 제3자와 공유하지 않습니다.
+      </p>
+
+      <p>
+        Android가 다른 창에 완전히 또는 부분적으로 가려졌다고 표시한 터치 입력은 카메라,
+        설정, 권한, 삭제 조작에 닿기 전에 차단합니다. 가려짐 표시가 없는 일반 터치, 스타일러스,
+        마우스, 접근성, 시스템 입력은 Android의 기본 방식대로 처리합니다.
+      </p>
+
+      <h2>촬영한 사진과 동영상</h2>
+      <p>
+        사진과 동영상은 Android MediaStore를 통해 DCIM/TeleCamPro에 저장합니다. TeleCam Pro를
+        삭제하면 설정은 지워지지만 공유 미디어 저장소의 촬영물은 남습니다. 앱은 촬영물을
+        업로드하거나 백업하지 않습니다. 촬영물은 TeleCam Pro, 갤러리 앱, 파일 관리자에서
+        삭제할 수 있습니다.
+      </p>
+      <p>
+        촬영물에는 카메라 제조사와 모델, 렌즈, 노출, 촬영 시간 등 일반적인 사진 메타데이터가
+        들어가지만 위치 정보는 들어가지 않습니다. 앱은 위치 권한을 요청하지 않고 GPS 태그도
+        기록하지 않으므로 촬영 위치를 사진에 남길 수 없습니다.
+      </p>
+
+      <h2>데이터 수집 및 공유</h2>
+      <p>
+        앱에는 분석, 비정상 종료 보고, 광고, 추적 SDK가 없습니다. 이름, 연락처, 위치, 식별자,
+        사용 데이터도 수집하지 않습니다.
+      </p>
+      <p>
+        사진 및 동영상 접근 권한을 허용하면 앱이 이 기기에서 라이브러리를 읽을 수 있지만 어떤
+        데이터도 전송하지 않습니다. 앱에는 인터넷 권한이 없으므로 읽은 내용을 외부로 보낼 수
+        없습니다. 갤러리는 현재 패키지가 소유한 미디어와 DCIM/TeleCamPro에서 조건이 맞는 소유자
+        없는 기존 TeleCam 형식 파일만 찾습니다. 소유자 없는 파일은 만든 앱을 확인할 수 없으므로
+        리뷰 화면에 출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다.
+      </p>
+
+      <h2>아동</h2>
+      <p>
+        이 앱은 일반 카메라 도구이며 아동을 대상으로 하지 않습니다. 아동을 포함한 어떤 사용자의
+        데이터도 수집하지 않습니다.
+      </p>
+
+      <h2>방침 변경</h2>
+      <p>방침이 바뀌면 이 URL에 새 최종 업데이트 날짜와 함께 게시합니다.</p>
+
+      <h2>앱 정보</h2>
+      <p>
+        TeleCam Pro는
+        <a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro">Google Play</a>에서
+        받을 수 있으며 소스 코드는 <a href="https://github.com/hletrd/telecam-pro">GitHub</a>에
+        공개되어 있습니다. 이 페이지의 모든 설명은 해당 소스에서 확인할 수 있습니다.
+      </p>
+
+      <h2>문의</h2>
+      <p>이 방침에 관한 문의: <a href="mailto:01@0101010101.com">01@0101010101.com</a></p>
+
+      <p class="colophon">
+        TeleCam Pro는 독립 앱이며 OPPO, Hasselblad 또는 다른 하드웨어 제조사와 제휴하지 않았고,
+        이들로부터 보증이나 후원을 받지 않습니다.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

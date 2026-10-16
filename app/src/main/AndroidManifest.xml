@@ -1,11 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Visual-media READ access (user decision 2026-08-01): after a REINSTALL, MediaStore clears
+         the previous install's row ownership, and a permission-less app cannot see those rows on a
+         spec provider — the in-app gallery restore came back empty even though the files were
+         intact. Requested CONTEXTUALLY (first gallery tap with nothing to review), never at
+         launch; declining keeps the old own-rows-only behavior. USER_SELECTED joins so Android
+         14+'s partial "Select photos" grant is handled first-class instead of read as a denial. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- The entire privacy story (PRIVACY.md, Play Data Safety) rests on the MERGED manifest having
+         no network permission. tools:node="remove" makes that build-enforced instead of true-by-
+         omission: a dependency AAR whose manifest sneaks INTERNET in would be stripped, not merged. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- Both of these are IMPLIED features that Play would otherwise default to required="true",
+         and both are STRICTER than what the app actually needs (aapt2 dump badging on the release
+         APK: "uses-implied-feature ... reason='requested android.permission.CAMERA permission'" and
+         the same for RECORD_AUDIO). Left implied, Play filters the app off devices that it runs on
+         perfectly well — which started to matter with the 2026-08-01 multi-device decision.
+
+         android.hardware.camera is REAR-camera-specific. The app's real requirement is camera.any
+         above: route inventory is resolved before the first open, FRONT starts automatically when
+         no rear route exists, and an external-only camera is opened plainly on the capability-
+         enumerated GENERIC path. Rear-only TELE/focal controls remain absent on that fallback, so
+         neither an external nor front-only device inherits PMA110 quirks.
+
+         android.hardware.microphone contradicts the app's own documented design outright: a
+         declined mic still records, video-only and silently (CameraPermissionPolicy
+         .microphoneDeclineOutcome, VideoRecorder's expectedTracks = 1). Filtering the app off
+         mic-less devices withholds a clip the pipeline can fully deliver. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:name=".TeleCameraApp"
@@ -14,15 +50,54 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.FindX9TeleCamera">
+        android:theme="@style/Theme.TeleCamPro">
+
+        <!-- No vendor camera SDK is integrated, and none will be: the authenticated OEM path was
+             DECLINED by the owner on 2026-08-04, so this is a closed decision rather than a gap
+             waiting to be filled. The SDK dependency, its maven repo and the debug-only probe were
+             removed on 2026-07-25 and must not come back; there is deliberately no auth-code
+             meta-data here and no instruction for adding one.
+
+             This costs the shipped app nothing. The teleconverter path rides the vendor session
+             type 0x80b4 and the plain com.oplus.* Camera2 request keys, which need no
+             authentication and no SDK — see CLAUDE.md. What stays out of reach as a result (the
+             200 MP remosaic, a scene-referred log stream, the 300 mm OIS profile) is documented
+             where each is described, so nothing here needs re-deriving. -->
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
-            android:theme="@style/Theme.FindX9TeleCamera">
+            android:theme="@style/Theme.TeleCamPro"
+            tools:ignore="DiscouragedApi">
+
+            <!-- android:screenOrientation is GONE (2026-08-04). The portrait lock still applies on
+                 PHONES, but MainActivity now sets it at RUNTIME from the smallest width instead
+                 (see lockPortraitOnHandsets). Same behaviour, and Play's large-screen check stops
+                 flagging the app: that check is STATIC — it reads this attribute out of the merged
+                 manifest and cannot see that the lock is already conditional. Leaving the attribute
+                 in place to be ignored on tablets meant carrying a permanent advisory that says the
+                 opposite of what the app does.
+
+                 The whole app — glyph counter-rotation, capture masks, encoder framing — is built
+                 around a device-fixed portrait layout on handsets. PMA110 behaviour is unchanged.
+
+                 What is GONE (2026-08-04) is PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY, which
+                 used to force the restriction back on at sw600dp+. Android 16 ignores
+                 screenOrientation on those displays and API 37 removes the opt-out outright, so the
+                 durable answer was always the layout. It now exists: the preview takes the
+                 window-rotated aspect, and preview rotation / tap mapping / glyph rotation each
+                 carry the window term (RotationMath). Device-verified on the Lenovo TB336ZU
+                 (Android 16, 1600x2560) — the same device that reproduced the original problem on
+                 2026-08-02. A wide window briefly earned a separate operator RAIL as well; that was
+                 removed on 2026-08-05 because orientation must move no control, and the one
+                 arrangement now serves every window shape.
+
+                 Deliberately NOT window-dependent: capture masks and encoder framing still derive
+                 from GRAVITY, so a still or clip records the same field however the window is
+                 turned. Do not "fix" those to follow window shape — see RotationMath. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

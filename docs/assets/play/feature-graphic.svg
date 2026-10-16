@@ -1,0 +1,36 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TeleCam Pro feature graphic">
+  <!--
+    Square 1024x1024 canvas so qlmanage renders it edge-to-edge. The design is centered in the middle
+    500px band (y 262..762); render with qlmanage, then crop the center 500 rows with sips to produce
+    the 1024x500 Play asset (see docs/play-store-listing.md for the exact commands).
+  -->
+  <defs>
+    <radialGradient id="glow" cx="27%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#17252D"/>
+      <stop offset="100%" stop-color="#101A20"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- logo mark (machined-glass barrel, the launcher foreground paths), left, vertically centered -->
+  <g transform="translate(270,512) scale(4.4) translate(-52.6,-54.2)">
+<defs><linearGradient id="metal" gradientUnits="userSpaceOnUse" x1="35" y1="36" x2="68" y2="76"><stop offset="0" stop-color="#DCE5E6"/><stop offset="0.5" stop-color="#A7BBBF"/><stop offset="1" stop-color="#617980"/></linearGradient><radialGradient id="glass" gradientUnits="userSpaceOnUse" cx="62" cy="42" r="19"><stop offset="0" stop-color="#9CEBDD"/><stop offset="0.55" stop-color="#4BBBAF"/><stop offset="1" stop-color="#277A80"/></radialGradient></defs>
+<path fill="url(#metal)" fill-rule="evenodd" d="M29.6,59.8 L51.2,33.6 C56.06,29.955 64.8354,33.4472 70.8,41.4 C76.7646,49.3528 77.66,58.755 72.8,62.4 L41.6,75.8 C39.8328,77.1254 35.7138,74.6184 32.4,70.2 C29.0862,65.7816 27.8328,61.1254 29.6,59.8 Z M68.48,43.14 C73.318,49.5907 74.3388,56.9959 70.76,59.68 C67.1812,62.3641 60.358,59.3107 55.52,52.86 C50.682,46.4093 49.6612,39.0041 53.24,36.32 C56.8188,33.6359 63.642,36.6893 68.48,43.14 Z M34.12,59.16 L35.26,57.68 L45.22,70.96 L43.48,71.64 Z M38.52,55.86 L39.66,54.38 L49.62,67.66 L47.88,68.34 Z M42.92,52.56 L44.06,51.08 L54.02,64.36 L52.28,65.04 Z"/>
+<path fill="#DCE5E6" fill-rule="evenodd" d="M70.8,41.4 C76.7647,49.3529 77.6601,58.7549 72.8,62.4 C67.9399,66.0451 59.1647,62.5529 53.2,54.6 C47.2353,46.6471 46.3399,37.2451 51.2,33.6 C56.0601,29.9549 64.8353,33.4471 70.8,41.4 Z M68.48,43.14 C73.318,49.5907 74.3388,56.9959 70.76,59.68 C67.1812,62.3641 60.358,59.3107 55.52,52.86 C50.682,46.4093 49.6612,39.0041 53.24,36.32 C56.8188,33.6359 63.642,36.6893 68.48,43.14 Z"/>
+<path fill="url(#glass)" fill-rule="evenodd" d="M66.56,44.58 C70.1388,49.3517 70.9984,54.7512 68.48,56.64 C65.9616,58.5288 61.0188,56.1917 57.44,51.42 C53.8612,46.6483 53.0016,41.2488 55.52,39.36 C58.0384,37.4712 62.9812,39.8083 66.56,44.58 Z"/>
+<path fill="#4BBBAF" fill-rule="evenodd" d="M44.72,44.96 L46.7,42.6 L49.88,46.84 L47.9,49.2 Z"/>
+<path fill="#C7FFF0" fill-rule="evenodd" d="M59.56,44.58 C60.5872,45.9497 60.8827,47.4629 60.22,47.96 C59.5573,48.4571 58.1872,47.7497 57.16,46.38 C56.1328,45.0103 55.8373,43.4971 56.5,43 C57.1627,42.5029 58.5328,43.2103 59.56,44.58 Z"/>
+  </g>
+
+  <!-- wordmark + two short tagline lines, right; all within the center band and 1024 width -->
+  <text x="440" y="500" font-family="Helvetica, Arial, sans-serif" font-size="78" font-weight="700" fill="#E6E6EA">TeleCam Pro</text>
+  <!--
+    The tagline names NO specific optic. It used to read "300 mm afocal teleconverter", which was
+    written when the app targeted one phone and one kit; the converter is now a selectable PAIR
+    (phone, then the optics that fit it — Hasselblad 300/230, ZEISS 200/400, generic clip-ons,
+    custom), so a fixed focal length on the store's largest asset advertised a limit the app does
+    not have. Kept to two short lines that read as one sentence and match the short description.
+  -->
+  <text x="442" y="558" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#8A8A93">Open-source manual camera</text>
+  <text x="442" y="598" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#8A8A93">for clip-on afocal teleconverters</text>
+</svg>

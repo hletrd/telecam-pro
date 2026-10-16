@@ -1,0 +1,3678 @@
+package me.hletrd.telecampro.storage
+
+import android.content.ContentResolver
+import android.content.ContentUris
+import android.content.ContentValues
+import android.content.Context
+import android.content.SharedPreferences
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.net.Uri
+import android.os.Bundle
+import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import java.io.FileInputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import me.hletrd.telecampro.ProcessAdmissionSignal
+import me.hletrd.telecampro.ProcessAdmissionSubscription
+import me.hletrd.telecampro.camera.DiagnosticLog
+import me.hletrd.telecampro.camera.MAX_RETAINED_PROCESSED_SNAPSHOTS
+import me.hletrd.telecampro.camera.RECORDING_STORAGE_BACKLOG_CAPACITY
+import me.hletrd.telecampro.camera.RECORDING_STORAGE_WORKER_COUNT
+
+/**
+ * Thin wrapper around MediaStore for saving photos/videos into DCIM/<subDir> using the
+ * pending-file convention (IS_PENDING) so files don't appear to other apps until fully written.
+ */
+object MediaStoreWriter {
+
+    /**
+     * Where new captures are written. Renamed from "X9Tele" once the app stopped being tied to one
+     * handset — the old name told users which phone the developer owned, not which app made the
+     * file. Safe as a hard cut because the app had never been published.
+     */
+    const val CAPTURE_SUBDIR = "TeleCamPro"
+
+    /**
+     * Directories reads cover. A single entry today; the list shape is kept because the restore
+     * query filters on an EXACT RELATIVE_PATH, so any future rename must add the old name here or
+     * it silently empties the in-app gallery for everyone who shot before it. (The "X9Tele" → this
+     * rename needed no such entry: the app had never shipped.)
+     */
+    val CAPTURE_SUBDIRS = listOf(CAPTURE_SUBDIR)
+
+    private const val MAX_RESTORE_ROWS_PER_COLLECTION = 64
+    internal const val MAX_ORPHAN_RECOVERY_ROWS_PER_COLLECTION = 64
+    internal const val MAX_DISCARD_RECOVERY_ROWS = 64
+    private const val MAX_FAMILY_ROWS = 8
+    private const val PENDING_JOURNAL = "pending_media_journal"
+    private const val TAG = "MediaStoreWriter"
+    private const val PENDING_REGISTERED = "registered"
+    private const val PENDING_COMPLETE = "complete"
+    private const val DELETED_FAMILY_JOURNAL = "deleted_capture_family_journal"
+    private const val DELETED_FAMILY_PREFIX = "F1|"
+    private const val COMPLETION_MARK_ATTEMPTS = 3
+    private const val COMPLETION_MARK_BACKOFF_MS = 25L
+    internal const val MAX_DELETED_FAMILY_MARKERS = 64
+    internal const val MAX_REJECTED_OUTPUTS = 32
+    internal const val MAX_PENDING_IDENTITY_RECOVERIES = 32
+    internal const val PENDING_IDENTITY_RETRY_INITIAL_MS = 250L
+    internal const val PENDING_IDENTITY_RETRY_MAX_MS = 30_000L
+    /**
+     * Exact headroom for every output that can still reach rejection after the soft admission edge:
+     * two process-wide retained processed snapshots at three siblings each; one Camera2 RAW-only
+     * shot; two active + eight queued process recording-storage tails; and one active recorder not
+     * yet handed to that dispatcher. These upstream owners are all hard-bounded.
+     */
+    internal const val MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS =
+        MAX_RETAINED_PROCESSED_SNAPSHOTS * 3 +
+            1 +
+            RECORDING_STORAGE_WORKER_COUNT + RECORDING_STORAGE_BACKLOG_CAPACITY +
+            1
+    private val processJournalOwner = UUID.randomUUID().toString()
+    private val familyJournalMetadataLock = Any()
+    private val familyAuthorityRegistryLock = Any()
+    private val familyAuthorities = mutableMapOf<String, FamilyJournalAuthority>()
+    private const val MAX_LIVE_PENDING_ALLOCATIONS = 128
+    private val pendingAllocationLock = Any()
+    private val pendingAllocations = LinkedHashMap<Uri, PendingOutputAllocation>()
+
+    private class FamilyJournalAuthority(
+        val monitor: Any = Any(),
+        // This monitor protects only the finite admission transition. Retirement seals an empty
+        // state here before slow marker removal, then opens it again before releasing [monitor]. A
+        // registrant that observes the seal waits on [monitor] and becomes a post-retirement
+        // admission; it never waits while owning the process-wide registry.
+        val admissionMonitor: Any = Any(),
+        var users: Int = 0,
+        // Registered before Camera2 receives the still request and retained until every possible
+        // HEIF/JPEG/DNG continuation is terminal. Unlike an Engine-local capture id, this survives
+        // Engine replacement and therefore prevents a restored delete from retiring the exact
+        // family veto in front of a future old-Engine sibling.
+        var producerLeases: Int = 0,
+        // Registered before a publication caller waits for [monitor]. Retirement consults this
+        // count after its exact-family absence query, so it cannot erase the durable veto in front
+        // of an old-Engine publication that is already queued behind it.
+        var publicationClaims: Int = 0,
+        var retirementSealed: Boolean = false,
+    )
+
+    private inline fun <T> withFamilyJournalAuthority(
+        key: String,
+        publication: Boolean = false,
+        onRegistered: () -> Unit = {},
+        block: (FamilyJournalAuthority) -> T,
+    ): T {
+        var publicationInstalled = false
+        val authority = synchronized(familyAuthorityRegistryLock) {
+            familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
+                it.users += 1
+                if (publication) synchronized(it.admissionMonitor) {
+                    if (!it.retirementSealed) {
+                        it.publicationClaims += 1
+                        publicationInstalled = true
+                    }
+                }
+            }
+        }
+        return try {
+            if (publication && !publicationInstalled) {
+                // Retirement already sealed its claim-free decision. Wait without the registry,
+                // then install as a new post-retirement admission before observing the marker.
+                synchronized(authority.monitor) {
+                    synchronized(authority.admissionMonitor) {
+                        check(!authority.retirementSealed) {
+                            "sealed family admission escaped retirement"
+                        }
+                        authority.publicationClaims += 1
+                        publicationInstalled = true
+                    }
+                    onRegistered()
+                    block(authority)
+                }
+            } else {
+                onRegistered()
+                synchronized(authority.monitor) { block(authority) }
+            }
+        } finally {
+            if (publicationInstalled) synchronized(authority.admissionMonitor) {
+                check(authority.publicationClaims > 0) { "family publication claim underflow" }
+                authority.publicationClaims -= 1
+            }
+            synchronized(familyAuthorityRegistryLock) {
+                authority.users -= 1
+                if (authority.users == 0 && familyAuthorities[key] === authority) {
+                    familyAuthorities.remove(key)
+                }
+            }
+        }
+    }
+
+    /**
+     * Registers process-wide producer ownership before Camera2 can create any row in [family].
+     * The returned lease is exact-family and idempotent; callers close it only after every output
+     * lane is terminal, including rejected dispatch and exceptional completion.
+     */
+    internal fun registerStillFamilyProducer(family: CaptureFamilyKey): CaptureFamilyProducerLease {
+        val key = deletedFamilyJournalKey(family)
+        var producerInstalled = false
+        val authority = synchronized(familyAuthorityRegistryLock) {
+            familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
+                it.users += 1
+                synchronized(it.admissionMonitor) {
+                    if (!it.retirementSealed) {
+                        it.producerLeases += 1
+                        producerInstalled = true
+                    }
+                }
+            }
+        }
+        if (!producerInstalled) {
+            // A producer arriving after the retirement decision is sealed is not retroactively
+            // covered by that decision. It waits, without the registry, and starts a new family
+            // admission only after marker retirement has completed.
+            synchronized(authority.monitor) {
+                synchronized(authority.admissionMonitor) {
+                    check(!authority.retirementSealed) {
+                        "sealed family producer escaped retirement"
+                    }
+                    authority.producerLeases += 1
+                }
+            }
+        }
+        return CaptureFamilyProducerLease {
+            synchronized(authority.admissionMonitor) {
+                check(authority.producerLeases > 0) { "family producer lease underflow" }
+                authority.producerLeases -= 1
+            }
+            synchronized(familyAuthorityRegistryLock) {
+                authority.users -= 1
+                if (authority.users == 0 && familyAuthorities[key] === authority) {
+                    familyAuthorities.remove(key)
+                }
+            }
+        }
+    }
+
+    internal data class RejectedOutput(
+        val context: Context,
+        val allocation: PendingOutputAllocation,
+    )
+
+    internal fun interface PendingIdentityRecovery {
+        fun recover(): PendingOutputDiscardResult
+    }
+
+    private val stillStorageAdmissionSignal = ProcessAdmissionSignal(initial = true)
+
+    private fun publishStillStorageAdmission() {
+        // Read inside the signal monitor (AGG4-35): a value computed before it could land after a
+        // newer edge and leave the change-gated signal stale until an unrelated publication.
+        stillStorageAdmissionSignal.refresh(::rejectedOutputAdmissionAvailable)
+    }
+
+    private val rejectedOutputOwner = RejectedOutputCleanupCapacityOwner<RejectedOutput>(
+        workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
+        backlogCapacity = REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+        admissionLimit = MAX_REJECTED_OUTPUTS,
+        // Once admission closes, work already accepted by the bounded still/recording owners may
+        // still report siblings. Keep equal-sized exact headroom so those URIs are never forgotten.
+        ownershipLimit = MAX_REJECTED_OUTPUTS + MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS +
+            REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+        discardEffect = { discardPendingOutput(it.context, it.allocation) },
+        onAvailabilityChanged = { publishStillStorageAdmission() },
+    )
+
+    /**
+     * Exact owner for rows whose insert + REGISTERED commit succeeded before identity froze.
+     * A reservation is acquired before insert, so an identity outage can never grow hidden rows
+     * beyond this process bound. Recovery stays non-destructive until a later exact read succeeds.
+     */
+    private val pendingIdentityRecoveryOwner =
+        RejectedOutputCleanupCapacityOwner<PendingIdentityRecovery>(
+            workerCount = REJECTED_OUTPUT_CLEANUP_WORKER_COUNT,
+            backlogCapacity = REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+            admissionLimit = MAX_PENDING_IDENTITY_RECOVERIES,
+            ownershipLimit = MAX_PENDING_IDENTITY_RECOVERIES +
+                REJECTED_OUTPUT_CLEANUP_WORKER_COUNT + REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY,
+            discardEffect = PendingIdentityRecovery::recover,
+            retryScheduler = processPendingIdentityRetryScheduler,
+            retryInitialDelayMs = PENDING_IDENTITY_RETRY_INITIAL_MS,
+            retryMaxDelayMs = PENDING_IDENTITY_RETRY_MAX_MS,
+            onAvailabilityChanged = { publishStillStorageAdmission() },
+        )
+
+    /**
+     * Reconstructs the newest package-owned row or recognized owner-null TeleCam-format candidate.
+     *
+     * Images and Video are separate MediaStore collections, so each query is bounded and the pure
+     * reducer compares their results. Versioned filenames prove sibling identity; legacy files stay
+     * one-file delete scopes instead of being grouped by timestamp proximity.
+     */
+    internal fun latestOwnCapture(
+        context: Context,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): RestoredCapture<Uri>? {
+        val imageRows = queryOwnedPublished(
+            context = context,
+            base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            collection = StoredMediaCollection.IMAGE,
+            subDirs = subDirs,
+        )
+        val videoRows = queryOwnedPublished(
+            context = context,
+            base = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            collection = StoredMediaCollection.VIDEO,
+            subDirs = subDirs,
+        )
+        // Media providers can fault one collection independently. Preserve every successful result
+        // so a transient Images failure cannot hide the latest video (or vice versa).
+        val initial = restoreLatestCaptureFromQueryResults(imageRows, videoRows) ?: return null
+        val familyKey = initial.familyKey ?: return initial
+
+        // The broad queries find the winner. One exact, bounded follow-up prevents their row limits
+        // from ever omitting an older sibling of that winning family from whole-capture deletion.
+        val familyCollection = when (familyKey.media) {
+            CaptureFamilyMedia.STILL -> StoredMediaCollection.IMAGE
+            CaptureFamilyMedia.VIDEO -> StoredMediaCollection.VIDEO
+        }
+        val familyBase = when (familyCollection) {
+            StoredMediaCollection.IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            StoredMediaCollection.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+        return queryOwnedPublished(
+            context = context,
+            base = familyBase,
+            collection = familyCollection,
+            subDirs = subDirs,
+            displayNames = familyKey.knownOutputDisplayNames(),
+            limit = MAX_FAMILY_ROWS,
+        ).fold(
+            // An EMPTY exact result gets the same FILE_ONLY fallback as a failed query (CR4-11):
+            // between the broad query that found the winner and this bounded follow-up, another
+            // app can delete/re-pend those rows — dropping the whole restore over that TOCTOU
+            // discarded a review file that still exists on disk. The two branches must agree.
+            onSuccess = { exactRows ->
+                restoreLatestCapture(exactRows) ?: RestoredCapture(
+                    preferred = initial.preferred,
+                    outputs = listOf(initial.preferred),
+                    familyKey = null,
+                    deleteScope = RestoredDeleteScope.FILE_ONLY,
+                )
+            },
+            // A failed family expansion cannot safely promise capture-level deletion. Retain only
+            // the already-resolved review file and make the fallback contract explicit.
+            onFailure = {
+                RestoredCapture(
+                    preferred = initial.preferred,
+                    outputs = listOf(initial.preferred),
+                    familyKey = null,
+                    deleteScope = RestoredDeleteScope.FILE_ONLY,
+                )
+            },
+        )
+    }
+
+    private fun queryOwnedPublished(
+        context: Context,
+        base: Uri,
+        collection: StoredMediaCollection,
+        subDirs: List<String>,
+        displayNames: List<String>? = null,
+        limit: Int = MAX_RESTORE_ROWS_PER_COLLECTION,
+    ): Result<List<StoredMediaRow<Uri>>> = runCatching {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.MIME_TYPE,
+            MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.DATE_ADDED,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.IS_PENDING,
+            MediaStore.MediaColumns.OWNER_PACKAGE_NAME,
+        )
+        val queryArgs = Bundle().apply {
+            val ownerPolicy = restoreOwnerQueryPolicy(
+                collection = collection,
+                packageName = context.packageName,
+                ownerColumn = MediaStore.MediaColumns.OWNER_PACKAGE_NAME,
+                displayNameColumn = MediaStore.MediaColumns.DISPLAY_NAME,
+                mimeTypeColumn = MediaStore.MediaColumns.MIME_TYPE,
+            )
+            val nameSelection = displayNames
+                ?.takeIf { it.isNotEmpty() }
+                ?.joinToString(prefix = " AND ${MediaStore.MediaColumns.DISPLAY_NAME} IN (", postfix = ")") { "?" }
+                .orEmpty()
+            // `OWNER_PACKAGE_NAME = ?` alone silently loses every capture this app made in a
+            // PREVIOUS install: Android can clear that column when the owning package is uninstalled,
+            // and in SQL `NULL = 'anything'` is NULL — never true — so those rows can never match
+            // any package name. Device evidence (2026-07-27): four rows in our own capture directory
+            // with our own IMG_TELECAM_* filenames sat at owner NULL, invisible to this query,
+            // which is why the gallery button fell back to its placeholder after a reinstall even
+            // though the photos were right there. A NULL owner is therefore recognized only through
+            // the explicit historical/current filename + collection + MIME rules. Those public
+            // properties cannot prove authorship: an imported lookalike can match too, so the reducer
+            // labels every admitted NULL-owner row LEGACY_FORMAT_UNVERIFIED and limits it to file-only
+            // deletion. The reducer repeats the exact grammar after this coarse provider filter. A
+            // row owned by a DIFFERENT package is still excluded.
+            putString(
+                ContentResolver.QUERY_ARG_SQL_SELECTION,
+                "${MediaStore.MediaColumns.RELATIVE_PATH} IN " +
+                    subDirs.joinToString(", ", "(", ")") { "?" } + " AND " +
+                    "${MediaStore.MediaColumns.IS_PENDING} = ? AND " +
+                    ownerPolicy.selection + nameSelection,
+            )
+            putStringArray(
+                ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                buildList {
+                    subDirs.forEach { add("DCIM/$it/") }
+                    add("0")
+                    addAll(ownerPolicy.selectionArgs)
+                    displayNames?.let(::addAll)
+                }.toTypedArray(),
+            )
+            putString(
+                ContentResolver.QUERY_ARG_SQL_SORT_ORDER,
+                "${MediaStore.MediaColumns.DATE_TAKEN} DESC, " +
+                    "${MediaStore.MediaColumns.DATE_ADDED} DESC, " +
+                    "${MediaStore.MediaColumns._ID} DESC",
+            )
+            putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+        }
+        context.contentResolver.query(base, projection, queryArgs, null)?.use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+            val takenColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+            val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+            val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+            val pendingColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+            val ownerColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.OWNER_PACKAGE_NAME)
+            buildList {
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idColumn)
+                    val displayName = cursor.getString(nameColumn)
+                    val family = CaptureFamilyKey.parse(displayName)?.familyKey
+                    // A family delete is a durable review veto, including for a published row that
+                    // survived its provider delete. Never let replacement-Engine restoration adopt
+                    // it while the journal still owns that intent.
+                    if (family != null && isFamilyDeleted(context, family)) continue
+                    add(
+                        StoredMediaRow(
+                            output = ContentUris.withAppendedId(base, id),
+                            collection = collection,
+                            rowId = id,
+                            displayName = displayName,
+                            mimeType = cursor.getString(mimeColumn),
+                            dateTakenEpochMillis = if (cursor.isNull(takenColumn)) null else cursor.getLong(takenColumn),
+                            dateAddedEpochSeconds = cursor.getLong(addedColumn),
+                            dateModifiedEpochSeconds = cursor.getLong(modifiedColumn),
+                            isPending = cursor.getInt(pendingColumn) != 0,
+                            // The selection admits our package OR a null owner matching the
+                            // historical/current TeleCam format. Null-owner rows are recognized but
+                            // unverifiable and remain file-only because deletion can require consent.
+                            isOwned = !cursor.isNull(ownerColumn),
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+    }
+
+    private fun insertPendingImage(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+    ): Uri? {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+            put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/$subDir")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+            CaptureFamilyKey.parse(displayName)?.familyKey?.capturedAtEpochMillis?.let {
+                put(MediaStore.Images.Media.DATE_TAKEN, it)
+            }
+        }
+        val insert = runCatching {
+            context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        }
+        insert.exceptionOrNull()?.let { failure ->
+            DiagnosticLog.w(TAG, "pending image insert threw for $displayName", failure)
+        }
+        val uri = insert.getOrNull() ?: run {
+            if (insert.isSuccess) {
+                DiagnosticLog.w(TAG, "pending image insert returned no row for $displayName")
+            }
+            return null
+        }
+        return uri
+    }
+
+    fun createPendingImage(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+    ): Uri? = createPendingImageAllocation(context, displayName, mimeType, subDir)?.uri
+
+    /** Creates and freezes the exact provider identity used by every later destructive decision. */
+    internal fun createPendingImageAllocation(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputAllocation? {
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: run {
+            DiagnosticLog.w(TAG, "pending image allocation refused: unparseable family $displayName")
+            return null
+        }
+        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: run {
+            DiagnosticLog.w(TAG, "pending image allocation refused: identity recovery owner at capacity")
+            return null
+        }
+        val uri = insertPendingImage(context, displayName, mimeType, subDir) ?: run {
+            identityReservation.cancel()
+            return null
+        }
+        return finishPendingInsert(
+            context = context,
+            uri = uri,
+            family = family,
+            identityReservation = identityReservation,
+            discardJournal = discardJournal,
+        )
+    }
+
+    private fun finishPendingInsert(
+        context: Context,
+        uri: Uri,
+        family: CaptureFamilyKey,
+        identityReservation: RejectedOutputCleanupReservation<PendingIdentityRecovery>,
+        discardJournal: PendingDiscardJournal,
+    ): PendingOutputAllocation? {
+        when (val disposition = registerPending(context, uri)) {
+            PendingRegistrationDisposition.ABSENT -> {
+                DiagnosticLog.w(TAG, "pending registration $disposition for $uri")
+                identityReservation.cancel()
+                return null
+            }
+            PendingRegistrationDisposition.RETAINED -> {
+                DiagnosticLog.w(TAG, "pending registration $disposition for $uri")
+                submitPendingIdentityRecovery(identityReservation, context, uri, family)
+                return null
+            }
+            PendingRegistrationDisposition.REGISTERED -> Unit
+        }
+        when (val capture = discardJournal.captureAllocationResult(uri, family)) {
+            is PendingAllocationCaptureResult.Exact -> {
+                identityReservation.cancel()
+                rememberPendingAllocation(capture.allocation)
+                return capture.allocation
+            }
+            PendingAllocationCaptureResult.Absent -> {
+                DiagnosticLog.w(TAG, "creation-time identity absent for $uri")
+                if (clearRegisteredPendingOnly(context, uri)) identityReservation.cancel()
+                else submitPendingIdentityRecovery(identityReservation, context, uri, family)
+                return null
+            }
+            PendingAllocationCaptureResult.Uncertain -> {
+                DiagnosticLog.w(TAG, "creation-time identity uncertain for $uri")
+            }
+        }
+        submitPendingIdentityRecovery(identityReservation, context, uri, family)
+        return null
+    }
+
+    fun createPendingVideo(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+    ): Uri? = createPendingVideoAllocation(context, displayName, mimeType, subDir)?.uri
+
+    internal fun createPendingVideoAllocation(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        subDir: String = CAPTURE_SUBDIR,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputAllocation? {
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: run {
+            DiagnosticLog.w(TAG, "pending video allocation refused: unparseable family $displayName")
+            return null
+        }
+        val identityReservation = pendingIdentityRecoveryOwner.reserve() ?: run {
+            DiagnosticLog.w(TAG, "pending video allocation refused: identity recovery owner at capacity")
+            return null
+        }
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Video.Media.MIME_TYPE, mimeType)
+            put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/$subDir")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+            CaptureFamilyKey.parse(displayName)?.familyKey?.capturedAtEpochMillis?.let {
+                put(MediaStore.Video.Media.DATE_TAKEN, it)
+            }
+        }
+        val insert = runCatching {
+            context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        }
+        insert.exceptionOrNull()?.let { failure ->
+            DiagnosticLog.w(TAG, "pending video insert threw for $displayName", failure)
+        }
+        val uri = insert.getOrNull() ?: run {
+            if (insert.isSuccess) {
+                DiagnosticLog.w(TAG, "pending video insert returned no row for $displayName")
+            }
+            identityReservation.cancel()
+            return null
+        }
+        return finishPendingInsert(
+            context = context,
+            uri = uri,
+            family = family,
+            identityReservation = identityReservation,
+            discardJournal = discardJournal,
+        )
+    }
+
+    private fun submitPendingIdentityRecovery(
+        reservation: RejectedOutputCleanupReservation<PendingIdentityRecovery>,
+        context: Context,
+        uri: Uri,
+        family: CaptureFamilyKey,
+    ) {
+        val application = context.applicationContext
+        reservation.submit(PendingIdentityRecovery {
+            recoverPendingAllocationIdentity(
+                capture = {
+                    PendingDiscardJournal(application).captureAllocationResult(uri, family)
+                },
+                discardExact = { allocation ->
+                    rememberPendingAllocation(allocation)
+                    discardPendingOutput(application, allocation)
+                },
+                clearAbsent = { clearRegisteredPendingOnly(application, uri) },
+            )
+        })
+    }
+
+    /** Stable provider absence retires REGISTERED metadata only; it never issues a provider delete. */
+    private fun clearRegisteredPendingOnly(context: Context, uri: Uri): Boolean {
+        val removed = SharedPreferencesDurableEdit.remove(
+            context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+            uri.toString(),
+        )
+        if (removed) synchronized(pendingAllocationLock) { pendingAllocations.remove(uri) }
+        return removed
+    }
+
+    internal fun pendingOutputAllocation(uri: Uri): PendingOutputAllocation? =
+        synchronized(pendingAllocationLock) { pendingAllocations[uri] }
+
+    private fun rememberPendingAllocation(allocation: PendingOutputAllocation) =
+        synchronized(pendingAllocationLock) {
+            // Never replace old caller truth at a reused URI. A newer allocation then degrades to
+            // launch recovery rather than inheriting destructive authority from a fresh read.
+            pendingAllocations.putIfAbsent(allocation.uri, allocation)
+            while (pendingAllocations.size > MAX_LIVE_PENDING_ALLOCATIONS) {
+                pendingAllocations.remove(pendingAllocations.keys.first())
+            }
+        }
+
+    /**
+     * Durably records that all bytes/container metadata for [uri] were finalized. Call this after
+     * the encoder/muxer has stopped and the output has been closed, but before [publish]. A launch
+     * recovery can then distinguish a valuable complete take from an interrupted write without
+     * guessing from file size alone.
+     */
+    internal fun markWriteComplete(context: Context, uri: Uri): CompletionMarkResult =
+        markCompletionWithRetry(
+            maxAttempts = COMPLETION_MARK_ATTEMPTS,
+            commit = {
+                SharedPreferencesDurableEdit.putString(
+                    context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+                    uri.toString(),
+                    PENDING_COMPLETE,
+                )
+            },
+            backoff = { attempt -> sleepPreservingInterrupt(COMPLETION_MARK_BACKOFF_MS * attempt) },
+        )
+
+    /**
+     * Durably vetoes recovery of a completed private row that belongs to a deleted capture.
+     *
+     * The immediate delete remains best-effort: a provider outage can reject it even though the
+     * user's family-delete intent already won. Persisting DISCARD first makes that outage safe — a
+     * later launch deletes the row regardless of its valid bytes or earlier COMPLETE marker instead
+     * of adopting and publishing media the user deleted. A successful delete clears the journal in
+     * the ordinary [delete] path.
+     */
+    internal fun discardPendingOutput(
+        context: Context,
+        allocation: PendingOutputAllocation,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputDiscardResult {
+        var committed: PendingDiscardRecord? = null
+        var zeroBased = 0
+        while (committed == null && zeroBased < COMPLETION_MARK_ATTEMPTS) {
+            committed = discardJournal.mark(allocation)
+            if (committed == null && zeroBased < COMPLETION_MARK_ATTEMPTS - 1) {
+                // Interrupted = owner retired: stop retrying; UNRESOLVED below is the fail-closed answer.
+                if (!sleepPreservingInterrupt(COMPLETION_MARK_BACKOFF_MS * (zeroBased + 1))) break
+            }
+            zeroBased += 1
+        }
+        val record = committed ?: return PendingOutputDiscardResult.UNRESOLVED
+        val deleted = discardJournal.withReplayIdentityAuthority(record) { replay ->
+            when (replay) {
+                DiscardReplayIdentity.MATCH -> deleteKnownOutput(
+                    context = context,
+                    uri = allocation.uri,
+                    discardJournal = discardJournal,
+                    expectedIdentity = allocation.identity,
+                ).fullyRetired
+                DiscardReplayIdentity.ABSENT -> clearPending(context, allocation.uri, discardJournal)
+                DiscardReplayIdentity.MISMATCH,
+                DiscardReplayIdentity.AMBIGUOUS,
+                DiscardReplayIdentity.UNAVAILABLE,
+                DiscardReplayIdentity.LEGACY,
+                -> false
+            }
+        }
+        // Keep the three outcomes distinct. In particular, callers must not erase UNRESOLVED and
+        // claim terminal deletion: without either the row delete or a durable DISCARD marker, a
+        // structurally valid pending row is still eligible for launch adoption.
+        return when {
+            deleted -> PendingOutputDiscardResult.DELETED
+            discardJournal.lookup(allocation.uri.toString()) == DiscardJournalLookup.PRESENT ->
+                PendingOutputDiscardResult.RECOVERY_MARKED
+            else -> PendingOutputDiscardResult.UNRESOLVED
+        }
+    }
+
+    /**
+     * URI-only callers cannot prove allocation identity. Fail closed and let REGISTERED/family
+     * recovery own the row instead of reading and blessing a possible replacement.
+     */
+    internal fun discardPendingOutput(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): PendingOutputDiscardResult = pendingOutputAllocation(uri)?.let { allocation ->
+        discardPendingOutput(context, allocation, discardJournal)
+    } ?: PendingOutputDiscardResult.UNRESOLVED
+
+    /**
+     * Commits capture-family delete intent before the UI acknowledges deletion.
+     *
+     * The key is independent of any one MediaStore URI, so HEIF/JPEG/DNG rows created after the
+     * delete (and published rows whose exact-URI discard failed) remain vetoed across Engine and
+     * process replacement. The process token lets launch recovery retain current-process markers:
+     * an old Engine may still produce a sibling after a replacement Engine's recovery pass.
+     */
+    internal fun markFamilyDeletedResult(
+        context: Context,
+        family: CaptureFamilyKey,
+    ): FamilyDeletionMarkResult = markFamilyDeletedResult(
+        family = family,
+        markerStore = SharedPreferencesFamilyMarkerStore(
+            context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE),
+        ),
+    )
+
+    internal fun markFamilyDeletedResult(
+        family: CaptureFamilyKey,
+        markerStore: FamilyDeletionMarkerStore,
+    ): FamilyDeletionMarkResult = withFamilyJournalAuthority(deletedFamilyJournalKey(family)) {
+        val key = deletedFamilyJournalKey(family)
+        repeat(COMPLETION_MARK_ATTEMPTS) { attempt ->
+            val durable = synchronized(familyJournalMetadataLock) {
+                if (markerStore.contains(key)) {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
+                }
+                val markerCount = runCatching { markerStore.size() }.getOrElse {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.UNAVAILABLE
+                }
+                if (markerCount >= MAX_DELETED_FAMILY_MARKERS) {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.CAPACITY_EXHAUSTED
+                }
+                markerStore.put(key, processJournalOwner)
+            }
+            if (durable) return@withFamilyJournalAuthority FamilyDeletionMarkResult.DURABLE
+            if (attempt + 1 < COMPLETION_MARK_ATTEMPTS) {
+                // Preference I/O is serialized for capacity, but retry delay never owns global
+                // metadata authority and cannot stall another family's durable mark. An interrupted
+                // backoff (owner retired) stops retrying with the fail-closed UNAVAILABLE answer.
+                if (!sleepPreservingInterrupt(COMPLETION_MARK_BACKOFF_MS * (attempt + 1))) {
+                    return@withFamilyJournalAuthority FamilyDeletionMarkResult.UNAVAILABLE
+                }
+            }
+        }
+        FamilyDeletionMarkResult.UNAVAILABLE
+    }
+
+    internal fun markFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
+        markFamilyDeletedResult(context, family) == FamilyDeletionMarkResult.DURABLE
+
+    /**
+     * Retires one durable family marker only after producer terminality and exact provider absence.
+     * The query is injectable so the durability/limit state machine is exhaustively host-testable.
+     */
+    internal fun retireFamilyDeletionMarker(
+        context: Context,
+        family: CaptureFamilyKey,
+        producersTerminal: Boolean,
+        exactFamilyAbsent: () -> Boolean?,
+    ): FamilyDeletionRetirementResult = retireFamilyDeletionMarker(
+        family = family,
+        producersTerminal = producersTerminal,
+        markerStore = SharedPreferencesFamilyMarkerStore(
+            context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE),
+        ),
+        exactFamilyAbsent = exactFamilyAbsent,
+    )
+
+    internal fun retireFamilyDeletionMarker(
+        family: CaptureFamilyKey,
+        producersTerminal: Boolean,
+        markerStore: FamilyDeletionMarkerStore,
+        exactFamilyAbsent: () -> Boolean?,
+    ): FamilyDeletionRetirementResult {
+        if (!producersTerminal) return FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
+        val key = deletedFamilyJournalKey(family)
+        return withFamilyJournalAuthority(key) { authority ->
+            if (synchronized(authority.admissionMonitor) { authority.producerLeases > 0 }) {
+                return@withFamilyJournalAuthority FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
+            }
+            // SharedPreferences reads are thread-safe. Exact-family authority supplies the required
+            // same-key ordering; taking the global capacity/RMW lock here would couple an unrelated
+            // family's publication or absence query to a slow synchronous commit.
+            val markerPresent = runCatching { markerStore.contains(key) }.getOrNull()
+                ?: return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETRYABLE
+            if (!markerPresent) {
+                return@withFamilyJournalAuthority FamilyDeletionRetirementResult.ALREADY_ABSENT
+            }
+
+            // The exact-family authority prevents a same-family re-mark from being erased, while
+            // unrelated families remain free to commit their own deletion markers during provider
+            // I/O. Never place this unbounded Binder query under the global metadata monitor.
+            when (runCatching(exactFamilyAbsent).getOrNull()) {
+                false -> return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
+                null -> return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETRYABLE
+                true -> Unit
+            }
+
+            val sealedResult = synchronized(authority.admissionMonitor) {
+                if (authority.producerLeases > 0) {
+                    return@synchronized FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
+                }
+                // A publication registers before it waits for this family's monitor. If one
+                // arrived during the absence query, retain the marker: after we release the exact
+                // authority that publication must observe the durable delete and discard its row.
+                if (authority.publicationClaims > 0) {
+                    FamilyDeletionRetirementResult.RETRYABLE
+                } else {
+                    // This is the linearization point. Later registrants wait on the exact-family
+                    // owner and become post-retirement admissions; earlier ones are counted above.
+                    authority.retirementSealed = true
+                    null
+                }
+            }
+            if (sealedResult != null) return@withFamilyJournalAuthority sealedResult
+
+            try {
+                // Capacity-changing removal still uses the metadata RMW lock. Neither it nor the
+                // slow preference commit owns the global registry or admission monitor.
+                runCatching {
+                    synchronized(familyJournalMetadataLock) {
+                        if (!markerStore.contains(key)) {
+                            FamilyDeletionRetirementResult.ALREADY_ABSENT
+                        } else if (markerStore.remove(key)) {
+                            FamilyDeletionRetirementResult.RETIRED
+                        } else {
+                            FamilyDeletionRetirementResult.RETRYABLE
+                        }
+                    }
+                }.getOrDefault(FamilyDeletionRetirementResult.RETRYABLE)
+            } finally {
+                synchronized(authority.admissionMonitor) {
+                    check(authority.retirementSealed) { "family retirement seal lost" }
+                    authority.retirementSealed = false
+                }
+            }
+        }
+    }
+
+    /** Exact Images/Video absence proof for a producer-terminal family. */
+    internal fun retireFamilyDeletionIfAbsent(
+        context: Context,
+        family: CaptureFamilyKey,
+        producersTerminal: Boolean,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): FamilyDeletionRetirementResult = retireFamilyDeletionMarker(
+        context = context,
+        family = family,
+        producersTerminal = producersTerminal,
+        exactFamilyAbsent = {
+            val base = when (family.media) {
+                CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+            val query = deletedFamilyQuery(family, subDirs, context.packageName)
+            val queryArgs = Bundle().apply {
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            context.contentResolver.query(
+                base,
+                arrayOf(MediaStore.MediaColumns._ID),
+                queryArgs,
+                null,
+            )?.use { cursor -> !cursor.moveToFirst() }
+        },
+    )
+
+    /**
+     * Bounded same-process retry for retirement submissions lost to finite-lane saturation.
+     *
+     * The journal itself is capped at [MAX_DELETED_FAMILY_MARKERS], so the snapshot cannot grow
+     * without bound. Each entry goes back through [retireFamilyDeletionIfAbsent]: producer leases,
+     * publication claims, marker ownership, and exact pending+published provider absence are all
+     * re-evaluated at retry execution time. Query/removal failure therefore retains the marker.
+     */
+    internal fun retireCurrentProcessFamilyDeletions(
+        context: Context,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): Map<CaptureFamilyKey, FamilyDeletionRetirementResult> =
+        retireCurrentProcessFamilyDeletionsResult(context, subDirs).results
+
+    /** Preserves a journal-enumeration failure so the process retry owner cannot mistake it for empty. */
+    internal fun retireCurrentProcessFamilyDeletionsResult(
+        context: Context,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): CurrentProcessFamilyRetirementScan {
+        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+        val ownedEntries = runCatching {
+            preferences.all
+                .filterValues { owner -> owner == processJournalOwner }
+                .toSortedMap()
+        }.getOrElse {
+            return CurrentProcessFamilyRetirementScan(emptyMap(), retryableFailure = true)
+        }
+        val batch = boundedDeletedFamilyBatch(ownedEntries, MAX_DELETED_FAMILY_MARKERS)
+        val results = buildMap {
+            batch.entries.forEach { (rawKey, _) ->
+                val family = parseDeletedFamilyJournalKey(rawKey) ?: return@forEach
+                put(
+                    family,
+                    retireFamilyDeletionIfAbsent(
+                        context = context,
+                        family = family,
+                        producersTerminal = true,
+                        subDirs = subDirs,
+                    ),
+                )
+            }
+        }
+        return CurrentProcessFamilyRetirementScan(results, retryableFailure = false)
+    }
+
+    /** Fast shared-preference read used by launch restoration and recovery. */
+    internal fun isFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
+        context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+            .contains(deletedFamilyJournalKey(family))
+
+    /**
+     * Orders one complete still publication decision against deletion of its exact family.
+     *
+     * Publication registers its claim before waiting for the family monitor, then keeps that
+     * authority through provider publication and the saved callback. A replacement Engine's
+     * same-family delete therefore either commits first and selects [deleted], or waits until
+     * [live] is wholly complete. Unrelated families use different monitors. The global registry
+     * and metadata locks never span [live], [deleted], provider calls, or retry sleeps.
+     *
+     * Journal-read uncertainty selects [unavailable], retaining complete bytes privately rather
+     * than guessing that the family is live or destructively treating an unreadable marker as a
+     * confirmed delete.
+     */
+    internal fun <T> withFamilyPublicationAuthority(
+        context: Context,
+        family: CaptureFamilyKey,
+        deleted: () -> T,
+        unavailable: () -> T,
+        live: () -> T,
+        publicationRegistered: () -> Unit = {},
+    ): T = withFamilyPublicationAuthority(
+        family = family,
+        markerStore = SharedPreferencesFamilyMarkerStore(
+            context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE),
+        ),
+        deleted = deleted,
+        unavailable = unavailable,
+        live = live,
+        publicationRegistered = publicationRegistered,
+    )
+
+    internal fun <T> withFamilyPublicationAuthority(
+        family: CaptureFamilyKey,
+        markerStore: FamilyDeletionMarkerStore,
+        deleted: () -> T,
+        unavailable: () -> T,
+        live: () -> T,
+        publicationRegistered: () -> Unit = {},
+    ): T {
+        val key = deletedFamilyJournalKey(family)
+        return withFamilyJournalAuthority(
+            key,
+            publication = true,
+            onRegistered = publicationRegistered,
+        ) {
+            // The exact-family monitor is the ordering authority. SharedPreferences.contains is
+            // thread-safe, so a read-only publication decision must not wait for another family's
+            // capacity-changing commit under [familyJournalMetadataLock].
+            val markerPresent = runCatching { markerStore.contains(key) }.getOrNull()
+            when (markerPresent) {
+                true -> deleted()
+                false -> live()
+                null -> unavailable()
+            }
+        }
+    }
+
+    /** Durable reject/delete path for any output the app has already classified as failed. */
+    internal fun reserveRejectedOutputCleanup(): RejectedOutputCleanupReservation<RejectedOutput>? =
+        rejectedOutputOwner.reserve()
+
+    internal fun dispatchRejectedOutput(
+        context: Context,
+        allocation: PendingOutputAllocation,
+        onComplete: (PendingOutputDiscardResult) -> Unit = {},
+    ): RejectedOutputCleanupDispatch = rejectedOutputOwner.dispatch(
+        RejectedOutput(context.applicationContext, allocation),
+        onComplete,
+    )
+
+    internal fun discardRejectedOutput(context: Context, uri: Uri): PendingOutputDiscardResult =
+        pendingOutputAllocation(uri)?.let { discardPendingOutput(context, it) }
+            ?: PendingOutputDiscardResult.UNRESOLVED
+
+    internal fun retryRejectedOutputs(): Int = rejectedOutputOwner.retryUnresolved()
+
+    internal fun retryPendingAllocationIdentities(): Int =
+        pendingIdentityRecoveryOwner.retryUnresolved()
+
+    internal fun rejectedOutputAdmissionAvailable(): Boolean =
+        rejectedOutputOwner.canAdmit() && pendingIdentityRecoveryOwner.canAdmit()
+
+    internal fun subscribeStillStorageAdmission(
+        listener: (Boolean) -> Unit,
+    ): ProcessAdmissionSubscription = stillStorageAdmissionSignal.subscribe(listener)
+
+    /**
+     * Per-(site, URI) change gate for the storage warnings below (AGG2-29), the same discipline as
+     * the identity-read warnings: a URI logs its FIRST failure at a site and then only when the
+     * failure CLASS changes; a success forgets it, so a later relapse reports again. Every row here
+     * spends the process-lifetime 120-row reserved budget, and one URI is legitimately retried —
+     * a save's sibling opens of the same row, launch recovery's bounded page retries of the same
+     * publish — so a persistent per-row fault used to spend one row per retry. Bounded LRU memory.
+     */
+    private val storageWarningGate = IdentityReadWarningGate()
+
+    private fun warnStorageOnce(
+        site: String,
+        uri: Uri,
+        message: String,
+        failure: Throwable?,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ) {
+        val reason = failure?.javaClass?.name ?: "none"
+        if (storageWarningGate.shouldLog("$site|$uri", reason)) warn(message, failure)
+    }
+
+    // Both helpers sit on the same save chain as the insert, whose silent exits were fixed on
+    // 2026-09-09; FileNotFound/Security/IllegalState (row deleted, volume unmounted) here turned into
+    // HEIF/JPEG/REC failure toasts with no app log line. One reserved row per failing URI and cause.
+    // [warn] defaults to the process reserved door; tests bind fresh budgets for exact counts (TE2-2).
+    fun openParcelFd(
+        context: Context,
+        uri: Uri,
+        mode: String = "rw",
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): ParcelFileDescriptor? =
+        runCatching { context.contentResolver.openFileDescriptor(uri, mode) }
+            .onSuccess { storageWarningGate.clear("open $mode|$uri") }
+            .onFailure { warnStorageOnce("open $mode", uri, "open $mode failed for $uri", it, warn) }
+            .getOrNull()
+
+    fun openOutputStream(
+        context: Context,
+        uri: Uri,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): OutputStream? =
+        runCatching { context.contentResolver.openOutputStream(uri) }
+            .onSuccess { storageWarningGate.clear("open output|$uri") }
+            .onFailure { warnStorageOnce("open output", uri, "open output stream failed for $uri", it, warn) }
+            .getOrNull()
+
+    /**
+     * Clears IS_PENDING so the file becomes visible to other apps (e.g. the gallery).
+     *
+     * Retries a transient resolver failure a few times with a short backoff (CRIT4-5): a complete
+     * artifact must not be stranded pending — and later deleted by the next launch's
+     * [cleanupOrphanedPendingBatch] sweep — over a one-off provider hiccup. Callers run on background
+     * executors (ioExecutor / recorderExecutor), so the bounded sleep never blocks the UI. A
+     * persistent failure still returns false; launch recovery returns an observable report and
+     * retries complete or structurally proven rows instead of silently deleting them.
+     */
+    fun publish(context: Context, uri: Uri): Boolean =
+        publish(context, uri, PendingDiscardJournal(context))
+
+    internal fun publish(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): Boolean = discardJournal.withLookupAuthority(uri.toString()) { lookup ->
+        if (lookup != DiscardJournalLookup.ABSENT) return@withLookupAuthority false
+        val preferenceState = pendingPreferenceState(context, uri)
+        if (
+            preferenceState == PendingJournalState.DISCARD ||
+            preferenceState == PendingJournalState.UNAVAILABLE
+        ) {
+            return@withLookupAuthority false
+        }
+
+        val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+        var lastFailure: Throwable? = null
+        repeat(PUBLISH_ATTEMPTS) { attempt ->
+            val update = runCatching { context.contentResolver.update(uri, values, null, null) }
+            lastFailure = update.exceptionOrNull()
+                ?: IllegalStateException("IS_PENDING=0 update matched ${update.getOrNull()} rows")
+            val published = (update.getOrNull() ?: 0) > 0
+            if (published) {
+                // SQLite was proven absent while holding this URI's process authority. Remove only
+                // the older preference; a later exact DISCARD owner remains independently durable.
+                runCatching {
+                    context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+                        .edit(commit = true) { remove(uri.toString()) }
+                }
+                storageWarningGate.clear("publish|$uri")
+                return@withLookupAuthority true
+            }
+            if (attempt < PUBLISH_ATTEMPTS - 1 &&
+                !sleepPreservingInterrupt(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1))
+            ) {
+                // Owner retired mid-backoff (AGG-30): stop retrying; the row stays retained for
+                // recovery exactly as on exhaustion, and the cause still gets its gated row.
+                warnStorageOnce("publish", uri, "publish interrupted after ${attempt + 1} attempts for $uri", lastFailure, warn)
+                return@withLookupAuthority false
+            }
+        }
+        // Exhaustion only — never per attempt. The row is retained for recovery either way; this
+        // row records WHY (a throwing provider policy vs. a vanished/foreign row matching 0 rows).
+        // Change-gated per URI: launch recovery re-runs the same row's publish on each bounded
+        // page retry, which used to spend one reserved row per retry (AGG2-29).
+        warnStorageOnce("publish", uri, "publish exhausted $PUBLISH_ATTEMPTS attempts for $uri", lastFailure, warn)
+        false
+    }
+
+    /**
+     * AGG3-4 (CRIT3-2, DES3-2): re-writes `IS_PENDING = 1` on a row launch recovery KEEPS pending
+     * and a later launch can still adopt ([keptRowReassertsPending], AGG4-4/AGG4-5).
+     * MediaProvider stamps a pending row's `DATE_EXPIRES` (about a week out) at insert and its idle
+     * maintenance deletes expired pending rows; nothing else in this app ever touches a retained
+     * row again, so "retained for the next start" silently became "expired" for any row recovery
+     * could not judge. A pending-flag update from the owner is what MediaProvider re-arms that
+     * expiry from, so each launch that keeps such a row buys it another full window.
+     *
+     * The update also RENAMES the backing file (AGG4-58 / DOC4-5, AOSP mainline MediaProvider):
+     * `IS_PENDING` and `DATE_EXPIRES` are placement columns, so `FileUtils.computeDateExpires`
+     * recomputes the expiry and `FileUtils.computeDataFromValues` rebuilds the on-disk name as
+     * `.pending-<newDateExpires>-<DISPLAY_NAME>`, changing `_data` (and the modified generation) on
+     * every re-arm. `DISPLAY_NAME`, `RELATIVE_PATH`, the row id, and `GENERATION_ADDED` survive,
+     * which is why [PendingDiscardIdentity] freezes exactly those: the destructive identity must
+     * NEVER include `_data` or `GENERATION_MODIFIED`, or the first re-arm would silently strip every
+     * kept row of its exact discard authority.
+     *
+     * PENDING DEVICE: the AOSP source settles the expiry and rename for mainline MediaProvider, but
+     * OEM provider forks are unverified; the host test pins only which kept rows receive the update.
+     * One attempt, best-effort (the row stays pending and is re-judged next launch either way); a
+     * failure spends one change-gated reserved warning row.
+     */
+    internal fun reassertPending(
+        context: Context,
+        uri: Uri,
+        warn: (String, Throwable?) -> Unit = processWarn,
+    ): Boolean {
+        val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 1) }
+        val update = runCatching { context.contentResolver.update(uri, values, null, null) }
+        if ((update.getOrNull() ?: 0) > 0) {
+            storageWarningGate.clear("reassert pending|$uri")
+            return true
+        }
+        val failure = update.exceptionOrNull()
+            ?: IllegalStateException("IS_PENDING=1 update matched ${update.getOrNull()} rows")
+        warnStorageOnce("reassert pending", uri, "pending expiry re-arm failed for $uri", failure, warn)
+        return false
+    }
+
+    private const val PUBLISH_ATTEMPTS = 3
+    private val processWarn: (String, Throwable?) -> Unit = { message, failure ->
+        DiagnosticLog.w(TAG, message, failure)
+    }
+    private const val PUBLISH_RETRY_BACKOFF_MS = 50L
+
+    /**
+     * Deletes one tracker-known output without conflating provider truth with journal cleanup.
+     *
+     * A deleted/already-absent provider row stays absent even when exact DISCARD-marker removal
+     * fails. The retained marker is then recovery work, not evidence that the URI still exists and
+     * should be restored into review. Conversely, a confirmed provider survivor remains reviewable,
+     * while an unanswered provider probe is kept distinct so the UI can report uncertainty without
+     * manufacturing a phantom handle.
+     */
+    internal fun deleteKnownOutput(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+        expectedIdentity: PendingDiscardIdentity? = null,
+    ): KnownOutputDeletionResult =
+        knownOutputDeletionResult(
+            delete = {
+                val condition = expectedIdentity?.let(::discardDeleteCondition)
+                context.contentResolver.delete(uri, condition?.first, condition?.second)
+            },
+            rowExistsAfter = { mediaRowExists(context, uri) },
+            clearDiscardMarker = { clearPending(context, uri, discardJournal) },
+        )
+
+    /**
+     * True only when both the provider row and its exact durable retry metadata are gone.
+     *
+     * Generic recovery/discard callers retain the historical Boolean contract. Review-family
+     * deletion consumes [deleteKnownOutput] directly because it needs the two axes separately.
+     */
+    fun delete(context: Context, uri: Uri): Boolean =
+        deleteKnownOutput(context, uri).fullyRetired
+
+    /** Null means the provider could not answer; false is an authoritative already-absent row. */
+    private fun mediaRowExists(context: Context, uri: Uri): Boolean? = runCatching {
+        val queryArgs = Bundle().apply {
+            // delete() is also used for not-yet-published cleanup; include an owned pending row so
+            // an empty default query cannot be mistaken for authoritative absence.
+            putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+        }
+        context.contentResolver.query(
+            uri,
+            arrayOf(MediaStore.MediaColumns._ID),
+            queryArgs,
+            null,
+        )?.use { cursor -> cursor.moveToFirst() }
+    }.getOrNull()
+
+    /** Read-only exact-row truth used after a system-owned delete-consent surface returns. */
+    internal fun knownOutputPresence(
+        context: Context,
+        uri: Uri,
+    ): KnownOutputProviderDisposition = when (mediaRowExists(context, uri)) {
+        true -> KnownOutputProviderDisposition.PRESENT
+        false -> KnownOutputProviderDisposition.ALREADY_ABSENT
+        null -> KnownOutputProviderDisposition.UNKNOWN
+    }
+
+    /**
+     * Deletes every untracked row belonging to one exact versioned capture family.
+     *
+     * The durable family marker has already won before this sweep starts. Usually the unknown rows
+     * are complete-but-pending outputs whose earlier publication failed. The exact-family
+     * publication authority also permits the opposite ordering, though: an old Engine can finish
+     * publication immediately before a replacement Engine commits Delete. Include published rows
+     * here so that winner is still discovered and deleted instead of remaining Gallery-visible.
+     * [excluded] is the tracker's frozen set; its caller keeps exact survivor accounting for those
+     * rows. Exact F1 names, package ownership, and capture directories prevent proximity or foreign
+     * media deletion. Every provider outcome is preserved in [DeletedFamilySweepResult]; unresolved
+     * rows and query uncertainty remain owned by the durable family marker.
+     */
+    internal fun deleteUntrackedFamilySiblings(
+        context: Context,
+        family: CaptureFamilyKey,
+        excluded: Set<Uri>,
+    ): DeletedFamilySweepResult {
+        val base = when (family.media) {
+            CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+        return sweepDeletedFamilySiblings(
+            excluded = excluded,
+            discover = {
+                val queryArgs = Bundle().apply {
+                    val query = deletedFamilyQuery(family, CAPTURE_SUBDIRS, context.packageName)
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                }
+                context.contentResolver.query(
+                    base,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    queryArgs,
+                    null,
+                )?.use { cursor ->
+                    buildList {
+                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                        while (cursor.moveToNext()) {
+                            add(ContentUris.withAppendedId(base, cursor.getLong(idCol)))
+                        }
+                    }
+                } ?: error("MediaProvider returned no cursor for exact-family delete sweep")
+            },
+            delete = { rowUri -> delete(context, rowUri) },
+        )
+    }
+
+    /**
+     * Recovers our own prior-process pending entries under DCIM/[subDir]. A complete take is adopted
+     * by publishing it; only a proven incomplete artifact is deleted. Indeterminate rows remain
+     * pending for a later launch rather than risking silent data loss. Best-effort; never throws.
+     * One bounded page per call; `executeLaunchMediaRecovery` owns the cursor loop and retry budget.
+     */
+    internal fun cleanupOrphanedPendingBatch(
+        context: Context,
+        cursor: OrphanRecoveryCursor = OrphanRecoveryCursor(),
+        batchLimit: Int = MAX_ORPHAN_RECOVERY_ROWS_PER_COLLECTION,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+        targets: List<OrphanRecoveryTarget> = defaultOrphanRecoveryTargets(),
+    ): OrphanRecoveryBatch {
+        require(batchLimit > 0)
+        require(targets.isNotEmpty())
+        // Only sweep entries created BEFORE this process: the launch-time sweep runs on the setup
+        // executor while an immediate first capture creates its own pending entry on ioExecutor —
+        // without the age gate the sweep could delete that in-flight write (two-executor race on
+        // shared MediaStore state; an orphan from a prior crash is by definition older than us).
+        val processStartSecs = processStartEpochSecs(
+            nowMillis = System.currentTimeMillis(),
+            elapsedRealtimeMillis = android.os.SystemClock.elapsedRealtime(),
+            processStartElapsedRealtimeMillis = android.os.Process.getStartElapsedRealtime(),
+        )
+        // Selection/args construction is pure and PINNED BY TEST (OrphanSweepTest). Each collection
+        // is independently caught and reported, so a broken Images query cannot suppress Video.
+        val (selection, args) = orphanSweepSelection(subDirs, context.packageName, processStartSecs)
+        // Process-local rejected rows and durable family tombstones are one bounded preflight, not
+        // work repeated for every Images/Video page. A failure retries this exact stage before any
+        // media cursor advances.
+        if (!cursor.preflightComplete) {
+            retryRejectedOutputs()
+            retryPendingAllocationIdentities()
+            val report = cleanupDeletedFamilyJournal(context, subDirs)
+            return OrphanRecoveryBatch(
+                report = report,
+                nextCursor = cursor.copy(preflightComplete = true),
+                hasMore = true,
+            )
+        }
+
+        // The exact-URI DISCARD journal is its own terminal stage. Generic collection pages count
+        // and advance past its pending rows without deleting them; published rows are reachable only
+        // through these durable URI markers. A permanent failure receives the normal bounded retry
+        // budget, then advances so one bad provider row cannot starve later markers forever.
+        if (cursor.mediaComplete && !cursor.discardComplete) {
+            val batch = cleanupDiscardJournalBatch(
+                context = context,
+                afterKey = cursor.discardAfterKey,
+                batchLimit = MAX_DISCARD_RECOVERY_ROWS,
+                discardJournal = discardJournal,
+            )
+            return OrphanRecoveryBatch(
+                report = batch.report,
+                nextCursor = cursor.copy(
+                    discardAfterKey = batch.nextAfterKey,
+                    discardComplete = !batch.hasMore,
+                ),
+                hasMore = batch.hasMore,
+                continueAfterFailureExhaustion = true,
+            )
+        }
+
+        var report = RecoveryReport()
+        var nextCursor = cursor
+        var exhaustedCursor = cursor
+        for (target in targets) {
+            val base = target.base
+            val collection = target.collection
+            val afterId = cursor.afterId(collection)
+            if (afterId == OrphanRecoveryCursor.COLLECTION_COMPLETE) continue
+            var nextAfterId = afterId
+            var collectionHasMore = false
+            val collectionResult = runCatching {
+                val page = orphanSweepPage(selection, args, afterId, batchLimit)
+                val queryArgs = Bundle().apply {
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, page.selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, page.args)
+                    // Pending items are hidden from ordinary queries even for the owner; opt in.
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                    putStringArray(
+                        ContentResolver.QUERY_ARG_SORT_COLUMNS,
+                        arrayOf(MediaStore.MediaColumns._ID),
+                    )
+                    putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_ASCENDING)
+                    putInt(ContentResolver.QUERY_ARG_LIMIT, page.queryLimit)
+                }
+                val cursor = context.contentResolver.query(
+                    base,
+                    arrayOf(
+                        MediaStore.MediaColumns._ID,
+                        MediaStore.MediaColumns.IS_PENDING,
+                        MediaStore.MediaColumns.MIME_TYPE,
+                        MediaStore.MediaColumns.SIZE,
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                    ),
+                    queryArgs,
+                    null,
+                ) ?: error("MediaProvider returned no cursor")
+                cursor.use {
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+                    val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+                    val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    var processed = 0
+                    while (cursor.moveToNext()) {
+                        if (cursor.getInt(pendingCol) != 1) continue
+                        if (processed >= batchLimit) {
+                            collectionHasMore = true
+                            break
+                        }
+                        val rowId = cursor.getLong(idCol)
+                        nextAfterId = rowId
+                        processed += 1
+                        report = report.record(RecoveryEvent.SCANNED)
+                        val uri = ContentUris.withAppendedId(base, rowId)
+                        val journalState = pendingJournalState(context, uri, discardJournal)
+                        if (journalState == PendingJournalState.UNAVAILABLE) {
+                            // SQLite failure is not absence. Do not probe, adopt, delete, or publish
+                            // while exact delete authority is unknowable; retry this same cursor.
+                            // The row is still kept, and whether a later launch adopts it is just as
+                            // unknowable — so it re-arms its expiry like any adoptable kept row
+                            // (AGG4-5): a journal outage must not let the provider expire a take.
+                            reassertPending(context, uri)
+                            report = report
+                                .record(RecoveryEvent.QUERY_FAILED)
+                                .record(RecoveryEvent.RETAINED)
+                            continue
+                        }
+                        val familyDeleted = CaptureFamilyKey.parse(cursor.getString(nameCol))
+                            ?.familyKey
+                            ?.let { isFamilyDeleted(context, it) }
+                            ?: false
+                        // Provider SIZE is metadata, not structural proof (AGG4-28): whether
+                        // MediaProvider keeps it current for a pending row after an abrupt process
+                        // death is unverified, so SIZE <= 0 decides nothing by itself. Every probe
+                        // below measures the opened descriptor's real length instead.
+                        val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
+                        val probeOutcome = when {
+                            // The lexicographically paged DISCARD stage below is the only terminal
+                            // owner for an exact durable URI marker. This generic MediaStore page
+                            // still counts/advances past the row, but must not spend the whole launch
+                            // retry budget trying the same delete before that progress-capable stage.
+                            journalState == PendingJournalState.DISCARD ->
+                                PendingProbeOutcome(PendingProbe.INDETERMINATE)
+                            // A durable COMPLETE marker is the adoption proof for a row with bytes; a
+                            // COMPLETE row the provider reports EMPTY is judged on its opened
+                            // descriptor's real length instead, so an empty or unreadable file is never
+                            // published on the marker alone. It is NOT sent through the format probe
+                            // (AGG5-7): the only doubt is the provider's metadata, never the bytes the
+                            // marker already vouches for, and an undecidable-but-complete layout must
+                            // not let the app's weakest evidence overrule its strongest.
+                            journalState == PendingJournalState.COMPLETE && sizeBytes > 0L ->
+                                PendingProbeOutcome(PendingProbe.VALID)
+                            journalState == PendingJournalState.COMPLETE ->
+                                pendingProbeOutcome { completeMarkerLengthVerdict(descriptorLength(context, uri)) }
+                            else -> probePendingMedia(
+                                context = context,
+                                uri = uri,
+                                mimeType = cursor.getString(mimeCol).orEmpty(),
+                                isVideoCollection = collection == OrphanRecoveryCollection.VIDEO,
+                            )
+                        }
+                        if (probeOutcome.failed) {
+                            report = report.record(RecoveryEvent.PROBE_FAILED)
+                        }
+                        when (orphanDisposition(journalState, probeOutcome.probe, familyDeleted)) {
+                            OrphanDisposition.ADOPT -> {
+                                val published = publish(context, uri, discardJournal)
+                                // A structurally adoptable take whose publish keeps failing stays
+                                // pending; without the re-arm it reached MediaProvider's expiry —
+                                // the very loss AGG3-4 closed for every other kept row (AGG4-5).
+                                if (!published) reassertPending(context, uri)
+                                report = report.record(
+                                    if (published) RecoveryEvent.ADOPTED else RecoveryEvent.PUBLISH_FAILED,
+                                )
+                            }
+                            OrphanDisposition.DELETE -> {
+                                report = report.record(
+                                    if (delete(context, uri)) RecoveryEvent.DELETED
+                                    else RecoveryEvent.DELETE_FAILED,
+                                )
+                            }
+                            OrphanDisposition.KEEP_PENDING -> {
+                                // Bounded re-arm (AGG4-4): only a row a later launch can still
+                                // adopt buys another expiry window — see keptRowReassertsPending.
+                                if (keptRowReassertsPending(journalState, probeOutcome)) {
+                                    reassertPending(context, uri)
+                                }
+                                report = report.record(RecoveryEvent.RETAINED)
+                            }
+                        }
+                    }
+                }
+            }
+            if (collectionResult.isFailure) {
+                report = report.record(RecoveryEvent.QUERY_FAILED)
+                exhaustedCursor = exhaustedCursor.withAfterId(collection, OrphanRecoveryCursor.COLLECTION_COMPLETE)
+            } else {
+                val advancedAfterId = if (collectionHasMore) nextAfterId else OrphanRecoveryCursor.COLLECTION_COMPLETE
+                nextCursor = nextCursor.withAfterId(collection, advancedAfterId)
+                exhaustedCursor = exhaustedCursor.withAfterId(collection, advancedAfterId)
+            }
+        }
+        return OrphanRecoveryBatch(
+            report = report,
+            nextCursor = nextCursor,
+            // Even an empty media scan must enter the independent DISCARD stage once.
+            hasMore = !nextCursor.mediaComplete || !nextCursor.discardComplete,
+            // A media page whose failure is a ROW (publish/delete failed, journal unavailable) has
+            // already retained that row and moved its cursor past it; once the bounded retry budget
+            // is spent it may advance, or one persistently failing row would starve every later
+            // Images/Video page and the whole DISCARD stage on every launch. A collection whose
+            // QUERY failed did not advance; after exhaustion it is skipped for the rest of this run
+            // via [exhaustedCursor] (AGG2-21) — stopping starved DISCARD on every launch while the
+            // query kept failing, and continuing from nextCursor re-ran the identical failing query
+            // with its full retry budget on every later page. exhaustedCursor therefore always
+            // differs from the input cursor when anything failed, which is the progress guarantee.
+            // The preflight stage stays blocking because media disposition depends on the family
+            // journal it reconciles.
+            continueAfterFailureExhaustion = exhaustedCursor != cursor,
+            exhaustedCursor = exhaustedCursor,
+        )
+    }
+
+    /**
+     * Reconciles family tombstones against both pending and published rows.
+     *
+     * A marker written by this process is deliberately never cleared here: a retired Engine may
+     * still own an accepted save tail. A prior-process marker can be removed only after its exact,
+     * bounded family query completed and every matching row was authoritatively deleted/absent.
+     */
+    private fun cleanupDeletedFamilyJournal(
+        context: Context,
+        subDirs: List<String>,
+    ): RecoveryReport {
+        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+        val allEntries = runCatching { preferences.all.toSortedMap() }.getOrElse {
+            return RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
+        }
+        val batch = boundedDeletedFamilyBatch(allEntries, MAX_DELETED_FAMILY_MARKERS)
+        var report = if (batch.hasMore) {
+            RecoveryReport().record(RecoveryEvent.QUERY_FAILED)
+        } else {
+            RecoveryReport()
+        }
+        batch.entries.forEach { (rawKey, rawOwner) ->
+            val family = parseDeletedFamilyJournalKey(rawKey)
+            if (family == null) {
+                report = report.record(RecoveryEvent.QUERY_FAILED)
+                return@forEach
+            }
+            val base = when (family.media) {
+                CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+            val rows = runCatching {
+                val query = deletedFamilyQuery(family, subDirs, context.packageName)
+                val queryArgs = Bundle().apply {
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                }
+                context.contentResolver.query(
+                    base,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    queryArgs,
+                    null,
+                )?.use { cursor ->
+                    buildList<Uri> {
+                        while (cursor.moveToNext()) {
+                            add(ContentUris.withAppendedId(base, cursor.getLong(0)))
+                        }
+                    }
+                } ?: error("MediaProvider returned no cursor")
+            }
+            val ownedRows = rows.getOrElse {
+                report = report.record(RecoveryEvent.QUERY_FAILED)
+                return@forEach
+            }
+            var resolved = true
+            ownedRows.forEach { uri ->
+                report = report.record(RecoveryEvent.SCANNED)
+                if (delete(context, uri)) {
+                    report = report.record(RecoveryEvent.DELETED)
+                } else {
+                    resolved = false
+                    report = report.record(RecoveryEvent.DELETE_FAILED)
+                }
+            }
+            if (resolved && rawOwner != processJournalOwner) {
+                preferences.edit(commit = true) { remove(rawKey) }
+            }
+        }
+        return report
+    }
+
+    internal fun cleanupDiscardJournalBatch(
+        context: Context,
+        afterKey: String?,
+        batchLimit: Int,
+        discardJournal: PendingDiscardJournal,
+    ): DiscardJournalRecoveryBatch {
+        val page = runCatching {
+            discardJournal.page(afterKey, batchLimit)
+        }.getOrElse {
+            return DiscardJournalRecoveryBatch(
+                report = RecoveryReport().record(RecoveryEvent.QUERY_FAILED),
+                nextAfterKey = afterKey,
+                hasMore = false,
+            )
+        }
+        var report = RecoveryReport()
+        for (record in page.records) {
+            report = report.record(RecoveryEvent.SCANNED)
+            val uri = runCatching { record.uri.toUri() }.getOrNull()
+            val event = if (uri == null) {
+                RecoveryEvent.DELETE_FAILED
+            } else {
+                discardJournal.withReplayIdentityAuthority(record) { identity ->
+                    when (identity) {
+                        DiscardReplayIdentity.MATCH -> {
+                            if (
+                                deleteKnownOutput(
+                                    context = context,
+                                    uri = uri,
+                                    discardJournal = discardJournal,
+                                    expectedIdentity = requireNotNull(record.identity),
+                                ).fullyRetired
+                            ) {
+                                RecoveryEvent.DELETED
+                            } else {
+                                RecoveryEvent.DELETE_FAILED
+                            }
+                        }
+                        DiscardReplayIdentity.ABSENT -> {
+                            if (clearPending(context, uri, discardJournal)) {
+                                RecoveryEvent.DELETED
+                            } else {
+                                RecoveryEvent.DELETE_FAILED
+                            }
+                        }
+                        DiscardReplayIdentity.MISMATCH,
+                        DiscardReplayIdentity.AMBIGUOUS,
+                        DiscardReplayIdentity.UNAVAILABLE,
+                        DiscardReplayIdentity.LEGACY,
+                        -> RecoveryEvent.DELETE_FAILED
+                    }
+                }
+            }
+            report = report.record(event)
+        }
+        return DiscardJournalRecoveryBatch(report, page.nextAfterKey, page.hasMore)
+    }
+
+    private fun registerPending(context: Context, uri: Uri): PendingRegistrationDisposition =
+        pendingRegistrationDisposition(
+            register = {
+                SharedPreferencesDurableEdit.putString(
+                    context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE),
+                    uri.toString(),
+                    PENDING_REGISTERED,
+                )
+            },
+            delete = { context.contentResolver.delete(uri, null, null) },
+            rowExists = { mediaRowExists(context, uri) },
+            clearRegistered = { clearRegisteredPendingOnly(context, uri) },
+        )
+
+    private fun pendingJournalState(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal,
+    ): PendingJournalState = when (discardJournal.lookup(uri.toString())) {
+        DiscardJournalLookup.PRESENT -> PendingJournalState.DISCARD
+        DiscardJournalLookup.UNAVAILABLE -> PendingJournalState.UNAVAILABLE
+        DiscardJournalLookup.ABSENT -> pendingPreferenceState(context, uri)
+    }
+
+    private fun pendingPreferenceState(context: Context, uri: Uri): PendingJournalState =
+        runCatching {
+            when (
+                context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+                    .getString(uri.toString(), null)
+            ) {
+                PENDING_COMPLETE -> PendingJournalState.COMPLETE
+                PendingDiscardJournal.LEGACY_DISCARD_VALUE -> PendingJournalState.DISCARD
+                PENDING_REGISTERED -> PendingJournalState.REGISTERED
+                else -> PendingJournalState.UNKNOWN
+            }
+        }.getOrDefault(PendingJournalState.UNAVAILABLE)
+
+    private fun clearPending(
+        context: Context,
+        uri: Uri,
+        discardJournal: PendingDiscardJournal = PendingDiscardJournal(context),
+    ): Boolean {
+        val discardRemoved = discardJournal.remove(uri.toString())
+        context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+            .edit(commit = true) { remove(uri.toString()) }
+        return discardRemoved
+    }
+
+    /** Atomically refuses a row that changed after the replay identity query. */
+    internal fun discardDeleteCondition(
+        identity: PendingDiscardIdentity,
+    ): Pair<String, Array<String>> {
+        val clauses = mutableListOf(
+            "${MediaStore.MediaColumns._ID} = ?",
+            "${MediaStore.MediaColumns.GENERATION_ADDED} = ?",
+            "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+            "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+            "${MediaStore.MediaColumns.MIME_TYPE} = ?",
+        )
+        val args = mutableListOf(
+            identity.rowId.toString(),
+            identity.generationAdded.toString(),
+            identity.displayName,
+            identity.relativePath,
+            identity.mimeType,
+        )
+        if (identity.ownerPackageName == null) {
+            clauses += "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} IS NULL"
+        } else {
+            clauses += "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
+            args += identity.ownerPackageName
+        }
+        if (identity.dateTaken == null) {
+            clauses += "${MediaStore.MediaColumns.DATE_TAKEN} IS NULL"
+        } else {
+            clauses += "${MediaStore.MediaColumns.DATE_TAKEN} = ?"
+            args += identity.dateTaken.toString()
+        }
+        return clauses.joinToString(" AND ") to args.toTypedArray()
+    }
+
+    private fun deletedFamilyJournalKey(family: CaptureFamilyKey): String =
+        "$DELETED_FAMILY_PREFIX${family.media.name}|${family.capturedAtEpochMillis}|${family.sequence}"
+
+    private fun parseDeletedFamilyJournalKey(raw: String): CaptureFamilyKey? {
+        val fields = raw.split('|')
+        if (fields.size != 4 || fields[0] != DELETED_FAMILY_PREFIX.removeSuffix("|")) return null
+        val media = runCatching { CaptureFamilyMedia.valueOf(fields[1]) }.getOrNull() ?: return null
+        val timestamp = fields[2].toLongOrNull() ?: return null
+        val sequence = fields[3].toLongOrNull() ?: return null
+        return runCatching { CaptureFamilyKey(media, timestamp, sequence) }.getOrNull()
+    }
+
+    private fun probePendingMedia(
+        context: Context,
+        uri: Uri,
+        mimeType: String,
+        isVideoCollection: Boolean,
+    ): PendingProbeOutcome = pendingProbeOutcome {
+        when (pendingMediaProbeKind(mimeType, isVideoCollection)) {
+            PendingMediaProbeKind.VIDEO -> probeFinalizedVideo(context, uri)
+            PendingMediaProbeKind.JPEG -> probeCompleteJpeg(context, uri)
+            PendingMediaProbeKind.DNG -> probeCompleteDng(context, uri)
+            PendingMediaProbeKind.HEIF -> probeCompleteHeif(context, uri)
+            PendingMediaProbeKind.KEEP_PENDING -> PendingProbe.INDETERMINATE
+        }
+    }
+
+    /**
+     * Recovery's video verdict. An open failure throws (a transient PROBE failure). A parsed
+     * container decides on its tracks. An extractor THROW used to end there too, so a crash-truncated
+     * take — the commonest orphan, with no `moov` at all — stayed INDETERMINATE on every launch
+     * (AGG4-4). It is now judged structurally on the same descriptor: a proven-absent `moov` is
+     * INVALID; a walk that found a complete `moov` earns one confirming parse on a fresh descriptor,
+     * and only a repeated throw is a deterministic INDETERMINATE (kept, not re-armed — AGG5-8); an
+     * unreadable walk or a failed reopen re-throws the extractor's cause, so the row stays a
+     * transient probe failure that is retained (and its expiry re-armed) for a later launch. Launch
+     * recovery runs on its own background executor, never main or camera, so the pause is safe.
+     */
+    private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe =
+        openReadableParcelFd(context, uri).use { descriptor ->
+            recoveryVideoVerdict(
+                hasVideoTrack = { parcelFdHasVideoTrack(descriptor) },
+                moovPresence = { parcelFdMoovPresence(descriptor) },
+                reparseOnFreshDescriptor = {
+                    val fresh = try {
+                        openReadableParcelFd(context, uri)
+                    } catch (failure: Exception) {
+                        throw FreshDescriptorUnavailable(failure)
+                    }
+                    fresh.use(::parcelFdHasVideoTrack)
+                },
+                beforeReparse = { sleepPreservingInterrupt(FINALIZED_VIDEO_PARSE_RETRY_MS) },
+            )
+        }
+
+    private fun parcelFdHasVideoTrack(descriptor: ParcelFileDescriptor): Boolean {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(descriptor.fileDescriptor)
+            (0 until extractor.trackCount).any { index ->
+                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            }
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    /** Positional reads only, so whatever offset the extractor left on the fd is irrelevant. */
+    private fun parcelFdMoovPresence(descriptor: ParcelFileDescriptor): Mp4MoovPresence =
+        FileInputStream(descriptor.fileDescriptor).use { input ->
+            val channel = input.channel
+            probeMp4MoovPresence(channel.size()) { offset, byteCount ->
+                val buffer = ByteBuffer.allocate(byteCount)
+                var position = offset
+                while (buffer.hasRemaining()) {
+                    val read = channel.read(buffer, position)
+                    if (read <= 0) return@probeMp4MoovPresence null
+                    position += read
+                }
+                buffer.array()
+            }
+        }
+
+    /**
+     * Reopens a closed recording and classifies its video track for the live stop tail. This used
+     * to collapse every exception to "no track", so a provider that was merely busy at the moment
+     * of reopen (media scan, transient Binder failure) made the live path DELETE a good take that
+     * launch recovery — which classifies the same exception as INDETERMINATE — would have kept.
+     * Now only a successful open followed by a PARSED "no video track" verdict is authoritative; an
+     * open or extractor throw is INDETERMINATE and the caller retains the private row for recovery
+     * — unless [muxerStopThrew], where a confirming parse on a FRESH descriptor also throws AND the
+     * top-level walk proves no complete `moov` (see [classifyFinalizedVideoTrack], AGG4-3).
+     */
+    internal fun finalizedVideoTrackProbe(context: Context, uri: Uri, muxerStopThrew: Boolean): PendingProbe =
+        classifyFinalizedVideoTrack(
+            open = { openReadableParcelFd(context, uri) },
+            muxerStopThrew = muxerStopThrew,
+            hasVideoTrack = ::parcelFdHasVideoTrack,
+            moovPresence = ::parcelFdMoovPresence,
+            onOpenFailure = { failure ->
+                DiagnosticLog.w(TAG, "finalized video reopen failed for $uri; retained for recovery", failure)
+            },
+            onParseFailure = { failure, verdict ->
+                val outcome = if (verdict == PendingProbe.INVALID) "no complete moov; deleting" else "retained for recovery"
+                DiagnosticLog.w(TAG, "finalized video container unreadable for $uri; $outcome", failure)
+            },
+            // Recorder finalization thread, never main or camera; an interrupt simply skips the pause.
+            beforeParseRetry = { sleepPreservingInterrupt(FINALIZED_VIDEO_PARSE_RETRY_MS) },
+        )
+
+    private fun probeCompleteHeif(context: Context, uri: Uri): PendingProbe {
+        val pfd = openReadableParcelFd(context, uri)
+        return pfd.use {
+            FileInputStream(it.fileDescriptor).use { input ->
+                val channel = input.channel
+                probeHeifIsoBmff(channel.size()) { offset, byteCount ->
+                    val buffer = ByteBuffer.allocate(byteCount)
+                    channel.position(offset)
+                    while (buffer.hasRemaining()) {
+                        if (channel.read(buffer) <= 0) return@probeHeifIsoBmff null
+                    }
+                    buffer.array()
+                }
+            }
+        }
+    }
+
+    /**
+     * Judged on the descriptor's real length, never the provider's SIZE column (AGG4-28), and on
+     * structure as well as the tail ([probeCompleteJpegStructure], AGG5-71). Positional reads only.
+     */
+    private fun probeCompleteJpeg(context: Context, uri: Uri): PendingProbe {
+        val pfd = openReadableParcelFd(context, uri)
+        return pfd.use {
+            FileInputStream(it.fileDescriptor).use { input ->
+                val channel = input.channel
+                probeCompleteJpegStructure(channel.size()) { offset, byteCount ->
+                    val buffer = ByteBuffer.allocate(byteCount)
+                    var position = offset
+                    while (buffer.hasRemaining()) {
+                        val read = channel.read(buffer, position)
+                        if (read <= 0) return@probeCompleteJpegStructure null
+                        position += read
+                    }
+                    buffer.array()
+                }
+            }
+        }
+    }
+
+    /** Strip bounds are checked against the descriptor's real length (AGG4-28), not provider SIZE. */
+    private fun probeCompleteDng(context: Context, uri: Uri): PendingProbe {
+        val pfd = openReadableParcelFd(context, uri)
+        return pfd.use {
+            // fstat of the open descriptor; -1 means the provider handed back something that is not
+            // a sized regular file, which proves nothing about the bytes (a transient probe failure).
+            val sizeBytes = it.statSize
+            if (sizeBytes < 0L) throw IOException("DNG descriptor has no stat size")
+            if (sizeBytes == 0L) return@use PendingProbe.INVALID
+            val exif = androidx.exifinterface.media.ExifInterface(it.fileDescriptor)
+            val width = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_WIDTH, 0)
+            val height = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_LENGTH, 0)
+            val version = exif.getAttributeBytes(androidx.exifinterface.media.ExifInterface.TAG_DNG_VERSION)
+            val offsets = parseUnsignedExifValues(
+                exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_STRIP_OFFSETS),
+            )
+            val counts = parseUnsignedExifValues(
+                exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_STRIP_BYTE_COUNTS),
+            )
+            val stripsFit = offsets.isNotEmpty() && offsets.size == counts.size &&
+                offsets.zip(counts).all { (offset, count) -> count > 0L && offset <= sizeBytes - count }
+            if (width > 0 && height > 0 && version != null && version.isNotEmpty() && stripsFit) {
+                PendingProbe.VALID
+            } else {
+                PendingProbe.INVALID
+            }
+        }
+    }
+
+    /** fstat of the opened row; a provider/open failure throws (a transient probe failure). */
+    private fun descriptorLength(context: Context, uri: Uri): Long =
+        openReadableParcelFd(context, uri).use { it.statSize }
+
+    /** A queried row that cannot be reopened is a provider/probe error, not quiet indeterminacy. */
+    private fun openReadableParcelFd(context: Context, uri: Uri): ParcelFileDescriptor =
+        context.contentResolver.openFileDescriptor(uri, "r")
+            ?: throw IOException("MediaProvider returned no file descriptor")
+
+}
+
+/** Exact process-owned still-family producer marker; [close] is safe to repeat. */
+internal class CaptureFamilyProducerLease(
+    private val release: () -> Unit,
+) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) release()
+    }
+}
+
+/** Narrow storage seam that keeps family ordering tests independent of Android preference timing. */
+internal interface FamilyDeletionMarkerStore {
+    fun contains(key: String): Boolean
+    fun size(): Int
+    fun put(key: String, owner: String): Boolean
+    fun remove(key: String): Boolean
+}
+
+private class SharedPreferencesFamilyMarkerStore(
+    private val preferences: SharedPreferences,
+) : FamilyDeletionMarkerStore {
+    override fun contains(key: String): Boolean = preferences.contains(key)
+
+    override fun size(): Int = preferences.all.size
+
+    override fun put(key: String, owner: String): Boolean =
+        SharedPreferencesDurableEdit.putString(preferences, key, owner)
+
+    override fun remove(key: String): Boolean = SharedPreferencesDurableEdit.remove(preferences, key)
+}
+
+internal enum class FamilyDeletionMarkResult { DURABLE, CAPACITY_EXHAUSTED, UNAVAILABLE }
+
+internal enum class FamilyDeletionRetirementResult {
+    RETIRED,
+    ALREADY_ABSENT,
+    PRODUCERS_ACTIVE,
+    /** An exact provider row authoritatively remains; retry only after another mutation edge. */
+    RETAINED,
+    /** Marker/query/publication uncertainty may clear without another family mutation. */
+    RETRYABLE,
+}
+
+internal data class CurrentProcessFamilyRetirementScan(
+    val results: Map<CaptureFamilyKey, FamilyDeletionRetirementResult>,
+    val retryableFailure: Boolean,
+)
+
+internal data class DeletedFamilyQuery(val selection: String, val args: Array<String>)
+
+/** Exact terminal accounting for the untracked portion of a capture-family delete. */
+internal data class DeletedFamilySweepResult(
+    val discovered: Int = 0,
+    val deleted: Int = 0,
+    val unresolved: Int = 0,
+    val queryFailed: Boolean = false,
+) {
+    init {
+        require(discovered >= 0)
+        require(deleted >= 0)
+        require(unresolved >= 0)
+        require(deleted + unresolved == discovered)
+    }
+
+    val complete: Boolean get() = !queryFailed && unresolved == 0
+
+    companion object {
+        val QUERY_FAILED = DeletedFamilySweepResult(queryFailed = true)
+    }
+}
+
+/**
+ * Provider seam for exact-family discovery and deletion.
+ *
+ * Query failure is distinct from an authoritative empty result. A row whose delete reports success
+ * includes the already-absent case because [MediaStoreWriter.delete] probes an ambiguous zero count
+ * before returning; every false result remains an explicit unresolved sibling.
+ */
+internal fun <T> sweepDeletedFamilySiblings(
+    excluded: Set<T>,
+    discover: () -> List<T>,
+    delete: (T) -> Boolean,
+): DeletedFamilySweepResult {
+    val rows = runCatching(discover).getOrElse { return DeletedFamilySweepResult.QUERY_FAILED }
+    var discovered = 0
+    var deleted = 0
+    var unresolved = 0
+    rows.forEach { row ->
+        if (row in excluded) return@forEach
+        discovered += 1
+        if (runCatching { delete(row) }.getOrDefault(false)) {
+            deleted += 1
+        } else {
+            unresolved += 1
+        }
+    }
+    return DeletedFamilySweepResult(
+        discovered = discovered,
+        deleted = deleted,
+        unresolved = unresolved,
+    )
+}
+
+internal data class DeletedFamilyBatch<K, V>(
+    val entries: List<Map.Entry<K, V>>,
+    val hasMore: Boolean,
+)
+
+internal fun <K, V> boundedDeletedFamilyBatch(
+    entries: Map<K, V>,
+    limit: Int,
+): DeletedFamilyBatch<K, V> {
+    require(limit > 0)
+    return DeletedFamilyBatch(entries.entries.take(limit), entries.size > limit)
+}
+
+/** Exact bounded family query, extracted so placeholder order and path/owner anchors are testable. */
+internal fun deletedFamilyQuery(
+    family: CaptureFamilyKey,
+    subDirs: List<String>,
+    packageName: String,
+): DeletedFamilyQuery {
+    require(subDirs.isNotEmpty())
+    val names = family.knownOutputDisplayNames()
+    val paths = subDirs.joinToString(" OR ") {
+        MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
+    }
+    return DeletedFamilyQuery(
+        selection = "($paths) AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
+            "${MediaStore.MediaColumns.DISPLAY_NAME} IN (" +
+            names.joinToString(",") { "?" } + ")",
+        args = (subDirs.map { "DCIM/$it/%" } + packageName + names).toTypedArray(),
+    )
+}
+
+internal const val REJECTED_OUTPUT_CLEANUP_WORKER_COUNT = 2
+internal const val REJECTED_OUTPUT_CLEANUP_BACKLOG_CAPACITY = 8
+
+/** Post-insert authority when the preference-backed REGISTERED write itself is uncertain. */
+internal enum class PendingRegistrationDisposition {
+    REGISTERED,
+    ABSENT,
+    RETAINED,
+}
+
+/**
+ * A failed REGISTERED commit is not a failed insert. The URI may already name a private provider
+ * row, so release finite ownership only after delete/absence and metadata cleanup are authoritative.
+ */
+internal fun pendingRegistrationDisposition(
+    register: () -> Boolean,
+    delete: () -> Int,
+    rowExists: () -> Boolean?,
+    clearRegistered: () -> Boolean,
+): PendingRegistrationDisposition {
+    if (runCatching(register).getOrDefault(false)) {
+        return PendingRegistrationDisposition.REGISTERED
+    }
+    val deleted = runCatching(delete).getOrNull()?.let { it > 0 } == true
+    val absent = deleted || runCatching(rowExists).getOrNull() == false
+    return if (absent && runCatching(clearRegistered).getOrDefault(false)) {
+        PendingRegistrationDisposition.ABSENT
+    } else {
+        PendingRegistrationDisposition.RETAINED
+    }
+}
+
+/** Identity uncertainty is never destructive; stable absence clears only REGISTERED metadata. */
+internal fun recoverPendingAllocationIdentity(
+    capture: () -> PendingAllocationCaptureResult,
+    discardExact: (PendingOutputAllocation) -> PendingOutputDiscardResult,
+    clearAbsent: () -> Boolean,
+): PendingOutputDiscardResult = when (val result = capture()) {
+    is PendingAllocationCaptureResult.Exact -> discardExact(result.allocation)
+    PendingAllocationCaptureResult.Absent -> if (clearAbsent()) {
+        // Existing finite owners use DELETED as their generic terminal-success classification. No
+        // provider delete happened here: the provider proved absence and only REGISTERED was cleared.
+        PendingOutputDiscardResult.DELETED
+    } else {
+        PendingOutputDiscardResult.UNRESOLVED
+    }
+    PendingAllocationCaptureResult.Uncertain -> PendingOutputDiscardResult.UNRESOLVED
+}
+
+internal fun interface RejectedOutputRetryCancellation {
+    fun cancel()
+}
+
+internal fun interface RejectedOutputRetryScheduler {
+    fun schedule(delayMs: Long, action: () -> Unit): RejectedOutputRetryCancellation?
+}
+
+private val processPendingIdentityRetryExecutor =
+    java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "pending-identity-retry").apply { isDaemon = true }
+    }
+
+private val processPendingIdentityRetryScheduler = RejectedOutputRetryScheduler { delayMs, action ->
+    runCatching {
+        processPendingIdentityRetryExecutor.schedule(
+            action,
+            delayMs,
+            java.util.concurrent.TimeUnit.MILLISECONDS,
+        )
+    }.getOrNull()?.let { future ->
+        RejectedOutputRetryCancellation { future.cancel(false) }
+    }
+}
+
+internal enum class RejectedOutputCleanupDispatch { ACCEPTED, OVERFLOW, SHUTDOWN }
+
+/** One slot reserved before Camera2 may create a RAW output requiring failed-row cleanup. */
+internal class RejectedOutputCleanupReservation<T> internal constructor(
+    private val owner: RejectedOutputCleanupCapacityOwner<T>,
+) {
+    private val terminal = AtomicBoolean(false)
+
+    fun submit(output: T, onComplete: (PendingOutputDiscardResult) -> Unit = {}): Boolean {
+        if (!terminal.compareAndSet(false, true)) return false
+        return owner.submitReserved(output, onComplete)
+    }
+
+    fun cancel(): Boolean {
+        if (!terminal.compareAndSet(false, true)) return false
+        owner.releaseReservation()
+        return true
+    }
+}
+
+/** Process-finite non-inline cleanup owner with durable unresolved identity retention. */
+internal class RejectedOutputCleanupCapacityOwner<T>(
+    workerCount: Int,
+    backlogCapacity: Int,
+    private val admissionLimit: Int,
+    private val ownershipLimit: Int = admissionLimit * 2,
+    threadFactory: java.util.concurrent.ThreadFactory = rejectedOutputCleanupThreadFactory(),
+    private val discardEffect: (T) -> PendingOutputDiscardResult,
+    private val retryScheduler: RejectedOutputRetryScheduler? = null,
+    private val retryInitialDelayMs: Long = 250L,
+    private val retryMaxDelayMs: Long = 30_000L,
+    private val onAvailabilityChanged: ((Boolean) -> Unit)? = null,
+    /** Test seam: runs on the worker right after a finished attempt returns its permit. */
+    private val afterTaskReleased: () -> Unit = {},
+) {
+    private val lock = Any()
+    private val unresolved = LinkedHashSet<T>()
+    private val scheduledRetries = HashSet<T>()
+    private val inFlightRetries = HashSet<T>()
+    private val retryAttempts = HashMap<T, Int>()
+    private val executor = java.util.concurrent.ThreadPoolExecutor(
+        workerCount,
+        workerCount,
+        0L,
+        java.util.concurrent.TimeUnit.MILLISECONDS,
+        // The queue alone must hold every permit's task (AGG5-27, the AGG4-26 sibling): the permit
+        // returns in runAttempt's finally while that worker is still busy, so a reserve() in that
+        // window used to be admitted by the semaphore and then rejected by a backlog-sized queue —
+        // a spurious UNRESOLVED that counted against admissionLimit exactly as an outage drained.
+        java.util.concurrent.ArrayBlockingQueue(workerCount + backlogCapacity),
+        threadFactory,
+        java.util.concurrent.ThreadPoolExecutor.AbortPolicy(),
+    )
+    private val permitCount = workerCount + backlogCapacity
+    private val admission = java.util.concurrent.Semaphore(permitCount, true)
+
+    init {
+        require(workerCount > 0)
+        require(backlogCapacity > 0)
+        require(admissionLimit > 0)
+        require(ownershipLimit >= admissionLimit)
+        require(retryInitialDelayMs > 0L)
+        require(retryMaxDelayMs >= retryInitialDelayMs)
+    }
+
+    fun reserve(): RejectedOutputCleanupReservation<T>? {
+        val reservation = synchronized(lock) {
+            if (unresolved.size >= admissionLimit || !admission.tryAcquire()) null
+            else RejectedOutputCleanupReservation(this)
+        }
+        if (reservation != null) notifyAvailability()
+        return reservation
+    }
+
+    fun dispatch(
+        output: T,
+        onComplete: (PendingOutputDiscardResult) -> Unit = {},
+    ): RejectedOutputCleanupDispatch {
+        val reservation = reserve() ?: return RejectedOutputCleanupDispatch.OVERFLOW
+        return if (reservation.submit(output, onComplete)) {
+            RejectedOutputCleanupDispatch.ACCEPTED
+        } else {
+            RejectedOutputCleanupDispatch.SHUTDOWN
+        }
+    }
+
+    internal fun submitReserved(
+        output: T,
+        onComplete: (PendingOutputDiscardResult) -> Unit,
+    ): Boolean = try {
+        executor.execute { runAttempt(output, onComplete, retry = false) }
+        true
+    } catch (_: java.util.concurrent.RejectedExecutionException) {
+        val retryDelay = rememberResult(output, PendingOutputDiscardResult.UNRESOLVED, retry = false)
+        runCatching { onComplete(PendingOutputDiscardResult.UNRESOLVED) }
+        releaseReservation()
+        retryDelay?.let { scheduleRetry(output, it) }
+        false
+    }
+
+    private fun runAttempt(
+        output: T,
+        onComplete: (PendingOutputDiscardResult) -> Unit,
+        retry: Boolean,
+    ) {
+        val result = runCatching { discardEffect(output) }
+            .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
+        val retryDelay = rememberResult(output, result, retry)
+        try {
+            runCatching { onComplete(result) }
+        } finally {
+            releaseReservation()
+            retryDelay?.let { scheduleRetry(output, it) }
+            afterTaskReleased()
+        }
+    }
+
+    /** Returns a delay only for the one unresolved claim that owns the next retry. */
+    private fun rememberResult(
+        output: T,
+        result: PendingOutputDiscardResult,
+        retry: Boolean,
+    ): Long? = synchronized(lock) {
+        if (retry) inFlightRetries.remove(output)
+        if (result == PendingOutputDiscardResult.UNRESOLVED) {
+            check(output in unresolved || unresolved.size < ownershipLimit) {
+                "already-admitted rejected-output ownership exhausted"
+            }
+            unresolved.add(output)
+            if (retryScheduler == null || output in scheduledRetries || output in inFlightRetries) {
+                null
+            } else {
+                val attempt = (retryAttempts[output] ?: 0) + 1
+                retryAttempts[output] = attempt
+                scheduledRetries.add(output)
+                retryDelayMs(attempt)
+            }
+        } else {
+            unresolved.remove(output)
+            scheduledRetries.remove(output)
+            inFlightRetries.remove(output)
+            retryAttempts.remove(output)
+            null
+        }
+    }
+
+    private fun retryDelayMs(attempt: Int): Long {
+        var delay = retryInitialDelayMs
+        repeat((attempt - 1).coerceAtLeast(0).coerceAtMost(30)) {
+            delay = (delay * 2L).coerceAtMost(retryMaxDelayMs)
+        }
+        return delay
+    }
+
+    private fun scheduleRetry(output: T, delayMs: Long) {
+        val scheduler = retryScheduler ?: return
+        val scheduled = scheduler.schedule(delayMs) { dispatchScheduledRetry(output) }
+        if (scheduled == null) synchronized(lock) { scheduledRetries.remove(output) }
+    }
+
+    private fun dispatchScheduledRetry(output: T) {
+        val mayDispatch = synchronized(lock) {
+            output in unresolved && scheduledRetries.remove(output) && inFlightRetries.add(output)
+        }
+        if (!mayDispatch) return
+        if (!admission.tryAcquire()) {
+            rescheduleUndispatchedRetry(output)
+            return
+        }
+        notifyAvailability()
+        try {
+            executor.execute { runAttempt(output, {}, retry = true) }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            releaseReservation()
+            rescheduleUndispatchedRetry(output)
+        }
+    }
+
+    private fun rescheduleUndispatchedRetry(output: T) {
+        val delay = synchronized(lock) {
+            inFlightRetries.remove(output)
+            if (output !in unresolved || !scheduledRetries.add(output)) null
+            else retryDelayMs(retryAttempts[output] ?: 1)
+        }
+        delay?.let { scheduleRetry(output, it) }
+    }
+
+    fun retryUnresolved(): Int {
+        val pending = synchronized(lock) { unresolved.toList() }
+        if (retryScheduler == null) {
+            pending.forEach { output ->
+                val reservation = synchronized(lock) {
+                    if (admission.tryAcquire()) RejectedOutputCleanupReservation(this) else null
+                }
+                if (reservation != null) notifyAvailability()
+                reservation?.submit(output)
+            }
+        } else {
+            pending.forEach { output ->
+                val shouldSchedule = synchronized(lock) {
+                    if (output in scheduledRetries || output in inFlightRetries) false
+                    else scheduledRetries.add(output)
+                }
+                if (shouldSchedule) scheduleRetry(output, retryInitialDelayMs)
+            }
+        }
+        return unresolvedCount()
+    }
+
+    fun canAdmit(): Boolean = synchronized(lock) {
+        unresolved.size < admissionLimit && admission.availablePermits() > 0
+    }
+
+    internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
+
+    internal fun releaseReservation() {
+        admission.release()
+        notifyAvailability()
+    }
+
+    private fun notifyAvailability() {
+        onAvailabilityChanged?.invoke(canAdmit())
+    }
+
+    internal fun admittedCount(): Int = permitCount - admission.availablePermits()
+
+    internal fun queuedTaskCount(): Int = executor.queue.size
+
+    internal fun shutdownNowForTest() = executor.shutdownNow()
+}
+
+private fun rejectedOutputCleanupThreadFactory(): java.util.concurrent.ThreadFactory {
+    val sequence = java.util.concurrent.atomic.AtomicInteger()
+    return java.util.concurrent.ThreadFactory { task ->
+        Thread(task, "rejected-output-cleanup-${sequence.incrementAndGet()}").apply {
+            isDaemon = true
+        }
+    }
+}
+
+/** Legacy pure owner retained only for its existing unit-contract coverage; production is async. */
+internal class BoundedRejectedOutputOwner<T>(
+    private val admissionLimit: Int,
+    private val ownershipLimit: Int = admissionLimit * 2,
+    private val discardEffect: (T) -> PendingOutputDiscardResult,
+) {
+    private val lock = Any()
+    private val unresolved = LinkedHashSet<T>()
+
+    fun discard(output: T): PendingOutputDiscardResult {
+        val result = runCatching { discardEffect(output) }
+            .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
+        synchronized(lock) {
+            if (result == PendingOutputDiscardResult.UNRESOLVED) {
+                check(output in unresolved || unresolved.size < ownershipLimit) {
+                    "already-admitted rejected-output ownership exhausted"
+                }
+                unresolved.add(output)
+            } else {
+                unresolved.remove(output)
+            }
+        }
+        return result
+    }
+
+    fun retryUnresolved(): Int {
+        synchronized(lock) { unresolved.toList() }.forEach(::discard)
+        return unresolvedCount()
+    }
+
+    fun canAdmit(): Boolean = synchronized(lock) { unresolved.size < admissionLimit }
+    internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
+}
+
+internal data class PendingProbeOutcome(
+    val probe: PendingProbe,
+    val failed: Boolean = false,
+)
+
+/** Converts access/parser exceptions into an explicit retained probe failure for launch recovery. */
+internal fun pendingProbeOutcome(probe: () -> PendingProbe): PendingProbeOutcome {
+    val result = runCatching(probe)
+    return PendingProbeOutcome(
+        probe = result.getOrDefault(PendingProbe.INDETERMINATE),
+        failed = result.isFailure,
+    )
+}
+
+internal data class CompletionMarkResult(
+    val durable: Boolean,
+    val attempts: Int,
+)
+
+/** Durable ownership result for media the user has already deleted as part of a capture family. */
+internal enum class PendingOutputDiscardResult {
+    /** The exact MediaStore row is gone and its journal entry was cleared. */
+    DELETED,
+
+    /** Immediate delete failed, but DISCARD is durable and launch recovery owns the retry. */
+    RECOVERY_MARKED,
+
+    /** Neither deletion nor durable recovery ownership succeeded; an in-process retry is required. */
+    UNRESOLVED,
+}
+
+/**
+ * Terminal provider disposition for bytes that have already been closed and structurally
+ * completed. Both retained outcomes deliberately leave the MediaStore row private: publishing is
+ * forbidden until COMPLETE is durable, while a provider publication outage must not destroy a
+ * valuable take that launch recovery can adopt.
+ */
+internal enum class CompletedOutputPublication {
+    PUBLISHED,
+    RETAINED_MARKER_UNAVAILABLE,
+    RETAINED_PUBLICATION_UNAVAILABLE,
+}
+
+/**
+ * The single durable-before-publication gate shared by still and video callers.
+ *
+ * A failed marker commit is not a save failure and is not permission to delete structurally
+ * complete bytes. It is a recoverable pending outcome, and [publish] is intentionally not invoked.
+ */
+internal fun publishCompletedOutput(
+    markerDurable: Boolean,
+    publish: () -> Boolean,
+): CompletedOutputPublication {
+    if (!markerDurable) return CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE
+    return if (publish()) {
+        CompletedOutputPublication.PUBLISHED
+    } else {
+        CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE
+    }
+}
+
+/** Bounded durable-marker policy with injected seams for commit-failure tests. */
+internal fun markCompletionWithRetry(
+    maxAttempts: Int,
+    commit: () -> Boolean,
+    backoff: (attempt: Int) -> Unit = {},
+): CompletionMarkResult {
+    require(maxAttempts > 0)
+    repeat(maxAttempts) { zeroBasedAttempt ->
+        val attempt = zeroBasedAttempt + 1
+        if (runCatching(commit).getOrDefault(false)) {
+            return CompletionMarkResult(durable = true, attempts = attempt)
+        }
+        if (attempt < maxAttempts) {
+            backoff(attempt)
+            // An interrupted backoff means the owning executor is being retired (AGG-30): stop
+            // retrying. Non-durable is the fail-closed answer — the row stays REGISTERED and private.
+            if (Thread.currentThread().isInterrupted) {
+                return CompletionMarkResult(durable = false, attempts = attempt)
+            }
+        }
+    }
+    return CompletionMarkResult(durable = false, attempts = maxAttempts)
+}
+
+/** Pause before the single confirming re-parse of a muxer-stop-threw take ([classifyFinalizedVideoTrack]). */
+private const val FINALIZED_VIDEO_PARSE_RETRY_MS = 250L
+
+/**
+ * Retry backoff that keeps the interrupt contract (AGG-30 / D9). `runCatching { Thread.sleep() }`
+ * caught the InterruptedException and thereby CLEARED the thread's interrupt status, so a
+ * `shutdownNow()` on these executors could not stop a retry loop mid-backoff: it went on doing
+ * provider/SQLite work after its owner was retired. This restores the flag and returns false so the
+ * caller can stop retrying, matching `CameraTeardownTerminal` / `RecordingTeardownCoordinator`.
+ * (Launch recovery also uses it, but defensively only: nothing currently interrupts that daemon —
+ * see `executeLaunchMediaRecovery`, AGG4-57.)
+ */
+internal fun sleepPreservingInterrupt(ms: Long): Boolean = try {
+    Thread.sleep(ms)
+    true
+} catch (_: InterruptedException) {
+    Thread.currentThread().interrupt()
+    false
+}
+
+internal enum class RecoveryFailureClass { QUERY, PROBE, PUBLISH, DELETE }
+
+/** Monotonic per-collection page cursor for one process-owned launch recovery. */
+internal enum class OrphanRecoveryCollection { IMAGES, VIDEO }
+
+internal data class OrphanRecoveryTarget(
+    val base: Uri,
+    val collection: OrphanRecoveryCollection,
+)
+
+private fun defaultOrphanRecoveryTargets(): List<OrphanRecoveryTarget> = listOf(
+    OrphanRecoveryTarget(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, OrphanRecoveryCollection.IMAGES),
+    OrphanRecoveryTarget(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, OrphanRecoveryCollection.VIDEO),
+)
+
+internal data class OrphanRecoveryCursor(
+    val preflightComplete: Boolean = false,
+    val imagesAfterId: Long = 0L,
+    val videoAfterId: Long = 0L,
+    val discardAfterKey: String? = null,
+    val discardComplete: Boolean = false,
+) {
+    fun afterId(collection: OrphanRecoveryCollection): Long = when (collection) {
+        OrphanRecoveryCollection.IMAGES -> imagesAfterId
+        OrphanRecoveryCollection.VIDEO -> videoAfterId
+    }
+
+    fun withAfterId(collection: OrphanRecoveryCollection, value: Long): OrphanRecoveryCursor = when (collection) {
+        OrphanRecoveryCollection.IMAGES -> copy(imagesAfterId = value)
+        OrphanRecoveryCollection.VIDEO -> copy(videoAfterId = value)
+    }
+
+    val mediaComplete: Boolean
+        get() = imagesAfterId == COLLECTION_COMPLETE && videoAfterId == COLLECTION_COMPLETE
+
+    companion object {
+        const val COLLECTION_COMPLETE = Long.MAX_VALUE
+    }
+}
+
+internal data class OrphanRecoveryBatch(
+    val report: RecoveryReport,
+    val nextCursor: OrphanRecoveryCursor,
+    val hasMore: Boolean,
+    /** A durable per-entry failure may advance only after the ordinary retry budget is exhausted. */
+    val continueAfterFailureExhaustion: Boolean = false,
+    /**
+     * Where a run continues once this page's retry budget is spent (AGG2-21). Equal to [nextCursor]
+     * except that a collection whose QUERY failed is marked complete for the rest of the run: its
+     * cursor never advances on its own, so continuing from [nextCursor] re-ran the identical failing
+     * query (with its full retry budget) on every later page. The next launch retries it from zero.
+     * Only meaningful when [continueAfterFailureExhaustion]; [hasMore] stays valid for it because
+     * the skip only touches media cursors, never the DISCARD stage that keeps a media page live.
+     */
+    val exhaustedCursor: OrphanRecoveryCursor = nextCursor,
+)
+
+internal data class DiscardJournalPage(
+    val records: List<PendingDiscardRecord>,
+    val nextAfterKey: String?,
+    val hasMore: Boolean,
+    val rowsRead: Int,
+) {
+    val keys: List<String>
+        get() = records.map(PendingDiscardRecord::uri)
+}
+
+internal data class DiscardJournalRecoveryBatch(
+    val report: RecoveryReport,
+    val nextAfterKey: String?,
+    val hasMore: Boolean,
+)
+
+internal data class RecoveryReport(
+    val scanned: Int = 0,
+    val adopted: Int = 0,
+    val deleted: Int = 0,
+    val retained: Int = 0,
+    val errors: Int = 0,
+    val failureClasses: Set<RecoveryFailureClass> = emptySet(),
+) {
+    val retryRequired: Boolean
+        get() = failureClasses.isNotEmpty()
+
+    internal fun record(event: RecoveryEvent): RecoveryReport = when (event) {
+        RecoveryEvent.SCANNED -> copy(scanned = scanned + 1)
+        RecoveryEvent.ADOPTED -> copy(adopted = adopted + 1)
+        RecoveryEvent.DELETED -> copy(deleted = deleted + 1)
+        RecoveryEvent.RETAINED -> copy(retained = retained + 1)
+        RecoveryEvent.QUERY_FAILED -> failed(RecoveryFailureClass.QUERY, retain = false)
+        RecoveryEvent.PROBE_FAILED -> failed(RecoveryFailureClass.PROBE, retain = false)
+        RecoveryEvent.PUBLISH_FAILED -> failed(RecoveryFailureClass.PUBLISH, retain = true)
+        RecoveryEvent.DELETE_FAILED -> failed(RecoveryFailureClass.DELETE, retain = true)
+    }
+
+    private fun failed(failure: RecoveryFailureClass, retain: Boolean): RecoveryReport = copy(
+        retained = retained + if (retain) 1 else 0,
+        errors = errors + 1,
+        failureClasses = failureClasses + failure,
+    )
+
+    /**
+     * Adds durable transition counts while making the newest attempt the sole owner of unresolved
+     * failures. A clean retry therefore completes even though the terminal summary retains the
+     * earlier attempt's error count for truthful diagnostics.
+     */
+    internal fun foldRecoveryAttempt(attempt: RecoveryReport): RecoveryReport = RecoveryReport(
+        scanned = scanned + attempt.scanned,
+        adopted = adopted + attempt.adopted,
+        deleted = deleted + attempt.deleted,
+        retained = retained + attempt.retained,
+        errors = errors + attempt.errors,
+        failureClasses = attempt.failureClasses,
+    )
+}
+
+internal enum class RecoveryEvent {
+    SCANNED,
+    ADOPTED,
+    DELETED,
+    RETAINED,
+    QUERY_FAILED,
+    PROBE_FAILED,
+    PUBLISH_FAILED,
+    DELETE_FAILED,
+}
+
+internal enum class RecoveryRetryDecision { COMPLETE, RETRY, EXHAUSTED }
+
+/** One-based bounded launch-recovery retry decision, kept pure for provider-failure matrices. */
+internal fun recoveryRetryDecision(
+    report: RecoveryReport,
+    completedAttempts: Int,
+    maxAttempts: Int,
+): RecoveryRetryDecision = when {
+    !report.retryRequired -> RecoveryRetryDecision.COMPLETE
+    completedAttempts < maxAttempts.coerceAtLeast(1) -> RecoveryRetryDecision.RETRY
+    else -> RecoveryRetryDecision.EXHAUSTED
+}
+
+internal enum class MediaDeleteDisposition { DELETED, ALREADY_ABSENT, FAILED }
+
+/** Pure resolver-result reduction used by [MediaStoreWriter.delete]. */
+internal fun mediaDeleteDisposition(
+    deleteCount: Int?,
+    rowExistsAfter: Boolean?,
+): MediaDeleteDisposition = when {
+    deleteCount != null && deleteCount > 0 -> MediaDeleteDisposition.DELETED
+    rowExistsAfter == false -> MediaDeleteDisposition.ALREADY_ABSENT
+    else -> MediaDeleteDisposition.FAILED
+}
+
+/** Provider truth for one tracker-known URI after a delete attempt. */
+internal enum class KnownOutputProviderDisposition {
+    DELETED,
+    ALREADY_ABSENT,
+    PRESENT,
+    UNKNOWN,
+}
+
+/** Whether exact DISCARD/recovery metadata was retired after provider absence was established. */
+internal enum class DiscardMarkerCleanupDisposition {
+    CLEARED,
+    RETAINED_FOR_RETRY,
+    NOT_ATTEMPTED,
+}
+
+/** Two-axis result: provider presence is never inferred from marker-cleanup success. */
+internal data class KnownOutputDeletionResult(
+    val provider: KnownOutputProviderDisposition,
+    val markerCleanup: DiscardMarkerCleanupDisposition,
+) {
+    val restoreAsSurvivor: Boolean
+        get() = provider == KnownOutputProviderDisposition.PRESENT
+
+    val providerAbsent: Boolean
+        get() = provider == KnownOutputProviderDisposition.DELETED ||
+            provider == KnownOutputProviderDisposition.ALREADY_ABSENT
+
+    val providerUnknown: Boolean
+        get() = provider == KnownOutputProviderDisposition.UNKNOWN
+
+    val cleanupRetryRequired: Boolean
+        get() = providerAbsent &&
+            markerCleanup == DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY
+
+    val fullyRetired: Boolean
+        get() = providerAbsent && markerCleanup == DiscardMarkerCleanupDisposition.CLEARED
+}
+
+/**
+ * Executes one known-output delete while preserving provider and marker-cleanup evidence.
+ *
+ * A positive delete count proves absence without a second query. A zero/throwing delete needs an
+ * exact existence probe: false proves prior absence, true proves a survivor, and null/throw remains
+ * unknown. Marker cleanup runs only after provider absence is authoritative.
+ */
+internal fun knownOutputDeletionResult(
+    delete: () -> Int?,
+    rowExistsAfter: () -> Boolean?,
+    clearDiscardMarker: () -> Boolean,
+): KnownOutputDeletionResult {
+    val deleteCount = runCatching(delete).getOrNull()
+    val rowExists = if (deleteCount != null && deleteCount > 0) {
+        null
+    } else {
+        runCatching(rowExistsAfter).getOrNull()
+    }
+    val provider = when (mediaDeleteDisposition(deleteCount, rowExists)) {
+        MediaDeleteDisposition.DELETED -> KnownOutputProviderDisposition.DELETED
+        MediaDeleteDisposition.ALREADY_ABSENT -> KnownOutputProviderDisposition.ALREADY_ABSENT
+        MediaDeleteDisposition.FAILED -> if (rowExists == true) {
+            KnownOutputProviderDisposition.PRESENT
+        } else {
+            KnownOutputProviderDisposition.UNKNOWN
+        }
+    }
+    val markerCleanup = if (
+        provider == KnownOutputProviderDisposition.DELETED ||
+        provider == KnownOutputProviderDisposition.ALREADY_ABSENT
+    ) {
+        if (runCatching(clearDiscardMarker).getOrDefault(false)) {
+            DiscardMarkerCleanupDisposition.CLEARED
+        } else {
+            DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY
+        }
+    } else {
+        DiscardMarkerCleanupDisposition.NOT_ATTEMPTED
+    }
+    return KnownOutputDeletionResult(provider, markerCleanup)
+}
+
+internal enum class PendingMediaProbeKind { VIDEO, JPEG, DNG, HEIF, KEEP_PENDING }
+
+/**
+ * Only containers with a conservative terminal-structure probe may bridge a missing COMPLETE
+ * marker. HEIF requires a supported primary-item location whose explicit extents are wholly inside
+ * bounded mdat payloads; header image dimensions or top-level box presence are never accepted.
+ */
+internal fun pendingMediaProbeKind(
+    mimeType: String,
+    isVideoCollection: Boolean,
+): PendingMediaProbeKind = when {
+    isVideoCollection -> PendingMediaProbeKind.VIDEO
+    mimeType.equals("image/jpeg", ignoreCase = true) -> PendingMediaProbeKind.JPEG
+    mimeType.contains("dng", ignoreCase = true) -> PendingMediaProbeKind.DNG
+    mimeType.equals("image/heif", ignoreCase = true) ||
+        mimeType.equals("image/heic", ignoreCase = true) -> PendingMediaProbeKind.HEIF
+    else -> PendingMediaProbeKind.KEEP_PENDING
+}
+
+internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE, DISCARD, UNAVAILABLE }
+
+internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
+
+/**
+ * Pure tri-state for the live finalized-video check. Provider OPEN failure proves nothing about the
+ * bytes and is INDETERMINATE (retain, never delete). After a successful open, only an extractor that
+ * PARSED the container and found no `video/` track is INVALID (plus, after a stop throw, a walk that
+ * PROVES the `moov` absent — below). A THROW from the extractor is
+ * INDETERMINATE too (AGG2-18): `MediaExtractor.setDataSource` on a MediaProvider FUSE fd raises the
+ * same `IOException("Failed to instantiate extractor")` for a transient provider/FUSE read failure
+ * (media scan, MediaProvider restart mid-read, revoked fd) as for a corrupt container, and launch
+ * recovery's `pendingProbeOutcome` already maps any probe throw to INDETERMINATE — the live tail
+ * must not be the stricter path in the destructive direction. A genuinely corrupt take is then
+ * retained private and re-judged by recovery, which costs a pending row, never a good clip. Open
+ * failure and parse failure each report their cause exactly once through the supplied observer.
+ *
+ * [muxerStopThrew] (the tolerated empty-audio-track `muxer.stop()` throw — the ONLY stop throw that
+ * reaches this probe, see `muxerStopFailureIsTerminal`) is NOT evidence that the moov is missing
+ * (AGG4-3, correcting AGG3-6). AOSP `MPEG4Writer::reset()` reports a sample-less track as
+ * `ERROR_MALFORMED` and deliberately STILL writes the movie header for that one error ("Do not
+ * write out movie header on error except malformed track"), so that throw arrives over a finalized,
+ * playable file. A parse throw there is therefore the same AGG2-18 transient class as anywhere else
+ * and is never INVALID by itself. What the stop throw buys is one confirming parse: the first
+ * descriptor is closed, [beforeParseRetry] pauses, and a FRESH descriptor is opened (re-parsing the
+ * same fd only re-read a revoked/poisoned descriptor, CR4-7). A failed reopen is INDETERMINATE. If
+ * the fresh parse also throws, only [moovPresence]'s bounded top-level ISO-BMFF walk
+ * ([probeMp4MoovPresence]) may decide: a PROVEN absent `moov` is INVALID (the container was never
+ * finalized and recovery would judge it the same way), anything else — a present `moov` the
+ * extractor still rejected, or bytes the walk could not read — stays INDETERMINATE and is retained.
+ * Only the final cause is reported, together with the verdict it produced.
+ */
+internal fun <D : AutoCloseable> classifyFinalizedVideoTrack(
+    open: () -> D,
+    hasVideoTrack: (D) -> Boolean,
+    moovPresence: (D) -> Mp4MoovPresence,
+    muxerStopThrew: Boolean = false,
+    onOpenFailure: (Throwable) -> Unit = {},
+    onParseFailure: (Throwable, PendingProbe) -> Unit = { _, _ -> },
+    beforeParseRetry: () -> Unit = {},
+): PendingProbe {
+    val first = try {
+        open()
+    } catch (failure: Exception) {
+        onOpenFailure(failure)
+        return PendingProbe.INDETERMINATE
+    }
+    val firstFailure = try {
+        return if (hasVideoTrack(first)) PendingProbe.VALID else PendingProbe.INVALID
+    } catch (failure: Exception) {
+        failure
+    } finally {
+        // A read-only descriptor's close cannot change the verdict already reached on its bytes.
+        runCatching { first.close() }
+    }
+    if (!muxerStopThrew) {
+        onParseFailure(firstFailure, PendingProbe.INDETERMINATE)
+        return PendingProbe.INDETERMINATE
+    }
+    beforeParseRetry()
+    val fresh = try {
+        open()
+    } catch (failure: Exception) {
+        failure.addSuppressed(firstFailure)
+        onOpenFailure(failure)
+        return PendingProbe.INDETERMINATE
+    }
+    try {
+        val secondFailure = try {
+            return if (hasVideoTrack(fresh)) PendingProbe.VALID else PendingProbe.INVALID
+        } catch (failure: Exception) {
+            failure
+        }
+        val presence = runCatching { moovPresence(fresh) }.getOrDefault(Mp4MoovPresence.UNKNOWN)
+        val verdict = moovPresenceVerdict(presence)
+        onParseFailure(secondFailure, verdict)
+        return verdict
+    } finally {
+        runCatching { fresh.close() }
+    }
+}
+
+/** What a bounded top-level ISO-BMFF walk could PROVE about an MP4's movie box. */
+internal enum class Mp4MoovPresence {
+    /** A complete top-level `moov` box lies wholly inside the file. */
+    PRESENT,
+
+    /**
+     * Every top-level byte was accounted for and no complete `moov` exists: the walk reached EOF,
+     * or a box header was impossible / overran the file, so nothing complete can follow it.
+     */
+    ABSENT,
+
+    /** A read failed or the box bound was hit; nothing is proven either way. */
+    UNKNOWN,
+}
+
+/**
+ * AGG4-3 / AGG4-4: the structural "was this MP4 ever finalized" answer that `MediaExtractor` cannot
+ * give, because it throws the same exception for a transient FUSE read as for a moov-less file.
+ *
+ * Reads only 8- (or 16-) byte top-level box headers, never sample data. MediaMuxer/`MPEG4Writer`
+ * writes `moov` only at stop (into a reserved `free` area at the front or after `mdat`), and a
+ * killed recorder leaves `mdat` with its placeholder size — 0 (to EOF), a zero/garbage 64-bit
+ * largesize, or one that overruns the file. So a walk that hits EOF, an impossible header, or an
+ * overrun before seeing a whole `moov` is proof of absence: top-level boxes are sequential, and
+ * nothing complete can follow a box that does not end inside the file. A `moov` that itself overruns
+ * is truncated, not present. Any unreadable header or the [MAX_MP4_TOP_LEVEL_BOXES] bound is
+ * UNKNOWN — the caller then retains instead of deleting.
+ */
+internal fun probeMp4MoovPresence(
+    fileSize: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): Mp4MoovPresence {
+    if (fileSize < 0L) return Mp4MoovPresence.UNKNOWN
+    var offset = 0L
+    var boxes = 0
+    while (fileSize - offset >= 8L) {
+        if (++boxes > MAX_MP4_TOP_LEVEL_BOXES) return Mp4MoovPresence.UNKNOWN
+        val header = readAt(offset, 8)?.takeIf { it.size == 8 } ?: return Mp4MoovPresence.UNKNOWN
+        val size32 = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffff_ffffL
+        val type = String(header, 4, 4, Charsets.US_ASCII)
+        val remaining = fileSize - offset
+        val headerSize: Long
+        val boxSize: Long
+        when (size32) {
+            // "Extends to EOF": by definition the last top-level box.
+            0L -> {
+                headerSize = 8L
+                boxSize = remaining
+            }
+            1L -> {
+                if (remaining < 16L) return Mp4MoovPresence.ABSENT
+                val extended = readAt(offset + 8L, 8)?.takeIf { it.size == 8 }
+                    ?: return Mp4MoovPresence.UNKNOWN
+                headerSize = 16L
+                boxSize = ByteBuffer.wrap(extended).order(ByteOrder.BIG_ENDIAN).long
+            }
+            else -> {
+                headerSize = 8L
+                boxSize = size32
+            }
+        }
+        // Negative (unsigned overflow), smaller than its own header, or past EOF: no box can be
+        // delimited here, so neither this box nor anything after it is a complete moov.
+        if (boxSize < headerSize || boxSize > remaining) return Mp4MoovPresence.ABSENT
+        if (type == "moov") return Mp4MoovPresence.PRESENT
+        offset += boxSize
+    }
+    return Mp4MoovPresence.ABSENT
+}
+
+/**
+ * Launch recovery's video verdict on one opened descriptor (AGG4-4). A parse decides on its tracks;
+ * a parse throw is INVALID only when [moovPresence] PROVES the `moov` absent.
+ *
+ * A parse throw over a walk that READ the bytes and found a complete `moov` is NOT yet a constant
+ * of those bytes (AGG5-8, correcting MRG4-4): `MediaExtractor.setDataSource` on a MediaProvider FUSE
+ * fd throws the same exception for a transient provider failure (media scan, MediaProvider restart
+ * mid-read, revoked fd — the AGG2-18 class) as for a corrupt container, and a later walk succeeding
+ * only shows the bytes were readable then. So that take — the best-formed one recovery ever sees —
+ * gets ONE confirming parse: [beforeReparse] pauses and [reparseOnFreshDescriptor] opens a FRESH
+ * descriptor and parses it (re-parsing the same fd only re-reads a revoked one, CR4-7). A fresh
+ * parse decides on its tracks. A failed reopen proves nothing and re-throws the extractor's cause (a
+ * transient probe failure: kept AND re-armed). Only a REPEATED parse throw over a present `moov` is
+ * the byte constant — a corrupt sample table or a box the extractor rejects — and returns a plain
+ * INDETERMINATE: kept but NOT re-armed ([keptRowReassertsPending]), so the re-arm stays bounded and
+ * the take cannot become immortal hidden storage. A walk that could not read the bytes (UNKNOWN, or
+ * a walk throw) re-throws the extractor's cause (with any walk failure suppressed onto it), so
+ * `pendingProbeOutcome` records a transient probe failure that a later launch may still resolve.
+ *
+ * [reparseOnFreshDescriptor] reports an OPEN failure by throwing [FreshDescriptorUnavailable] and a
+ * PARSE failure by throwing anything else.
+ */
+internal fun recoveryVideoVerdict(
+    hasVideoTrack: () -> Boolean,
+    moovPresence: () -> Mp4MoovPresence,
+    reparseOnFreshDescriptor: () -> Boolean,
+    beforeReparse: () -> Unit = {},
+): PendingProbe {
+    val parseFailure = try {
+        return if (hasVideoTrack()) PendingProbe.VALID else PendingProbe.INVALID
+    } catch (failure: Exception) {
+        failure
+    }
+    val presence = try {
+        moovPresence()
+    } catch (walkFailure: Exception) {
+        parseFailure.addSuppressed(walkFailure)
+        throw parseFailure
+    }
+    if (presence == Mp4MoovPresence.UNKNOWN) throw parseFailure
+    if (presence == Mp4MoovPresence.ABSENT) return PendingProbe.INVALID
+    beforeReparse()
+    return try {
+        if (reparseOnFreshDescriptor()) PendingProbe.VALID else PendingProbe.INVALID
+    } catch (unavailable: FreshDescriptorUnavailable) {
+        parseFailure.addSuppressed(unavailable)
+        throw parseFailure
+    } catch (_: Exception) {
+        // The same bytes rejected twice, on two descriptors: a constant, not a transient.
+        PendingProbe.INDETERMINATE
+    }
+}
+
+/** [recoveryVideoVerdict]'s confirming reopen failed; nothing about the bytes is proven. */
+internal class FreshDescriptorUnavailable(cause: Throwable) : IOException("fresh descriptor unavailable", cause)
+
+/** Verdict a parse throw may take once the walk has spoken (shared by the live tail and recovery). */
+internal fun moovPresenceVerdict(presence: Mp4MoovPresence): PendingProbe =
+    if (presence == Mp4MoovPresence.ABSENT) PendingProbe.INVALID else PendingProbe.INDETERMINATE
+
+private const val MAX_MP4_TOP_LEVEL_BOXES = 4_096
+
+internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
+
+/**
+ * AGG5-7: a durable COMPLETE row whose provider SIZE reads <= 0 is decided on the opened
+ * descriptor's real length ([android.os.ParcelFileDescriptor.getStatSize]). Positive bytes adopt on
+ * the marker, exactly as before AGG4-28; a zero-length file is INVALID (kept by [orphanDisposition],
+ * never deleted on the marker, never re-armed — there is nothing to recover); a negative stat says
+ * the provider handed back something that is not a sized regular file, which proves nothing about
+ * the bytes, so it throws and [pendingProbeOutcome] records a transient failure that re-arms.
+ */
+internal fun completeMarkerLengthVerdict(statSize: Long): PendingProbe = when {
+    statSize > 0L -> PendingProbe.VALID
+    statSize == 0L -> PendingProbe.INVALID
+    else -> throw IOException("COMPLETE descriptor has no stat size")
+}
+
+/**
+ * Which KEPT rows re-arm MediaProvider's pending expiry ([MediaStoreWriter.reassertPending]).
+ *
+ * AGG4-4 (CRIT4-1, DBG4-2): re-arming every kept row made the never-judgeable ones immortal — a
+ * hidden, undeletable, multi-GB leak, because a pending row is invisible to Gallery and to the user.
+ * The re-arm is for rows a LATER launch can still adopt: those whose probe could not run this time
+ * (open/read/extractor threw — [PendingProbeOutcome.failed], e.g. a busy provider, or a
+ * fail-closed take whose COMPLETE marker never landed and whose bytes were unreachable). A row whose
+ * bytes WERE read and whose verdict is a constant of those bytes — an unknown MIME with no
+ * conservative probe, an undecidable HEIF layout — is kept but NOT re-armed: the next launch would
+ * reach the same answer, so MediaProvider's expiry is its terminal, exactly as before AGG3-4.
+ *
+ * A COMPLETE row is the exception (AGG5-7): its marker is the app's own durable proof that the
+ * output was fully closed, so a kept COMPLETE row always re-arms unless its descriptor proved the
+ * file EMPTY ([completeMarkerLengthVerdict] INVALID) — a zero-byte file holds nothing to lose, and
+ * re-arming it would only make an empty hidden row immortal. A DISCARD row belongs to the DISCARD
+ * stage; re-arming it would only delay a delete the user already asked for.
+ */
+internal fun keptRowReassertsPending(
+    journalState: PendingJournalState,
+    probeOutcome: PendingProbeOutcome,
+): Boolean = journalState != PendingJournalState.DISCARD && (
+    probeOutcome.failed ||
+        (journalState == PendingJournalState.COMPLETE && probeOutcome.probe != PendingProbe.INVALID)
+    )
+
+/** Pure conservative launch-recovery decision; an unknown answer never destroys user media. */
+internal fun orphanDisposition(
+    journalState: PendingJournalState,
+    probe: PendingProbe,
+    familyDeleted: Boolean = false,
+): OrphanDisposition = when {
+    // Durable exact-URI DISCARD rows are retained by the generic Images/Video pages. The dedicated
+    // lexicographic DISCARD stage is their sole delete owner and can advance after bounded failure,
+    // so one wedged provider row cannot starve later media pages or later durable markers.
+    journalState == PendingJournalState.DISCARD -> OrphanDisposition.KEEP_PENDING
+    journalState == PendingJournalState.UNAVAILABLE -> OrphanDisposition.KEEP_PENDING
+    familyDeleted -> OrphanDisposition.DELETE
+    // The caller certifies every positive-SIZE COMPLETE row as VALID; a provider-EMPTY COMPLETE row
+    // is VALID only when its opened descriptor has bytes (AGG4-28, AGG5-7). One that is not proven
+    // VALID is kept, never deleted on a probe and never published on the marker alone.
+    journalState == PendingJournalState.COMPLETE ->
+        if (probe == PendingProbe.VALID) OrphanDisposition.ADOPT else OrphanDisposition.KEEP_PENDING
+    probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
+    probe == PendingProbe.INVALID -> OrphanDisposition.DELETE
+    else -> OrphanDisposition.KEEP_PENDING
+}
+
+/**
+ * Recovery's JPEG completion verdict (AGG5-71). An `FF D9` tail alone is not proof: a passthrough
+ * lane killed between its APP1 write and its body write leaves `SOI + APP1` whose EXIF block ends in
+ * the embedded thumbnail's own EOI, so the file ends `FF D9` with no SOF and no scan at all — and
+ * the tail-only probe adopted it as a broken picture. VALID therefore also needs the header walk
+ * from SOI to reach a Start-of-Scan (`FF DA`) before that tail; an EOI, a stuffed byte where a
+ * marker must be, a segment that overruns, or a short read is INVALID. Only 4-byte segment headers
+ * are read (never entropy-coded data), and the walk stops at [MAX_JPEG_HEADER_SEGMENTS] as
+ * INDETERMINATE rather than guessing. The same marker grammar as `exifSplicePlan`: a lone `FF`
+ * fill byte advances by one, and TEM/RST are length-less.
+ */
+internal fun probeCompleteJpegStructure(
+    fileSize: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): PendingProbe {
+    if (fileSize < 4L) return PendingProbe.INVALID
+    val tail = readAt(fileSize - 2L, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+    if (tail[0] != 0xff.toByte() || tail[1] != 0xd9.toByte()) return PendingProbe.INVALID
+    val soi = readAt(0L, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+    if (soi[0] != 0xff.toByte() || soi[1] != 0xd8.toByte()) return PendingProbe.INVALID
+    // The scan must start strictly before the trailing EOI.
+    val headerLimit = fileSize - 2L
+    var offset = 2L
+    var segments = 0
+    while (offset + 2L <= headerLimit) {
+        if (++segments > MAX_JPEG_HEADER_SEGMENTS) return PendingProbe.INDETERMINATE
+        val marker = readAt(offset, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+        if (marker[0] != 0xff.toByte()) return PendingProbe.INVALID
+        when (val code = marker[1].toInt() and 0xff) {
+            0xda -> return PendingProbe.VALID
+            0xff -> offset += 1L
+            0xd9, 0x00 -> return PendingProbe.INVALID
+            else -> if (code == 0x01 || code in 0xd0..0xd7) {
+                offset += 2L
+            } else {
+                if (offset + 4L > headerLimit) return PendingProbe.INVALID
+                val length = readAt(offset + 2L, 2)?.takeIf { it.size == 2 } ?: return PendingProbe.INVALID
+                val segmentLength = ((length[0].toInt() and 0xff) shl 8) or (length[1].toInt() and 0xff)
+                if (segmentLength < 2) return PendingProbe.INVALID
+                offset += 2L + segmentLength
+            }
+        }
+    }
+    return PendingProbe.INVALID
+}
+
+private const val MAX_JPEG_HEADER_SEGMENTS = 4_096
+
+/**
+ * Structural HEIF completion probe. Reads bounded ISO-BMFF metadata only, never pixel data. A valid
+ * result requires a HEIF brand, one supported primary item, and every explicit primary-item extent
+ * to resolve wholly inside an mdat payload — or, for the idat-stored grid primary that every
+ * app-written still carries, the layout [idatDerivedVerdict] checks. Malformed or out-of-range
+ * structures are INVALID; unreadable bytes, unbounded boxes, and unsupported meta/pitm/iloc
+ * variants are INDETERMINATE so recovery retains the private row instead of risking deletion.
+ */
+internal fun probeHeifIsoBmff(
+    fileSize: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): PendingProbe {
+    if (fileSize < 24L) return PendingProbe.INVALID
+    var offset = 0L
+    var boxCount = 0
+    var foundFtyp = false
+    var metaBox: HeifIsoBox? = null
+    val mdatPayloads = mutableListOf<HeifByteRange>()
+
+    while (offset < fileSize) {
+        if (++boxCount > MAX_HEIF_BOXES) return PendingProbe.INDETERMINATE
+        val box = when (val parsed = readHeifIsoBox(offset, fileSize, readAt)) {
+            is HeifParse.Success -> parsed.value
+            is HeifParse.Failure -> return parsed.probe
+        }
+        when (box.type) {
+            "ftyp" -> {
+                when (val brands = hasHeifBrand(box, readAt)) {
+                    is HeifParse.Success -> foundFtyp = foundFtyp || brands.value
+                    is HeifParse.Failure -> return brands.probe
+                }
+            }
+            "meta" -> {
+                if (metaBox != null) return PendingProbe.INVALID
+                metaBox = box
+            }
+            "mdat" -> {
+                if (box.payloadSize <= 0L) return PendingProbe.INVALID
+                mdatPayloads += HeifByteRange(box.payloadOffset, box.payloadSize)
+            }
+        }
+        offset += box.size
+    }
+
+    if (offset != fileSize || !foundFtyp || metaBox == null || mdatPayloads.isEmpty()) {
+        return PendingProbe.INVALID
+    }
+    val layout = when (val parsed = parseHeifMeta(metaBox, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed.probe
+    }
+    fun inMdat(extent: HeifByteRange): Boolean =
+        extent.length > 0L &&
+            extent.offset <= fileSize - extent.length &&
+            mdatPayloads.any { payload -> extent.isWhollyInside(payload) }
+    return when (layout) {
+        is HeifPrimaryLayout.InMdat ->
+            if (layout.primaryExtents.all(::inMdat)) PendingProbe.VALID else PendingProbe.INVALID
+        is HeifPrimaryLayout.IdatDerived -> idatDerivedVerdict(layout, ::inMdat)
+    }
+}
+
+/**
+ * AGG3-3 / DBG3-1: the verdict for the layout AOSP `MPEG4Writer` writes for EVERY gridded HEIF —
+ * and `HeifWriter` grids every image wider than 512 px, so this is every still this app saves. The
+ * primary item is the grid DESCRIPTOR, stored inside `meta/idat` (construction_method 1, offsets
+ * relative to the idat payload plus base_offset), and the coded tiles (plus any Exif item) are
+ * construction-0 items in `mdat`. Measured on device output
+ * (`capture_then_kill_survives/IMG_TELECAM_F1_…0001.heic`): primary 10048 = one 8-byte idat
+ * extent, 49 tiles + 1 metadata item in mdat. Before this branch the probe called that layout
+ * INDETERMINATE, so a retained HEIF could never be adopted and stayed private until MediaProvider
+ * expired it.
+ *
+ * VALID needs the descriptor wholly inside idat AND every construction-0 local item wholly inside
+ * an mdat payload, with at least one such item (a grid with no coded data is not an image). A
+ * truncated tail fails the mdat bound, which is exactly the crash this probe exists to catch.
+ * INVALID (a proven out-of-range or unrepresentable location) outranks INDETERMINATE (an item this
+ * probe cannot judge — another construction method, an external data reference, or a
+ * whole-source zero length): a provably missing byte range cannot be repaired by the bytes this
+ * probe declined to read.
+ */
+private fun idatDerivedVerdict(
+    layout: HeifPrimaryLayout.IdatDerived,
+    inMdat: (HeifByteRange) -> Boolean,
+): PendingProbe {
+    val idat = layout.idatPayload ?: return PendingProbe.INVALID
+    if (!layout.primaryExtents.all { it.isWhollyInsideRelative(idat) }) return PendingProbe.INVALID
+    var undecidable = false
+    var codedItems = 0
+    for (item in layout.otherItems) {
+        when {
+            item.unrepresentable -> return PendingProbe.INVALID
+            item.dataReferenceIndex != 0L || item.constructionMethod !in 0..1 || item.wholeSource ->
+                undecidable = true
+            item.constructionMethod == 1 ->
+                if (!item.extents.all { it.isWhollyInsideRelative(idat) }) return PendingProbe.INVALID
+            else -> {
+                if (!item.extents.all(inMdat)) return PendingProbe.INVALID
+                codedItems++
+            }
+        }
+    }
+    return when {
+        undecidable -> PendingProbe.INDETERMINATE
+        codedItems == 0 -> PendingProbe.INVALID
+        else -> PendingProbe.VALID
+    }
+}
+
+private const val MAX_HEIF_BOXES = 4_096
+private const val MAX_HEIF_ITEMS = 4_096
+private const val MAX_HEIF_EXTENTS = 4_096
+private const val MAX_HEIF_FTYP_BYTES = 4_096
+
+private val HEIF_BRANDS = setOf("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1")
+
+private sealed interface HeifParse<out T> {
+    data class Success<T>(val value: T) : HeifParse<T>
+    data class Failure(val probe: PendingProbe) : HeifParse<Nothing>
+}
+
+private data class HeifIsoBox(
+    val type: String,
+    val offset: Long,
+    val size: Long,
+    val headerSize: Long,
+) {
+    val payloadOffset: Long get() = offset + headerSize
+    val payloadSize: Long get() = size - headerSize
+    val endOffset: Long get() = offset + size
+}
+
+private data class HeifByteRange(val offset: Long, val length: Long) {
+    fun isWhollyInside(container: HeifByteRange): Boolean {
+        if (offset < container.offset) return false
+        val relativeOffset = offset - container.offset
+        return relativeOffset <= container.length && length <= container.length - relativeOffset
+    }
+
+    /** This range's [offset] counts from [container]'s START (construction_method 1 / idat). */
+    fun isWhollyInsideRelative(container: HeifByteRange): Boolean =
+        length > 0L && offset in 0L..container.length && length <= container.length - offset
+}
+
+/** Where the primary item's bytes live, as parsed from `meta`; judged by [probeHeifIsoBmff]. */
+private sealed interface HeifPrimaryLayout {
+    /** construction_method 0: explicit absolute extents that must lie inside mdat. */
+    data class InMdat(val primaryExtents: List<HeifByteRange>) : HeifPrimaryLayout
+
+    /**
+     * construction_method 1: [primaryExtents] are idat-RELATIVE (base_offset already added);
+     * [idatPayload] is null when meta carries no idat box at all.
+     */
+    data class IdatDerived(
+        val primaryExtents: List<HeifByteRange>,
+        val idatPayload: HeifByteRange?,
+        val otherItems: List<HeifItemLocation>,
+    ) : HeifPrimaryLayout
+}
+
+/**
+ * One non-primary iloc entry, read leniently: a field this probe could only previously SKIP is
+ * recorded rather than failed on, so the construction-0 primary path keeps its exact old verdicts.
+ */
+private data class HeifItemLocation(
+    val constructionMethod: Int,
+    val dataReferenceIndex: Long,
+    val extents: List<HeifByteRange>,
+    /** A zero extent length ("the whole source") — legal, but no explicit crash-safe bound. */
+    val wholeSource: Boolean,
+    /** base_offset/offset/length did not fit a non-negative Long, or base + offset overflowed. */
+    val unrepresentable: Boolean,
+)
+
+private fun readHeifIsoBox(
+    offset: Long,
+    parentEnd: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<HeifIsoBox> {
+    if (offset < 0L || parentEnd < offset || parentEnd - offset < 8L) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    val header = readAt(offset, 8)
+        ?: return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (header.size != 8) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    val size32 = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffff_ffffL
+    val type = String(header, 4, 4, Charsets.US_ASCII)
+    val headerSize: Long
+    val boxSize: Long
+    when (size32) {
+        // Although ISO-BMFF defines zero as "through parent/EOF", a crash-truncated final box has
+        // the same shape. The recovery probe deliberately declines to decide.
+        0L -> return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        1L -> {
+            if (parentEnd - offset < 16L) return HeifParse.Failure(PendingProbe.INVALID)
+            val extended = readAt(offset + 8L, 8)
+                ?: return HeifParse.Failure(PendingProbe.INDETERMINATE)
+            if (extended.size != 8) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+            boxSize = ByteBuffer.wrap(extended).order(ByteOrder.BIG_ENDIAN).long
+            if (boxSize < 0L) return HeifParse.Failure(PendingProbe.INVALID)
+            headerSize = 16L
+        }
+        else -> {
+            boxSize = size32
+            headerSize = 8L
+        }
+    }
+    if (boxSize < headerSize || boxSize > parentEnd - offset) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    return HeifParse.Success(HeifIsoBox(type, offset, boxSize, headerSize))
+}
+
+private fun hasHeifBrand(
+    box: HeifIsoBox,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<Boolean> {
+    if (box.payloadSize < 8L || (box.payloadSize - 8L) % 4L != 0L) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    if (box.payloadSize > MAX_HEIF_FTYP_BYTES) {
+        return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    }
+    val bytes = readAt(box.payloadOffset, box.payloadSize.toInt())
+        ?: return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (bytes.size != box.payloadSize.toInt()) {
+        return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    }
+    val brands = buildList {
+        add(String(bytes, 0, 4, Charsets.US_ASCII))
+        var offset = 8
+        while (offset + 4 <= bytes.size) {
+            add(String(bytes, offset, 4, Charsets.US_ASCII))
+            offset += 4
+        }
+    }
+    return HeifParse.Success(brands.any(HEIF_BRANDS::contains))
+}
+
+private fun parseHeifMeta(
+    meta: HeifIsoBox,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<HeifPrimaryLayout> {
+    if (meta.payloadSize < 4L) return HeifParse.Failure(PendingProbe.INVALID)
+    val fullBox = when (val parsed = readHeifUnsigned(meta.payloadOffset, 4, meta.endOffset, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed
+    }
+    val version = (fullBox ushr 24).toInt()
+    val flags = fullBox and 0x00ff_ffffL
+    if (version != 0) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (flags != 0L) return HeifParse.Failure(PendingProbe.INVALID)
+
+    var childOffset = meta.payloadOffset + 4L
+    var childCount = 0
+    var pitm: HeifIsoBox? = null
+    var iloc: HeifIsoBox? = null
+    var idat: HeifIsoBox? = null
+    while (childOffset < meta.endOffset) {
+        if (++childCount > MAX_HEIF_BOXES) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        val child = when (val parsed = readHeifIsoBox(childOffset, meta.endOffset, readAt)) {
+            is HeifParse.Success -> parsed.value
+            is HeifParse.Failure -> return parsed
+        }
+        when (child.type) {
+            "pitm" -> {
+                if (pitm != null) return HeifParse.Failure(PendingProbe.INVALID)
+                pitm = child
+            }
+            "iloc" -> {
+                if (iloc != null) return HeifParse.Failure(PendingProbe.INVALID)
+                iloc = child
+            }
+            "idat" -> {
+                if (idat != null) return HeifParse.Failure(PendingProbe.INVALID)
+                idat = child
+            }
+        }
+        childOffset += child.size
+    }
+    if (childOffset != meta.endOffset || pitm == null || iloc == null) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    val primaryItemId = when (val parsed = parsePrimaryItemId(pitm, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed
+    }
+    val idatPayload = idat?.let { HeifByteRange(it.payloadOffset, it.payloadSize) }
+    return parsePrimaryItemExtents(iloc, primaryItemId, idatPayload, readAt)
+}
+
+private fun parsePrimaryItemId(
+    pitm: HeifIsoBox,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<Long> {
+    if (pitm.payloadSize < 4L) return HeifParse.Failure(PendingProbe.INVALID)
+    val fullBox = when (val parsed = readHeifUnsigned(pitm.payloadOffset, 4, pitm.endOffset, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed
+    }
+    val version = (fullBox ushr 24).toInt()
+    val flags = fullBox and 0x00ff_ffffL
+    if (version !in 0..1) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (flags != 0L) return HeifParse.Failure(PendingProbe.INVALID)
+    val itemIdSize = if (version == 0) 2 else 4
+    if (pitm.payloadSize != 4L + itemIdSize) return HeifParse.Failure(PendingProbe.INVALID)
+    return when (val parsed = readHeifUnsigned(pitm.payloadOffset + 4L, itemIdSize, pitm.endOffset, readAt)) {
+        is HeifParse.Success -> if (parsed.value != 0L) parsed else HeifParse.Failure(PendingProbe.INVALID)
+        is HeifParse.Failure -> parsed
+    }
+}
+
+private fun parsePrimaryItemExtents(
+    iloc: HeifIsoBox,
+    primaryItemId: Long,
+    idatPayload: HeifByteRange?,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<HeifPrimaryLayout> {
+    val reader = HeifBoundedReader(iloc.payloadOffset, iloc.endOffset, readAt)
+    val fullBox = reader.readUnsigned(4) ?: return HeifParse.Failure(reader.failure!!)
+    val version = (fullBox ushr 24).toInt()
+    val flags = fullBox and 0x00ff_ffffL
+    if (version !in 0..2) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (flags != 0L) return HeifParse.Failure(PendingProbe.INVALID)
+
+    val sizePair = reader.readUnsigned(1)?.toInt()
+        ?: return HeifParse.Failure(reader.failure!!)
+    val baseAndIndexPair = reader.readUnsigned(1)?.toInt()
+        ?: return HeifParse.Failure(reader.failure!!)
+    val offsetSize = sizePair ushr 4
+    val lengthSize = sizePair and 0x0f
+    val baseOffsetSize = baseAndIndexPair ushr 4
+    val indexSize = if (version == 0) 0 else baseAndIndexPair and 0x0f
+    if (version == 0 && baseAndIndexPair and 0x0f != 0) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    val legalFieldSizes = setOf(0, 4, 8)
+    if (offsetSize !in legalFieldSizes || lengthSize !in legalFieldSizes ||
+        baseOffsetSize !in legalFieldSizes || indexSize !in legalFieldSizes
+    ) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+
+    val itemCount = reader.readUnsigned(if (version < 2) 2 else 4)
+        ?: return HeifParse.Failure(reader.failure!!)
+    if (itemCount > MAX_HEIF_ITEMS) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+
+    var primaryFound = false
+    var primaryConstruction = 0
+    var totalExtents = 0L
+    val primaryExtents = mutableListOf<HeifByteRange>()
+    val otherItems = mutableListOf<HeifItemLocation>()
+    repeat(itemCount.toInt()) {
+        val itemId = reader.readUnsigned(if (version < 2) 2 else 4)
+            ?: return HeifParse.Failure(reader.failure!!)
+        val constructionMethod = if (version == 0) {
+            0
+        } else {
+            val construction = reader.readUnsigned(2)?.toInt()
+                ?: return HeifParse.Failure(reader.failure!!)
+            if (construction and 0xfff0 != 0) return HeifParse.Failure(PendingProbe.INVALID)
+            construction and 0x0f
+        }
+        val dataReferenceIndex = reader.readUnsigned(2)
+            ?: return HeifParse.Failure(reader.failure!!)
+        val isPrimary = itemId == primaryItemId
+        if (isPrimary && primaryFound) return HeifParse.Failure(PendingProbe.INVALID)
+        // 0 = file offsets (mdat), 1 = idat-relative (the gridded layout AOSP MPEG4Writer writes,
+        // judged by idatDerivedVerdict). Item-offset construction (2) stays undecidable.
+        if (isPrimary && constructionMethod !in 0..1) {
+            return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        }
+        if (isPrimary && dataReferenceIndex != 0L) {
+            return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        }
+        // Non-primary fields were only ever SKIPPED by the construction-0 primary path; they are
+        // now read leniently (an unreadable or overflowing value is RECORDED on the item, never
+        // failed on) so that path's verdicts stay exactly what they were.
+        var otherUnreadable = false
+        var otherUnrepresentable = false
+        var otherWholeSource = false
+        fun lenient(value: Long): Long {
+            when (value) {
+                HeifBoundedReader.UNREADABLE -> otherUnreadable = true
+                HeifBoundedReader.OVERFLOW -> otherUnrepresentable = true
+            }
+            return value.coerceAtLeast(0L)
+        }
+        val baseOffset = if (isPrimary) {
+            reader.readUnsigned(baseOffsetSize) ?: return HeifParse.Failure(reader.failure!!)
+        } else {
+            lenient(reader.readUnsignedLenient(baseOffsetSize) ?: return HeifParse.Failure(reader.failure!!))
+        }
+        val extentCount = reader.readUnsigned(2)
+            ?: return HeifParse.Failure(reader.failure!!)
+        totalExtents += extentCount
+        if (totalExtents > MAX_HEIF_EXTENTS) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        if (extentCount == 0L) return HeifParse.Failure(PendingProbe.INVALID)
+        if (isPrimary && lengthSize == 0) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+
+        val otherExtents = mutableListOf<HeifByteRange>()
+        repeat(extentCount.toInt()) {
+            if (!reader.skip(indexSize)) return HeifParse.Failure(reader.failure!!)
+            if (isPrimary) {
+                val extentOffset = reader.readUnsigned(offsetSize)
+                    ?: return HeifParse.Failure(reader.failure!!)
+                val extentLength = reader.readUnsigned(lengthSize)
+                    ?: return HeifParse.Failure(reader.failure!!)
+                // A zero length means "the whole source" in ISO-BMFF. It is valid syntax, but not
+                // an explicit crash-safe bound, so keep the row pending rather than adopting it.
+                if (extentLength == 0L) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+                if (baseOffset > Long.MAX_VALUE - extentOffset) {
+                    return HeifParse.Failure(PendingProbe.INVALID)
+                }
+                primaryExtents += HeifByteRange(baseOffset + extentOffset, extentLength)
+            } else {
+                val extentOffset = lenient(
+                    reader.readUnsignedLenient(offsetSize) ?: return HeifParse.Failure(reader.failure!!),
+                )
+                val extentLength = lenient(
+                    reader.readUnsignedLenient(lengthSize) ?: return HeifParse.Failure(reader.failure!!),
+                )
+                if (extentLength == 0L) otherWholeSource = true
+                if (baseOffset > Long.MAX_VALUE - extentOffset) otherUnrepresentable = true
+                if (!otherUnrepresentable) otherExtents += HeifByteRange(baseOffset + extentOffset, extentLength)
+            }
+        }
+        if (isPrimary) {
+            primaryFound = true
+            primaryConstruction = constructionMethod
+        } else {
+            otherItems += HeifItemLocation(
+                constructionMethod = constructionMethod,
+                dataReferenceIndex = dataReferenceIndex,
+                extents = otherExtents,
+                // An unreadable field is a provider-read question, not proof: it rides the same
+                // undecidable lane as a whole-source length.
+                wholeSource = otherWholeSource || otherUnreadable,
+                unrepresentable = otherUnrepresentable,
+            )
+        }
+    }
+    if (reader.cursor != iloc.endOffset) return HeifParse.Failure(PendingProbe.INVALID)
+    if (!primaryFound || primaryExtents.isEmpty()) return HeifParse.Failure(PendingProbe.INVALID)
+    return HeifParse.Success(
+        if (primaryConstruction == 0) {
+            HeifPrimaryLayout.InMdat(primaryExtents)
+        } else {
+            HeifPrimaryLayout.IdatDerived(primaryExtents, idatPayload, otherItems)
+        },
+    )
+}
+
+private class HeifBoundedReader(
+    start: Long,
+    private val end: Long,
+    private val readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+) {
+    var cursor: Long = start
+        private set
+    var failure: PendingProbe? = null
+        private set
+
+    fun readUnsigned(byteCount: Int): Long? = read(byteCount, lenient = false)
+
+    /**
+     * Like [readUnsigned], but a value that is unreadable or does not fit a Long returns
+     * [UNREADABLE] / [OVERFLOW] (and still advances) instead of failing the whole parse. Running
+     * past the box end still fails exactly as a skip of the same width would.
+     */
+    fun readUnsignedLenient(byteCount: Int): Long? = read(byteCount, lenient = true)
+
+    private fun read(byteCount: Int, lenient: Boolean): Long? {
+        if (failure != null) return null
+        if (byteCount !in 0..8) {
+            failure = PendingProbe.INDETERMINATE
+            return null
+        }
+        if (byteCount == 0) return 0L
+        if (cursor < 0L || end < cursor || byteCount.toLong() > end - cursor) {
+            failure = PendingProbe.INVALID
+            return null
+        }
+        val bytes = readAt(cursor, byteCount)
+        if (bytes == null || bytes.size != byteCount) {
+            if (lenient) {
+                cursor += byteCount
+                return UNREADABLE
+            }
+            failure = PendingProbe.INDETERMINATE
+            return null
+        }
+        var value = 0L
+        for (byte in bytes) {
+            val unsigned = byte.toInt() and 0xff
+            if (value > (Long.MAX_VALUE - unsigned) / 256L) {
+                if (lenient) {
+                    cursor += byteCount
+                    return OVERFLOW
+                }
+                failure = PendingProbe.INVALID
+                return null
+            }
+            value = value * 256L + unsigned
+        }
+        cursor += byteCount
+        return value
+    }
+
+    companion object {
+        const val UNREADABLE = -2L
+        const val OVERFLOW = -1L
+    }
+
+    fun skip(byteCount: Int): Boolean {
+        if (failure != null) return false
+        if (byteCount < 0 || cursor < 0L || end < cursor || byteCount.toLong() > end - cursor) {
+            failure = PendingProbe.INVALID
+            return false
+        }
+        cursor += byteCount
+        return true
+    }
+}
+
+private fun readHeifUnsigned(
+    offset: Long,
+    byteCount: Int,
+    end: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<Long> {
+    val reader = HeifBoundedReader(offset, end, readAt)
+    val value = reader.readUnsigned(byteCount)
+    return if (value != null) HeifParse.Success(value) else HeifParse.Failure(reader.failure!!)
+}
+
+internal fun parseUnsignedExifValues(raw: String?): List<Long> = raw
+    ?.split(',')
+    ?.mapNotNull { token -> token.trim().substringBefore('/').toLongOrNull()?.takeIf { it >= 0L } }
+    .orEmpty()
+
+/**
+ * Epoch-seconds moment this process started: wall-clock "now" rolled back by the time elapsed
+ * since boot, plus the process-start elapsed-realtime stamp. Mixes the two clocks deliberately —
+ * DATE_ADDED is epoch seconds, but "before this process" is an elapsed-realtime fact. Integer
+ * division truncates up to ~1 s conservative (fewer deletions), which is the safe direction for
+ * a delete sweep.
+ */
+internal fun processStartEpochSecs(
+    nowMillis: Long,
+    elapsedRealtimeMillis: Long,
+    processStartElapsedRealtimeMillis: Long,
+): Long = (nowMillis - elapsedRealtimeMillis) / 1000 + processStartElapsedRealtimeMillis / 1000
+
+/**
+ * The orphan-sweep delete predicate, as a pure pair so OrphanSweepTest can pin it:
+ * - RELATIVE_PATH values are normalized with a trailing slash ("DCIM/TeleCamPro/"), so the pattern
+ *   anchors on it — "DCIM/TeleCamPro%" would also sweep a hypothetical "DCIM/TeleCamProOther/".
+ * - OWNER_PACKAGE_NAME makes ownership an EXPLICIT invariant (mirroring queryOwnedPublished):
+ *   scoped storage without READ_MEDIA_* already hides other apps' rows today, but a future
+ *   media-read permission would otherwise silently widen this delete sweep to any app's pending
+ *   items under a same-named DCIM path.
+ * - Placeholder count must equal the arg count; a drifted edit fails the test, not silently
+ *   inside the sweep's runCatching.
+ */
+internal fun orphanSweepSelection(
+    subDirs: List<String>,
+    packageName: String,
+    cutoffEpochSecs: Long,
+): Pair<String, Array<String>> {
+    // One LIKE per known directory: the sweep has to reach a PREVIOUS naming too, or a pending row
+    // stranded there before the rename is never cleaned up and never expires.
+    val paths = subDirs.joinToString(" OR ") { "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?" }
+    val selection =
+        "($paths) AND ${MediaStore.MediaColumns.DATE_ADDED} < ? AND " +
+            "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
+            "${MediaStore.MediaColumns.IS_PENDING} = 1"
+    return selection to (
+        subDirs.map { "DCIM/$it/%" } + listOf(cutoffEpochSecs.toString(), packageName)
+        ).toTypedArray()
+}
+
+internal data class OrphanSweepPage(
+    val selection: String,
+    val args: Array<String>,
+    val queryLimit: Int,
+)
+
+/** One extra row proves continuation without processing beyond the page's hard bound. */
+internal fun orphanSweepPage(
+    selection: String,
+    args: Array<String>,
+    afterId: Long,
+    batchLimit: Int,
+): OrphanSweepPage {
+    require(batchLimit > 0)
+    return OrphanSweepPage(
+        selection = "$selection AND ${MediaStore.MediaColumns._ID} > ?",
+        args = args + afterId.toString(),
+        queryLimit = batchLimit + 1,
+    )
+}

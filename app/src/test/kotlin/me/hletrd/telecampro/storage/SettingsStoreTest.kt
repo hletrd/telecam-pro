@@ -1,0 +1,837 @@
+package me.hletrd.telecampro.storage
+
+import android.content.SharedPreferences
+import me.hletrd.telecampro.camera.AfSpotSize
+import me.hletrd.telecampro.camera.Antibanding
+import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.AudioInputPreference
+import me.hletrd.telecampro.camera.AudioScene
+import me.hletrd.telecampro.camera.BitrateLevel
+import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.ColorEffect
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.ExposureStep
+import me.hletrd.telecampro.camera.FlashMode
+import me.hletrd.telecampro.camera.FnSlot
+import me.hletrd.telecampro.camera.FocusMode
+import me.hletrd.telecampro.camera.FrameLineType
+import me.hletrd.telecampro.camera.GridType
+import me.hletrd.telecampro.camera.HardwareKeyAction
+import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.MemorySlot
+import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.PeakingColor
+import me.hletrd.telecampro.camera.PeakingLevel
+import me.hletrd.telecampro.camera.PhoneModel
+import me.hletrd.telecampro.camera.ProcessingLevel
+import me.hletrd.telecampro.camera.ShutterMode
+import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.TeleconverterProfile
+import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.WbGains
+import me.hletrd.telecampro.camera.WbMode
+import me.hletrd.telecampro.camera.ZebraLevel
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Exercises the SettingsStore persistence contract against an in-memory SharedPreferences fake (the
+ * SharedPreferences seam the primary constructor exposes). The full-round-trip test is the main net
+ * for a copy-paste key mismatch among the ~50 keys.
+ */
+class SettingsStoreTest {
+
+    // ---- in-memory SharedPreferences fake (only what SettingsStore touches) ----
+
+    private class FakePrefs(
+        private val store: MutableMap<String, Any?> = mutableMapOf(),
+    ) : SharedPreferences {
+        /** False simulates a disk-full/I/O commit: nothing is written and commit() reports it. */
+        var commitSucceeds: Boolean = true
+        var commitCount: Int = 0
+            private set
+        var applyCount: Int = 0
+            private set
+
+        override fun getString(key: String?, defValue: String?): String? =
+            if (store.containsKey(key)) store[key] as String? else defValue
+
+        @Suppress("UNCHECKED_CAST")
+        override fun getStringSet(key: String?, defValues: MutableSet<String>?): MutableSet<String>? =
+            if (store.containsKey(key)) store[key] as MutableSet<String>? else defValues
+
+        override fun getInt(key: String?, defValue: Int): Int =
+            if (store.containsKey(key)) store[key] as Int else defValue
+
+        override fun getLong(key: String?, defValue: Long): Long =
+            if (store.containsKey(key)) store[key] as Long else defValue
+
+        override fun getFloat(key: String?, defValue: Float): Float =
+            if (store.containsKey(key)) store[key] as Float else defValue
+
+        override fun getBoolean(key: String?, defValue: Boolean): Boolean =
+            if (store.containsKey(key)) store[key] as Boolean else defValue
+
+        override fun contains(key: String?): Boolean = store.containsKey(key)
+        override fun getAll(): MutableMap<String, *> = store
+        override fun edit(): SharedPreferences.Editor = FakeEditor(
+            store = store,
+            onCommit = { commitCount++ },
+            onApply = { applyCount++ },
+            commitSucceeds = { commitSucceeds },
+        )
+        override fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
+        override fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
+    }
+
+    private class FakeEditor(
+        private val store: MutableMap<String, Any?>,
+        private val onCommit: () -> Unit,
+        private val onApply: () -> Unit,
+        private val commitSucceeds: () -> Boolean = { true },
+    ) : SharedPreferences.Editor {
+        private val staged = mutableMapOf<String, Any?>()
+        private val removed = mutableSetOf<String>()
+        private var clearAll = false
+
+        override fun putString(key: String?, value: String?): SharedPreferences.Editor = apply { staged[key!!] = value }
+        override fun putStringSet(key: String?, values: MutableSet<String>?): SharedPreferences.Editor = apply { staged[key!!] = values }
+        override fun putInt(key: String?, value: Int): SharedPreferences.Editor = apply { staged[key!!] = value }
+        override fun putLong(key: String?, value: Long): SharedPreferences.Editor = apply { staged[key!!] = value }
+        override fun putFloat(key: String?, value: Float): SharedPreferences.Editor = apply { staged[key!!] = value }
+        override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor = apply { staged[key!!] = value }
+        override fun remove(key: String?): SharedPreferences.Editor = apply { removed += key!! }
+        override fun clear(): SharedPreferences.Editor = apply { clearAll = true }
+        override fun commit(): Boolean {
+            onCommit()
+            if (!commitSucceeds()) return false
+            flush()
+            return true
+        }
+        override fun apply() { onApply(); flush() }
+
+        private fun flush() {
+            if (clearAll) store.clear()
+            removed.forEach { store.remove(it) }
+            store.putAll(staged)
+            staged.clear(); removed.clear(); clearAll = false
+        }
+    }
+
+    // A ManualControls with every PERSISTED field non-default. programAppSide is intentionally left
+    // at its default: it is derived state, NOT persisted, so a non-default value there would never
+    // round-trip.
+    private val nonDefaultControls = ManualControls(
+        focusMode = FocusMode.MANUAL,
+        focusDistanceDiopters = 2.5f,
+        afLock = true,
+        exposureMode = ExposureMode.MANUAL,
+        iso = 1600,
+        exposureTimeNs = 4_000_000L,
+        shutterMode = ShutterMode.ANGLE,
+        shutterAngle = 172.8f,
+        exposureCompensation = 2,
+        logEiOffsetStops = 2,
+        aeLock = true,
+        antibanding = Antibanding.HZ60,
+        fps = 60,
+        exposureStep = ExposureStep.HALF,
+        wbMode = WbMode.MANUAL,
+        wbKelvin = 3200,
+        wbTint = -10,
+        // Distinct gEven/gOdd so a customWbGe/customWbGo copy-paste swap is caught.
+        customWbGains = WbGains(r = 1.8f, gEven = 1.0f, gOdd = 1.02f, b = 2.4f),
+        awbLock = true,
+        meteringMode = MeteringMode.SPOT,
+        afSpotSize = AfSpotSize.LARGE,
+        facePriorityAf = true,
+        edge = ProcessingLevel.HIGH_QUALITY,
+        noiseReduction = ProcessingLevel.FAST,
+        colorEffect = ColorEffect.MONO,
+        flash = FlashMode.ON,
+        oisEnabled = false,
+        zoomRatio = 4.286f,
+        jpegQuality = 80,
+    )
+
+    @Test
+    fun legacyPersistedLogNameMigratesToSlog3Cine() {
+        // Pre-2026-07-22 builds persisted the removed O-Log2 option as "LOG". The defensive enum
+        // load must map it to SLOG3_CINE explicitly — the generic unknown-name fallback would
+        // silently drop a log shooter back to the HLG default. Presets share loadWithPrefix, so
+        // the alias must hold under a preset prefix too.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putString("transfer", "LOG")
+            .putBoolean("preset_MR1_hasSaved", true)
+            .putString("preset_MR1_transfer", "LOG")
+            .commit()
+        val store = SettingsStore(prefs)
+
+        assertEquals(ColorTransfer.SLOG3_CINE, store.load()?.extras?.transfer)
+        assertEquals(ColorTransfer.SLOG3_CINE, store.loadPreset(MemorySlot.MR1)?.extras?.transfer)
+        // A genuinely unknown name still degrades to the field default, not the log alias.
+        prefs.edit().putString("transfer", "NOT_A_TRANSFER").commit()
+        assertEquals(ExtraSettings().transfer, store.load()?.extras?.transfer)
+    }
+
+    @Test
+    fun oLog2PersistsByItsOwnNameWhileLegacyLogStillMigrates() {
+        // O-Log2 came back 2026-10-15 under a NEW enum name precisely so these two cannot collide:
+        // "OLOG2" restores as O-Log2 (main settings and an MR bank), while the legacy "LOG" — the
+        // retired, toe-carrying O-Log2 — keeps migrating to S-Log3.Cine exactly as before.
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        assertTrue(store.save(ManualControls(), ExtraSettings(transfer = ColorTransfer.OLOG2)))
+        assertEquals("OLOG2", prefs.getString("transfer", null))
+        assertEquals(ColorTransfer.OLOG2, store.load()?.extras?.transfer)
+
+        prefs.edit()
+            .putBoolean("preset_MR2_hasSaved", true)
+            .putString("preset_MR2_transfer", "OLOG2")
+            .putBoolean("preset_MR1_hasSaved", true)
+            .putString("preset_MR1_transfer", "LOG")
+            .commit()
+        assertEquals(ColorTransfer.OLOG2, store.loadPreset(MemorySlot.MR2)?.extras?.transfer)
+        assertEquals(ColorTransfer.SLOG3_CINE, store.loadPreset(MemorySlot.MR1)?.extras?.transfer)
+    }
+
+    @Test
+    fun everyPhoneMakerLogPersistsByItsOwnName() {
+        // The store keeps the operator's name verbatim on every phone; whether THIS device offers it
+        // is decided at restore by normalizedForEncoder (a foreign flavor becomes S-Log3 there).
+        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
+            val prefs = FakePrefs()
+            val store = SettingsStore(prefs)
+            assertTrue(store.save(ManualControls(), ExtraSettings(transfer = flavor)))
+            assertEquals(flavor.name, prefs.getString("transfer", null))
+            assertEquals(flavor, store.load()?.extras?.transfer)
+        }
+    }
+
+    @Test
+    fun corruptExposureFpsAndKelvinAreBoundedAtLoad() {
+        // AGG-33: like ISO/EV/focus, these raw numbers reach exposure math before any caps clamp.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putLong("exposureTimeNs", -5L)
+            .putInt("fps", 0)
+            .putInt("wbKelvin", 99_999)
+            .commit()
+        val controls = SettingsStore(prefs).load()?.controls
+
+        assertEquals(1L, controls?.exposureTimeNs)
+        assertEquals(1, controls?.fps)
+        assertEquals(10000, controls?.wbKelvin)
+    }
+
+    @Test
+    fun aFailedCommitIsReportedOnceAndReturnedToTheCaller() {
+        // AGG-32: commit()'s Boolean was dropped, so a full disk lost every save silently.
+        val prefs = FakePrefs()
+        val reports = mutableListOf<String>()
+        val store = SettingsStore(prefs, onCommitFailure = { reports += it })
+
+        assertTrue(store.save(nonDefaultControls, ExtraSettings()))
+        assertTrue(reports.isEmpty())
+
+        prefs.commitSucceeds = false
+        assertFalse(store.save(nonDefaultControls, ExtraSettings()))
+        assertFalse(store.savePreset(MemorySlot.MR1, nonDefaultControls, ExtraSettings(), "n", "s"))
+        assertFalse(store.saveGeneratedPreset(MemorySlot.MR2, nonDefaultControls, ExtraSettings()))
+        store.rememberEnabled = false
+        // Quota-safe: one report per store however many saves fail.
+        assertEquals(listOf("settings"), reports)
+
+        prefs.commitSucceeds = true
+        assertTrue(store.savePreset(MemorySlot.MR1, nonDefaultControls, ExtraSettings(), "n", "s"))
+    }
+
+    @Test
+    fun everyRestoredExposureAndWbNumberIsBoundedAtBothEnds() {
+        // AGG2-27: the AGG-33 bound skipped the sibling photoExposureTimeNs key (upper end) and
+        // wbTint entirely. A Video-saved blob carrying Long.MAX_VALUE for the Photo shutter became
+        // the ACTIVE exposure on the next Video→Photo flip, ahead of any caps clamp.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putLong("exposureTimeNs", Long.MAX_VALUE)
+            .putLong("photoExposureTimeNs", Long.MAX_VALUE)
+            .putInt("fps", Int.MAX_VALUE)
+            .putInt("wbKelvin", -1)
+            .putInt("wbTint", Int.MAX_VALUE)
+            .commit()
+        val high = SettingsStore(prefs).load()
+
+        assertEquals(60_000_000_000L, high?.controls?.exposureTimeNs)
+        assertEquals(60_000_000_000L, high?.extras?.photoExposureTimeNs)
+        assertEquals(240, high?.controls?.fps)
+        assertEquals(2000, high?.controls?.wbKelvin)
+        assertEquals(50, high?.controls?.wbTint)
+
+        prefs.edit()
+            .putLong("photoExposureTimeNs", Long.MIN_VALUE)
+            .putInt("wbTint", Int.MIN_VALUE)
+            .commit()
+        val low = SettingsStore(prefs).load()
+
+        assertEquals(1L, low?.extras?.photoExposureTimeNs)
+        assertEquals(-50, low?.controls?.wbTint)
+
+        // In-range values are restored untouched (PMA110 behavior unchanged).
+        prefs.edit()
+            .putLong("photoExposureTimeNs", 4_000_000_000L)
+            .putInt("wbTint", -17)
+            .commit()
+        val inRange = SettingsStore(prefs).load()
+        assertEquals(4_000_000_000L, inRange?.extras?.photoExposureTimeNs)
+        assertEquals(-17, inRange?.controls?.wbTint)
+    }
+
+    @Test
+    fun aBlobWithoutAPhoneKeyRestoresTheCallersSeedNotTheFindX9Ultra() {
+        // A blob or MR bank written before the phone key existed must not replace the OTHER seed
+        // on foreign hardware with the Find X9 Ultra + Hasselblad 300 mm kit (AGG-35).
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putBoolean("preset_MR1_hasSaved", true)
+            .commit()
+        val store = SettingsStore(prefs) { PhoneModel.OTHER }
+
+        assertEquals(PhoneModel.OTHER, store.load()?.extras?.phoneModel)
+        assertEquals(PhoneModel.OTHER, store.loadPreset(MemorySlot.MR1)?.extras?.phoneModel)
+        // A persisted phone still wins over the seed.
+        prefs.edit().putString("phoneModel", PhoneModel.FIND_X9_ULTRA.name).commit()
+        assertEquals(PhoneModel.FIND_X9_ULTRA, store.load()?.extras?.phoneModel)
+    }
+
+    @Test
+    fun loadReconcilesAConverterThatCannotClampOntoTheRestoredPhone() {
+        // The phone and converter are two independent keys, so nothing in the file format stops a
+        // pair that never existed together (an older catalog, a hand-edited blob, a preset written
+        // before a phone change). Load must resolve it rather than hand the UI a selection its own
+        // narrowed dropdown does not contain. Presets share loadWithPrefix, so it holds there too.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putString("phoneModel", PhoneModel.FIND_X9_ULTRA.name)
+            .putString("teleconverterProfile", TeleconverterProfile.ZEISS_400.name)
+            .putBoolean("preset_MR1_hasSaved", true)
+            .putString("preset_MR1_phoneModel", PhoneModel.OTHER.name)
+            .putString("preset_MR1_teleconverterProfile", TeleconverterProfile.EXPLORER_300.name)
+            .commit()
+        val store = SettingsStore(prefs)
+
+        assertEquals(TeleconverterProfile.EXPLORER_300, store.load()?.extras?.teleconverterProfile)
+        assertEquals(PhoneModel.OTHER, store.loadPreset(MemorySlot.MR1)?.extras?.phoneModel)
+        assertEquals(
+            TeleconverterProfile.GENERIC_1_5,
+            store.loadPreset(MemorySlot.MR1)?.extras?.teleconverterProfile,
+        )
+        // A converter that fits anything is the user's deliberate pick and must survive untouched.
+        prefs.edit().putString("teleconverterProfile", TeleconverterProfile.GENERIC_3.name).commit()
+        assertEquals(TeleconverterProfile.GENERIC_3, store.load()?.extras?.teleconverterProfile)
+    }
+
+    @Test
+    fun rememberToggleCommitsBothValuesSynchronously() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+
+        store.rememberEnabled = false
+        assertFalse(store.rememberEnabled)
+        assertEquals(1, prefs.commitCount)
+        assertEquals(0, prefs.applyCount)
+
+        store.rememberEnabled = true
+        assertTrue(store.rememberEnabled)
+        assertEquals(2, prefs.commitCount)
+        assertEquals(0, prefs.applyCount)
+    }
+
+    private val nonDefaultExtras = ExtraSettings(
+        transfer = ColorTransfer.LOGC3,
+        heif = false,
+        jpeg = true,
+        dngRaw = false,
+        mode = CaptureMode.VIDEO,
+        photoExposureTimeNs = 750_000_000L,
+        lens = LensChoice.TELE3X,
+        teleconverter = true,
+        // A phone with its own kit catalog paired with a fits-anything converter: proves the phone
+        // key round-trips AND that load-time reconciliation does not replace a legitimate pick.
+        phoneModel = PhoneModel.VIVO_X300_ULTRA,
+        teleconverterProfile = TeleconverterProfile.CUSTOM,
+        teleconverterCustomMagnification = 2.75f,
+        videoStabMode = VideoStabMode.STANDARD,
+        aspectRatio = AspectRatio.W16_9,
+        timer = ShutterTimer.SEC10,
+        driveMode = DriveMode.TIMELAPSE,
+        intervalSec = 17,
+        focusPeaking = true,
+        peakingLevel = PeakingLevel.HIGH,
+        peakingColor = PeakingColor.BLUE,
+        zebra = true,
+        zebraLevel = ZebraLevel.IRE70,
+        falseColor = true,
+        histogram = true,
+        waveform = true,
+        grid = GridType.GOLDEN,
+        level = true,
+        punchIn = true,
+        teleFinder = true,
+        videoCodec = VideoCodec.AVC,
+        bitrateLevel = BitrateLevel.MAX,
+        videoFrameRate = VideoFrameRate.FPS_24,
+        videoResolution = "1920x1080",
+        openGate = true,
+        recordAudio = false,
+        audioGain = 1.5f,
+        audioScene = AudioScene.SOUND_FOCUS,
+        audioInputPreference = AudioInputPreference.USB,
+        // Reordered from PHOTO_DEFAULT — catches a photoFnSlots/videoFnSlots/fnSlots key mixup.
+        photoFnSlots = listOf(FnSlot.WB, FnSlot.ISO, FnSlot.EXPOSURE_MODE, FnSlot.EV, FnSlot.FOCUS, FnSlot.SHUTTER),
+        videoFnSlots = listOf(FnSlot.TRANSFER, FnSlot.STABILIZATION, FnSlot.AUDIO_SCENE),
+        myMenuSlots = listOf(FnSlot.PEAKING, FnSlot.ZEBRA),
+        volumeKeyAction = HardwareKeyAction.AF_ON,
+        halfPressAction = HardwareKeyAction.AEL,
+        gammaAssist = true,
+        gyroLog = true,
+        frameLines = FrameLineType.CINEMA,
+        preserveLensSelection = false,
+        preserveTeleconverter = false,
+    )
+
+    @Test
+    fun saveThenLoad_roundTripsEqual() {
+        val store = SettingsStore(FakePrefs())
+        store.save(nonDefaultControls, nonDefaultExtras)
+        assertEquals(SettingsStore.Loaded(nonDefaultControls, nonDefaultExtras), store.load())
+    }
+
+    @Test
+    fun `gyro log defaults OFF and an older blob or MR bank without the key restores OFF`() {
+        assertEquals(false, ExtraSettings().gyroLog)
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "preset_MR1_hasSaved" to true,
+            ),
+        )
+        val store = SettingsStore(prefs)
+        assertEquals(false, store.load()?.extras?.gyroLog)
+        assertEquals(false, store.loadPreset(MemorySlot.MR1)?.extras?.gyroLog)
+    }
+
+    @Test
+    fun `face priority AF defaults OFF and an older blob or MR bank without the key restores OFF`() {
+        assertEquals(false, ManualControls().facePriorityAf)
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "preset_MR1_hasSaved" to true,
+            ),
+        )
+        val store = SettingsStore(prefs)
+        assertEquals(false, store.load()?.controls?.facePriorityAf)
+        assertEquals(false, store.loadPreset(MemorySlot.MR1)?.controls?.facePriorityAf)
+    }
+
+    @Test
+    fun `face priority AF round-trips through the main blob and an MR bank`() {
+        val store = SettingsStore(FakePrefs())
+        store.save(ManualControls(facePriorityAf = true), ExtraSettings())
+        assertEquals(true, store.load()?.controls?.facePriorityAf)
+        store.savePreset(MemorySlot.MR3, ManualControls(facePriorityAf = true), ExtraSettings(), "n", "s")
+        assertEquals(true, store.loadPreset(MemorySlot.MR3)?.controls?.facePriorityAf)
+        // An MR bank saved with the feature OFF recalls OFF even while the live blob holds ON.
+        store.savePreset(MemorySlot.MR1, ManualControls(), ExtraSettings(), "n", "s")
+        assertEquals(false, store.loadPreset(MemorySlot.MR1)?.controls?.facePriorityAf)
+    }
+
+    @Test
+    fun `log EI offset defaults to 0 and an older blob or MR bank without the key restores 0`() {
+        assertEquals(0, ManualControls().logEiOffsetStops)
+        val store = SettingsStore(FakePrefs(mutableMapOf("hasSaved" to true, "preset_MR1_hasSaved" to true)))
+        assertEquals(0, store.load()?.controls?.logEiOffsetStops)
+        assertEquals(0, store.loadPreset(MemorySlot.MR1)?.controls?.logEiOffsetStops)
+    }
+
+    @Test
+    fun `log EI offset round-trips through the main blob and every MR bank value`() {
+        val store = SettingsStore(FakePrefs())
+        for (stops in 0..3) {
+            store.save(ManualControls(logEiOffsetStops = stops), ExtraSettings())
+            assertEquals(stops, store.load()?.controls?.logEiOffsetStops)
+            store.savePreset(MemorySlot.MR2, ManualControls(logEiOffsetStops = stops), ExtraSettings(), "n", "s")
+            assertEquals(stops, store.loadPreset(MemorySlot.MR2)?.controls?.logEiOffsetStops)
+        }
+        // A bank saved at 0 recalls 0 while the live blob holds an offset.
+        store.save(ManualControls(logEiOffsetStops = 3), ExtraSettings())
+        store.savePreset(MemorySlot.MR1, ManualControls(), ExtraSettings(), "n", "s")
+        assertEquals(0, store.loadPreset(MemorySlot.MR1)?.controls?.logEiOffsetStops)
+    }
+
+    @Test
+    fun `a corrupt log EI offset is clamped into the offered domain`() {
+        val store = SettingsStore(
+            FakePrefs(
+                mutableMapOf(
+                    "hasSaved" to true,
+                    "logEiOffsetStops" to 99,
+                    "preset_MR1_hasSaved" to true,
+                    "preset_MR1_logEiOffsetStops" to -4,
+                ),
+            ),
+        )
+        assertEquals(3, store.load()?.controls?.logEiOffsetStops)
+        assertEquals(0, store.loadPreset(MemorySlot.MR1)?.controls?.logEiOffsetStops)
+    }
+
+    @Test
+    fun `gyro log round-trips through the main blob and an MR bank`() {
+        val store = SettingsStore(FakePrefs())
+        store.save(ManualControls(), ExtraSettings(gyroLog = true))
+        assertEquals(true, store.load()?.extras?.gyroLog)
+        store.savePreset(MemorySlot.MR2, ManualControls(), ExtraSettings(gyroLog = true), "n", "s")
+        assertEquals(true, store.loadPreset(MemorySlot.MR2)?.extras?.gyroLog)
+    }
+
+    @Test
+    fun load_onEmptyStore_isNull() {
+        assertNull(SettingsStore(FakePrefs()).load())
+    }
+
+    @Test
+    fun `main settings and MR intervals normalize to the shared domain`() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "intervalSec" to 300,
+                "preset_MR1_hasSaved" to true,
+                "preset_MR1_intervalSec" to -8,
+                "preset_MR2_hasSaved" to true,
+                "preset_MR2_intervalSec" to 17,
+            ),
+        )
+        val store = SettingsStore(prefs)
+
+        assertEquals(30, store.load()?.extras?.intervalSec)
+        assertEquals(1, store.loadPreset(MemorySlot.MR1)?.extras?.intervalSec)
+        assertEquals(17, store.loadPreset(MemorySlot.MR2)?.extras?.intervalSec)
+    }
+
+    @Test
+    fun load_migratesLegacySharedShutterIntoPhotoExposureMemory() {
+        val legacyExposureNs = 500_000_000L
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "mode" to CaptureMode.VIDEO.name,
+                "exposureTimeNs" to legacyExposureNs,
+            ),
+        )
+
+        val loaded = requireNotNull(SettingsStore(prefs).load())
+        assertEquals(legacyExposureNs, loaded.extras.photoExposureTimeNs)
+    }
+
+    @Test
+    fun load_migratesLegacyFnSlotsKey() {
+        // Old installs stored the still Fn bar under "fnSlots"; with no "photoFnSlots" key present,
+        // load() must fall back to the legacy key.
+        val prefs = FakePrefs(mutableMapOf("hasSaved" to true, "fnSlots" to "ISO,WB"))
+        val loaded = SettingsStore(prefs).load()
+        assertEquals(listOf(FnSlot.ISO, FnSlot.WB), loaded?.extras?.photoFnSlots)
+    }
+
+    @Test
+    fun load_migratesMissingLensPreservationKeyToTheCurrentDefault() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "lens" to LensChoice.TELE3X.name,
+                // A pre-preserve-policy blob has no preserveLensSelection key.
+            ),
+        )
+
+        val extras = requireNotNull(SettingsStore(prefs).load()).extras
+
+        assertEquals(LensChoice.TELE3X, extras.lens)
+        assertTrue(extras.preserveLensSelection)
+
+        // An explicit current-schema OFF remains the operator's durable choice.
+        prefs.edit().putBoolean("preserveLensSelection", false).commit()
+        assertFalse(requireNotNull(SettingsStore(prefs).load()).extras.preserveLensSelection)
+    }
+
+    @Test
+    fun enumOr_defaultsOnUnknownOrNull_roundTripsValid() {
+        assertEquals(WbMode.MANUAL, enumOr("MANUAL", WbMode.AUTO))
+        assertEquals(WbMode.AUTO, enumOr("NOT_A_MODE", WbMode.AUTO))
+        assertEquals(WbMode.AUTO, enumOr(null, WbMode.AUTO))
+    }
+
+    @Test
+    fun enumListOr_dropsGarbage_keepsValid_defaultsWhenAllGarbage() {
+        assertEquals(listOf(FnSlot.ISO, FnSlot.WB), enumListOr("ISO,GARBAGE,WB", emptyList<FnSlot>()))
+        assertEquals(listOf(FnSlot.WB), enumListOr("NOPE,ALSO_NOPE", listOf(FnSlot.WB)))
+        assertEquals(listOf(FnSlot.EV), enumListOr(null, listOf(FnSlot.EV)))
+    }
+
+    @Test
+    fun load_canonicalizesFnListsToDistinctMaximumEightWithFallback() {
+        val raw = listOf(
+            FnSlot.ISO, FnSlot.WB, FnSlot.EV, FnSlot.FOCUS, FnSlot.SHUTTER,
+            FnSlot.EXPOSURE_MODE, FnSlot.TRANSFER, FnSlot.STABILIZATION,
+            FnSlot.AUDIO_SCENE, FnSlot.ISO,
+        ).joinToString(",") { it.name }
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "photoFnSlots" to raw,
+                "videoFnSlots" to "NOPE,INVALID",
+            ),
+        )
+
+        val extras = requireNotNull(SettingsStore(prefs).load()).extras
+        assertEquals(8, extras.photoFnSlots.size)
+        assertEquals(8, extras.photoFnSlots.distinct().size)
+        assertEquals(ExtraSettings().videoFnSlots, extras.videoFnSlots)
+    }
+
+    @Test
+    fun presets_roundTripPerSlot_noCrossSlotBleed() {
+        val store = SettingsStore(FakePrefs())
+        val cA = nonDefaultControls.copy(iso = 200)
+        val cB = nonDefaultControls.copy(iso = 6400)
+        store.savePreset(MemorySlot.MR1, cA, nonDefaultExtras, "A", "sumA")
+        store.savePreset(MemorySlot.MR2, cB, nonDefaultExtras, "B", "sumB")
+        assertEquals(SettingsStore.Loaded(cA, nonDefaultExtras), store.loadPreset(MemorySlot.MR1))
+        assertEquals(SettingsStore.Loaded(cB, nonDefaultExtras), store.loadPreset(MemorySlot.MR2))
+        assertNull("an unsaved slot stays empty", store.loadPreset(MemorySlot.MR3))
+    }
+
+    @Test
+    fun presets_reportSavedSlotsAndInfoWithTruthfulFallbacks() {
+        // MR3 simulates an older-version preset whose name/summary keys were never written.
+        val prefs = FakePrefs(mutableMapOf("preset_MR3_hasSaved" to true))
+        val store = SettingsStore(prefs)
+        store.savePreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras, "Birds", "1/300 ISO A")
+        store.savePreset(MemorySlot.MR2, nonDefaultControls, nonDefaultExtras, "   ", "moon")
+
+        assertEquals(setOf(MemorySlot.MR1, MemorySlot.MR2, MemorySlot.MR3), store.savedPresetSlots())
+        val info = store.savedPresetInfo()
+        assertEquals("Birds", info[MemorySlot.MR1]?.customName)
+        assertEquals("1/300 ISO A", info[MemorySlot.MR1]?.customSummary)
+        // Blank/missing presentation stays null so the UI can derive it in the active locale. Neither
+        // may drop the slot or its typed control packet.
+        assertNull(info[MemorySlot.MR2]?.customName)
+        assertEquals("moon", info[MemorySlot.MR2]?.customSummary)
+        assertNull(info[MemorySlot.MR3]?.customName)
+        assertNull(info[MemorySlot.MR3]?.customSummary)
+        assertEquals(nonDefaultControls, info[MemorySlot.MR1]?.loaded?.controls)
+
+        val empty = SettingsStore(FakePrefs())
+        assertTrue(empty.savedPresetSlots().isEmpty())
+        assertTrue(empty.savedPresetInfo().isEmpty())
+    }
+
+    @Test
+    fun generatedPreset_persistsOnlyCanonicalInputs_notLocaleSpecificDisplayProse() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+
+        store.saveGeneratedPreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras)
+
+        val info = requireNotNull(store.savedPresetInfo()[MemorySlot.MR1])
+        assertNull(info.customName)
+        assertNull(info.customSummary)
+        assertEquals(nonDefaultControls, info.loaded.controls)
+        assertEquals(nonDefaultExtras, info.loaded.extras)
+        assertFalse(prefs.contains("preset_MR1_name"))
+        assertFalse(prefs.contains("preset_MR1_summary"))
+    }
+
+    @Test
+    fun generatedPreset_migratesPreMarkerGeneratedPresentation() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "preset_MR1_name" to "Photo 300 mm",
+                "preset_MR1_summary" to "300 mm · M · HEIF",
+            ),
+        )
+        val store = SettingsStore(prefs)
+
+        store.saveGeneratedPreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras)
+
+        val info = requireNotNull(store.savedPresetInfo()[MemorySlot.MR1])
+        assertNull(info.customName)
+        assertNull(info.customSummary)
+        assertFalse(prefs.contains("preset_MR1_name"))
+        assertFalse(prefs.contains("preset_MR1_summary"))
+    }
+
+    @Test
+    fun generatedPresetOverwrite_preservesUserAuthoredPresentation() {
+        val store = SettingsStore(FakePrefs())
+        store.savePreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras, "Birds", "moon")
+
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            nonDefaultControls.copy(iso = 800),
+            nonDefaultExtras.copy(mode = CaptureMode.VIDEO),
+        )
+
+        val info = requireNotNull(store.savedPresetInfo()[MemorySlot.MR1])
+        assertEquals("Birds", info.customName)
+        assertEquals("moon", info.customSummary)
+        assertEquals(800, info.loaded.controls.iso)
+        assertEquals(CaptureMode.VIDEO, info.loaded.extras.mode)
+    }
+
+    @Test
+    fun load_clampsPersistedZoomRatio() {
+        // A persisted non-positive zoom would feed the zoom-ease ticker's log-space math a 0 -> clamp.
+        val prefs = FakePrefs(mutableMapOf("hasSaved" to true, "zoomRatio" to 0f))
+        val loaded = SettingsStore(prefs).load()
+        assertTrue("zoomRatio must be clamped >= 0.1f", (loaded?.controls?.zoomRatio ?: 0f) >= 0.1f)
+    }
+
+    @Test
+    fun load_sanitizesCorruptManualNumbersBeforeCapabilitiesExist() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "focusDiopters" to Float.NaN,
+                "shutterAngle" to -10f,
+                "iso" to Int.MAX_VALUE,
+                "exposureCompensation" to Int.MIN_VALUE,
+                "hasCustomWb" to true,
+                "customWbR" to 0f,
+                "customWbGe" to 100f,
+                "customWbGo" to Float.NaN,
+                "customWbB" to Float.POSITIVE_INFINITY,
+                "audioGain" to Float.NaN,
+                "preset_MR1_hasSaved" to true,
+                "preset_MR1_focusDiopters" to Float.POSITIVE_INFINITY,
+                "preset_MR1_shutterAngle" to 999f,
+                "preset_MR1_iso" to Int.MIN_VALUE,
+                "preset_MR1_exposureCompensation" to Int.MAX_VALUE,
+                "preset_MR1_audioGain" to -5f,
+            ),
+        )
+        val store = SettingsStore(prefs)
+
+        val restored = requireNotNull(store.load()).controls
+        assertEquals(0f, restored.focusDistanceDiopters, 0f)
+        assertEquals(1f, restored.shutterAngle, 0f)
+        assertEquals(1_000_000, restored.iso)
+        assertEquals(-100, restored.exposureCompensation)
+        assertEquals(WbGains(1f, 32f, 1f, 1f), restored.customWbGains)
+        assertEquals(1f, requireNotNull(store.load()).extras.audioGain, 0f)
+
+        val recalledPacket = requireNotNull(store.loadPreset(MemorySlot.MR1))
+        val recalled = recalledPacket.controls
+        assertEquals(0f, recalled.focusDistanceDiopters, 0f)
+        assertEquals(360f, recalled.shutterAngle, 0f)
+        assertEquals(1, recalled.iso)
+        assertEquals(100, recalled.exposureCompensation)
+        assertEquals(0f, recalledPacket.extras.audioGain, 0f)
+    }
+
+    // AGG3-8 (CRIT3-3, REG3-4): each sequence below goes through a real bank round trip, then the
+    // Activity's two pure decisions (what the bank records, what recall does to the reason), then
+    // the grant rule. A provenance-blind bank could satisfy only one of the two.
+    @Test
+    fun `a bank saved silent by denial is restored with audio by a later grant`() {
+        val store = SettingsStore(FakePrefs())
+        // Mic denied: audio dropped as a denial consequence, reason set; the operator saves MR1.
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            ManualControls(),
+            ExtraSettings(
+                recordAudio = false,
+                recordAudioOffByDenial = me.hletrd.telecampro.bankAudioOffByDenial(false, audioDenialReason = true),
+            ),
+        )
+        // Later the operator turns audio on (reason cleared), then recalls MR1.
+        val bank = requireNotNull(store.loadPreset(MemorySlot.MR1)).extras
+        assertEquals(true, bank.recordAudioOffByDenial)
+        val reason = me.hletrd.telecampro.audioDenialReasonAfterRecall(
+            recallApplied = true,
+            recalledRecordAudio = bank.recordAudio,
+            recalledOffByDenial = bank.recordAudioOffByDenial,
+        )
+        assertEquals(true, reason)
+        assertTrue(
+            me.hletrd.telecampro.audioRestoredByMicrophoneGrant(
+                audioDisabledByDenial = reason!!,
+                recordAudio = bank.recordAudio,
+                hasMicrophonePermission = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `a bank the operator silenced stays silent after a later grant`() {
+        val store = SettingsStore(FakePrefs())
+        // Mic granted, operator switches audio off on purpose (reason cleared) and saves MR1.
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            ManualControls(),
+            ExtraSettings(
+                recordAudio = false,
+                recordAudioOffByDenial = me.hletrd.telecampro.bankAudioOffByDenial(false, audioDenialReason = false),
+            ),
+        )
+        // Later the mic is revoked (reason set), then MR1 is recalled.
+        val bank = requireNotNull(store.loadPreset(MemorySlot.MR1)).extras
+        assertEquals(false, bank.recordAudioOffByDenial)
+        val reason = me.hletrd.telecampro.audioDenialReasonAfterRecall(
+            recallApplied = true,
+            recalledRecordAudio = bank.recordAudio,
+            recalledOffByDenial = bank.recordAudioOffByDenial,
+        )
+        assertEquals(false, reason)
+        assertFalse(
+            me.hletrd.telecampro.audioRestoredByMicrophoneGrant(
+                audioDisabledByDenial = reason!!,
+                recordAudio = bank.recordAudio,
+                hasMicrophonePermission = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `audio-off provenance is absent for a legacy bank and cleared by an unknown resave`() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+        store.saveGeneratedPreset(MemorySlot.MR1, ManualControls(), ExtraSettings(recordAudio = false))
+        assertNull(requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            ManualControls(),
+            ExtraSettings(recordAudio = false, recordAudioOffByDenial = true),
+        )
+        assertEquals(true, requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+        // A resave without provenance must not leave the old answer standing for the new bank.
+        store.saveGeneratedPreset(MemorySlot.MR1, ManualControls(), ExtraSettings(recordAudio = false))
+        assertNull(requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+        // A type-mismatched key degrades alone to "unknown".
+        prefs.edit().putString("preset_MR1_recordAudioOffByDenial", "x").commit()
+        assertNull(requireNotNull(store.loadPreset(MemorySlot.MR1)).extras.recordAudioOffByDenial)
+    }
+}

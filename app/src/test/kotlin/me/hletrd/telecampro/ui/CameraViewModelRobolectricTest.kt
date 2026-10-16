@@ -1,0 +1,1686 @@
+package me.hletrd.telecampro.ui
+
+import android.app.Application
+import android.net.Uri
+import android.os.Looper
+import androidx.test.core.app.ApplicationProvider
+import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.camera.CameraController
+import me.hletrd.telecampro.camera.CameraEngine
+import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraRoute
+import me.hletrd.telecampro.camera.CameraRouteInventory
+import me.hletrd.telecampro.camera.CameraReadyPublication
+import me.hletrd.telecampro.camera.CameraPolicyPublication
+import me.hletrd.telecampro.camera.CameraPolicyPublicationGate
+import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.camera.CaptureFamilyDeleteDurability
+import me.hletrd.telecampro.camera.CaptureFamilyDeleteIntent
+import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.DeletedStillPublication
+import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.EngineCallbackKey
+import me.hletrd.telecampro.camera.GridType
+import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
+import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
+import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.TeleconverterProfile
+import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.cameraPolicyPublishedState
+import me.hletrd.telecampro.storage.ExtraSettings
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.DeletedFamilySweepResult
+import me.hletrd.telecampro.storage.DiscardMarkerCleanupDisposition
+import me.hletrd.telecampro.storage.KnownOutputDeletionResult
+import me.hletrd.telecampro.storage.KnownOutputProviderDisposition
+import me.hletrd.telecampro.storage.MediaProvenance
+import me.hletrd.telecampro.storage.RestoredCapture
+import me.hletrd.telecampro.storage.RestoredCaptureOutput
+import me.hletrd.telecampro.storage.RestoredDeleteScope
+import me.hletrd.telecampro.storage.SettingsStore
+import me.hletrd.telecampro.storage.StoredMediaOutputKind
+import me.hletrd.telecampro.video.CodecComponent
+import me.hletrd.telecampro.video.CodecInventory
+import me.hletrd.telecampro.video.buildCodecInventory
+import java.time.Duration
+import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+
+/**
+ * Robolectric-driven construction/init-contract tests for [CameraViewModel] — the first host tests
+ * that execute the ViewModel CLASS BODY (Partition B by policy; see docs/TESTING.md) instead of its
+ * extracted pure policy.
+ *
+ * ENGINE STRATEGY (the truthful option of the two considered for this phase): `CameraEngine` is a
+ * FINAL class, so a subclassed fake is not constructible without adding production `open` markers.
+ * These tests therefore inject a REAL `CameraEngine(app)` through the ViewModel's constructor seam
+ * and NEVER call `onStart()` — the camera only opens on `resume()` (CLAUDE.md lifecycle chain), and
+ * everything the VM touches during construction/interaction is pre-open safe by design: every
+ * controller call is `controller?.`-guarded, `GlPipeline.post` is a no-op before `start()`, and the
+ * engine's executors only run inert bookkeeping (the orphan sweep runs against Robolectric's empty
+ * MediaStore, where the missing provider cursor is swallowed by its own `runCatching` per
+ * collection). Holding the injected engine reference also lets tests drive the VM through the
+ * exact callback fields the engine would use (`onStatus` etc.), not through test-only side doors.
+ *
+ * Compose UI remains OUT of scope for this phase: the compose-ui-test deps land with the build
+ * infra, but semantics-tree tests are a separately gated decision (lane report).
+ */
+@RunWith(RobolectricTestRunner::class)
+class CameraViewModelRobolectricTest {
+
+    private class QueuedTasks {
+        private val tasks = ArrayDeque<Runnable>()
+
+        fun submit(task: Runnable): Boolean {
+            tasks.addLast(task)
+            return true
+        }
+
+        fun runNext() = tasks.removeFirst().run()
+        fun size(): Int = tasks.size
+    }
+
+    private val app: Application = ApplicationProvider.getApplicationContext()
+    private var vm: CameraViewModel? = null
+    private var engine: CameraEngine? = null
+
+    private fun createViewModel(): Pair<CameraViewModel, CameraEngine> {
+        RobolectricEglSentinels.ensure() // GlPipeline field init reads EGL14.EGL_NO_SURFACE
+        val e = CameraEngine(app)
+        val v = CameraViewModel(app, e)
+        vm = v
+        engine = e
+        return v to e
+    }
+
+    private fun idleFor(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
+
+    private fun armCountdown(v: CameraViewModel, seconds: Int = 3) {
+        CameraViewModel::class.java.getDeclaredMethod("startCountdown", Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+            .invoke(v, seconds)
+    }
+
+    private fun clearViewModel(v: CameraViewModel) {
+        CameraViewModel::class.java.getDeclaredMethod("onCleared")
+            .apply { isAccessible = true }
+            .invoke(v)
+    }
+
+    private fun setRecordingPresentation(
+        v: CameraViewModel,
+        recording: Boolean,
+        starting: Boolean,
+        finalizing: Boolean = false,
+    ) {
+        @Suppress("UNCHECKED_CAST")
+        val state = CameraViewModel::class.java.getDeclaredField("_state")
+            .apply { isAccessible = true }
+            .get(v) as MutableStateFlow<CameraUiState>
+        state.value = state.value.copy(
+            isRecording = recording,
+            isRecordingStarting = starting,
+            isRecordingFinalizing = finalizing,
+        )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun captureTracker(v: CameraViewModel): CaptureOutputTracker<Uri> =
+        CameraViewModel::class.java.getDeclaredField("captureOutputs")
+            .apply { isAccessible = true }
+            .get(v) as CaptureOutputTracker<Uri>
+
+    @Suppress("UNCHECKED_CAST")
+    private fun setState(v: CameraViewModel, transform: (CameraUiState) -> CameraUiState) {
+        val state = CameraViewModel::class.java.getDeclaredField("_state")
+            .apply { isAccessible = true }
+            .get(v) as MutableStateFlow<CameraUiState>
+        state.value = transform(state.value)
+    }
+
+    @After fun tearDown() {
+        // Detaches engine callbacks and hands the (never-started) engine to its release thread.
+        // onCleared is protected (androidx contract) — reflection is the lifecycle-honest teardown
+        // without dragging a ViewModelProvider/Store harness into every test.
+        runCatching {
+            vm?.let(::clearViewModel)
+        }
+    }
+
+    private fun currentExtras(v: CameraViewModel): ExtraSettings =
+        CameraViewModel::class.java.getDeclaredMethod("currentExtras")
+            .apply { isAccessible = true }
+            .invoke(v) as ExtraSettings
+
+    // AGG2-6 / CR2-4: "" is the persisted "never chosen -> auto-pick the largest" sentinel. The
+    // AGG-36 fix still fell back to the DELIVERED size, so an auto user was pinned to whatever the
+    // current route delivered (Open Gate's 2560x1920, a 1080p-max lens) after one save.
+    @Test fun `save persists auto video size when the operator never picked one`() {
+        val (v, _) = createViewModel()
+        assertEquals("", currentExtras(v).videoResolution)
+        CameraViewModel::class.java.getDeclaredField("requestedVideoResolution")
+            .apply { isAccessible = true }
+            .set(v, android.util.Size(1920, 1080))
+        assertEquals("1920x1080", currentExtras(v).videoResolution)
+    }
+
+    // AGG2-11 / CRIT2-5: Robolectric resolves the GENERIC DeviceProfile (RAW rides the logical
+    // camera), while CameraUiState.rawForcesStandalone still holds its PMA110 default before any
+    // route inventory. The door must follow the engine's law: no remap, unified 3.0 stays 3.0.
+    @Test fun `DNG door follows the engine RAW law instead of the state default`() {
+        val (v, e) = createViewModel()
+        assertFalse(e.rawForcesStandalone)
+        @Suppress("UNCHECKED_CAST")
+        val state = CameraViewModel::class.java.getDeclaredField("_state")
+            .apply { isAccessible = true }
+            .get(v) as MutableStateFlow<CameraUiState>
+        state.value = state.value.copy(
+            mode = CaptureMode.PHOTO,
+            lens = LensChoice.TELE3X,
+            controls = state.value.controls.copy(zoomRatio = 3f),
+            rawForcesStandalone = true,
+        )
+        assertEquals(CameraRoute.BACK, state.value.activeCameraRoute)
+
+        v.onSetPhotoFormats(state.value.photoFormats.copy(dngRaw = true))
+
+        assertTrue(v.state.value.photoFormats.dngRaw)
+        assertEquals(3f, v.state.value.controls.zoomRatio, 0f)
+        assertEquals(LensChoice.TELE3X, v.state.value.lens)
+    }
+
+    // AGG3-13: route decisions take the RAW law from the engine (GENERIC here: RAW rides the
+    // logical camera), never the state copy that still holds the PMA110 default. With DNG on, the
+    // generic photo route is the seamless logical camera, so the lens band must follow the zoom.
+    @Test fun `zoom band follows the engine RAW law instead of the state default`() {
+        val (v, e) = createViewModel()
+        assertFalse(e.rawForcesStandalone)
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.PHOTO,
+                lens = LensChoice.MAIN,
+                photoFormats = it.photoFormats.copy(dngRaw = true),
+                controls = it.controls.copy(zoomRatio = 1f),
+                rawForcesStandalone = true,
+            )
+        }
+
+        v.onZoomRatio(5f)
+
+        assertEquals(LensChoice.forZoom(v.state.value.controls.zoomRatio), v.state.value.lens)
+        assertEquals(LensChoice.TELE3X, v.state.value.lens)
+    }
+
+    // AGG2-12: the engine refuses a mid-REC camera override; the UI must not publish it anyway.
+    @Test fun `camera override refuses while recording and keeps the live pin`() {
+        val (v, _) = createViewModel()
+        setState(v) { it.copy(cameraOverrideId = "4") }
+        setRecordingPresentation(v, recording = true, starting = false)
+
+        v.onCameraOverride(null)
+
+        assertEquals("4", v.state.value.cameraOverrideId)
+        assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+    }
+
+    // ---- Construction / init contract ----
+
+    @Test fun `AndroidViewModelFactory retains the public Application constructor`() {
+        assertNotNull(CameraViewModel::class.java.getConstructor(Application::class.java))
+    }
+
+    @Test fun `fresh launch publishes the documented CameraUiState defaults`() {
+        val (v, _) = createViewModel()
+        val s = v.state.value
+        // Fresh launch is the 1× main lens, rear camera, TELE off, photo mode (CLAUDE.md contract).
+        assertEquals(CaptureMode.PHOTO, s.mode)
+        assertEquals(LensChoice.MAIN, s.lens)
+        assertEquals(CameraFacing.BACK, s.facing)
+        assertFalse(s.teleconverterMode)
+        // Camera health starts NOT ready — only an owned engine Ready publication may set it.
+        assertFalse(s.cameraReady)
+        assertNull(s.status)
+        assertEquals(ShutterTimer.OFF, s.timer)
+        assertEquals(0, s.timerCountdownSec)
+        // "Remember settings" defaults ON even when nothing was ever saved.
+        assertTrue(s.rememberSettings)
+        // init's refreshProgramAppSide: photo PROGRAM with flash OFF runs the APP-SIDE program line
+        // (the HAL AE takes no min-shutter hint), published synchronously during construction.
+        assertEquals(ExposureMode.PROGRAM, s.controls.exposureMode)
+        assertTrue(s.controls.programAppSide)
+        assertEquals(1f, s.controls.zoomRatio)
+    }
+
+    @Test fun `production gallery action bounds repeated restore requests and drops satisfied tail`() {
+        RobolectricEglSentinels.ensure()
+        val provider = QueuedTasks()
+        val completion = QueuedTasks()
+        val restoredUri = Uri.parse("content://media/external/images/media/501")
+        val output = RestoredCaptureOutput(
+            output = restoredUri,
+            kind = StoredMediaOutputKind.DISPLAYABLE,
+            displayName = "TCP_20260824_120000_001.heic",
+            provenance = MediaProvenance.APP_OWNED,
+        )
+        var queries = 0
+        val e = CameraEngine(app)
+        val v = CameraViewModel(
+            app,
+            e,
+            LatestCaptureRestoreOverrides(
+                submit = provider::submit,
+                postCompletion = completion::submit,
+                query = {
+                    queries += 1
+                    RestoredCapture(
+                        preferred = output,
+                        outputs = listOf(output),
+                        familyKey = null,
+                        deleteScope = RestoredDeleteScope.FILE_ONLY,
+                    )
+                },
+            ),
+        )
+        vm = v
+        engine = e
+
+        repeat(100) { v.onGalleryAccessRequested() }
+
+        assertEquals(1, provider.size())
+        provider.runNext()
+        assertEquals(1, completion.size())
+        completion.runNext()
+
+        assertEquals(1, queries)
+        assertEquals(restoredUri, v.state.value.lastMediaUri)
+        assertEquals(0, provider.size())
+    }
+
+    @Test fun `ViewModel clear makes an already-posted restore completion inert`() {
+        RobolectricEglSentinels.ensure()
+        val provider = QueuedTasks()
+        val completion = QueuedTasks()
+        val restoredUri = Uri.parse("content://media/external/images/media/502")
+        val output = RestoredCaptureOutput(
+            output = restoredUri,
+            kind = StoredMediaOutputKind.DISPLAYABLE,
+            displayName = "TCP_20260824_120000_002.heic",
+            provenance = MediaProvenance.APP_OWNED,
+        )
+        val e = CameraEngine(app)
+        val v = CameraViewModel(
+            app,
+            e,
+            LatestCaptureRestoreOverrides(
+                submit = provider::submit,
+                postCompletion = completion::submit,
+                query = {
+                    RestoredCapture(
+                        preferred = output,
+                        outputs = listOf(output),
+                        familyKey = null,
+                        deleteScope = RestoredDeleteScope.FILE_ONLY,
+                    )
+                },
+            ),
+        )
+        vm = v
+        engine = e
+
+        repeat(20) { v.onGalleryAccessRequested() }
+        provider.runNext()
+        assertEquals(1, completion.size())
+
+        clearViewModel(v)
+        vm = null
+        engine = null
+        completion.runNext()
+
+        assertNull(v.state.value.lastMediaUri)
+        assertEquals(0, provider.size())
+    }
+
+    @Test fun `ordinary partial delete restores survivor with ownership-safe gallery retry`() {
+        val survivorUri = Uri.parse("content://media/survivor")
+        val tracker = CaptureOutputTracker<Uri>(maxCaptureHistory = 4)
+        assertTrue(
+            tracker.seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput(
+                        output = survivorUri,
+                        kind = CaptureOutputKind.RAW,
+                        provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                    ),
+                ),
+                preferredOutput = survivorUri,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        val plan = tracker.beginDelete(survivorUri)
+        val survivor = checkNotNull(tracker.restoreDeleteSurvivors(plan, setOf(survivorUri)))
+
+        val state = resolveDeleteSurvivorState(
+            current = CameraUiState(),
+            survivor = survivor,
+            captureOutputs = tracker,
+        )
+
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(false, DeletedFamilySweepResult()),
+        )
+        assertEquals(survivorUri, state.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, state.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, state.lastMediaDeleteScope)
+    }
+
+    @Test fun `ownerless review freezes for system consent and approval never issues direct delete`() {
+        val (v, _) = createViewModel()
+        val uri = Uri.parse("content://media/external/images/media/41")
+        assertTrue(
+            captureTracker(v).seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput(
+                        output = uri,
+                        kind = CaptureOutputKind.DISPLAYABLE,
+                        provenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                    ),
+                ),
+                preferredOutput = uri,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        setState(v) {
+            it.copy(
+                lastMediaUri = uri,
+                lastMediaProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+            )
+        }
+
+        assertEquals(
+            OwnerlessMediaDeletePreparation.ConsentRequired::class.java,
+            v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED)::class.java,
+        )
+        assertEquals(
+            OwnerlessMediaDeletePreparation.Rejected,
+            v.prepareOwnerlessMediaDelete(uri, MediaProvenance.LEGACY_FORMAT_UNVERIFIED),
+        )
+        assertTrue(v.state.value.ownerlessDeleteConsentPending)
+        assertTrue(v.state.value.cameraInputBlocked)
+        assertNull(v.state.value.lastMediaUri)
+
+        // RESULT_OK means MediaStore's PendingIntent already completed deletion. This edge clears
+        // tracker/UI ownership synchronously and performs no ContentResolver.delete call.
+        v.onOwnerlessMediaDeleteConsentResult(OwnerlessMediaDeleteConsentResult.APPROVED)
+        assertFalse(v.state.value.ownerlessDeleteConsentPending)
+        assertFalse(v.state.value.cameraInputBlocked)
+        assertNull(v.state.value.lastMediaUri)
+        assertEquals(CameraStatusMessage.DELETED, v.state.value.status?.message)
+    }
+
+    @Test fun `app-owned review stays on direct deletion and ownerless callers cannot bypass consent`() {
+        val (v, _) = createViewModel()
+        val ownerless = Uri.parse("content://media/external/images/media/43")
+        assertTrue(
+            captureTracker(v).seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput(
+                        ownerless,
+                        CaptureOutputKind.DISPLAYABLE,
+                        MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                    ),
+                ),
+                preferredOutput = ownerless,
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+        v.onDeleteLastMedia(ownerless, MediaProvenance.LEGACY_FORMAT_UNVERIFIED)
+        assertEquals(
+            CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
+            v.state.value.status?.message,
+        )
+        assertTrue(captureTracker(v).isCurrentReviewOutput(ownerless))
+
+        val owned = Uri.parse("content://media/external/images/media/42")
+        captureTracker(v).record(42, owned, CaptureOutputKind.DISPLAYABLE)
+        assertEquals(
+            OwnerlessMediaDeletePreparation.DirectAppOwned,
+            v.prepareOwnerlessMediaDelete(owned, MediaProvenance.APP_OWNED),
+        )
+        assertFalse(v.state.value.ownerlessDeleteConsentPending)
+    }
+
+    @Test fun `delete authorization routing and terminal results preserve provenance honestly`() {
+        assertEquals(
+            MediaDeleteAuthorizationRoute.DIRECT_APP_OWNED,
+            mediaDeleteAuthorizationRoute(
+                trackedProvenance = MediaProvenance.APP_OWNED,
+                presentedProvenance = MediaProvenance.APP_OWNED,
+            ),
+        )
+        // Either the tracker or the frozen review identifying an ownerless row must win over a stale
+        // APP_OWNED value on the other side of the UI boundary.
+        assertEquals(
+            MediaDeleteAuthorizationRoute.SYSTEM_CONSENT,
+            mediaDeleteAuthorizationRoute(
+                trackedProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+                presentedProvenance = MediaProvenance.APP_OWNED,
+            ),
+        )
+        assertEquals(
+            MediaDeleteAuthorizationRoute.SYSTEM_CONSENT,
+            mediaDeleteAuthorizationRoute(
+                trackedProvenance = null,
+                presentedProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            ),
+        )
+
+        assertEquals(
+            OwnerlessMediaDeleteResolution(false, CameraStatusMessage.DELETED),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.APPROVED,
+                KnownOutputProviderDisposition.PRESENT,
+            ),
+        )
+        assertEquals(
+            OwnerlessMediaDeleteResolution(true, CameraStatusMessage.DELETE_CANCELED),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.CANCELED,
+                KnownOutputProviderDisposition.PRESENT,
+            ),
+        )
+        assertEquals(
+            OwnerlessMediaDeleteResolution(false, CameraStatusMessage.FILE_ALREADY_REMOVED),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.CANCELED,
+                KnownOutputProviderDisposition.ALREADY_ABSENT,
+            ),
+        )
+        assertEquals(
+            OwnerlessMediaDeleteResolution(
+                true,
+                CameraStatusMessage.DELETE_AUTHORIZATION_UNAVAILABLE,
+            ),
+            ownerlessMediaDeleteResolution(
+                OwnerlessMediaDeleteConsentResult.LAUNCH_FAILED,
+                KnownOutputProviderDisposition.UNKNOWN,
+            ),
+        )
+    }
+
+    @Test fun `superseded delete survivor preserves newer packet and selects gallery retry`() {
+        val oldUri = Uri.parse("content://media/old")
+        val newerUri = Uri.parse("content://media/newer")
+        val tracker = CaptureOutputTracker<Uri>(maxCaptureHistory = 4)
+        tracker.record(31, oldUri, CaptureOutputKind.DISPLAYABLE)
+        val plan = tracker.beginDelete(oldUri)
+        val restored = checkNotNull(tracker.restoreDeleteSurvivors(plan, setOf(oldUri)))
+        // This is the exact uncovered boundary: restore completed on the provider lane, then a
+        // newer capture became owner before the queued main-thread delivery ran.
+        tracker.record(32, newerUri, CaptureOutputKind.DISPLAYABLE)
+        val newerState = CameraUiState(
+            lastMediaUri = newerUri,
+            lastMediaProvenance = MediaProvenance.LEGACY_FORMAT_UNVERIFIED,
+            lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY,
+        )
+
+        val state = resolveDeleteSurvivorState(
+            current = newerState,
+            survivor = restored,
+            captureOutputs = tracker,
+        )
+
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(false, DeletedFamilySweepResult()),
+        )
+        assertEquals(newerState, state)
+        assertEquals(newerUri, state.lastMediaUri)
+        assertEquals(MediaProvenance.LEGACY_FORMAT_UNVERIFIED, state.lastMediaProvenance)
+        assertEquals(MediaDeleteScope.FILE_ONLY, state.lastMediaDeleteScope)
+    }
+
+    @Test fun `delete result reports success only when no survivor remains`() {
+        assertEquals(
+            CameraStatusMessage.DELETED,
+            deleteResultStatus(true, DeletedFamilySweepResult()),
+        )
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(false, DeletedFamilySweepResult()),
+        )
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(
+                true,
+                DeletedFamilySweepResult(discovered = 1, unresolved = 1),
+            ),
+        )
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(true, DeletedFamilySweepResult.QUERY_FAILED),
+        )
+    }
+
+    @Test fun `known output composition restores only confirmed provider survivors`() {
+        val deletedCleanupRetry = Uri.parse("content://media/deleted-cleanup-retry")
+        val absentCleanupRetry = Uri.parse("content://media/absent-cleanup-retry")
+        val survivor = Uri.parse("content://media/confirmed-survivor")
+        val unknown = Uri.parse("content://media/provider-unknown")
+
+        val composition = knownOutputDeleteComposition(
+            linkedMapOf(
+                deletedCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.DELETED,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+                absentCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.ALREADY_ABSENT,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+                survivor to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.PRESENT,
+                    markerCleanup = DiscardMarkerCleanupDisposition.NOT_ATTEMPTED,
+                ),
+                unknown to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.UNKNOWN,
+                    markerCleanup = DiscardMarkerCleanupDisposition.NOT_ATTEMPTED,
+                ),
+            ),
+        )
+
+        assertEquals(setOf(survivor), composition.survivors)
+        assertEquals(setOf(deletedCleanupRetry, absentCleanupRetry), composition.cleanupRetry)
+        assertEquals(setOf(unknown), composition.providerUnknown)
+        assertFalse(composition.providerDeletionComplete)
+        assertEquals(
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+            deleteResultStatus(composition.providerDeletionComplete, DeletedFamilySweepResult()),
+        )
+
+        val absentOnly = knownOutputDeleteComposition(
+            mapOf(
+                deletedCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.DELETED,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+                absentCleanupRetry to KnownOutputDeletionResult(
+                    provider = KnownOutputProviderDisposition.ALREADY_ABSENT,
+                    markerCleanup = DiscardMarkerCleanupDisposition.RETAINED_FOR_RETRY,
+                ),
+            ),
+        )
+        assertTrue(absentOnly.survivors.isEmpty())
+        assertTrue(absentOnly.providerDeletionComplete)
+        assertEquals(
+            CameraStatusMessage.DELETED,
+            deleteResultStatus(absentOnly.providerDeletionComplete, DeletedFamilySweepResult()),
+        )
+    }
+
+    @Test fun `engine route publication installs explicit external truth without hidden tele`() {
+        val (v, e) = createViewModel()
+        e.onCameraRouteInventory?.invoke(
+            CameraRouteInventory(back = false, front = false, external = true),
+            CameraRoute.EXTERNAL,
+        )
+
+        val state = v.state.value
+        assertEquals(CameraRoute.EXTERNAL, state.activeCameraRoute)
+        assertEquals(CameraFacing.BACK, state.facing)
+        assertFalse(state.teleconverterMode)
+        assertEquals(1f, state.controls.zoomRatio)
+    }
+
+    @Test fun `init wires every engine callback the ViewModel depends on`() {
+        val (_, e) = createViewModel()
+        // The init block's callback assignments are the VM↔engine contract: a missing wire means a
+        // whole feature silently dies (status toasts, review ownership, Ready gating, tap AF...).
+        assertNotNull(e.onStatus)
+        assertNotNull(e.onTapFocusChange)
+        assertNotNull(e.onCapsReady)
+        assertNotNull(e.onVideoSizeChosen)
+        assertNotNull(e.onPreviewAspect)
+        assertNotNull(e.onCameraReadyChange)
+        assertNotNull(e.onOpticsRollback)
+        assertNotNull(e.onAfIndication)
+        assertNotNull(e.onAnalysis)
+        assertNotNull(e.onAudioLevel)
+        assertNotNull(e.onAudioRoute)
+        assertNotNull(e.onStandbyAudioAvailable)
+        assertNotNull(e.onStandbyAudioUnavailable)
+        assertNotNull(e.onRecordingStarted)
+        assertNotNull(e.onRecordingTerminated)
+        assertNotNull(e.onRecordingFinalizing)
+        assertNotNull(e.onExposureInfo)
+        assertNotNull(e.onFocusDistance)
+        assertNotNull(e.onMediaSaved)
+        assertNotNull(e.onRawSaved)
+        assertNotNull(e.onLensInventory)
+        assertNotNull(e.onCameraPolicyBlocked)
+        assertNotNull(e.onTimelapseRun)
+    }
+
+    @Test fun `onCleared detaches every current Engine callback field`() {
+        val (v, e) = createViewModel()
+        assertEquals(EngineCallbackKey.entries.size, e.attachedCallbackCount())
+
+        clearViewModel(v)
+        vm = null // tearDown must not invoke the lifecycle edge twice
+
+        assertEquals(0, e.attachedCallbackCount())
+    }
+
+    @Test fun `callback fetched before onCleared cannot publish after teardown`() {
+        val (v, e) = createViewModel()
+        val saved = e.onMediaSaved
+        assertNotNull(saved)
+
+        clearViewModel(v)
+        vm = null
+        saved!!.invoke(Uri.parse("content://media/external/images/media/404"), 404)
+
+        assertNull(v.state.value.lastMediaUri)
+    }
+
+    @Test fun `deleted still publication remains Engine-owned after ViewModel detach`() {
+        val (v, e) = createViewModel()
+        val captureId = 909
+        val output = Uri.parse("content://media/external/images/media/909")
+        val deletionFinished = CountDownLatch(1)
+        val callerThread = Thread.currentThread()
+        val completionThread = AtomicReference<Thread>()
+        e.markCaptureDeleted(
+            CaptureFamilyDeleteIntent(
+                familyKey = CaptureFamilyKey(
+                    CaptureFamilyMedia.STILL,
+                    1_700_000_000_909L,
+                    captureId.toLong(),
+                ),
+                scope = MediaDeleteScope.CAPTURE_FAMILY,
+                liveStillCaptureId = captureId,
+            ),
+        ) {
+            completionThread.set(Thread.currentThread())
+            assertEquals(CaptureFamilyDeleteDurability.DURABLE, it)
+            deletionFinished.countDown()
+        }
+        assertTrue(deletionFinished.await(5, TimeUnit.SECONDS))
+        assertFalse("durable delete commit ran on the caller/UI thread", completionThread.get() === callerThread)
+
+        clearViewModel(v)
+        vm = null // lifecycle edge has run; the UI callback graph is now absent
+        val ownerField = CameraEngine::class.java.getDeclaredField("retainedStillDeletionOwner")
+            .apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val owner = ownerField.get(e) as RetainedStillDeletionOwner<Uri>
+        var providerPublishCalled = false
+
+        val result = owner.publishIfLive(output, captureId) {
+            providerPublishCalled = true
+            true
+        }
+
+        assertFalse("deleted output reached provider publication after detach", providerPublishCalled)
+        assertTrue(
+            result == DeletedStillPublication.DISCARD_DELETED_CAPTURE ||
+                result == DeletedStillPublication.DISCARD_RETRY_PENDING,
+        )
+    }
+
+    @Test fun `video family deletion never claims or poisons the retained still gate`() {
+        val (_, e) = createViewModel()
+        val finished = CountDownLatch(1)
+        val availability = AtomicReference<Boolean>()
+        e.onStillCaptureAdmissionChanged = { availability.set(it) }
+
+        e.markCaptureDeleted(
+            CaptureFamilyDeleteIntent(
+                familyKey = CaptureFamilyKey(CaptureFamilyMedia.VIDEO, 1_700_000_001_000L, 1_000L),
+                scope = MediaDeleteScope.CAPTURE_FAMILY,
+                liveStillCaptureId = null,
+            ),
+        ) {
+            assertEquals(CaptureFamilyDeleteDurability.DURABLE, it)
+            finished.countDown()
+        }
+
+        assertTrue(finished.await(5, TimeUnit.SECONDS))
+        assertEquals(true, availability.get())
+        val ownerField = CameraEngine::class.java.getDeclaredField("retainedStillDeletionOwner")
+            .apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val owner = ownerField.get(e) as RetainedStillDeletionOwner<Uri>
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test fun `a persisted settings packet restores through the store during construction`() {
+        // Seed the REAL SharedPreferences file ("camera_settings") the VM's own store reads —
+        // the exact restore wiring, not a fake around it.
+        SettingsStore(app).save(
+            ManualControls(exposureMode = ExposureMode.MANUAL, iso = 1600),
+            ExtraSettings(mode = CaptureMode.VIDEO),
+        )
+        val (v, _) = createViewModel()
+        val s = v.state.value
+        assertTrue(s.rememberSettings)
+        assertEquals(CaptureMode.VIDEO, s.mode)
+        assertEquals(ExposureMode.MANUAL, s.controls.exposureMode)
+        assertEquals(1600, s.controls.iso)
+        // Facing is deliberately never persisted — a restored packet is rear-route optics.
+        assertEquals(CameraFacing.BACK, s.facing)
+    }
+
+    @Test fun `live HEVC HLG to AVC transition atomically normalizes gamma to SDR`() {
+        val (v, _) = createViewModel()
+        val inventory = buildCodecInventory(
+            listOf(
+                CodecComponent(
+                    name = "vendor.hevc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = setOf(
+                        android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+                    ),
+                ),
+                CodecComponent(
+                    name = "vendor.avc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_AVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = emptySet(),
+                ),
+            ),
+        )
+        CameraViewModel::class.java.getDeclaredMethod(
+            "applyEncoderInventory",
+            CodecInventory::class.java,
+        ).apply { isAccessible = true }.invoke(v, inventory)
+
+        v.onVideoCodec(VideoCodec.HEVC)
+        v.onTransfer(ColorTransfer.HLG)
+        assertEquals(ColorTransfer.HLG, v.state.value.transfer)
+
+        v.onVideoCodec(VideoCodec.AVC)
+        assertEquals(VideoCodec.AVC, v.state.value.videoCodec)
+        assertEquals(ColorTransfer.SDR, v.state.value.transfer)
+    }
+
+    // ---- Per-device phone-maker log (owner decision 2026-10-15) ----
+
+    private fun applyMain10Inventory(v: CameraViewModel) {
+        val inventory = buildCodecInventory(
+            listOf(
+                CodecComponent(
+                    name = "vendor.hevc",
+                    encoder = true,
+                    supportedTypes = setOf(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC),
+                    hardwareAccelerated = true,
+                    hevcProfiles = setOf(android.media.MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10),
+                ),
+            ),
+        )
+        CameraViewModel::class.java.getDeclaredMethod("applyEncoderInventory", CodecInventory::class.java)
+            .apply { isAccessible = true }
+            .invoke(v, inventory)
+    }
+
+    @Test fun `a Find X9 offers its own O-Log and turns another maker's log into S-Log3`() {
+        org.robolectric.shadows.ShadowBuild.setModel("PLJ110")
+        val (v, _) = createViewModel()
+        assertEquals(ColorTransfer.OLOG, v.state.value.nativeLogFlavor)
+        applyMain10Inventory(v)
+        v.onTransfer(ColorTransfer.OLOG)
+        assertEquals(ColorTransfer.OLOG, v.state.value.transfer)
+        v.onTransfer(ColorTransfer.OLOG2)
+        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer)
+        v.onTransfer(ColorTransfer.MILOG)
+        assertEquals(ColorTransfer.SLOG3, v.state.value.transfer)
+        v.onTransfer(ColorTransfer.LOGC3)
+        assertEquals(ColorTransfer.LOGC3, v.state.value.transfer)
+    }
+
+    @Test fun `an unmapped device offers no phone-maker log at all`() {
+        val (v, _) = createViewModel() // Robolectric's Build.MODEL resolves GENERIC
+        assertNull(v.state.value.nativeLogFlavor)
+        applyMain10Inventory(v)
+        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
+            v.onTransfer(flavor)
+            assertEquals("$flavor", ColorTransfer.SLOG3, v.state.value.transfer)
+        }
+    }
+
+    @Test fun `a restored foreign maker log normalizes to S-Log3 and the phone's own survives`() {
+        org.robolectric.shadows.ShadowBuild.setModel("PMA110")
+        val (v, _) = createViewModel()
+        assertEquals(ColorTransfer.OLOG2, v.state.value.nativeLogFlavor)
+        // Restore and MR recall before the encoder inventory park the persisted transfer in
+        // pendingTransferUntilInventory; its landing is where the device's offer is applied. (Driven
+        // directly: a process-cached inventory from an earlier test may already have landed.)
+        for ((persisted, expected) in listOf(
+            ColorTransfer.MILOG to ColorTransfer.SLOG3,
+            ColorTransfer.OLOG to ColorTransfer.SLOG3,
+            ColorTransfer.OLOG2 to ColorTransfer.OLOG2,
+        )) {
+            setState(v) { it.copy(encoderInventoryLoaded = false) }
+            ViewModelTestAccess.setField(v, "pendingTransferUntilInventory", persisted)
+            applyMain10Inventory(v)
+            assertEquals("$persisted", expected, v.state.value.transfer)
+        }
+    }
+
+    // ---- Status auto-clear (Handler-timed, deterministic via the shadow main looper) ----
+
+    @Test fun `engine status publications auto-clear after the ordinary display duration`() {
+        val (v, e) = createViewModel()
+        val guidance = CameraStatusMessage.STOP_RECORDING_FIRST.status()
+        e.onStatus!!.invoke(guidance)
+        assertEquals(guidance, v.state.value.status)
+        idleFor(2_499)
+        assertEquals(guidance, v.state.value.status)
+        idleFor(1) // ordinary messages clear at 2.5 s (CameraStatus.durationMs)
+        assertNull(v.state.value.status)
+    }
+
+    // AGG3-18 / VER3-2: Ready publication must not rewrite the processed axes of the REQUEST. A
+    // DNG-only selection on a session without RAW (FRONT, the drop-RAW rung) came back HEIF+DNG and
+    // persisted; capture-time normalisation is the shot's guarantee, readouts show the answer.
+    @Test fun `Ready keeps the format request and only the readout reflects the session`() {
+        val (v, e) = createViewModel()
+        // The main-thread half re-checks the publication against the engine's live generations.
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        val dngOnly = PhotoFormats(heif = false, jpeg = false, dngRaw = true)
+        idleFor(0) // let the init-time codec inventory land before staging an HEVC-capable device
+        setState(v) { it.copy(photoFormats = dngOnly, encoderInventoryLoaded = true, heifAvailable = true) }
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = optics,
+                sessionGeneration = session,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            )
+        )
+        idleFor(0)
+        assertEquals(PhotoSessionOutputs(processed = true), v.state.value.photoSessionOutputs)
+        assertEquals(dngOnly, v.state.value.photoFormats)
+        // The readout names what this session writes: HEIF, and no DNG (MRG3-3).
+        assertEquals(PhotoFormats(heif = true, jpeg = false, dngRaw = false), v.state.value.effectivePhotoFormats)
+
+        // And the mirror: a processed request on a RAW-only session keeps its processed axis.
+        val heifDng = PhotoFormats(heif = true, jpeg = false, dngRaw = true)
+        setState(v) { it.copy(photoFormats = heifDng) }
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 2L,
+                ready = true,
+                opticsGeneration = optics,
+                sessionGeneration = session,
+                photoOutputs = PhotoSessionOutputs(raw = true),
+            )
+        )
+        idleFor(0)
+        assertEquals(heifDng, v.state.value.photoFormats)
+        assertEquals(dngOnly, v.state.value.effectivePhotoFormats)
+    }
+
+    // AGG4-67: the DNG-only substitution status is a TRANSITION notice. With the request no longer
+    // normalized at Ready, every later Ready of the same RAW-only session re-announced it.
+    @Test fun `DNG-only Ready status fires on the transition edge only`() {
+        val (v, e) = createViewModel()
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        setState(v) { it.copy(photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true)) }
+        var sequence = 0L
+        fun ready(outputs: PhotoSessionOutputs): CameraStatusMessage? {
+            setState(v) { it.copy(status = null) }
+            e.onCameraReadyChange!!.invoke(
+                CameraReadyPublication(
+                    sequence = ++sequence,
+                    ready = true,
+                    opticsGeneration = optics,
+                    sessionGeneration = session,
+                    photoOutputs = outputs,
+                ),
+            )
+            idleFor(0)
+            return v.state.value.status?.message
+        }
+        val rawOnly = PhotoSessionOutputs(raw = true)
+        assertEquals(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY, ready(rawOnly))
+        assertNull("same session shape: no re-announcement", ready(rawOnly))
+        assertNull(ready(PhotoSessionOutputs(processed = true, raw = true)))
+        assertEquals(
+            "a new transition into DNG-only announces again",
+            CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY,
+            ready(rawOnly),
+        )
+    }
+
+    // AGG5-11 / TE5-10: the edge latches only when the plate SHOWED the notice. Dropped under an
+    // unexpired retained-take line, it used to latch anyway and no later Ready re-announced it.
+    @Test fun `DNG-only notice dropped under a retained take is announced by the next Ready`() {
+        val (v, e) = createViewModel()
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        setState(v) { it.copy(photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true)) }
+        var sequence = 0L
+        fun ready() {
+            e.onCameraReadyChange!!.invoke(
+                CameraReadyPublication(
+                    sequence = ++sequence,
+                    ready = true,
+                    opticsGeneration = optics,
+                    sessionGeneration = session,
+                    photoOutputs = PhotoSessionOutputs(raw = true),
+                ),
+            )
+            idleFor(0)
+        }
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        ready()
+        assertEquals("the notice is out-ranked", retained, v.state.value.status)
+        idleFor(6_000)
+        assertNull(v.state.value.status)
+        ready()
+        assertEquals(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY, v.state.value.status?.message)
+    }
+
+    // MRG5-1 / MRG5-7: the RAW-loss notice, through the REAL commitOpticsReady and the Ready fold. It
+    // speaks exactly once per RAW-capable RAW-less shape, never on a structurally RAW-less route, and
+    // a notice the plate dropped under a retained-take line comes back with the next Ready.
+    @Test fun `RAW loss is announced once per shape and again after the plate dropped it`() {
+        val (v, e) = createViewModel()
+        fun field(name: String) = CameraEngine::class.java.getDeclaredField(name).apply { isAccessible = true }
+        val controller = CameraController(app)
+        field("controller").set(e, controller)
+        field("previewReady").setBoolean(e, true)
+        field("rawWanted").setBoolean(e, true)
+        field("caps").set(e, ViewModelTestAccess.caps().copy(supportsRaw = true))
+        val optics = (field("opticsIntentGeneration").get(e) as java.util.concurrent.atomic.AtomicLong).get()
+        val session = (field("cameraSessionGeneration").get(e) as java.util.concurrent.atomic.AtomicLong).get()
+        val commit = CameraEngine::class.java.declaredMethods.single {
+            it.name == "commitOpticsReady" && it.parameterTypes.size == 6
+        }.apply { isAccessible = true }
+        var shown = 0
+        fun ready() {
+            assertTrue(commit.invoke(e, optics, controller, PhotoSessionOutputs(processed = true), session, {}, null) as Boolean)
+            idleFor(0)
+            if (v.state.value.status?.message == CameraStatusMessage.RAW_UNAVAILABLE) {
+                shown++
+                setState(v) { it.copy(status = null) }
+            }
+        }
+
+        field("activeCameraRoute").set(e, CameraRoute.FRONT)
+        ready()
+        assertEquals("a structurally RAW-less route stays quiet", 0, shown)
+        field("activeCameraRoute").set(e, CameraRoute.BACK)
+
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        ready()
+        assertEquals("the notice is out-ranked", retained, v.state.value.status)
+        assertEquals(0, shown)
+        idleFor(6_000)
+        assertNull(v.state.value.status)
+        ready()
+        assertEquals("the dropped notice comes back with the next Ready", 1, shown)
+        ready()
+        ready()
+        assertEquals("same session shape: exactly once", 1, shown)
+    }
+
+    // AGG5-11 / UX5-2: a response to the operator's own tap is never silently dropped; the retained
+    // instruction it covers comes back for the time it had left.
+    @Test fun `a response covers a retained-take line which then returns`() {
+        val (v, e) = createViewModel()
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        idleFor(1_000)
+        v.onAppStatus(CameraStatusMessage.STOP_RECORDING_FIRST)
+        assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+        idleFor(2_500)
+        assertEquals("the instruction returns", retained, v.state.value.status)
+        idleFor(4_999)
+        assertEquals("for the 5 s it had left", retained, v.state.value.status)
+        idleFor(1)
+        assertNull(v.state.value.status)
+    }
+
+    // AGG5-55: the Output row keys "reconfiguring" on the live condition, shown or deferred.
+    @Test fun `camera condition tracks a deferred reopen and clears on Ready`() {
+        val (v, e) = createViewModel()
+        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING.status())
+        assertEquals(CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING, v.state.value.cameraCondition)
+        v.onAppStatus(CameraStatusMessage.MEMORY_SLOT_SAVED)
+        assertEquals(CameraStatusMessage.MEMORY_SLOT_SAVED, v.state.value.status?.message)
+        assertEquals(
+            "still retrying behind the event",
+            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+            v.state.value.cameraCondition,
+        )
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            ),
+        )
+        idleFor(0)
+        assertNull(v.state.value.cameraCondition)
+        idleFor(1_500)
+        assertNull("the condition does not come back after Ready", v.state.value.status)
+    }
+
+    // AGG6-37: production clears a condition through the pure, tested StatusPlate.clearProgress().
+    // The inline copy it replaced kept a covered event behind a cleared shown condition.
+    @Test fun `clearing progress goes through the plate transition`() {
+        val (v, _) = createViewModel()
+        val starting = CameraStatusMessage.STARTING_CAMERA.status()
+        ViewModelTestAccess.state(v).value = v.state.value.copy(status = starting, cameraCondition = starting.message)
+        ViewModelTestAccess.setField(
+            v,
+            "deferredStatusEvent",
+            me.hletrd.telecampro.camera.DeferredStatusEvent(CameraStatusMessage.VIDEO_SAVE_DELAYED.status(), 1_000L),
+        )
+        ViewModelTestAccess.invoke(v, "clearProgressStatus", null)
+        assertNull(v.state.value.status)
+        assertNull(v.state.value.cameraCondition)
+        assertNull(ViewModelTestAccess.field(v, "deferredStatusEvent"))
+    }
+
+    // AGG6-9: "Camera reconfiguring…" is read from Ready truth. An ordinary reopen publishes no
+    // condition, so keyed on one the Output row said nothing during the DNG/aspect/fps/lens reopen it
+    // was written for; the cold start and the terminal "reopen the app" are not a reopen.
+    @Test fun `reopen in progress follows Not-Ready after Ready and never the terminal or cold start`() {
+        val (v, e) = createViewModel()
+        CameraEngine::class.java.getDeclaredField("cameraReady")
+            .apply { isAccessible = true }
+            .setBoolean(e, true)
+        fun generation(name: String) = (
+            CameraEngine::class.java.getDeclaredField(name)
+                .apply { isAccessible = true }
+                .get(e) as java.util.concurrent.atomic.AtomicLong
+            ).get()
+        val optics = generation("opticsIntentGeneration")
+        val session = generation("cameraSessionGeneration")
+        var sequence = 0L
+        fun publish(ready: Boolean) {
+            e.onCameraReadyChange!!.invoke(
+                CameraReadyPublication(
+                    sequence = ++sequence,
+                    ready = ready,
+                    opticsGeneration = optics,
+                    sessionGeneration = session,
+                    photoOutputs = if (ready) PhotoSessionOutputs(processed = true) else PhotoSessionOutputs(),
+                ),
+            )
+            idleFor(0)
+        }
+
+        publish(ready = false)
+        assertFalse("the cold start is not a reopen", v.state.value.reopenInProgress)
+        publish(ready = true)
+        assertFalse(v.state.value.reopenInProgress)
+        publish(ready = false)
+        assertTrue("an ordinary reopen of a working camera", v.state.value.reopenInProgress)
+        e.onStatus!!.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+        assertFalse("no Ready follows the terminal", v.state.value.reopenInProgress)
+        publish(ready = true)
+        publish(ready = false)
+        assertTrue("a later Ready re-arms it", v.state.value.reopenInProgress)
+        v.onStart()
+        v.onStop()
+        assertFalse("a resume is a cold start again", v.state.value.reopenInProgress)
+    }
+
+    // AGG6-12: the setup-thread route fold resets zoom to the lens-local 1× but used to POST the
+    // glide invalidation, never cancel the throttled controls packet, and never end the Engine's
+    // zoom interaction. A pinch queued before that post compounded from the rear 3× pending ratio.
+    @Test fun `a route fold settles old-scale zoom before the next main zoom input`() {
+        val (v, e) = createViewModel()
+        val routes = me.hletrd.telecampro.camera.CameraRouteInventory(back = true, front = true, external = false)
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.BACK)
+        e.onCapsReady!!.invoke(
+            ViewModelTestAccess.caps(zoomRatioRange = android.util.Range(0.6f, 10f)),
+            e.currentOpticsGeneration(),
+        )
+        idleFor(0)
+        v.onZoomRatio(3f)
+        v.onJpegQuality(90) // a throttled whole-controls packet carrying the rear 3×
+        fun engineInteraction(): Boolean {
+            val state = CameraEngine::class.java.getDeclaredField("zoomInteractionState")
+                .apply { isAccessible = true }
+                .get(e)
+            return state.javaClass.getDeclaredMethod("getActive").invoke(state) as Boolean
+        }
+        assertTrue(engineInteraction())
+
+        // The fold lands (setup thread); a pinch is handled on main BEFORE the fold's post.
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.FRONT)
+        assertEquals(1f, v.state.value.controls.zoomRatio, 0f)
+        v.onPinchZoom(1.1f)
+        assertEquals("compounds from the new route's 1×", 1.1f, v.state.value.controls.zoomRatio, 1e-4f)
+
+        idleFor(1_000)
+        val engineControls = CameraEngine::class.java.getDeclaredField("controls")
+            .apply { isAccessible = true }
+            .get(e) as me.hletrd.telecampro.camera.ManualControls
+        assertEquals("the stale 3× packet never reached the wire", 1.1f, engineControls.zoomRatio, 1e-4f)
+        assertFalse("the new pinch's end still reaches the Engine", engineInteraction())
+    }
+
+    // MRG6-2: the fold's settle used to CANCEL the whole throttled packet because of its old-scale
+    // zoom, dropping a real non-zoom edit staged before the fold — or made after the fold but before
+    // main settled it. `_state` showed the new value while the Engine kept the old one. The packet is
+    // now rebased onto the new route's zoom and still lands.
+    @Test fun `a route fold rebases a staged controls edit instead of dropping it`() {
+        val (v, e) = createViewModel()
+        val routes = me.hletrd.telecampro.camera.CameraRouteInventory(back = true, front = true, external = false)
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.BACK)
+        e.onCapsReady!!.invoke(
+            ViewModelTestAccess.caps(zoomRatioRange = android.util.Range(0.6f, 10f)),
+            e.currentOpticsGeneration(),
+        )
+        idleFor(0)
+        v.onZoomRatio(3f)
+        idleFor(1_000)
+        fun engineControls() = CameraEngine::class.java.getDeclaredField("controls")
+            .apply { isAccessible = true }
+            .get(e) as me.hletrd.telecampro.camera.ManualControls
+
+        // Staged inside the 40 ms window, then the fold lands before the throttle fires.
+        v.onJpegQuality(77)
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.FRONT)
+        idleFor(1_000)
+        assertEquals("the staged edit reaches the wire", 77, engineControls().jpegQuality)
+        assertEquals("on the new route's scale", 1f, engineControls().zoomRatio, 0f)
+
+        // Made after the fold wrote its epoch but before main settled it.
+        e.onCameraRouteInventory!!.invoke(routes, me.hletrd.telecampro.camera.CameraRoute.BACK)
+        v.onJpegQuality(66)
+        idleFor(1_000)
+        assertEquals("an edit built from the new state is not cancelled", 66, engineControls().jpegQuality)
+        assertEquals(66, v.state.value.controls.jpegQuality)
+    }
+
+    // AGG5-4 / TR5-3: a route that cannot honour the stabilization / frame-rate REQUEST (Photo's
+    // logical camera, FRONT) narrows only what is shown and what reaches the wire. It used to
+    // narrow, push and PERSIST the request, so one FRONT visit downgraded every later tele clip.
+    @Test fun `caps narrowing keeps the stabilization and frame-rate request for the next route`() {
+        val (v, e) = createViewModel()
+        val tele = ViewModelTestAccess.caps(equivalentFocalMm = 69.4f).copy(
+            videoStabModes = intArrayOf(0, 1, 2),
+            availableFpsRanges = arrayOf(android.util.Range(30, 30), android.util.Range(60, 60)),
+        )
+        val front = ViewModelTestAccess.caps(equivalentFocalMm = 21.5f).copy(
+            videoStabModes = intArrayOf(0, 1),
+            availableFpsRanges = arrayOf(android.util.Range(30, 30)),
+        )
+        fun deliver(caps: me.hletrd.telecampro.camera.CameraCaps) {
+            e.onCapsReady!!.invoke(caps, e.currentOpticsGeneration())
+            idleFor(0)
+        }
+        fun extras() = ViewModelTestAccess.invoke(v, "currentExtras") as me.hletrd.telecampro.storage.ExtraSettings
+        fun engineStab() = CameraEngine::class.java.getDeclaredField("videoStabMode")
+            .apply { isAccessible = true }
+            .get(e)
+
+        deliver(tele)
+        v.onVideoStabMode(me.hletrd.telecampro.camera.VideoStabMode.ENHANCED)
+        v.onVideoFrameRate(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60)
+        idleFor(600)
+        val slotBefore = v.state.value.activeMemorySlot
+
+        deliver(front)
+        assertEquals(me.hletrd.telecampro.camera.VideoStabMode.STANDARD, v.state.value.videoStabMode)
+        assertEquals(30, v.state.value.videoFrameRate.fps)
+        assertEquals("the encoder is never handed an impossible rate", 30, v.state.value.controls.fps)
+        assertEquals("the Engine keeps the request and resolves it per route",
+            me.hletrd.telecampro.camera.VideoStabMode.ENHANCED, engineStab())
+        assertEquals(me.hletrd.telecampro.camera.VideoStabMode.ENHANCED, extras().videoStabMode)
+        assertEquals(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60, extras().videoFrameRate)
+        assertEquals("a narrowing is not a setting change", slotBefore, v.state.value.activeMemorySlot)
+
+        deliver(tele)
+        assertEquals(me.hletrd.telecampro.camera.VideoStabMode.ENHANCED, v.state.value.videoStabMode)
+        assertEquals(me.hletrd.telecampro.camera.VideoFrameRate.FPS_60, v.state.value.videoFrameRate)
+        assertEquals(60, v.state.value.controls.fps)
+    }
+
+    // AGG4-65: the plate is priority-aware. "MR1 loaded" must not wipe a 6 s retained-take
+    // instruction, and a progress condition published meanwhile waits and then takes the plate.
+    @Test fun `status plate keeps a retained-take line over lower statuses`() {
+        val (v, e) = createViewModel()
+        val retained = CameraStatusMessage.VIDEO_SAVE_DELAYED.status()
+        e.onStatus!!.invoke(retained)
+        e.onStatus!!.invoke(CameraStatusMessage.RAW_UNAVAILABLE.status())
+        e.onStatus!!.invoke(CameraStatusMessage.STARTING_CAMERA.status())
+        assertEquals(retained, v.state.value.status)
+        idleFor(6_000)
+        assertEquals(CameraStatusMessage.STARTING_CAMERA, v.state.value.status?.message)
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            ),
+        )
+        idleFor(0)
+        assertNull(v.state.value.status)
+    }
+
+    @Test fun `camera condition progress waits for Ready not a timer`() {
+        val (v, e) = createViewModel()
+        val conditions = listOf(
+            CameraStatusMessage.STARTING_CAMERA,
+            CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING,
+            CameraStatusMessage.CAMERA_ERROR_RECOVERING,
+            CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+        )
+        conditions.forEach { message ->
+            val status = message.status()
+            e.onStatus!!.invoke(status)
+            // Deliberately farther than the former longest timer: a condition remains until an
+            // exact terminal/new event, however fast or slow the Camera2 path is.
+            idleFor(10_000)
+            assertEquals(message.name, status, v.state.value.status)
+        }
+
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            )
+        )
+        idleFor(0)
+        assertNull(v.state.value.status)
+    }
+
+    @Test fun `Ready does not swallow a status published during bring-up`() {
+        val (v, e) = createViewModel()
+        e.onStatus!!.invoke(CameraStatusMessage.STARTING_CAMERA.status())
+        // Anything published after it owns the pill; the progress clear is not a blanket reset, or
+        // a message arriving in the bring-up window would vanish the instant the camera came up.
+        val saved = CameraStatusMessage.VIDEO_SAVED.status()
+        e.onStatus!!.invoke(saved)
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            )
+        )
+        idleFor(0)
+        assertEquals(saved, v.state.value.status)
+        idleFor(1_500) // and it still keeps its own timer
+        assertNull(v.state.value.status)
+    }
+
+    @Test fun `unavailable hardware shutter preserves the terminal camera verdict`() {
+        val (v, e) = createViewModel()
+        val terminals = listOf(
+            CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN,
+            CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN,
+        )
+        terminals.forEach { message ->
+            val terminal = message.status()
+            e.onStatus!!.invoke(terminal)
+
+            v.onHardwareFullKey(true)
+            v.onHardwareFullKey(false)
+            v.onHardwareQuickButton(true)
+            v.onHardwareQuickButton(false)
+
+            assertEquals(message.name, terminal, v.state.value.status)
+            assertFalse(v.state.value.isRecording)
+            assertEquals(0, v.state.value.shutterFlashTick)
+            idleFor(5_999)
+            assertEquals(message.name, terminal, v.state.value.status)
+            idleFor(1)
+            assertNull(v.state.value.status)
+        }
+    }
+
+    @Test fun `saved-confirmation statuses clear on the shorter timer and re-arm per message`() {
+        val (v, e) = createViewModel()
+        val videoSaved = CameraStatusMessage.VIDEO_SAVED.status()
+        e.onStatus!!.invoke(videoSaved)
+        idleFor(1_400)
+        assertEquals(videoSaved, v.state.value.status)
+        // A newer message replaces the text AND re-arms its own timer; the old deadline is dead.
+        val wbSet = CameraStatusMessage.CUSTOM_WB_SET.status()
+        e.onStatus!!.invoke(wbSet)
+        idleFor(1_499)
+        assertEquals(wbSet, v.state.value.status)
+        idleFor(1) // "saved" confirmations clear at 1.5 s
+        assertNull(v.state.value.status)
+    }
+
+    @Test fun `every shared modal input owner cancels a one-shot timer with no late capture attempt`() {
+        val (v, _) = createViewModel()
+
+        for (owner in listOf("Settings", "Fn", "permission or dialog")) {
+            // Arm the private scheduler seam directly: camera readiness belongs to the Engine and
+            // is irrelevant to whether a modal owns an already-running countdown.
+            armCountdown(v)
+            assertEquals("$owner precondition", 3, v.state.value.timerCountdownSec)
+
+            v.onCameraInputBlockedChange(true)
+            assertEquals("$owner did not cancel synchronously", 0, v.state.value.timerCountdownSec)
+            v.onCameraInputBlockedChange(false)
+            idleFor(3_100)
+
+            // With this never-started engine, any leaked deadline calls capturePhoto and publishes
+            // CAMERA_RECONFIGURING. Null therefore proves the scheduled shutter call never ran;
+            // timer state alone could pass even after a late attempt reset it to zero.
+            assertNull("$owner leaked a late capture attempt", v.state.value.status)
+            assertEquals(0, v.state.value.shutterFlashTick)
+        }
+    }
+
+    @Test fun `replacement Compose release preserves restored microphone permission ownership`() {
+        val (v, _) = createViewModel()
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, true)
+        assertTrue(v.state.value.cameraInputBlocked)
+
+        // Fresh CameraScreen composition publishes modalVisible=false. It owns only COMPOSE_MODAL.
+        v.onCameraInputBlockedChange(false)
+        assertTrue(v.state.value.cameraInputBlocked)
+
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MICROPHONE_PERMISSION, false)
+        assertFalse(v.state.value.cameraInputBlocked)
+    }
+
+    @Test fun `review ownership cancels a one-shot timer before pinning and never fires later`() {
+        val (v, _) = createViewModel()
+        armCountdown(v)
+        assertEquals(3, v.state.value.timerCountdownSec)
+
+        val uri = Uri.parse("content://telecam.test/previous")
+        v.onReviewOpenChange(true, uri)
+        assertEquals(0, v.state.value.timerCountdownSec)
+        assertTrue(v.state.value.cameraInputBlocked)
+        assertEquals(uri, v.state.value.openReview?.uri)
+        assertEquals(MediaDeleteScope.FILE_ONLY, v.state.value.openReview?.deleteScope)
+        idleFor(3_100)
+
+        assertNull("review leaked a late capture attempt", v.state.value.status)
+        assertEquals(0, v.state.value.shutterFlashTick)
+    }
+
+    @Test fun `policy replacement preserves exact review until its own close retires every owner`() {
+        val (v, e) = createViewModel()
+        val uri = Uri.parse("content://telecam.test/policy-review")
+        assertFalse("untracked fixture is file-only", v.onReviewOpenChange(true, uri))
+        val frozen = v.state.value.openReview
+        assertNotNull(frozen)
+
+        // MainActivity replaces CameraScreen with PermissionGate for this Engine state and installs
+        // a separate owner. The exact review is ViewModel state, so composition replacement cannot
+        // discard its URI while retaining only the pin/block Boolean.
+        e.onCameraPolicyBlocked!!.invoke(CameraPolicyPublication(1L, true))
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_POLICY, true)
+        assertEquals(frozen, v.state.value.openReview)
+        assertTrue(v.state.value.cameraInputBlocked)
+
+        e.onCameraPolicyBlocked!!.invoke(CameraPolicyPublication(2L, false))
+        e.onCameraPolicyBlocked!!.invoke(CameraPolicyPublication(1L, true))
+        assertFalse("older policy terminal repainted replacement truth", v.state.value.cameraPolicyBlocked)
+        v.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_POLICY, false)
+        assertEquals(frozen, v.state.value.openReview)
+        assertTrue("the reconstructed review still owns input", v.state.value.cameraInputBlocked)
+
+        v.onReviewOpenChange(false, uri)
+        assertNull(v.state.value.openReview)
+        assertFalse(v.state.value.reviewOpen)
+        assertFalse(v.state.value.cameraInputBlocked)
+    }
+
+    @Test fun `older admitted policy terminal cannot repaint newer committed truth`() {
+        val gate = CameraPolicyPublicationGate()
+        val frozenReview = me.hletrd.telecampro.camera.OpenReviewPresentation(
+            uri = Uri.parse("content://telecam.test/pinned-policy-review"),
+            provenance = MediaProvenance.APP_OWNED,
+            deleteScope = MediaDeleteScope.FILE_ONLY,
+        )
+        val state = AtomicReference(
+            CameraUiState(
+                openReview = frozenReview,
+                cameraInputBlocked = true,
+                cameraPolicyBlocked = false,
+            ),
+        )
+        val olderAdmitted = CountDownLatch(1)
+        val resumeOlder = CountDownLatch(1)
+        val olderResult = AtomicReference<Boolean>()
+        val older = Thread {
+            olderResult.set(
+                gate.publish(
+                    publication = CameraPolicyPublication(1L, true),
+                    afterAdmission = {
+                        olderAdmitted.countDown()
+                        assertTrue(resumeOlder.await(2, TimeUnit.SECONDS))
+                    },
+                ) { blocked ->
+                    state.updateAndGet { cameraPolicyPublishedState(it, blocked) }
+                },
+            )
+        }.apply { start() }
+        assertTrue(olderAdmitted.await(2, TimeUnit.SECONDS))
+
+        assertTrue(gate.publish(CameraPolicyPublication(2L, false)) { blocked ->
+            state.updateAndGet { cameraPolicyPublishedState(it, blocked) }
+        })
+        resumeOlder.countDown()
+        older.join(2_000)
+
+        assertFalse(older.isAlive)
+        assertFalse("superseded admitted callback committed", olderResult.get())
+        assertFalse(state.get().cameraPolicyBlocked)
+        assertTrue("policy truth released another input owner", state.get().cameraInputBlocked)
+        assertEquals(frozenReview, state.get().openReview)
+    }
+
+    @Test fun `review gate covers every starting and active video combination`() {
+        val (v, _) = createViewModel()
+        val uri = Uri.parse("content://telecam.test/previous-video")
+
+        data class Case(val starting: Boolean, val recording: Boolean, val refused: Boolean)
+        val cases = listOf(
+            Case(starting = false, recording = true, refused = true),
+            Case(starting = true, recording = false, refused = true),
+            Case(starting = true, recording = true, refused = true),
+            // Keep idle last: it deliberately acquires modal ownership for the untracked fixture.
+            Case(starting = false, recording = false, refused = false),
+        )
+        for ((starting, recording, refused) in cases) {
+            setRecordingPresentation(v, recording = recording, starting = starting)
+            val pinned = v.onReviewOpenChange(true, uri)
+            assertFalse("untracked fixture family is never pinnable", pinned)
+            if (refused) {
+                assertFalse("review opened for starting=$starting recording=$recording", v.state.value.reviewOpen)
+                assertFalse(v.state.value.cameraInputBlocked)
+                assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+            } else {
+                assertTrue(v.state.value.reviewOpen)
+                assertTrue(v.state.value.cameraInputBlocked)
+            }
+        }
+    }
+
+    @Test fun `native finalization blocks review after visible REC clears`() {
+        val (v, e) = createViewModel()
+        val uri = Uri.parse("content://telecam.test/previous-video")
+        setRecordingPresentation(v, recording = false, starting = false)
+
+        e.onRecordingFinalizing?.invoke(true)
+        assertTrue(v.state.value.isRecordingFinalizing)
+        assertFalse(v.state.value.isRecording)
+        assertFalse(v.onReviewOpenChange(true, uri))
+        assertFalse(v.state.value.reviewOpen)
+        assertEquals(CameraStatusMessage.STOP_RECORDING_FIRST, v.state.value.status?.message)
+
+        e.onRecordingFinalizing?.invoke(false)
+        assertFalse(v.state.value.isRecordingFinalizing)
+        assertFalse("untracked fixture is not pinnable", v.onReviewOpenChange(true, uri))
+        assertTrue("terminal native release restores review ownership", v.state.value.reviewOpen)
+    }
+
+    // ---- Mode change ----
+
+    @Test fun `mode change publishes the video optics and returns photo faithfully`() {
+        val (v, _) = createViewModel()
+        assertTrue(v.state.value.controls.programAppSide)
+        v.onModeChange(CaptureMode.VIDEO)
+        val video = v.state.value
+        assertEquals(CaptureMode.VIDEO, video.mode)
+        // Video PROGRAM stays on the HAL AE (flash metering/cadence); only photo-P runs app-side.
+        assertFalse(video.controls.programAppSide)
+        v.onModeChange(CaptureMode.PHOTO)
+        val photo = v.state.value
+        assertEquals(CaptureMode.PHOTO, photo.mode)
+        assertTrue(photo.controls.programAppSide)
+        // The photographer's Photo shutter survives the round trip (the hidden photo bank).
+        assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
+    }
+
+    // ---- The focus-ruler loupe assist must not become a persisted setting ----
+
+    @Test fun `the saved recording size is the operator's request, not the delivered fallback`() {
+        // AGG-36: a 1080p pick, then a route (Open Gate) that delivers 2560x1920. Persisting the
+        // delivered size lost the 1080p pick across a relaunch.
+        val (v, e) = createViewModel()
+        v.onVideoResolution(android.util.Size(1920, 1080))
+        e.onVideoSizeChosen!!.invoke(android.util.Size(2560, 1920), null)
+        idleFor(50)
+        assertEquals(android.util.Size(2560, 1920), v.state.value.videoResolution)
+
+        v.onGridType(GridType.NONE)
+        idleFor(600)
+
+        val saved = SettingsStore(app).load()
+        assertNotNull("a save must have landed, or this test proves nothing", saved)
+        assertEquals("1920x1080", saved!!.extras.videoResolution)
+    }
+
+    @Test fun `the focus-ruler loupe assist never reaches the saved settings`() {
+        val (v, _) = createViewModel()
+        assertFalse("precondition: the operator has the loupe off", v.state.value.punchIn)
+
+        // Opening the Focus ruler magnifies by itself — visible immediately...
+        v.onAutoPunchIn(true)
+        assertTrue("the assist must actually punch in", v.state.value.punchIn)
+
+        // ...and now force a save to actually LAND while the assist owns the loupe. An unrelated
+        // user action is the honest way: without one, the fixed code writes nothing at all and the
+        // assertion below would pass for the wrong reason — which is exactly how the first version
+        // of this test failed to catch the defect it was written for.
+        v.onGridType(GridType.NONE)
+        idleFor(600)
+
+        val saved = SettingsStore(app).load()
+        assertNotNull("a save must have landed, or this test proves nothing", saved)
+        assertFalse(
+            "a save during the Focus-ruler assist persisted a loupe nobody asked for",
+            saved!!.extras.punchIn,
+        )
+    }
+
+    @Test fun `MR tele focal uses the measured device host only for an OTHER phone`() {
+        val extras = ExtraSettings(
+            teleconverter = true,
+            phoneModel = me.hletrd.telecampro.camera.PhoneModel.OTHER,
+            teleconverterProfile = TeleconverterProfile.CUSTOM,
+            teleconverterCustomMagnification = 4f,
+        )
+        assertEquals(340f, memoryPresetFocalMm(extras, hostTeleEquivMm = 85f), 0.001f)
+        assertEquals(
+            LensChoice.MAIN.targetEquivMm,
+            memoryPresetFocalMm(extras.copy(teleconverter = false), hostTeleEquivMm = 85f),
+            0.001f,
+        )
+    }
+
+    @Test fun `an operator toggle during the assist is theirs to keep`() {
+        val (v, _) = createViewModel()
+        v.onAutoPunchIn(true)
+        // The operator reaches into the sheet mid-assist and turns it ON deliberately. That ends the
+        // assist's ownership — "manual sheet toggles mid-drag win" — so it is what persists.
+        v.onTogglePunchIn(true)
+        idleFor(600)
+        val saved = SettingsStore(app).load()
+        assertNotNull(saved)
+        assertTrue(
+            "an explicit operator toggle during the assist must still be saved",
+            saved!!.extras.punchIn,
+        )
+    }
+
+    @Test fun `closing the ruler restores the operator value without saving it`() {
+        val (v, _) = createViewModel()
+        v.onAutoPunchIn(true)
+        assertTrue(v.state.value.punchIn)
+        v.onAutoPunchIn(false)
+        assertFalse("closing the ruler must undo the assist", v.state.value.punchIn)
+    }
+}

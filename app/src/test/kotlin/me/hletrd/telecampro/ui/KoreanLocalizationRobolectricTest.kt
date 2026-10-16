@@ -1,0 +1,205 @@
+package me.hletrd.telecampro.ui
+
+import android.content.Context
+import android.content.res.Configuration
+import androidx.test.core.app.ApplicationProvider
+import java.util.Locale
+import me.hletrd.telecampro.R
+import me.hletrd.telecampro.camera.AudioInputPreference
+import me.hletrd.telecampro.camera.CameraStatusArgument
+import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.ui.review.mediaDeleteConfirmationCopy
+import me.hletrd.telecampro.video.AudioPortKind
+import me.hletrd.telecampro.video.AudioRouteAvailability
+import me.hletrd.telecampro.video.AudioRouteStatus
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class KoreanLocalizationRobolectricTest {
+    private val base: Context = ApplicationProvider.getApplicationContext()
+
+    private fun context(language: String): Context {
+        val configuration = Configuration(base.resources.configuration)
+        configuration.setLocale(Locale.forLanguageTag(language))
+        return base.createConfigurationContext(configuration)
+    }
+
+    @Test
+    fun `every typed status resolves in English and Korean without controlling metadata`() {
+        val english = context("en")
+        val korean = context("ko")
+        CameraStatusMessage.entries.forEach { id ->
+            val argument = when (id) {
+                CameraStatusMessage.OUTPUT_SAVED_PENDING,
+                CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY,
+                CameraStatusMessage.MEMORY_SLOT_SAVED,
+                CameraStatusMessage.MEMORY_SLOT_EMPTY,
+                CameraStatusMessage.MEMORY_SLOT_LOADED,
+                -> arrayOf(CameraStatusArgument.Text("MR1"))
+                CameraStatusMessage.LENS_UNAVAILABLE_UNCHANGED ->
+                    arrayOf(CameraStatusArgument.Lens(LensChoice.TELE3X))
+                CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT ->
+                    arrayOf(CameraStatusArgument.AudioInput(AudioInputPreference.AUTO))
+                else -> emptyArray()
+            }
+            val status = id.status(*argument)
+            assertTrue(status.resolve(english).isNotBlank())
+            assertTrue(status.resolve(korean).isNotBlank())
+            assertEquals(status.durationMs, id.status(*argument).durationMs)
+        }
+    }
+
+    @Test
+    fun `Korean covers permission settings status focus review delete timer and storage`() {
+        val ko = context("ko")
+        val ids = listOf(
+            R.string.camera_permission_required,
+            R.string.settings_tab_shoot,
+            R.string.section_recording_format,
+            R.string.status_camera_unavailable_reopen,
+            R.string.status_video_save_delayed,
+            R.string.focus_confidence_too_close,
+            R.string.a11y_start_recording,
+            R.string.review_error_open_image,
+            R.string.review_delete_family_body,
+            R.string.a11y_unavailable_while_recording,
+            R.string.a11y_selected_teleconverter_on,
+            R.string.a11y_raw_capture_review,
+            R.string.a11y_media_review,
+            R.string.a11y_focus_locked,
+            R.string.a11y_autofocus_failed,
+            R.string.output_10_bit_video_stills_off,
+            R.string.video_tone_mapped_source,
+            R.string.mr_default_photo_name,
+            R.string.mr_default_video_name,
+        )
+        ids.forEach { id ->
+            val rendered = ko.getString(id)
+            assertTrue(rendered.isNotBlank())
+            assertFalse("resource $id unexpectedly fell back to English: $rendered", rendered.matches(Regex("[A-Za-z ]+[.!?]?")))
+        }
+        assertEquals("3초 남음", ko.resources.getQuantityString(R.plurals.a11y_seconds_remaining, 3, 3))
+        assertEquals("42장 촬영 가능", ko.resources.getQuantityString(R.plurals.a11y_shots_remaining, 42, 42))
+        assertEquals("배터리 72퍼센트", ko.resources.getQuantityString(R.plurals.a11y_battery_percent, 72, 72))
+        assertEquals(
+            "MR2: 비어 있음",
+            CameraStatusMessage.MEMORY_SLOT_EMPTY
+                .status(CameraStatusArgument.Text("MR2"))
+                .resolve(ko),
+        )
+        assertEquals(
+            "MR2 불러오기 완료",
+            CameraStatusMessage.MEMORY_SLOT_LOADED
+                .status(CameraStatusArgument.Text("MR2"))
+                .resolve(ko),
+        )
+    }
+
+    @Test
+    fun `review delete button names are actions, never the dialog's question`() {
+        // DES2-1: the old name was the dialog title minus "?", which in Korean still asked a
+        // question ("…삭제할까요"). Every scope's button name must be an imperative noun phrase.
+        val en = context("en")
+        val ko = context("ko")
+        MediaDeleteScope.entries.forEach { scope ->
+            listOf(false, true).forEach { raw ->
+                val copy = mediaDeleteConfirmationCopy(scope, raw)
+                val koAction = ko.getString(copy.action)
+                val enAction = en.getString(copy.action)
+                assertFalse("$scope raw=$raw: $koAction", koAction.endsWith("까요") || koAction.endsWith("?"))
+                assertTrue("$scope raw=$raw: $koAction", koAction.endsWith("삭제"))
+                assertFalse("$scope raw=$raw: $enAction", enAction.endsWith("?"))
+                assertTrue("$scope raw=$raw: $enAction", enAction.startsWith("Delete "))
+                assertEquals(raw, koAction.startsWith("RAW "))
+            }
+        }
+    }
+
+    @Test
+    fun `retained saves name the real trigger, a full close and reopen, not an in-session retry`() {
+        // DES2-2 / DES3-1: nothing in the running process retries a retained row, and the orphan
+        // sweep adopts only rows from BEFORE the process started. Reopening from the launcher or
+        // Recents usually reuses the cached process, so "the next time the app starts" was falsified
+        // by the very action it invited; only a new process (the app fully closed) publishes it.
+        val en = context("en")
+        val ko = context("ko")
+        listOf(
+            CameraStatusMessage.DNG_SAVE_DELAYED.status(),
+            CameraStatusMessage.VIDEO_SAVE_DELAYED.status(),
+            CameraStatusMessage.OUTPUT_SAVED_PENDING.status(CameraStatusArgument.Text("HEIF")),
+        ).forEach { status ->
+            val english = status.resolve(en)
+            val korean = status.resolve(ko)
+            assertTrue(english, english.endsWith("It is saved after the app is fully closed and opened again."))
+            assertFalse(english, english.contains("next time the app starts"))
+            assertFalse(english, english.contains("retry", ignoreCase = true))
+            assertTrue(korean, korean.endsWith("앱을 완전히 종료한 뒤 다시 열면 저장됩니다."))
+            assertFalse(korean, korean.contains("다음에 시작할 때"))
+            assertFalse(korean, korean.contains("다시 시도"))
+        }
+    }
+
+    @Test
+    fun `an unvalidated clip is promised a check, never a save`() {
+        // REG3-1 / DES3-4: recovery adopts it only if its structural probe passes.
+        val english = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("en"))
+        val korean = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("ko"))
+        assertTrue(english, english.endsWith("It is checked after the app is fully closed and opened again."))
+        assertFalse(english, english.contains("saved"))
+        assertTrue(korean, korean.endsWith("앱을 완전히 종료한 뒤 다시 열면 확인합니다."))
+        assertFalse(korean, korean.contains("저장"))
+    }
+
+    @Test
+    fun `a still whose recovery marker failed speaks outcome, not mechanism`() {
+        // DES3-4: "Recovery marker" is an implementation term the operator cannot act on.
+        val status = CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(CameraStatusArgument.Text("DNG"))
+        val english = status.resolve(context("en"))
+        val korean = status.resolve(context("ko"))
+        assertEquals("DNG kept privately. It may not be recoverable.", english)
+        assertFalse(english, english.contains("marker", ignoreCase = true))
+        assertEquals("DNG 파일을 임시 보관했지만 복구되지 않을 수 있습니다.", korean)
+        assertFalse(korean, korean.contains("표식"))
+    }
+
+    @Test
+    fun `audio routes localize while hardware product identity remains verbatim`() {
+        val ko = context("ko")
+        val route = AudioRouteStatus(
+            AudioInputPreference.USB,
+            AudioRouteAvailability.READY,
+            AudioPortKind.USB,
+            "Rode VideoMic",
+        )
+        val rendered = route.resolve(ko)
+        assertTrue(rendered.contains("USB 마이크"))
+        assertTrue(rendered.contains("Rode VideoMic"))
+        assertTrue(rendered.endsWith("준비됨"))
+    }
+
+    @Test
+    fun `documented camera abbreviation allow list remains stable`() {
+        val en = context("en")
+        val ko = context("ko")
+        val ids = listOf(
+            R.string.label_iso,
+            R.string.label_wb,
+            R.string.label_ss,
+            R.string.label_ev,
+            R.string.label_af,
+            R.string.label_nr,
+            R.string.label_fps,
+            R.string.label_fn,
+            R.string.label_open_gate,
+        )
+        ids.forEach { assertEquals(en.getString(it), ko.getString(it)) }
+    }
+}

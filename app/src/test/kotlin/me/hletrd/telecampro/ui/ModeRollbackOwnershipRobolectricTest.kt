@@ -1,0 +1,581 @@
+package me.hletrd.telecampro.ui
+
+import android.app.Application
+import android.media.MediaFormat
+import android.os.Looper
+import android.util.Range
+import android.util.Rational
+import android.util.Size
+import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.flow.MutableStateFlow
+import me.hletrd.telecampro.camera.CameraController
+import me.hletrd.telecampro.camera.CameraCaps
+import me.hletrd.telecampro.camera.CameraEngine
+import me.hletrd.telecampro.camera.CameraStatus
+import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.camera.recordingEncoderAdmission
+import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoPipelineEngineOverrides
+import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.CodecInventory
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import java.lang.reflect.Modifier
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+
+@RunWith(RobolectricTestRunner::class)
+class ModeRollbackOwnershipRobolectricTest {
+    private val app: Application = ApplicationProvider.getApplicationContext()
+    private var vm: CameraViewModel? = null
+
+    @Test
+    fun `video pipeline mutation serializes its decision with optics rollback`() {
+        val method = CameraEngine::class.java.getDeclaredMethod(
+            "setVideoPipeline",
+            List::class.java,
+            ColorTransfer::class.java,
+            VideoCodec::class.java,
+        )
+
+        assertTrue(
+            "setVideoPipeline must hold the Engine monitor across mode-transfer derivation and commit",
+            Modifier.isSynchronized(method.modifiers),
+        )
+    }
+
+    @Test
+    fun `pipeline command queued behind rollback cannot publish Photo with active HLG`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        viewModel.onModeChange(CaptureMode.VIDEO)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        val candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+            .filterIsInstance<EncoderSelection>()
+        val started = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val pipelineThread: Thread
+
+        synchronized(engine) {
+            pipelineThread = Thread {
+                started.countDown()
+                try {
+                    engine.setVideoPipeline(candidates, ColorTransfer.HLG)
+                } finally {
+                    completed.countDown()
+                }
+            }.apply { start() }
+            assertTrue(started.await(2, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (pipelineThread.state != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.yield()
+            }
+            assertEquals(Thread.State.BLOCKED, pipelineThread.state)
+            forceOwnedRollback(engine, ColorTransfer.SDR, ColorTransfer.HLG)
+            assertFalse(field(engine, "videoMode") as Boolean)
+            assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        }
+
+        assertTrue(completed.await(2, TimeUnit.SECONDS))
+        pipelineThread.join()
+        assertFalse(field(engine, "videoMode") as Boolean)
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertEquals(ColorTransfer.HLG, field(engine, "requestedVideoTransfer"))
+    }
+
+    @Test
+    fun `newer disjoint pipeline command survives the queued rollback publication`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        viewModel.onModeChange(CaptureMode.VIDEO)
+        val started = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val pipelineThread: Thread
+
+        synchronized(engine) {
+            pipelineThread = Thread {
+                started.countDown()
+                try {
+                    viewModel.onVideoCodec(VideoCodec.AVC)
+                } finally {
+                    completed.countDown()
+                }
+            }.apply { start() }
+            assertTrue(started.await(2, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (pipelineThread.state != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.yield()
+            }
+            assertEquals(Thread.State.BLOCKED, pipelineThread.state)
+            forceOwnedRollback(
+                engine,
+                acceptedTransfer = ColorTransfer.SDR,
+                requestedTransfer = ColorTransfer.HLG,
+                drainMain = false,
+            )
+        }
+
+        assertTrue(completed.await(2, TimeUnit.SECONDS))
+        pipelineThread.join()
+        assertEquals(VideoCodec.AVC, viewModel.state.value.videoCodec)
+        assertEquals(ColorTransfer.SDR, viewModel.state.value.transfer)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(CaptureMode.PHOTO, viewModel.state.value.mode)
+        assertEquals(VideoCodec.AVC, viewModel.state.value.videoCodec)
+        assertEquals(ColorTransfer.SDR, viewModel.state.value.transfer)
+        assertEquals(VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals(ColorTransfer.SDR, field(engine, "requestedVideoTransfer"))
+        val admitted = recordingEncoderAdmission(
+            frameRateAvailable = true,
+            codec = field(engine, "videoCodec") as VideoCodec,
+            transfer = field(engine, "requestedVideoTransfer") as ColorTransfer,
+            candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+                .filterIsInstance<EncoderSelection>(),
+        )
+        assertEquals(null, admitted.failure)
+        assertEquals(listOf(VideoCodec.AVC), admitted.candidates.map { it.codec })
+    }
+
+    @Test
+    fun `newer same precision packet is the observable GL winner after rollback`() {
+        val glTransfers = mutableListOf<ColorTransfer?>()
+        val (viewModel, engine) = createAccepted(
+            mode = CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.HLG,
+            requestedTransfer = ColorTransfer.HLG,
+            videoPipelineOverrides = VideoPipelineEngineOverrides(glTransfers::add),
+        )
+        glTransfers.clear()
+        val transaction = beginUnchangedOpticsTransaction(engine)
+
+        viewModel.onTransfer(ColorTransfer.SLOG3)
+        assertEquals(ColorTransfer.SLOG3, glTransfers.last())
+        forceOwnedRollback(engine, transaction, drainMain = false)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(ColorTransfer.SLOG3, glTransfers.last())
+        assertEquals(ColorTransfer.SLOG3, engineTransfer(engine))
+        assertEquals(ColorTransfer.SLOG3, field(engine, "requestedVideoTransfer"))
+        assertEquals(ColorTransfer.SLOG3, viewModel.state.value.transfer)
+        val admitted = recordingEncoderAdmission(
+            frameRateAvailable = true,
+            codec = field(engine, "videoCodec") as VideoCodec,
+            transfer = engineTransfer(engine),
+            candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+                .filterIsInstance<EncoderSelection>(),
+        )
+        assertEquals(null, admitted.failure)
+    }
+
+    @Test
+    fun `rollback commits state then invokes every callback after releasing Engine monitor`() {
+        val (_, engine) = createAccepted(CaptureMode.PHOTO)
+        val caps = rollbackCaps()
+        setField(engine, "caps", caps)
+        val transaction = beginUnchangedOpticsTransaction(engine)
+        val lockStates = linkedMapOf<String, Boolean>()
+        var rollbackControls: Any? = null
+        var publishedCaps: CameraCaps? = null
+        var publishedSize: Size? = null
+        var publishedAspect: Float? = null
+        var ready = false
+        var status: CameraStatus? = null
+        engine.onOpticsRollback = {
+            lockStates["optics"] = Thread.holdsLock(engine)
+            rollbackControls = it.controls
+        }
+        engine.onCapsReady = { value, _ ->
+            lockStates["caps"] = Thread.holdsLock(engine)
+            publishedCaps = value
+        }
+        engine.onVideoSizeChosen = { value, _ ->
+            lockStates["size"] = Thread.holdsLock(engine)
+            publishedSize = value
+        }
+        engine.onPreviewAspect = { value, _ ->
+            lockStates["aspect"] = Thread.holdsLock(engine)
+            publishedAspect = value
+        }
+        engine.onCameraReadyChange = {
+            lockStates["ready"] = Thread.holdsLock(engine)
+            ready = it.ready
+        }
+        engine.onStatus = {
+            lockStates["status"] = Thread.holdsLock(engine)
+            status = it
+        }
+
+        forceOwnedRollback(engine, transaction, drainMain = false)
+
+        assertEquals(
+            setOf("optics", "caps", "size", "aspect", "ready", "status"),
+            lockStates.keys,
+        )
+        assertTrue(lockStates.values.none { it })
+        assertEquals(field(engine, "controls"), rollbackControls)
+        assertSame(caps, publishedCaps)
+        assertEquals(Size(1920, 1080), publishedSize)
+        assertEquals(1080f / 1920f, publishedAspect)
+        assertTrue(ready)
+        assertEquals(CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED, status?.message)
+        val method = CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
+        assertFalse("rollback wrapper must not own the Engine monitor", Modifier.isSynchronized(method.modifiers))
+    }
+
+    private fun createAccepted(
+        mode: CaptureMode,
+        acceptedTransfer: ColorTransfer = transferFor(mode),
+        requestedTransfer: ColorTransfer = ColorTransfer.HLG,
+        videoPipelineOverrides: VideoPipelineEngineOverrides? = null,
+    ): Pair<CameraViewModel, CameraEngine> {
+        RobolectricEglSentinels.ensure()
+        val engine = CameraEngine(app, videoPipelineOverrides = videoPipelineOverrides)
+        val viewModel = CameraViewModel(app, engine)
+        vm = viewModel
+        // Drain constructor-time capability publication before installing the accepted fixture.
+        shadowOf(Looper.getMainLooper()).idle()
+        // Keep a late real-platform inventory callback from overwriting the deterministic fixture.
+        setBoolean(viewModel, "cleared", true)
+        val main10 = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-main10",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val avc = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc-main",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
+        engine.setVideoEncoders(listOf(main10))
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(main10),
+            VideoCodec.AVC to listOf(avc),
+        )))
+        val controller = CameraController(app)
+        setField(engine, "controller", controller)
+        setField(engine, "readyController", controller)
+        setBoolean(engine, "cameraReady", true)
+        setBoolean(engine, "previewReady", true)
+        setBoolean(engine, "videoMode", mode == CaptureMode.VIDEO)
+        setField(engine, "transfer", acceptedTransfer)
+        setField(engine, "requestedVideoTransfer", requestedTransfer)
+        setBoolean(viewModel, "lifecycleStarted", true)
+        state(viewModel).value = state(viewModel).value.copy(
+            cameraReady = true,
+            mode = mode,
+            transfer = requestedTransfer,
+            videoCodec = VideoCodec.HEVC,
+            tenBitEncodeAvailable = true,
+            encoderInventoryLoaded = true,
+            availableVideoCodecs = listOf(VideoCodec.HEVC, VideoCodec.AVC),
+            recordAudio = true,
+        )
+        viewModel.onStandbyAudioMeterVisibilityChanged(true)
+        return viewModel to engine
+    }
+
+    private fun forceOwnedRollback(
+        engine: CameraEngine,
+        acceptedTransfer: ColorTransfer,
+        requestedTransfer: ColorTransfer = acceptedTransfer,
+        drainMain: Boolean = true,
+    ) {
+        val generation = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
+        val baseline = checkNotNull(field(engine, "opticsRollbackBaseline"))
+        assertEquals(acceptedTransfer, field(baseline, "transfer"))
+        assertEquals(
+            requestedTransfer,
+            field(checkNotNull(field(baseline, "videoPipeline")), "requestedTransfer"),
+        )
+        val transactionType = CameraEngine::class.java.declaredClasses
+            .single { it.simpleName == "OpticsTransaction" }
+        val transaction = transactionType.declaredConstructors.single()
+            .apply { isAccessible = true }
+            .newInstance(generation, baseline, true)
+        CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
+            .apply { isAccessible = true }
+            .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
+        assertEquals(acceptedTransfer, engineTransfer(engine))
+        assertEquals(requestedTransfer, field(engine, "requestedVideoTransfer"))
+        if (drainMain) shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun beginUnchangedOpticsTransaction(engine: CameraEngine): Any {
+        val result = CameraEngine::class.java.declaredMethods.single {
+            it.name == "beginOpticsTransaction"
+        }.apply { isAccessible = true }.invoke(engine, { Unit }) as Pair<*, *>
+        return checkNotNull(result.first)
+    }
+
+    private fun rollbackCaps() = CameraCaps(
+        logicalId = "test",
+        physicalId = null,
+        sensorOrientation = 90,
+        minFocusDistanceDiopters = 0f,
+        hyperfocalDiopters = 0f,
+        isoRange = Range(100, 100),
+        exposureTimeRange = Range(1_000L, 1_000L),
+        maxFrameDurationNs = 1_000L,
+        evRange = Range(0, 0),
+        evStep = Rational(1, 3),
+        focalLengthsMm = floatArrayOf(4f),
+        equivalentFocalMm = 23f,
+        lensFocalLengthMm = 4f,
+        lensApertureF = 2f,
+        nativeFocalInImageWidths = 1f,
+        supportsManualSensor = false,
+        supportsManualPostProcessing = false,
+        supportsRaw = false,
+        lensFacingFront = false,
+        rawSize = null,
+        supportedDynamicRangeProfiles = emptySet(),
+        largestJpegSize = Size(4000, 3000),
+        hiResJpegSize = null,
+        hiResUsesMaxResolutionMode = false,
+        largestYuvSize = Size(4000, 3000),
+        timestampSource = 0,
+        isLogicalMultiCamera = false,
+        oisAvailable = false,
+        flashAvailable = false,
+        zoomRatioRange = Range(1f, 10f),
+        videoStabModes = intArrayOf(0),
+        afModes = intArrayOf(0),
+        awbModes = intArrayOf(1),
+        aeModes = intArrayOf(1),
+        maxAeRegions = 0,
+        maxAfRegions = 0,
+        antibandingModes = intArrayOf(0),
+        effectModes = intArrayOf(0),
+        edgeModes = intArrayOf(0),
+        noiseReductionModes = intArrayOf(0),
+        availableFpsRanges = arrayOf(Range(30, 30)),
+        availableVideoSizes = listOf(Size(1920, 1080)),
+        openGateVideoSizes = listOf(Size(1440, 1080)),
+        highSpeedConfigs = emptyMap(),
+    )
+
+    private fun forceOwnedRollback(
+        engine: CameraEngine,
+        transaction: Any,
+        drainMain: Boolean,
+    ) {
+        CameraEngine::class.java.declaredMethods.single { it.name == "rollbackOptics" }
+            .apply { isAccessible = true }
+            .invoke(engine, transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
+        if (drainMain) shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test
+    fun `failed Video to Photo restores transfer standby ownership and Ready`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+        assertTrue(standbyWanted(engine))
+
+        viewModel.onModeChange(CaptureMode.PHOTO)
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertFalse(standbyWanted(engine))
+
+        forceOwnedRollback(engine, ColorTransfer.HLG)
+
+        assertEquals(CaptureMode.VIDEO, viewModel.state.value.mode)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertTrue(standbyWanted(engine))
+        assertTrue(viewModel.state.value.cameraReady)
+        assertEquals(
+            "the next recording must use the accepted Video transfer",
+            ColorTransfer.HLG,
+            engineTransfer(engine),
+        )
+    }
+
+    @Test
+    fun `external permission surface releases and restores standby microphone ownership`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+        assertTrue(standbyWanted(engine))
+
+        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, true)
+        assertTrue(viewModel.state.value.cameraInputBlocked)
+        assertFalse(standbyWanted(engine))
+
+        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, false)
+        assertFalse(viewModel.state.value.cameraInputBlocked)
+        assertTrue(standbyWanted(engine))
+    }
+
+    @Test
+    fun `failed Photo to Video restores SDR drops standby and Ready`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        assertFalse(standbyWanted(engine))
+        val generationBefore = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
+
+        viewModel.onModeChange(CaptureMode.VIDEO)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertEquals(
+            "mode and transfer must publish through one optics generation",
+            generationBefore + 1,
+            (field(engine, "opticsIntentGeneration") as AtomicLong).get(),
+        )
+        assertTrue(standbyWanted(engine))
+
+        forceOwnedRollback(engine, ColorTransfer.SDR, ColorTransfer.HLG)
+
+        assertEquals(CaptureMode.PHOTO, viewModel.state.value.mode)
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertFalse(standbyWanted(engine))
+        assertTrue(viewModel.state.value.cameraReady)
+    }
+
+    @Test
+    fun `failed direct transfer reopen restores the accepted pre-mutation transfer`() {
+        val (viewModel, engine) = createAccepted(
+            CaptureMode.VIDEO,
+            acceptedTransfer = ColorTransfer.SDR,
+            requestedTransfer = ColorTransfer.SDR,
+        )
+        val generationBefore = (field(engine, "opticsIntentGeneration") as AtomicLong).get()
+
+        viewModel.onTransfer(ColorTransfer.HLG)
+
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertEquals(
+            generationBefore + 1,
+            (field(engine, "opticsIntentGeneration") as AtomicLong).get(),
+        )
+        forceOwnedRollback(engine, ColorTransfer.SDR)
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        assertEquals(ColorTransfer.SDR, viewModel.state.value.transfer)
+        assertEquals(VideoCodec.HEVC, viewModel.state.value.videoCodec)
+        assertTrue(engineReady(engine))
+    }
+
+    @Test
+    fun `failed HLG to SDR reopen restores visible and active HLG`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+
+        viewModel.onTransfer(ColorTransfer.SDR)
+
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        forceOwnedRollback(engine, ColorTransfer.HLG)
+        assertEquals(ColorTransfer.HLG, engineTransfer(engine))
+        assertEquals(ColorTransfer.HLG, viewModel.state.value.transfer)
+        assertTrue(engineReady(engine))
+    }
+
+    @Test
+    fun `failed HEVC HLG to AVC SDR restores complete encoder tuple`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
+        val hevc = EncoderSelection(
+            VideoCodec.HEVC,
+            "test-main10",
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hardwareAccelerated = true,
+            main10 = true,
+        )
+        val avc = EncoderSelection(
+            VideoCodec.AVC,
+            "test-avc",
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            hardwareAccelerated = true,
+            main10 = false,
+        )
+        setField(viewModel, "encoderInventory", CodecInventory(mapOf(
+            VideoCodec.HEVC to listOf(hevc),
+            VideoCodec.AVC to listOf(avc),
+        )))
+        state(viewModel).value = state(viewModel).value.copy(
+            encoderInventoryLoaded = true,
+            availableVideoCodecs = listOf(VideoCodec.HEVC, VideoCodec.AVC),
+        )
+
+        viewModel.onVideoCodec(VideoCodec.AVC)
+
+        assertEquals(VideoCodec.AVC, field(engine, "videoCodec"))
+        assertEquals(ColorTransfer.SDR, engineTransfer(engine))
+        forceOwnedRollback(engine, ColorTransfer.HLG)
+        assertEquals(VideoCodec.HEVC, field(engine, "videoCodec"))
+        assertEquals(listOf(hevc), field(engine, "videoEncoderCandidates"))
+        val recAdmission = recordingEncoderAdmission(
+            frameRateAvailable = true,
+            codec = field(engine, "videoCodec") as VideoCodec,
+            transfer = engineTransfer(engine),
+            candidates = (field(engine, "videoEncoderCandidates") as List<*>)
+                .filterIsInstance<EncoderSelection>(),
+        )
+        assertEquals(null, recAdmission.failure)
+        assertEquals(
+            listOf(hevc),
+            recAdmission.candidates,
+        )
+        assertEquals(VideoCodec.HEVC, viewModel.state.value.videoCodec)
+        assertEquals(ColorTransfer.HLG, viewModel.state.value.transfer)
+        assertTrue(engineReady(engine))
+    }
+
+    // AGG2-9: a DNG door that rolls back inside the encoder-inventory window must also roll back
+    // the pending REQUEST, or the inventory replays DNG with no remap packet and saves persist it.
+    @Test
+    fun `rollback mirrors restored DNG into the pre-inventory pending formats`() {
+        val (viewModel, engine) = createAccepted(CaptureMode.PHOTO)
+        state(viewModel).value = state(viewModel).value.copy(encoderInventoryLoaded = false)
+        val transaction = beginUnchangedOpticsTransaction(engine)
+        setField(
+            viewModel,
+            "pendingPhotoFormatsUntilInventory",
+            me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = true),
+        )
+
+        forceOwnedRollback(engine, transaction, drainMain = true)
+
+        assertEquals(
+            me.hletrd.telecampro.camera.PhotoFormats(heif = true, jpeg = false, dngRaw = false),
+            field(viewModel, "pendingPhotoFormatsUntilInventory"),
+        )
+        assertFalse(viewModel.state.value.photoFormats.dngRaw)
+    }
+
+    private fun transferFor(mode: CaptureMode) =
+        if (mode == CaptureMode.VIDEO) ColorTransfer.HLG else ColorTransfer.SDR
+
+    @Suppress("UNCHECKED_CAST")
+    private fun state(viewModel: CameraViewModel) =
+        field(viewModel, "_state") as MutableStateFlow<CameraUiState>
+
+    private fun engineTransfer(engine: CameraEngine) = field(engine, "transfer") as ColorTransfer
+    private fun standbyWanted(engine: CameraEngine) = field(engine, "standbyAudioMonitorWanted") as Boolean
+    private fun engineReady(engine: CameraEngine) = field(engine, "cameraReady") as Boolean
+
+    private fun field(owner: Any, name: String): Any? = owner.javaClass.getDeclaredField(name)
+        .apply { isAccessible = true }
+        .get(owner)
+
+    private fun setField(owner: Any, name: String, value: Any?) {
+        owner.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(owner, value)
+    }
+
+    private fun setBoolean(owner: Any, name: String, value: Boolean) {
+        owner.javaClass.getDeclaredField(name).apply { isAccessible = true }.setBoolean(owner, value)
+    }
+
+    @After
+    fun tearDown() {
+        vm?.let {
+            CameraViewModel::class.java.getDeclaredMethod("onCleared")
+                .apply { isAccessible = true }
+                .invoke(it)
+        }
+    }
+}

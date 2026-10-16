@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "FindX9TeleCamera"
+rootProject.name = "TeleCamPro"
 include(":app")

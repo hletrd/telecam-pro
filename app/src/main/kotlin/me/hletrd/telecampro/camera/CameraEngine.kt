@@ -1,0 +1,9672 @@
+package me.hletrd.telecampro.camera
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.TotalCaptureResult
+import android.media.Image
+import me.hletrd.telecampro.camera.DiagnosticLog as Log
+import android.util.Size
+import android.view.Surface
+import me.hletrd.telecampro.BuildConfig
+import me.hletrd.telecampro.ProcessAdmissionSubscription
+import me.hletrd.telecampro.capture.DngCapture
+import me.hletrd.telecampro.capture.DngWriteResult
+import me.hletrd.telecampro.capture.ExifShot
+import me.hletrd.telecampro.capture.ShotSpec
+import me.hletrd.telecampro.capture.StillCapturePipeline
+import me.hletrd.telecampro.capture.HeifCapture
+import me.hletrd.telecampro.capture.PendingDngPublication
+import me.hletrd.telecampro.capture.StillSnapshot
+import me.hletrd.telecampro.gl.AtomicOwnerSlot
+import me.hletrd.telecampro.gl.EncoderOutputAdmission
+import me.hletrd.telecampro.gl.GlPipeline
+import me.hletrd.telecampro.gl.GlStopOutcome
+import me.hletrd.telecampro.gl.glInputTransactionMayProceed
+import me.hletrd.telecampro.gl.glReplacementMayRestartPreview
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.CaptureFamilyProducerLease
+import me.hletrd.telecampro.storage.MediaStoreWriter
+import me.hletrd.telecampro.storage.PendingOutputDiscardResult
+import me.hletrd.telecampro.storage.PendingOutputAllocation
+import me.hletrd.telecampro.storage.RecoveryReport
+import me.hletrd.telecampro.storage.RecoveryRetryDecision
+import me.hletrd.telecampro.storage.sleepPreservingInterrupt
+import me.hletrd.telecampro.video.NativeGraphDisposition
+import me.hletrd.telecampro.video.AudioRouteStatus
+import me.hletrd.telecampro.video.EncoderSelection
+import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
+import me.hletrd.telecampro.video.VideoRecorder
+
+/**
+ * Narrow pre-native composition seam used by host tests to drive [CameraEngine.startRecording].
+ *
+ * The ordinary Engine constructor passes null and therefore keeps the production Camera2 preflight,
+ * process-wide allocator, MediaStore writer, watchdog, mic handoff, and native recorder path. Tests
+ * may replace only the effects that otherwise require a live camera/provider/codec; the real Engine
+ * still owns its recorder executor, admission latch, process token, attempt generation, lifecycle
+ * retirement, standby-mic claim, status callbacks, and bounded storage dispatch.
+ */
+internal data class RecordingPreNativeEngineOverrides(
+    val admissionCurrent: () -> Boolean = { true },
+    val allocatePendingVideo: (displayName: String, mimeType: String) -> android.net.Uri?,
+    val dispatchAllocation: ((() -> Unit) -> RecordingPreNativeSubmission),
+    val scheduleDeadline: (delayMs: Long, action: () -> Unit) -> RecordingTeardownCancellation?,
+    val allocationTimeoutMs: Long = 8_000L,
+    val setupReleaseTimeoutMs: Long = 14_000L,
+    /** Test terminal after the REAL standby-mic claim; false exercises ordinary admission rollback. */
+    val afterMicrophoneClaim: (uri: android.net.Uri, captureId: Int, recordAudio: Boolean) -> Boolean,
+    val discardPendingOutput: (android.net.Uri) -> PendingOutputDiscardResult,
+    /** Engine-level lifecycle barrier probe; production replays the retained preview Surface. */
+    val onNativeAcquisitionReplay: (() -> Unit)? = null,
+    /** Test-only token-acquisition barrier after advisory acceptance but before GL native entry. */
+    val beforeGlNativeAcquisition: (() -> Unit)? = null,
+    /** Same-Engine pending->published barrier at the preview-window native bind only. */
+    val beforePreviewOutputNativeAcquisition: ((Any?) -> Unit)? = null,
+    /** Records the production bind branch after replay; does not replace or short-circuit it. */
+    val onPreviewBindAttempt: (() -> Unit)? = null,
+    /** Records full-graph replay selection without replacing the production restart. */
+    val onFullGraphReplayAttempt: (() -> Unit)? = null,
+    /** Keep the real accepted-session/codec/FPS admission while replacing later native effects. */
+    val useProductionEncoderAdmission: Boolean = false,
+    /** Observes the immutable production decision after the Engine monitor has been released. */
+    val onEncoderAdmission: ((RecordingEncoderAdmission) -> Unit)? = null,
+    /** Test-only barrier while the immutable production inputs still own the Engine monitor. */
+    val beforeEncoderAdmissionSnapshot: (() -> Unit)? = null,
+    /** Observes the exact pre-policy packet after the Engine monitor has been released. */
+    val onEncoderAdmissionInputs: ((RecordingAdmissionInputs) -> Unit)? = null,
+    /** Executes the production setup-packet composition without entering MediaCodec in host tests. */
+    val onNativeSetupPacket: ((RecordingNativeSetupPacket) -> Boolean)? = null,
+    /** Host-only capability answer; null keeps exact CameraCaps-derived production admission. */
+    val frameRateAvailable: Boolean? = null,
+)
+
+/** Pending REC row plus immutable allocation authority; host overrides may supply URI-only truth. */
+internal data class RecordingPendingOutput(
+    val uri: android.net.Uri,
+    val allocation: PendingOutputAllocation?,
+)
+
+internal data class RecordingAdmissionInputs(
+    val frameRateAvailable: Boolean,
+    val size: Size,
+    val frameRate: VideoFrameRate,
+    val captureRate: Double,
+    val codec: VideoCodec,
+    val transfer: ColorTransfer,
+    val candidates: List<EncoderSelection>,
+)
+
+/** One exact accepted REC packet carried unchanged from admission through native setup. */
+internal data class RecordingNativeSetupPacket(
+    val size: Size,
+    val frameRate: VideoFrameRate,
+    val captureRate: Double,
+    val codec: VideoCodec,
+    val transfer: ColorTransfer,
+    val candidates: List<EncoderSelection>,
+)
+
+/** Host observation edge for the active GL transfer lane; production still posts to GlPipeline. */
+internal data class VideoPipelineEngineOverrides(
+    val onGlTransfer: (ColorTransfer?) -> Unit,
+)
+
+/** Host-only Binder classification seam for deterministic delayed AppOps ownership tests. */
+internal data class CameraPolicyEngineOverrides(
+    val cameraOpWithheld: () -> Boolean,
+)
+
+/** Monotonic camera-policy terminal so delayed true/false callbacks cannot repaint newer truth. */
+data class CameraPolicyPublication(
+    val sequence: Long,
+    val blocked: Boolean,
+)
+
+/** Injects only the process-capacity owner behind one Engine's post-native admission facade. */
+internal data class RecordingStorageEngineOverrides(
+    val capacityOwner: RecordingStorageCapacityOwner,
+)
+
+/** Injects only the finite pre-marker family capacity behind one Engine's admission facade. */
+internal data class FamilyDeletionMarkerEngineOverrides(
+    val capacityOwner: FamilyDeletionMarkerCapacityOwner,
+)
+
+/**
+ * Narrow host-test seam for the stabilization transaction owned by [CameraEngine.setVideoStabMode].
+ * Production leaves this null and therefore reads accepted Camera2 capabilities and executes the
+ * real request/session effects. Tests replace the three hardware-facing edges while still driving
+ * the public Engine entry, stored intent, guard ordering, and exact effect cardinality.
+ */
+internal data class StabilizationEngineOverrides(
+    val videoStabModes: IntArray?,
+    val apply: () -> Unit,
+    val reopen: () -> Unit,
+)
+
+/** Host-only observation edges for the real zoom interaction/timer chain. */
+internal data class ZoomEngineOverrides(
+    val setZoomTarget: (Float) -> Unit,
+    val submitZoom: (Float) -> Unit,
+    val noteRequestZoom: (Float) -> Unit,
+    val setSmoothPreviewBoost: (Boolean, Float, Float?, Boolean) -> Unit,
+)
+
+internal fun interface TimelapseCancellation {
+    fun cancel()
+}
+
+/** Host-only scheduler edge for the real interval-run ownership and live-period chain. */
+internal data class TimelapseEngineOverrides(
+    val schedule: (delaySeconds: Long, action: () -> Unit) -> TimelapseCancellation?,
+)
+
+private data class RecorderSetupOwner(
+    val terminal: RecorderSetupFinalizationOwner<VideoRecorder>,
+    val processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+    val topologyLease: Long,
+    val captureId: Int,
+)
+
+/**
+ * Facade tying Camera2 + GL(180° flip) + capture encoders + video recorder + MediaStore together.
+ * Called by the ViewModel; internal work runs on the components' own threads. All image encoding
+ * happens off the UI thread (inside camera/GL callbacks).
+ */
+class CameraEngine internal constructor(
+    private val context: Context,
+    private val recordingPreNativeOverrides: RecordingPreNativeEngineOverrides? = null,
+    private val recordingStorageOverrides: RecordingStorageEngineOverrides? = null,
+    private val familyDeletionMarkerOverrides: FamilyDeletionMarkerEngineOverrides? = null,
+    private val stabilizationOverrides: StabilizationEngineOverrides? = null,
+    private val zoomOverrides: ZoomEngineOverrides? = null,
+    private val timelapseOverrides: TimelapseEngineOverrides? = null,
+    private val videoPipelineOverrides: VideoPipelineEngineOverrides? = null,
+    private val cameraPolicyOverrides: CameraPolicyEngineOverrides? = null,
+) {
+
+    /** Monotonic, read-only proof of preview invalidation and producer-fed replacement readiness. */
+    internal data class PreviewReadinessDiagnostic(
+        val surfaceGeneration: Long,
+        val pendingGeneration: Long,
+        val producerFrameGeneration: Long,
+        val pendingOrder: Long,
+        val producerFrameOrder: Long,
+        val lastNotReadyPublicationSequence: Long,
+        val lastReadyPublicationSequence: Long,
+        val cameraReady: Boolean,
+    )
+
+    private val callbackSink = EngineCallbackSink()
+    private val processStillAdmissionSubscriptionLock = Any()
+    private var dngAdmissionSubscription: ProcessAdmissionSubscription? = null
+    private var storageAdmissionSubscription: ProcessAdmissionSubscription? = null
+    private val stillAdmissionPublication = StillAdmissionPublication(
+        snapshot = { stillOutputAdmissionAvailable() },
+        deliver = { onStillCaptureAdmissionChanged?.invoke(it) },
+    )
+
+    private fun publishProcessStillAdmission() {
+        stillAdmissionPublication.publish()
+    }
+
+    private fun ensureProcessStillAdmissionSubscriptions() {
+        synchronized(processStillAdmissionSubscriptionLock) {
+            if (dngAdmissionSubscription == null) {
+                dngAdmissionSubscription = ProcessDngPreCaptureAdmission.owner.subscribe {
+                    publishProcessStillAdmission()
+                }
+            }
+            if (storageAdmissionSubscription == null) {
+                storageAdmissionSubscription = MediaStoreWriter.subscribeStillStorageAdmission {
+                    publishProcessStillAdmission()
+                }
+            }
+        }
+    }
+
+    private fun closeProcessStillAdmissionSubscriptions() {
+        val subscriptions = synchronized(processStillAdmissionSubscriptionLock) {
+            val current = listOfNotNull(dngAdmissionSubscription, storageAdmissionSubscription)
+            dngAdmissionSubscription = null
+            storageAdmissionSubscription = null
+            current
+        }
+        subscriptions.forEach(ProcessAdmissionSubscription::close)
+        stillAdmissionPublication.reset()
+    }
+
+    private val manager = context.getSystemService(CameraManager::class.java)
+    private val processNativeOwner = Any()
+    private val glOwners = AtomicOwnerSlot(
+        GlPipeline(
+            processNativeOwner,
+            recordingPreNativeOverrides?.beforeGlNativeAcquisition,
+            recordingPreNativeOverrides?.beforePreviewOutputNativeAcquisition,
+        ),
+    ) {
+        GlPipeline(
+            processNativeOwner,
+            recordingPreNativeOverrides?.beforeGlNativeAcquisition,
+            recordingPreNativeOverrides?.beforePreviewOutputNativeAcquisition,
+        )
+    }
+    private val gl: GlPipeline
+        get() = glOwners.current()
+    private val rendererAssists = RendererAssists(glOwners::current)
+    // Terminal owner for every operation that can acquire a fresh GL generation. release() closes
+    // it before its one GL stop, so a queued cold start cannot resurrect resources afterward.
+    private val terminalAcquisitionGate = TerminalAcquisitionGate()
+    // Startup setup (camera-service IPC) and still-image encoding are kept off the main/camera/GL
+    // threads via these single-thread executors.
+    private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Optional Gyroflow .gcsv sidecar (video/GyroLogRecorder.kt). Owns its own sensor HandlerThread
+    // and publish thread, so neither REC timing nor the GL/encoder/recorder lanes ever wait on it.
+    // The operator's intent is read once per take at REC admission.
+    @Volatile private var gyroLogEnabled = false
+    private val gyroLog = me.hletrd.telecampro.video.GyroLogRecorder(context) {
+        onStatus?.invoke(CameraStatusMessage.GYRO_LOG_NOT_SAVED.status())
+    }
+    // Every completed DNG publication tail uses finite process-wide capacity. Mixed-output shots
+    // enqueue only the cheap transfer behind their processed sibling on [ioExecutor], while RAW-only
+    // SINGLE/BURST/AEB/timelapse — and a mixed shot whose sibling was never queued — transfer
+    // directly; sequence completion still preserves exact order.
+    private val stillPublicationDispatcher = StillPublicationDispatcher(
+        workerCount = STILL_PUBLICATION_WORKER_COUNT,
+        backlogCapacity = STILL_PUBLICATION_BACKLOG_CAPACITY,
+    )
+    // Delete intent must become durable before provider deletion or UI acknowledgement, but it must
+    // not queue behind a wedged bitmap/HEIF/provider call on ioExecutor. Reserve one exact family
+    // BEFORE publishing the Engine tombstone; overflow can then restore review without claiming a
+    // recovery owner that does not exist yet. Every Engine facade shares one finite process lane.
+    private val familyDeletionMarkerDispatcher = familyDeletionMarkerOverrides?.let {
+        FamilyDeletionMarkerDispatcher(it.capacityOwner)
+    } ?: FamilyDeletionMarkerDispatcher(
+        workerCount = FAMILY_DELETION_MARKER_WORKER_COUNT,
+        backlogCapacity = FAMILY_DELETION_MARKER_BACKLOG_CAPACITY,
+    )
+    private val familyDeletionCompletions =
+        FamilyDeletionCompletionRegistry<CaptureFamilyDeleteDurability>()
+    // Deleted-family veto lives with the still lane, not the UI callback graph. A retained output
+    // can complete after ViewModel.onCleared; its durable discard must remain owned by this Engine.
+    private val retainedStillDeletionOwner = RetainedStillDeletionOwner<PendingOutputAllocation>(
+        maxTombstones = MAX_RETAINED_STILL_DELETE_TOMBSTONES,
+        discard = { allocation -> MediaStoreWriter.discardPendingOutput(context, allocation) },
+        persistDeletionIntent = { family -> MediaStoreWriter.markFamilyDeleted(context, family) },
+    )
+    // Process rescans may retire a marker created by another Engine generation. Register this exact
+    // local owner before the marker commit so whichever worker proves retirement clears the right
+    // unresolved rows/tombstones and republishes this Engine's admission truth.
+    private val retainedStillRetirementListener = RetainedStillRetirementListener { family ->
+        retainedStillDeletionOwner.retireDeletedFamily(family)
+        publishProcessStillAdmission()
+    }
+    // Deleted-still provider work is process-finite across Engine replacement. A rejected task stays
+    // owned by the durable capture-family tombstone for launch recovery; it never runs inline on a
+    // camera, UI, or teardown thread.
+    private val retainedStillDiscardDispatcher = RetainedStillDiscardDispatcher(
+        workerCount = RETAINED_STILL_DISCARD_WORKER_COUNT,
+        backlogCapacity = RETAINED_STILL_DISCARD_BACKLOG_CAPACITY,
+    )
+    private val launchRecoveryOwner = Any()
+    @Volatile private var launchRecoverySubscription: LaunchMediaRecoverySubscription? = null
+    // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
+    // behind a burst's full-resolution still encodes on ioExecutor (or vice versa).
+    private val recorderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Pending-video MediaProvider allocation is PRE-native and has no cancellation signal. Keep it
+    // off the serial REC/native lane: timeout/Stop/release retire admission immediately while the
+    // finite daemon pool owns any provider call that returns late.
+    private val recordingPreNativeAttempt = java.util.concurrent.atomic.AtomicReference<
+        RecordingPreNativeAllocationAttempt<RecordingPendingOutput>?
+    >(null)
+    // DNG allocation precedes Camera2 dispatch. Binder work is uncancellable, so lifecycle/optics
+    // retirement drops these compact owners immediately while the finite process lane routes any
+    // later exact allocation to bounded cleanup/recovery.
+    private val dngPreCaptureAllocationLock = Any()
+    private val dngPreCaptureAllocations = java.util.Collections.newSetFromMap(
+        java.util.IdentityHashMap<DngPreCaptureAllocation<PendingOutputAllocation>, Boolean>(),
+    )
+    @Volatile
+    private var recorderSetupFinalizationOwner: RecorderSetupOwner? = null
+    private val recorderSetupReplayGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    private val recorderSetupReplayLock = Any()
+    private var recorderSetupReplayObservation:
+        me.hletrd.telecampro.video.NativeAcquisitionReplayObservation? = null
+    // Extractor/MediaStore tails own no native recorder resources. The lane is deliberately finite:
+    // provider outages may occupy two workers plus a bounded backlog, after which the pending row is
+    // the durable overflow owner for launch recovery. Admission never falls back inline/raw-thread.
+    private val recordingStorageDispatcher = recordingStorageOverrides?.let {
+        RecordingStorageDispatcher(it.capacityOwner)
+    } ?: RecordingStorageDispatcher(
+        workerCount = RECORDING_STORAGE_WORKER_COUNT,
+        backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
+    )
+    private val recordingStoragePresentation =
+        RecordingStoragePresentationReducer<android.net.Uri>()
+    // Independent of GL/setup/recorder lanes: an accepted task on any of those lanes may itself be
+    // the wedge we are timing out. This daemon owns only bounded teardown deadlines.
+    private val recorderWatchdog = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "recording-teardown-watchdog").apply { isDaemon = true }
+    }
+    // Drives interval (timelapse) capture off the camera/UI threads.
+    private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var timelapseFuture: TimelapseCancellation? = null
+    private val timelapseRun = CaptureSequenceGeneration()
+    // Serializes run start/stop edges across the main and timelapse-scheduler threads (review
+    // 2026-08-01): the flag + generation + listener edge must move together or a tick-thread stop
+    // can kill a concurrent restart / wedge the edge flag.
+    private val timelapseRunEdgeLock = Any()
+    // True between startTimelapse and the stopTimelapse that ends that run — the edge detector for
+    // [onTimelapseRun] only; run OWNERSHIP stays with [timelapseRun]'s generation.
+    @Volatile private var timelapseRunActive = false
+    @Volatile private var controller: CameraController? = null
+    @Volatile private var recorder: VideoRecorder? = null
+    private val recorderOwnershipLock = Any()
+    // The encoder EGL surface must detach from the exact pipeline instance that attached it. A
+    // replacement pipeline is deliberately unreachable from an old recorder teardown callback.
+    @Volatile private var activeRecordingGl: GlPipeline? = null
+    @Volatile private var recorderFinalizationOwner: RecorderFinalizationOwner? = null
+    // URI (+ capture-sequence id) of the clip currently being recorded, so stop can surface it
+    // (thumbnail/review) tagged like any other capture.
+    @Volatile private var activeRecordingUri: android.net.Uri? = null
+    @Volatile private var activeRecordingCaptureId = 0
+
+    // These are written from the UI thread and read on the GL thread (via the onInputReady
+    // continuation), so they are @Volatile to give the JMM a visibility edge across the seam.
+    @Volatile private var selection: TeleSelection? = null
+    @Volatile private var caps: CameraCaps? = null
+    @Volatile private var videoSize = Size(1920, 1080)
+    // The user's explicit resolution pick (from the Video tab or a settings restore); null = never
+    // chosen, auto-derive. Kept separate from videoSize so reopen paths can re-validate it against
+    // each lens's caps instead of blindly re-deriving the largest size over the user's choice.
+    @Volatile private var requestedVideoSize: Size? = null
+    // Bumped by every interactive size pick ([setVideoResolution]), which owns no optics
+    // transaction. Same rule as rawWantedDirectWrites: an older door's rollback must not revert a
+    // pick made while it was in flight (RPL cycle 2, AGG2-7). The size is a REQUEST, never a route
+    // input — chooseVideoSize re-validates it against whatever route opens — so a newer pick is
+    // always safe to keep.
+    @Volatile private var requestedVideoSizeDirectWrites = 0L
+    // What the camera preview stream (the GL SurfaceTexture) is actually sized to. In VIDEO mode it
+    // must equal [videoSize] (the SurfaceTexture feeds the encoder, and the HAL fixes the stream size
+    // at session config). In PHOTO mode it is the largest 4:3 stream instead, so the viewfinder shows
+    // the SAME field the still capture gets — a 16:9 preview stream crops the sensor vertically and
+    // silently mis-frames every photo.
+    @Volatile private var previewStreamSize = Size(1920, 1080)
+    @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
+    @Volatile private var videoEncoderCandidates: List<EncoderSelection> = emptyList()
+    @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.ULTRA
+    @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
+    @Volatile private var openGate = false
+    @Volatile private var driveMode: DriveMode = DriveMode.SINGLE
+    @Volatile private var intervalSec: Int = 5
+    @Volatile private var controls = ManualControls()
+    // Hidden while Video is active, but transaction-owned like every visible optics control: a
+    // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
+    @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
+    @Volatile private var transfer = ColorTransfer.HLG
+    /** Operator's next-Video curve; Photo keeps this while its active GL/Camera2 transfer is SDR. */
+    @Volatile private var requestedVideoTransfer = ColorTransfer.HLG
+    // Latest controller-published GL brightness-simulation gain (see wireController), cached so a
+    // replacement GL generation is re-seeded with the live value in the gl.start callback —
+    // GlPipeline drops posts before start, and the controller's change gate won't republish.
+    @Volatile private var lastPreviewDigitalGain = 1f
+    @Volatile private var lensChoice: LensChoice = LensChoice.MAIN
+    @Volatile private var overrideId: String? = null
+    // The GENUINE diagnostic pin (setCameraOverride), distinct from [overrideId]: after any door,
+    // [overrideId] holds the ROUTED target id as an engine-internal pin, but the UI treats a
+    // non-null override as "a diagnostic camera override is active" (Setup's Camera ID row, and
+    // the settings/MR same-route fast path refuses while one is set). Publishing the routed pin
+    // through a rollback permanently surfaced the diagnostic row after any failed optics
+    // transaction (cycle-6 code-review F5) — rollback publishes THIS field instead. Maintained
+    // only where pin semantics live: set by setCameraOverride, cleared by the doors that own
+    // automatic routing (mode/lens/facing/settings-recall), never touched by route commits.
+    @Volatile private var userCameraPin: String? = null
+    @Volatile private var started = false
+    // Set true synchronously on the calling thread once startup setup is dispatched, so a second
+    // onPreviewSurfaceAvailable arriving before setup completes doesn't launch a duplicate start.
+    @Volatile private var starting = false
+    // True only while the GL generation exists but has not created its camera input Surface yet.
+    // Optics intents during this window remain pending; the input callback converges on the latest.
+    @Volatile private var glInputPending = false
+    // The optics generation whose input-ready open is still PENDING on setupExecutor (AGG6-19):
+    // cleared by pause() and by that open's own task the moment it dequeues (MRG6-1). Resume's
+    // reopen task skips a generation whose open is still queued behind it.
+    private val inputReadyOpenGeneration = java.util.concurrent.atomic.AtomicLong(NO_INPUT_READY_OPEN)
+    // True between pause() and resume(). openCamera() honors it so a camera open queued during
+    // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
+    // launched behind the keyguard, where onStop lands right as the session would configure.
+    @Volatile private var paused = false
+    // One exact Engine/resume attempt, explicitly carried into at most one installed controller.
+    // Never sample StartupTrace's mutable process-global owner while wiring a Camera2 generation.
+    private val startupTraceOwnership = EngineStartupTraceOwnership()
+    // True only after the CURRENT controller has configured a working session. Session-key and lens
+    // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
+    @Volatile private var cameraReady = false
+    // Preview EGL health participates in the externally visible Ready contract. The accepted
+    // Camera2 session remains owned across a preview-only failure so a bounded rebind can restore
+    // admission without needlessly reopening the device or starving an active encoder.
+    @Volatile private var previewReady = false
+    @Volatile private var readyController: CameraController? = null
+    @Volatile private var acceptedCameraSession: AcceptedCameraSession? = null
+    private val cameraSessionGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val cameraReadyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    private val cameraPolicyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    @Volatile private var currentCameraPolicyPublication = CameraPolicyPublication(0L, false)
+    // Instrumentation-readable lifecycle evidence. These are observations of production events,
+    // not test-controlled state: Ready publications remain owned by the existing sequence, while
+    // preview orders advance only at accepted pending edges and producer-fed first-frame swaps.
+    private var lastNotReadyPublicationSequence = 0L
+    private var lastReadyPublicationSequence = 0L
+    private var previewDiagnosticOrder = 0L
+    private var lastPreviewPendingOrder = 0L
+    private var lastPreviewProducerFrameOrder = 0L
+    private var lastPreviewPendingGeneration = 0L
+    private var lastPreviewProducerFrameGeneration = 0L
+    private val tapFocusPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val videoPipelinePublicationGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    /** Pipeline publication owned by the current optics intent after its desired packet was written. */
+    @Volatile private var currentOpticsPipelineGeneration = 0L
+    private val opticsCommitGate = OpticsCommitGate(opticsIntentGeneration, this)
+    // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
+    // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
+    // black viewfinder behind a fully interactive-looking shutter with zero indication.
+    var onCameraReadyChange: ((CameraReadyPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.CAMERA_READY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAMERA_READY, value)
+    /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
+    var onOpticsRollback: ((OpticsRollbackPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.OPTICS_ROLLBACK)
+        set(value) = callbackSink.install(EngineCallbackKey.OPTICS_ROLLBACK, value)
+
+    // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
+    var onAfIndication: ((AfIndication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.AF_INDICATION)
+        set(value) = callbackSink.install(EngineCallbackKey.AF_INDICATION, value)
+    // A tap point is owned by one exact accepted Camera2 session. Controller/session invalidation
+    // publishes a newer false event so a delayed UI task can never leave a stale AF HOLD visible.
+    var onTapFocusChange: ((TapFocusPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.TAP_FOCUS)
+        set(value) = callbackSink.install(EngineCallbackKey.TAP_FOCUS, value)
+    private var tapFocusOwner: AcceptedCameraSession? = null
+
+    /** Captures callback ordering while the caller still owns the engine monitor/state mutation. */
+    private fun nextCameraReadyPublication(
+        ready: Boolean,
+        opticsGeneration: Long,
+        sessionGeneration: Long,
+        photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
+        rawLoss: RawLossReadyFacts? = null,
+    ): CameraReadyPublication {
+        val sequence = cameraReadyPublicationSequence.incrementAndGet()
+        if (ready) lastReadyPublicationSequence = sequence
+        else lastNotReadyPublicationSequence = sequence
+        return CameraReadyPublication(
+            sequence = sequence,
+            ready = ready,
+            opticsGeneration = opticsGeneration,
+            sessionGeneration = sessionGeneration,
+            photoOutputs = photoOutputs,
+            rawLoss = rawLoss,
+        )
+    }
+
+    private fun nextTapFocusPublication(
+        held: Boolean,
+        point: Pair<Float, Float>? = null,
+    ): TapFocusPublication = TapFocusPublication(
+        sequence = tapFocusPublicationSequence.incrementAndGet(),
+        held = held,
+        point = point,
+    )
+
+    /** Engine-monitor-only: advances one exact policy terminal for out-of-order UI rejection. */
+    private fun nextCameraPolicyPublication(blocked: Boolean): CameraPolicyPublication =
+        CameraPolicyPublication(
+            sequence = cameraPolicyPublicationSequence.incrementAndGet(),
+            blocked = blocked,
+        ).also { currentCameraPolicyPublication = it }
+
+    /** Engine-monitor-only: retires the exact session that owned the functional tap point. */
+    private fun retireTapFocusLocked(rebuildPreview: Boolean): TapFocusPublication? {
+        val owner = tapFocusOwner
+        val pending = pendingTapFocus
+        if (owner == null && pending == null && deferredTapFocus == null) return null
+        tapFocusOwner = null
+        pendingTapFocus = null
+        deferredTapFocus = null
+        owner?.controller?.clearMeteringPoint(rebuildPreview)
+        pending?.session?.controller
+            ?.takeIf { it !== owner?.controller }
+            ?.clearMeteringPoint(rebuildPreview)
+        resetTapGeometryLocked()
+        return nextTapFocusPublication(held = false)
+    }
+
+    /** Engine-monitor-only sibling of the controller ROI reset. */
+    private fun resetTapGeometryLocked() {
+        loupeCenterTexX = 0.5f
+        loupeCenterTexY = 0.5f
+        loupeCenterSensorX = 0.5f
+        loupeCenterSensorY = 0.5f
+        gl.setPunchInCenter(0.5f, 0.5f)
+    }
+
+    /** Returns the session generation this invalidation produced (see [rollbackOpticsAfterPreflight]). */
+    private fun invalidateCameraReady(): Long {
+        // Ready/session are cleared BEFORE the DNG owners are cancelled (AGG5-5). A cancel settles
+        // its shot synchronously, and a BURST/AEB settle continues the chain gated only on
+        // `acceptedSessionIsCurrent` — which still read TRUE while this used to cancel first, so
+        // the continuation re-took the just-released process DNG slot, registered a NEW owner the
+        // cancel snapshot had already missed, and dispatched a real pending insert for a dying
+        // session (held up to the 8 s allocation deadline, refusing every still after resume).
+        // cancelEachSealed already guarantees a throwing cancel cannot skip the invalidation, so
+        // the old "first statement" placement bought nothing.
+        val (publication, tapPublication) = synchronized(this) {
+            val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            val retiredTap = retireTapFocusLocked(rebuildPreview = false)
+            cameraReady = false
+            readyController = null
+            acceptedCameraSession = null
+            nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = sessionGeneration,
+            ) to retiredTap
+        }
+        cancelDngPreCaptureAllocations()
+        tapPublication?.let { onTapFocusChange?.invoke(it) }
+        onCameraReadyChange?.invoke(publication)
+        return publication.sessionGeneration
+    }
+
+    /**
+     * [outgoingCaps] are the caps of the route that was streaming until this call (null on cold
+     * start). They exist only so the exposure can be carried across the aperture change BEFORE the
+     * new route's first repeating request is built — seeding after the open would spend a whole
+     * ~180 ms rebuild, and one visibly mis-exposed batch of frames, undoing itself.
+     */
+    private fun reconcileControlsWithCaps(cameraCaps: CameraCaps, outgoingCaps: CameraCaps?) {
+        val mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO
+        val range = cameraCaps.zoomRatioRange
+        controls = normalizeControlsForRoute(
+            requested = seedExposureForRouteChange(
+                requested = controls,
+                outgoing = outgoingCaps,
+                incoming = cameraCaps,
+                mode = mode,
+            ),
+            capabilities = cameraCaps.controlCapabilities(),
+            mode = mode,
+            teleconverter = teleconverterMode,
+            teleconverterMagnification = teleconverterMagnification,
+            capsLower = range?.lower,
+            capsUpper = range?.upper,
+        )
+        if (!videoMode) photoExposureTimeNs = controls.exposureTimeNs
+        // The lens band is a REAR *unified*-zoom concept: it only means anything while zoomRatio is
+        // main-relative, i.e. on the LOGICAL seamless camera. Front zoom is lens-local and must not
+        // remap the retained rear band (it is what "leave FRONT" returns to) — and neither may any
+        // other standalone route. This asked `!videoMode`, which misses the DNG door: with RAW on,
+        // the lens-local 1.0 was read as main-relative and collapsed the band to 1×, so the rail
+        // highlighted 1× while the focal readout correctly said 69 mm (device-reported 2026-08-04).
+        if (lensBandFollowsZoom(videoMode, teleconverterMode, activeCameraRoute)) {
+            lensChoice = LensChoice.forZoom(controls.zoomRatio)
+        }
+        seedGlZoom()
+    }
+
+    /**
+     * The lens band is a REAR *unified*-zoom concept: it only means anything while zoomRatio is
+     * main-relative, i.e. on the LOGICAL seamless camera. Every site that re-derives the band from
+     * zoom asks this ONE predicate — two fast-path commits still asked `!video` after the caps seam
+     * was fixed, which reads a DNG Photo lens-local 1.0 as main-relative and parks the band on 1×
+     * while the session stays on the 70 mm lens (RPL cycle 1, AGG-3).
+     */
+    private fun lensBandFollowsZoom(video: Boolean, teleconverter: Boolean, route: CameraRoute): Boolean =
+        !standaloneRouteWanted(video, rawWanted, activeDeviceProfile().rawRequiresStandalone) &&
+            !teleconverter && route == CameraRoute.BACK
+
+    private data class VideoPipelineSelection(
+        val codec: VideoCodec,
+        val candidates: List<EncoderSelection>,
+        val requestedTransfer: ColorTransfer,
+        val activeTransfer: ColorTransfer,
+    )
+
+    private fun currentVideoPipelineSelection(): VideoPipelineSelection = VideoPipelineSelection(
+        codec = videoCodec,
+        candidates = videoEncoderCandidates,
+        requestedTransfer = requestedVideoTransfer,
+        activeTransfer = transfer,
+    )
+
+    /** Posts one transfer to the live GL owner and mirrors that exact command into host evidence. */
+    private fun postGlTransfer(value: ColorTransfer?) {
+        videoPipelineOverrides?.onGlTransfer?.invoke(value)
+        gl.setTransfer(value)
+    }
+
+    /** Publishes one complete pipeline packet while the caller owns the Engine monitor. */
+    private fun publishVideoPipelineLocked(selection: VideoPipelineSelection): Long {
+        if (selection != currentVideoPipelineSelection()) {
+            videoCodec = selection.codec
+            videoEncoderCandidates = selection.candidates
+            requestedVideoTransfer = selection.requestedTransfer
+            transfer = selection.activeTransfer
+            videoPipelinePublicationGeneration.incrementAndGet()
+        }
+        return videoPipelinePublicationGeneration.get()
+    }
+
+    private data class OpticsSnapshot(
+        val videoMode: Boolean,
+        /** Exact accepted Engine/GL transfer; mode changes derive this optimistically. */
+        val transfer: ColorTransfer,
+        val videoPipeline: VideoPipelineSelection,
+        val lens: LensChoice,
+        val teleconverter: Boolean,
+        val facing: CameraFacing,
+        val route: CameraRoute,
+        val controls: ManualControls,
+        val declaration: TeleconverterDeclaration,
+        val photoExposureTimeNs: Long,
+        val overrideId: String?,
+        val userPin: String?,
+        val selection: TeleSelection?,
+        val caps: CameraCaps?,
+        val videoSize: Size,
+        val requestedVideoSize: Size?,
+        val requestedVideoSizeDirectWrites: Long,
+        val previewStreamSize: Size,
+        val preTeleUnifiedZoom: Float,
+        val ready: Boolean,
+        val readyController: CameraController?,
+        val sessionGeneration: Long,
+        val photoSessionOutputs: PhotoSessionOutputs,
+        val hiResConfigured: Boolean,
+        /** DNG intent is a ROUTE input, so it rolls back with the route it selected (AGG-4). */
+        val rawWanted: Boolean,
+        val rawWantedDirectWrites: Long,
+    )
+
+    // The RAW-loss facts commitOpticsReady computed for one exact accepted session (identity, not
+    // data-class equality). A later Ready of that session — the first real preview frame —
+    // re-publishes them (AGG6-13).
+    @Volatile private var acceptedRawLoss: Pair<AcceptedCameraSession, RawLossReadyFacts>? = null
+
+    private data class AcceptedCameraSession(
+        val controller: CameraController,
+        val sessionGeneration: Long,
+        val outputs: PhotoSessionOutputs,
+        // The hi-res INTENT this session was configured with (controller.hiResStill at commit) —
+        // distinct from outputs.hiRes, the session TRUTH. When the ladder drops hi-res
+        // (configured=true, truth=false), fast same-route doors must compare against the
+        // CONFIGURED intent: comparing against truth made every fast commit reconfigure — and
+        // re-fail hi-res — forever (cycle-6 tracer T9 / code-review F12).
+        val hiResConfigured: Boolean = false,
+    )
+
+    /** One queued tap awaiting Camera2 request submission on its accepted controller. */
+    private data class PendingTapFocus(
+        val session: AcceptedCameraSession,
+        val viewPoint: Pair<Float, Float>,
+        val sensorPoint: Pair<Float, Float>,
+        val loupePoint: Pair<Float, Float>,
+    )
+
+    private var pendingTapFocus: PendingTapFocus? = null
+    /** Latest already-mapped point while setRepeatingRequest is submitting the preceding tap. */
+    private var deferredTapFocus: PendingTapFocus? = null
+
+    private data class OwnedRecording(
+        val recorder: VideoRecorder,
+        val uri: android.net.Uri?,
+        val captureId: Int,
+        val gl: GlPipeline,
+    )
+
+    private data class RecorderFinalizationOwner(
+        val recorder: VideoRecorder,
+        val captureId: Int,
+        val nativeFinalization: RecorderNativeFinalizationGate,
+    )
+
+    /**
+     * [baselinePrecedesMutation] is true only for [beginOpticsTransaction], whose `before` is frozen
+     * INSIDE the commit gate before the door publishes its desired packet. A
+     * [currentOpticsReconfiguration] token (bare `reopenForSession()` doors — video size, stab,
+     * aspect/hi-res, frame rate — and the resume/cold-start paths) snapshots AFTER the door already
+     * mutated its field, so that `before` describes the NEW request, not the streaming session, and
+     * must never re-accept the outgoing controller as Ready (AGG3-7). A preflight failure on such a
+     * token converges through the bounded retry instead ([handlePreflightFailure], AGG4-2).
+     */
+    private data class OpticsTransaction(
+        val generation: Long,
+        val before: OpticsSnapshot,
+        val baselinePrecedesMutation: Boolean,
+    )
+    private data class OpticsReconfiguration(val overrideId: String?, val transaction: OpticsTransaction)
+
+    /**
+     * Complete post-monitor rollback packet. Every mutable value needed by controller, GL, and UI
+     * publication is frozen while the rollback still owns the optics generation; execution never
+     * re-derives an old packet from fields a newer intent may already have replaced.
+     */
+    private data class OpticsRollbackEffects(
+        val generation: Long,
+        val status: CameraStatus,
+        val videoPipeline: VideoPipelineSelection,
+        val postTransfer: Boolean,
+        val controller: CameraController?,
+        val controls: ManualControls,
+        val teleconverterMagnification: Float,
+        val videoMode: Boolean,
+        val caps: CameraCaps?,
+        val videoSize: Size,
+        val previewStreamSize: Size,
+        val previewAspect: Float,
+        val punchInResolved: Boolean,
+        val restoreSession: Boolean,
+        val opticsPublication: OpticsRollbackPublication,
+        val readyPublication: CameraReadyPublication,
+    )
+
+    @Volatile private var opticsRollbackBaseline: OpticsSnapshot? = null
+    /** Non-zero while one committed rollback still owes its controller/GL/publication packet. */
+    @Volatile private var opticsRollbackEffectsGeneration = 0L
+
+    private fun currentOpticsSnapshot(): OpticsSnapshot = OpticsSnapshot(
+        videoMode = videoMode,
+        transfer = transfer,
+        videoPipeline = currentVideoPipelineSelection(),
+        lens = lensChoice,
+        teleconverter = teleconverterMode,
+        facing = facing,
+        route = activeCameraRoute,
+        controls = controls,
+        declaration = teleconverterDeclaration,
+        photoExposureTimeNs = photoExposureTimeNs,
+        overrideId = overrideId,
+        userPin = userCameraPin,
+        selection = selection,
+        caps = caps,
+        videoSize = videoSize,
+        requestedVideoSize = requestedVideoSize,
+        requestedVideoSizeDirectWrites = requestedVideoSizeDirectWrites,
+        previewStreamSize = previewStreamSize,
+        preTeleUnifiedZoom = preTeleUnifiedZoom,
+        ready = cameraReady,
+        readyController = readyController,
+        sessionGeneration = cameraSessionGeneration.get(),
+        photoSessionOutputs = acceptedCameraSession?.outputs ?: PhotoSessionOutputs(),
+        hiResConfigured = acceptedCameraSession?.hiResConfigured ?: false,
+        rawWanted = rawWanted,
+        rawWantedDirectWrites = rawWantedDirectWrites,
+    )
+
+    private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
+        val (result, publications) = opticsCommitGate.begin { generation ->
+            // A second tap can arrive while the first switch is still preflighting. Both must roll
+            // back to the last Ready state, never to the first tap's unaccepted intermediate fields.
+            val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
+            opticsRollbackBaseline = before
+            val transaction = OpticsTransaction(generation, before, baselinePrecedesMutation = true)
+            // Generation and its complete desired packet share the commit gate's monitor. Resume
+            // cannot capture the new token between increment and desired-state publication.
+            val desired = publishDesiredOptics()
+            currentOpticsPipelineGeneration = videoPipelinePublicationGeneration.get()
+            // Desired optics and Not-Ready are one publication. Capture/REC cannot observe g+1's
+            // fields while the outgoing controller still presents itself as Ready.
+            val tapPublication = retireTapFocusLocked(rebuildPreview = false)
+            cameraReady = false
+            readyController = null
+            acceptedCameraSession = null
+            (transaction to desired) to (
+                nextCameraReadyPublication(
+                    ready = false,
+                    opticsGeneration = generation,
+                    sessionGeneration = cameraSessionGeneration.get(),
+                ) to tapPublication
+            )
+        }
+        publications.second?.let { onTapFocusChange?.invoke(it) }
+        onCameraReadyChange?.invoke(publications.first)
+        return result
+    }
+
+    /**
+     * Accepts an optics result only if its generation and controller still own the engine at the
+     * exact terminal mutation boundary. The callback payload is captured in that same commit; a
+     * later intent therefore receives the old generation and can reject it instead of having an
+     * obsolete controller mislabeled with the new global generation.
+     */
+    private fun commitOpticsReady(
+        expectedGeneration: Long,
+        expectedController: CameraController,
+        photoOutputs: PhotoSessionOutputs,
+        expectedSessionGeneration: Long,
+        terminalMutation: () -> Unit = {},
+        beforeReadyPublication: ((generation: Long) -> Unit)? = null,
+    ): Boolean {
+        // terminalMutation must only update engine fields or enqueue non-blocking GL/controller
+        // handler work. Never perform Binder IPC, close resources, or invoke external callbacks
+        // while the optics monitor is held.
+        var publication: CameraReadyPublication? = null
+        var acceptedDiagnostic: String? = null
+        var policyPublication: CameraPolicyPublication? = null
+        val publicationGeneration = opticsCommitGate.commit(
+            expectedGeneration = expectedGeneration,
+            ownsTerminal = {
+                controller === expectedController && !paused &&
+                    cameraSessionGeneration.get() == expectedSessionGeneration
+            },
+        ) {
+            terminalMutation()
+            opticsRollbackBaseline = null
+            val sessionGeneration = cameraSessionGeneration.get()
+            acceptedCameraSession = AcceptedCameraSession(
+                controller = expectedController,
+                sessionGeneration = sessionGeneration,
+                outputs = photoOutputs,
+                hiResConfigured = expectedController.hiResStill,
+            )
+            // How the ACCEPTED session encoded its buffers. Pushed HERE, after onConfigured has run
+            // — a route-time push reads a stale false and every 10-bit frame is then linearised as
+            // 8-bit SDR. Through rendererAssists so it enters the replayed snapshot and survives a
+            // GL generation replacement.
+            rendererAssists.setSourceHlg(expectedController.hlgConfigured)
+            // Same accepted-session rule for the native ISP log curve: GL must decode S-Log3 only
+            // from frames the CONFIGURED session's repeating request actually tone-mapped that way.
+            rendererAssists.setSourceLog(expectedController.nativeLogConfigured)
+            val effectiveReady = previewReady
+            cameraReady = effectiveReady
+            readyController = expectedController.takeIf { effectiveReady }
+            val acceptedMode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO
+            val acceptedCameraId = selection?.let { it.physicalId ?: it.logicalId } ?: "none"
+            // The RAW-loss announcement's INPUTS ride the publication; the ViewModel's Ready fold
+            // owns the per-shape latch (MRG5-1). Latching here, at emission, lost the notice for
+            // the whole shape whenever the plate dropped it under an unexpired ERROR/retained
+            // line — likely on exactly this path, since a drop-RAW rung often follows a failed
+            // reopen whose ERROR is still showing. The fold latches only once it was SHOWN.
+            val rawLoss = RawLossReadyFacts(
+                rawWanted = rawWanted,
+                rawSelectable = rawSelectable(
+                    deviceSupportsRaw = caps?.supportsRaw == true,
+                    rawInSession = photoOutputs.raw,
+                    videoMode = videoMode,
+                    hiResSession = photoOutputs.hiRes,
+                    frontFacing = activeCameraRoute == CameraRoute.FRONT,
+                ),
+                shape = "$acceptedCameraId|$photoOutputs",
+            )
+            acceptedRawLoss = acceptedCameraSession?.let { it to rawLoss }
+            publication = nextCameraReadyPublication(
+                ready = effectiveReady,
+                opticsGeneration = expectedGeneration,
+                sessionGeneration = sessionGeneration,
+                photoOutputs = photoOutputs,
+                rawLoss = rawLoss,
+            )
+            acceptedDiagnostic = "CameraSessionAccepted: controllerId=${expectedController.diagnosticId} " +
+                "opticsGeneration=$expectedGeneration sessionGeneration=$sessionGeneration " +
+                "requestGeneration=${expectedController.latestPreviewRequestGeneration} " +
+                "mode=${acceptedMode.name} cameraId=$acceptedCameraId ready=$effectiveReady"
+            cameraRecoveryAttempts = 0
+            if (cameraPolicyBlocked) {
+                // A session was accepted, so whatever refused us is gone. Retract the gate in the
+                // same commit that publishes Ready — leaving it up over a live camera would be a
+                // worse lie than the silence this feature replaced.
+                cameraPolicyBlocked = false
+                policyPublication = nextCameraPolicyPublication(blocked = false)
+            }
+        } ?: return false
+        coldStartRetryGate.success(publicationGeneration)
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
+        }
+        // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
+        // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
+        runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
+        policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
+        onCameraReadyChange?.invoke(checkNotNull(publication))
+        return true
+    }
+
+    /**
+     * Same-route intents optimistically reuse the accepted session. A superseded dual-open attempt
+     * can restore that controller with a newer session token, so a rejected terminal commit must
+     * converge through the ordinary reconfigure path while this intent still owns the engine.
+     */
+    private fun commitFastPathOrReconfigure(
+        transaction: OpticsTransaction,
+        cameraId: String,
+        expectedController: CameraController,
+        beforeReadyPublication: ((generation: Long) -> Unit)? = null,
+        terminalMutation: () -> Unit,
+    ) {
+        // A fast commit retains the accepted session's still readers VERBATIM, but the hi-res
+        // admission axis (photo-only) can flip on exactly these same-route doors — e.g. a
+        // photo↔video mode flip on the standalone 3× with an unchanged stream size. Re-publishing
+        // the old reader truth under the new intent would either strand a 200MP reader in a video
+        // session or deny an admitted hi-res still, so when the freshly resolved admission no
+        // longer matches the intent the retained session was CONFIGURED with, converge through the
+        // full reconfigure (the desired-state fields were already published under this
+        // transaction's monitor). Compared against the CONFIGURED intent, not accepted truth: a
+        // ladder-dropped hi-res (intent true, truth false) must not force a full — and identically
+        // failing — reconfigure on every subsequent fast door (tracer T9 / code-review F12).
+        // Session SHAPE, not just bit depth (2026-10-14): native log is an 8-bit session like SDR,
+        // but its repeating request and GL source decode are bound to the accepted session, so an
+        // SDR <-> native-log flip must reconfigure exactly as a 10-bit flip does. Same-route door,
+        // so the installed route's caps answer the capability for both sides.
+        val nativeLogSupported = nativeLogCurveSupported(caps)
+        val sessionTransferChanged = videoSessionShape(
+            transaction.before.videoMode,
+            transaction.before.transfer,
+            nativeLogSupported,
+        ) != videoSessionShape(videoMode, transfer, nativeLogSupported)
+        if ((resolvedHiResStill() != transaction.before.hiResConfigured || sessionTransferChanged) &&
+            ownsOpticsTransaction(transaction) && !paused && recorder == null
+        ) {
+            reconfigureCamera(cameraId, transaction)
+            return
+        }
+        convergeFastPathCommit(
+            commit = {
+                commitOpticsReady(
+                    transaction.generation,
+                    expectedController,
+                    transaction.before.photoSessionOutputs,
+                    expectedSessionGeneration = transaction.before.sessionGeneration,
+                    terminalMutation = {
+                        terminalMutation()
+                        finishRetainedControllerOpticsRemap(expectedController)
+                    },
+                    beforeReadyPublication = beforeReadyPublication,
+                )
+            },
+            ownsTransaction = { ownsOpticsTransaction(transaction) },
+            canReconfigure = { !paused && recorder == null },
+            reconfigure = { reconfigureCamera(cameraId, transaction) },
+        )
+    }
+
+    /**
+     * Completes the zoom lifecycle only for a fast optics commit that RETAINS its CameraController.
+     * Reconfiguration paths skip this entirely because [wireController] installs a fresh boost=false
+     * owner. The controller folds exact controls + boost-off into one camera-thread request update,
+     * avoiding both the stale low-light FPS pin and a second corrective rebuild.
+     */
+    private fun finishRetainedControllerOpticsRemap(expectedController: CameraController) {
+        zoomInteractionState = ZoomInteractionState()
+        gl.setZoomTarget(controls.zoomRatio)
+        expectedController.commitRetainedOpticsControls(controls)
+    }
+
+    private fun ownsOpticsTransaction(transaction: OpticsTransaction): Boolean =
+        reconfigurationOwnsGeneration(opticsIntentGeneration.get(), transaction.generation)
+
+    /** Desired route + ownership token captured atomically for resume. */
+    @Synchronized
+    private fun currentOpticsReconfiguration(): OpticsReconfiguration = OpticsReconfiguration(
+        overrideId = overrideId,
+        transaction = OpticsTransaction(
+            generation = opticsIntentGeneration.get(),
+            before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline),
+            // Snapshotted after a bare door's own write: see [OpticsTransaction].
+            baselinePrecedesMutation = false,
+        ),
+    )
+
+    private fun rollbackOptics(transaction: OpticsTransaction, status: CameraStatus) {
+        val effects = synchronized(this) { commitOpticsRollbackLocked(transaction, status) } ?: return
+        executeOpticsRollbackEffects(effects)
+    }
+
+    /**
+     * Rollback for a [reconfigureCamera] preflight failure (selection/caps unavailable) that runs
+     * AFTER `invalidateCameraReady()` but BEFORE the outgoing controller was closed. That
+     * invalidation moved the session generation, so the ordinary rule — restore Ready only while
+     * the generation still equals the baseline's — always took the Not-Ready branch: the old camera
+     * kept streaming behind a "camera unchanged" status while shutter and REC stayed dead until some
+     * other door happened to reopen (RPL cycle 2, AGG2-4). The generation this door's own
+     * invalidation produced is therefore restorable too; any LATER bump (a camera error, pause, or
+     * another door) moves it again and keeps the rollback Not-Ready.
+     *
+     * Only a transaction whose baseline PRECEDES its door's mutation qualifies (AGG3-7): a bare
+     * `reopenForSession()` door snapshots after writing its video size / stab / aspect / rate, so
+     * re-accepting the outgoing controller would publish Ready over a session that does not carry
+     * the restored fields. Those never reach this rollback: [handlePreflightFailure] sends them to
+     * the bounded retry instead (AGG4-2), and the guard below stays as defence in depth.
+     */
+    private fun rollbackOpticsAfterPreflight(
+        transaction: OpticsTransaction,
+        status: CameraStatus,
+        preflightSessionGeneration: Long,
+    ) {
+        val restorable = preflightRestorableSessionGeneration(
+            baselinePrecedesMutation = transaction.baselinePrecedesMutation,
+            preflightSessionGeneration = preflightSessionGeneration,
+        )
+        val effects = synchronized(this) {
+            commitOpticsRollbackLocked(transaction, status, restorable)
+        } ?: return
+        executeOpticsRollbackEffects(effects)
+    }
+
+    /**
+     * The one disposition for a [reconfigureCamera] preflight failure (selection or capabilities
+     * unavailable) that ran after the door's own `invalidateCameraReady()` but before the outgoing
+     * controller was closed. See [preflightFailureDisposition] for the table.
+     *
+     * The BARE_RETRY arm closes AGG4-2: a bare `reopenForSession()` door (stabilization, frame rate,
+     * hi-res/aspect, video size, camera-error recovery) cannot honestly re-accept the outgoing
+     * controller — its baseline was snapshotted AFTER its own write (AGG3-7) — and the plain
+     * Not-Ready rollback it used to take scheduled nothing, so the app sat Not-Ready over a live,
+     * still-streaming preview, shutter and REC dead, under "camera unchanged" copy, until some
+     * unrelated door reopened it (the AGG2-4 symptom, reopened by cycle 3). Its desired packet is
+     * still the operator's newest intent, so it converges through the same bounded, generation-
+     * claimed retry the cold path uses: a newer door supersedes it, and an exhausted budget ends
+     * in the honest terminal reopen status rather than a silent park.
+     */
+    private fun handlePreflightFailure(
+        transaction: OpticsTransaction,
+        recoverColdPreflight: Boolean,
+        preflightSessionGeneration: Long,
+        startupTraceOwner: StartupTrace.Owner?,
+    ) {
+        when (
+            preflightFailureDisposition(
+                recoverColdPreflight = recoverColdPreflight,
+                baselinePrecedesMutation = transaction.baselinePrecedesMutation,
+            )
+        ) {
+            PreflightFailureDisposition.COLD_RETRY -> scheduleColdStartRetry(
+                transaction,
+                CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING,
+                startupTraceOwner,
+            )
+            PreflightFailureDisposition.RESTORE_ROLLBACK -> {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                // The outgoing controller is still open and streaming and this transaction's
+                // baseline precedes its mutation: restore the baseline packet and its Ready.
+                rollbackOpticsAfterPreflight(
+                    transaction,
+                    CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status(),
+                    preflightSessionGeneration,
+                )
+            }
+            PreflightFailureDisposition.BARE_RETRY -> {
+                // A bare door is never a cold start; it owns no startup measurement.
+                startupTraceOwnership.revoke(startupTraceOwner)
+                retryBareDoor(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING)
+            }
+        }
+    }
+
+    /**
+     * The BARE_RETRY arm shared by both preflight failure kinds (selection/caps in
+     * [handlePreflightFailure], a missing GL input in [reconfigureCamera]). MRG4-3: a bare door that
+     * could neither roll back (its baseline is post-mutation) nor retry would otherwise sit
+     * Not-Ready with NO status — the silent park AGG4-2 set out to remove. Supersession and the
+     * lifecycle (pause/start/release) own their own next open; anything else ends in the honest
+     * terminal reopen status.
+     */
+    private fun retryBareDoor(transaction: OpticsTransaction, reason: CameraStatusMessage) {
+        val outcome = scheduleColdStartRetry(transaction, reason, startupTraceOwner = null)
+        if (outcome == ColdStartRetryOutcome.BLOCKED) {
+            onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+        }
+    }
+
+    /** Engine-monitor-only state commit. No controller/GL call or external callback is allowed here. */
+    private fun commitOpticsRollbackLocked(
+        transaction: OpticsTransaction,
+        status: CameraStatus,
+        preflightSessionGeneration: Long? = null,
+    ): OpticsRollbackEffects? {
+        check(Thread.holdsLock(this)) { "optics rollback commit requires the Engine monitor" }
+        val before = transaction.before
+        val restored = rollbackOpticsState(
+            currentGeneration = opticsIntentGeneration.get(),
+            expectedGeneration = transaction.generation,
+            snapshot = OpticsIntentState(
+                mode = if (before.videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                lens = before.lens,
+                teleconverter = before.teleconverter,
+                facing = before.facing,
+                route = before.route,
+                controls = before.controls,
+                declaration = before.declaration,
+                photoExposureTimeNs = before.photoExposureTimeNs,
+                overrideId = before.overrideId,
+                userPin = before.userPin,
+                requestedVideoSize = before.requestedVideoSize,
+            ),
+        ) ?: return null
+        opticsRollbackBaseline = null
+        videoMode = restored.mode == CaptureMode.VIDEO
+        // The outgoing session is still the accepted owner. Restore its exact curve directly:
+        // setTransfer() would interpret this as a fresh session request and could reopen the
+        // already-restored controller while rollback is publishing Ready.
+        // An optics failure restores only the pipeline publication it still owns. A later Photo-mode
+        // codec/curve command does not need a Camera2 generation, but it is still a newer operator
+        // intent and must survive this rollback in both Engine and the queued UI publication.
+        val restoredVideoPipeline = if (
+            videoPipelinePublicationGeneration.get() == currentOpticsPipelineGeneration
+        ) {
+            publishVideoPipelineLocked(before.videoPipeline)
+            before.videoPipeline
+        } else {
+            currentVideoPipelineSelection()
+        }
+        val postTransfer = recorder == null
+        lensChoice = restored.lens
+        teleconverterMode = restored.teleconverter
+        // A failed FRONT open (or a failed exit) restores the exact prior facing with the rest of
+        // the packet; applyStabilization below then re-pushes the matching preview mirror.
+        facing = restored.facing
+        activeCameraRoute = restored.route
+        controls = restored.controls
+        teleconverterDeclaration = restored.declaration
+        photoExposureTimeNs = restored.photoExposureTimeNs
+        overrideId = restored.overrideId
+        userCameraPin = restored.userPin
+        selection = before.selection
+        caps = before.caps
+        videoSize = before.videoSize
+        // A pick made while this door was in flight survives; only the transaction's own write
+        // (a recall's recalledVideoSize) rolls back with it (AGG2-7). The VM mirrors the published
+        // value below, so its request and the persisted size follow without a VM-side rule.
+        requestedVideoSize = keepNewerDirectWrite(
+            current = requestedVideoSize,
+            baseline = restored.requestedVideoSize,
+            directWriteSinceBaseline = requestedVideoSizeDirectWrites != before.requestedVideoSizeDirectWrites,
+        )
+        previewStreamSize = before.previewStreamSize
+        preTeleUnifiedZoom = before.preTeleUnifiedZoom
+        // A direct DNG write survives only while it does not move the RESTORED route. "Direct" was
+        // judged in the mode current at WRITE time (Video, FRONT, TELE), so a failed recall of a
+        // Video+DNG bank from Photo/DNG-off restored the logical Photo session with DNG still on:
+        // every shot dropped DNG and the band predicate read the unified wire zoom as lens-local
+        // (RPL cycle 2, AGG2-1). activeCameraRoute was restored above, so the profile is the
+        // restored route's.
+        rawWanted = rollbackRawWanted(
+            current = rawWanted,
+            baseline = before.rawWanted,
+            directWriteSinceBaseline = rawWantedDirectWrites != before.rawWantedDirectWrites,
+            restoredVideo = restored.mode == CaptureMode.VIDEO,
+            restoredTeleconverter = restored.teleconverter,
+            restoredRoute = restored.route,
+            rawForcesStandalone = activeDeviceProfile().rawRequiresStandalone,
+        )
+        val opticsPublication = OpticsRollbackPublication(
+            mode = restored.mode,
+            transfer = restoredVideoPipeline.requestedTransfer,
+            videoCodec = restoredVideoPipeline.codec,
+            lens = restored.lens,
+            teleconverter = restored.teleconverter,
+            facing = restored.facing,
+            route = restored.route,
+            controls = restored.controls,
+            photoExposureTimeNs = restored.photoExposureTimeNs,
+            // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
+            // the engine's routed-target overrideId (which is non-null after any door).
+            userPin = restored.userPin,
+            // The VM mirrors preTeleUnifiedZoom and resets it eagerly on recall; a FAILED recall
+            // restores the engine's snapshot here, so the mirror must receive the same value or
+            // the next TC-off diverges OSD from wire on the failed-recall path (verification S4).
+            preTeleUnifiedZoom = before.preTeleUnifiedZoom,
+            declaration = restored.declaration,
+            generation = transaction.generation,
+            videoPipelineGeneration = videoPipelinePublicationGeneration.get(),
+            rawWanted = rawWanted,
+            requestedVideoSize = requestedVideoSize,
+        )
+        val restoredSessionGeneration = rollbackRestorableSessionGeneration(
+            beforeReady = before.ready,
+            controllerMatches = before.readyController === controller,
+            paused = paused,
+            beforeSessionGeneration = before.sessionGeneration,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            preflightSessionGeneration = preflightSessionGeneration,
+        )
+        val restoreSession = restoredSessionGeneration != null
+        if (restoreSession) {
+            // The remaining zoom effects execute from the frozen packet after unlock.
+            zoomInteractionState = ZoomInteractionState()
+        }
+        val readyPublication = if (restoreSession) {
+            val restoredController = checkNotNull(controller)
+            acceptedCameraSession = AcceptedCameraSession(
+                controller = restoredController,
+                sessionGeneration = checkNotNull(restoredSessionGeneration),
+                outputs = before.photoSessionOutputs,
+                hiResConfigured = restoredController.hiResStill,
+            )
+            val effectiveReady = previewReady
+            cameraReady = effectiveReady
+            readyController = restoredController.takeIf { effectiveReady }
+            nextCameraReadyPublication(
+                ready = effectiveReady,
+                opticsGeneration = transaction.generation,
+                sessionGeneration = restoredSessionGeneration,
+                photoOutputs = before.photoSessionOutputs,
+            )
+        } else {
+            val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            cameraReady = false
+            readyController = null
+            acceptedCameraSession = null
+            nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = transaction.generation,
+                sessionGeneration = sessionGeneration,
+            )
+        }
+        // Capture/REC admission must not observe the internally committed Ready state before the
+        // matching controller and GL packet has been enqueued. UI state is still Not-Ready from the
+        // rejected door, and the central accepted-session helpers also honor this generation gate.
+        opticsRollbackEffectsGeneration = transaction.generation
+        return OpticsRollbackEffects(
+            generation = transaction.generation,
+            status = status,
+            videoPipeline = restoredVideoPipeline,
+            postTransfer = postTransfer,
+            controller = controller,
+            controls = before.controls,
+            teleconverterMagnification = restored.declaration.magnification,
+            videoMode = before.videoMode,
+            caps = before.caps,
+            videoSize = before.videoSize,
+            previewStreamSize = before.previewStreamSize,
+            previewAspect = displayedPreviewAspect(before.previewStreamSize, before.caps),
+            punchInResolved = punchInResolved(
+                rendererAssists.isPunchInIntended(),
+                restored.route == CameraRoute.FRONT,
+            ),
+            restoreSession = restoreSession,
+            opticsPublication = opticsPublication,
+            readyPublication = readyPublication,
+        )
+    }
+
+    /** Executes the frozen packet after unlock; a newer optics generation retires remaining effects. */
+    private fun executeOpticsRollbackEffects(effects: OpticsRollbackEffects) {
+        fun owned(): Boolean = synchronized(this) {
+            opticsRollbackEffectsGeneration == effects.generation &&
+                reconfigurationOwnsGeneration(opticsIntentGeneration.get(), effects.generation) &&
+                controller === effects.controller
+        }
+        try {
+            if (!owned()) return
+            if (effects.postTransfer && recorder == null) {
+                postGlTransfer(effects.videoPipeline.activeTransfer)
+            }
+            if (!owned()) return
+            // Facing resolves the user's independent loupe intent against the active route. Restore
+            // both the live GL generation and RendererAssists replay snapshot from the frozen value.
+            rendererAssists.setPunchInResolved(effects.punchInResolved)
+            effects.controller?.setTeleconverterMagnification(effects.teleconverterMagnification)
+            effects.controller?.setPinAutoFps(effects.videoMode, effects.generation)
+
+            if (!owned()) return
+            // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged
+            // with this generation, so it cannot clamp the failed candidate or a newer user intent.
+            onOpticsRollback?.invoke(effects.opticsPublication)
+            effects.caps?.let { onCapsReady?.invoke(it, effects.generation) }
+            onVideoSizeChosen?.invoke(effects.videoSize, effects.generation)
+            onPreviewAspect?.invoke(effects.previewAspect, effects.generation)
+
+            if (!owned()) return
+            gl.setCameraPreviewSize(effects.previewStreamSize.width, effects.previewStreamSize.height)
+            gl.setZoomTarget(effects.controls.zoomRatio)
+            gl.setHalZoom(effects.controls.zoomRatio)
+            applyStabilization()
+            if (effects.restoreSession) {
+                effects.controller?.commitRetainedOpticsControls(effects.controls)
+            } else {
+                effects.controller?.updateControls(effects.controls)
+            }
+        } finally {
+            synchronized(this) {
+                if (opticsRollbackEffectsGeneration == effects.generation) {
+                    opticsRollbackEffectsGeneration = 0L
+                }
+            }
+        }
+        val publishTerminal = synchronized(this) {
+            reconfigurationOwnsGeneration(opticsIntentGeneration.get(), effects.generation) &&
+                controller === effects.controller &&
+                cameraSessionGeneration.get() == effects.readyPublication.sessionGeneration &&
+                cameraReadyPublicationSequence.get() == effects.readyPublication.sequence
+        }
+        if (!publishTerminal) return
+        onCameraReadyChange?.invoke(effects.readyPublication)
+        onStatus?.invoke(effects.status)
+    }
+    @Volatile private var previewSurface: Surface? = null
+    // Last-known preview surface dimensions, kept alongside previewSurface so the async start
+    // continuation can bind the LIVE surface (not its captured, possibly-released parameter).
+    @Volatile private var previewSurfaceW = 0
+    @Volatile private var previewSurfaceH = 0
+    private val previewSurfaceGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private var previewRecoveryAttempts = 0
+
+    /**
+     * Read-only lifecycle evidence for the on-device instrumentation suite.
+     *
+     * A producer-frame generation advances only from [handlePreviewReady], whose callback is fired
+     * after the exact preview owner completes its first successful real-camera-frame swap. Keeping
+     * this at the Engine boundary avoids reflection and prevents a stale retained ViewModel Boolean
+     * from impersonating a replacement TextureView that really reached pixels.
+     */
+    internal fun previewReadinessDiagnostic(): PreviewReadinessDiagnostic = synchronized(this) {
+        PreviewReadinessDiagnostic(
+            surfaceGeneration = previewSurfaceGeneration.get(),
+            pendingGeneration = lastPreviewPendingGeneration,
+            producerFrameGeneration = lastPreviewProducerFrameGeneration,
+            pendingOrder = lastPreviewPendingOrder,
+            producerFrameOrder = lastPreviewProducerFrameOrder,
+            lastNotReadyPublicationSequence = lastNotReadyPublicationSequence,
+            lastReadyPublicationSequence = lastReadyPublicationSequence,
+            cameraReady = cameraReady,
+        )
+    }
+
+    // Static-per-device caches: camera characteristics and focal→id resolution never change at
+    // runtime, but re-reading them cost dozens of Binder IPCs on EVERY lens/TC/mode switch — and
+    // they used to run inside the close→open blackout window.
+    private val capsCache = java.util.concurrent.ConcurrentHashMap<String, CameraCaps>()
+    private val lensExifCache = java.util.concurrent.ConcurrentHashMap<String, LensExifMetadata>()
+    private val idForFocalCache = java.util.concurrent.ConcurrentHashMap<Float, String>()
+    @Volatile private var cachedLogicalBackId: String? = null
+    // Measured per-device HAL quirks (multi-device 2026-08-01). Resolved once; PMA110 keeps every
+    // shipped workaround byte-identical, anything else gets spec behavior. See DeviceProfile.kt.
+    private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
+
+    private fun activeDeviceProfile(): DeviceProfile =
+        deviceProfileForRoute(deviceProfile, externalRoute = activeCameraRoute == CameraRoute.EXTERNAL)
+
+    private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
+        runCatching {
+            capsCache.getOrPut("$logicalId:$physicalId") {
+                CameraCaps.read(
+                    manager,
+                    logicalId,
+                    physicalId,
+                    stillExposureCeilingNs = activeDeviceProfile().stillExposureCeilingNs,
+                    gateVideoRatesOnMinFrameDuration =
+                        !activeDeviceProfile().videoMinFrameDurationsUnderstated,
+                    // A process-lifetime cache must never memoize the logical-fallback read
+                    // (review 2026-08-01): a transient service outage during the first physical
+                    // read otherwise stamps the LOGICAL camera's focal into every later still on
+                    // that lens with no recovery path. Fail the read instead — getOrNull degrades
+                    // this call and the NEXT call retries fresh.
+                    allowLogicalFallback = false,
+                )
+            }
+        }.getOrNull()?.also { cameraCaps ->
+            lensExifCache.putIfAbsent(physicalId ?: logicalId, cameraCaps.lensExifMetadata())
+        }
+
+    /** Populates logical-member optics on setupExecutor before Camera2 can deliver a still. */
+    private fun prefetchLensExifMetadata(selection: TeleSelection, selectedCaps: CameraCaps) {
+        val selectedId = selection.physicalId ?: selection.logicalId
+        lensExifCache.putIfAbsent(selectedId, selectedCaps.lensExifMetadata())
+        val memberIds = runCatching {
+            manager.getCameraCharacteristics(selection.logicalId).physicalCameraIds
+        }.getOrDefault(emptySet())
+        for (cameraId in memberIds) {
+            if (!lensExifCache.containsKey(cameraId)) {
+                readLensExifMetadata(manager, cameraId)?.let {
+                    lensExifCache.putIfAbsent(cameraId, it)
+                }
+            }
+        }
+    }
+
+    /**
+     * Macro-hint input for the VM: the rear lens (from the same per-lens metadata cache the EXIF
+     * prefetch fills) that focuses meaningfully closer than [active], as its preset label — or
+     * null when nothing qualifies. The front enumeration is excluded: its cache entry would
+     * otherwise masquerade as a rear wide lens by focal alone. Pure lookup over concurrent caches;
+     * callers pass the generation-guarded caps they just received (onCapsReady), not engine state.
+     */
+    fun closerFocusingLens(active: CameraCaps): LensChoice? {
+        val front = cachedFrontSelection
+        val frontIds = setOfNotNull(front?.logicalId, front?.physicalId)
+        val hint = me.hletrd.telecampro.focus.closerLensHint(
+            activeEquivFocalMm = active.lensExifMetadata().equivalentFocalMm,
+            activeMinFocusDiopters = active.minFocusDistanceDiopters,
+            candidates = lensExifCache.filterKeys { it !in frontIds }.values,
+        ) ?: return null
+        return me.hletrd.telecampro.focus.lensChoiceForEquivFocal(hint.equivalentFocalMm)
+    }
+
+    private fun cachedIdForFocal(equivMm: Float): String? =
+        idForFocalCache[equivMm]
+            ?: CameraSelector2.overrideIdForFocal(manager, equivMm)?.also { idForFocalCache[equivMm] = it }
+
+    private fun cachedLogicalBack(): String? =
+        cachedLogicalBackId ?: CameraSelector2.logicalBackId(manager)?.also { cachedLogicalBackId = it }
+
+    @Volatile private var lensInventoryPublished = false
+
+    /**
+     * Retained beside the one-shot publication because the ZOOM SCALE needs it, not just the rail:
+     * a standalone route's lens-local divisor is the optical lens the route lands on, which only the
+     * inventory knows. Until the enumeration runs it is the SAME placeholder the ViewModel starts
+     * from (`CameraUiState.lensInventory = LensInventory.ALL`), so both sides convert every scale
+     * pair with one divisor (AGG4-25). It used to be empty here (divisor 1×) while the VM used
+     * every preset as optical, so a TC tap or FRONT flip inside that window restored different
+     * framings on the two sides (OSD vs wire). PMA110 enumerates all four presets as optical, so
+     * its post-inventory answer is unchanged.
+     */
+    @Volatile private var acceptedOpticalPresets: Set<LensChoice> = LensInventory.ALL.optical
+
+    /**
+     * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.
+     * Runs on [setupExecutor] (several Binder IPCs) beside the other one-shot enumerations, and the
+     * zoom half reads the PHOTO-HOME route's advertised range — device-static like the lens list,
+     * where a per-route range would wrongly narrow the rail in TELE/video (those carry a LENS-LOCAL
+     * range while the presets speak the unified main-relative scale).
+     */
+    private fun publishLensInventoryOnce() {
+        if (lensInventoryPublished) return
+        val candidates = runCatching {
+            if (cameraRouteInventory.back) {
+                CameraSelector2.candidatesOf(manager)
+            } else {
+                listOfNotNull(cachedExternal())
+            }
+        }.getOrDefault(emptyList())
+        val equivalents = candidates.map { it.equivFocalMm }
+        val homeId = if (cameraRouteInventory.back) {
+            cachedLogicalBack() ?: cachedIdForFocal(LensChoice.MAIN.targetEquivMm)
+        } else {
+            cachedExternal()?.logicalId
+        }
+        val range = homeId?.let { id ->
+            val logical = id.substringBefore(':')
+            val physical = id.substringAfter(':', "").takeIf { it.isNotEmpty() }
+            cachedCaps(logical, physical)?.zoomRatioRange?.let { it.lower to it.upper }
+        }
+        val inventory = lensInventoryOf(equivalents, range)
+        acceptedOpticalPresets = inventory.optical
+        // acceptedOpticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder
+        // resolves FINDER_MIN_ZOOM against unifiedZoomOf(..., optical = acceptedOpticalPresets).
+        // Enumeration is
+        // deliberately queued AFTER the first route/open task (see the caller), so every push before
+        // this line resolved the gate against the PRE-ENUMERATION default — and nothing re-resolved
+        // it afterwards. On a launch restored to 3x or 10x that left the GL flag false while the
+        // Compose border, which recomputes live from state.unifiedZoom, drew anyway: an empty
+        // rectangle that only healed once a zoom or mode change happened to re-push (user-reported
+        // 2026-08-04, "loupe is sometimes just a transparent rectangle" on first launch at 3x/10x).
+        // The change gate inside pushTeleFinder makes this free when the answer did not move.
+        pushTeleFinder()
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i(
+                "CameraEngine",
+                "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
+                    "available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
+            )
+        }
+        // Latch only on a real publication: setting it first meant a null listener at this instant
+        // (or any throw) permanently pinned the UI to LensInventory.ALL — silently restoring the
+        // hardcoded rail with no retry (verification 2026-08-02).
+        val listener = onLensInventory ?: return
+        listener.invoke(inventory)
+        lensInventoryPublished = true
+    }
+
+    // Static-per-device like the focal→id cache: the front enumeration never changes at runtime and
+    // costs several Binder IPCs, so resolve it once on setupExecutor and reuse.
+    @Volatile private var cachedFrontSelection: TeleSelection? = null
+
+    private fun cachedFront(): TeleSelection? =
+        cachedFrontSelection ?: CameraSelector2.pickFront(manager)?.also { cachedFrontSelection = it }
+
+    @Volatile private var cachedExternalSelection: TeleSelection? = null
+    @Volatile private var cameraRouteInventory = CameraRouteInventory.UNKNOWN
+    @Volatile private var cameraRouteInventoryResolved = false
+    @Volatile private var knownCameraIds: Set<String> = emptySet()
+    private val cameraIdentityEpochCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val cameraIdentityEpochs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    @Volatile private var knownCameraIdentityEpochs: Map<String, Long> = emptyMap()
+    private val routeTopologyRevision = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile private var pendingRouteTopologyRevision = 0L
+    private val routeTopologyConvergence = CameraRouteTopologyConvergence()
+    private val activeRecordingTopologyLease = java.util.concurrent.atomic.AtomicLong(0L)
+    private val deferredRouteTopologyScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val routeAvailabilityReleased = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var routeAvailabilityRegistered = false
+    private val routeAvailabilityRefreshScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val routeInventoryRetryScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var routeInventoryRetryAttempts = 0
+
+    private fun cachedExternal(): TeleSelection? =
+        cachedExternalSelection
+            ?: CameraSelector2.pickExternal(manager)?.also { cachedExternalSelection = it }
+
+    private fun setActiveCameraRoute(route: CameraRoute) {
+        activeCameraRoute = route
+        facing = route.facing
+    }
+
+    /**
+     * Applies a DISCOVERED route. Its optics side effects (TC off, lens-local 1×, override/pin
+     * cleared) belong to a route TRANSITION only (AGG4-15): a forced, complete inventory retry that
+     * re-resolves the route already active (a partial first read completing later) used to write
+     * zoom 1× straight into the Engine, outside any optics transaction and without a request
+     * rebuild, so the Engine said 1× while the wire kept the operator's zoom.
+     */
+    private fun applyResolvedCameraRoute(route: CameraRoute) {
+        if (route == activeCameraRoute) {
+            setActiveCameraRoute(route)
+            return
+        }
+        when (route) {
+            CameraRoute.BACK -> setActiveCameraRoute(CameraRoute.BACK)
+            CameraRoute.FRONT -> {
+                setActiveCameraRoute(CameraRoute.FRONT)
+                teleconverterMode = false
+                controls = controls.copy(zoomRatio = 1f)
+                overrideId = null
+                userCameraPin = null
+            }
+            CameraRoute.EXTERNAL -> {
+                // Reuse non-mirrored capture semantics, but route selection and UI availability
+                // remain explicitly external so no PMA110/rear-only quirk leaks onto this camera.
+                setActiveCameraRoute(CameraRoute.EXTERNAL)
+                teleconverterMode = false
+                controls = controls.copy(zoomRatio = 1f)
+                overrideId = null
+                userCameraPin = null
+            }
+        }
+    }
+
+    /** Identity change invalidates every fact derived from CameraCharacteristics or route choice. */
+    private fun invalidateCameraTopologyCaches() {
+        cachedExternalSelection = null
+        cachedFrontSelection = null
+        cachedLogicalBackId = null
+        idForFocalCache.clear()
+        capsCache.clear()
+        lensExifCache.clear()
+        // Discovery truth may be stale, but accepted session optics stay authoritative until the
+        // topology action owns convergence. Clearing this during a REC lease made a standalone 3x
+        // zoom tick recompute the GL finder gate against the 1x pre-enumeration fallback while
+        // Compose still displayed the accepted rail — border/tag with no PIP.
+        lensInventoryPublished = false
+    }
+
+    /** Resolve an honest startup route before snapshotting the first optics transaction. */
+    private fun resolveInitialCameraRouteAvailability(force: Boolean = false) {
+        if (cameraRouteInventoryResolved && !force) {
+            runCatching { onCameraRouteInventory?.invoke(cameraRouteInventory, activeCameraRoute) }
+            return
+        }
+        if (routeAvailabilityReleased.get()) return
+        val inventory = CameraSelector2.routeInventory(manager)
+        val idsResult = runCatching { manager.cameraIdList.toSet() }
+        val ids = idsResult.getOrNull()
+        val identityEpochs = cameraIdentityEpochs.toMap()
+        if (ids != null) {
+            val changedIds = changedCameraTopologyIds(
+                previous = CameraTopologyStamp(knownCameraIds, knownCameraIdentityEpochs),
+                current = CameraTopologyStamp(ids, identityEpochs),
+            )
+            if (changedIds.isNotEmpty()) {
+                knownCameraIds = ids
+                knownCameraIdentityEpochs = identityEpochs
+                invalidateCameraTopologyCaches()
+                pendingRouteTopologyRevision = routeTopologyRevision.incrementAndGet()
+            }
+        }
+        if (!inventory.complete || ids == null) {
+            cameraRouteInventory = inventory
+            // The latest snapshot is partial even if a previous generation completed. Leaving the
+            // old true value here makes a same-id availability callback skip the only recovery path
+            // after the timer retry budget is exhausted.
+            cameraRouteInventoryResolved = false
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            scheduleRouteInventoryRetry()
+            return
+        }
+        // A complete inventory has consumed every removal epoch in this snapshot. Keep epochs only
+        // for ids that still exist: a same-id A -> B replacement remains observable because the id
+        // is present, while a later return of a genuinely absent id is already a membership change.
+        // Conditional remove preserves a newer onCameraRemoved callback that raced this setup task.
+        val retainedIdentityEpochs = retainedCameraIdentityEpochs(ids, identityEpochs)
+        identityEpochs.forEach { (cameraId, epoch) ->
+            if (cameraId !in ids) cameraIdentityEpochs.remove(cameraId, epoch)
+        }
+        knownCameraIdentityEpochs = retainedIdentityEpochs
+        routeInventoryRetryAttempts = 0
+        routeInventoryRetryScheduled.set(false)
+        val topology = cameraRouteTopologyDecision(
+            previousIds = knownCameraIds,
+            currentIds = ids,
+            inventory = inventory,
+            currentRoute = activeCameraRoute,
+        )
+        val topologyChanged = pendingRouteTopologyRevision != 0L
+        cameraRouteInventory = inventory
+        if (!inventory.any) {
+            // CameraService can transiently enumerate nothing. Publish the honest temporary state,
+            // but retry enumeration with the existing bounded cold-start retry rather than caching it.
+            cameraRouteInventoryResolved = false
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            scheduleRouteInventoryRetry()
+            return
+        }
+        val topologyAction = if (topologyChanged) {
+            routeTopologyConvergence.offer(pendingRouteTopologyRevision)
+            pendingRouteTopologyRevision = 0L
+            routeTopologyConvergence.claim()
+        } else {
+            null
+        }
+        if (topologyChanged && topologyAction == null) {
+            // REC admission, rolling, and native teardown all retain the currently accepted route.
+            // Inventory and cache truth above is already current; only route mutation/reopen waits.
+            cameraRouteInventoryResolved = true
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            return
+        }
+        val resolvedRoute = topology.targetRoute ?: return
+        applyResolvedCameraRoute(resolvedRoute)
+        cameraRouteInventoryResolved = true
+        // UI publication cannot own camera startup: a detached or throwing observer must not turn
+        // valid enumerated hardware into a black viewfinder.
+        runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+        // Ordinary startup/resume callers immediately snapshot and reconfigure after this method.
+        // Only asynchronous availability/retry (`force`) owns convergence itself; doing both paid
+        // two optics generations and could dual-open the same initial route.
+        if (force && topologyAction != null && started && !paused) {
+            convergeAfterRouteTopologyChange()
+        }
+    }
+
+    private fun scheduleRouteInventoryRetry() {
+        if (routeInventoryRetryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS ||
+            !routeInventoryRetryScheduled.compareAndSet(false, true)
+        ) return
+        routeInventoryRetryAttempts++
+        runCatching {
+            timelapseScheduler.schedule(
+                {
+                    routeInventoryRetryScheduled.set(false)
+                    runCatching { setupExecutor.execute { resolveInitialCameraRouteAvailability(force = true) } }
+                },
+                CAMERA_RECOVERY_DELAY_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+        }.onFailure { routeInventoryRetryScheduled.set(false) }
+    }
+
+    private fun scheduleRouteAvailabilityRefresh() {
+        if (routeAvailabilityReleased.get()) return
+        if (!routeAvailabilityRefreshScheduled.compareAndSet(false, true)) return
+        runCatching {
+            setupExecutor.execute {
+                routeAvailabilityRefreshScheduled.set(false)
+                if (routeAvailabilityReleased.get()) return@execute
+                val ids = runCatching { manager.cameraIdList.toSet() }.getOrNull()
+                val identitiesUnchanged = cameraIdentityEpochs.toMap() == knownCameraIdentityEpochs
+                // Opening our own camera emits onCameraUnavailable without changing topology.
+                if (!routeAvailabilityRefreshRequired(
+                        inventoryResolved = cameraRouteInventoryResolved,
+                        idsUnchanged = ids == knownCameraIds,
+                        identitiesUnchanged = identitiesUnchanged,
+                    )
+                ) return@execute
+                resolveInitialCameraRouteAvailability(force = true)
+            }
+        }.onFailure { routeAvailabilityRefreshScheduled.set(false) }
+    }
+
+    private val routeAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraAvailable(cameraId: String) = scheduleRouteAvailabilityRefresh()
+        override fun onCameraUnavailable(cameraId: String) = scheduleRouteAvailabilityRefresh()
+        override fun onCameraRemoved(cameraId: String) {
+            if (routeAvailabilityReleased.get()) return
+            cameraIdentityEpochs[cameraId] = cameraIdentityEpochCounter.incrementAndGet()
+            scheduleRouteAvailabilityRefresh()
+        }
+    }
+
+    private fun registerRouteAvailabilityIfNeeded() {
+        if (routeAvailabilityRegistered) return
+        routeAvailabilityRegistered = true
+        manager.registerAvailabilityCallback(context.mainExecutor, routeAvailabilityCallback)
+    }
+
+    private fun runDeferredRouteTopologyConvergence(
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ): Boolean {
+        if (routeAvailabilityReleased.get() || paused || !started || !nativeAcquisitionMayProceed()) return false
+        routeTopologyConvergence.claim() ?: return false
+        convergeAfterRouteTopologyChange(startupTraceOwner)
+        return true
+    }
+
+    private fun scheduleDeferredRouteTopologyConvergence() {
+        if (routeAvailabilityReleased.get() || !routeTopologyConvergence.hasClaimableAction() ||
+            !deferredRouteTopologyScheduled.compareAndSet(false, true)
+        ) return
+        runCatching {
+            setupExecutor.execute {
+                deferredRouteTopologyScheduled.set(false)
+                runDeferredRouteTopologyConvergence()
+            }
+        }.onFailure { deferredRouteTopologyScheduled.set(false) }
+    }
+
+    private fun convergeAfterRouteTopologyChange(
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ) {
+        val targetRoute = cameraRouteTopologyDecision(
+            previousIds = knownCameraIds,
+            currentIds = knownCameraIds,
+            inventory = cameraRouteInventory,
+            currentRoute = activeCameraRoute,
+        ).targetRoute ?: return
+        applyResolvedCameraRoute(targetRoute)
+        val transaction = beginOpticsTransaction {
+            teleconverterMode = teleconverterMode && activeCameraRoute == CameraRoute.BACK
+            if (activeCameraRoute != CameraRoute.BACK) controls = controls.copy(zoomRatio = 1f)
+            overrideId = null
+            userCameraPin = null
+        }.first
+        reconfigureCamera(
+            null,
+            transaction,
+            startup = controller == null,
+            startupTraceOwner = startupTraceOwner,
+        )
+        runCatching { publishLensInventoryOnce() }
+    }
+
+    private val gyro = me.hletrd.telecampro.stab.GyroEis(context)
+    @Volatile private var teleconverterMode = false
+    // The phone, converter, custom value, and host focal are ONE declaration. A single volatile
+    // owner prevents readers from composing halves of different MR recalls; optics transactions
+    // snapshot and roll back this object with route/controls so async failure cannot leave rejected
+    // focal metadata behind. Passive glass cannot announce itself — see Teleconverter.kt.
+    @Volatile private var teleconverterDeclaration = teleconverterDeclaration(
+        phone = DEFAULT_PHONE_MODEL,
+        profile = DEFAULT_TELECONVERTER_PROFILE,
+        customMagnification = TELECONVERTER_MAGNIFICATION,
+    )
+    private val teleconverterMagnification: Float
+        get() = teleconverterDeclaration.magnification
+    private val teleconverterHostEquivMm: Float
+        get() = teleconverterDeclaration.hostTeleEquivMm
+    @Volatile private var videoMode = false
+    // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
+    // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
+    @Volatile private var facing = CameraFacing.BACK
+    @Volatile private var activeCameraRoute = CameraRoute.BACK
+    private val facingIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    // Hi-res still INTENT (user toggle, persisted). Resolution to an actual session demand happens
+    // in exactly one place ([resolvedHiResStill], the shared hiResAdmitted predicate) and is pushed
+    // to the controller before every configure; the doors that can flip the resolved value without
+    // a reconfigure of their own (the toggle itself, aspect, and same-route fast commits) each
+    // re-resolve and converge through the session reconfigure paths below.
+    @Volatile private var hiResStillIntent = false
+    private val modeIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val lensIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
+    @Volatile private var videoStabMode = VideoStabMode.ENHANCED
+    // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
+    // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
+    @Volatile private var cameraRecoveryAttempts = 0
+    // Latched by an owned policy-block failure; cleared by any accepted session, so the gate cannot
+    // outlive the user clearing the block and returning to the app.
+    @Volatile private var cameraPolicyBlocked = false
+    private val coldStartRetryGate = ColdStartRetryGate(MAX_CAMERA_RECOVERY_ATTEMPTS)
+
+    // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
+    // read from the audio-encode / io-executor threads, so both are @Volatile.
+    @Volatile private var audioGain = 1f
+    @Volatile private var audioScene = AudioScene.STANDARD
+    @Volatile private var audioInputPreference = AudioInputPreference.AUTO
+    @Volatile private var aspectRatio = AspectRatio.W4_3
+    var onStatus: ((CameraStatus?) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.STATUS)
+        set(value) = callbackSink.install(EngineCallbackKey.STATUS, value)
+    var onCapsReady: ((CameraCaps, generation: Long) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.CAPS_READY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAPS_READY, value)
+    /** Device-static route truth plus the initial facing selected before first Camera2 open. */
+    var onCameraRouteInventory: ((CameraRouteInventory, CameraRoute) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.CAMERA_ROUTES)
+        set(value) = callbackSink.install(EngineCallbackKey.CAMERA_ROUTES, value)
+    // Device-static lens inventory (enumerated once, published once): which lens presets this
+    // hardware can actually deliver. The rail rendered the PMA110 set unconditionally before.
+    var onLensInventory: ((LensInventory) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.LENS_INVENTORY)
+        set(value) = callbackSink.install(EngineCallbackKey.LENS_INVENTORY, value)
+    // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
+    // what the engine will actually encode instead of drifting from a hardcoded default.
+    var onVideoSizeChosen: ((Size, generation: Long?) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.VIDEO_SIZE)
+        set(value) = callbackSink.install(EngineCallbackKey.VIDEO_SIZE, value)
+    /** Exact encoder raster accepted for the current REC attempt, including a configure fallback. */
+    var onEncoderSizeAccepted: ((Size) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.ENCODER_SIZE)
+        set(value) = callbackSink.install(EngineCallbackKey.ENCODER_SIZE, value)
+    // Displayed preview aspect (width/height AS SHOWN on the portrait screen — the ~90° sensor
+    // orientation already swaps the stream's W/H). The UI sizes the TextureView to this so the
+    // viewfinder letterboxes the FULL capture field instead of cover-cropping it: with a 16:9 stream
+    // on this ~19.5:9 panel the old full-screen cover cut ~40% of the frame's width, and photo mode
+    // additionally previewed a 16:9 field while capturing the full 4:3 sensor.
+    var onPreviewAspect: ((Float, generation: Long) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.PREVIEW_ASPECT)
+        set(value) = callbackSink.install(EngineCallbackKey.PREVIEW_ASPECT, value)
+    // Viewfinder analysis (histogram/waveform/frame-detail) computed off the GL thread; delivered
+    // here so the ViewModel can hoist it into UI state. Each arg is null when its analysis is
+    // disabled — the frame-detail arg is additionally null whenever no scope/AE readback ran at
+    // all, because it deliberately rides that readback rather than triggering one.
+    var onAnalysis: (
+        (HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit
+    )?
+        get() = callbackSink.function4(EngineCallbackKey.ANALYSIS)
+        set(value) = callbackSink.install(EngineCallbackKey.ANALYSIS, value)
+    // Live recording-audio RMS + held peak truth (0..1, post-gain), throttled to ~10 Hz.
+    var onAudioLevel: ((me.hletrd.telecampro.video.AudioLevelFrame) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.AUDIO_LEVEL)
+        set(value) = callbackSink.install(EngineCallbackKey.AUDIO_LEVEL, value)
+
+    /**
+     * True once the platform has refused to open the camera FOR THIS APP while the runtime
+     * permission reads granted (`Camera "…" disabled by policy`), and the bounded reopen budget is
+     * spent. Retrying cannot clear it — only the user can, in the app's settings page — so the UI
+     * shows the permission gate rather than an interactive-looking black viewfinder.
+     */
+    var onCameraPolicyBlocked: ((CameraPolicyPublication) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.CAMERA_POLICY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAMERA_POLICY, value)
+
+    /**
+     * The HOST handset's [DeviceProfile.nativeLogFlavor] for the transfer picker. Deliberately the
+     * host profile, not [activeDeviceProfile]: the transfer is a persisted ENCODER selection (like
+     * the codec), not route state, and keying it on the route would rewrite the operator's choice
+     * every time an external camera came and went. It changes no session either way.
+     */
+    val nativeLogFlavor: ColorTransfer? get() = deviceProfile.nativeLogFlavor
+
+    /** The HOST handset's [DeviceProfile.nativeLogEiSupported]: gates the Log EI offset setting. */
+    val nativeLogEiSupported: Boolean get() = deviceProfile.nativeLogEiSupported
+
+    /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
+    val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
+    // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s
+    // generation, which the UI cannot see — the OSD's TL tag keys off the SELECTED drive only.
+    // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
+    // thread flipped the run; the ViewModel folds it into state via thread-safe StateFlow update.
+    // Consumer: the unattended-timelapse screen dim (perf review #10) and any future run OSD.
+    var onTimelapseRun: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.TIMELAPSE)
+        set(value) = callbackSink.install(EngineCallbackKey.TIMELAPSE, value)
+    // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
+    var onAudioRoute: ((AudioRouteStatus) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.AUDIO_ROUTE)
+        set(value) = callbackSink.install(EngineCallbackKey.AUDIO_ROUTE, value)
+    /** First successful standby PCM after enable/recovery; safe point to clear unavailable UI. */
+    internal var onStandbyAudioAvailable: (() -> Unit)?
+        get() = callbackSink.function0(EngineCallbackKey.STANDBY_AUDIO_AVAILABLE)
+        set(value) = callbackSink.install(EngineCallbackKey.STANDBY_AUDIO_AVAILABLE, value)
+    /** Bounded standby setup/read budget exhausted while the visible meter is still requested. */
+    internal var onStandbyAudioUnavailable: ((StandbyAudioUnavailable) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.STANDBY_AUDIO_UNAVAILABLE)
+        set(value) = callbackSink.install(EngineCallbackKey.STANDBY_AUDIO_UNAVAILABLE, value)
+    /** Unexpected async codec/muxer failure; the recorder has already entered ordered teardown. */
+    var onRecordingTerminated: ((Throwable) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.RECORDING_TERMINATED)
+        set(value) = callbackSink.install(EngineCallbackKey.RECORDING_TERMINATED, value)
+    /** Encoder input is attached to EGL and the recorder is now genuinely rolling. */
+    var onRecordingStarted: (() -> Unit)?
+        get() = callbackSink.function0(EngineCallbackKey.RECORDING_STARTED)
+        set(value) = callbackSink.install(EngineCallbackKey.RECORDING_STARTED, value)
+    /** Exact native/container ownership edge after visible REC has stopped. */
+    var onRecordingFinalizing: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.RECORDING_FINALIZING)
+        set(value) = callbackSink.install(EngineCallbackKey.RECORDING_FINALIZING, value)
+    // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
+    // the camera thread, only on change; the ViewModel hoists it into UI state.
+    var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.EXPOSURE_INFO)
+        set(value) = callbackSink.install(EngineCallbackKey.EXPOSURE_INFO, value)
+    // Live lens focus distance (diopters) from the controller: the AF-resolved position shown on the
+    // Focus chip and used to seed the manual slider when the user switches into MF (AF→MF handoff).
+    var onFocusDistance: ((Float) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.FOCUS_DISTANCE)
+        set(value) = callbackSink.install(EngineCallbackKey.FOCUS_DISTANCE, value)
+    // Face Priority AF frames, already mapped to VIEW-normalized coordinates (FacePriority.kt).
+    // Fired from the camera thread at most 10 Hz and only on a material change; an empty list
+    // clears the overlay (detection off, controller replaced).
+    var onFaceBoxes: ((List<FaceBox>) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.FACE_BOXES)
+        set(value) = callbackSink.install(EngineCallbackKey.FACE_BOXES, value)
+    // The most recently saved displayable media (HEIF/JPEG/video) URI + its capture-sequence id, for
+    // the gallery thumbnail + in-app review. Fired from the io thread after the file publishes. The
+    // id groups every output of one shutter press so review-Delete can remove the whole shot.
+    var onMediaSaved: ((android.net.Uri, Int) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.MEDIA_SAVED)
+        set(value) = callbackSink.install(EngineCallbackKey.MEDIA_SAVED, value)
+    // A DNG output with the same capture-sequence id as its HEIF/JPEG siblings. A RAW-only capture
+    // may own the review metadata tile until a processed sibling upgrades it. Fired after publish.
+    var onRawSaved: ((android.net.Uri, Int) -> Unit)?
+        get() = callbackSink.function2(EngineCallbackKey.RAW_SAVED)
+        set(value) = callbackSink.install(EngineCallbackKey.RAW_SAVED, value)
+    /** Canonical family truth published before any output callback or video allocation can arrive. */
+    internal var onCaptureFamilyRegistered: ((Int, CaptureFamilyKey, Boolean) -> Unit)?
+        get() = callbackSink.function3(EngineCallbackKey.CAPTURE_FAMILY)
+        set(value) = callbackSink.install(EngineCallbackKey.CAPTURE_FAMILY, value)
+    /** Projects the retained/rejected-output fail-closed gate into the visible shutter state. */
+    internal var onStillCaptureAdmissionChanged: ((Boolean) -> Unit)?
+        get() = callbackSink.function1(EngineCallbackKey.STILL_ADMISSION)
+        set(value) {
+            callbackSink.install(EngineCallbackKey.STILL_ADMISSION, value)
+            if (value == null) closeProcessStillAdmissionSubscriptions()
+            else {
+                // Delivered-state belongs to the callback identity. A replacement observer needs
+                // one current snapshot even when no constituent owner changed during replacement.
+                stillAdmissionPublication.reset()
+                ensureProcessStillAdmissionSubscriptions()
+                publishProcessStillAdmission()
+            }
+        }
+
+    // ---- Preview surface lifecycle ----
+
+    fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
+        }
+        // Retain the TextureView edge before a finite recorder-setup refusal. TextureView does not
+        // promise to repeat this callback when a process-wide setup token later retires.
+        cancelRecorderSetupReplay()
+        val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
+        previewSurface = surface
+        previewSurfaceW = width
+        previewSurfaceH = height
+        markPreviewPending(surface, surfaceGeneration)
+        if (!nativeAcquisitionMayProceed()) {
+            if (UnsafeRecorderQuarantine.isActive()) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            } else {
+                awaitRecorderSetupReplay(surfaceGeneration)
+            }
+            return
+        }
+        registerRouteAvailabilityIfNeeded()
+        if (started) {
+            bindPreviewSurface(surface, width, height, surfaceGeneration)
+            return
+        }
+        val dispatchStart = synchronized(this) {
+            if (started || starting || paused) {
+                false
+            } else {
+                starting = true
+                true
+            }
+        }
+        if (!dispatchStart) return
+        // Exact Engine-local owner captured by the resume that authorized this GL/open attempt.
+        // A pause/new resume revokes it; this callback never samples process-global trace state.
+        val startupTraceOwner = startupTraceOwnership.current()
+        // Cold-start feedback: GL creation + Camera2 preflight/open happen before the first frame.
+        onStatus?.invoke(CameraStatusMessage.STARTING_CAMERA.status())
+
+        // Start GL before resolving a camera route. Any mode/lens/MR intent arriving before the GL
+        // input Surface exists is retained, and the input callback snapshots that latest complete
+        // desired transaction. This removes the old preflight route that could be opened under a
+        // newer generation.
+        runCatching { setupExecutor.execute {
+            val acquired = runCatching { terminalAcquisitionGate.runIfOpen {
+                // Decide AND retire under the one monitor resume()'s dispatch check takes (AGG6-20).
+                // Read outside it, a resume() landing between `paused == true` and `starting = false`
+                // cleared `paused`, found `starting` still set, and declined to dispatch — and this
+                // task then retired the only start. Backgrounding keeps the TextureView surface, so no
+                // availability callback replays it: a black viewfinder until the next surface event.
+                // Under the monitor a resume either lands first (this task sees `paused == false` and
+                // proceeds, its own dispatch refused by `starting`) or after (it sees `starting ==
+                // false` and dispatches a fresh start).
+                val refused = synchronized(this) {
+                    if (paused || UnsafeRecorderQuarantine.isActive()) {
+                        starting = false
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (refused) {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    return@runIfOpen
+                }
+                // Shipping non-SDR video requests an HLG10 Camera2 source and drops both still
+                // readers because HLG10 + full-res JPEG/RAW crashes this HAL. This separate debug
+                // flag asks only for an RGBA1010102 EGL target; release EGL remains 8-bit.
+                val tenBit = tenBitExperimentEnabled()
+                val ownedGl = glOwners.current()
+                glInputPending = true
+                ownedGl.start(tenBit) { _ ->
+                    // A bounded native wedge can retire this whole GlPipeline object and install a
+                    // replacement. Its late input callback must not open a camera onto the new
+                    // generation's Engine state.
+                    if (!glOwners.owns(ownedGl)) {
+                        startupTraceOwnership.revoke(startupTraceOwner)
+                        return@start
+                    }
+                    terminalAcquisitionGate.runIfOpen {
+                        completeGlInputReady(ownedGl, startupTraceOwner)
+                    }
+                }
+                if (!glOwners.owns(ownedGl)) {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    return@runIfOpen
+                }
+                synchronized(this) {
+                    // Publish start state BEFORE binding: a TextureView surface destroyed+recreated
+                    // during GL startup then takes the started fast path and binds the fresh surface.
+                    started = true
+                    starting = false
+                }
+                // Bind the LIVE surface field, not the captured parameter: a destroyed-and-not-yet-
+                // recreated surface simply skips this bind and the next callback supplies the owner.
+                val liveSurface = previewSurface
+                if (liveSurface != null) {
+                    bindPreviewSurface(
+                        surface = liveSurface,
+                        width = previewSurfaceW,
+                        height = previewSurfaceH,
+                        surfaceGeneration = previewSurfaceGeneration.get(),
+                    )
+                }
+            } }.getOrDefault(false)
+            if (!acquired) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                synchronized(this) { starting = false }
+            }
+        } }.onFailure {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            synchronized(this) { starting = false }
+        }
+    }
+
+    /**
+     * The GL generation's one-shot input-ready continuation (runs inside the terminal gate).
+     *
+     * Split by what each step OWNS, because this callback fires exactly once per GL generation and
+     * nothing replays it (AGG5-1). The generation-local re-seed — EIS provider, the analysis
+     * callback that feeds app-side AE / scopes / focus confidence, the transfer, the digital gain,
+     * and the renderer-assist replay — and the lens-inventory enqueue acquire NO camera, so they run
+     * even when a pause landed between bind and this callback. They used to sit behind the `paused`
+     * return: a pause inside that window (EGL surface creation + renderer init wide) left the
+     * generation with no analysis callback for its whole life — exposure frozen at the restored
+     * ISO/shutter in app-side PROGRAM, dead histogram/waveform, missing assists and log curve —
+     * while resume() still reached Ready because the input Surface existed. Only gyro, the route
+     * resolve, and the camera open stay behind `paused`; resume() owns those for a paused generation.
+     */
+    private fun completeGlInputReady(ownedGl: GlPipeline, startupTraceOwner: StartupTrace.Owner?) {
+        if (!glOwners.owns(ownedGl)) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        glInputPending = false
+        ownedGl.setEisProvider { gyro.currentCorrection() }
+        ownedGl.setAnalysisCallback { h, w, f, m ->
+            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f, m)
+        }
+        // Re-seed desired GL state that may have been set before the handler existed.
+        ownedGl.setTransfer(transfer)
+        ownedGl.setPreviewDigitalGain(lastPreviewDigitalGain)
+        rendererAssists.replayAll(ownedGl)
+        if (paused || UnsafeRecorderQuarantine.isActive()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            // Enumeration only (CameraManager reads, no device open) and idempotent, so this paused
+            // branch cannot lose the inventory. It keeps the unpaused ORDER too (AGG6-17): route
+            // availability resolves first, because the inventory enumerates the RESOLVED route.
+            // Enqueued against the UNKNOWN default (back = true), an external-only device found no
+            // back lens, published LensInventory.ALL — the PMA110 0.6/1/3/10x rail and finder gate
+            // it cannot reach — and latched it; resume's own resolve then cleared the latch and
+            // nothing on that path enqueued the inventory again. Resume finds the route resolved
+            // and leaves both untouched.
+            resolveInitialCameraRouteAvailability()
+            runCatching { setupExecutor.execute { runCatching { publishLensInventoryOnce() } } }
+            return
+        }
+        gyro.start()
+        // Resolve device-static route truth before the first optics snapshot. This leaves ordinary
+        // BACK-first phones unchanged, but lets a front-only device avoid a known-impossible rear
+        // retry and admits a plain GENERIC external camera when it is the sole route.
+        resolveInitialCameraRouteAvailability()
+        // Capture route + token after GL input exists. A newer intent invalidates it.
+        val desired = currentOpticsReconfiguration()
+        // Published BEFORE the open is queued, so resume's own reopen task — queued earlier on the
+        // same serial lane but possibly dequeued after this — sees that this generation's open is
+        // already owned (AGG6-19).
+        inputReadyOpenGeneration.set(desired.transaction.generation)
+        reconfigureCamera(
+            desired.overrideId,
+            desired.transaction,
+            startup = true,
+            // Whichever owner is live NOW, not the one GL started under (AGG6-18): a pause in the
+            // GL window revoked that capture, and resume's attempt handed this open its own owner.
+            startupTraceOwner = startupTraceOwnership.current(),
+        )
+        // Enumerated AFTER the route/open task is queued, like the debug capability scan below it:
+        // the rail can render its pre-enumeration default for the few hundred ms this costs, but the
+        // first camera open must not wait on it.
+        setupExecutor.execute { runCatching { publishLensInventoryOnce() } }
+        maybeLogCameraCapabilities()
+    }
+
+    /**
+     * Debug-only Camera2 capability log, deliberately queued behind the initial camera work. ColorOS
+     * rate-limits each process (300-row quota) during the cold-start burst, which otherwise drops the
+     * concurrent-camera evidence before adb can read it. The 5 s delay originally ALSO cleared the
+     * OPPO OCS SDK's startup log storm; that SDK was removed 2026-07-25, so the remaining reason is
+     * the camera stack's own burst — shorten the delay only with a device measurement, never by
+     * reasoning from this comment alone.
+     */
+    private fun maybeLogCameraCapabilities() {
+        if (!me.hletrd.telecampro.BuildConfig.DEBUG) return
+        timelapseScheduler.schedule(
+            {
+                runCatching {
+                    setupExecutor.execute { runCatching { VendorTagInspector.logAll(manager) } }
+                }
+            },
+            5,
+            java.util.concurrent.TimeUnit.SECONDS,
+        )
+    }
+
+    /** Apply afocal preview rotation and the selected HAL stabilization mode; keep GL EIS disabled. */
+    private fun applyStabilization() {
+        val c = caps ?: return
+        // The camera SurfaceTexture transform already rotates the sampled image by the sensor
+        // orientation, so the renderer only needs the afocal flip on top (see previewRotationDegrees).
+        // It still needs the sensor orientation separately to pick the right preview ASPECT, because
+        // that ~90° SurfaceTexture rotation swaps the displayed width/height.
+        gl.setSensorOrientation(c.sensorOrientation)
+        gl.setRotationDegrees(previewRotationDegrees())
+        // Selfie mirror is ROUTE state plumbed exactly like the rotation pair above: re-pushed on
+        // every session (re)config/rollback, which also covers a replacement GL generation (this
+        // method runs after each reconfigure, so a fresh pipeline can never start with a stale
+        // flag — the documented "posted before start() is dropped" trap).
+        // DEVICE FACT (PMA110, diagnosed 2026-07-23): the front HAL PRE-MIRRORS the SurfaceTexture
+        // stream itself. The previewMirror trace proved our texcoord mirror verifiably reached the
+        // GL thread, yet the selfie still read unmirrored on screen — our mirror was CANCELING the
+        // stream's own. So the roles INVERT from the naive design: the preview draw adds NO mirror
+        // (the stream already displays the selfie-mirror view), while the ENCODER/ANALYSIS draws
+        // apply the inversion to write the TRUE scene into files (stills are untouched HAL buffers
+        // and stay correct either way). Tap mapping follows the same fact — displayed x == texture
+        // x, so no un-flip. Since multi-device (2026-08-01) the inversion is the
+        // [DeviceProfile.frontStreamPreMirrored] quirk: spec devices deliver the unmirrored scene
+        // and take the naive roles (preview mirrors, encoder/analysis pass through).
+        gl.setFrontMirrorConvention(
+            activeCameraRoute == CameraRoute.FRONT,
+            activeDeviceProfile().frontStreamPreMirrored,
+        )
+        // Loupe Overview: re-resolve on every session (re)config and optics change, like rotation.
+        // Toggle, TELE, unified zoom, mode, and Photo aspect may all have changed since the last push.
+        pushTeleFinder()
+        // App-side gyro EIS is disabled (unusable at 300 mm): the HAL video-stab modes own
+        // stabilization, so GL EIS cannot double-warp. Push the resolved HAL mode to the live request.
+        gl.setEis(false, 0f, 0f)
+        controller?.setVideoStabMode(c.videoStabControlMode(videoStabMode))
+    }
+
+    /**
+     * CW degrees the GL renderer adds ON TOP of the camera SurfaceTexture transform to show the
+     * preview upright. That transform already applies the sensor orientation to the sampled image, so
+     * the ONLY correction left is the afocal teleconverter's 180° inversion — no sensor term here
+     * (unlike [captureRotationDegrees], which rotates the raw-sensor JPEG/RAW and therefore keeps it).
+     * Empirically calibrated on this device: +sensorOrientation (270°) read 90° CCW and
+     * −sensorOrientation (90°) read 90° CW, so the upright value is the afocal 180° alone. Portrait-
+     * locked UI ⇒ no device-orientation term (tilting the phone tilts the world in the preview).
+     */
+    private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
+
+    // NOTE: there is deliberately no setTeleconverterMode(Boolean) convenience here. TELE is a
+    // CAMERA SWITCH, not just the afocal flip, and the ONE correct entry point is
+    // CameraViewModel.onToggleTeleconverter → setLens(TELE3X, enabled, restorePreTele = !enabled).
+    // A wrapper that forwarded to setLens(TELE3X, enabled) took restorePreTele's `false` default and
+    // therefore discarded the pre-TELE framing snapshot on TC-off — landing pinned at the 3× preset,
+    // the exact user-reported regression [preTeleUnifiedZoom] exists to prevent — and it updated
+    // engine state only, leaving the UI mirror and the live ZoomGlideState ease target stale. Route
+    // TC toggles through the ViewModel.
+
+    fun setVideoStabMode(m: VideoStabMode) {
+        if (videoStabMode == m) return
+        val requiresReconfigure = videoStabModeChangeRequiresReconfigure(
+            videoStabModes = stabilizationOverrides?.videoStabModes ?: caps?.videoStabModes,
+            before = videoStabMode,
+            after = m,
+        )
+        videoStabMode = m
+        if (!requiresReconfigure) return
+        stabilizationOverrides?.apply?.invoke() ?: applyStabilization()
+        // CONTROL_VIDEO_STABILIZATION_MODE is advertised as a session key on the Find X9 Ultra tele.
+        // Request-only updates work, but the HAL can select a different OIS/EIS pipeline at configure
+        // time, so recreate the session when the user changes the stabilization class.
+        stabilizationOverrides?.reopen?.invoke() ?: reopenForSession()
+    }
+    fun setFalseColor(enabled: Boolean) {
+        rendererAssists.setFalseColor(enabled)
+    }
+
+    /**
+     * The app WINDOW's rotation away from the device's natural orientation, pushed from the UI
+     * (only Compose sees configuration changes; the activity declares configChanges, so it is never
+     * recreated). Goes through [rendererAssists] so it joins the replayed snapshot and survives a GL
+     * generation replacement — the exact failure shape of the old log-preview bug.
+     *
+     * Preview and finder draws only; capture, encoder and analysis framing stay gravity-derived.
+     * Always 0 on a portrait-locked phone.
+     */
+    fun setWindowRotation(degrees: Int) {
+        rendererAssists.setWindowRotation(degrees)
+    }
+
+    /** Layout-measured chrome overlap for the Loupe Overview; forwarded to GL as renderer state. */
+    fun setFinderBottomClearance(fraction: Float) {
+        rendererAssists.setFinderBottomClearanceFraction(fraction)
+    }
+
+    fun onPreviewSurfaceChanged(width: Int, height: Int) {
+        previewSurfaceW = width
+        previewSurfaceH = height
+        val surface = previewSurface ?: return
+        cancelRecorderSetupReplay()
+        val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
+        markPreviewPending(surface, surfaceGeneration)
+        if (!nativeAcquisitionMayProceed()) {
+            if (UnsafeRecorderQuarantine.isActive()) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            } else {
+                awaitRecorderSetupReplay(surfaceGeneration)
+            }
+            return
+        }
+        bindPreviewSurface(surface, width, height, surfaceGeneration)
+    }
+
+    fun onPreviewSurfaceDestroyed() {
+        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+            android.util.Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
+        }
+        cancelRecorderSetupReplay()
+        val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
+        val outgoing = previewSurface
+        previewSurface = null
+        if (outgoing != null) markPreviewPending(outgoing, surfaceGeneration, requireCurrentSurface = false)
+        gl.setPreviewOutput(null, 0, 0)
+        // A destroyed preview surface is NOT necessarily app teardown — the original comment here
+        // assumed it was, because the portrait lock removes rotation-driven recreation. Every OTHER
+        // configuration change outside the activity's configChanges list still recreates the
+        // Activity and therefore the TextureView: font size, display size, dark-mode/uiMode, locale,
+        // and entering multi-window. Reusing the half-torn render chain across that leaves the
+        // camera streaming into an input the GL thread never receives frames from again —
+        // device-reproduced on an API 34 AVD 2026-08-02: after one font-scale change the camera
+        // reopened and 3A flowed while drawFrame ran ZERO times, so the viewfinder stayed black and
+        // Ready never republished (shutter disabled) until the process was killed. Backgrounding
+        // does NOT destroy the surface, so that path is untouched and stays warm.
+        restartGlAfterPreviewSurfaceLoss()
+    }
+
+    /**
+     * Retires the GL generation and camera whose render chain just lost its preview surface, so the
+     * REPLACEMENT surface takes the proven cold-start path instead of binding onto a torn chain.
+     *
+     * Deliberately synchronous about the state flags and asynchronous about the teardown: clearing
+     * [started] here (on main, before returning) is what makes a replacement surface arriving in
+     * the same frame choose the cold-start branch, and queuing the close/stop on [setupExecutor]
+     * keeps that teardown ordered AHEAD of the cold start the replacement enqueues on the same
+     * serial executor. Recording is exempt — the encoder owns the GL generation and pause()'s
+     * ordered finalize owns that teardown.
+     */
+    private fun restartGlAfterPreviewSurfaceLoss() {
+        val acquisitionAllowed = nativeAcquisitionMayProceed()
+        val ownedGl = glOwners.current()
+        val outgoingController = synchronized(this) {
+            if (!previewSurfaceLossRestartAllowed(
+                    acquisitionAllowed = acquisitionAllowed,
+                    started = started,
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    // pause() nulls `recorder` at onStop, which ALWAYS precedes the TextureView
+                    // destroy at onDestroy — so `recorder != null` alone could never see a
+                    // recreation-during-recording, and the restart would race the ordered finalize
+                    // still in flight (verification 2026-08-02). recorderTeardownInFlight stays true
+                    // across exactly that window, which is the state the exemption meant to name.
+                    recording = recorder != null || recorderTeardownInFlight,
+                )
+            ) {
+                return
+            }
+            started = false
+            starting = false
+            glInputPending = false
+            val current = controller
+            controller = null
+            current
+        }
+        invalidateCameraReady()
+        val teardown = Runnable {
+            val release = outgoingController?.close()
+            stopGlOwner(ownedGl, restartPreviewOnAbandon = false)
+            if (!cameraReplacementMayAcquire(release)) {
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                return@Runnable
+            }
+            // The replacement surface usually arrives while this is still queued and cold-starts
+            // itself; this covers the reverse order (surface already published before teardown ran).
+            restartPreviewAfterGlReset()
+        }
+        if (runCatching { setupExecutor.execute(teardown) }.isFailure) {
+            runCatching { outgoingController?.close() }
+        }
+    }
+
+    private fun bindPreviewSurface(
+        surface: Surface,
+        width: Int,
+        height: Int,
+        surfaceGeneration: Long,
+    ) {
+        val ownedGl = glOwners.current()
+        // TextureView availability/size callbacks arrive on main. The terminal gate deliberately
+        // spans CameraManager/HAL acquisition and may be held for hundreds of milliseconds, so the
+        // UI callback must only publish its Surface generation and enqueue this admission. The
+        // setup lane preserves ordering with camera open/release; both sides of the blocking gate
+        // recheck the exact Surface + GL owner so a callback superseded while queued cannot bind a
+        // released native window or a replacement renderer.
+        dispatchGenerationOwnedPreviewBind(
+            submit = { task ->
+                runCatching { setupExecutor.execute(task) }.isSuccess
+            },
+            terminalGate = terminalAcquisitionGate,
+            isCurrent = {
+                glOwners.owns(ownedGl) && started && !paused &&
+                    previewSurfaceGeneration.get() == surfaceGeneration &&
+                    previewSurface === surface && !UnsafeRecorderQuarantine.isActive()
+            },
+            bind = {
+                recordingPreNativeOverrides?.onPreviewBindAttempt?.invoke()
+                ownedGl.setPreviewOutput(
+                    surface = surface,
+                    width = width,
+                    height = height,
+                    onReady = {
+                        if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
+                            android.util.Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
+                        }
+                        handlePreviewReady(ownedGl, surface, surfaceGeneration)
+                    },
+                    onFailure = { failure ->
+                        if (BuildConfig.DEBUG) Log.w("CameraEngine", "PreviewSurface: BIND-FAILED ${System.identityHashCode(surface)} gen=$surfaceGeneration: $failure")
+                        handlePreviewFailure(ownedGl, surface, surfaceGeneration, failure)
+                    },
+                )
+            },
+        )
+    }
+
+    /** Makes the UI/shutter truthful while a replacement TextureView output is not yet bound. */
+    private fun markPreviewPending(
+        surface: Surface,
+        surfaceGeneration: Long,
+        requireCurrentSurface: Boolean = true,
+    ) {
+        val publication = synchronized(this) {
+            if (surfaceGeneration != previewSurfaceGeneration.get()) return@synchronized null
+            if (requireCurrentSurface && previewSurface !== surface) return@synchronized null
+            lastPreviewPendingGeneration = surfaceGeneration
+            lastPreviewPendingOrder = ++previewDiagnosticOrder
+            previewReady = false
+            previewRecoveryAttempts = 0
+            if (!cameraReady) return@synchronized null
+            cameraReady = false
+            readyController = null
+            val accepted = acceptedCameraSession
+            nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = accepted?.sessionGeneration ?: cameraSessionGeneration.get(),
+                photoOutputs = accepted?.outputs ?: PhotoSessionOutputs(),
+            )
+        }
+        publication?.let { onCameraReadyChange?.invoke(it) }
+    }
+
+    private fun handlePreviewReady(
+        ownedGl: GlPipeline,
+        surface: Surface,
+        surfaceGeneration: Long,
+    ) {
+        if (!nativeAcquisitionMayProceed()) return
+        val publication = synchronized(this) {
+            if (!glOwners.owns(ownedGl)) return@synchronized null
+            if (surfaceGeneration != previewSurfaceGeneration.get() || previewSurface !== surface) {
+                return@synchronized null
+            }
+            val wasReady = previewReady && cameraReady
+            if (lastPreviewProducerFrameGeneration != surfaceGeneration) {
+                lastPreviewProducerFrameGeneration = surfaceGeneration
+                lastPreviewProducerFrameOrder = ++previewDiagnosticOrder
+            }
+            previewReady = true
+            // GlPipeline invokes this only after the generation's first successful real-frame
+            // swap. Bind success alone stays Pending, so repeated first-swap failures retain and
+            // eventually exhaust this surface generation's bounded recovery budget.
+            previewRecoveryAttempts = 0
+            val accepted = acceptedCameraSession?.takeIf {
+                !paused && controller === it.controller &&
+                    cameraSessionGeneration.get() == it.sessionGeneration
+            } ?: return@synchronized null
+            cameraReady = true
+            readyController = accepted.controller
+            if (wasReady) return@synchronized null
+            nextCameraReadyPublication(
+                ready = true,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = accepted.sessionGeneration,
+                photoOutputs = accepted.outputs,
+                // The SAME session's facts (AGG6-13). When the preview had not yet swapped a real
+                // frame at commit (cold start, a resume rebind, preview recovery), the commit
+                // published Not-Ready and THIS is the session's Ready; without them the fold, which
+                // reads facts only from a Ready, never announced a drop-RAW rung on these paths.
+                rawLoss = acceptedRawLoss?.takeIf { it.first === accepted }?.second,
+            )
+        }
+        publication?.let { onCameraReadyChange?.invoke(it) }
+    }
+
+    private fun handlePreviewFailure(
+        ownedGl: GlPipeline,
+        surface: Surface,
+        surfaceGeneration: Long,
+        failure: Throwable,
+    ) {
+        if (failure is me.hletrd.telecampro.video.NativeAcquisitionRefusedException) {
+            val current = glOwners.owns(ownedGl) &&
+                surfaceGeneration == previewSurfaceGeneration.get() && previewSurface === surface
+            if (current) convergeRetainedSurfaceAfterNativeRefusal(failure)
+            return
+        }
+        if (!nativeAcquisitionMayProceed()) return
+        val outcome = synchronized(this) {
+            val ownerCurrent = glOwners.owns(ownedGl) &&
+                surfaceGeneration == previewSurfaceGeneration.get() && previewSurface === surface
+            val decision = previewRecoveryDecision(
+                ownerCurrent = ownerCurrent,
+                started = started,
+                paused = paused,
+                nextAttempt = previewRecoveryAttempts + 1,
+                maxAttempts = MAX_PREVIEW_RECOVERY_ATTEMPTS,
+            )
+            if (decision == PreviewRecoveryDecision.IGNORE) return@synchronized null
+            previewReady = false
+            val wasCameraReady = cameraReady
+            cameraReady = false
+            readyController = null
+            previewRecoveryAttempts++
+            val accepted = acceptedCameraSession
+            val publication = if (wasCameraReady) {
+                nextCameraReadyPublication(
+                    ready = false,
+                    opticsGeneration = opticsIntentGeneration.get(),
+                    sessionGeneration = accepted?.sessionGeneration ?: cameraSessionGeneration.get(),
+                    photoOutputs = accepted?.outputs ?: PhotoSessionOutputs(),
+                )
+            } else {
+                null
+            }
+            decision to publication
+        } ?: return
+
+        outcome.second?.let { onCameraReadyChange?.invoke(it) }
+        when (outcome.first) {
+            PreviewRecoveryDecision.IGNORE -> Unit
+            PreviewRecoveryDecision.EXHAUSTED ->
+                onStatus?.invoke(CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN.status())
+            PreviewRecoveryDecision.RETRY -> {
+                onStatus?.invoke(CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING.status())
+                runCatching {
+                    timelapseScheduler.schedule(
+                        {
+                            if (nativeAcquisitionMayProceed() && glOwners.owns(ownedGl) &&
+                                surfaceGeneration == previewSurfaceGeneration.get() &&
+                                previewSurface === surface && started && !paused
+                            ) {
+                                bindPreviewSurface(surface, previewSurfaceW, previewSurfaceH, surfaceGeneration)
+                            }
+                        },
+                        PREVIEW_RECOVERY_DELAY_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS,
+                    )
+                }.onFailure {
+                    onStatus?.invoke(CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN.status())
+                }
+            }
+        }
+        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+            Log.w("CameraEngine", "Preview EGL failure", failure)
+        }
+    }
+
+    private fun wireController(ownedGl: GlPipeline): CameraController {
+        // A fresh controller means a fresh gesture world: clear the interaction state so a glide
+        // that was cut short by a remap door (whose invalidate deliberately skips the boost-off
+        // rebuild) cannot leave the NEXT gesture's leading edge seeing a stale mid-gesture state
+        // (AGG4-2 — the flag used to survive every mode/lens/TC remap and defeat the leading-edge
+        // exact submit for one gesture).
+        zoomInteractionState = ZoomInteractionState()
+        val ctrl = CameraController(context)
+        if (activeCameraRoute == CameraRoute.EXTERNAL) {
+            ctrl.useGenericDeviceProfile()
+        }
+        // Every result callback is identity-gated: a CLOSING controller's capture results keep
+        // arriving on its camera thread for a beat after the replacement is wired, and an ungated
+        // setHalZoom could clobber the new generation's GL zoom compensation for a frame during a
+        // reopen (the same replaced-controller-is-inert rule the error path already follows).
+        ctrl.onExposure = { iso, exp -> if (controller === ctrl) onExposureInfo?.invoke(iso, exp) }
+        ctrl.onZoomResult = { rz ->
+            if (controller === ctrl && glOwners.owns(ownedGl)) ownedGl.setHalZoom(rz)
+        }
+        ctrl.onPreviewDigitalGain = { gain ->
+            if (controller === ctrl && glOwners.owns(ownedGl)) {
+                // Cached so a GL generation replacement can re-seed the live value: GlPipeline
+                // drops posts before start, and the controller's change gate won't republish an
+                // unchanged gain on its own.
+                lastPreviewDigitalGain = gain
+                ownedGl.setPreviewDigitalGain(gain)
+            }
+        }
+        // Log EI offset (NativeLogCurve.kt): the factor the accepted repeating request ACHIEVED is
+        // the GL native decode's headroom. Through rendererAssists so it enters the replayed
+        // snapshot and survives a GL generation replacement, like setSourceLog.
+        ctrl.onNativeLogEiFactor = { factor ->
+            if (controller === ctrl) rendererAssists.setSourceLogHeadroom(factor)
+        }
+        ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
+        ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
+        ctrl.onFaces = { frame -> if (controller === ctrl) publishFaceFrame(frame) }
+        // A replacement controller starts with no faces; frames from the outgoing route's geometry
+        // must not linger over the new one until its first readout.
+        onFaceBoxes?.invoke(emptyList())
+        ctrl.rollingShutterSkewSink = object : me.hletrd.telecampro.video.RollingShutterSkewSink {
+            override fun wantsRollingShutterSkew(): Boolean =
+                controller === ctrl && gyroLog.wantsRollingShutterSkew()
+
+            override fun offerRollingShutterSkew(skewNs: Long) {
+                if (controller === ctrl) gyroLog.offerRollingShutterSkew(skewNs)
+            }
+        }
+        // Replay the cached debug fps-logging intent (a pre-controller toggle must not be lost).
+        if (me.hletrd.telecampro.BuildConfig.DEBUG && zslSpikeLoggingWanted) ctrl.setZslSpike(true)
+        // Replay the drive-side ZSL streaming gate (perf review #8): a fresh controller defaults to
+        // serve-possible, which is wrong if the app opens (or reopens) while BURST/AEB/TIMELAPSE is
+        // the persisted drive selection.
+        ctrl.setZslServePossible(driveMode == DriveMode.SINGLE)
+        return ctrl
+    }
+
+    private fun openCamera(
+        ownedGl: GlPipeline,
+        input: Surface,
+        transaction: OpticsTransaction? = null,
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ) {
+        if (!nativeAcquisitionMayProceed()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        // The SurfaceTexture belongs to exactly one GL object. A queued open from a retired object
+        // must never configure Camera2 against that old native window.
+        if (paused || !glInputTransactionMayProceed(
+                ownerCurrent = glOwners.owns(ownedGl),
+                engineStarted = started,
+                inputCurrent = ownedGl.inputSurface === input,
+            )
+        ) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val expectedOpticsGeneration = transaction?.generation ?: opticsIntentGeneration.get()
+        if (!reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val sel = selection ?: run {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val c = caps ?: run {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        seedGlZoom(ownedGl)
+        invalidateCameraReady()
+        val outgoing = controller
+        val release = outgoing?.close()
+        if (!cameraReplacementMayAcquire(release)) {
+            synchronized(this) {
+                if (controller === outgoing) controller = null
+            }
+            onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val ctrl = wireController(ownedGl)
+        val installedPublication = synchronized(this) {
+            if (UnsafeRecorderQuarantine.isActive() || paused || !glInputTransactionMayProceed(
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    engineStarted = started,
+                    inputCurrent = ownedGl.inputSurface === input,
+                ) || !reconfigurationOwnsGeneration(
+                    opticsIntentGeneration.get(),
+                    expectedOpticsGeneration,
+                )
+            ) {
+                null
+            } else {
+                // Controller replacement shares the terminal-commit monitor, so an obsolete
+                // callback cannot pass identity and publish Ready across this assignment.
+                controller = ctrl
+                cameraReady = false
+                readyController = null
+                acceptedCameraSession = null
+                val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+                nextCameraReadyPublication(
+                    ready = false,
+                    opticsGeneration = expectedOpticsGeneration,
+                    sessionGeneration = sessionGeneration,
+                )
+            }
+        }
+        if (installedPublication == null) {
+            ctrl.close()
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val controllerTraceOwner = startupTraceOwnership.claimController(startupTraceOwner)
+        ctrl.bindStartupTrace(controllerTraceOwner)
+        // Post-swap replay of the drive-side ZSL gate (review 2026-08-01): the construction-site
+        // replay reads driveMode BEFORE the swap, so a main-thread setDriveMode landing in that
+        // window pushed the outgoing controller (dropped/closing) and left the new one wired with
+        // a stale value — stale-true re-paid the full-res streaming for a whole timelapse run,
+        // stale-false silently disabled zero-lag serve. Re-reading here, after `controller = ctrl`,
+        // closes the window: a racing setDriveMode now lands on the installed controller, and this
+        // replay is change-gated inside the controller so the common no-change case costs nothing.
+        ctrl.setZslServePossible(driveMode == DriveMode.SINGLE)
+        // Re-assert the atomic install state in case the outgoing controller reported Ready after
+        // the earlier invalidation but before replacement acquired the monitor.
+        onCameraReadyChange?.invoke(installedPublication)
+        var openStarted = false
+        terminalAcquisitionGate.runIfOpen cameraOpen@{
+            if (UnsafeRecorderQuarantine.isActive()) return@cameraOpen
+            openStarted = true
+            // Same pre-configure resolve as the dual-open path: this sequential fallback must not
+            // silently drop an admitted hi-res session (or keep one video mode denies).
+            ctrl.hiResStill = resolvedHiResStill(sel, c)
+            ctrl.open(
+                selection = sel,
+                caps = c,
+                glInputSurface = input,
+                controls = controls,
+                // 10-bit exactly when the bits are spent on something: VIDEO + HLG, or a log
+                // transfer this camera cannot encode natively (the GL-log fallback).
+                tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
+                // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
+                highSpeedFps = desiredHighSpeedFps(),
+                videoStabHalMode = c.videoStabControlMode(videoStabMode),
+                teleconverterMode = teleconverterMode,
+                teleconverterMagnification = teleconverterMagnification,
+                pinAutoFps = videoMode,
+                diagnosticOpticsGeneration = expectedOpticsGeneration,
+                runNativeAcquisition = { block ->
+                    UnsafeRecorderQuarantine.runNativeAcquisition(processNativeOwner, block)
+                },
+                onReady = { outputs ->
+                    if (!nativeAcquisitionMayProceed() || !glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        )
+                    ) {
+                        startupTraceOwnership.revoke(controllerTraceOwner)
+                        ctrl.close()
+                        return@open
+                    }
+                    // Generation, controller identity, rollback acceptance, and Ready publication are
+                    // one commit. A superseding intent cannot land between the check and publication.
+                    // Status messages auto-expire in the ViewModel; an untagged old success must not
+                    // clear a newer transaction's message after the owned commit.
+                    commitOpticsReady(
+                        expectedGeneration = expectedOpticsGeneration,
+                        expectedController = ctrl,
+                        photoOutputs = outputs,
+                        expectedSessionGeneration = installedPublication.sessionGeneration,
+                    )
+                },
+                onError = { failure ->
+                    startupTraceOwnership.revoke(controllerTraceOwner)
+                    if (convergeRetainedSurfaceAfterNativeRefusal(failure)) {
+                        synchronized(this) { if (controller === ctrl) controller = null }
+                        ctrl.close()
+                    } else if (nativeAcquisitionMayProceed() && glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        )
+                    ) {
+                        handleActiveCameraFailure(ctrl, failure)
+                    } else {
+                        ctrl.close()
+                    }
+                },
+            )
+        }
+        if (!openStarted) {
+            startupTraceOwnership.revoke(controllerTraceOwner)
+            synchronized(this) {
+                if (controller === ctrl) controller = null
+            }
+            ctrl.close()
+        }
+    }
+
+    // ---- Controls ----
+
+    fun setControls(c: ManualControls) {
+        val modeIntent = if (videoMode && c.exposureMode == ExposureMode.PROGRAM) {
+            c.copy(programAppSide = false)
+        } else {
+            c
+        }
+        val normalized = (caps?.let(modeIntent::normalizedFor) ?: modeIntent).normalizedForCaptureMode(
+            if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
+        // Packet-write invariant: EVERY wholesale [controls] writer holds the engine monitor
+        // (rollbackOptics is @Synchronized, the commit-gate/caps-reconcile writers run inside
+        // synchronized(this), the zoom RMW takes it). This main-thread apply loop was the one
+        // exception — its write landing between a setupExecutor writer's read and write-back
+        // silently clobbered the route-normalized packet with one normalized against the
+        // OUTGOING caps (the VM's caps snapshot lags onCapsReady by a main-queue hop).
+        val tapPublication = synchronized(this) {
+            val retiredTap = if (controls.focusMode != normalized.focusMode) {
+                // setControls is also used by MR restore/caps reconciliation, not only the Focus UI.
+                // Retire under the same monitor as the packet swap so a pending submission cannot
+                // publish AF HOLD between the focus-mode comparison and ownership invalidation.
+                retireTapFocusLocked(rebuildPreview = false)
+            } else {
+                null
+            }
+            controls = normalized
+            if (!videoMode) photoExposureTimeNs = normalized.exposureTimeNs
+            retiredTap
+        }
+        tapPublication?.let { onTapFocusChange?.invoke(it) }
+        // Wholesale packets (MR restore, rollback, caps reconcile, the 25 Hz apply loop) can move
+        // zoom across FINDER_MIN_ZOOM without an optics door — same re-resolve as setZoomRatio.
+        pushTeleFinder()
+        // clearMeteringPoint(false), when needed, was queued first on this same controller. This
+        // update performs the single request rebuild carrying both the focus-mode and ROI reset.
+        controller?.updateControls(normalized)
+    }
+
+    fun isOpticsGenerationCurrent(generation: Long): Boolean =
+        reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
+
+    /** The optics intent generation as of now. Read-only; doors key rollback state on their own. */
+    fun currentOpticsGeneration(): Long = opticsIntentGeneration.get()
+
+    /** Rechecks only the independent codec/candidate/transfer publication after a main-queue hop. */
+    fun isVideoPipelinePublicationCurrent(generation: Long): Boolean =
+        videoPipelinePublicationGeneration.get() == generation
+
+    /** Rechecks a queued UI Ready publication after it crosses onto the main thread. */
+    fun isCameraReadyPublicationCurrent(publication: CameraReadyPublication): Boolean =
+        cameraReadyPublicationIsCurrent(
+            currentOpticsGeneration = opticsIntentGeneration.get(),
+            expectedOpticsGeneration = publication.opticsGeneration,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            expectedSessionGeneration = publication.sessionGeneration,
+            cameraReady = cameraReady,
+        )
+
+    fun setVideoMode(
+        enabled: Boolean,
+        resolvedLens: LensChoice,
+        resolvedControls: ManualControls,
+        resolvedPhotoExposureTimeNs: Long,
+        resolvedTransfer: ColorTransfer,
+    ) {
+        val wasVideoMode = videoMode
+        if (captureModeTransitionStopsTimelapse(wasVideoMode, enabled)) {
+            // Interval shooting is photo-owned. Revoke its generation before publishing any VIDEO
+            // optics/session intent so a queued tick or late still-save completion cannot follow the
+            // new accepted session into Video. Keep [driveMode] untouched: returning to Photo still
+            // shows TIMELAPSE, but the photographer must press the shutter to start a fresh run.
+            stopTimelapse()
+        }
+        // Publish one already-resolved optics packet before queuing any reconfiguration. Keeping the
+        // UI and engine remaps separate let a delayed full-controls apply race this method and made
+        // Photo/Video transitions depend on executor timing.
+        val enteringVideo = !videoMode && enabled
+        val modeIntent = if (enteringVideo && resolvedControls.exposureMode == ExposureMode.PROGRAM) {
+            resolvedControls.copy(programAppSide = false)
+        } else {
+            resolvedControls
+        }
+        val modeControls = modeIntent.normalizedForCaptureMode(
+            if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
+        val targetTransfer = if (enabled) resolvedTransfer else ColorTransfer.SDR
+        val changed = wasVideoMode != enabled || transfer != targetTransfer
+        val transaction = if (changed) {
+            beginOpticsTransaction {
+                videoMode = enabled
+                publishVideoPipelineLocked(
+                    currentVideoPipelineSelection().copy(
+                        requestedTransfer = if (enabled) resolvedTransfer else requestedVideoTransfer,
+                        activeTransfer = targetTransfer,
+                    ),
+                )
+                lensChoice = resolvedLens
+                controls = modeControls
+                photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
+                // A mode intent owns automatic routing. Clear the resolved outgoing id atomically.
+                overrideId = null
+                userCameraPin = null
+            }.first
+        } else {
+            synchronized(this) {
+                videoMode = enabled
+                publishVideoPipelineLocked(
+                    currentVideoPipelineSelection().copy(
+                        requestedTransfer = if (enabled) resolvedTransfer else requestedVideoTransfer,
+                        activeTransfer = targetTransfer,
+                    ),
+                )
+                lensChoice = resolvedLens
+                controls = modeControls
+                photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
+            }
+            null
+        }
+        if (recorder == null) gl.setTransfer(targetTransfer)
+        // Mode changes how the finder gate treats still aspect: Photo requires 4:3, while Video
+        // deliberately ignores it. Re-resolve synchronously so a mode flip cannot leave stale GL
+        // PIP truth until the async reconfigure lands.
+        pushTeleFinder()
+        transaction?.let { controller?.setPinAutoFps(enabled, it.generation) }
+        controller?.updateControls(modeControls)
+        if (!changed) return
+        val intentGeneration = modeIntentGeneration.incrementAndGet()
+        if (!started) return
+        // beginOpticsTransaction published Not-Ready atomically with the desired packet, so REC
+        // cannot start against the outgoing session while this reopen is merely queued.
+        // The mode flip can change the CAMERA (photo=logical seamless, video=standalone — see
+        // resolveNonTeleId) as well as the stream size. The caller has already remapped zoom and
+        // lens together; this task only applies that immutable intent.
+        setupExecutor.execute {
+            if (transaction == null || !ownsOpticsTransaction(transaction) ||
+                videoMode != enabled || modeIntentGeneration.get() != intentGeneration
+            ) return@execute
+            if (paused) return@execute
+            if (recorder != null) {
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_MODE_UNCHANGED.status())
+                return@execute
+            }
+            // FRONT keeps its one camera across the mode flip (photo/video are stream-size, not
+            // camera, changes there); the rear split keeps its documented tele/mode-home routing.
+            val id = when {
+                activeCameraRoute == CameraRoute.FRONT -> cachedFront()?.logicalId
+                teleconverterMode -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                else -> resolveNonTeleId(lensChoice)
+            }
+            if (id == null) {
+                rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_MODE_UNCHANGED.status())
+                return@execute
+            }
+            val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
+            if (id != beforeCameraId || controller == null) {
+                reconfigureCamera(id, transaction) // refreshes caps, stream sizes, aspect, stabilization, reopens
+            } else {
+                // Same camera (e.g. TELE mode) — still recreate when the STREAM SIZE flips between
+                // the photo 4:3 field and the recording stream (dimensions fix at configureStreams).
+                val sel = selection ?: return@execute
+                val next = choosePreviewStreamSize(sel)
+                if (next != previewStreamSize) {
+                    previewStreamSize = next
+                    emitPreviewAspect(transaction.generation)
+                    gl.setCameraPreviewSize(next.width, next.height)
+                    reopenForSession(transaction)
+                } else if (controller != null && transaction.before.ready &&
+                    transaction.before.readyController === controller && !paused
+                ) {
+                    // Same camera and same configured stream: the intent only changed request-side
+                    // mode semantics, so the existing session is still the ready session. Reconcile
+                    // against this retained route before publishing Ready: an AE_OFF-only camera
+                    // must re-arm app-owned Program + luma analysis in the ViewModel, even though
+                    // Video entry intentionally cleared the Photo-derived ownership flag.
+                    val expectedController = controller ?: return@execute
+                    val routeCaps = caps ?: run {
+                        reconfigureCamera(id, transaction)
+                        return@execute
+                    }
+                    val range = routeCaps.zoomRatioRange
+                    commitFastPathOrReconfigure(
+                        transaction = transaction,
+                        cameraId = id,
+                        expectedController = expectedController,
+                        terminalMutation = {
+                            // This terminal mutation holds the engine monitor, the same monitor used
+                            // by setControls. Normalize the LIVE target-mode packet so a P-ownership
+                            // refresh or dial update that landed while setup was queued cannot be
+                            // overwritten by the older transition snapshot.
+                            controls = normalizeRetainedControlsAtCommit(
+                                liveControls = controls,
+                                capabilities = routeCaps.controlCapabilities(),
+                                mode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                                teleconverter = teleconverterMode,
+                                teleconverterMagnification = teleconverterMagnification,
+                                capsLower = range?.lower,
+                                capsUpper = range?.upper,
+                            )
+                            if (!enabled) photoExposureTimeNs = controls.exposureTimeNs
+                            // Same route-scale predicate as reconcileControlsWithCaps: `!enabled`
+                            // alone read a DNG Photo lens-local ratio as unified (AGG-3).
+                            if (lensBandFollowsZoom(enabled, teleconverterMode, activeCameraRoute)) {
+                                lensChoice = LensChoice.forZoom(controls.zoomRatio)
+                            }
+                            seedGlZoom()
+                            overrideId = id
+                        },
+                        beforeReadyPublication = { generation ->
+                            onCapsReady?.invoke(routeCaps, generation)
+                        },
+                    )
+                } else {
+                    reconfigureCamera(id, transaction)
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies settings/MR optics as one transaction so mode and lens cannot supersede each other.
+     * Returns the optics generation that transaction BEGAN, or null when the door refused
+     * synchronously (MRG5-6): the caller keys its own off-engine rollback state on exactly this
+     * value, not on a later re-read that another intent could already have bumped.
+     */
+    fun setResolvedOptics(
+        enabledVideo: Boolean,
+        resolvedLens: LensChoice,
+        resolvedTeleconverter: Boolean,
+        resolvedDeclaration: TeleconverterDeclaration,
+        resolvedControls: ManualControls,
+        resolvedPhotoExposureTimeNs: Long,
+        recalledVideoSize: Size?,
+        resolvedTransfer: ColorTransfer,
+        resolvedVideoCodec: VideoCodec,
+        resolvedVideoEncoderCandidates: List<EncoderSelection>,
+        /**
+         * The recalled DNG intent. It is a ROUTE input ([standaloneRouteWanted]), so it belongs in
+         * THIS packet: recall used to publish the optics here and the DNG intent through a
+         * trailing [setRawWanted], a second transaction. `setupExecutor` could run this one first,
+         * resolve the LOGICAL camera from the still-old `rawWanted = false`, and its fast-path
+         * terminal re-banded the recalled lens-local 1.0 to MAIN; the DNG door then reopened the
+         * standalone 23 mm lens instead of the recalled 70 mm one, and a failure of the second
+         * door rolled back to a mixed-scale packet (RPL cycle 2, AGG2-2). Published inside the
+         * same `beginOpticsTransaction`, so `resolveNonTeleId`, the fast-path band predicate, and
+         * the rollback snapshot all see one coherent value.
+         */
+        resolvedRawWanted: Boolean,
+    ): Long? {
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return null }
+        val declaration = teleconverterDeclaration(
+            phone = resolvedDeclaration.phone,
+            profile = resolvedDeclaration.profile,
+            customMagnification = resolvedDeclaration.customMagnification,
+            measuredOtherHostEquivMm = resolvedDeclaration.hostTeleEquivMm,
+        )
+        if (captureModeTransitionStopsTimelapse(videoMode, enabledVideo)) {
+            // MR/settings recall is a second route into VIDEO and must own the same interval boundary
+            // as the direct Photo/Video carousel transition.
+            stopTimelapse()
+        }
+        val modeIntent = if (enabledVideo && resolvedControls.exposureMode == ExposureMode.PROGRAM) {
+            resolvedControls.copy(programAppSide = false)
+        } else {
+            resolvedControls
+        }
+        val route = recalledCameraRoute(cameraRouteInventory, activeCameraRoute) ?: return null
+        val routeTeleconverter = resolvedTeleconverter && route == CameraRoute.BACK
+        val routeControls = if (route.lensLocalZoom) resolvedControls.copy(zoomRatio = resolvedControls.zoomRatio.coerceAtLeast(1f)) else resolvedControls
+        val modeControls = modeIntent.copy(zoomRatio = routeControls.zoomRatio).normalizedForCaptureMode(
+            if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
+        val transaction = beginOpticsTransaction {
+            videoMode = enabledVideo
+            publishVideoPipelineLocked(
+                VideoPipelineSelection(
+                    codec = resolvedVideoCodec,
+                    candidates = resolvedVideoEncoderCandidates
+                        .filter { it.codec == resolvedVideoCodec }
+                        .distinctBy { it.codecName },
+                    requestedTransfer = resolvedTransfer,
+                    activeTransfer = if (enabledVideo) resolvedTransfer else ColorTransfer.SDR,
+                ),
+            )
+            lensChoice = resolvedLens
+            teleconverterMode = routeTeleconverter
+            teleconverterDeclaration = declaration
+            controller?.setTeleconverterMagnification(declaration.magnification)
+            // MR recall / settings restore EXITS the front camera in this same atomic publication:
+            // recalled packets are rear-route optics (lens band, TC state, unified/lens-local zoom
+            // semantics — facing itself is deliberately never persisted), so applying one while
+            // FRONT would pair front hardware with rear-scale values. One transaction, no
+            // intermediate front-with-recalled-optics state.
+            setActiveCameraRoute(route)
+            controls = modeControls
+            // Not a direct write (no rawWantedDirectWrites bump): it rides this transaction, so a
+            // failed recall restores the baseline DNG intent together with the route it selected.
+            rawWanted = resolvedRawWanted
+            photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
+            recalledVideoSize?.let { requestedVideoSize = it }
+            preTeleUnifiedZoom = Float.NaN
+            // Settings/MR replaces automatic routing; the snapshot retains an override for rollback.
+            overrideId = null
+            userCameraPin = null
+        }.first
+        if (recorder == null) gl.setTransfer(transfer)
+        // Self-contained finder resolve: TC/mode just changed above, and relying on the restore
+        // block's TRAILING setAspectRatio/setTeleFinder calls made correctness depend on adjacent
+        // setter call order (a reorder would resolve against stale inputs).
+        pushTeleFinder()
+        val modeGeneration = modeIntentGeneration.incrementAndGet()
+        val lensGeneration = lensIntentGeneration.incrementAndGet()
+        controller?.setPinAutoFps(enabledVideo, transaction.generation)
+        if (!started) return transaction.generation
+        setupExecutor.execute {
+            if (!ownsOpticsTransaction(transaction) ||
+                modeIntentGeneration.get() != modeGeneration ||
+                lensIntentGeneration.get() != lensGeneration
+            ) return@execute
+            if (paused) return@execute
+            if (recorder != null) {
+                // Same symmetric rollback as setVideoMode: a silent return leaves the desired
+                // packet published and Not-Ready latched with no convergence path (tracer T8).
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_RECALL_UNCHANGED.status())
+                return@execute
+            }
+            val id = when {
+                route == CameraRoute.FRONT -> cachedFront()?.logicalId
+                route == CameraRoute.EXTERNAL -> cachedExternal()?.logicalId
+                routeTeleconverter -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                else -> resolveNonTeleId(resolvedLens)
+            }
+            if (id == null) {
+                rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
+                return@execute
+            }
+            val structuralChange = recallRequiresReconfigure(
+                before = transaction.before,
+                enabledVideo = enabledVideo,
+                routeTeleconverter = routeTeleconverter,
+                targetCameraId = id,
+            )
+            if (structuralChange) {
+                reconfigureCamera(id, transaction)
+            } else {
+                val expectedController = controller ?: return@execute
+                val routeCaps = caps ?: run {
+                    reconfigureCamera(id, transaction)
+                    return@execute
+                }
+                val range = routeCaps.zoomRatioRange
+                commitFastPathOrReconfigure(
+                    transaction = transaction,
+                    cameraId = id,
+                    expectedController = expectedController,
+                    terminalMutation = {
+                        // Preserve any target-owned update that landed after the recalled packet was
+                        // published; terminal commit and setControls serialize on this monitor.
+                        controls = normalizeRetainedControlsAtCommit(
+                            liveControls = controls,
+                            capabilities = routeCaps.controlCapabilities(),
+                            mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                            teleconverter = routeTeleconverter,
+                            teleconverterMagnification = teleconverterMagnification,
+                            capsLower = range?.lower,
+                            capsUpper = range?.upper,
+                        )
+                        if (!enabledVideo) photoExposureTimeNs = controls.exposureTimeNs
+                        if (lensBandFollowsZoom(enabledVideo, routeTeleconverter, route)) {
+                            lensChoice = LensChoice.forZoom(controls.zoomRatio)
+                        }
+                        seedGlZoom()
+                        overrideId = id
+                    },
+                    beforeReadyPublication = { generation -> onCapsReady?.invoke(routeCaps, generation) },
+                )
+            }
+        }
+        return transaction.generation
+    }
+
+    /**
+     * The recall's ONE structural decision, with every input wired from Engine state here (TE5-13):
+     * the pure [resolvedOpticsRequiresReconfigure] table is host-tested on its own, so a call site
+     * that dropped an input (e.g. AGG4-8's stream-size term pinned to false) stayed green. The
+     * Robolectric recall suite drives this method against real Engine fields instead.
+     */
+    private fun recallRequiresReconfigure(
+        before: OpticsSnapshot,
+        enabledVideo: Boolean,
+        routeTeleconverter: Boolean,
+        targetCameraId: String,
+    ): Boolean = resolvedOpticsRequiresReconfigure(
+        beforeVideo = before.videoMode,
+        targetVideo = enabledVideo,
+        beforeTeleconverter = before.teleconverter,
+        targetTeleconverter = routeTeleconverter,
+        beforeCameraId = before.selection?.let { it.physicalId ?: it.logicalId },
+        targetCameraId = targetCameraId,
+        controllerAvailable = controller != null,
+        beforeReady = before.ready,
+        readyControllerMatches = before.readyController === controller,
+        videoStreamSizeChanges = recallVideoStreamSizeChanges(enabledVideo),
+    )
+
+    /**
+     * Whether a same-camera recall's Video packet names a different stream size than the session is
+     * streaming (AGG4-8). The recall writes only [requestedVideoSize]; nothing on the fast commit
+     * re-picks [videoSize] or reconfigures the stream, so a 1080p bank recalled over a 4K Video
+     * session showed 1080p while the session — and every file REC froze from it — stayed 4K.
+     * [chooseVideoSize] is the SAME resolution the reconfigure path applies, so this asks exactly
+     * "would a reopen configure something else?". Photo keeps its 4:3 full-field stream whatever
+     * the recalled video size is, so only a Video target can change the stream.
+     */
+    private fun recallVideoStreamSizeChanges(enabledVideo: Boolean): Boolean {
+        if (!enabledVideo) return false
+        val current = selection ?: return false
+        return chooseVideoSize(current) != videoSize
+    }
+
+    /**
+     * Selects the color transfer — the single source of truth. The log profiles (S-Log3 /
+     * S-Log3.Cine / LogC3) are GL-baked curves (the shipping path): the encoder receives the curve
+     * and the preview renders it flat. The device's native HAL log key (`com.oplus.log.video.mode`)
+     * is INERT for third-party Camera2 (device-settled 2026-07-09 — see the body comment), and the
+     * dormant plumbing that once carried it was REMOVED 2026-08-04 with the vendor-SDK decision.
+     *
+     * Changing the OETF mid-recording would tag the file with the start transfer but bake a different
+     * curve into the second half, so the GL curve is only pushed when idle (the field still updates
+     * for the next recording; stopRecording/pause re-apply it). See docs/reviews record-pipeline #4.
+     */
+    @Synchronized
+    fun setTransfer(t: ColorTransfer) {
+        setVideoPipeline(videoEncoderCandidates, t, fallbackCodec = videoCodec)
+    }
+
+    /**
+     * One immutable codec/candidate/curve command. A source-precision boundary change owns one
+     * optics generation, and rollback restores this complete tuple rather than a hybrid pipeline.
+     */
+    @Synchronized
+    fun setVideoPipeline(
+        candidates: List<EncoderSelection>,
+        requestedTransfer: ColorTransfer,
+        fallbackCodec: VideoCodec = videoCodec,
+    ) {
+        // Keep every state read below on the Engine monitor shared with rollbackOptics. In
+        // particular, mode/active-transfer and the ten-bit boundary must describe the same instant:
+        // deriving them before this monitor allowed an owned rollback to restore Photo/SDR and then
+        // be overwritten by a stale no-generation Video/HLG packet. The monitor is reentrant, so a
+        // real boundary change can enter beginOpticsTransaction without opening an interleaving gap.
+        val codec = candidates.firstOrNull()?.codec ?: fallbackCodec
+        val normalizedCandidates = candidates
+            .filter { it.codec == codec }
+            .distinctBy { it.codecName }
+        val resolved = if (codec == VideoCodec.HEVC) {
+            if (
+                requestedTransfer == ColorTransfer.SDR ||
+                normalizedCandidates.any { it.main10 }
+            ) requestedTransfer else ColorTransfer.SDR
+        } else {
+            ColorTransfer.SDR
+        }
+        val activeTransfer = if (videoMode) resolved else ColorTransfer.SDR
+        val targetPipeline = VideoPipelineSelection(
+            codec = codec,
+            candidates = normalizedCandidates,
+            requestedTransfer = resolved,
+            activeTransfer = activeTransfer,
+        )
+        // Session-shape boundary (SDR / native log / 10-bit), against the installed route's caps.
+        val nativeLogSupported = nativeLogCurveSupported(caps)
+        val sessionShapeChanged = videoSessionShape(videoMode, transfer, nativeLogSupported) !=
+            videoSessionShape(videoMode, activeTransfer, nativeLogSupported)
+        val publish = { publishVideoPipelineLocked(targetPipeline) }
+        if (sessionShapeChanged && recorder == null) {
+            val transaction = beginOpticsTransaction(publish).first
+            postGlTransfer(activeTransfer)
+            reopenForSession(transaction)
+        } else {
+            publish()
+            if (recorder == null) postGlTransfer(activeTransfer)
+        }
+    }
+
+    fun setPeaking(enabled: Boolean) {
+        rendererAssists.setPeaking(enabled)
+    }
+    fun setZebra(enabled: Boolean) {
+        rendererAssists.setZebra(enabled)
+    }
+    fun setPeakingLevel(l: PeakingLevel) {
+        rendererAssists.setPeakingLevel(l)
+    }
+    fun setPeakingColor(c: PeakingColor) {
+        rendererAssists.setPeakingColor(c)
+    }
+    fun setZebraLevel(z: ZebraLevel) {
+        rendererAssists.setZebraLevel(z)
+    }
+
+    /** Enables/disables GL-thread histogram and/or waveform computation feeding [onAnalysis]. */
+    fun setAnalysis(histogram: Boolean, waveform: Boolean) {
+        rendererAssists.setAnalysis(histogram, waveform)
+    }
+
+    /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
+    // DEBUG only: the per-second YUV fps logging toggle (the S4a measurement instrument; ZSL
+    // streaming itself is route-owned). Cached so a toggle arriving before the first controller
+    // exists (cold-launch race, operator-observed: silently ignored <~10 s after launch) applies
+    // when wireController runs — and the refusal is at least visible in logcat meanwhile.
+    @Volatile private var zslSpikeLoggingWanted = false
+
+    fun setZslSpike(enabled: Boolean) {
+        zslSpikeLoggingWanted = enabled
+        val ctrl = controller
+        if (ctrl == null) {
+            Log.w("CameraEngine", "ZslSpike: no controller yet — cached, applies on next wire")
+            return
+        }
+        ctrl.setZslSpike(enabled)
+    }
+
+    fun setAeMetering(enabled: Boolean) {
+        rendererAssists.setAeMetering(enabled)
+    }
+
+    /**
+     * Arms the frame-detail (focus-confidence) metric. Adds no GL work: it computes over the
+     * scope/AE readback that was already going to happen, and is silent when none does.
+     */
+    fun setFocusDetail(enabled: Boolean) {
+        rendererAssists.setFocusDetail(enabled)
+    }
+
+    /**
+     * Arms or disarms the motion-inversion rider AND the gyroscope it needs, as one operation — the
+     * two must never disagree: an armed rider with a dead sensor reads every frame as "no rotation"
+     * and answers UNJUDGEABLE forever, while a live sensor with no consumer is the battery waste
+     * that got the gyro unregistered in the first place.
+     *
+     * Like [setFocusDetail] this adds no GL work; it computes over the readback that was already
+     * happening. The gyroscope is the only real cost, which is why the caller is expected to disarm
+     * as soon as the verdict settles (see [MotionInversionConfidence]).
+     */
+    fun setMotionInversionArmed(enabled: Boolean, resetEvidence: Boolean = false) {
+        gyro.setRotationTracking(enabled)
+        if (resetEvidence) gyro.resetRotationEvidence()
+        rendererAssists.setMotionInversion(
+            enabled = enabled,
+            rotationProvider = { fromNs, toNs ->
+                // REFUSE unless camera frames use the same clock as SensorEvent timestamps.
+                val realtime = caps?.timestampSource ==
+                    android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+                if (realtime) gyro.rotationBetween(fromNs, toNs) else null
+            },
+            resetEvidence = resetEvidence,
+        )
+    }
+
+    /** Gamma Display Assist bypasses every log curve on preview only; the encoded file stays log. */
+    fun setGammaAssist(enabled: Boolean) {
+        rendererAssists.setGammaAssist(enabled)
+    }
+
+    /**
+     * Requests a fresh, converged grey-card sample from the accepted unlocked-AUTO session.
+     * The returned sample retains that exact session as an opaque owner; callers must consume it
+     * through [consumeCustomWbSampleIfCurrent] after crossing thread boundaries.
+     */
+    internal fun requestCustomWbSample(onResult: (CustomWbSample?) -> Unit) {
+        val accepted = synchronized(this) {
+            currentAcceptedCameraSession()?.takeIf {
+                controls.wbMode == WbMode.AUTO && !controls.awbLock
+            }
+        }
+        if (accepted == null) {
+            runCatching { onResult(null) }
+            return
+        }
+        accepted.controller.requestCustomWbSample { gains ->
+            val sample = synchronized(this) {
+                gains?.takeIf { ownsCustomWbSample(accepted) }?.let {
+                    CustomWbSample(
+                        gains = WbGains(it.red, it.greenEven, it.greenOdd, it.blue),
+                        ownerToken = accepted,
+                    )
+                }
+            }
+            runCatching { onResult(sample) }
+        }
+    }
+
+    /** Atomically rechecks the sample owner and lets the UI publish it before ownership can change. */
+    internal fun consumeCustomWbSampleIfCurrent(
+        sample: CustomWbSample,
+        onCurrent: (WbGains) -> Unit,
+    ): Boolean = synchronized(this) {
+        val accepted = sample.ownerToken as? AcceptedCameraSession ?: return@synchronized false
+        if (!ownsCustomWbSample(accepted)) return@synchronized false
+        onCurrent(sample.gains)
+        true
+    }
+
+    private fun ownsCustomWbSample(expected: AcceptedCameraSession): Boolean =
+        customWbSampleOwnerIsCurrent(
+            currentAcceptedSession = acceptedCameraSession,
+            expectedAcceptedSession = expected,
+            currentController = controller,
+            expectedController = expected.controller,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            expectedSessionGeneration = expected.sessionGeneration,
+            cameraReady = cameraReady,
+            paused = paused,
+            wbMode = controls.wbMode,
+            awbLocked = controls.awbLock,
+        )
+
+    /**
+     * Tap-to-focus/meter. Maps a VIEW-normalized tap [(nx,ny), origin top-left] to a
+     * SENSOR-normalized point by inverting the GL content rotation applied to the preview — the
+     * sensor orientation plus the teleconverter's afocal 180° (normalized to 0/90/180/270). The
+     * centered tap is rotated by -total degrees and re-centered, then forwarded to the controller.
+     *
+     * A tap made while the punch-in loupe is ACTIVE is additionally composed through the loupe's
+     * crop+center (loupeAdjustedTap, AGG4-11) so AF/metering land on the scene point actually
+     * under the finger. EIS shift is not composed (app-side EIS is disabled; shift is 0). Axis
+     * signs remain an on-device calibration item.
+     *
+     * Returns true only when one current Ready session accepted the camera-thread task. AF HOLD is
+     * published separately after [CameraController] confirms that Camera2 accepted the required
+     * trigger (unless AF Lock owns the lens) and repeating request; AF convergence remains
+     * asynchronous result telemetry.
+     */
+    fun setTapPoint(nx: Float, ny: Float): Boolean = synchronized(this) {
+        val c = caps ?: return@synchronized false
+        val accepted = acceptedCameraSession ?: return@synchronized false
+        val canHoldFocus = touchAfMayTrigger(
+            touchAfActive = true,
+            maxAfRegions = c.maxAfRegions,
+            focusMode = controls.focusMode,
+            afModes = c.afModes,
+        )
+        if (!tapPointAdmissionAllowed(
+                currentController = controller,
+                acceptedController = accepted.controller,
+                currentSessionGeneration = cameraSessionGeneration.get(),
+                acceptedSessionGeneration = accepted.sessionGeneration,
+                cameraReady = cameraReady,
+                paused = paused,
+                canHoldFocus = canHoldFocus,
+            )
+        ) {
+            return@synchronized false
+        }
+        // Map NOW, against the loupe center the user actually sees. If another submission is in
+        // flight, keeping only raw view coordinates and mapping after it completes would compose the
+        // latest tap through a future center the user had not seen when tapping.
+        val geometry = mapTapFocusGeometry(
+            nx = nx,
+            ny = ny,
+            sensorOrientation = c.sensorOrientation,
+            teleconverter = teleconverterMode,
+            punchActive = rendererAssists.isPunchInEnabled(),
+            sensorCenter = loupeCenterSensorX to loupeCenterSensorY,
+            loupeCenter = loupeCenterTexX to loupeCenterTexY,
+            previewRotationDegrees = previewRotationDegrees(),
+            // Same term the GL preview draw applies, so a tap lands on the subject the operator
+            // actually sees in a rotated window. 0 on a phone, where this is inert.
+            windowRotationDeg = rendererAssists.windowRotationDegrees(),
+            // No un-flip on this device: the front stream is PRE-mirrored by the HAL and the GL
+            // preview adds no mirror of its own, so displayed x == texture x and the plain mapping
+            // already lands on the tapped subject — user-verified before the preview-mirror roles
+            // inverted, and the geometry is unchanged by that inversion. Derived from the ONE
+            // FrontMirrorConvention authority so a re-diagnosed mirror role cannot leave this seam
+            // and the GL draw roles disagreeing (cycle-6 architect F4).
+            mirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.tapDisplayMirrorX(
+                activeCameraRoute == CameraRoute.FRONT,
+                activeDeviceProfile().frontStreamPreMirrored,
+            ),
+            // The METERING half is a different question and a different answer: AE/AF regions are
+            // ACTIVE-ARRAY coordinates, and the array holds the TRUE scene while the selfie preview
+            // shows it mirrored. Derived from the same one authority so the two halves can never
+            // drift apart.
+            meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
+                activeCameraRoute == CameraRoute.FRONT,
+                activeDeviceProfile().frontStreamPreMirrored,
+            ),
+        )
+        val attempt = PendingTapFocus(
+            session = accepted,
+            viewPoint = geometry.viewPoint,
+            sensorPoint = geometry.sensorPoint,
+            loupePoint = geometry.loupePoint,
+        )
+        // This HAL can spend ~170-250 ms replacing its repeating request. Preserve rapid user taps
+        // without stacking rebuilds: retain one mapped latest-wins snapshot.
+        if (pendingTapFocus != null) {
+            deferredTapFocus = attempt
+            return@synchronized true
+        }
+        submitTapFocusLocked(attempt)
+    }
+
+    /**
+     * Camera thread (via the controller's identity-gated callback): maps one face readout onto the
+     * preview with the SAME geometry sources [setTapPoint] composes — sensor orientation, afocal
+     * 180°, loupe crop + center, front metering mirror, window rotation — plus the stream crop the
+     * tap path does not model (a 16:9 video stream shows only the middle of the 4:3 array). Every
+     * input is a lock-free volatile read; nothing here takes the engine monitor, so the camera
+     * thread never waits on main. Pure geometry lives in FacePriority.kt (host-tested).
+     */
+    private fun publishFaceFrame(frame: FaceFrame) {
+        val sink = onFaceBoxes ?: return
+        if (frame.faces.isEmpty()) { sink(emptyList()); return }
+        val c = caps ?: return
+        val front = activeCameraRoute == CameraRoute.FRONT
+        val stream = previewStreamSize
+        val geometry = FaceViewGeometry(
+            sensorOrientation = c.sensorOrientation,
+            afocal180 = teleconverterMode,
+            punchActive = rendererAssists.isPunchInEnabled(),
+            loupeSensorCenter = loupeCenterSensorX to loupeCenterSensorY,
+            meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
+                front,
+                activeDeviceProfile().frontStreamPreMirrored,
+            ),
+            windowRotationDeg = rendererAssists.windowRotationDegrees(),
+            streamCrop = streamSourceCrop(stream.width, stream.height, frame.arrayWidth, frame.arrayHeight),
+        )
+        sink(faceBoxesForView(frame.faces, geometry))
+    }
+
+    /** Engine-monitor-only: submits a mapped point after exact accepted-session revalidation. */
+    private fun submitTapFocusLocked(attempt: PendingTapFocus): Boolean {
+        val accepted = attempt.session
+        val c = caps ?: return false
+        if (!tapFocusSessionOwnerIsCurrent(
+                currentAcceptedSession = acceptedCameraSession,
+                expectedAcceptedSession = accepted,
+                currentController = controller,
+                expectedController = accepted.controller,
+                currentSessionGeneration = cameraSessionGeneration.get(),
+                expectedSessionGeneration = accepted.sessionGeneration,
+                paused = paused,
+            ) || !touchAfMayTrigger(
+                touchAfActive = true,
+                maxAfRegions = c.maxAfRegions,
+                focusMode = controls.focusMode,
+                afModes = c.afModes,
+            )
+        ) {
+            return false
+        }
+        val queued = accepted.controller.setMeteringPoint(
+            attempt.sensorPoint.first,
+            attempt.sensorPoint.second,
+        ) { result -> completeTapFocus(attempt, result) }
+        if (queued) pendingTapFocus = attempt
+        return queued
+    }
+
+    /** Camera-thread completion of one queued point; publishes only an actually submitted request. */
+    private fun completeTapFocus(
+        attempt: PendingTapFocus,
+        submission: TapFocusSubmissionResult,
+    ) {
+        val publication = synchronized(this) {
+            val accepted = attempt.session
+            val sessionCurrent = submission == TapFocusSubmissionResult.ACCEPTED &&
+                tapFocusSessionOwnerIsCurrent(
+                    currentAcceptedSession = acceptedCameraSession,
+                    expectedAcceptedSession = accepted,
+                    currentController = controller,
+                    expectedController = accepted.controller,
+                    currentSessionGeneration = cameraSessionGeneration.get(),
+                    expectedSessionGeneration = accepted.sessionGeneration,
+                    paused = paused,
+                )
+            when (tapFocusCompletionDecision(pendingTapFocus === attempt, submission, sessionCurrent)) {
+                TapFocusCompletionDecision.IGNORE -> return@synchronized null
+                TapFocusCompletionDecision.KEEP_PREVIOUS -> {
+                    pendingTapFocus = null
+                    if (tapFocusOwner == null) resetTapGeometryLocked()
+                    val deferred = deferredTapFocus
+                    deferredTapFocus = null
+                    deferred?.let(::submitTapFocusLocked)
+                    return@synchronized null
+                }
+                TapFocusCompletionDecision.RETIRE -> {
+                    val liveRequest = controller === accepted.controller &&
+                        cameraSessionGeneration.get() == accepted.sessionGeneration && !paused
+                    return@synchronized retireTapFocusLocked(rebuildPreview = liveRequest)
+                }
+                TapFocusCompletionDecision.PUBLISH_HELD -> Unit
+            }
+
+            pendingTapFocus = null
+            tapFocusOwner = accepted
+            loupeCenterTexX = attempt.loupePoint.first
+            loupeCenterTexY = attempt.loupePoint.second
+            loupeCenterSensorX = attempt.sensorPoint.first
+            loupeCenterSensorY = attempt.sensorPoint.second
+            // Lifecycle invalidation takes this same monitor, so its later center reset always wins.
+            gl.setPunchInCenter(attempt.loupePoint.first, attempt.loupePoint.second)
+            val heldPublication = nextTapFocusPublication(held = true, point = attempt.viewPoint)
+            val deferred = deferredTapFocus
+            deferredTapFocus = null
+            deferred?.let(::submitTapFocusLocked)
+            heldPublication
+        }
+        publication?.let { onTapFocusChange?.invoke(it) }
+    }
+
+    // Tap-owned loupe center mirrors in BOTH spaces (AGG4-11): texcoord (what GL magnifies about)
+    // and sensor (what a magnified tap's metering composes against). Reset with clearTapPoint.
+    @Volatile private var loupeCenterTexX = 0.5f
+    @Volatile private var loupeCenterTexY = 0.5f
+
+    // Canonical main-relative rear framing in force when FRONT was entered. Storing one coordinate
+    // keeps a Photo/DNG or mode change while FRONT from reinterpreting a raw lens-local ratio.
+    private var preFrontRearUnifiedZoom = Float.NaN
+
+    // DNG intent, mirrored from the ViewModel: decides whether photo takes the standalone route.
+    @Volatile
+    private var rawWanted = false
+    // Bumped by every DNG write that does NOT own an optics transaction (no route flip: Video,
+    // TELE, FRONT/EXTERNAL, before start, or a device without the RAW law). A rollback restores the
+    // baseline DNG intent only while this still matches the baseline's value — otherwise it would
+    // silently revert a later operator choice that never moved the route (RPL cycle 1 review).
+    @Volatile
+    private var rawWantedDirectWrites = 0L
+
+    @Volatile private var loupeCenterSensorX = 0.5f
+    @Volatile private var loupeCenterSensorY = 0.5f
+
+    /**
+     * The FUNCTIONAL tap release: drops the tap-owned AE/AF region and re-centers the loupe.
+     * Called on explicit reset and by the engine's optics-remap transaction — NOT from the 2 s
+     * reticle timer, which is visual-only (AGG4-3: the tapped focus must HOLD until a new tap,
+     * a focus-mode change, an explicit reset, or a remap; the timer used to silently return AF
+     * to continuous hunting and re-center the loupe mid-composition).
+     */
+    fun clearTapPoint(rebuildPreview: Boolean = true) {
+        val tapPublication = synchronized(this) {
+            val hadTapState = tapFocusOwner != null || pendingTapFocus != null || deferredTapFocus != null
+            val publication = retireTapFocusLocked(rebuildPreview)
+            // No tracked point means there is no Camera2 key state to clear. Rebuilding here made
+            // every optics tap pay an extra setRepeatingRequest even when tap AF had never been used.
+            if (!hadTapState) {
+                resetTapGeometryLocked()
+            }
+            publication
+        }
+        if (tapFocusDiagnosticAllowed(BuildConfig.DEBUG, edgeOwned = tapPublication != null)) {
+            android.util.Log.i("CameraEngine", "TapFocus: cleared")
+        }
+        tapPublication?.let { onTapFocusChange?.invoke(it) }
+    }
+
+    // ---- Drive mode + video parameters ----
+
+    fun setDriveMode(m: DriveMode) {
+        driveMode = m
+        // Selecting any non-timelapse drive mode cancels an in-progress interval sequence.
+        if (m != DriveMode.TIMELAPSE) stopTimelapse()
+        // Drive-side ZSL streaming gate (perf review #8): burst/AEB/timelapse can never serve a
+        // buffered frame, so the full-res repeating target detaches while they are selected. The
+        // controller change-gates and resubmits itself (~180 ms, once per drive change).
+        controller?.setZslServePossible(m == DriveMode.SINGLE)
+    }
+    fun setIntervalSec(s: Int) { intervalSec = normalizeTimelapseIntervalSeconds(s) }
+    @Synchronized
+    fun setVideoCodec(c: VideoCodec) {
+        setVideoPipeline(
+            candidates = videoEncoderCandidates.filter { it.codec == c },
+            requestedTransfer = requestedVideoTransfer,
+            fallbackCodec = c,
+        )
+    }
+
+    /** Installs every exact component eligible for the selected codec/transfer, in attempt order. */
+    @Synchronized
+    fun setVideoEncoders(candidates: List<EncoderSelection>) {
+        setVideoPipeline(candidates, requestedVideoTransfer)
+    }
+    fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
+
+    /**
+     * Selects the video frame rate. Shipping UI and settings restore exclude high-speed rates because
+     * the constrained session SIGABRTs this HAL. The boundary/reopen path remains dormant for
+     * diagnostics and persisted-schema compatibility; normal rates only update the next recording.
+     */
+    fun setVideoFrameRate(r: VideoFrameRate) {
+        val before = desiredHighSpeedFps()
+        videoFrameRate = r
+        if (desiredHighSpeedFps() != before) reopenForSession()
+    }
+
+    /** Open Gate: record the full 4:3 sensor readout. Switches [videoSize] to a 4:3 size and re-picks it. */
+    fun setOpenGate(enabled: Boolean) {
+        if (openGate == enabled) return
+        // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+        openGate = enabled
+        val sel = selection ?: return
+        applyVideoSize(chooseVideoSize(sel))
+    }
+
+    /**
+     * Dormant high-speed-session resolver. Shipping selection/restore guarantees 0 because this HAL
+     * aborts constrained sessions; diagnostic internal callers still require a matching advertised
+     * config before the compatibility path returns a non-zero rate.
+     */
+    private fun desiredHighSpeedFps(): Int {
+        val c = caps ?: return 0
+        val r = videoFrameRate
+        return if (r.highSpeed && c.highSpeedFpsFor(videoSize) >= r.fps) r.fps else 0
+    }
+
+    /** Capture a generation-owned desired packet before invalidating the accepted session. */
+    private fun reopenForSession(expectedController: CameraController? = null) {
+        reopenForSession(expectedController, currentOpticsReconfiguration())
+    }
+
+    /** Reopen for an already-owned optics transaction (mode/stream-size transition). */
+    private fun reopenForSession(transaction: OpticsTransaction) {
+        val desired = synchronized(this) { OpticsReconfiguration(overrideId, transaction) }
+        reopenForSession(expectedController = null, desired = desired)
+    }
+
+    /** Reopen the camera (if started) so the session type tracks [desiredHighSpeedFps]. */
+    private fun reopenForSession(
+        expectedController: CameraController?,
+        desired: OpticsReconfiguration,
+    ) {
+        val transaction = desired.transaction
+        if (!nativeAcquisitionMayProceed() || !started || paused) return
+        if (!ownsOpticsTransaction(transaction)) return
+        // Never tear the camera down under an active recording — it strands the encoder input surface
+        // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
+        if (recorder != null) return
+        if (gl.inputSurface == null) return
+        invalidateCameraReady()
+        // Run the close+reopen OFF the main thread. close() blocks until the HAL device is released
+        // (bounded join) and openCamera() issues several getCameraCharacteristics/openCamera Binder
+        // calls; on this HAL those can take seconds under contention, so doing it on the UI thread
+        // (vendor-feature toggles are main-thread ViewModel calls) exceeds the 5s ANR watchdog and the
+        // OS kills the app. setupExecutor is single-threaded, so reopens also serialize cleanly.
+        setupExecutor.execute {
+            if (!nativeAcquisitionMayProceed() || !sessionReopenMayProceed(
+                    currentGeneration = opticsIntentGeneration.get(),
+                    expectedGeneration = transaction.generation,
+                    expectedControllerMatches = expectedController == null || controller === expectedController,
+                    paused = paused,
+                    recording = recorder != null,
+                )
+            ) return@execute
+            // Every reopen resolves the immutable desired route under its generation. There is no
+            // transaction-less close/open branch that can pair stale selection/caps with a newer
+            // optics generation after this task was queued.
+            reconfigureCamera(desired.overrideId, transaction)
+        }
+    }
+
+    /**
+     * True when AppOps is withholding the CAMERA op from this package, i.e. the runtime permission
+     * can read GRANTED while every open is refused. Device-confirmed shape on a Lenovo TB331FC:
+     * `appops CAMERA: ignore` at UID level with `REVOKED_COMPAT` on the permission.
+     *
+     * Defensive: any failure to ask (missing service, vendor throw) answers FALSE, so an
+     * unanswerable question can never produce the accusation. That biases toward the old silent
+     * behaviour rather than toward a wrong claim, which is the right way round.
+     */
+    private fun cameraOpWithheld(): Boolean = cameraPolicyOverrides?.cameraOpWithheld?.invoke()
+        ?: runCatching {
+        val ops = context.getSystemService(android.app.AppOpsManager::class.java) ?: return false
+        val mode = ops.checkOpNoThrow(
+            android.app.AppOpsManager.OPSTR_CAMERA,
+            android.os.Process.myUid(),
+            context.packageName,
+        )
+        cameraOpModeWithheld(mode)
+        }.getOrDefault(false)
+
+    /**
+     * Atomically invalidates an accepted Camera2 session and claims any recorder fed by it. The
+     * shared engine monitor is also the recording-admission gate, so failure either wins before REC
+     * publication or claims the published recorder; it cannot leave a phantom recorder between the
+     * two transitions.
+     */
+    private fun handleActiveCameraFailure(
+        failedController: CameraController,
+        failure: Throwable,
+    ) {
+        val outcome = synchronized(this) {
+            if (!activeCameraFailureBelongsToController(controller, failedController)) return
+            val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            val tapPublication = retireTapFocusLocked(rebuildPreview = false)
+            cameraReady = false
+            readyController = null
+            acceptedCameraSession = null
+            val publication = nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = sessionGeneration,
+            )
+            val ownedRecording = synchronized(recorderOwnershipLock) {
+                recorder?.let { owned ->
+                    recorderTeardownInFlight = true
+                    recorder = null
+                    val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+                    activeRecordingGl = null
+                    val uri = activeRecordingUri
+                    val captureId = activeRecordingCaptureId
+                    activeRecordingUri = null
+                    activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
+                    OwnedRecording(owned, uri, captureId, ownedGl)
+                }
+            }
+            Triple(publication, ownedRecording, tapPublication)
+        }
+        onCameraReadyChange?.invoke(outcome.first)
+        outcome.third?.let { onTapFocusChange?.invoke(it) }
+        // Latched here, ANNOUNCED only when the reopen budget is spent (below): a transient refusal
+        // must not blank a working viewfinder, and the retries are cheap because a policy rejection
+        // returns immediately. Device-confirmed on a TB331FC that BOTH failure paths arrive here —
+        // StateCallback.onError code=3 AND a synchronous CameraAccessException CAMERA_DISABLED — so
+        // both classifiers are load-bearing.
+        // The exception code alone is NOT proof: the platform raises CAMERA_DISABLED for the
+        // transient background-proc-state refusal too (relaunch behind the keyguard, screen just
+        // woken — documented in CLAUDE.md). So confirm it against AppOps, which answers the actual
+        // question — is the camera op withheld from THIS package right now — and turns an inference
+        // into a proof. A transient lifecycle race leaves the op ALLOWED and is therefore never
+        // accused; only a genuine withholding latches.
+        val policyQueryBlocked = cameraFailureIsPolicyBlock(failure) && cameraOpWithheld()
+        // AppOps is Binder I/O and deliberately runs outside the Engine monitor. Its answer belongs
+        // only to the exact failed controller/session invalidation captured above; a replacement
+        // Ready may commit while the query is blocked, and that newer session must make the old
+        // result inert rather than letting it relatch policy truth afterward.
+        val policyBlocked = if (policyQueryBlocked) synchronized(this) {
+            val stillOwned = controller === failedController &&
+                cameraSessionGeneration.get() == outcome.first.sessionGeneration &&
+                acceptedCameraSession == null && !cameraReady
+            if (stillOwned) {
+                cameraPolicyBlocked = true
+                nextCameraPolicyPublication(blocked = true)
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+        val evicted = cameraFailureIsEviction(failure)
+        if (evicted) {
+            // Another camera app took the device — ordinary multitasking, not a fault. The status
+            // line used to announce "Camera error. Recovering." whenever the eviction beat our own
+            // onStop by a few frames (user-reported as an intermittent error on app switches).
+            // Everything else about the health path is unchanged: Ready invalidated, a live
+            // recording finalized and published, bounded recovery scheduled — resume() reopens
+            // when the user returns, and a genuinely exhausted recovery still says so.
+            Log.w("CameraEngine", "Camera evicted by another client", failure)
+        } else if (policyBlocked) {
+            // Suppressed for the same reason the eviction branch above suppresses it: we already
+            // know what this is. "Recovering." promises an outcome the retries cannot deliver — a
+            // policy block clears only when the user changes it — and the gate below says the true
+            // thing once the budget is spent. The retries still run; only the false promise goes.
+            Log.w("CameraEngine", "Camera blocked for this app by policy", failure)
+        } else {
+            Log.e("CameraEngine", "Active camera failure", failure)
+            onStatus?.invoke(CameraStatusMessage.CAMERA_ERROR_RECOVERING.status())
+        }
+        outcome.second?.let { owned ->
+            detachAndFinalizeRecording(owned.gl, owned.recorder, owned.uri, owned.captureId)
+            owned.gl.setTransfer(transfer)
+            onRecordingTerminated?.invoke(failure)
+        }
+        // The recorder has been claimed before recovery checks its invariant, so a failed Camera2
+        // producer cannot strand UI/audio/encoder state and then suppress the bounded reopen.
+        scheduleCameraRecovery(failedController)
+    }
+
+    /**
+     * The camera HAL reported an error/disconnect mid-session — its provider process can crash (e.g. a
+     * vendor key destabilizes it), which otherwise leaves a black CAMERA_DISCONNECTED viewfinder until
+     * the user backgrounds/foregrounds the app. Auto-reopen a bounded number of times, after a short
+     * delay so the provider has time to restart. The attempt counter resets on the next successful open.
+     */
+    private fun scheduleCameraRecovery(failedController: CameraController) {
+        if (!nativeAcquisitionMayProceed() || !started || paused || recorder != null) return
+        if (controller !== failedController) return
+        if (cameraRecoveryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS) {
+            // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
+            // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
+            // background/foreground cycle (resume()) retries with a fresh attempt budget.
+            val policyPublication = synchronized(this) {
+                currentCameraPolicyPublication.takeIf {
+                    cameraPolicyBlocked && it.blocked
+                }
+            }
+            if (policyPublication != null) {
+                // A policy block never heals by reopening, and "Reopen the app." would send the
+                // user around a loop that cannot end. Hand it to the permission gate instead.
+                onCameraPolicyBlocked?.invoke(policyPublication)
+            } else {
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+            }
+            return
+        }
+        cameraRecoveryAttempts++
+        runCatching {
+            timelapseScheduler.schedule(
+                {
+                    if (nativeAcquisitionMayProceed() && controller === failedController) {
+                        reopenForSession(failedController)
+                    }
+                },
+                CAMERA_RECOVERY_DELAY_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+        }
+    }
+
+    /**
+     * Bounded retry for transient selection/capability failures before the first Ready session (and
+     * for a bare door's preflight failure, AGG4-2). Returns how the failure was disposed so a caller
+     * with no other way out can tell a real park ([ColdStartRetryOutcome.BLOCKED]) from a failure
+     * that something else already owns.
+     */
+    private fun scheduleColdStartRetry(
+        transaction: OpticsTransaction,
+        reason: CameraStatusMessage,
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ): ColdStartRetryOutcome {
+        val acquisitionOpen = nativeAcquisitionMayProceed()
+        val recorderActive = recorder != null
+        val inputSurfacePresent = gl.inputSurface != null
+        val canRun = acquisitionOpen && started && !paused && !recorderActive && inputSurfacePresent
+        if (!canRun || transaction.generation != opticsIntentGeneration.get()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return coldStartRetryRefusal(
+                generationCurrent = transaction.generation == opticsIntentGeneration.get(),
+                acquisitionOpen = acquisitionOpen,
+                started = started,
+                paused = paused,
+                recorderActive = recorderActive,
+                inputSurfacePresent = inputSurfacePresent,
+                glInputPending = glInputPending,
+            )
+        }
+        when (val failure = coldStartRetryGate.failed(
+            expectedGeneration = transaction.generation,
+            currentGeneration = opticsIntentGeneration.get(),
+            canRun = canRun,
+        )) {
+            // Another failure already owns the one scheduled retry for this exact attempt.
+            ColdStartRetryGate.Failure.Ignore -> return ColdStartRetryOutcome.OWNED
+            ColdStartRetryGate.Failure.Exhausted -> {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                return ColdStartRetryOutcome.OWNED
+            }
+            is ColdStartRetryGate.Failure.Retry -> {
+                onStatus?.invoke(reason.status())
+                runCatching {
+                    timelapseScheduler.schedule(
+                        {
+                            val retryable = nativeAcquisitionMayProceed() && started && !paused &&
+                                recorder == null && gl.inputSurface != null
+                            if (!coldStartRetryGate.claim(
+                                    failure.token,
+                                    opticsIntentGeneration.get(),
+                                    retryable,
+                                )
+                            ) {
+                                startupTraceOwnership.revoke(startupTraceOwner)
+                                return@schedule
+                            }
+                            resolveInitialCameraRouteAvailability()
+                            val desired = currentOpticsReconfiguration()
+                            reconfigureCamera(
+                                desired.overrideId,
+                                desired.transaction,
+                                startup = true,
+                                startupTraceOwner = startupTraceOwner,
+                            )
+                        },
+                        CAMERA_RECOVERY_DELAY_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS,
+                    )
+                }.onFailure {
+                    coldStartRetryGate.abandon(failure.token)
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                }
+                return ColdStartRetryOutcome.OWNED
+            }
+        }
+    }
+
+    /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
+    fun setAudioGain(g: Float) { audioGain = normalizeAudioGain(g) }
+    /** Directional-audio scene (Sound Focus/Stage); applies on the next [startRecording]. */
+    fun setAudioScene(s: AudioScene) { audioScene = s }
+    /**
+     * Preferred audio input; resolved against connected AudioDeviceInfo entries at record start AND
+     * by every standby-meter generation.
+     *
+     * The standby meter is CYCLED on a real change rather than left to pick the new device up at the
+     * next arm: an AudioRecord's route is fixed when it is constructed, so without this the operator
+     * selects a USB/BT mic, watches the armed meter, and sees the phone's own capsule — the exact
+     * confusion this selector exists to remove. Disable-then-enable is self-sequencing: the running
+     * generation observes `wanted = false` and exits, and ownership defers the new reservation until
+     * it has completed.
+     */
+    fun setAudioInputPreference(p: AudioInputPreference) {
+        if (audioInputPreference == p) return
+        audioInputPreference = p
+        if (standbyAudioMonitorWanted) {
+            standbyAudioController.disable()
+            standbyAudioController.setEnabled(true)
+        }
+    }
+
+    /** Still-photo center-crop aspect ratio; applies to HEIF and JPEG. W4_3 = no crop. */
+    fun setAspectRatio(a: AspectRatio) {
+        val hiResBefore = resolvedHiResStill()
+        aspectRatio = a
+        // Still aspect is a finder input in Photo only; Video deliberately ignores it. Keep the
+        // resolved flag in step with a live Photo 4:3↔16:9 change.
+        pushTeleFinder()
+        // Hi-res is 4:3-only too, but unlike the finder flag it is SESSION state (the still reader
+        // size fixes at configureStreams): a 4:3↔16:9 flip that changes the resolved admission
+        // must rebuild the session, or a 16:9 selection would keep silently shooting uncropped
+        // 4:3 hi-res passthrough frames.
+        if (resolvedHiResStill() != hiResBefore) reopenForSession()
+    }
+
+    /**
+     * Declares which converter is clamped on (see Teleconverter.kt — it is a user statement, never a
+     * detection). NOT a session key and NOT a route axis: no reopen, and no capability changes.
+     *
+     * The controller only stores the new value; it does not resubmit the repeating request. The
+     * value's only wire effect is the advisory `com.oplus.original.zoomRatio` OIS-context hint, which
+     * every STILL request rebuilds from scratch and which the preview picks up on its next ordinary
+     * rebuild or zoom submit. Resubmitting here instead would pay the documented ~180 ms
+     * setRepeatingRequest stall at slider rate while the custom-magnification ruler is being dragged.
+     */
+    @Synchronized
+    fun setTeleconverterDeclaration(declaration: TeleconverterDeclaration) {
+        val normalizedDeclaration = teleconverterDeclaration(
+            phone = declaration.phone,
+            profile = declaration.profile,
+            customMagnification = declaration.customMagnification,
+            measuredOtherHostEquivMm = declaration.hostTeleEquivMm,
+        )
+        val previous = teleconverterDeclaration
+        if (previous == normalizedDeclaration) return
+        teleconverterDeclaration = normalizedDeclaration
+        if (previous.magnification == normalizedDeclaration.magnification) return
+        controller?.setTeleconverterMagnification(normalizedDeclaration.magnification)
+        // The Loupe Overview's pretend-field scale follows the selected converter (the hint marks
+        // the magnified view against the PRE-CONVERTER world) — re-resolve so a profile change with
+        // the finder already visible resizes the hint without waiting for a door.
+        pushTeleFinder()
+    }
+
+    /**
+     * The ONE engine-side hi-res resolution ([hiResAdmitted]): defaults describe the CURRENT route;
+     * reconfigure passes its freshly selected route explicitly. Standalone here means the full
+     * standalone-camera truth — an unrouted selection of a non-logical camera (both halves of the
+     * documented blob-allocation/RAW crash classes).
+     */
+    private fun resolvedHiResStill(
+        sel: TeleSelection? = selection,
+        c: CameraCaps? = caps,
+    ): Boolean = hiResAdmitted(
+        requested = hiResStillIntent,
+        videoMode = videoMode,
+        aspect = aspectRatio,
+        standalone = sel != null && sel.physicalId == null && c?.isLogicalMultiCamera == false,
+        advertised = c?.hiResJpegSize != null,
+    )
+
+    /**
+     * Hi-res still intent. When the RESOLVED admission for the current route changes, the session
+     * must rebuild (the still reader size is fixed at configureStreams) — through the same
+     * generation-owned reopen door every other session-affecting toggle uses, never a bespoke
+     * close/open shortcut. A toggle that does not change the resolved value (video mode, 16:9, a
+     * camera that advertises nothing) costs no reopen; mode/lens/TC/aspect doors re-resolve on
+     * their own paths.
+     */
+    fun setHiResStill(enabled: Boolean) {
+        if (hiResStillIntent == enabled) return
+        val before = resolvedHiResStill()
+        hiResStillIntent = enabled
+        if (resolvedHiResStill() != before) reopenForSession()
+    }
+
+    /**
+     * The operator's live recording-size REQUEST (not the delivered [videoSize]). The ViewModel's
+     * rollback mirror reads it on the main queue, after every interactive pick that preceded it.
+     */
+    internal fun currentRequestedVideoSize(): Size? = requestedVideoSize
+
+    /**
+     * The live DNG intent, for the same rollback mirror (AGG3-10): a direct [setRawWanted] write
+     * after the rollback committed is newer than the frozen packet's `rawWanted`.
+     */
+    internal fun currentRawWanted(): Boolean = rawWanted
+
+    /**
+     * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
+     * SurfaceTexture buffer and encoder all agree on the same dimensions.
+     *
+     * This is the INTERACTIVE picker only. A memory/settings RECALL does not come through here: it
+     * rides [setResolvedOptics]'s `recalledVideoSize`, which assigns [requestedVideoSize] INSIDE
+     * `beginOpticsTransaction` alongside facing/lens/teleconverter/controls. A bare recall setter
+     * that wrote the field outside any transaction is exactly the transaction-less shortcut that can
+     * pair an outgoing caps snapshot with a newer optics generation — do not reintroduce one.
+     */
+    fun setVideoResolution(s: Size): Boolean {
+        val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
+        if (offered != null && s !in offered) {
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
+            return false
+        }
+        // Remember the user's pick so lens switches and the initial open don't silently re-derive
+        // the largest size over it — chooseVideoSize honors this request whenever the current lens
+        // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
+        // flip or a lens without that mode).
+        synchronized(this) {
+            requestedVideoSize = s
+            requestedVideoSizeDirectWrites++
+        }
+        if (videoSize == s) return true
+        applyVideoSize(s)
+        return true
+    }
+
+    private fun applyVideoSize(s: Size) {
+        videoSize = s
+        onVideoSizeChosen?.invoke(s, null)
+        // In PHOTO mode the preview stream stays on the 4:3 full-field size — the new recording
+        // size takes effect on the stream when the user switches to VIDEO (setVideoMode reopens).
+        if (videoMode) {
+            previewStreamSize = s
+            emitPreviewAspect()
+            gl.setCameraPreviewSize(s.width, s.height)
+            // Output dimensions are part of Camera2's configured stream contract. Updating only the
+            // SurfaceTexture default size leaves the producer on the old 16:9/4:3 stream.
+            reopenForSession()
+        }
+    }
+
+    /**
+     * Switches to one of the four rear lenses — by default bundling teleconverter mode: the 3× lens
+     * enables it (the afocal 180° flip; stabilization at 300 mm is the HAL's OIS+EIS via
+     * [VideoStabMode], not app-side gyro warping), any other lens disables it — one action, one
+     * camera reopen. [teleconverterOverride] lets TELE toggles retain or detach the converter in the
+     * same reopen. Resolves the [LensChoice]'s target focal to
+     * a concrete (standalone-preferred) camera id so nothing is hardcoded. No-op mid-recording
+     * (reconfiguring under the encoder corrupts the clip); the UI also gates it.
+     */
+    // Pre-TELE framing snapshot as a UNIFIED main-relative zoom (mode-independent), so turning
+    // TELE off returns the user EXACTLY where they were — lens band, ratio, focal readout — in
+    // photo AND video (user-reported: off used to pin the 3× preset, or 9.1× through a remap).
+    @Volatile private var preTeleUnifiedZoom = Float.NaN
+
+    fun setLens(
+        choice: LensChoice,
+        teleconverterOverride: Boolean = false,
+        // TELE-toggle-off only: restore the pre-TELE framing instead of jumping to [choice]'s
+        // preset. An explicit lens pick (onLens) must NOT restore — the user chose a new framing.
+        restorePreTele: Boolean = false,
+    ) {
+        // Lens presets and the TC toggle (which routes through here) are REAR-only doors: while
+        // FRONT they refuse instead of silently flipping the route out from under the operator —
+        // the flip button is the one exit. Defensive twin of the ViewModel's gate, through the same
+        // shared decision so their answers cannot drift.
+        when (
+            backOpticsDoorRefusal(recorder != null, activeCameraRoute)
+        ) {
+            BackOpticsRefusal.RECORDING -> { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+            BackOpticsRefusal.FRONT_ROUTE -> { onStatus?.invoke(CameraStatusMessage.SWITCH_TO_REAR_FIRST.status()); return }
+            BackOpticsRefusal.NONE -> Unit
+        }
+        val intentGeneration = lensIntentGeneration.incrementAndGet()
+        val (transaction, resolved) = beginOpticsTransaction {
+            val intent = resolveLensOpticsIntent(
+                // The ROUTE, not the mode — DNG moves photo onto a standalone lens as surely as
+                // video does, and the zoom scale follows the route.
+                standaloneRoute = standaloneRouteWanted(
+                    videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                ),
+                opticalPresets = acceptedOpticalPresets,
+                currentLens = lensChoice,
+                currentTeleconverter = teleconverterMode,
+                currentControls = controls,
+                currentPreTeleUnifiedZoom = preTeleUnifiedZoom,
+                requestedLens = choice,
+                requestedTeleconverter = teleconverterOverride,
+                restorePreTele = restorePreTele,
+            )
+            // Publish the COMPLETE desired packet under the same monitor as its generation.
+            lensChoice = intent.lens
+            teleconverterMode = intent.teleconverter
+            controls = intent.controls
+            preTeleUnifiedZoom = intent.preTeleUnifiedZoom
+            overrideId = null
+            userCameraPin = null
+            intent
+        }
+        // The optics packet above already updated [teleconverterMode]; resolve the finder PIP now
+        // so a TC-off (or a lens pick that drops TC) can never leave the GL PIP drawing after the
+        // Compose border is gone — applyStabilization re-pushes, but only once the async session
+        // reconfigure completes.
+        pushTeleFinder()
+        // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
+        setupExecutor.execute {
+            if (!ownsOpticsTransaction(transaction) ||
+                lensIntentGeneration.get() != intentGeneration || paused
+            ) return@execute
+            if (recorder != null) {
+                // Symmetric with setVideoMode's recheck: silent return latched Not-Ready with the
+                // new lens published over the old streaming camera (tracer T8).
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_LENS_UNCHANGED.status())
+                return@execute
+            }
+            // The TC state is SESSION-scoped: the session TYPE (0x80b4, the stock TC operation mode
+            // that engages the real 300 mm OIS profile), the Hasselblad hints, and the afocal flip
+            // are all fixed at configureStreams. Flipping TELE on the SAME camera id (the video 3×
+            // band and TELE both live on standalone 4) therefore MUST still reopen — device-observed
+            // otherwise: the TC stabilization kept applying after TELE off, and turning TELE on from
+            // the video 3× lens never engaged it.
+            val teleChanged = transaction.before.teleconverter != resolved.teleconverter
+            if (resolved.teleconverter) {
+                // Physical-converter shooting: pin the STANDALONE 3× camera — the converter clamps
+                // onto that lens, so the logical camera's seamless switching would zoom right off it.
+                // Digital 1–10× only, afocal flip on, RAW available (standalone id).
+                val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                if (id == null) {
+                    rollbackOptics(transaction, CameraStatusMessage.TELE_LENS_UNAVAILABLE_UNCHANGED.status())
+                    return@execute
+                }
+                val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
+                if (beforeCameraId != id || controller == null || teleChanged) {
+                    reconfigureCamera(id, transaction)
+                } else if (transaction.before.ready &&
+                    transaction.before.readyController === controller
+                ) {
+                    val expectedController = controller ?: return@execute
+                    commitFastPathOrReconfigure(transaction, id, expectedController) {
+                        overrideId = id
+                        applyStabilization()
+                    }
+                } else {
+                    reconfigureCamera(id, transaction)
+                }
+            } else {
+                // Mode-split homes (see resolveNonTeleId): PHOTO picks are ZOOM PRESETS on the
+                // logical seamless camera (no reopen); VIDEO picks reopen the matching STANDALONE
+                // lens (lens-local zoom resets to 1×).
+                val id = resolveNonTeleId(resolved.lens)
+                if (id == null) {
+                    rollbackOptics(
+                        transaction,
+                        CameraStatusMessage.LENS_UNAVAILABLE_UNCHANGED.status(
+                            CameraStatusArgument.Lens(resolved.lens),
+                        ),
+                    )
+                    return@execute
+                }
+                val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
+                if (beforeCameraId != id || controller == null || teleChanged) {
+                    reconfigureCamera(id, transaction)
+                } else if (transaction.before.ready &&
+                    transaction.before.readyController === controller
+                ) {
+                    val expectedController = controller ?: return@execute
+                    commitFastPathOrReconfigure(transaction, id, expectedController) {
+                        overrideId = id
+                    }
+                } else {
+                    reconfigureCamera(id, transaction)
+                }
+            }
+        }
+    }
+
+    /**
+     * The FRONT (selfie) camera door — a first-class optics transaction like setLens/setVideoMode,
+     * NOT a transaction-less close/open. Order inside the desired packet matters and is deliberate:
+     * entering FRONT forces the teleconverter OFF in the SAME publication (the converter is a
+     * rear-3× accessory; a front session with the afocal 180° or the TC session type would be
+     * nonsense), so no intermediate front+TC state is ever observable. Zoom becomes front-lens-local
+     * 1× on entry; leaving converts the retained canonical rear framing into the target route's
+     * coordinates: logical BACK is unified, while every standalone route (Video or RAW/DNG Photo)
+     * is lens-local. Remap-door hygiene:
+     * beginOpticsTransaction retires tap focus, pushTeleFinder re-resolves (false — TC just went
+     * off), the ViewModel invalidates its zoom glide at the same door, and hi-res is re-resolved by
+     * reconfigureCamera's route-explicit resolvedHiResStill(sel, c) — the facing door ALWAYS
+     * reconfigures, so that resolve IS the explicit re-resolve the other doors perform inline.
+     * A failed open rolls back facing with the rest of the packet through rollbackOptics.
+     */
+    fun setFrontCamera(enabled: Boolean) {
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+        if ((activeCameraRoute == CameraRoute.FRONT) == enabled) return
+        val targetRoute = if (enabled) {
+            CameraRoute.FRONT
+        } else if (cameraRouteInventory.back) {
+            CameraRoute.BACK
+        } else {
+            CameraRoute.EXTERNAL
+        }
+        val intentGeneration = facingIntentGeneration.incrementAndGet()
+        val transaction = beginOpticsTransaction {
+            val sourceStandaloneRoute = teleconverterMode || standaloneRouteWanted(
+                videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+            )
+            if (enabled) {
+                preFrontRearUnifiedZoom = unifiedZoomOf(
+                    lens = lensChoice,
+                    zoomRatio = controls.zoomRatio,
+                    standaloneRoute = sourceStandaloneRoute,
+                    optical = acceptedOpticalPresets,
+                )
+            }
+            setActiveCameraRoute(targetRoute)
+            if (targetRoute != CameraRoute.BACK) teleconverterMode = false
+            val targetStandaloneRoute = standaloneRouteWanted(
+                videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+            )
+            controls = controls.copy(
+                zoomRatio = if (enabled) {
+                    1f
+                } else if (targetRoute == CameraRoute.EXTERNAL) {
+                    1f
+                } else {
+                    rearReturnZoom(
+                        targetStandaloneRoute = targetStandaloneRoute,
+                        preFrontUnifiedZoom = preFrontRearUnifiedZoom,
+                        lensPreset = lensChoice.zoomPreset,
+                        opticalPresets = acceptedOpticalPresets,
+                    )
+                },
+            )
+            // Leaving onto the logical route re-bands from the zoom just returned (AGG4-23); TC is
+            // always off here (forced off on entry, refused while FRONT).
+            if (targetRoute == CameraRoute.BACK) {
+                lensChoice = rearReturnLens(targetStandaloneRoute, controls.zoomRatio, lensChoice)
+            }
+            // A front trip drops the pre-TELE return framing: the snapshot is an absolute ratio in
+            // a rear scale, and TELE does not survive the trip (leaving FRONT lands on the plain
+            // rear home, TC off), so a stale restore target must not linger.
+            preTeleUnifiedZoom = Float.NaN
+            overrideId = null
+            userCameraPin = null
+        }.first
+        // TC state changed above (entering) or the finder inputs must re-resolve anyway (leaving):
+        // resolve synchronously so the GL PIP cannot outlive the facing flip while the async
+        // reconfigure is still queued — the same door discipline as setLens/setVideoMode.
+        pushTeleFinder()
+        // Same door, same reason: the loupe is suppressed on the front route, and resolving it
+        // synchronously keeps the 40% crop from surviving into the selfie preview while the
+        // reconfigure is still in flight.
+        pushPunchIn()
+        setupExecutor.execute {
+            if (!ownsOpticsTransaction(transaction) ||
+                facingIntentGeneration.get() != intentGeneration || paused
+            ) return@execute
+            if (recorder != null) {
+                // Symmetric with setVideoMode's recheck: silent return latched Not-Ready with the
+                // new facing published over the old streaming camera (tracer T8).
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_CAMERA_UNCHANGED.status())
+                return@execute
+            }
+            val id = when (targetRoute) {
+                CameraRoute.FRONT -> cachedFront()?.logicalId
+                CameraRoute.EXTERNAL -> cachedExternal()?.logicalId
+                CameraRoute.BACK -> resolveNonTeleId(lensChoice)
+            }
+            if (id == null) {
+                rollbackOptics(
+                    transaction,
+                    if (enabled) CameraStatusMessage.FRONT_CAMERA_UNAVAILABLE.status()
+                    else CameraStatusMessage.CAMERA_UNAVAILABLE_FACING_UNCHANGED.status(),
+                )
+                return@execute
+            }
+            // Facing always changes the physical camera — no same-route fast path exists here.
+            reconfigureCamera(id, transaction)
+        }
+    }
+
+    /**
+     * The non-teleconverter camera id for the CURRENT capture mode. PHOTO lives on the LOGICAL
+     * multicamera — seamless 0.6–20× pinch, stills device-verified clean. VIDEO pins the matching
+     * STANDALONE lens: the logical camera's EIS (Standard AND Active) leaks its uncorrected warp
+     * margin into the stream's left edge — device-verified 2026-07-14 in the preview AND the
+     * RECORDED file — while the standalone cameras have shipped clean stabilized video all along.
+     * Falls back to the closest standalone id on devices without a logical back camera.
+     */
+    private fun resolveNonTeleId(choice: LensChoice): String? =
+        if (activeCameraRoute == CameraRoute.EXTERNAL) {
+            cachedExternal()?.logicalId
+        } else if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone)) {
+            cachedIdForFocal(choice.targetEquivMm)
+        } else {
+            cachedLogicalBack()
+                ?: cachedIdForFocal(choice.targetEquivMm)
+        }
+
+    /**
+     * The operator's DNG intent. It is a ROUTE input, not just a save option: RAW is impossible on
+     * the logical camera (see [standaloneRouteWanted]), so wanting DNG moves photo onto a standalone
+     * lens. Reopens only when the answer actually changes, so toggling HEIF/JPEG never disturbs the
+     * session.
+     */
+    fun setRawWanted(
+        enabled: Boolean,
+        /**
+         * The DNG door's target-scale optics, resolved by the caller with [remapRouteScaleOptics]
+         * when the standalone answer flips. Published inside this door's own optics transaction:
+         * the toggle moves PHOTO between unified and lens-local zoom, and carrying the old number
+         * across turned a unified 3× into a 9× crop on the 70 mm lens (RPL cycle 1, AGG-1). Null
+         * keeps the current packet (restore, encoder inventory, and other non-door callers).
+         */
+        resolvedLens: LensChoice? = null,
+        resolvedControls: ManualControls? = null,
+    ) {
+        if (rawWanted == enabled) return
+        val rawLaw = activeDeviceProfile().rawRequiresStandalone
+        // TELE already pins the standalone 3×, whose session carries RAW by ROUTE (the reader plan
+        // never asks rawWanted), so a DNG toggle there names the same camera: asking only the
+        // mode/law reopened the identical id + TC session for a visible black dip per toggle
+        // (RPL cycle 2, AGG2-10). The VM's scale remap already treated it as no change.
+        val routeFlips = dngIntentChangesRearRoute(
+            video = videoMode,
+            teleconverter = teleconverterMode,
+            from = rawWanted,
+            to = enabled,
+            rawForcesStandalone = rawLaw,
+        )
+        // Before start there is no session to move: the FIRST configure resolves the route from
+        // `rawWanted` directly (that is how a restored DNG selection lands), and opening a
+        // transaction here would bump the optics generation under the cold-start path for nothing.
+        // FRONT/EXTERNAL keep their one camera whatever DNG says (selectCurrentLens ignores the
+        // answer there), so a reopen would be a visible black dip for no route change; leaving
+        // FRONT re-resolves through resolveNonTeleId with the updated intent (tracer T7).
+        if (!routeFlips || !started || activeCameraRoute != CameraRoute.BACK) {
+            synchronized(this) {
+                rawWanted = enabled
+                rawWantedDirectWrites++
+                if (routeFlips) {
+                    resolvedLens?.let { lensChoice = it }
+                    resolvedControls?.let { controls = it }
+                }
+            }
+            return
+        }
+        if (paused) {
+            // Backgrounded: no reopen now, but resume() reuses the CACHED overrideId, which still
+            // names the pre-pause route — the permanent-divergence shape of DNG bug #2 below. Drop
+            // the cached resolution so resume re-resolves from the new intent (tracer T6).
+            synchronized(this) {
+                // Not counted as a direct write: this one DOES change the route answer (and drops
+                // overrideId), so a rollback must restore DNG together with the route it restores.
+                rawWanted = enabled
+                resolvedLens?.let { lensChoice = it }
+                resolvedControls?.let { controls = it }
+                overrideId = userCameraPin
+            }
+            return
+        }
+        // RE-RESOLVE the route; do NOT go through the bare reopenForSession(). That path reuses
+        // `overrideId`, which caches the id the LAST ACCEPTED session resolved to — after a
+        // Video→Photo trip that is the LOGICAL camera — so the reopen rebuilt the one route that
+        // cannot carry RAW, and the change gate above then made the divergence PERMANENT: the chip
+        // read DNG-on, the session stayed raw=false, no DNG file was ever written, and no further
+        // toggle could recover it because `rawWanted` already matched (device-reproduced with the
+        // route trace 2026-07-29, overrideId=0). `setRawWanted` is the only reopen whose route
+        // ANSWER changes — hi-res, aspect, fps and transfer all keep the same camera — which is why
+        // it alone needs this. An explicit user camera pin still wins; only the cached resolution
+        // is dropped.
+        //
+        // `rawWanted` itself is published INSIDE the transaction and is part of OpticsSnapshot, so
+        // a failed reopen rolls the intent back with the route instead of leaving DNG wanted over a
+        // logical session that the change gate would then refuse to repair (AGG-4).
+        val pin = synchronized(this) { userCameraPin }
+        val transaction = beginOpticsTransaction {
+            rawWanted = enabled
+            resolvedLens?.let { lensChoice = it }
+            resolvedControls?.let { controls = it }
+            overrideId = pin
+        }.first
+        // The Loupe Overview gate converts zoom through the route answer that just changed.
+        pushTeleFinder()
+        reconfigureCamera(pin, transaction)
+    }
+
+    fun setCameraOverride(id: String?) {
+        // Switching the physical lens mid-recording reconfigures the camera under the encoder and
+        // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+        // A debug override pins an explicit rear-route id; it is not the facing door, so it also
+        // drops FRONT (selectCurrentLens would otherwise ignore the pinned id while facing FRONT).
+        val transaction = beginOpticsTransaction {
+            setActiveCameraRoute(CameraRoute.BACK)
+            overrideId = id
+            userCameraPin = id
+        }.first
+        reconfigureCamera(id, transaction)
+    }
+
+    private fun reconfigureCamera(
+        id: String?,
+        transaction: OpticsTransaction,
+        startup: Boolean = false,
+        startupTraceOwner: StartupTrace.Owner? = null,
+    ) {
+        if (!nativeAcquisitionMayProceed()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        synchronized(this) {
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return
+            }
+            overrideId = id
+        }
+        if (!started) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            return
+        }
+        val ownedGl = glOwners.current()
+        val input = ownedGl.inputSurface ?: run {
+            // An optics intent that lands between GL start and input-Surface creation is valid and
+            // remains Not-Ready. The input callback snapshots the latest generation and converges it
+            // — and opens under this Engine's live trace owner (AGG6-18), so a resume's owner
+            // passed here is deliberately left armed for it rather than disarmed.
+            if (glInputPending) return
+            // Same disposition table as the selection/caps preflight (AGG5-25): a bare
+            // reopenForSession() door already invalidated Ready before queueing, so the plain
+            // "camera unchanged" rollback could not restore Ready and parked Not-Ready over a
+            // still-streaming session with a condition-ENDING status and nothing scheduled.
+            when (
+                preflightFailureDisposition(
+                    recoverColdPreflight = startup || controller == null,
+                    baselinePrecedesMutation = transaction.baselinePrecedesMutation,
+                )
+            ) {
+                PreflightFailureDisposition.COLD_RETRY -> scheduleColdStartRetry(
+                    transaction,
+                    CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING,
+                    startupTraceOwner,
+                )
+                PreflightFailureDisposition.RESTORE_ROLLBACK -> {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    rollbackOptics(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED.status())
+                }
+                PreflightFailureDisposition.BARE_RETRY -> {
+                    startupTraceOwnership.revoke(startupTraceOwner)
+                    retryBareDoor(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING)
+                }
+            }
+            return
+        } // @Volatile in GlPipeline: safe cross-thread read
+        val preflightSessionGeneration = invalidateCameraReady()
+        // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
+        // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
+        // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
+        // the initial open and other reopens.
+        setupExecutor.execute {
+            // The input-ready marker means "this open is still queued", never "it was queued once"
+            // (MRG6-1). A pause between completeGlInputReady's `paused` read and its marker write
+            // clears nothing, so the marker outlived the pause; this task then refused on `paused`
+            // below, and resume's task — dequeued after it — found the marker naming its own
+            // generation and skipped the only open left: a black viewfinder until an unrelated
+            // optics door. The lane is serial, so once this task runs, whatever it does finishes
+            // before resume's task looks: either a controller is installed (resume returns on it)
+            // or nothing opened and resume must converge. Clearing on dequeue covers every refusal.
+            if (startup) inputReadyOpenGeneration.compareAndSet(transaction.generation, NO_INPUT_READY_OPEN)
+            if (!nativeAcquisitionMayProceed() || !glInputTransactionMayProceed(
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    engineStarted = started,
+                    inputCurrent = ownedGl.inputSurface === input,
+                )
+            ) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (paused || recorder != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            val recoverColdPreflight = startup || controller == null
+            // Resolve the id and read the characteristics BEFORE closing: these are dozens of
+            // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
+            // the old camera keeps streaming while they run, shrinking the visible freeze.
+            val sel = selectCurrentLens() ?: run {
+                handlePreflightFailure(
+                    transaction,
+                    recoverColdPreflight,
+                    preflightSessionGeneration,
+                    startupTraceOwner,
+                )
+                return@execute
+            }
+            val c = cachedCaps(sel.logicalId, sel.physicalId)
+                ?: run {
+                    handlePreflightFailure(
+                        transaction,
+                        recoverColdPreflight,
+                        preflightSessionGeneration,
+                        startupTraceOwner,
+                    )
+                    return@execute
+                }
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (!nativeAcquisitionMayProceed() || paused || recorder != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            // This lightweight physical-member walk happens on setupExecutor while the old camera
+            // is still streaming. The still callback remains cache-only even on the first lens hit.
+            prefetchLensExifMetadata(sel, c)
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            if (!nativeAcquisitionMayProceed() || paused || recorder != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+
+            // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
+            // blackout overlapped away). The preview surface still belongs to the old session, so
+            // the new session is deferred until the old controller closes. If the HAL refuses a
+            // second open (shared physical sensor / max-cameras), fall back to the sequential path.
+            // A concurrent eviction of the OLD device is harmless: `controller` is already the new
+            // one, so the old error handler's identity guard no-ops and its close() self-runs.
+            val old = controller
+            val next = wireController(ownedGl)
+            val candidatePublication = synchronized(this) {
+                // paused/recorder are rechecked INSIDE the monitor, like the sequential path: the
+                // outside check above races pause(), which writes `paused` first and then nulls
+                // `controller` under this monitor. Installing `next` after that null meant pause
+                // queued no close for it, and `next.open` ran behind the keyguard (AGG2-14).
+                if (!dualOpenCandidateInstallAdmitted(
+                        quarantined = UnsafeRecorderQuarantine.isActive(),
+                        glInputMayProceed = glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        ),
+                        ownsTransaction = ownsOpticsTransaction(transaction),
+                        paused = paused,
+                        recording = recorder != null,
+                    )
+                ) {
+                    null
+                } else {
+                    controller = next
+                    cameraReady = false
+                    readyController = null
+                    acceptedCameraSession = null
+                    val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+                    // Read the OUTGOING caps before the field is overwritten: the exposure transfer
+                    // needs the f-number of the lens that was actually streaming.
+                    val outgoingCaps = caps
+                    selection = sel
+                    caps = c
+                    reconcileControlsWithCaps(c, outgoingCaps)
+                    videoSize = chooseVideoSize(sel)
+                    previewStreamSize = choosePreviewStreamSize(sel)
+                    nextCameraReadyPublication(
+                        ready = false,
+                        opticsGeneration = transaction.generation,
+                        sessionGeneration = sessionGeneration,
+                    )
+                }
+            }
+            if (candidatePublication == null) {
+                next.close()
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            val controllerTraceOwner = startupTraceOwnership.claimController(startupTraceOwner)
+            next.bindStartupTrace(controllerTraceOwner)
+            // Post-swap replay of the drive-side ZSL gate — same window as the sequential path's
+            // replay above: wireController read driveMode before this synchronized swap, and an MR
+            // recall's own applyLoaded orders the reopen BEFORE setDriveMode, making the race real.
+            next.setZslServePossible(driveMode == DriveMode.SINGLE)
+            onCameraReadyChange?.invoke(candidatePublication)
+
+            seedGlZoom()
+            val deviceUp = java.util.concurrent.CountDownLatch(1)
+            val deviceOk = java.util.concurrent.atomic.AtomicBoolean(false)
+            var openStarted = false
+            terminalAcquisitionGate.runIfOpen cameraOpen@{
+                if (UnsafeRecorderQuarantine.isActive()) return@cameraOpen
+                openStarted = true
+                // Resolved against the freshly selected route, BEFORE configure (the deferred
+                // session included) — the controller only re-checks the standalone/advertised
+                // halves defensively at its reader seam.
+                next.hiResStill = resolvedHiResStill(sel, c)
+                next.open(
+                    selection = sel,
+                    caps = c,
+                    glInputSurface = input,
+                    controls = controls,
+                    // 10-bit exactly when the bits are spent on something: VIDEO + HLG, or a log
+                    // transfer this camera cannot encode natively (the GL-log fallback).
+                    tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                    nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                    highSpeedFps = desiredHighSpeedFps(),
+                        videoStabHalMode = c.videoStabControlMode(videoStabMode),
+                    teleconverterMode = teleconverterMode,
+                    teleconverterMagnification = teleconverterMagnification,
+                    pinAutoFps = videoMode,
+                    diagnosticOpticsGeneration = transaction.generation,
+                    deferSession = true,
+                    onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
+                    runNativeAcquisition = { block ->
+                        UnsafeRecorderQuarantine.runNativeAcquisition(processNativeOwner, block)
+                    },
+                    onReady = { outputs ->
+                        if (nativeAcquisitionMayProceed() && glInputTransactionMayProceed(
+                                ownerCurrent = glOwners.owns(ownedGl),
+                                engineStarted = started,
+                                inputCurrent = ownedGl.inputSurface === input,
+                            )
+                        ) {
+                            commitOpticsReady(
+                                expectedGeneration = transaction.generation,
+                                expectedController = next,
+                                photoOutputs = outputs,
+                                expectedSessionGeneration = candidatePublication.sessionGeneration,
+                            )
+                        } else {
+                            startupTraceOwnership.revoke(controllerTraceOwner)
+                            next.close()
+                        }
+                    },
+                    onError = { failure ->
+                        startupTraceOwnership.revoke(controllerTraceOwner)
+                        deviceUp.countDown() // an open-phase failure also releases the latch (fallback)
+                        // A concurrent-open refusal is expected on devices that cannot dual-open a
+                        // shared sensor; the setup task below owns that local sequential fallback.
+                        // Only an error AFTER the next device opened is a real active-controller fault.
+                        if (convergeRetainedSurfaceAfterNativeRefusal(failure)) {
+                            synchronized(this) { if (controller === next) controller = null }
+                            next.close()
+                        } else if (nativeAcquisitionMayProceed() && deviceOk.get() && glInputTransactionMayProceed(
+                                ownerCurrent = glOwners.owns(ownedGl),
+                                engineStarted = started,
+                                inputCurrent = ownedGl.inputSurface === input,
+                            )
+                        ) {
+                            handleActiveCameraFailure(next, failure)
+                        } else if (!nativeAcquisitionMayProceed()) {
+                            next.close()
+                        }
+                    },
+                )
+            }
+            if (!openStarted) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                next.close()
+                // Close the OUTGOING device too. Every other abort branch here either closes `old`
+                // or deliberately RESTORES it as the controller (the superseded-transaction branch);
+                // this one did neither, so the still-open old CameraDevice became unreachable the
+                // moment `controller` was nulled — a HAL client leak that can refuse later opens
+                // with CAMERA_IN_USE (2026-07-30 review L1). An open refused at the gate means
+                // teardown is in progress, so old cannot be restored; release it.
+                old?.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                return@execute
+            }
+            // The old camera streams through the new device's open. Keep the absolute two-second
+            // HAL deadline, but wake at a short ownership cadence: a newer optics intent can only
+            // enqueue on this same setupExecutor, so parking here unconditionally made an
+            // already-known-stale switch hold the sole setup lane (and Not-Ready UI) for two seconds.
+            waitForDualOpenBoundary(
+                awaitSlice = { nanos ->
+                    deviceUp.await(nanos, java.util.concurrent.TimeUnit.NANOSECONDS)
+                },
+                shouldContinue = {
+                    ownsOpticsTransaction(transaction) && nativeAcquisitionMayProceed() &&
+                        !paused && recorder == null && glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        )
+                },
+            )
+            // The blocking wait is an ownership boundary: pause, REC, or a newer reopen may have
+            // superseded this attempt while the setup thread was parked. Do not publish sizes or
+            // start a deferred session from an obsolete device; release every local handle.
+            if (!nativeAcquisitionMayProceed()) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                next.close()
+                // Same leak as the !openStarted branch (review L1): terminal teardown superseded the
+                // dual-open while the setup thread was parked on the latch — release the outgoing
+                // device instead of orphaning it behind a nulled controller reference.
+                old?.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                return@execute
+            }
+            if (!glInputTransactionMayProceed(
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    engineStarted = started,
+                    inputCurrent = ownedGl.inputSurface === input,
+                )
+            ) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                next.close()
+                old?.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                return@execute
+            }
+            if (!ownsOpticsTransaction(transaction)) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                next.close()
+                val cleanup = synchronized(this) {
+                    dualOpenSupersessionCleanup(
+                        currentSlot = controller,
+                        candidate = next,
+                        outgoing = old,
+                        outgoingRestorable = old?.restorableAfterDualOpen() ?: true,
+                    ).also { action ->
+                        if (action != DualOpenSupersessionCleanup.RELEASE_OUTGOING) {
+                            controller = when (action) {
+                                DualOpenSupersessionCleanup.RESTORE_VACANT -> null
+                                else -> old
+                            }
+                            selection = transaction.before.selection
+                            caps = transaction.before.caps
+                            videoSize = transaction.before.videoSize
+                            previewStreamSize = transaction.before.previewStreamSize
+                        }
+                    }
+                }
+                // Candidate self-removal may have vacated the slot before setup observes the newer
+                // intent. Vacancy still belongs to this attempt; a different non-null slot does not.
+                if (cleanup == DualOpenSupersessionCleanup.RELEASE_OUTGOING ||
+                    cleanup == DualOpenSupersessionCleanup.RESTORE_VACANT
+                ) old?.close()
+                return@execute
+            }
+            if (!nativeAcquisitionMayProceed() || paused || recorder != null || controller !== next) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                next.close()
+                old?.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                return@execute
+            }
+            // Candidate caps/sizes become externally visible only after the blocking dual-open
+            // boundary confirms this generation still owns the user's intent.
+            val deliveredGeneration = transaction.generation
+            onCapsReady?.invoke(c, deliveredGeneration)
+            onVideoSizeChosen?.invoke(videoSize, deliveredGeneration)
+            applyStabilization()
+            // Update the GL stream size only now — the old camera was still producing into the
+            // shared SurfaceTexture; resizing it earlier would distort its final frames.
+            emitPreviewAspect(deliveredGeneration)
+            ownedGl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
+            val outgoingRelease = old?.close()
+            if (!cameraReplacementMayAcquire(outgoingRelease)) {
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                // The next CameraDevice may have been admitted by the deliberate dual-open path,
+                // but its deferred session has not started. Retire it and refuse every sequential
+                // or session-start acquisition: timeout is retained ownership, never release proof.
+                next.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                return@execute
+            }
+            if (deviceOk.get()) {
+                var sessionStarted = false
+                terminalAcquisitionGate.runIfOpen sessionStart@{
+                    if (UnsafeRecorderQuarantine.isActive()) return@sessionStart
+                    sessionStarted = true
+                    next.startDeferredSession()
+                }
+                if (!sessionStarted) {
+                    startupTraceOwnership.revoke(controllerTraceOwner)
+                    next.close()
+                    synchronized(this) {
+                        if (controller === next) controller = null
+                    }
+                }
+            } else {
+                // Sequential fallback: the HAL refused the concurrent open.
+                startupTraceOwnership.revoke(controllerTraceOwner)
+                val refusedCandidateRelease = next.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                if (!cameraReplacementMayAcquire(refusedCandidateRelease)) {
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                    return@execute
+                }
+                if (!nativeAcquisitionMayProceed() || paused || recorder != null) return@execute
+                // A second controller must never inherit the first candidate's trace owner.
+                openCamera(ownedGl, input, transaction, startupTraceOwner = null)
+            }
+        }
+    }
+
+    private fun selectCurrentLens(): TeleSelection? {
+        // FRONT owns the whole selection: the rear override/focal resolvers below are meaningless
+        // for it, and the facing door already cleared overrideId in its transaction. Standalone-
+        // shaped (physicalId == null), so every downstream session/capture axis behaves like the
+        // proven rear standalone path.
+        if (activeCameraRoute == CameraRoute.FRONT) return cachedFront()
+        if (activeCameraRoute == CameraRoute.EXTERNAL) return cachedExternal()
+        val id = overrideId
+            ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
+            ?: cachedIdForFocal(lensChoice.targetEquivMm)
+            ?: return null
+        return CameraSelector2.select(manager, id)
+    }
+
+    /**
+     * Zoom-gesture smoothness: in low light the preview legitimately idles at 10-15 fps — the
+     * app-side P loop parks exposure at up to 1/10 s (its handheld ceiling) and HAL-AE photo AUTO
+     * uses the lowest fps floor for a brighter view. At that rate ANY zoom reads as jank, no matter
+     * how smoothly the ratio is applied. While a gesture is live: pin the HAL-AE fps floor
+     * (controller boost), and for the app-side P loop trade exposure time for ISO
+     * BRIGHTNESS-NEUTRALLY — only as far as ISO headroom allows, floored at 1/30 s, so the image
+     * never dims (in this trade the frame rate simply rises as far as physics permits). On release
+     * the loop re-converges to its preferred program point on its own (≤0.35 stop/tick).
+     */
+    fun setZoomInteraction(active: Boolean) {
+        val transition = if (active) startZoomInteraction() else endZoomInteraction(zoomInteractionState)
+        zoomInteractionState = transition.next
+        // Start carries the wide aim. Moving ticks are GL/still-truth only. A quiet timer can land
+        // exact before the boost tail ends; if it did, the no-FPS-change end clears state without
+        // resubmitting the identical ratio. Routes that restore FPS still rebuild at the end.
+        val exact = controls.zoomRatio
+        val wideAim = if (active) {
+            val r = caps?.zoomRatioRange
+            resolveZoomGestureEdgeTarget(exact, ZOOM_GESTURE_MARGIN, r?.lower, r?.upper)
+        } else {
+            null
+        }
+        zoomOverrides?.setSmoothPreviewBoost?.invoke(active, exact, wideAim, transition.submitExact)
+            ?: controller?.setSmoothPreviewBoost(
+                active,
+                finalZoom = exact,
+                halZoom = wideAim,
+                submitExactWhenFpsUnchanged = transition.submitExact,
+            )
+        // (The low-light frame-rate help lives in applyExposure's ALWAYS-on preview exposure cap —
+        // an earlier gesture-scoped trade here mutated the real program values, so a still captured
+        // right after a zoom inherited the traded short-exposure/high-ISO pair.)
+    }
+
+    /**
+     * Re-seeds the GL live-zoom pair at a camera (re)open. A fresh session's HAL RAMPS its zoom
+     * from 1.0 to the requested ratio over several frames — with a stale GL target the compensation
+     * can't mask it, which showed as a 1×→3× flicker the instant TELE turned off. Seeding target
+     * AND hal to the requested ratio holds the last frame steady; the first real capture result
+     * then reports the HAL's true (still-ramping) zoom and the crop masks the rest of the ramp.
+     */
+    private fun seedGlZoom(ownedGl: GlPipeline = glOwners.current()) {
+        ownedGl.setZoomTarget(controls.zoomRatio)
+        ownedGl.setHalZoom(controls.zoomRatio)
+    }
+
+    /**
+     * Zoom FAST PATH — pinch/dial ticks arrive at input rate, and routing them through the full
+     * setControls → startPreview rebuild (request re-derivation, metering regions, AF-trigger arming,
+     * new callback per tick) is what read as zoom lag/stutter. The controller instead mutates only
+     * the zoom keys on its CACHED repeating builder and resubmits. [controls] stays the source of
+     * truth so the next full rebuild carries the same value (no snap-back).
+     */
+    fun setZoomRatio(ratio: Float) {
+        val r = caps?.zoomRatioRange
+        // TELE's zoom is capped at the 60× display ceiling (local ≈4.6 on the 3× lens): past that
+        // the digital crop is unusable at 1400 mm-equivalent anyway.
+        val hi = if (teleconverterMode) {
+            minOf(
+                r?.upper ?: Float.MAX_VALUE,
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+            )
+        } else {
+            r?.upper ?: Float.MAX_VALUE
+        }
+        val z = clampToOrderedBounds(ratio, r?.lower ?: ratio, hi)
+        // Packet writers (rollback / caps-normalize on setupExecutor) replace [controls] wholesale
+        // under this monitor. Take it for the zoom read-modify-write too: @Volatile alone gives
+        // visibility, not atomicity, so a 60 Hz pinch flush could overwrite (lose) an entire
+        // normalized packet published between its read and write-back — exactly around the
+        // lens/TELE/mode churn where rollbacks happen.
+        val previousZoom = synchronized(this) {
+            controls.zoomRatio.also { controls = controls.copy(zoomRatio = z) }
+        }
+        // The finder predicate carries a zoom axis (FINDER_MIN_ZOOM), and a seamless pinch never
+        // fires an optics door — re-resolve here so GL and the live UI gate cross the threshold on
+        // the same tick. Change-gated inside pushTeleFinder; costs a few boolean reads per tick.
+        pushTeleFinder()
+        // The PREVIEW zooms instantly: GL crops the last frame to the requested ratio and
+        // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
+        // so per-tick HAL submits made zoom read as ~5 fps no matter how smooth the input was).
+        zoomOverrides?.setZoomTarget?.invoke(z) ?: gl.setZoomTarget(z)
+        // A moving tick never submits to the HAL: only GL follows it immediately. The START edge
+        // pre-buys a slightly wide field (÷ZOOM_GESTURE_MARGIN), while the quiet landing or END edge
+        // lands the exact ratio. requestRatio still carries exact z so stills never inherit the aim.
+        if (z != previousZoom) zoomInteractionState = noteZoomMovement(zoomInteractionState)
+        val plan = resolveHalZoomSubmit(
+            requestedZoom = z,
+            interactionActive = zoomInteractionState.active,
+        )
+        if (plan.submitNow) {
+            zoomOverrides?.submitZoom?.invoke(plan.controlsZoomRatio)
+                ?: controller?.setZoomRatio(plan.controlsZoomRatio)
+        } else {
+            // A swallowed tick must STILL update the controller's still-request truth: the
+            // viewfinder (GL target) already frames z, and a shutter press during the gesture
+            // window would otherwise capture the PREVIOUS tick's ratio (aggregate AGG3-27).
+            zoomOverrides?.noteRequestZoom?.invoke(plan.controlsZoomRatio)
+                ?: controller?.noteRequestZoom(plan.controlsZoomRatio)
+        }
+    }
+
+    /**
+     * Lands the EXACT (non-wide-aimed) ratio while a gesture is still formally active but has gone
+     * quiet for one landing window. Without this, the start edge's ~1.2×-wide HAL framing
+     * held for the full 700 ms interaction tail — a recorded clip carried it after finger-up (the
+     * encoder only sees real frames; GL zoomComp masks it in the preview only). One spaced
+     * fast-path swap, NOT a boost flip. The interaction state records that exact framing landed, so
+     * a no-FPS-change end is state-only. A later suppressed moving tick clears that ownership so
+     * the next quiet callback lands the new ratio; duplicate quiet callbacks without movement are
+     * inert. Routes that restore FPS still rebuild at the end.
+     */
+    fun landExactZoom() {
+        val transition = landQuietZoom(zoomInteractionState)
+        if (!transition.submitExact) return
+        val currentController = controller
+        if (zoomOverrides == null && currentController == null) return
+        zoomInteractionState = transition.next
+        zoomOverrides?.submitZoom?.invoke(controls.zoomRatio)
+            ?: currentController?.setZoomRatio(controls.zoomRatio)
+    }
+
+    /**
+     * Commits [ratio] as the engine/GL/still-request zoom truth WITHOUT a HAL submit (AGG4-1).
+     * The zoom-OUT leading edge calls this immediately before setZoomInteraction(true), whose
+     * boost rebuild then carries `controls.zoomRatio` as its finalZoom — the gesture edge's ONE
+     * submit. The old leading-edge fast-path submit PLUS that rebuild paid two back-to-back
+     * ~180 ms repeating-request stalls at every fresh pinch-out (the exact anti-pattern the
+     * gesture-END path was rewritten to remove); the encoder saw the longer real-frame gap even
+     * though GL zoomComp masked it in the preview.
+     */
+    fun commitZoomForBoost(ratio: Float) {
+        val r = caps?.zoomRatioRange
+        val hi = if (teleconverterMode) {
+            minOf(
+                r?.upper ?: Float.MAX_VALUE,
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+            )
+        } else {
+            r?.upper ?: Float.MAX_VALUE
+        }
+        val z = clampToOrderedBounds(ratio, r?.lower ?: ratio, hi)
+        // Same monitor rule as setZoomRatio: packet writers replace [controls] wholesale under it.
+        synchronized(this) { controls = controls.copy(zoomRatio = z) }
+        // Third zoom writer, same finder rule as setZoomRatio/setControls — and the one the
+        // zoom-OUT leading edge uses exclusively (flushZoom skips setZoomRatio on a leading-wide
+        // flush), so a single-flush downward FINDER_MIN_ZOOM crossing otherwise left GL drawing an
+        // overview the UI gate had dropped (verification S1, 2026-07-30).
+        pushTeleFinder()
+        zoomOverrides?.setZoomTarget?.invoke(z) ?: gl.setZoomTarget(z)
+        // Still-request truth must follow even though no repeating submit happens here.
+        zoomOverrides?.noteRequestZoom?.invoke(z) ?: controller?.noteRequestZoom(z)
+    }
+
+    @Volatile private var zoomInteractionState = ZoomInteractionState()
+
+    // ---- Photo ----
+
+    /**
+     * The processed stand-in a capture may use for a request with no processed axis (AGG5-53): HEIF
+     * only with an HEVC encoder, kept while the codec walk has not landed (the ViewModel's
+     * `CameraUiState.heifStandInAvailable` answers the same way, so the readout matches the file).
+     */
+    private fun heifStandIn(): Boolean = heifStandInAvailable(
+        inventoryLoaded = me.hletrd.telecampro.video.EncoderCaps.isLoaded(),
+        heifEncodeAvailable = me.hletrd.telecampro.video.EncoderCaps.heifEncodeAvailable(),
+    )
+
+    private fun currentAcceptedCameraSession(): AcceptedCameraSession? {
+        if (UnsafeRecorderQuarantine.isActive()) return null
+        if (opticsRollbackEffectsGeneration != 0L) return null
+        val accepted = acceptedCameraSession ?: return null
+        return accepted.takeIf {
+            cameraReady && !paused && controller === it.controller &&
+                cameraSessionGeneration.get() == it.sessionGeneration
+        }
+    }
+
+    private fun acceptedSessionIsCurrent(accepted: AcceptedCameraSession): Boolean =
+        acceptedCameraSession === accepted && currentAcceptedCameraSession() === accepted
+
+    /**
+     * Dispatches one still only after any RAW output has a creation-time exact provider identity.
+     * Processed-only captures keep the immediate path byte-for-byte. DNG provider work runs on the
+     * process-finite pre-native lane and is cancellable at every Ready/lifecycle invalidation.
+     */
+    private fun dispatchStillCapture(
+        accepted: AcceptedCameraSession,
+        formats: PhotoFormats,
+        shotControls: ManualControls,
+        hiRes: Boolean,
+        optics: ShotOptics,
+        retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
+        traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
+        /** First still of its capture chain; see [CameraController.capturePhoto]. No default. */
+        chainHead: Boolean,
+        allowZsl: Boolean = false,
+        onDone: (() -> Unit)? = null,
+    ): Boolean {
+        // The press instant's AF override inputs, frozen with [shotControls] (AGG5-29): the DNG
+        // path below dispatches only after an up-to-8 s provider pre-allocation.
+        val frozenAf = accepted.controller.afInputsNow()
+        // Sequence chaining bounds snapshots only inside one Engine. The process lease also covers
+        // BURST/AEB/timelapse so a blocked old Engine cannot multiply full-resolution heap owners
+        // when an Activity replacement admits another sequence.
+        val snapshotLease = retainedSnapshotLease ?: if (formats.wantsProcessedStill) {
+            processedSnapshotBudget.tryAcquire() ?: run {
+                onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+                return false
+            }
+        } else {
+            null
+        }
+        if (!formats.dngRaw) {
+            val callback = photoCallback(
+                formats = formats,
+                shotControls = shotControls,
+                hiRes = hiRes,
+                optics = optics,
+                retainedSnapshotLease = snapshotLease,
+                traceAdmission = traceAdmission,
+                onDone = onDone,
+            ) ?: run {
+                snapshotLease?.release()
+                return false
+            }
+            accepted.controller.capturePhoto(
+                wantJpeg = formats.wantsProcessedStill,
+                wantRaw = false,
+                cb = callback,
+                chainHead = chainHead,
+                allowZsl = allowZsl,
+                frozen = StillShotFreeze(shotControls, frozenAf),
+            )
+            return true
+        }
+
+        val dngAdmission = ProcessDngPreCaptureAdmission.owner.tryAcquire() ?: run {
+            snapshotLease?.release()
+            publishProcessStillAdmission()
+            onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+            return false
+        }
+        fun releaseDngAdmission() {
+            if (dngAdmission.release()) {
+                publishProcessStillAdmission()
+            }
+        }
+        // This process owner serializes every still route while provider allocation/Camera2/DNG
+        // bytes are in flight. Publish the edge immediately; the exact release helper restores it.
+        publishProcessStillAdmission()
+        val rejectedCleanup = MediaStoreWriter.reserveRejectedOutputCleanup() ?: run {
+            releaseDngAdmission()
+            snapshotLease?.release()
+            onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+            return false
+        }
+        val registered = runCatching { shotSpec(shotControls, hiRes, optics) }.getOrElse { failure ->
+            rejectedCleanup.cancel()
+            releaseDngAdmission()
+            snapshotLease?.release()
+            Log.e("CameraEngine", "DNG capture registration failed", failure)
+            onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+            return false
+        }
+        val traceText = captureFamilyTraceText(formats, registered.spec, traceAdmission)
+        traceText?.takeIf {
+            traceAdmission.registration && recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        }?.let { (stem, outputs) ->
+            android.util.Log.i(
+                "CameraEngine",
+                "CaptureFamily: registered stem=$stem outputs=$outputs",
+            )
+        }
+        // One continuation owner for both terminals of this allocation: a synchronous rejection
+        // settles inside start(), so the Boolean below must not ALSO hand the chain caller its own
+        // continuation (AGG2-3) — and it answers false, never "taken", so a refused BURST/AEB head
+        // refuses the press instead of walking the chain (AGG6-23). The handoff/settle/dispatchResult wiring is
+        // [dispatchDngPreCaptureAllocation], the SAME function DngPreCaptureAllocationTest drives
+        // (AGG3-39) — a copy in the test proved only the copy.
+        return dispatchDngPreCaptureAllocation(
+            onDone = onDone,
+            register = { owner ->
+                synchronized(dngPreCaptureAllocationLock) { dngPreCaptureAllocations.add(owner) }
+            },
+        ) { settle ->
+            fun cleanLateAllocation(allocation: PendingOutputAllocation) {
+                // The owner hands a late row here BEFORE it can release the shot's reserved
+                // cleanup capacity (AGG6-24), so the row spends that reservation rather than racing
+                // for unreserved capacity. A refused submit means the reservation is already
+                // terminal (spent by onError's cleanup, or cancelled) or its owner shut down, so
+                // this call retains nothing; REGISTERED is already durable, so launch recovery
+                // owns the row. Provider work never falls back inline on the allocator/cancel caller.
+                val submitted = rejectedCleanup.submit(
+                    MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
+                ) { _ ->
+                    publishProcessStillAdmission()
+                }
+                if (!submitted) publishProcessStillAdmission()
+            }
+
+            lateinit var owner: DngPreCaptureAllocation<PendingOutputAllocation>
+            owner = DngPreCaptureAllocation(
+                dispatch = ProcessPreNativeMediaAllocator::dispatch,
+                allocate = {
+                    MediaStoreWriter.createPendingImageAllocation(
+                        context,
+                        registered.spec.familyKey.displayName("dng"),
+                        "image/x-adobe-dng",
+                    )
+                },
+                isCurrent = { acceptedSessionIsCurrent(accepted) },
+                onReady = { allocation ->
+                    val callback = checkNotNull(
+                        photoCallback(
+                            formats = formats,
+                            shotControls = shotControls,
+                            hiRes = hiRes,
+                            optics = optics,
+                            retainedSnapshotLease = snapshotLease,
+                            traceAdmission = traceAdmission,
+                            onDone = onDone,
+                            registeredShotOverride = registered,
+                            dngAllocation = allocation,
+                            rejectedDngCleanupOverride = rejectedCleanup,
+                            dngPreCaptureLease = dngAdmission,
+                            registrationAlreadyTraced = true,
+                        ),
+                    )
+                    accepted.controller.capturePhoto(
+                        wantJpeg = formats.wantsProcessedStill,
+                        wantRaw = true,
+                        cb = callback,
+                        chainHead = chainHead,
+                        allowZsl = allowZsl,
+                        frozen = StillShotFreeze(shotControls, frozenAf),
+                    )
+                },
+                onLateValue = ::cleanLateAllocation,
+                onFailure = { failure ->
+                    failure?.let {
+                        Log.e("CameraEngine", "DNG preallocation failed", it)
+                    }
+                    onStatus?.invoke(CameraStatusMessage.DNG_SAVE_FAILED.status())
+                },
+                // The settle-before-camera terminal is [dngOwnerRetirement], the SAME function
+                // DngPreCaptureAllocationTest drives (AGG4-46): the AGG2-3 bug line — handing the
+                // registered shot the chain's raw onDone instead of the handoff's settle — lives
+                // inside it, so a revert there fails the exactly-one-continuation proof.
+                onRetired = dngOwnerRetirement(
+                    settle = settle,
+                    unregister = {
+                        synchronized(dngPreCaptureAllocationLock) {
+                            dngPreCaptureAllocations.remove(owner)
+                        }
+                    },
+                    // The rejected-cleanup reservation is NOT released here: the owner releases it
+                    // through releaseLateCleanupCapacity only once no late row can appear.
+                    releaseReservations = {
+                        snapshotLease?.release()
+                        releaseDngAdmission()
+                    },
+                    settleRegisteredShot = { continuation ->
+                        settleRegisteredStillShot(
+                            registered = registered,
+                            traceText = traceText,
+                            traceSettlement = traceAdmission.settlement,
+                            onDone = continuation,
+                        )
+                    },
+                    publishAdmission = ::publishProcessStillAdmission,
+                ),
+                onClaimed = {
+                    synchronized(dngPreCaptureAllocationLock) {
+                        dngPreCaptureAllocations.remove(owner)
+                    }
+                },
+                releaseLateCleanupCapacity = {
+                    rejectedCleanup.cancel()
+                    publishProcessStillAdmission()
+                },
+                deadlineScheduler = RecordingTeardownScheduler { delayMs, action ->
+                    runCatching {
+                        recorderWatchdog.schedule(
+                            action,
+                            delayMs,
+                            java.util.concurrent.TimeUnit.MILLISECONDS,
+                        )
+                    }.getOrNull()?.let { future ->
+                        RecordingTeardownCancellation { future.cancel(false) }
+                    }
+                },
+            )
+            owner
+        }
+    }
+
+    /**
+     * Runs inside [invalidateCameraReady] right after Ready/session are cleared (AGG5-5): nothing
+     * here may throw past it. One owner's cancel runs its retirement callbacks (settle, admission
+     * release, publication); a failure there must neither skip the remaining owners nor abort the
+     * invalidation's Ready publication (AGG4-21), so each cancel is sealed individually.
+     */
+    private fun cancelDngPreCaptureAllocations() {
+        val pending = synchronized(dngPreCaptureAllocationLock) {
+            dngPreCaptureAllocations.toList()
+        }
+        cancelEachSealed(pending) { it.cancel() }
+    }
+
+    /** Returns true only when this press was admitted to a real still target. */
+    fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
+        stillCaptureAdmissionFailureStatus(stillOutputAdmissionAvailable())?.let { status ->
+            publishProcessStillAdmission()
+            onStatus?.invoke(status.status())
+            return false
+        }
+        // Same gate startRecording has: during a session-key reopen (cameraReady=false) the
+        // controller guards make a capture attempt safe but silent — give the user the status
+        // instead of a shutter press that does nothing.
+        val accepted = currentAcceptedCameraSession()
+        if (accepted == null) {
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+            return false
+        }
+        val effFormats = formats.normalizedFor(accepted.outputs, heifStandIn())
+        if (!effFormats.wantsProcessedStill && !effFormats.dngRaw) {
+            onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
+            return false
+        }
+        // No per-press format-loss notice, in either direction. RAW_UNAVAILABLE went first (AGG5-10):
+        // on a structurally RAW-less route (FRONT, hi-res, 10-bit video) the OSD and the Output
+        // caption already carry the state, and on a RAW-capable route that lost RAW (a drop-RAW
+        // ladder rung) the ViewModel's Ready fold announces it once per session shape, from the
+        // facts every Ready publication carries. The per-press ERROR fired on every selfie.
+        // PROCESSED_STILL_UNAVAILABLE_DNG_ONLY follows the same law (AGG6-27): the Ready fold
+        // announces its rising edge once it is shown, the Output caption keeps it, and the shot
+        // itself succeeds (the DNG is written) — repeating the warning for 2.5 s on every press of
+        // a session that already said so made a working shutter read as failing.
+        val effectiveDrive = captureDriveMode(driveMode, singleShot)
+        when (effectiveDrive) {
+            DriveMode.SINGLE -> {
+                val snapshotLease = if (effFormats.wantsProcessedStill) {
+                    processedSnapshotBudget.tryAcquire()
+                } else {
+                    null
+                }
+                if (effFormats.wantsProcessedStill && snapshotLease == null) {
+                    onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
+                    return false
+                }
+                val dispatched = runCatching {
+                    dispatchStillCapture(
+                        accepted = accepted,
+                        formats = effFormats,
+                        shotControls = controls,
+                        hiRes = accepted.outputs.hiRes,
+                        optics = snapshotShotOptics(),
+                        retainedSnapshotLease = snapshotLease,
+                        traceAdmission = captureFamilyTraceAdmission(
+                            driveMode,
+                            singleShot,
+                            me.hletrd.telecampro.BuildConfig.DEBUG,
+                        ),
+                        // Only the SINGLE drive may serve a buffered pseudo-ZSL frame: chains
+                        // (burst/AEB/timelapse) need per-shot wire captures, and the admission
+                        // itself re-gates route/format/values (ZslAdmission.kt). The in-REC
+                        // snapshot arrives here too (captureDriveMode maps singleShot → SINGLE), so
+                        // the "never during REC" half of that invariant must be spelled out rather
+                        // than left to the fact that video happens to route to a standalone camera
+                        // today — a debug camera override (or the backlogged logical-video move)
+                        // would otherwise let a mid-clip snapshot serve a frame up to 400 ms old.
+                        allowZsl = !singleShot,
+                        chainHead = true,
+                    )
+                }
+                if (dispatched.isFailure) {
+                    snapshotLease?.release()
+                    Log.e(
+                        "CameraEngine",
+                        "Photo dispatch failed",
+                        dispatched.exceptionOrNull(),
+                    )
+                    onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+                    return false
+                }
+                if (!dispatched.getOrDefault(false)) return false
+            }
+            // The HEAD dispatch answers the press, exactly like SINGLE (AGG5-45): a refused head
+            // ("Finishing previous photo") used to return true and blink the shutter anyway.
+            DriveMode.BURST, DriveMode.AEB -> {
+                val head = runCatching {
+                    if (effectiveDrive == DriveMode.BURST) {
+                        captureBurst(accepted, effFormats)
+                    } else {
+                        captureAeb(accepted, effFormats)
+                    }
+                }
+                if (head.isFailure) {
+                    Log.e("CameraEngine", "Photo dispatch failed", head.exceptionOrNull())
+                    onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+                    return false
+                }
+                if (!head.getOrDefault(false)) return false
+            }
+            // Press-to-START, press-again-to-STOP — the universal interval-shooting idiom (review
+            // 2026-08-01: the old unconditional restart fired an immediate extra frame, reset the
+            // interval phase mid-assembly, and left NO discoverable way to end a run; drive-mode
+            // surgery was the only stop). The toggle reads the same edge flag the dim consumes.
+            DriveMode.TIMELAPSE -> if (timelapseRunActive) stopTimelapse() else startTimelapse(formats)
+        }
+        return true
+    }
+
+    /**
+     * BURST: [BURST_COUNT] stills, each started only after the previous completes. The controller
+     * tracks a single in-flight capture (one `pending` slot), so shots are chained rather than fired
+     * in a tight loop, which would clobber that slot while a capture is still resolving its images.
+     * Returns the HEAD shot's dispatch result: false when the press was refused.
+     */
+    private fun captureBurst(accepted: AcceptedCameraSession, formats: PhotoFormats): Boolean {
+        // One optics identity for the whole chain: continuations run from save completions off
+        // the main thread, where re-reading the live fields raced the optics doors (T1).
+        val chainOptics = snapshotShotOptics()
+        fun fire(shot: Int): Boolean {
+            if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return false
+            return dispatchStillCapture(
+                accepted = accepted,
+                formats = formats,
+                shotControls = controls,
+                hiRes = accepted.outputs.hiRes,
+                optics = chainOptics,
+                chainHead = shot == 0,
+                onDone = { fire(shot + 1) },
+            )
+        }
+        return fire(0)
+    }
+
+    /**
+     * AEB: three stills at -2 / 0 / +2 EV. In AUTO exposure the bracket drives
+     * CONTROL_AE_EXPOSURE_COMPENSATION; in MANUAL exposure the HAL ignores that key entirely (AE
+     * is OFF), which used to fire three identical frames — so the manual path brackets the
+     * exposure TIME instead (×¼ / ×1 / ×4, clamped to the sensor range, ISO untouched; see
+     * [manualAebExposuresNs]). Either way the original controls are restored when the bracket
+     * finishes, and shots are chained for the same single-`pending` reason as BURST. Returns the
+     * HEAD bracket step's dispatch result: false when the press was refused.
+     */
+    private fun captureAeb(accepted: AcceptedCameraSession, formats: PhotoFormats): Boolean {
+        val ctrl = accepted.controller
+        val chainOptics = snapshotShotOptics()
+        val c = chainOptics.caps
+        val original = controls
+        if (!original.autoExposure && c?.supportsManualSensor == true) {
+            val base = original.effectiveExposureNs()
+            val range = c.exposureTimeRange
+            val steps = manualAebExposuresNs(base, range?.lower ?: base, range?.upper ?: base)
+            fun fire(i: Int): Boolean {
+                if (!acceptedSessionIsCurrent(accepted)) {
+                    ctrl.updateControls(controls)
+                    return false
+                }
+                if (i >= steps.size) { ctrl.updateControls(controls); return false }
+                // SPEED override so the bracketed time applies even when the user dials ANGLE.
+                val stepControls = manualAebStepControls(controls, steps[i])
+                ctrl.updateControls(stepControls)
+                return dispatchAebStep(ctrl) {
+                    dispatchStillCapture(
+                        accepted = accepted,
+                        formats = formats,
+                        shotControls = stepControls,
+                        hiRes = accepted.outputs.hiRes,
+                        optics = chainOptics,
+                        chainHead = i == 0,
+                        onDone = { fire(i + 1) },
+                    )
+                }
+            }
+            return fire(0)
+        }
+        val range = c?.evRange
+        val evStep = c?.evStep?.let {
+            if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
+        } ?: (1f / 3f)
+        val steps = if (range != null) {
+            aeCompAebSteps(original.exposureCompensation, range.lower, range.upper, evStep)
+        }
+        else listOf(original.exposureCompensation)
+        fun fire(i: Int): Boolean {
+            if (!acceptedSessionIsCurrent(accepted)) {
+                ctrl.updateControls(controls)
+                return false
+            }
+            if (i >= steps.size) { ctrl.updateControls(controls); return false }
+            val stepControls = autoAebStepControls(controls, steps[i])
+            ctrl.updateControls(stepControls)
+            return dispatchAebStep(ctrl) {
+                dispatchStillCapture(
+                    accepted = accepted,
+                    formats = formats,
+                    shotControls = stepControls,
+                    hiRes = accepted.outputs.hiRes,
+                    optics = chainOptics,
+                    chainHead = i == 0,
+                    onDone = { fire(i + 1) },
+                )
+            }
+        }
+        return fire(0)
+    }
+
+    /**
+     * One AEB step's dispatch: the preview returns to base controls whenever the step will not
+     * continue itself — a refusal OR a throw (the head's throw now reaches capturePhoto's status
+     * instead of leaving the bracket's step controls on the wire).
+     */
+    private inline fun dispatchAebStep(ctrl: CameraController, dispatch: () -> Boolean): Boolean {
+        val dispatched = try {
+            dispatch()
+        } catch (failure: Throwable) {
+            ctrl.updateControls(controls)
+            throw failure
+        }
+        if (!dispatched) ctrl.updateControls(controls)
+        return dispatched
+    }
+
+    /**
+     * TIMELAPSE: one capture + processed save at a time. The next interval starts only after
+     * [photoCallback]'s exactly-once completion, so full-resolution snapshots cannot accumulate on
+     * [ioExecutor] when encoding/storage is slower than [intervalSec].
+     */
+    private fun startTimelapse(requestedFormats: PhotoFormats) {
+        // Stop-old + claim-new + edge under ONE lock (review 2026-08-01): the tick thread's own
+        // defensive stop raced a main-thread restart's check-then-act — it could kill the freshly
+        // restarted generation, or interleave with the edge flag so timelapseRunning wedged true
+        // with no live run (dimming an idle viewfinder until the next drive change).
+        val generation = synchronized(timelapseRunEdgeLock) {
+            stopTimelapseLocked()
+            val g = timelapseRun.restart()
+            timelapseRunActive = true
+            onTimelapseRun?.invoke(true)
+            g
+        }
+        val sequence = object {
+            fun schedule(delaySeconds: Long) {
+                if (!timelapseRun.owns(generation)) return
+                val future = runCatching {
+                    val action = action@{
+                        if (!timelapseRun.owns(generation)) return@action
+                        val accepted = currentAcceptedCameraSession()
+                        if (accepted == null || driveMode != DriveMode.TIMELAPSE) {
+                            if (!paused && driveMode == DriveMode.TIMELAPSE) {
+                                schedule(currentTimelapseIntervalSeconds())
+                            }
+                            return@action
+                        }
+                        val formats = requestedFormats.normalizedFor(accepted.outputs, heifStandIn())
+                        if (!formats.wantsProcessedStill && !formats.dngRaw) {
+                            onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
+                            stopTimelapseIfOwns(generation)
+                            return@action
+                        }
+                        val dispatched = dispatchStillCapture(
+                            accepted = accepted,
+                            formats = formats,
+                            shotControls = controls,
+                            hiRes = accepted.outputs.hiRes,
+                            optics = snapshotShotOptics(),
+                            // Each tick is its own one-frame chain: ticks are >= 1 s apart, the
+                            // same bound the shared gate would impose anyway.
+                            chainHead = true,
+                            onDone = {
+                            if (timelapseRun.owns(generation)) {
+                                schedule(currentTimelapseIntervalSeconds())
+                            }
+                            },
+                        )
+                        if (!dispatched) {
+                            schedule(currentTimelapseIntervalSeconds())
+                            return@action
+                        }
+                    }
+                    timelapseOverrides?.schedule?.invoke(delaySeconds, action)
+                        ?: timelapseScheduler.schedule(
+                            action,
+                            delaySeconds,
+                            java.util.concurrent.TimeUnit.SECONDS,
+                        ).let { scheduled -> TimelapseCancellation { scheduled.cancel(false) } }
+                }.getOrNull() ?: return
+                if (timelapseRun.owns(generation)) {
+                    timelapseFuture = future
+                } else {
+                    future.cancel()
+                }
+            }
+        }
+        sequence.schedule(0)
+    }
+
+    fun stopTimelapse() = synchronized(timelapseRunEdgeLock) { stopTimelapseLocked() }
+
+    /** Tick-thread stop that may only kill ITS OWN run — a concurrent restart survives it. */
+    private fun stopTimelapseIfOwns(generation: Long) = synchronized(timelapseRunEdgeLock) {
+        if (timelapseRun.owns(generation)) stopTimelapseLocked()
+    }
+
+    private fun stopTimelapseLocked() {
+        timelapseRun.stop()
+        timelapseFuture?.cancel()
+        timelapseFuture = null
+        // Edge-only: the many defensive stopTimelapse() calls (mode flips, pause, release) must not
+        // spam run-state listeners when no run was live.
+        if (timelapseRunActive) {
+            timelapseRunActive = false
+            onTimelapseRun?.invoke(false)
+        }
+    }
+
+    private fun currentTimelapseIntervalSeconds(): Long =
+        normalizeTimelapseIntervalSeconds(intervalSec).toLong()
+
+
+    /**
+     * Publishes a whole-family delete to the still lane before asynchronous provider deletion.
+     * Null is a FILE_ONLY/unknown capture and has no live sibling callback family to suppress.
+     */
+    internal fun markCaptureDeleted(
+        intent: CaptureFamilyDeleteIntent,
+        onComplete: (CaptureFamilyDeleteDurability) -> Unit = {},
+    ) {
+        if (intent.scope != MediaDeleteScope.CAPTURE_FAMILY || intent.familyKey == null) {
+            onComplete(CaptureFamilyDeleteDurability.NOT_REQUIRED)
+            return
+        }
+        // Capacity owns one exact family before any Engine tombstone exists. A rejected Delete has
+        // no durable recovery continuation, so fail immediately and let the ViewModel restore the
+        // frozen review handle; never enqueue or run marker/provider work on this caller thread.
+        val markerAdmission = familyDeletionMarkerDispatcher.reserve(intent.familyKey)
+        val markerReservation = markerAdmission.reservation
+        if (markerAdmission.dispatch != FamilyDeletionMarkerDispatch.ACCEPTED || markerReservation == null) {
+            runCatching { onComplete(CaptureFamilyDeleteDurability.FAILED) }
+            return
+        }
+        // The queued process task owns only this compact registry/token. ViewModel teardown closes
+        // and drains the registry before clearing UI ownership, so an accepted old task cannot retain
+        // or call its stale callback graph after detach.
+        val completionRegistry = familyDeletionCompletions
+        val completionToken = completionRegistry.register(onComplete)
+        if (completionToken == null) {
+            markerReservation.cancel()
+            return
+        }
+        val complete: (CaptureFamilyDeleteDurability) -> Unit = { result ->
+            completionRegistry.complete(completionToken, result)
+        }
+        val liveStillId = intent.liveStillCaptureId
+        val publications = liveStillId?.let(retainedStillDeletionOwner::markCaptureDeletedInMemory).orEmpty()
+        val task = Runnable {
+            var terminal = CaptureFamilyDeleteDurability.FAILED
+            try {
+                // Registration MUST precede the marker commit. A producer lease can become terminal
+                // on another Engine/thread immediately afterward, allowing an already-accepted
+                // process rescan to remove this marker before our family-specific retirement task.
+                val retirementListener = retainedStillRetirementListener.takeIf { liveStillId != null }
+                val retirementRegistration = ProcessRetainedStillDiscardOwner.registerFamilyRetirement(
+                    intent.familyKey,
+                    retirementListener,
+                )
+                val durable = retirementRegistration !=
+                    RetainedStillRetirementRegistrationResult.CAPACITY_EXHAUSTED &&
+                    MediaStoreWriter.markFamilyDeletedResult(context, intent.familyKey) ==
+                    me.hletrd.telecampro.storage.FamilyDeletionMarkResult.DURABLE
+                if (!durable) {
+                    ProcessRetainedStillDiscardOwner.rollbackFamilyRetirementRegistration(
+                        intent.familyKey,
+                        retirementListener,
+                        retirementRegistration,
+                    )
+                }
+                if (liveStillId != null) {
+                    retainedStillDeletionOwner.completeDeletionDurability(liveStillId, durable)
+                }
+                terminal = if (durable) {
+                    CaptureFamilyDeleteDurability.DURABLE
+                } else {
+                    CaptureFamilyDeleteDurability.FAILED
+                }
+                if (durable) {
+                    publications.forEach { output ->
+                        dispatchDeletedStillDiscard(output, checkNotNull(liveStillId))
+                    }
+                    if (liveStillId != null &&
+                        retainedStillDeletionOwner.deletedFamilyIfProducersTerminal(liveStillId) ==
+                        intent.familyKey
+                    ) {
+                        scheduleDeletedFamilyRetirement(intent.familyKey, liveStillId)
+                    }
+                }
+            } catch (failure: Throwable) {
+                if (liveStillId != null) {
+                    retainedStillDeletionOwner.completeDeletionDurability(liveStillId, false)
+                }
+                Log.e("CameraEngine", "Family deletion durability failed", failure)
+            } finally {
+                runCatching {
+                    publishProcessStillAdmission()
+                }
+                complete(terminal)
+            }
+        }
+        if (!markerReservation.submit(task)) {
+            // Submission after a successful reservation is an executor-infrastructure failure, not
+            // ordinary capacity overflow. The in-memory tombstone already won, so preserve the
+            // historical fail-closed admission behavior rather than pretending rollback is safe
+            // against a late sibling that may already have observed it.
+            if (liveStillId != null) retainedStillDeletionOwner.completeDeletionDurability(liveStillId, false)
+            publishProcessStillAdmission()
+            complete(CaptureFamilyDeleteDurability.FAILED)
+        }
+    }
+
+    internal fun stillOutputAdmissionAvailable(): Boolean =
+        allStillOutputOwnersAvailable(
+            dng = ProcessDngPreCaptureAdmission.owner.canAdmit(),
+            retainedFamily = retainedStillDeletionOwner.canAdmitCapture(),
+            rejectedCleanup = MediaStoreWriter.rejectedOutputAdmissionAvailable(),
+        )
+
+    /** Rechecks retirement after the UI/provider deletion tail; producer completion races safely. */
+    internal fun reconcileDeletedFamilyAfterProviderMutation(
+        family: CaptureFamilyKey,
+        liveStillCaptureId: Int?,
+    ) {
+        scheduleDeletedFamilyRetirement(family, liveStillCaptureId)
+    }
+
+    private fun scheduleDeletedFamilyRetirement(
+        family: CaptureFamilyKey,
+        liveStillCaptureId: Int?,
+        exactProducerTerminal: Boolean = false,
+    ) {
+        val task = Runnable {
+            val locallyDeletedTerminalFamily = liveStillCaptureId?.let(
+                retainedStillDeletionOwner::deletedFamilyIfProducersTerminal,
+            )
+            val producersTerminal = exactProducerTerminal || liveStillCaptureId == null ||
+                locallyDeletedTerminalFamily == family
+            val result = MediaStoreWriter.retireFamilyDeletionIfAbsent(
+                context,
+                family,
+                producersTerminal,
+            )
+            ProcessRetainedStillDiscardOwner.reconcileFamilyRetirement(family, result)
+            if (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETRYABLE) {
+                ProcessRetainedStillDiscardOwner.requestRetirementRetry(context)
+            }
+            publishProcessStillAdmission()
+        }
+        // This process-owned closure retains application context only. It can outlive this Engine
+        // after overflow or a retryable provider result without keeping the old callback graph alive.
+        val overflowRescan = ProcessRetainedStillDiscardOwner.currentProcessRetirementRescan(context)
+        // Retirement is provider/journal work, not still encoding. Keep every continuation on the
+        // existing finite process lane even while this Engine is live; a blocked ioExecutor must
+        // not accumulate one closure per independently completed RAW-only shot. Shutdown retries
+        // through the process owner because the producer lease predates the stale facade. Overflow
+        // requests one process-conflated bounded journal rescan; a worker completion re-arms it, and
+        // the rescan repeats producer/claim and exact-family provider checks off the caller thread.
+        dispatchDeletedFamilyRetirement(retainedStillDiscardDispatcher, task, overflowRescan)
+    }
+
+    /**
+     * Transfers a completed row to the Engine's delete owner without depending on UI callbacks.
+     * The fast ownership step performs no provider I/O, so it is safe on UI/camera threads. Normal
+     * Provider work uses one process-lifetime finite lane. Overflow or stale-facade shutdown never
+     * runs inline: the already-durable family tombstone remains the launch-recovery owner.
+     */
+    private fun dispatchDeletedStillDiscard(
+        allocation: PendingOutputAllocation,
+        captureId: Int,
+    ) {
+        if (!retainedStillDeletionOwner.ownRetainedForAsyncDiscard(allocation, captureId)) return
+        val task = Runnable {
+            if (retainedStillDeletionOwner.discardDeleted(allocation, captureId) ==
+                RetainedStillDisposition.DISCARD_RETRY_PENDING
+            ) {
+                onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+            }
+        }
+        if (retainedStillDiscardDispatcher.dispatch(task) != RetainedStillDiscardDispatch.ACCEPTED) {
+            // The exact URI remains in the old Engine's bounded unresolved owner until release, and
+            // the durable family journal vetoes adoption process-wide after that owner disappears.
+            onStatus?.invoke(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+        }
+    }
+
+    // Save lanes live in the extracted StillCapturePipeline (ARCH4-3 step 1). UI-facing lambdas
+    // read live listener fields; retained-output deletion deliberately bypasses that detachable graph.
+    private val stillPipeline = StillCapturePipeline(
+        context,
+        emitStatus = { status -> onStatus?.invoke(status) },
+        emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
+        emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
+        publishStillOutput = { allocation, id, publish ->
+            retainedStillDeletionOwner.publishIfLive(allocation, id, publish)
+        },
+        finishPublishedStill = retainedStillDeletionOwner::finishPublished,
+        emitPublishRetained = { allocation, id ->
+            retainedStillDeletionOwner.handleRetained(allocation, id)
+        },
+        onRejectedOutputDisposition = {
+            publishProcessStillAdmission()
+        },
+    )
+    // Process-wide: Engine recreation must not multiply full-resolution save work that was already
+    // admitted before rejected-output capacity closed. Accepted old-Engine tasks retain/release the
+    // same leases while the replacement Engine observes the remaining budget.
+    private val processedSnapshotBudget = ProcessProcessedSnapshotBudget.owner
+
+    /**
+     * Optics identity for one still CHAIN (single shot, all BURST/AEB frames, one timelapse tick),
+     * snapshotted under the engine monitor at dispatch. Burst/AEB continuations run from save
+     * completions on the camera/io threads, where re-reading the individual volatiles raced the
+     * optics doors (main thread): a door's `beginOpticsTransaction` publishes NEW tele/facing/caps
+     * under the monitor while the OLD session still exposes the in-flight frame (controller
+     * replacement is queued behind it), so a mid-door continuation composed the new route's
+     * rotation/EXIF onto the old route's pixels — an upside-down/mislabeled file (cycle-6 tracer
+     * T1/T2). One snapshot per chain describes the route the chain actually fires on; a door
+     * landing mid-chain stops the chain via [acceptedSessionIsCurrent] before the next fire.
+     */
+    private data class ShotOptics(
+        val caps: CameraCaps?,
+        val selection: TeleSelection?,
+        val teleconverter: Boolean,
+        // WHICH converter, snapshotted with the rest of the route for the same reason: the EXIF
+        // focal is derived from it, and a profile change landing mid-save would otherwise label
+        // this frame with an optic it was not taken through.
+        val teleconverterMagnification: Float,
+        // The declared host tele focal the magnification multiplies — snapshotted with it so a
+        // phone re-declared mid-save cannot relabel this frame's focal (same rule as above).
+        val hostTeleEquivMm: Float,
+        val frontFacing: Boolean,
+        val route: CameraRoute,
+        val aspectRatio: AspectRatio,
+    )
+
+    private fun snapshotShotOptics(): ShotOptics = synchronized(this) {
+        ShotOptics(
+            caps,
+            selection,
+            teleconverterMode,
+            teleconverterMagnification,
+            teleconverterHostEquivMm,
+            activeCameraRoute == CameraRoute.FRONT,
+            activeCameraRoute,
+            aspectRatio,
+        )
+    }
+
+    private data class RegisteredStillShot(
+        val spec: ShotSpec,
+        val producerLease: CaptureFamilyProducerLease,
+        val settled: java.util.concurrent.atomic.AtomicBoolean =
+            java.util.concurrent.atomic.AtomicBoolean(false),
+    )
+
+    private fun settleRegisteredStillShot(
+        registered: RegisteredStillShot,
+        traceText: Pair<String, String>?,
+        traceSettlement: Boolean,
+        onDone: (() -> Unit)?,
+    ) {
+        if (!registered.settled.compareAndSet(false, true)) return
+        traceText?.takeIf {
+            traceSettlement && recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        }?.let { (stem, outputs) ->
+            android.util.Log.i(
+                "CameraEngine",
+                "CaptureFamily: settled stem=$stem outputs=$outputs",
+            )
+        }
+        markStillProducersTerminal(registered.spec.captureId)
+        registered.producerLease.close()
+        scheduleDeletedFamilyRetirement(
+            registered.spec.familyKey,
+            registered.spec.captureId,
+            exactProducerTerminal = true,
+        )
+        onDone?.invoke()
+    }
+
+    private fun shotSpec(
+        shotControls: ManualControls,
+        hiRes: Boolean,
+        optics: ShotOptics,
+    ): RegisteredStillShot {
+        val requestedAtMs = System.currentTimeMillis()
+        val captureId = captureSeq.incrementAndGet()
+        // A newer still (including an in-REC snapshot) also owns current capture presentation. Its
+        // tracker result already outranks an older video by this same id; advance the storage-status
+        // gate now so that video's late tail cannot take review or claim "saved" over it. The tail
+        // still reaches the tracker (TRACK_ONLY by id) and still announces a failed/retained take
+        // (AGG5-39).
+        recordingStoragePresentation.observeCapture(captureId)
+        // Device orientation stays LIVE per shot (gravity, not an optics axis) — frames of one
+        // burst share the chain's route but may straddle a physical re-hold like any two shots.
+        val rotation = optics.caps?.let {
+            RotationMath.captureRotationDegrees(
+                it.sensorOrientation,
+                optics.teleconverter,
+                gyro.currentDeviceOrientation(),
+                frontFacing = optics.frontFacing,
+                route = optics.route,
+            )
+        } ?: 0
+        val spec = ShotSpec(
+            controls = shotControls,
+            caps = optics.caps,
+            selection = optics.selection,
+            teleconverter = optics.teleconverter,
+            teleconverterMagnification = optics.teleconverterMagnification,
+            hostTeleEquivMm = optics.hostTeleEquivMm,
+            aspectRatio = optics.aspectRatio,
+            jpegQuality = shotControls.jpegQuality.coerceIn(1, 100),
+            rotationDegrees = rotation,
+            captureId = captureId,
+            familyKey = CaptureFamilyKey(
+                media = CaptureFamilyMedia.STILL,
+                capturedAtEpochMillis = requestedAtMs,
+                sequence = captureId.toLong(),
+            ),
+            requestedAtMs = requestedAtMs,
+            takenAtMs = requestedAtMs,
+            hiRes = hiRes,
+            frontFacing = optics.frontFacing,
+            route = optics.route,
+        )
+        // Process ownership must precede both the UI callback and the Camera2 request. A replacement
+        // Engine can restore/delete this family from that callback while this Engine has not yet
+        // created the later JPEG/DNG row or publication claim; the exact process lease is the only
+        // authority visible to both generations during that gap.
+        val producerLease = MediaStoreWriter.registerStillFamilyProducer(spec.familyKey)
+        return try {
+            retainedStillDeletionOwner.registerCaptureFamily(captureId, spec.familyKey)
+            onCaptureFamilyRegistered?.invoke(captureId, spec.familyKey, true)
+            RegisteredStillShot(spec, producerLease)
+        } catch (failure: Throwable) {
+            markStillProducersTerminal(captureId)
+            producerLease.close()
+            throw failure
+        }
+    }
+
+    /**
+     * The producer-terminal edge for one still capture. It may reopen still admission that a failed
+     * durable delete marker closed for exactly this capture (AGG5-2), so it republishes from a read
+     * taken AFTER the mark. The publication re-reads every owner under its own monitor and is
+     * change-gated, so the ordinary path (admission already open) delivers nothing.
+     *
+     * It used to publish only when a `wasAdmitting` read taken BEFORE the mark was false (PR6-1).
+     * The marker worker could close admission and deliver `false` between that read and the mark;
+     * the mark then reopened the live owner, but the stale `true` read suppressed the republish and
+     * the shutter stayed disabled while admission was open, until some unrelated owner edge fired.
+     */
+    private fun markStillProducersTerminal(captureId: Int) {
+        retainedStillDeletionOwner.markCaptureProducersTerminal(captureId)
+        runCatching { publishProcessStillAdmission() }
+    }
+
+    /**
+     * Per-shot save callback. Processed frame copying happens while the Image is live, then encoding
+     * runs on [ioExecutor]. A BURST/AEB continuation is admitted only after that save job finishes,
+     * keeping at most one full processed snapshot queued behind the active shot.
+     */
+    private fun captureFamilyTraceText(
+        formats: PhotoFormats,
+        spec: ShotSpec,
+        traceAdmission: CaptureFamilyTraceAdmission,
+    ): Pair<String, String>? = if (traceAdmission.registration || traceAdmission.settlement) {
+        val expectedOutputExtensions = buildList {
+            if (formats.heif) add("heic")
+            if (formats.jpeg) add("jpg")
+            if (formats.dngRaw) add("dng")
+        }
+        spec.familyKey.displayName("complete").substringBeforeLast('.') to
+            expectedOutputExtensions.joinToString(",")
+    } else {
+        null
+    }
+
+    private fun photoCallback(
+        formats: PhotoFormats,
+        shotControls: ManualControls,
+        // Accepted-session truth ([PhotoSessionOutputs.hiRes]) snapshotted at dispatch: the save
+        // lane must pick passthrough-vs-decode from the session the shot actually fired against,
+        // not whatever session is accepted when the image lands.
+        hiRes: Boolean,
+        // The chain-owned optics identity (see [ShotOptics]) — continuations must reuse the
+        // dispatch-time snapshot, never re-read the live volatiles.
+        optics: ShotOptics,
+        retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
+        // Bounded harness evidence. Sequence drives never spend ColorOS's finite process log quota;
+        // the one in-REC snapshot keeps its terminal edge without the pre-kill registration line.
+        traceAdmission: CaptureFamilyTraceAdmission = CaptureFamilyTraceAdmission(),
+        onDone: (() -> Unit)? = null,
+        registeredShotOverride: RegisteredStillShot? = null,
+        dngAllocation: PendingOutputAllocation? = null,
+        rejectedDngCleanupOverride: me.hletrd.telecampro.storage.RejectedOutputCleanupReservation<
+            MediaStoreWriter.RejectedOutput
+        >? = null,
+        dngPreCaptureLease: DngPreCaptureAdmission.Lease? = null,
+        registrationAlreadyTraced: Boolean = false,
+    ): CameraController.PhotoCallback? {
+        require(retainedSnapshotLease == null || formats.wantsProcessedStill)
+        require(!formats.dngRaw || dngAllocation != null || registeredShotOverride == null)
+        // Reserve process-finite cleanup before Camera2 can create a RAW output. The reservation is
+        // released on every success/no-image/error edge, or transferred exactly once to failed-row
+        // cleanup after DNG byte writing returns.
+        val rejectedDngCleanup = rejectedDngCleanupOverride ?: if (formats.dngRaw) {
+            MediaStoreWriter.reserveRejectedOutputCleanup() ?: return null
+        } else {
+            null
+        }
+        val registeredShot = registeredShotOverride ?: shotSpec(shotControls, hiRes, optics)
+        val requestSpec = registeredShot.spec
+        val traceText = captureFamilyTraceText(formats, requestSpec, traceAdmission)
+        traceText?.takeIf {
+            traceAdmission.registration && !registrationAlreadyTraced &&
+                recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)
+        }
+            ?.let { (stem, outputs) ->
+            android.util.Log.i(
+                "CameraEngine",
+                "CaptureFamily: registered stem=$stem outputs=$outputs",
+            )
+        }
+        // Lane/settlement ownership (AGG6-22): see [StillSaveLanes] for why onError may not finish
+        // a lane once onPhoto was entered.
+        val lanes = StillSaveLanes(
+            wantsProcessed = formats.wantsProcessedStill,
+            wantsDng = formats.dngRaw,
+            onProcessedFinished = { retainedSnapshotLease?.release() },
+            settle = {
+                settleRegisteredStillShot(
+                    registered = registeredShot,
+                    traceText = traceText,
+                    traceSettlement = traceAdmission.settlement,
+                    onDone = onDone,
+                )
+            },
+        )
+        fun releaseDngAdmission() {
+            if (dngPreCaptureLease?.release() == true) {
+                publishProcessStillAdmission()
+            }
+        }
+        fun submitIncompleteDngCleanup(): Boolean {
+            val cleanup = rejectedDngCleanup ?: return false
+            val allocation = dngAllocation ?: run {
+                cleanup.cancel()
+                return false
+            }
+            return cleanup.submit(
+                MediaStoreWriter.RejectedOutput(context.applicationContext, allocation),
+            ) { _ ->
+                runCatching {
+                    publishProcessStillAdmission()
+                }
+                lanes.finishDng()
+            }
+        }
+        // Status observers are UI-owned and must never strand a retained-snapshot lease or a
+        // BURST/AEB/timelapse continuation if one is detached or throws during teardown.
+        val reportStatus: (CameraStatus) -> Unit = { status ->
+            runCatching { onStatus?.invoke(status) }
+        }
+        fun retainCompletedDngForRecovery(pending: PendingDngPublication) {
+            // The row is structurally complete and remains private. A tombstoned family transfers
+            // to durable discard; otherwise launch recovery publishes it later. This callback never
+            // performs provider publication/deletion inline on the camera or ordered-save lane.
+            dispatchDeletedStillDiscard(
+                pending.allocation,
+                pending.captureId,
+            )
+            reportStatus(retainedDngStatus(pending.completionMarkerDurable))
+        }
+        fun dispatchCompletedDng(pending: PendingDngPublication) {
+            stillPublicationDispatcher.dispatchRecoverable(
+                publication = { stillPipeline.publishDng(pending) },
+                onRejected = { retainCompletedDngForRecovery(pending) },
+                onTerminal = lanes::finishDng,
+            )
+        }
+        return object : CameraController.PhotoCallback {
+            override fun onPhoto(
+                jpeg: Image?,
+                raw: Image?,
+                result: TotalCaptureResult,
+                rawChars: CameraCharacteristics?,
+                takenAtMs: Long,
+            ) {
+                lanes.enterPhoto()
+                var processedQueued = false
+                var dngPublishQueued = false
+                // Whether the DNG lane reached its own terminal decision (published, retained,
+                // cleanup submitted, or its reservation cancelled). A throw before that hands the
+                // preallocated row to bounded cleanup below, as onError used to.
+                var dngLaneDecided = false
+                try {
+                    val spec = requestSpec.copy(takenAtMs = takenAtMs)
+                    // Copy the live Image first so the ImageReader slot and Camera2 handler are held
+                    // for the shortest possible interval; EXIF composition is cache-only.
+                    val processedSnapshot = if (formats.wantsProcessedStill && jpeg != null) {
+                        runCatching { StillSnapshot.from(jpeg) }
+                            .onFailure { Log.e("CameraEngine", "Still snapshot failed", it) }
+                            .getOrNull()
+                    } else {
+                        null
+                    }
+                    val exifShot = exifShotOf(result, spec)
+
+                    if (formats.wantsProcessedStill) {
+                        if (jpeg != null) {
+                            if (processedSnapshot != null) {
+                                val queued = runCatching {
+                                    ioExecutor.execute {
+                                        try {
+                                            val encoded = runCatching { processedSnapshot.jpeg() }
+                                                .onFailure { Log.e("CameraEngine", "Still JPEG encode failed", it) }
+                                                .getOrNull()
+                                            if (encoded == null) {
+                                                reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
+                                            } else {
+                                                stillPipeline.saveProcessedStills(
+                                                    encoded.bytes,
+                                                    encoded.length,
+                                                    spec,
+                                                    exifShot,
+                                                    wantHeif = formats.heif,
+                                                    wantJpeg = formats.jpeg,
+                                                )
+                                            }
+                                        } finally {
+                                            lanes.finishProcessed()
+                                        }
+                                    }
+                                }
+                                processedQueued = queued.isSuccess
+                                queued.onFailure { failure ->
+                                    Log.e("CameraEngine", "Photo save dispatch failed", failure)
+                                    reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
+                                }
+                            } else {
+                                reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
+                            }
+                        } else {
+                            reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+                        }
+                    }
+
+                    if (formats.dngRaw) {
+                        if (raw != null) {
+                            // DngCreator needs the live Image, so write + the bounded COMPLETE
+                            // marker attempt remain on this camera callback. Publication transfers
+                            // to the process owner directly for RAW-only or, for mixed output, via a
+                            // lightweight ioExecutor task queued after the processed sibling. A mixed
+                            // shot whose processed sibling was never queued (no processed Image, a
+                            // snapshot-copy failure, a dispatch rejection) has nothing to wait
+                            // behind and transfers DIRECT too (AGG4-7); only a real ordered-lane
+                            // rejection retains the private row for launch recovery.
+                            val write = stillPipeline.saveDng(
+                                raw,
+                                // The controller fails a RAW shot whose read failed before this
+                                // callback (AGG5-41), so a delivered RAW Image always has it.
+                                checkNotNull(rawChars) { "RAW still delivered without characteristics" },
+                                result,
+                                spec,
+                                checkNotNull(dngAllocation) {
+                                    "DNG Camera2 dispatch has no preallocated output"
+                                },
+                            )
+                            // The serialization the admission buys ends HERE, before any tail is
+                            // handed to a worker (AGG5-5 / TR5-15): a RAW-only BURST/AEB tail
+                            // transferred to the process owner could otherwise settle on that
+                            // worker and fire the next shot while this thread still held the slot,
+                            // refusing the chain's own continuation (`tryAcquire` false).
+                            releaseDngAdmission()
+                            when (write) {
+                                is DngWriteResult.Complete -> {
+                                    rejectedDngCleanup?.cancel()
+                                    dngLaneDecided = true
+                                    val pending = write.publication
+                                    dngPublishQueued = transferCompletedDngFromCameraCallback(
+                                        formats = formats,
+                                        processedQueued = processedQueued,
+                                        // The processed save was enqueued first on this single-thread
+                                        // lane. A mixed DNG therefore reaches the process owner only
+                                        // after its sibling's finally block releases/settles that lane.
+                                        enqueueOrdered = { task ->
+                                            runCatching { ioExecutor.execute(task) }.isSuccess
+                                        },
+                                        dispatchToProcessOwner = { dispatchCompletedDng(pending) },
+                                        retainForRecovery = { retainCompletedDngForRecovery(pending) },
+                                    )
+                                }
+                                is DngWriteResult.Rejected -> {
+                                    Log.e("CameraEngine", "DNG write failed", write.failure)
+                                    reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
+                                    check(write.allocation == dngAllocation) {
+                                        "DNG rejection lost its preallocated identity"
+                                    }
+                                    dngLaneDecided = true
+                                    dngPublishQueued = submitIncompleteDngCleanup()
+                                }
+                                is DngWriteResult.Failed -> {
+                                    // Bytes complete, marker threw: the private row is a whole DNG
+                                    // that launch recovery publishes. Retain it like marker
+                                    // exhaustion (tombstoned family → durable discard) and say
+                                    // "saved, pending recovery", not "save failed" (AGG-31).
+                                    rejectedDngCleanup?.cancel()
+                                    dngLaneDecided = true
+                                    Log.e("CameraEngine", "DNG completion marker failed", write.failure)
+                                    retainCompletedDngForRecovery(write.publication)
+                                }
+                            }
+                        } else {
+                            releaseDngAdmission()
+                            dngLaneDecided = true
+                            dngPublishQueued = submitIncompleteDngCleanup()
+                            reportStatus(CameraStatusMessage.DNG_CAPTURE_FAILED.status())
+                        }
+                    }
+                    if (!formats.wantsProcessedStill && !formats.dngRaw) {
+                        reportStatus(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
+                    }
+                } catch (failure: Throwable) {
+                    // Contained HERE, not left to the controller's onError (AGG6-22): only this
+                    // body knows which lanes it already handed off. An undecided DNG lane takes the
+                    // same bounded cleanup onError used to submit.
+                    Log.e("CameraEngine", "Photo capture failed", failure)
+                    if (formats.dngRaw && !dngLaneDecided) {
+                        releaseDngAdmission()
+                        dngPublishQueued = submitIncompleteDngCleanup()
+                    }
+                    reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+                } finally {
+                    // Pre-capture serialization ends with the live Camera2 callback, not with slow
+                    // publication/cleanup tails; those have their own finite process owners. The
+                    // DNG branches already released before their handoff; this exactly-once
+                    // release is the backstop for every other exit (processed-only, a throw).
+                    releaseDngAdmission()
+                    if (!processedQueued) lanes.finishProcessed()
+                    if (!dngPublishQueued) lanes.finishDng()
+                    lanes.finishSequence()
+                }
+            }
+
+            override fun onError(t: Throwable) {
+                if (!lanes.claimErrorTerminal()) {
+                    // onPhoto ran: its finally settled every lane it did not hand off, and a queued
+                    // processed save finishes its own. Finishing here would settle the shot under
+                    // a live save (AGG6-22).
+                    Log.e("CameraEngine", "Photo callback failed after delivery", t)
+                    return
+                }
+                var dngCleanupQueued = false
+                try {
+                    if (formats.dngRaw) {
+                        // Same order as onPhoto: release before the cleanup worker can settle.
+                        releaseDngAdmission()
+                        dngCleanupQueued = submitIncompleteDngCleanup()
+                    }
+                    Log.e("CameraEngine", "Photo capture failed", t)
+                    reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
+                } finally {
+                    releaseDngAdmission()
+                    lanes.finishProcessed()
+                    if (!dngCleanupQueued) lanes.finishDng()
+                    lanes.finishSequence()
+                }
+            }
+        }
+    }
+
+
+
+
+
+    // ---- Video ----
+
+    private fun currentAcceptedRecordingSession(): AcceptedCameraSession? = synchronized(this) {
+        if (opticsRollbackEffectsGeneration != 0L) return@synchronized null
+        acceptedCameraSession?.takeIf { accepted ->
+            acceptedCameraSessionIsCurrent(
+                currentController = controller,
+                acceptedController = accepted.controller,
+                currentSessionGeneration = cameraSessionGeneration.get(),
+                acceptedSessionGeneration = accepted.sessionGeneration,
+                cameraReady = cameraReady,
+                paused = paused,
+            )
+        }
+    }
+
+    private fun ownsAcceptedRecordingSession(expected: AcceptedCameraSession): Boolean =
+        acceptedCameraSession === expected && acceptedCameraSessionIsCurrent(
+            currentController = controller,
+            acceptedController = expected.controller,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            acceptedSessionGeneration = expected.sessionGeneration,
+            cameraReady = cameraReady,
+            paused = paused,
+        )
+
+    /** Frozen pre-native admission facts; production carries an exact Camera2 session identity. */
+    private data class RecordingAdmissionSnapshot(
+        val acceptedSession: AcceptedCameraSession?,
+        val inputs: RecordingAdmissionInputs? = null,
+        val setupPacket: RecordingNativeSetupPacket? = null,
+        val failure: CameraStatusMessage? = null,
+        val isCurrent: () -> Boolean,
+    )
+
+    /**
+     * Freezes accepted Camera2 identity and every codec/FPS/transfer input under one monitor.
+     * Capability filtering is pure and bounded; callbacks and native/provider work stay outside.
+     */
+    private fun currentRecordingAdmissionSnapshot(): RecordingAdmissionSnapshot? = synchronized(this) {
+        val acceptedSession = currentAcceptedRecordingSession() ?: return@synchronized null
+        recordingPreNativeOverrides?.beforeEncoderAdmissionSnapshot?.invoke()
+        val frozenSize = videoSize
+        val frozenFrameRate = videoFrameRate
+        val frozenCodec = videoCodec
+        val frozenTransfer = transfer
+        val frozenCandidates = videoEncoderCandidates.toList()
+        val frozenHighSpeedFps = desiredHighSpeedFps()
+        val inputs = RecordingAdmissionInputs(
+            frameRateAvailable = recordingPreNativeOverrides?.frameRateAvailable
+                ?: (frozenFrameRate in VideoFrameRate.availableFor(
+                    caps,
+                    frozenSize,
+                    frozenCodec,
+                )),
+            size = frozenSize,
+            frameRate = frozenFrameRate,
+            captureRate = if (frozenHighSpeedFps != 0) frozenFrameRate.encoderRate else 0.0,
+            codec = frozenCodec,
+            transfer = frozenTransfer,
+            candidates = frozenCandidates,
+        )
+        val encoderAdmission = recordingEncoderAdmission(
+            frameRateAvailable = inputs.frameRateAvailable,
+            codec = inputs.codec,
+            transfer = inputs.transfer,
+            candidates = inputs.candidates,
+        )
+        RecordingAdmissionSnapshot(
+            acceptedSession = acceptedSession,
+            inputs = inputs,
+            setupPacket = RecordingNativeSetupPacket(
+                size = inputs.size,
+                frameRate = inputs.frameRate,
+                captureRate = inputs.captureRate,
+                codec = inputs.codec,
+                transfer = inputs.transfer,
+                candidates = encoderAdmission.candidates,
+            ),
+            failure = encoderAdmission.failure,
+            isCurrent = { currentAcceptedRecordingSession() === acceptedSession },
+        )
+    }
+
+    // REC admission runs off main. MediaStore row allocation has its own finite lane because a
+    // provider Binder call has no cancellation signal; only after that generation-owned result is
+    // claimed does the serial recorderExecutor perform mic handoff and native setup. The in-flight
+        // gate stays synchronous. Stop-during-start ordering is owned by [RecordingAdmissionLatch].
+    private val recAdmission = RecordingAdmissionLatch()
+
+    fun startRecording(recordAudio: Boolean, onResult: (Boolean) -> Unit) {
+        // Defensive boundary for any future REC entry point that bypasses setVideoMode (or for a
+        // Video-mode snapshot that accidentally started an interval run). This invalidates only the
+        // active sequence; the selected TIMELAPSE drive mode remains available on return to Photo.
+        stopTimelapse()
+        if (!MediaStoreWriter.rejectedOutputAdmissionAvailable()) {
+            publishProcessStillAdmission()
+            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+            onResult(false)
+            return
+        }
+        val topologyLease = routeTopologyConvergence.beginRecording()
+        if (!recAdmission.tryBeginAdmission()) {
+            routeTopologyConvergence.finishAdmission(topologyLease)
+            scheduleDeferredRouteTopologyConvergence()
+            onResult(false)
+            return
+        }
+        if (topologyLease == 0L || !activeRecordingTopologyLease.compareAndSet(0L, topologyLease)) {
+            recAdmission.completeAdmission(succeeded = false)
+            routeTopologyConvergence.finishAdmission(topologyLease)
+            scheduleDeferredRouteTopologyConvergence()
+            onStatus?.invoke(CameraStatusMessage.RECORDING_ALREADY_ACTIVE.status())
+            onResult(false)
+            return
+        }
+        val attemptCompleted = java.util.concurrent.atomic.AtomicBoolean(false)
+        val completeAttempt: (Boolean) -> Unit = { succeeded ->
+            if (attemptCompleted.compareAndSet(false, true)) {
+                val stopNow = recAdmission.completeAdmission(succeeded)
+                if (!succeeded) releaseRecordingAdmissionTopologyLease(topologyLease)
+                onResult(succeeded)
+                // The latched Stop belongs to THIS admission's published recorder, so it stops that
+                // owner directly (AGG5-42). Through stopRecording() it re-entered the latch: a REC
+                // press that claimed a new admission between completeAdmission and here absorbed
+                // the Stop, its own refusal (the held topology lease) then discarded it, and the
+                // published clip kept rolling with the mic live while the UI read not-recording.
+                if (stopNow) stopPublishedRecording()
+            }
+        }
+        val accepted = runCatching {
+            recorderExecutor.execute {
+                val pending = runCatching {
+                    beginRecordingAllocation(recordAudio, topologyLease, completeAttempt)
+                }.getOrDefault(false)
+                if (!pending) completeAttempt(false)
+            }
+        }.isSuccess
+        if (!accepted) {
+            completeAttempt(false)
+        }
+    }
+
+    /** Returns true only after an async allocation attempt owns [completeAttempt]. */
+    private fun beginRecordingAllocation(
+        recordAudio: Boolean,
+        topologyLease: Long,
+        completeAttempt: (Boolean) -> Unit,
+    ): Boolean {
+        val admission = recordingPreNativeOverrides
+            ?.takeUnless { it.useProductionEncoderAdmission }
+            ?.let { overrides ->
+            RecordingAdmissionSnapshot(
+                acceptedSession = null,
+                isCurrent = overrides.admissionCurrent,
+            )
+        } ?: run {
+            val snapshot = currentRecordingAdmissionSnapshot()
+            if (snapshot == null) {
+                onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+                return false
+            }
+            val observedDecision = RecordingEncoderAdmission(
+                candidates = snapshot.setupPacket?.candidates.orEmpty(),
+                failure = snapshot.failure,
+            )
+            snapshot.inputs?.let { recordingPreNativeOverrides?.onEncoderAdmissionInputs?.invoke(it) }
+            recordingPreNativeOverrides?.onEncoderAdmission?.invoke(observedDecision)
+            snapshot.failure?.let { failure ->
+                // Bare "<X> unavailable" like every sibling status in this file; the copula was the
+                // one status that read as a sentence in a register of clipped labels.
+                onStatus?.invoke(failure.status())
+                return false
+            }
+            snapshot
+        }
+        // A just-stopped clip's async teardown still owns the mic (and the encoder pipeline is being
+        // finalized) — refuse until finishRecording completes rather than starting a second recorder
+        // whose AudioRecord init would fail (silent video-only clip).
+        if (recorderTeardownInFlight) {
+            onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_CLIP.status())
+            return false
+        }
+        val processAdmission = UnsafeRecorderQuarantine.snapshotAdmission(processNativeOwner) ?: run {
+            onStatus?.invoke(
+                if (UnsafeRecorderQuarantine.isActive()) {
+                    CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()
+                } else {
+                    CameraStatusMessage.RECORDING_ALREADY_ACTIVE.status()
+                },
+            )
+            return false
+        }
+        val recordingCaptureId = captureSeq.incrementAndGet()
+        val familyKey = CaptureFamilyKey(
+            media = CaptureFamilyMedia.VIDEO,
+            capturedAtEpochMillis = System.currentTimeMillis(),
+            sequence = recordingCaptureId.toLong(),
+        )
+        onCaptureFamilyRegistered?.invoke(recordingCaptureId, familyKey, false)
+        val name = familyKey.displayName("mp4")
+        val scheduler = recordingPreNativeOverrides?.let { overrides ->
+            RecordingTeardownScheduler(overrides.scheduleDeadline)
+        } ?: RecordingTeardownScheduler { delayMs, action ->
+            runCatching {
+                recorderWatchdog.schedule(
+                    action,
+                    delayMs,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }.getOrNull()?.let { future ->
+                RecordingTeardownCancellation { future.cancel(false) }
+            }
+        }
+        val deadlineRef = java.util.concurrent.atomic.AtomicReference<RecordingOperationDeadline?>()
+        lateinit var attempt: RecordingPreNativeAllocationAttempt<RecordingPendingOutput>
+        attempt = RecordingPreNativeAllocationAttempt(
+            onRetired = {
+                deadlineRef.get()?.complete()
+                recordingPreNativeAttempt.compareAndSet(attempt, null)
+                abandonPendingRecordingAdmission(processAdmission)
+                completeAttempt(false)
+            },
+            onLateValue = { pending ->
+                retirePendingRecordingRow(pending, recordingCaptureId, "stale-pre-native-allocation")
+            },
+        )
+        if (!recordingPreNativeAttempt.compareAndSet(null, attempt)) {
+            abandonPendingRecordingAdmission(processAdmission)
+            return false
+        }
+        val allocationDeadline = RecordingOperationDeadline(
+            scheduler = scheduler,
+            timeoutMs = recordingPreNativeOverrides?.allocationTimeoutMs
+                ?: RECORDER_ALLOCATION_TIMEOUT_MS,
+            failure = { java.util.concurrent.TimeoutException("Pending video allocation timed out") },
+            onTimeout = { failure ->
+                attempt.retire {
+                    Log.e("CameraEngine", "REC allocation timed out", failure)
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
+            },
+        )
+        deadlineRef.set(allocationDeadline)
+        if (!allocationDeadline.arm()) return true
+        // Close the store-before-pause race: pause/release may have observed null immediately before
+        // this attempt was published. The post-publication recheck lets the same retire edge win.
+        if (paused || recAdmission.hasStopRequest() || !admission.isCurrent()) {
+            attempt.retire()
+            return true
+        }
+        val allocationTask: () -> Unit = allocationTask@{
+            val result = runCatching {
+                val overrides = recordingPreNativeOverrides
+                if (overrides != null) {
+                    overrides.allocatePendingVideo(name, "video/mp4")?.let {
+                        RecordingPendingOutput(it, allocation = null)
+                    }
+                } else {
+                    MediaStoreWriter.createPendingVideoAllocation(context, name, "video/mp4")?.let {
+                        RecordingPendingOutput(it.uri, it)
+                    }
+                }
+            }
+            when (attempt.deliver(result) {
+                onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+            }) {
+                RecordingPreNativeDelivery.READY -> {
+                    // The provider return and watchdog race independently. Only the deadline's
+                    // completion winner may schedule native setup; a timeout that already flipped
+                    // its state makes this allocated row stale even if onTimeout has not run yet.
+                    if (!allocationDeadline.complete()) {
+                        attempt.retire {
+                            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                        }
+                        return@allocationTask
+                    }
+                    val continuationAccepted = runCatching {
+                        recorderExecutor.execute {
+                            // Publish the release-visible owner BEFORE claim makes the allocation
+                            // non-retirable. It stays reachable until setup either transfers to the
+                            // recorder slot, proves cleanup, or is quarantined.
+                            val setupOwner = RecorderSetupFinalizationOwner<VideoRecorder>()
+                            val setupContext = RecorderSetupOwner(
+                                terminal = setupOwner,
+                                processAdmission = processAdmission,
+                                topologyLease = topologyLease,
+                                captureId = recordingCaptureId,
+                            )
+                            val ownerInstalled = synchronized(recorderOwnershipLock) {
+                                if (recorderSetupFinalizationOwner != null) false else {
+                                    recorderSetupFinalizationOwner = setupContext
+                                    true
+                                }
+                            }
+                            if (!ownerInstalled) {
+                                attempt.retire()
+                                return@execute
+                            }
+                            val pending = attempt.claim()
+                            if (pending == null) {
+                                completeRecorderSetup(setupContext)
+                                return@execute
+                            }
+                            recordingPreNativeAttempt.compareAndSet(attempt, null)
+                            val ok = try {
+                                runCatching {
+                                    continueRecordingAfterAllocation(
+                                        recordAudio = recordAudio,
+                                        topologyLease = topologyLease,
+                                        admission = admission,
+                                        processAdmission = processAdmission,
+                                        completeAttempt = completeAttempt,
+                                        setupContext = setupContext,
+                                        pending = pending,
+                                        recordingCaptureId = recordingCaptureId,
+                                        name = name,
+                                    )
+                                }.getOrElse { failure ->
+                                    Log.w("CameraEngine", "REC admission threw", failure)
+                                    quarantineRecorderSetup(
+                                        setupContext,
+                                        failure,
+                                    )
+                                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                                    false
+                                }
+                            } finally {
+                                completeRecorderSetup(setupContext)
+                            }
+                            completeAttempt(ok)
+                        }
+                    }.isSuccess
+                    if (!continuationAccepted) {
+                        attempt.retire {
+                            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                        }
+                    }
+                }
+                RecordingPreNativeDelivery.FAILED -> Unit
+                RecordingPreNativeDelivery.STALE -> Unit
+            }
+        }
+        val submission = runCatching {
+            recordingPreNativeOverrides?.dispatchAllocation?.invoke(allocationTask)
+                ?: ProcessRecordingPreNativeAllocator.dispatch(allocationTask)
+        }
+            .getOrElse { failure ->
+                attempt.retire {
+                    Log.e("CameraEngine", "REC allocation dispatch failed", failure)
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
+                return true
+            }
+        submission.cancellation?.let(attempt::attachCancellation)
+        when (submission.dispatch) {
+            RecordingPreNativeDispatch.ACCEPTED -> Unit
+            RecordingPreNativeDispatch.OVERFLOW,
+            RecordingPreNativeDispatch.SHUTDOWN,
+            -> {
+                attempt.retire {
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                }
+            }
+        }
+        return true
+    }
+
+    private fun continueRecordingAfterAllocation(
+        recordAudio: Boolean,
+        topologyLease: Long,
+        admission: RecordingAdmissionSnapshot,
+        processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+        completeAttempt: (Boolean) -> Unit,
+        setupContext: RecorderSetupOwner,
+        pending: RecordingPendingOutput,
+        recordingCaptureId: Int,
+        name: String,
+    ): Boolean = try {
+        val uri = pending.uri
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "superseded-before-mic")
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            false
+        } else if (!admission.isCurrent()) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "superseded-before-mic")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+            false
+        } else {
+            // Claim the microphone only after MediaProvider allocation returned. A provider wedge
+            // therefore cannot suppress the standby meter or retain its release latch.
+            val audioClaim = standbyAudioController.beginRecording()
+            if (!audioClaim.admitted) {
+                retirePendingRecordingRow(pending, recordingCaptureId, "mic-claim-refused")
+                // Every sibling refusal on this path names itself; a silent one cleared the
+                // optimistic "starting" state and the REC press appeared to do nothing (AGG4-29).
+                // The claim is held by an earlier, unfinished recording owner: the microphone is
+                // busy, exactly the release-timeout sibling's status.
+                onStatus?.invoke(recordingClaimRefusalStatus(recordAudio).status())
+                false
+            } else {
+                try {
+                    val overrides = recordingPreNativeOverrides
+                    if (overrides != null && overrides.onNativeSetupPacket == null) {
+                        val admitted = overrides.afterMicrophoneClaim(
+                            uri,
+                            recordingCaptureId,
+                            recordAudio,
+                        )
+                        // The injected terminal never publishes a recorder owner. Yield the exact
+                        // standby claim in both outcomes; only the result callback is simulated.
+                        if (!admitted) {
+                            retirePendingRecordingRow(
+                                pending,
+                                recordingCaptureId,
+                                "injected-post-mic-refusal",
+                            )
+                        }
+                        abortRecordingStart()
+                        admitted
+                    } else {
+                        startRecordingClaimed(
+                            recordAudio = recordAudio,
+                            topologyLease = topologyLease,
+                            acceptedSession = checkNotNull(admission.acceptedSession),
+                            audioClaim = audioClaim,
+                            processAdmission = processAdmission,
+                            setupContext = setupContext,
+                            setupPacket = checkNotNull(admission.setupPacket),
+                            completeAttempt = completeAttempt,
+                            pending = pending,
+                            recordingCaptureId = recordingCaptureId,
+                            name = name,
+                        )
+                    }
+                } catch (t: Throwable) {
+                    Log.w("CameraEngine", "REC native admission threw", t)
+                    abortRecordingStart()
+                    quarantineRecorderSetup(setupContext, t)
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+                    false
+                }
+            }
+        }
+    } finally {
+        // publishAdmission moves a successful setup to the active slot, so this is a no-op then.
+        abandonPendingRecordingAdmission(processAdmission)
+    }
+
+    /** The post-mic-claim half of REC admission; every return path releases or converts the claim. */
+    private fun startRecordingClaimed(
+        recordAudio: Boolean,
+        topologyLease: Long,
+        acceptedSession: AcceptedCameraSession,
+        audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
+        processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+        setupContext: RecorderSetupOwner,
+        setupPacket: RecordingNativeSetupPacket,
+        completeAttempt: (Boolean) -> Unit,
+        pending: RecordingPendingOutput,
+        recordingCaptureId: Int,
+        name: String,
+    ): Boolean {
+        val uri = pending.uri
+        val meterReleased = audioClaim.release?.let {
+            runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
+        } ?: true
+        if (!meterReleased) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "mic-release-timeout")
+            abortRecordingStart()
+            onStatus?.invoke(recordingClaimRefusalStatus(recordAudio).status())
+            return false
+        }
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-after-mic-release")
+            abortRecordingStart()
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            return false
+        }
+        if (recorder != null) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "recorder-already-published")
+            abortRecordingStart()
+            return false
+        }
+        if (currentAcceptedRecordingSession() !== acceptedSession) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "session-superseded-before-native")
+            abortRecordingStart()
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
+            return false
+        }
+        val ownedGl = glOwners.current()
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-before-native")
+            abortRecordingStart()
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            return false
+        }
+        val size = setupPacket.size
+        val codec = setupPacket.codec
+        val rate = setupPacket.frameRate
+        val captureRate = setupPacket.captureRate
+        val encoderCandidates = setupPacket.candidates
+        // AVC is 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC/APV keep the
+        // 10-bit HLG/Log path. (Resolution changes after this point stream the old size until reopen.)
+        // The HAL-native-log arm both of these carried was removed 2026-08-04 with the vendor-SDK
+        // decision: it only ever triggered on a stream this app can no longer be given.
+        val glTransfer = when {
+            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> setupPacket.transfer
+            else -> null
+        }
+        // File color tags: use the selected transfer on the 10-bit paths (HEVC/APV); AVC is always
+        // SDR. The log-class members still share one container policy (BT.2020 full-range + an
+        // explicit SDR-class transfer, never unset — the QTI PQ-mistag trap); see ColorProfiles.
+        val fileTransfer = when {
+            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> setupPacket.transfer
+            else -> ColorTransfer.SDR
+        }
+        recordingPreNativeOverrides?.onNativeSetupPacket?.let { observe ->
+            if (!observe(setupPacket)) {
+                retirePendingRecordingRow(pending, recordingCaptureId, "injected-native-setup-terminal")
+                abortRecordingStart()
+                return false
+            }
+        }
+        val rec = VideoRecorder(context).also { it.processAdmissionToken = processAdmission }
+        // Bind before the first vendor-native setup call. A release timeout that wins from here on
+        // can retain this exact graph; if release already revoked setup, no native entry is allowed.
+        if (!setupContext.terminal.bind(rec)) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "setup-revoked-before-native")
+            abortRecordingStart()
+            return false
+        }
+        val setupScheduler = RecordingTeardownScheduler { delayMs, action ->
+            runCatching {
+                recorderWatchdog.schedule(
+                    action,
+                    delayMs,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }.getOrNull()?.let { future ->
+                RecordingTeardownCancellation { future.cancel(false) }
+            }
+        }
+        val setupDeadline = RecordingOperationDeadline(
+            scheduler = setupScheduler,
+            timeoutMs = RECORDER_SETUP_TIMEOUT_MS,
+            failure = { java.util.concurrent.TimeoutException("Recorder native setup timed out") },
+            onTimeout = { failure ->
+                quarantineRecorderSetup(
+                    setupContext,
+                    failure,
+                )
+                completeAttempt(false)
+            },
+        )
+        if (!setupDeadline.arm()) return false
+        val earlyFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val encoderAttachResult = java.util.concurrent.atomic.AtomicReference<Result<Unit>?>()
+        val encoderAttachDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val reportRecorderFailure: (Throwable) -> Unit = { failure ->
+            // Both codec-drain and GL-output failures can beat recorder publication. Retain the
+            // first one, then replay through the same identity-owned claim after admission.
+            earlyFailure.compareAndSet(null, failure)
+            handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, failure)
+        }
+        fun deliverEncoderAttach(result: Result<Unit>) {
+            val effectiveResult = if (UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+                result
+            } else {
+                Result.failure(
+                    java.util.concurrent.CancellationException("Recorder admission was quarantined"),
+                )
+            }
+            val owned = synchronized(recorderOwnershipLock) {
+                recorder === rec && activeRecordingGl === ownedGl && glOwners.owns(ownedGl)
+            }
+            if (!owned || !encoderAttachDelivered.compareAndSet(false, true)) return
+            effectiveResult.fold(
+                onSuccess = {
+                    if (UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission) &&
+                        glOwners.owns(ownedGl)
+                    ) onRecordingStarted?.invoke()
+                },
+                onFailure = { failure ->
+                    handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, failure)
+                },
+            )
+        }
+        // Physical device orientation at record start → muxer rotation hint so a landscape-held clip
+        // plays upright (GL only bakes the afocal 180°; see VideoRecorder.start).
+        val orientationHint = gyro.currentDeviceOrientation()
+        // FRAMING CONTRACT (ARCH4-1): the encoder buffer must match the DISPLAYED aspect, not the
+        // camera stream's. The SurfaceTexture transform rotates GL sampling by the sensor's 90°,
+        // so the displayed content is portrait; drawing it into the stream-shaped LANDSCAPE buffer
+        // made coverScale overscan ~3.16× and the file recorded only a center band of the
+        // viewfinder field (device-measured via luminance-gradient A/B, 2026-07-18). The camera
+        // stream itself stays [videoSize] (the HAL fixes that); only the MediaCodec buffer swaps.
+        val (encW, encH) = RotationMath.encoderSurfaceSize(
+            size.width,
+            size.height,
+            caps?.sensorOrientation ?: 90,
+            previewRotationDegrees(),
+        )
+        val encoderSize = Size(encW, encH)
+        // One rule from the FROZEN packet's codec for both the encoder attempts and the diagnostic
+        // fallback: the latter used to read the live videoCodec field, so a codec edit between
+        // admission and setup logged a bitrate the file never had (AGG4-30).
+        val attemptBitRate = frozenRecordingBitRate(rate.encoderRate, bitrateLevel, codec)
+        val requestedBitRate = attemptBitRate(size.width, size.height)
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            retirePendingRecordingRow(pending, recordingCaptureId, "quarantined-before-setup")
+            abortRecordingStart()
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            return false
+        }
+        var configuredSurface: Surface? = null
+        val nativeSetupAdmitted = UnsafeRecorderQuarantine.runPendingNativeSetup(processAdmission) {
+            configuredSurface = rec.start(
+                uri, encoderSize, rate.encoderRate, captureRate, attemptBitRate,
+                fileTransfer, encoderCandidates, recordAudio, audioGain, orientationHint,
+                pendingAllocation = pending.allocation,
+                frontFacing = activeCameraRoute == CameraRoute.FRONT,
+                cameraRoute = activeCameraRoute,
+                audioScene = audioScene,
+                audioZoom = controls.zoomRatio,
+                audioInputPreference = audioInputPreference,
+                onRoute = { route -> onAudioRoute?.invoke(route) },
+                onLevel = { lvl -> onAudioLevel?.invoke(lvl) },
+                onFailure = reportRecorderFailure,
+            )
+        }
+        if (!nativeSetupAdmitted) {
+            setupDeadline.complete()
+            if (!UnsafeRecorderQuarantine.isActive()) {
+                retirePendingRecordingRow(pending, recordingCaptureId, "native-setup-refused")
+                abortRecordingStart()
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            }
+            return false
+        }
+        if (!setupDeadline.complete()) return false
+        val surface = configuredSurface
+        if (surface == null) {
+            rec.unsafeStartupFailure()?.let { failure ->
+                // A required native cleanup threw. The recorder retains every unproved owner and
+                // its still-open pending row; launch recovery classifies that row after process
+                // restart. Deleting or merely abandoning admission here would overlap the graph.
+                enterUnsafeRecorderQuarantine(rec, recordingCaptureId, failure)
+                return false
+            }
+            // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
+            // doesn't linger as a 0-byte orphan. Cleanup stays off the serial native lane; overflow
+            // leaves the durably REGISTERED row for launch recovery.
+            retirePendingRecordingRow(pending, recordingCaptureId, "native-setup-failed")
+            abortRecordingStart()
+            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status()); return false
+        }
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            stopUnattachedRecording(rec, recordingCaptureId)
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            return false
+        }
+        var admitted = false
+        val processCommitted = UnsafeRecorderQuarantine.publishAdmission(processAdmission) {
+            admitted = synchronized(this) {
+                synchronized(recorderOwnershipLock) {
+                    if (recordingCandidateMayPublish(
+                            acquisitionOpen = terminalAcquisitionGate.isOpen(),
+                            teardownInFlight = recorderTeardownInFlight,
+                            glOwnerCurrent = glOwners.owns(ownedGl),
+                            sessionOwned = ownsAcceptedRecordingSession(acceptedSession),
+                            recorderAbsent = recorder == null,
+                        ) && routeTopologyConvergence.transferToRecorder(topologyLease)
+                    ) {
+                        recorder = rec
+                        activeRecordingGl = ownedGl
+                        activeRecordingUri = uri
+                        activeRecordingCaptureId = recordingCaptureId
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+            admitted
+        }
+        if (!processCommitted || !admitted) {
+            // No EGL handoff occurred: direct recorder stop is safe and deletes the pending row.
+            stopUnattachedRecording(rec, recordingCaptureId)
+            onStatus?.invoke(
+                if (!processCommitted) CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()
+                else CameraStatusMessage.CAMERA_RECONFIGURING.status(),
+            )
+            return false
+        }
+        // Advance terminal-presentation ownership only after the recorder itself is admitted. A
+        // late tail from an older clip may still finish/recover, but it cannot replace this take's
+        // review or transient save verdict while this take is active.
+        recordingStoragePresentation.observeCapture(recordingCaptureId)
+        // After admission so every take that starts sampling also owns a teardown that ends it
+        // (detachAndFinalizeRecording / quarantine) and a storage verdict that settles it.
+        val gyroFirstFrameSink = beginGyroLog(recordingCaptureId, name)
+        ownedGl.setTransfer(glTransfer)
+        fun ownsEncoderAttach(): Boolean {
+            val acquisitionOpen = terminalAcquisitionGate.isOpen()
+            return synchronized(recorderOwnershipLock) {
+                recordingAttachMayCommit(
+                    acquisitionOpen = acquisitionOpen,
+                    recorderOwned = recorder === rec && activeRecordingGl === ownedGl,
+                    glOwnerCurrent = glOwners.owns(ownedGl),
+                )
+            }
+        }
+        val encoderAdmission = EncoderOutputAdmission(
+            validity = {
+                UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission) &&
+                    ownsEncoderAttach()
+            },
+            commitBlock = { block ->
+                var installed = false
+                // Lock order is terminal gate -> process lease -> recorder owner. The REVERSE
+                // (process lease outermost) was the app's single ABBA inversion: every camera
+                // open runs runNativeAcquisition (process lock) INSIDE runIfOpen (gate monitor),
+                // so this path taking the process lock first could deadlock a mid-REC
+                // camera-failure recovery against the encoder attach — GL thread, setupExecutor,
+                // and the teardown watchdog all wedged (cycle-6 tracer T6). Semantics are
+                // unchanged: a closed gate skips the commit entirely (installed stays false,
+                // same rejection the in-block gate check used to produce), and a stale process
+                // admission still rejects the private candidate before it can outlive the
+                // recorder it targets. release() closes the terminal gate before claiming
+                // recorder ownership, while pause and failure claim recorder ownership directly;
+                // either teardown observes a fully installed EGL owner and queues detach after
+                // this task, or this commit rejects the candidate.
+                terminalAcquisitionGate.runIfOpen {
+                    UnsafeRecorderQuarantine.commitAdmission(processAdmission) {
+                        synchronized(recorderOwnershipLock) {
+                            if (recordingAttachMayCommit(
+                                    acquisitionOpen = true,
+                                    recorderOwned = recorder === rec && activeRecordingGl === ownedGl,
+                                    glOwnerCurrent = glOwners.owns(ownedGl),
+                                )
+                            ) {
+                                block()
+                                installed = true
+                            }
+                        }
+                    }
+                }
+                installed
+            },
+        )
+        // Ownership is published before the asynchronous EGL handoff. A lease revocation therefore
+        // reports through the identity-owned failure path and receives checked detach-before-stop;
+        // before this point the Surface was never handed to EGL and direct stop remained safe.
+        // The recorder may have landed on a smaller SAME-ASPECT rung than we asked for, because some
+        // encoders refuse the portrait buffer at full height (VideoRecorder.encoderSizeLadder). GL
+        // must draw at the size the encoder actually took, or the viewport would not match the
+        // input Surface. Identical to `encoderSize` on every verified handset.
+        val acceptedEncoderSize = rec.configuredSize ?: encoderSize
+        val acceptedEncoder = rec.configuredEncoderSelection ?: encoderCandidates.first()
+        onEncoderSizeAccepted?.invoke(acceptedEncoderSize)
+        ownedGl.setEncoderOutput(
+            surface,
+            acceptedEncoderSize.width,
+            acceptedEncoderSize.height,
+            admission = encoderAdmission,
+            onRuntimeFailure = reportRecorderFailure,
+            firstFrameSink = gyroFirstFrameSink,
+        ) { result ->
+            // GlPipeline guarantees exactly-once result delivery, so a plain atomic publication is
+            // sufficient and avoids identity-CAS semantics on Kotlin's boxed Result value class.
+            encoderAttachResult.set(result)
+            deliverEncoderAttach(result)
+        }
+        // A drain thread can fail before start() returns and before recorder ownership is published.
+        // Re-run the same identity-guarded claim after publication so that early failure is not lost.
+        earlyFailure.get()?.let {
+            handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, it)
+        }
+        encoderAttachResult.get()?.let(::deliverEncoderAttach)
+        if (recorder !== rec) {
+            // A pause/stop/failure claimed and finalized this recorder between publication and
+            // here: its ordered teardown already restored the preview curve, and the
+            // setTransfer(glTransfer) above re-applied the RECORDING curve with no recording left
+            // to own it — the preview would render the recording transfer until the next transfer
+            // change or mode flip (tracer T3). Re-restore the current preview transfer.
+            ownedGl.setTransfer(transfer)
+            return false
+        }
+        if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
+            handleUnexpectedRecorderFailure(
+                ownedGl,
+                rec,
+                uri,
+                recordingCaptureId,
+                java.util.concurrent.CancellationException("Recorder admission was quarantined"),
+            )
+            return false
+        }
+        if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+            android.util.Log.i(
+                "CameraEngine",
+                "RecordingSpec: admitted stem=${name.substringBeforeLast('.')} " +
+                    "codec=${codec.name}/${acceptedEncoder.codecName} " +
+                    "source=${size.width}x${size.height} " +
+                    "encoder=${acceptedEncoderSize.width}x${acceptedEncoderSize.height}" +
+                    (if (acceptedEncoderSize != encoderSize) " (asked ${encoderSize.width}x${encoderSize.height})" else "") +
+                    " bitrate=${rec.configuredBitRate ?: requestedBitRate} " +
+                    "fps=${String.format(java.util.Locale.US, "%.9f", rate.encoderRate)} " +
+                    "transfer=${fileTransfer.name} audio=$recordAudio",
+            )
+        }
+        return true
+    }
+
+    /** Operator intent for the optional Gyroflow gyro log; read at the next REC admission. */
+    fun setGyroLogEnabled(enabled: Boolean) {
+        gyroLogEnabled = enabled
+    }
+
+    /**
+     * Starts the optional gyro log for an ADMITTED take, or returns null (disabled, EXTERNAL route
+     * with no fixed IMU relationship, or a released recorder). Geometry is frozen here from the same
+     * route facts the encoder draw uses: route + front mirror convention (file = true scene), sensor
+     * orientation, and the afocal content rotation ([previewRotationDegrees] is the renderer's
+     * content term, 180 on TELE). The clock offset is sampled once; see
+     * [me.hletrd.telecampro.video.GyroflowLog.sensorEventToCameraClockNs].
+     */
+    private fun beginGyroLog(
+        captureId: Int,
+        videoDisplayName: String,
+    ): me.hletrd.telecampro.video.GyroLogFirstFrameSink? {
+        if (!gyroLogEnabled) return null
+        val route = activeCameraRoute
+        val fileMirrored = me.hletrd.telecampro.video.GyroflowLog.encodedFileMirroredX(
+            frontRoute = route == CameraRoute.FRONT,
+            streamPreMirrored = activeDeviceProfile().frontStreamPreMirrored,
+        )
+        val orientation = me.hletrd.telecampro.video.GyroflowLog.orientation(route, fileMirrored) ?: return null
+        val currentCaps = caps
+        val readoutDirection = currentCaps?.sensorOrientation?.let { sensor ->
+            me.hletrd.telecampro.video.GyroflowLog.readoutDirection(sensor, previewRotationDegrees(), fileMirrored)
+        }
+        val realtime = currentCaps?.timestampSource ==
+            android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+        return gyroLog.begin(
+            me.hletrd.telecampro.video.GyroLogRecorder.Spec(
+                captureId = captureId,
+                videoDisplayName = videoDisplayName,
+                orientation = orientation,
+                readoutDirection = readoutDirection,
+                cameraTimestampRealtime = realtime,
+                realtimeMinusMonotonicNs = android.os.SystemClock.elapsedRealtimeNanos() - System.nanoTime(),
+                unixStartSeconds = System.currentTimeMillis() / 1_000L,
+                note = BuildConfig.VERSION_NAME,
+                vendor = android.os.Build.MANUFACTURER.orEmpty(),
+            ),
+        )
+    }
+
+    private fun completeRecorderSetup(owner: RecorderSetupOwner) {
+        owner.terminal.release()
+        synchronized(recorderOwnershipLock) {
+            if (recorderSetupFinalizationOwner === owner) recorderSetupFinalizationOwner = null
+        }
+    }
+
+    private fun quarantineRecorderSetup(
+        owner: RecorderSetupOwner,
+        failure: Throwable,
+    ) {
+        val quarantine = owner.terminal.quarantine()
+        if (!quarantine.claimed) return
+        val rec = quarantine.resource
+        if (rec != null) {
+            enterUnsafeRecorderQuarantine(rec, owner.captureId, failure)
+        } else {
+            // Release won before a VideoRecorder was bound. Revocation is sufficient: bind() now
+            // fails atomically, so no vendor owner can appear after the pending process lease ends.
+            abandonPendingRecordingAdmission(owner.processAdmission)
+            abortRecordingStart()
+            releaseRecordingAdmissionTopologyLease(owner.topologyLease)
+        }
+        synchronized(recorderOwnershipLock) {
+            if (recorderSetupFinalizationOwner === owner) recorderSetupFinalizationOwner = null
+        }
+    }
+
+    private fun abortRecordingStart() {
+        standbyAudioController.abortRecording()
+    }
+
+    /**
+     * Releases a REC admission's pending process token, then rechecks standby intent (AGG5-43).
+     * While the token is pending the standby gate is closed, so both [abortRecordingStart]'s
+     * restart and a ViewModel re-enable during admission were refused; nothing retried them once a
+     * Stop-latched admission failed, and the armed-video meter stayed dead. A published recorder
+     * makes the token release and the recheck no-ops.
+     */
+    private fun abandonPendingRecordingAdmission(
+        token: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+    ) {
+        UnsafeRecorderQuarantine.abandonPendingAdmission(token)
+        standbyAudioController.recheckAfterRecordingAdmission()
+    }
+
+    /** A configured recorder whose Surface never crossed into EGL can be stopped directly. */
+    private fun stopUnattachedRecording(
+        rec: VideoRecorder,
+        captureId: Int,
+    ) {
+        val result = runCatching { rec.stopNative() }.getOrElse { failure ->
+            VideoRecorder.NativeStopResult(
+                error = failure,
+                nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
+            )
+        }
+        if (result.nativeGraphDisposition == NativeGraphDisposition.QUARANTINE_REQUIRED) {
+            enterUnsafeRecorderQuarantine(
+                rec = rec,
+                captureId = captureId,
+                failure = result.error ?: IllegalStateException("Recorder setup could not stop"),
+            )
+        } else {
+            result.storageTail?.let { storageTail ->
+                dispatchRecordingStorageTask(Runnable { storageTail.complete() })
+            }
+        }
+        abortRecordingStart()
+    }
+
+    fun stopRecording() {
+        if (retirePreNativeRecordingAllocation()) return
+        // Admission still queued/in flight on the recorder executor → the latch takes the stop
+        // and the admission completion runs it there (exactly-once, ordered behind the start).
+        if (recAdmission.requestStop()) return
+        stopPublishedRecording()
+    }
+
+    /** Stops the published recorder, if any; never touches the pre-native attempt or the latch. */
+    private fun stopPublishedRecording() {
+        val ownedRecording = synchronized(recorderOwnershipLock) {
+            val owned = recorder ?: return
+            recorderTeardownInFlight = true
+            recorder = null
+            val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+            activeRecordingGl = null
+            val ownedUri = activeRecordingUri
+            val ownedCaptureId = activeRecordingCaptureId
+            activeRecordingUri = null
+            activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
+            OwnedRecording(owned, ownedUri, ownedCaptureId, ownedGl)
+        }
+        // ORDERED teardown: stopNative (codec release; joins the drain threads up to seconds, so it
+        // stays OFF the main thread on recorderExecutor) dispatches from the completion
+        // callback, which runs on the GL thread only AFTER the encoder EGL surface is actually
+        // cleared. The old fire-and-forget post had no happens-before edge with the independent
+        // ioExecutor — a queued drawFrame could still makeCurrent() the encoder surface while the
+        // codec that owns it was being released (uncaught EGL failure on the GL thread).
+        detachAndFinalizeRecording(
+            ownedRecording.gl,
+            ownedRecording.recorder,
+            ownedRecording.uri,
+            ownedRecording.captureId,
+        )
+        // Restore the preview curve startRecording overrode: an AVC recording pushes null (SDR) into
+        // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
+        ownedRecording.gl.setTransfer(transfer)
+    }
+
+    /** Stop/timeout/lifecycle first-wins edge for provider work that cannot itself be interrupted. */
+    private fun retirePreNativeRecordingAllocation(): Boolean =
+        recordingPreNativeAttempt.getAndSet(null)?.retire() == true
+
+    // True from stop/pause dispatching async native finalization until AudioRecord is released:
+    // `recorder == null` alone says nothing about the mic, and the standby meter starting
+    // in that window would violate the one-AudioRecord invariant (its init would fail, or worse,
+    // steal the route from the finalizing clip).
+    private val recorderTeardownOwner = RecordingFinalizationPublication { finalizing ->
+        onRecordingFinalizing?.invoke(finalizing)
+    }
+    private var recorderTeardownInFlight: Boolean
+        get() = recorderTeardownOwner.current()
+        set(value) {
+            recorderTeardownOwner.set(value)
+        }
+
+    /** Pre-publication failure may release admission; recorder ownership makes this a strict no-op. */
+    private fun releaseRecordingAdmissionTopologyLease(expected: Long) {
+        if (!routeTopologyConvergence.finishAdmission(expected)) return
+        if (activeRecordingTopologyLease.compareAndSet(expected, 0L)) {
+            scheduleDeferredRouteTopologyConvergence()
+        }
+    }
+
+    /** Ends the REC topology lease exactly once, after native/container ownership is gone. */
+    private fun releaseRecordingTopologyLease(expected: Long? = null) {
+        while (true) {
+            val current = activeRecordingTopologyLease.get()
+            if (current == 0L || expected != null && current != expected) return
+            if (activeRecordingTopologyLease.compareAndSet(current, 0L)) {
+                // Normal post-publication teardown owns RECORDER; unsafe native setup can quarantine
+                // before publication while admission still owns the same active lease.
+                if (!routeTopologyConvergence.finishRecording(current)) {
+                    routeTopologyConvergence.finishAdmission(current)
+                }
+                scheduleDeferredRouteTopologyConvergence()
+                return
+            }
+        }
+    }
+
+    private fun handleUnexpectedRecorderFailure(
+        ownedGl: GlPipeline,
+        rec: VideoRecorder,
+        uri: android.net.Uri,
+        captureId: Int,
+        failure: Throwable,
+    ) {
+        val claimed = synchronized(recorderOwnershipLock) {
+            if (recorder !== rec || activeRecordingGl !== ownedGl) {
+                false
+            } else {
+                recorderTeardownInFlight = true
+                recorder = null
+                activeRecordingGl = null
+                if (activeRecordingUri == uri) {
+                    activeRecordingUri = null
+                    activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
+                }
+                true
+            }
+        }
+        if (!claimed) return
+        detachAndFinalizeRecording(ownedGl, rec, uri, captureId)
+        Log.e("CameraEngine", "Recording failed", failure)
+        onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
+        onRecordingTerminated?.invoke(failure)
+        ownedGl.setTransfer(transfer)
+    }
+
+    private fun detachAndFinalizeRecording(
+        ownedGl: GlPipeline,
+        rec: VideoRecorder,
+        uri: android.net.Uri?,
+        captureId: Int,
+    ) {
+        recorderTeardownInFlight = true
+        // Every claim (stop, failure, pause, camera error, release) funnels here: the take is over,
+        // so the IMU stream stops now; its sidecar waits for the storage verdict.
+        gyroLog.endSampling(captureId)
+        val finalizationOwner = RecorderFinalizationOwner(
+            recorder = rec,
+            captureId = captureId,
+            nativeFinalization = RecorderNativeFinalizationGate(),
+        )
+        recorderFinalizationOwner = finalizationOwner
+
+        fun clearFinalizationOwner() {
+            synchronized(recorderOwnershipLock) {
+                if (recorderFinalizationOwner === finalizationOwner) {
+                    recorderFinalizationOwner = null
+                }
+            }
+        }
+
+        fun clearClassifiedFinalizationOwner() {
+            if (finalizationOwner.nativeFinalization.current() != RecorderNativeFinalization.PENDING) {
+                clearFinalizationOwner()
+            }
+        }
+
+        fun dispatchTask(task: Runnable, fallbackName: String) {
+            val accepted = runCatching { recorderExecutor.execute(task) }.isSuccess
+            if (!accepted) {
+                runCatching { Thread(task, fallbackName).apply { isDaemon = true }.start() }
+                    .onFailure { task.run() }
+            }
+        }
+
+        val scheduler = RecordingTeardownScheduler { delayMs, action ->
+            runCatching {
+                recorderWatchdog.schedule(
+                    action,
+                    delayMs,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }.getOrNull()?.let { future ->
+                RecordingTeardownCancellation {
+                    future.cancel(false)
+                }
+            }
+        }
+        lateinit var teardown: RecordingTeardownCoordinator
+        teardown = RecordingTeardownCoordinator(
+            scheduler = scheduler,
+            detachTimeoutMs = RECORDER_DETACH_TIMEOUT_MS,
+            hardTimeoutMs = RECORDER_QUARANTINE_TIMEOUT_MS,
+            onRecoveryRequired = { failure ->
+                // A failed or missing unbind/destroy result is NOT permission to release MediaCodec.
+                // Reset the EGL owner first; only its strict resource-release signal may finalize.
+                recoverFromEncoderDetachFailure(
+                    ownedGl = ownedGl,
+                    failure = failure,
+                    onReleased = teardown::resourcesReleased,
+                    onAbandoned = { teardown.recoveryAbandoned(failure) },
+                )
+            },
+            onTerminal = { terminal, failure ->
+                when (terminal) {
+                    RecordingTeardownTerminal.FINALIZE -> {
+                        val finalizationDeadline = RecordingOperationDeadline(
+                            scheduler = scheduler,
+                            timeoutMs = RECORDER_FINALIZATION_TIMEOUT_MS,
+                            failure = {
+                                java.util.concurrent.TimeoutException(
+                                    "Recorder native finalization timed out",
+                                )
+                            },
+                            onTimeout = { timeout ->
+                                if (finalizationOwner.nativeFinalization.classify(
+                                        RecorderNativeFinalization.QUARANTINED,
+                                    )
+                                ) {
+                                    enterUnsafeRecorderQuarantine(rec, captureId, timeout)
+                                    clearFinalizationOwner()
+                                }
+                            },
+                        )
+                        if (finalizationDeadline.arm()) {
+                            val task = Runnable {
+                                try {
+                                    finishRecordingNative(
+                                        rec,
+                                        uri,
+                                        captureId,
+                                        acceptNativeRelease = {
+                                            completeRecorderNativeRelease(
+                                                deadlineComplete = finalizationDeadline::complete,
+                                                classification = finalizationOwner.nativeFinalization,
+                                                releaseProcessAdmission = {
+                                                    UnsafeRecorderQuarantine.finishAdmission(
+                                                        rec.processAdmissionToken,
+                                                    )
+                                                    // Native/container ownership is fully gone.
+                                                    // Storage may now stall independently without
+                                                    // withholding same-Engine REC or microphone use.
+                                                    recorderTeardownInFlight = false
+                                                    standbyAudioController.finishRecording()
+                                                    releaseRecordingTopologyLease()
+                                                },
+                                            )
+                                        },
+                                    )
+                                } finally {
+                                    // A returned quarantine-required result can deliberately leave
+                                    // classification pending until its armed deadline. Preserve the
+                                    // owner so Engine.release can still claim it synchronously.
+                                    clearClassifiedFinalizationOwner()
+                                }
+                            }
+                            dispatchTask(task, "record-finalize-fallback")
+                        } else {
+                            // No task was submitted when the watchdog could not arm. Quarantine was
+                            // classified synchronously by onTimeout, so task ownership is complete.
+                            clearClassifiedFinalizationOwner()
+                        }
+                    }
+
+                    RecordingTeardownTerminal.QUARANTINE -> try {
+                        if (finalizationOwner.nativeFinalization.classify(
+                                RecorderNativeFinalization.QUARANTINED,
+                            )
+                        ) {
+                            enterUnsafeRecorderQuarantine(
+                                rec = rec,
+                                captureId = captureId,
+                                failure = failure
+                                    ?: IllegalStateException("Recording graph release was not proven"),
+                            )
+                        }
+                    } finally {
+                        clearFinalizationOwner()
+                    }
+                }
+            },
+        )
+        teardown.start { completion ->
+            ownedGl.setEncoderOutput(null, 0, 0, onApplied = completion)
+        }
+    }
+
+    /** Terminal EGL reset used only when the checked encoder detach transition itself fails. */
+    private fun recoverFromEncoderDetachFailure(
+        ownedGl: GlPipeline,
+        failure: Throwable,
+        onReleased: () -> Unit,
+        onAbandoned: () -> Unit,
+    ) {
+        Log.e("CameraEngine", "Renderer reset after encoder detach failure", failure)
+        if (glOwners.owns(ownedGl)) {
+            onStatus?.invoke(CameraStatusMessage.CAMERA_ERROR_RECOVERING.status())
+            invalidateCameraReady()
+        }
+        val failedController = synchronized(this) {
+            if (!glOwners.owns(ownedGl)) return@synchronized null
+            val current = controller
+            controller = null
+            current
+        }
+        val reset = Runnable {
+            val cameraRelease = failedController?.close()
+            val resourcesReleased = java.util.concurrent.atomic.AtomicBoolean(false)
+            val outcome = stopGlOwner(
+                ownedGl,
+                afterResourcesReleased(ownedGl) {
+                    resourcesReleased.set(true)
+                    onReleased()
+                },
+                restartPreviewOnAbandon = false,
+            )
+            if (outcome == GlStopOutcome.ABANDONED && !resourcesReleased.get()) {
+                onAbandoned()
+            } else if (resourcesReleased.get() && cameraReplacementMayAcquire(cameraRelease) &&
+                !UnsafeRecorderQuarantine.isActive()
+            ) {
+                restartPreviewAfterGlReset()
+            } else if (!cameraReplacementMayAcquire(cameraRelease)) {
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+            }
+        }
+        if (runCatching { setupExecutor.execute(reset) }.isFailure) {
+            // Release may already own the setup executor. A fresh helper keeps CameraController.close
+            // off the GL callback thread while preserving stop-before-codec-finalize ordering.
+            runCatching { Thread(reset, "egl-reset-fallback").start() }
+                .onFailure {
+                    val cameraRelease = failedController?.let { controller ->
+                        runCatching { controller.close() }
+                            .getOrElse {
+                                UnsafeRecorderQuarantine.quarantineNativeGraph(controller)
+                                CameraControllerCloseResult.QUARANTINED
+                            }
+                    }
+                    val resourcesReleased = java.util.concurrent.atomic.AtomicBoolean(false)
+                    val outcome = stopGlOwner(
+                        ownedGl,
+                        afterResourcesReleased(ownedGl) {
+                            resourcesReleased.set(true)
+                            onReleased()
+                        },
+                        restartPreviewOnAbandon = false,
+                    )
+                    if (outcome == GlStopOutcome.ABANDONED && !resourcesReleased.get()) {
+                        onAbandoned()
+                    } else if (resourcesReleased.get() && cameraReplacementMayAcquire(cameraRelease) &&
+                        !UnsafeRecorderQuarantine.isActive()
+                    ) {
+                        restartPreviewAfterGlReset()
+                    } else if (!cameraReplacementMayAcquire(cameraRelease)) {
+                        onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                    }
+                }
+        }
+    }
+
+    /** Replaces only the exact native owner that timed out; a stale stop cannot displace a newer GL. */
+    private fun stopGlOwner(
+        ownedGl: GlPipeline,
+        onResourcesReleased: (() -> Unit)? = null,
+        restartPreviewOnAbandon: Boolean = true,
+    ): GlStopOutcome {
+        val outcome = ownedGl.stop(onResourcesReleased = onResourcesReleased)
+        var replaced = false
+        if (outcome == GlStopOutcome.ABANDONED) {
+            synchronized(this) {
+                if (glOwners.replaceIfOwned(ownedGl) == null) return@synchronized
+                started = false
+                starting = false
+                glInputPending = false
+                replaced = true
+            }
+        }
+        if (replaced) {
+            Log.e(
+                "CameraEngine",
+                "Abandoned retired GL owner; installed isolated replacement",
+            )
+            // ABANDONED deliberately never emits the strict native-release callback. Start the
+            // isolated replacement from the still-live TextureView now; waiting for that callback
+            // or a lifecycle resume would leave an otherwise usable foreground preview black.
+            val liveSurface = previewSurface
+            if (restartPreviewOnAbandon && glReplacementMayRestartPreview(
+                    replaced = true,
+                    paused = paused,
+                    acquisitionOpen = terminalAcquisitionGate.isOpen(),
+                    hasPreviewSurface = liveSurface != null,
+                )
+            ) {
+                onPreviewSurfaceAvailable(
+                    checkNotNull(liveSurface),
+                    previewSurfaceW,
+                    previewSurfaceH,
+                )
+            }
+        }
+        return outcome
+    }
+
+    private fun afterResourcesReleased(ownedGl: GlPipeline, onReleased: () -> Unit): () -> Unit = released@{
+        // Recorder finalization belongs to this old EGL owner and remains valid. Engine start state,
+        // however, may only be mutated by the currently installed pipeline instance.
+        if (!glOwners.owns(ownedGl)) {
+            onReleased()
+            return@released
+        }
+        synchronized(this) {
+            started = false
+            starting = false
+            glInputPending = false
+        }
+        startupTraceOwnership.revoke()
+        onReleased()
+    }
+
+    private fun restartPreviewAfterGlReset() {
+        val liveSurface = previewSurface
+        if (nativeAcquisitionMayProceed() && !paused && liveSurface != null) {
+            onPreviewSurfaceAvailable(liveSurface, previewSurfaceW, previewSurfaceH)
+        }
+    }
+
+    private fun nativeAcquisitionMayProceed(): Boolean {
+        val process = UnsafeRecorderQuarantine.generalNativeAcquisitionState(processNativeOwner)
+        return nativeAcquisitionAllowed(
+            acquisitionOpen = terminalAcquisitionGate.isOpen(),
+            recorderQuarantined = process.quarantined,
+            recorderSetupPending = process.setupPending,
+            activeRecorderOwnedByForeignEngine = process.activeRecorderOwnedByForeignEngine,
+        )
+    }
+
+    /**
+     * Parks exactly one current preview generation behind the process recorder owner. The setup
+     * Engine is released when it publishes its own graph; a foreign/replacement Engine remains
+     * parked through that recording's strict finalization. Every callback re-enters setupExecutor
+     * and rechecks local terminal, lifecycle, Surface, and process authority before replay.
+     */
+    private fun awaitRecorderSetupReplay(
+        expectedSurfaceGeneration: Long,
+        restartNativeGraph: Boolean = false,
+    ) {
+        val replayGeneration = recorderSetupReplayGeneration.incrementAndGet()
+        val previous = synchronized(recorderSetupReplayLock) {
+            recorderSetupReplayObservation.also { recorderSetupReplayObservation = null }
+        }
+        previous?.cancel()
+        val observation = UnsafeRecorderQuarantine.observeNativeAcquisitionReplay(processNativeOwner) { outcome ->
+            dispatchRecorderSetupReplay(
+                replayGeneration,
+                expectedSurfaceGeneration,
+                restartNativeGraph,
+                outcome,
+            )
+        }
+        val installed = synchronized(recorderSetupReplayLock) {
+            if (recorderSetupReplayGeneration.get() == replayGeneration && observation != null) {
+                recorderSetupReplayObservation = observation
+                true
+            } else {
+                false
+            }
+        }
+        if (!installed) observation?.cancel()
+        if (observation == null) {
+            // The pending edge may have retired between the refusal and atomic registration.
+            dispatchRecorderSetupReplay(
+                replayGeneration,
+                expectedSurfaceGeneration,
+                restartNativeGraph,
+                if (UnsafeRecorderQuarantine.isActive()) {
+                    me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome.QUARANTINED
+                } else {
+                    me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome.AVAILABLE
+                },
+            )
+        }
+    }
+
+    private fun dispatchRecorderSetupReplay(
+        replayGeneration: Long,
+        expectedSurfaceGeneration: Long,
+        restartNativeGraph: Boolean,
+        outcome: me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome,
+    ) {
+        val task = Runnable {
+            if (recorderSetupReplayGeneration.get() != replayGeneration) return@Runnable
+            synchronized(recorderSetupReplayLock) { recorderSetupReplayObservation = null }
+            if (paused || !terminalAcquisitionGate.isOpen() ||
+                previewSurfaceGeneration.get() != expectedSurfaceGeneration
+            ) return@Runnable
+            if (outcome == me.hletrd.telecampro.video.NativeAcquisitionReplayOutcome.QUARANTINED ||
+                UnsafeRecorderQuarantine.isActive()
+            ) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+                invalidateCameraReady()
+                return@Runnable
+            }
+            if (!nativeAcquisitionMayProceed()) {
+                awaitRecorderSetupReplay(expectedSurfaceGeneration, restartNativeGraph)
+                return@Runnable
+            }
+            val surface = previewSurface ?: return@Runnable
+            recordingPreNativeOverrides?.onNativeAcquisitionReplay?.let { probe ->
+                probe()
+                return@Runnable
+            }
+            if (restartNativeGraph) {
+                recordingPreNativeOverrides?.onFullGraphReplayAttempt?.invoke()
+                restartGlAfterPreviewSurfaceLoss()
+            } else {
+                onPreviewSurfaceAvailable(surface, previewSurfaceW, previewSurfaceH)
+            }
+        }
+        runCatching { setupExecutor.execute(task) }
+    }
+
+    private fun cancelRecorderSetupReplay() {
+        recorderSetupReplayGeneration.incrementAndGet()
+        synchronized(recorderSetupReplayLock) {
+            recorderSetupReplayObservation.also { recorderSetupReplayObservation = null }
+        }?.cancel()
+    }
+
+    /** Converts an atomic GL/Camera2 refusal into the retained Surface's one-shot replay owner. */
+    private fun convergeRetainedSurfaceAfterNativeRefusal(failure: Throwable): Boolean {
+        if (failure !is me.hletrd.telecampro.video.NativeAcquisitionRefusedException) return false
+        val surfaceGeneration = synchronized(this) {
+            if (paused || !terminalAcquisitionGate.isOpen() || previewSurface == null) null
+            else previewSurfaceGeneration.get()
+        } ?: return true
+        val process = UnsafeRecorderQuarantine.generalNativeAcquisitionState(processNativeOwner)
+        if (process.quarantined) {
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            invalidateCameraReady()
+        } else {
+            // Even if the token retired between refusal and this check, atomic registration returns
+            // null and dispatches the same generation immediately instead of losing the edge.
+            awaitRecorderSetupReplay(
+                surfaceGeneration,
+                restartNativeGraph = failure.phase !=
+                    me.hletrd.telecampro.video.NativeAcquisitionRefusalPhase.PREVIEW_OUTPUT,
+            )
+        }
+        return true
+    }
+
+    private fun finishRecordingNative(
+        rec: VideoRecorder,
+        uri: android.net.Uri?,
+        captureId: Int,
+        acceptNativeRelease: () -> Boolean = { true },
+    ): VideoRecorder.NativeStopResult {
+        var nativeReleaseOwned = false
+        val result = runCatching {
+                rec.stopNative {
+                    acceptNativeRelease().also { nativeReleaseOwned = it }
+                }
+            }
+                .getOrElse {
+                    VideoRecorder.NativeStopResult(
+                        error = it,
+                        nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
+                    )
+                }
+        if (!nativeReleaseOwned) return result
+        if (result.nativeGraphDisposition == NativeGraphDisposition.QUARANTINE_REQUIRED) {
+            enterUnsafeRecorderQuarantine(
+                rec = rec,
+                captureId = captureId,
+                failure = result.error
+                    ?: IllegalStateException("Recorder drains did not terminate"),
+            )
+            return result
+        }
+        val storageTail = result.storageTail
+        if (storageTail == null) {
+            presentRecordingStorageResult(
+                RecordingStorageTerminalResult(
+                    captureId = captureId,
+                    outputUri = uri,
+                    disposition = RecordingStorageTerminalDisposition.FAILED,
+                    error = result.error,
+                ),
+            )
+            return result
+        }
+        dispatchRecordingStorageTail(storageTail, uri, captureId)
+        return result
+    }
+
+    internal fun dispatchRecordingStorageTail(
+        storageTail: RecordingStorageCompletion,
+        uri: android.net.Uri?,
+        captureId: Int,
+    ): RecordingStorageDispatch {
+        val task = Runnable {
+            val result = runCatching { storageTail.complete() }
+                .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
+            val terminal = RecordingStorageTerminalResult(
+                captureId = captureId,
+                outputUri = uri,
+                disposition = recordingStorageTerminalDisposition(
+                    storageDisposition = result.storageDisposition,
+                    hasUri = uri != null,
+                ),
+                error = result.error,
+            )
+            publishProcessStillAdmission()
+            presentRecordingStorageResult(terminal)
+            if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+                android.util.Log.i(
+                    "CameraEngine",
+                    "RecordingStored: captureId=$captureId saved=${result.saved} " +
+                        "storage=${result.storageDisposition} " +
+                        "error=${result.error?.javaClass?.simpleName ?: "none"}",
+                )
+            }
+        }
+        val dispatch = dispatchRecordingStorageTask(task)
+        when (dispatch) {
+            RecordingStorageDispatch.ACCEPTED -> Unit
+            RecordingStorageDispatch.OVERFLOW -> {
+                // The finalized row stays pending; launch recovery is the durable overflow lane.
+                // This is delayed/recoverable, not evidence that the clip failed.
+                presentRecordingStorageResult(
+                    RecordingStorageTerminalResult(
+                        captureId = captureId,
+                        outputUri = uri,
+                        disposition = RecordingStorageTerminalDisposition.RETAINED_PENDING,
+                    ),
+                )
+                if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                    Log.w(
+                        "CameraEngine",
+                        "RecordingStored: captureId=$captureId retained=pending reason=storage-overflow",
+                    )
+                }
+            }
+            RecordingStorageDispatch.SHUTDOWN -> {
+                // release() detached callbacks before closing this dispatcher. Retain the row for
+                // next-launch recovery without resurrecting UI from a terminal Engine.
+                if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                    Log.w(
+                        "CameraEngine",
+                        "RecordingStored: captureId=$captureId retained=pending reason=engine-shutdown",
+                    )
+                }
+            }
+        }
+        return dispatch
+    }
+
+    /**
+     * Retires a durably REGISTERED row without putting provider work back on the REC/native lane.
+     * Rejection is safe: the private row remains in the journal for launch recovery's structural
+     * invalid-row cleanup.
+     */
+    private fun retirePendingRecordingRow(
+        pending: RecordingPendingOutput,
+        captureId: Int,
+        reason: String,
+    ) {
+        val uri = pending.uri
+        val task = Runnable {
+            val disposition = recordingPreNativeOverrides?.discardPendingOutput?.invoke(uri)
+                ?: pending.allocation?.let { MediaStoreWriter.discardPendingOutput(context, it) }
+                ?: MediaStoreWriter.discardPendingOutput(context, uri)
+            if (recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+                android.util.Log.i(
+                    "CameraEngine",
+                    "RecordingAllocationRetired: captureId=$captureId reason=$reason " +
+                        "discard=$disposition",
+                )
+            }
+        }
+        when (dispatchRecordingStorageTask(task)) {
+            RecordingStorageDispatch.ACCEPTED -> Unit
+            RecordingStorageDispatch.OVERFLOW,
+            RecordingStorageDispatch.SHUTDOWN,
+            -> if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                Log.w(
+                    "CameraEngine",
+                    "RecordingAllocationRetired: captureId=$captureId reason=$reason retained=pending",
+                )
+            }
+        }
+    }
+
+    private fun presentRecordingStorageResult(
+        terminal: RecordingStorageTerminalResult<android.net.Uri>,
+    ) {
+        // Only a SAVED (public) clip earns its gyro sidecar; retained/unvalidated/failed takes drop
+        // it, so a .gcsv can never describe a file the gallery does not show.
+        gyroLog.complete(
+            terminal.captureId,
+            published = terminal.disposition == RecordingStorageTerminalDisposition.SAVED,
+        )
+        fun present(result: RecordingStorageTerminalResult<android.net.Uri>, current: Boolean) {
+            val presentation = recordingStoragePresentationFor(
+                disposition = result.disposition,
+                hasUri = result.outputUri != null,
+                current = current,
+            )
+            if (presentation.forwardMedia) {
+                result.outputUri?.let { onMediaSaved?.invoke(it, result.captureId) }
+            }
+            presentation.status?.let { onStatus?.invoke(it.status()) }
+        }
+        recordingStoragePresentation.publishOrStale(
+            terminal,
+            present = { present(it, current = true) },
+            presentStale = { present(it, current = false) },
+        )
+    }
+
+    private fun dispatchRecordingStorageTask(task: Runnable): RecordingStorageDispatch =
+        recordingStorageDispatcher.dispatch(task)
+
+    /** Fail closed without releasing any owner that may still be executing in native code. */
+    private fun enterUnsafeRecorderQuarantine(
+        rec: VideoRecorder,
+        captureId: Int,
+        failure: Throwable,
+    ) {
+        // Close process admission before recorder callbacks or AudioRecord.stop can re-enter app
+        // work. A fresh Engine observes the same irreversible gate.
+        if (!UnsafeRecorderQuarantine.retain(rec)) return
+        // A quarantined graph never reaches a live storage verdict; launch recovery may adopt the
+        // clip later, but its gyro log is dropped (no sidecar without a live publication).
+        gyroLog.complete(captureId, published = false)
+        terminalAcquisitionGate.close()
+        startupTraceOwnership.revoke()
+        synchronized(this) {
+            started = false
+            starting = false
+            glInputPending = false
+        }
+        recorderTeardownInFlight = false
+        releaseRecordingTopologyLease()
+        // Clear visible intent before yielding the recording mic claim, otherwise standby could
+        // transiently open another AudioRecord during terminal convergence.
+        standbyAudioController.disable()
+        standbyAudioController.finishRecording()
+        invalidateCameraReady()
+        runCatching { onAudioLevel?.invoke(me.hletrd.telecampro.video.AudioLevelFrame.EMPTY) }
+        runCatching { onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()) }
+        runCatching { onRecordingTerminated?.invoke(failure) }
+        Log.e(
+            "CameraEngine",
+            "Recording graph quarantined; process restart required (captureId=$captureId)",
+            failure,
+        )
+    }
+
+    /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
+    fun pause() {
+        paused = true
+        // A queued input-ready open sees `paused` and returns without a controller; the next
+        // resume's reopen must not mistake that abandoned generation for a pending owner.
+        inputReadyOpenGeneration.set(NO_INPUT_READY_OPEN)
+        startupTraceOwnership.revoke()
+        cancelRecorderSetupReplay()
+        retirePreNativeRecordingAllocation()
+        coldStartRetryGate.cancel()
+        standbyAudioController.disable()
+        invalidateCameraReady()
+        // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
+        // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
+        stopTimelapse()
+        // Finalize an in-flight recording OFF the main thread: stopNative joins the drain threads (up
+        // to a few seconds) and calling it inline on onStop risks an ANR. Clear the encoder EGL first
+        // so GL stops drawing into the input surface before the codec releases it.
+        val ownedRecording = synchronized(recorderOwnershipLock) {
+            recorder?.let { owned ->
+                recorderTeardownInFlight = true
+                recorder = null
+                val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+                activeRecordingGl = null
+                val ownedUri = activeRecordingUri
+                val ownedCaptureId = activeRecordingCaptureId
+                activeRecordingUri = null
+                activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
+                OwnedRecording(owned, ownedUri, ownedCaptureId, ownedGl)
+            }
+        }
+        if (ownedRecording != null) {
+            // Same ordered teardown as stopRecording: release the codec only after the GL thread
+            // confirmed the encoder EGL surface is cleared.
+            detachAndFinalizeRecording(
+                ownedRecording.gl,
+                ownedRecording.recorder,
+                ownedRecording.uri,
+                ownedRecording.captureId,
+            )
+            // Restore the preview curve startRecording overrode (AVC → null) on the exact renderer.
+            ownedRecording.gl.setTransfer(transfer)
+        }
+        gyro.stop()
+        // Close OFF the main thread: close() awaits strict handler teardown for at most 1.5 s, and
+        // onStop already competes with other teardown work inside the ANR budget. setupExecutor
+        // serializes this close ahead of any queued/subsequent reopen; a miss closes process native
+        // admission, so elapsed time alone can never authorize resume acquisition.
+        val ctrl = synchronized(this) {
+            val current = controller
+            controller = null
+            current
+        }
+        if (ctrl != null) {
+            setupExecutor.execute {
+                if (!cameraReplacementMayAcquire(ctrl.close())) {
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                }
+            }
+        }
+    }
+
+    /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
+    fun resume() {
+        // Cold-start stopwatch origin (cycle 8 S6): resume is the earliest point the app itself
+        // controls — everything before it is process/Activity bring-up the system owns. Idempotent,
+        // so a resume that finds the camera already live cannot restart a running measurement.
+        // Every path below that returns WITHOUT starting a real open must DISARM it again: an armed
+        // trace with zero marks is finished by the next ordinary startPreview rebuild (any control
+        // change builds a fresh callback with firstDiagnosticResultPending), which printed a
+        // one-mark `cold start … firstCameraResult <arbitrary>` line into the exact log the startup
+        // budget is read from. A fabricated number there is worse than no line at all.
+        val startupTraceOwner = startupTraceOwnership.begin()
+        paused = false
+        // Retract the policy-block gate on every foreground, BEFORE anything else. The gate replaces
+        // the viewfinder, so while it is up there is no preview Surface — and with no Surface the
+        // engine cannot open the camera, so it could never observe the block being lifted. Latching
+        // it across a resume would therefore deadlock the app on the very screen that tells the user
+        // how to fix it. Returning from Settings is exactly the moment to try again; if the block is
+        // still in place the bounded reopen re-raises the gate within a second or two, which is the
+        // same contract as "Camera unavailable. Reopen the app." one branch over.
+        val policyPublication = synchronized(this) {
+            if (cameraPolicyBlocked) {
+                cameraPolicyBlocked = false
+                cameraRecoveryAttempts = 0
+                nextCameraPolicyPublication(blocked = false)
+            } else {
+                null
+            }
+        }
+        policyPublication?.let { onCameraPolicyBlocked?.invoke(it) }
+        if (!nativeAcquisitionMayProceed()) {
+            startupTraceOwnership.revoke(startupTraceOwner)
+            if (UnsafeRecorderQuarantine.isActive()) {
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            } else {
+                previewSurface?.let { awaitRecorderSetupReplay(previewSurfaceGeneration.get()) }
+            }
+            invalidateCameraReady()
+            return
+        }
+        // onStop's invalidateOpticsDerivedState cancels the interaction-end runnable (the ordinary
+        // clearer of this state), so a background mid-gesture left it stale-active across the whole
+        // next foreground session's first gesture (AGG4-2). Resume covers the no-reopen path
+        // (controller still installed); wireController covers every reopen.
+        zoomInteractionState = ZoomInteractionState()
+        coldStartRetryGate.cancel()
+        gyro.start()
+        if (!started) {
+            // No surface yet: the trace stays ARMED on purpose — its origin is still the honest
+            // "ms since resume" zero and the real open follows as soon as the surface arrives.
+            val surface = previewSurface ?: return
+            onPreviewSurfaceAvailable(surface, previewSurfaceW, previewSurfaceH)
+            return
+        }
+        // A bind dropped while paused is never replayed by anything else (AGG5-1 / AGG5-26):
+        // backgrounding keeps the TextureView surface alive, so no availability callback follows.
+        // Two paths drop one — the cold-start bind task that found `paused` (no input Surface is
+        // ever created, so every later reconfigure returns at the glInputPending guard: a black
+        // viewfinder for the process) and a preview-recovery rebind whose 200 ms delay spanned the
+        // pause (`previewReady` stays false, so every reopen publishes Not-Ready). Re-bind the
+        // retained surface on the same serial lane, AHEAD of the reconfigure below. Re-binding a
+        // surface the GL thread already owns is harmless: GlPipeline's same-surface/same-size path
+        // only swaps the health signal, and a superseded in-flight bind is a stale generation that
+        // cancels. The ordinary foreground return (Ready preview, live input) takes neither branch.
+        val retainedSurface = previewSurface
+        if (retainedSurface != null && resumePreviewRebindWanted(
+                inputSurfacePresent = glOwners.current().inputSurface != null,
+                previewReady = previewReady,
+            )
+        ) {
+            bindPreviewSurface(
+                surface = retainedSurface,
+                width = previewSurfaceW,
+                height = previewSurfaceH,
+                surfaceGeneration = previewSurfaceGeneration.get(),
+            )
+        }
+        // Serialized on setupExecutor like every other open path (the GL-start continuation,
+        // reopenForSession, setCameraOverride). resume() used to call openCamera directly on the
+        // main thread — the one remaining unserialized open: it raced a queued reopen's
+        // `controller = null` + open (both threads could observe null and double-open, contending
+        // for the HAL device) and paid the open's Binder IPCs on the UI thread.
+        runCatching { setupExecutor.execute {
+            if (!nativeAcquisitionMayProceed() || paused) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            // Camera already live (an ordinary foreground return, not a cold start): nothing will
+            // mark, so disarm rather than leave a zero-mark trace for a later rebuild to finish.
+            if (controller != null) {
+                startupTraceOwnership.revoke(startupTraceOwner)
+                return@execute
+            }
+            // Re-resolve selection/caps/stream geometry from CURRENT desired fields. openCamera(input)
+            // reused the pre-pause selection and could mark a new mode/lens generation Ready on the
+            // outgoing camera when its queued intent had observed paused and returned.
+            // Resume always carries an ownership token. Without one, a lens/TELE tap during the
+            // dual-open wait could let this older attempt publish outgoing caps/Ready under the
+            // newer generation even when there was no pre-pause rollback baseline.
+            resolveInitialCameraRouteAvailability()
+            if (runDeferredRouteTopologyConvergence(startupTraceOwner)) return@execute
+            val desired = currentOpticsReconfiguration()
+            // The missing-input re-bind above can complete the whole GL input window before this
+            // task dequeues; the input-ready continuation then queued THIS generation's open
+            // behind us (AGG6-19). Converging it a second time invalidated Ready and dual-opened
+            // the id that open was about to open — a close/reopen blackout and a same-device double
+            // open on the HAL. That open also adopted this resume's trace owner, so it stays armed.
+            if (inputReadyOpenGeneration.get() == desired.transaction.generation) return@execute
+            reconfigureCamera(
+                desired.overrideId,
+                desired.transaction,
+                startupTraceOwner = startupTraceOwner,
+            )
+        } }.onFailure { startupTraceOwnership.revoke(startupTraceOwner) }
+    }
+
+    /**
+     * Reconciles prior-process pending media: adopt COMPLETE/structurally proven rows, delete only
+     * proven-incomplete rows, and retain indeterminate rows. Provider failures retry boundedly and
+     * finish with one typed success/failure result; Images and Video remain independently
+     * failure-isolated. Unexpected exceptions are terminally reported instead of suppressing the
+     * ViewModel's safe latest-published-family query.
+     * The process-wide recovery lane keeps provider work off camera startup and prevents Engine
+     * replacement from multiplying a blocked Binder call.
+     */
+    internal fun cleanupOrphans(onComplete: (Result<MediaRecoveryCompletion>) -> Unit = {}) {
+        launchRecoverySubscription?.cancel()
+        val recoveryContext = context.applicationContext
+        launchRecoverySubscription = ProcessLaunchMediaRecovery.request(
+            owner = launchRecoveryOwner,
+            recover = {
+                executeLaunchMediaRecovery(
+                    maxFailureAttempts = MAX_MEDIA_RECOVERY_ATTEMPTS,
+                    // Not `runCatching { Thread.sleep() }`, which swallowed an interrupt and cleared
+                    // its flag (AGG3-30, same contract as the MediaStoreWriter retry loops). Defensive
+                    // only: no current caller interrupts this daemon, so a retired owner does NOT
+                    // stop recovery (AGG4-57; see executeLaunchMediaRecovery).
+                    backoff = { attempt ->
+                        sleepPreservingInterrupt(MEDIA_RECOVERY_RETRY_BACKOFF_MS * attempt)
+                    },
+                    recoverBatch = { cursor ->
+                        MediaStoreWriter.cleanupOrphanedPendingBatch(recoveryContext, cursor)
+                    },
+                )
+            },
+        ) { result ->
+            result.fold(
+                onSuccess = { completion ->
+                    val cumulativeReport = completion.report
+                    val completedAttempts = completion.attempts
+                    val finalDecision = completion.decision
+                    if (BuildConfig.DEBUG || finalDecision == RecoveryRetryDecision.EXHAUSTED) {
+                        val summary = "attempts=$completedAttempts scanned=${cumulativeReport.scanned} " +
+                            "adopted=${cumulativeReport.adopted} deleted=${cumulativeReport.deleted} " +
+                            "retained=${cumulativeReport.retained} errors=${cumulativeReport.errors} " +
+                            "failures=${cumulativeReport.failureClasses.sortedBy { it.name }.joinToString { it.name }}"
+                        if (finalDecision == RecoveryRetryDecision.EXHAUSTED) {
+                            Log.w("MediaRecovery", "exhausted $summary")
+                        } else {
+                            Log.d("MediaRecovery", "complete $summary")
+                        }
+                    }
+                },
+                onFailure = { failure ->
+                    Log.e("MediaRecovery", "launch recovery failed before typed completion", failure)
+                }
+            )
+            onComplete(result)
+        }
+    }
+
+    fun currentRollDegrees(): Float = gyro.currentRollDegrees()
+
+    /** Discrete physical device orientation (0/90/180/270) from gravity, for auto-rotating overlays. */
+    fun currentDeviceOrientation(): Int = gyro.currentDeviceOrientation()
+
+    fun setPunchIn(enabled: Boolean) {
+        rendererAssists.setPunchInIntent(enabled)
+        pushPunchIn()
+    }
+
+    /**
+     * Re-resolves the loupe against the live route. Called from the toggle AND from the facing door,
+     * exactly like [pushTeleFinder] — the resolved value depends on state the toggle does not own,
+     * so a route change has to re-push it or the crop outlives the route that justified it.
+     */
+    private fun pushPunchIn() {
+        rendererAssists.setPunchInResolved(
+            punchInResolved(rendererAssists.isPunchInIntended(), activeCameraRoute == CameraRoute.FRONT),
+        )
+    }
+
+    // Loupe Overview: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag is
+    // pushed to GL and stored in RendererAssists (so a fresh GL generation replays it): toggle plus
+    // either TELE or unified zoom >= FINDER_MIN_ZOOM. The active punch-in remains the draw-time axis.
+    // Photo additionally requires 4:3 because its 16:9 AspectMask would dim/misframe the corner box;
+    // Video deliberately ignores that unrelated still aspect. See FINDER_* in CameraState for the
+    // honest single-stream contract.
+    fun setTeleFinder(enabled: Boolean) {
+        rendererAssists.setTeleFinderIntent(enabled)
+        pushTeleFinder()
+    }
+
+    // Last pushed resolved value, so the ZOOM paths can re-resolve at 60 Hz for free. Since the
+    // predicate gained its zoomRatio axis (FINDER_MIN_ZOOM), doors alone are not enough: a seamless
+    // pinch never fires a door, so the GL-stored flag diverged from the live Compose/OSD gate —
+    // border and OVERVIEW tag appeared with no PIP content on a pinch past 3x, and the reverse
+    // (preset TELE3X then pinch down) left GL scissor-drawing an overview the UI gate had dropped.
+    @Volatile
+    private var lastTeleFinderResolved: Boolean? = null
+
+    /** Recomputes and pushes the resolved finder flag; called on toggle, aspect, lens/TC, mode,
+     *  session (re)config, AND every zoom write (change-gated below, so the hot pinch path pays a
+     *  few boolean reads) so the GL PIP can never disagree with the live UI gate on any axis.
+     *  The predicate itself is the shared, unit-tested [teleFinderResolved]. */
+    private fun pushTeleFinder() {
+        // The whole compute→gate→push is ONE monitor section: this runs concurrently from the main
+        // thread (zoom writes at pinch rate) and setupExecutor (doors, rollback), and a non-atomic
+        // gate could latch an INVERSION — push ¬X while recording X — that the gate then preserved
+        // forever, because every later identical-value push (including the doors') is suppressed
+        // (verification S2). Reentrant for callers already holding the engine monitor; the body is
+        // a few boolean reads plus a change-gated handler post.
+        synchronized(this) {
+            // BEFORE the resolved change-gate below: the field scale can change (converter profile
+            // picked) while resolved stays true, and an early return must not swallow it. Its own
+            // change gate lives in RendererAssists, so the pinch-rate calls stay cheap.
+            rendererAssists.setFinderFieldScale(
+                if (teleconverterMode) teleconverterMagnification else 1f,
+            )
+            val resolved = teleFinderResolved(
+                rendererAssists.isTeleFinderEnabled(),
+                teleconverterMode,
+                videoMode,
+                aspectRatio,
+                // MAIN-RELATIVE, because FINDER_MIN_ZOOM is a main-relative threshold. `controls
+                // .zoomRatio` is lens-local on any standalone route, so passing it raw kept the GL
+                // PIP shut at a genuine 3x whenever the route was standalone — and the UI gate,
+                // which reads the same converted value, would then disagree with GL.
+                unifiedZoomOf(
+                    lens = lensChoice,
+                    zoomRatio = controls.zoomRatio,
+                    standaloneRoute = standaloneRouteWanted(
+                        videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                    ),
+                    optical = acceptedOpticalPresets,
+                ),
+            )
+            // Suppressing an identical re-push is safe for GL generations too: RendererAssists
+            // stores the value in its replayed config snapshot, and replayAll — not this push — is
+            // what seeds a fresh GL thread.
+            if (lastTeleFinderResolved == resolved) return
+            lastTeleFinderResolved = resolved
+            rendererAssists.setTeleFinderResolved(resolved)
+        }
+    }
+
+    /**
+     * DEBUG-only RGBA1010102 EGL experiment gate. It does not arm native log or the shipping HLG10
+     * Camera2 session; release builds always use the stable 8-bit EGL target. (It used to also OR
+     * into the session's `tenBitHlg`, so a leftover flag file turned PHOTO into the still-less HLG10
+     * rung — a debug photo mode that could not shoot, contradicting this very doc; AGG-45.)
+     */
+    internal fun tenBitExperimentEnabled(): Boolean =
+        BuildConfig.DEBUG &&
+            runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }
+                .getOrDefault(false)
+
+    /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
+    fun detachCallbacks() {
+        closeProcessStillAdmissionSubscriptions()
+        familyDeletionCompletions.closeAndDrain()
+        callbackSink.closeAndDrain()
+        launchRecoverySubscription?.cancel()
+        launchRecoverySubscription = null
+    }
+
+    internal fun attachedCallbackCount(): Int = callbackSink.callbackCount()
+
+    fun release() {
+        closeProcessStillAdmissionSubscriptions()
+        // Terminal before state/executor teardown: either an in-flight acquisition completes before
+        // this close (and the stop below owns it), or close wins and no later task can call gl.start.
+        familyDeletionCompletions.closeAndDrain()
+        terminalAcquisitionGate.close()
+        cancelRecorderSetupReplay()
+        routeAvailabilityReleased.set(true)
+        paused = true
+        startupTraceOwnership.revoke()
+        retirePreNativeRecordingAllocation()
+        started = false
+        glInputPending = false
+        coldStartRetryGate.cancel()
+        invalidateCameraReady()
+        stopTimelapse()
+        standbyAudioController.disable()
+        // Preserve the same GL-detach-before-codec-release order during ViewModel teardown. Await
+        // first-wins NATIVE classification before dropping GL/executor ownership; the independent
+        // task latch may remain open while durable MediaStore work continues. pause() usually
+        // started this already, while the direct branch covers unusual unbalanced lifecycle exits.
+        val ownedRecording = synchronized(recorderOwnershipLock) {
+            recorder?.let { rec ->
+                recorderTeardownInFlight = true
+                recorder = null
+                val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+                activeRecordingGl = null
+                val uri = activeRecordingUri
+                val captureId = activeRecordingCaptureId
+                activeRecordingUri = null
+                activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
+                OwnedRecording(rec, uri, captureId, ownedGl)
+            }
+        }
+        ownedRecording?.let {
+            detachAndFinalizeRecording(it.gl, it.recorder, it.uri, it.captureId)
+        }
+        recorderSetupFinalizationOwner?.let { setup ->
+            val terminal = setup.terminal.await(
+                timeout = recordingPreNativeOverrides?.setupReleaseTimeoutMs
+                    ?: RECORDER_FINALIZE_RELEASE_TIMEOUT_MS,
+                unit = java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+            if (terminal == RecorderSetupFinalization.PENDING) {
+                quarantineRecorderSetup(
+                    setup,
+                    java.util.concurrent.TimeoutException(
+                        "Engine release outlived recorder native setup classification",
+                    ),
+                )
+            }
+        }
+        recorderFinalizationOwner?.let { finalizing ->
+            val nativeFinalization = nativeFinalizationAtEngineRelease(
+                classification = finalizing.nativeFinalization,
+                timeout = RECORDER_FINALIZE_RELEASE_TIMEOUT_MS,
+                unit = java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+            if (nativeFinalization == RecorderNativeFinalization.QUARANTINED) {
+                // release() is the old Engine's last authority boundary. It may not return and let a
+                // replacement graph start while this recorder is still neither released nor retained.
+                enterUnsafeRecorderQuarantine(
+                    finalizing.recorder,
+                    finalizing.captureId,
+                    java.util.concurrent.TimeoutException(
+                        "Engine release outlived recorder finalization classification",
+                    ),
+                )
+            }
+        }
+        gyro.stop()
+        gyroLog.release()
+        val ctrl = synchronized(this) {
+            val current = controller
+            controller = null
+            current
+        }
+        val controllerRelease = ctrl?.close()
+        if (!cameraReplacementMayAcquire(controllerRelease)) {
+            Log.e("CameraEngine", "Camera graph retained in process quarantine during release")
+        }
+        stopGlOwner(glOwners.current())
+        starting = false
+        // Never perform ContentResolver work on this release thread. Accepted discard work remains
+        // process-owned; refused work remains protected by its durable family tombstone and will be
+        // retried by the bounded launch-recovery stages.
+        val unresolvedDeletedStills = retainedStillDeletionOwner.unresolvedDiscardCount()
+        if (unresolvedDeletedStills > 0) {
+            Log.e(
+                "CameraEngine",
+                "$unresolvedDeletedStills deleted still output(s) remain pending durable discard",
+            )
+        }
+        ProcessRetainedStillDiscardOwner.releaseFamilyRetirementListener(
+            retainedStillRetirementListener,
+        )
+        if (routeAvailabilityRegistered) {
+            runCatching { manager.unregisterAvailabilityCallback(routeAvailabilityCallback) }
+            routeAvailabilityRegistered = false
+        }
+        routeTopologyConvergence.close()
+        launchRecoverySubscription?.cancel()
+        launchRecoverySubscription = null
+        activeRecordingTopologyLease.set(0L)
+        setupExecutor.shutdown()
+        ioExecutor.shutdown()
+        familyDeletionMarkerDispatcher.shutdown()
+        stillPublicationDispatcher.shutdown()
+        retainedStillDiscardDispatcher.shutdown()
+        recorderExecutor.shutdown()
+        recordingStorageDispatcher.shutdown()
+        recorderWatchdog.shutdown()
+        timelapseScheduler.shutdown()
+    }
+
+    // ---- Helpers ----
+
+    /**
+     * Total rotation (deg, clockwise) to apply to a still so it saves upright: the tele lens's
+     * sensor orientation + the afocal 180° (teleconverter only) + the phone's physical orientation
+     * from gravity — so a shot framed while holding the phone in landscape saves landscape-correct,
+     * even though the UI is portrait-locked. Matches the GL preview rotation at 0° device tilt.
+     */
+    private fun captureRotationDegrees(): Int {
+        val c = caps ?: return 0
+        return RotationMath.captureRotationDegrees(
+            c.sensorOrientation,
+            teleconverterMode,
+            gyro.currentDeviceOrientation(),
+            frontFacing = activeCameraRoute == CameraRoute.FRONT,
+            route = activeCameraRoute,
+        )
+    }
+
+
+
+
+    /**
+     * The default recording size for the current lens: the largest matching-aspect SurfaceTexture
+     * size the camera reports — 4:3 when [openGate] (full sensor readout), else 16:9. Capped at 3840
+     * wide (this device's cameras top out at 4K/4096 for the recording surface; no camera exposes 8K
+     * video here). Falls back through the caps lists so it never returns an unsupported size.
+     */
+    private fun chooseVideoSize(sel: TeleSelection): Size {
+        val auto = chooseStreamSize(sel, fourByThree = openGate)
+        val req = requestedVideoSize ?: return auto
+        // Honor a user/restored pick only while the current caps actually offer it for the active
+        // aspect; anything else (stale persisted size, openGate flip) degrades to the auto choice.
+        val list = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
+        return if (list != null && req in list) req else auto
+    }
+
+    /**
+     * The camera preview (SurfaceTexture) stream size. VIDEO mode: identical to [videoSize] — the
+     * SurfaceTexture feeds the encoder, so the two must agree. PHOTO mode: the largest 4:3 stream,
+     * so the viewfinder previews the SAME full-sensor field the still capture gets (a 16:9 stream
+     * crops the sensor vertically and mis-frames every photo).
+     */
+    private fun choosePreviewStreamSize(sel: TeleSelection): Size =
+        if (videoMode) chooseVideoSize(sel) else chooseStreamSize(sel, fourByThree = true)
+
+    /** Pushes the DISPLAYED preview aspect (post sensor-orientation W/H swap) to the UI. */
+    private fun emitPreviewAspect(generation: Long = opticsIntentGeneration.get()) {
+        onPreviewAspect?.invoke(displayedPreviewAspect(previewStreamSize, caps), generation)
+    }
+
+    /** Frozen-packet form used by rollback so a newer route cannot change the published aspect. */
+    private fun displayedPreviewAspect(size: Size, routeCaps: CameraCaps?): Float {
+        // The ~90° sensor orientation means the SurfaceTexture transform swaps the shown W/H (the
+        // afocal 180° doesn't change the swap). Same rule FlipRenderer uses for its aspect choice.
+        val swapped = ((routeCaps?.sensorOrientation ?: 90) % 180) == 90
+        return if (swapped) {
+            size.height.toFloat() / size.width
+        } else {
+            size.width.toFloat() / size.height
+        }
+    }
+
+    private fun chooseStreamSize(sel: TeleSelection, fourByThree: Boolean): Size {
+        val c = caps
+        if (c != null) {
+            val list = if (fourByThree) c.openGateVideoSizes else c.availableVideoSizes
+            (list.firstOrNull { it.width <= 3840 } ?: list.firstOrNull())?.let { return it }
+        }
+        // Fallback: query directly (pre-caps or empty list).
+        val chars = runCatching {
+            manager.getCameraCharacteristics(sel.physicalId ?: sel.logicalId)
+        }.getOrNull() ?: return Size(1920, 1080)
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return Size(1920, 1080)
+        val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return Size(1920, 1080)
+        // One selection rule with CameraCaps.read's lists (pickStreamSize) — the fallback used to
+        // re-implement the aspect/cap/largest rule inline, so a policy change had to touch both.
+        return pickStreamSize(sizes.map { it.width to it.height }, capWidth = 3840, fourByThree = fourByThree)
+            ?.let { (w, h) -> Size(w, h) }
+            ?: Size(1920, 1080)
+    }
+
+    // Per-SHUTTER-PRESS counter (one id shared by every container a capture produces), so the review
+    // UI and durable filename can group the HEIF/JPEG with its DNG sibling.
+    private val captureSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+
+    /**
+     * Builds the EXIF snapshot for THIS shot. On the logical camera the active PHYSICAL lens comes
+     * from the capture result (LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) so FocalLength/FNumber/
+     * LensModel describe the lens that actually took the frame, exactly like the stock camera.
+     */
+    private fun exifShotOf(result: android.hardware.camera2.TotalCaptureResult, spec: ShotSpec): ExifShot {
+        val c = spec.controls
+        val base = spec.caps
+        // Active physical lens (logical camera) → its own optics; standalone cameras are themselves.
+        val activeId = runCatching {
+            result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+        }.getOrNull()
+        // Deliberately cache-only: CameraManager/CameraCaps.read on this callback would hold the
+        // live Image and serialize CameraService IPC with capture-result/image delivery.
+        val optics = resolveLensExifMetadata(activeId, lensExifCache, base?.lensExifMetadata())
+        val lensFocal = optics?.focalLengthMm ?: 0f
+        val lensF = optics?.apertureF ?: 0f
+        val lensEquiv = optics?.equivalentFocalMm ?: 0f
+        // Effective 35 mm focal: what the FRAME shows — unified zoom on the logical camera already
+        // lands on the active lens (equiv × leftover digital), TELE multiplies the converter.
+        val baseEquiv = base?.equivalentFocalMm ?: 0f
+        // TELE uses the NOMINAL converter base (magnification × the nominal 70 mm host lens, i.e.
+        // 300 mm on the kit optic) so EXIF matches the OSD/pill marks exactly — 13×→300, 30×→690,
+        // 60×→1380; the caps-measured 69.4 mm equiv would read 680 at 30×. The magnification comes
+        // from the SHOT's optics snapshot, never the live field, so a converter re-declared while
+        // this save is in flight cannot relabel a frame taken through the previous one.
+        val appliedZoom = result.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO)
+            ?: c.zoomRatio
+        val eff = if (spec.teleconverter) {
+            effectiveFocalMm(spec.teleconverterMagnification, spec.hostTeleEquivMm) * appliedZoom.coerceAtLeast(1f)
+        } else {
+            baseEquiv * appliedZoom.coerceAtLeast(0.01f)
+        }
+        // Digital portion of the zoom: in TELE the converter's magnification is OPTICAL (glass), so
+        // only the user's 1-10× ratio is digital; otherwise it's effective ÷ the active lens's equiv.
+        val digital = if (spec.teleconverter) {
+            appliedZoom.coerceAtLeast(1f)
+        } else if (lensEquiv > 0f) {
+            (eff / lensEquiv).coerceAtLeast(1f)
+        } else 1f
+        val evStep = base?.evStep?.let {
+            if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator
+        } ?: (1f / 3f)
+        // Lens description derives from the MEASURED equivalent focal and the running build, never
+        // from a camera-id table or a hardcoded phone name (see camera/DeviceExifLabels.kt): the id
+        // map this replaced defaulted every unrecognised rear lens to "tele" and stamped one
+        // phone's marketing focal band onto whatever handset was actually shooting.
+        val modelLabel = exifLensModelForRoute(
+            route = spec.route,
+            manufacturer = android.os.Build.MANUFACTURER,
+            model = android.os.Build.MODEL,
+            equivMm = lensEquiv,
+            apertureF = lensF,
+        )
+        val deviceIdentity = exifIdentityForRoute(
+            route = spec.route,
+            manufacturer = android.os.Build.MANUFACTURER,
+            model = android.os.Build.MODEL,
+        )
+        return ExifShot(
+            iso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0,
+            expNs = result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L,
+            lensFocalMm = lensFocal,
+            lensApertureF = lensF,
+            // TELE reads a clean "300", not 297 — same nearest-10 rounding the OSD applies.
+            focal35mm = if (spec.teleconverter) (Math.round(eff / 10f) * 10) else Math.round(eff),
+            digitalZoom = digital,
+            evBiasStops = exifExposureBiasSteps(
+                manualAe = base?.let { manualAeAdmitted(c, it) } == true,
+                exposureMode = c.exposureMode,
+                resultSteps = result.get(android.hardware.camera2.CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION),
+                intentSteps = c.exposureCompensation,
+            ) * evStep,
+            meteringMode = c.meteringMode,
+            // NOT bare FLASH_STATE: this HAL reports FIRED on frames where the lamp is physically
+            // dark (the documented torch lie), so with flash OFF a still could carry EXIF Flash=1
+            // for a flash that never existed. The REQUEST is wire truth for the commanded modes —
+            // OFF cannot have fired, ON/TORCH had the lamp lit during exposure — and only AUTO,
+            // where the HAL genuinely decides, falls back to its reported state (review L4).
+            flashFired = when (c.flash) {
+                FlashMode.OFF -> false
+                FlashMode.ON, FlashMode.TORCH -> true
+                FlashMode.AUTO ->
+                    result.get(android.hardware.camera2.CaptureResult.FLASH_STATE) ==
+                        android.hardware.camera2.CaptureResult.FLASH_STATE_FIRED
+            },
+            exposureProgram = when (c.exposureMode) {
+                ExposureMode.MANUAL -> 1
+                ExposureMode.SHUTTER -> 4
+                else -> 2
+            },
+            manualExposure = c.exposureMode == ExposureMode.MANUAL,
+            manualWb = c.wbMode != WbMode.AUTO,
+            lensModel = modelLabel,
+            deviceMake = deviceIdentity.make,
+            deviceModel = deviceIdentity.model,
+            takenAtMs = spec.takenAtMs,
+        )
+    }
+
+
+    private val standbyAudioController = StandbyAudioController(
+        context = context,
+        audioGain = { audioGain },
+        onLevels = { levels -> onAudioLevel?.invoke(levels) },
+        audioInputPreference = { audioInputPreference },
+        canStart = {
+            nativeAcquisitionMayProceed() && !paused && recorder == null && !recorderTeardownInFlight
+        },
+        recorderAbsent = { recorder == null },
+        isPaused = { paused },
+        processOwner = processNativeOwner,
+        onAvailable = { onStandbyAudioAvailable?.invoke() },
+        onUnavailable = { unavailable -> onStandbyAudioUnavailable?.invoke(unavailable) },
+        onUnsafeNative = {
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            invalidateCameraReady()
+        },
+    )
+
+    // Latest standby-meter intent, so an input change knows whether a meter is even wanted.
+    @Volatile private var standbyAudioMonitorWanted = false
+
+    fun setStandbyAudioMonitor(enabled: Boolean) {
+        standbyAudioMonitorWanted = enabled
+        standbyAudioController.setEnabled(enabled)
+    }
+
+    private companion object {
+        // Matches the UI's bounded late-sibling model with extra headroom for still saves that outlive
+        // rapid review deletion. Once a retained URI is routed here, its DISCARD marker is durable.
+        private const val MAX_RETAINED_STILL_DELETE_TOMBSTONES = 32
+        private const val NO_INPUT_READY_OPEN = Long.MIN_VALUE
+
+        // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
+        // took over the gesture exposure trade; it was unreferenced and its comment still asserted
+        // a policy nothing enforced.)
+
+        // Mid-gesture the HAL is aimed this factor WIDER than requested so the GL crop has spare
+        // field in BOTH directions (instant zoom-out within the margin). Converged at gesture end.
+        private const val ZOOM_GESTURE_MARGIN = 1.2f
+
+        // Number of frames fired for a single BURST drive-mode shutter press.
+        const val BURST_COUNT = 5
+        // Auto-recovery from a mid-session camera HAL error/disconnect (see scheduleCameraRecovery).
+        const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
+        const val CAMERA_RECOVERY_DELAY_MS = 1000L
+        const val MAX_PREVIEW_RECOVERY_ATTEMPTS = 3
+        const val PREVIEW_RECOVERY_DELAY_MS = 200L
+        // Covers the detach hard deadline plus native-finalization deadline. release() runs on the
+        // dedicated camera-engine-release thread, never main (CameraViewModel.onCleared). It waits
+        // for native classification only; MediaStore publication may continue independently.
+        const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 14_000L
+        const val RECORDER_ALLOCATION_TIMEOUT_MS = 8_000L
+        const val RECORDER_SETUP_TIMEOUT_MS = 8_000L
+        const val RECORDER_FINALIZATION_TIMEOUT_MS = 8_000L
+        const val RECORDER_DETACH_TIMEOUT_MS = 2_000L
+        const val RECORDER_QUARANTINE_TIMEOUT_MS = 4_500L
+        const val MAX_MEDIA_RECOVERY_ATTEMPTS = 3
+        const val MEDIA_RECOVERY_RETRY_BACKOFF_MS = 75L
+    }
+}
+
+/**
+ * Whether losing the preview surface must retire the GL generation so the REPLACEMENT surface can
+ * cold-start (device-reproduced 2026-08-02: reusing the chain across an Activity recreation left
+ * the camera streaming into an input the GL thread never drew again — permanent black viewfinder).
+ *
+ * The RECORDING exemption is the load-bearing term: the encoder owns that GL generation and pause()'s
+ * ordered finalize owns its teardown, so retiring GL underneath it would drop a take's native graph
+ * mid-write. Pure so that exemption is pinned by a host test rather than re-read from the call site.
+ */
+internal fun previewSurfaceLossRestartAllowed(
+    acquisitionAllowed: Boolean,
+    started: Boolean,
+    ownerCurrent: Boolean,
+    /** A live recorder OR one whose ordered finalize is still in flight — see the call site. */
+    recording: Boolean,
+): Boolean = acquisitionAllowed && started && ownerCurrent && !recording
+
+/** One predicate shared by GL, preview, Camera2, and standby-microphone acquisition boundaries. */
+internal fun nativeAcquisitionAllowed(
+    acquisitionOpen: Boolean,
+    recorderQuarantined: Boolean,
+    recorderSetupPending: Boolean = false,
+    activeRecorderOwnedByForeignEngine: Boolean = false,
+): Boolean = acquisitionOpen && !recorderQuarantined && !recorderSetupPending &&
+    !activeRecorderOwnedByForeignEngine
+
+/** A partial latest inventory must remain eligible even when ids and identity epochs are unchanged. */
+internal fun routeAvailabilityRefreshRequired(
+    inventoryResolved: Boolean,
+    idsUnchanged: Boolean,
+    identitiesUnchanged: Boolean,
+): Boolean = !inventoryResolved || !idsUnchanged || !identitiesUnchanged
+
+/** Exact local half of process-linearized REC publication. */
+internal fun recordingCandidateMayPublish(
+    acquisitionOpen: Boolean,
+    teardownInFlight: Boolean,
+    glOwnerCurrent: Boolean,
+    sessionOwned: Boolean,
+    recorderAbsent: Boolean,
+): Boolean = acquisitionOpen && !teardownInFlight && glOwnerCurrent && sessionOwned && recorderAbsent
+
+/** Exact local owner required when a privately prepared encoder EGL surface becomes live. */
+internal fun recordingAttachMayCommit(
+    acquisitionOpen: Boolean,
+    recorderOwned: Boolean,
+    glOwnerCurrent: Boolean,
+): Boolean = acquisitionOpen && recorderOwned && glOwnerCurrent
+
+/** Bounded preview-output recovery decision for one identity-owned TextureView generation. */
+internal enum class PreviewRecoveryDecision { IGNORE, RETRY, EXHAUSTED }
+
+internal fun previewRecoveryDecision(
+    ownerCurrent: Boolean,
+    started: Boolean,
+    paused: Boolean,
+    nextAttempt: Int,
+    maxAttempts: Int,
+): PreviewRecoveryDecision = when {
+    !ownerCurrent || !started || paused -> PreviewRecoveryDecision.IGNORE
+    nextAttempt <= maxAttempts.coerceAtLeast(0) -> PreviewRecoveryDecision.RETRY
+    else -> PreviewRecoveryDecision.EXHAUSTED
+}
+
+/** Prevents an older asynchronous camera intent from undoing a newer user choice. */
+internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
+    currentGeneration == expectedGeneration
+
+/** A rejected shutter press is capture state, never evidence that a deletion failed. */
+internal fun stillCaptureAdmissionFailureStatus(admissionAvailable: Boolean): CameraStatusMessage? =
+    if (admissionAvailable) null else CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE
+
+internal enum class DualOpenWaitResult { SIGNALED, SUPERSEDED, TIMED_OUT }
+
+internal enum class DualOpenSupersessionCleanup {
+    RESTORE_OUTGOING,
+    RESTORE_VACANT,
+    KEEP_OUTGOING,
+    RELEASE_OUTGOING,
+}
+
+/** Exact outgoing-owner terminal derived from the same nullable identities production owns. */
+internal fun <T : Any> dualOpenSupersessionCleanup(
+    currentSlot: T?,
+    candidate: T,
+    outgoing: T?,
+    outgoingRestorable: Boolean,
+): DualOpenSupersessionCleanup {
+    require(candidate !== outgoing) { "dual-open candidate and outgoing owner must be distinct" }
+    return when {
+        currentSlot != null && currentSlot !== candidate &&
+            (outgoing == null || currentSlot !== outgoing) ->
+            DualOpenSupersessionCleanup.RELEASE_OUTGOING
+        outgoing != null && currentSlot === outgoing && outgoingRestorable ->
+            DualOpenSupersessionCleanup.KEEP_OUTGOING
+        outgoing == null || outgoingRestorable ->
+            DualOpenSupersessionCleanup.RESTORE_OUTGOING
+        else -> DualOpenSupersessionCleanup.RESTORE_VACANT
+    }
+}
+
+/**
+ * Waits for a CameraDevice-open terminal without letting stale ownership monopolize setup.
+ *
+ * [awaitSlice] receives nanoseconds and returns true when open/error signalled. The small polling
+ * slice is deliberate: the superseding transaction is queued on the same executor and therefore
+ * cannot directly run a cancellation callback until this function returns. All native/controller
+ * cleanup remains with the existing post-wait ownership branches in [CameraEngine].
+ */
+internal fun waitForDualOpenBoundary(
+    awaitSlice: (timeoutNanos: Long) -> Boolean,
+    shouldContinue: () -> Boolean,
+    timeoutNanos: Long = java.util.concurrent.TimeUnit.SECONDS.toNanos(2),
+    ownershipPollNanos: Long = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(20),
+    nowNanos: () -> Long = System::nanoTime,
+): DualOpenWaitResult {
+    require(timeoutNanos > 0L)
+    require(ownershipPollNanos > 0L)
+    val startedAt = nowNanos()
+    while (shouldContinue()) {
+        val elapsed = (nowNanos() - startedAt).coerceAtLeast(0L)
+        val remaining = timeoutNanos - elapsed
+        if (remaining <= 0L) return DualOpenWaitResult.TIMED_OUT
+        val signalled = try {
+            awaitSlice(minOf(remaining, ownershipPollNanos))
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return DualOpenWaitResult.SUPERSEDED
+        }
+        if (signalled) return DualOpenWaitResult.SIGNALED
+    }
+    return DualOpenWaitResult.SUPERSEDED
+}
+
+/** Camera2 health callbacks remain owned for the complete installed-controller lifetime. */
+internal fun activeCameraFailureBelongsToController(
+    currentController: Any?,
+    failedController: Any,
+): Boolean = currentController === failedController
+
+internal data class MediaRecoveryCompletion(
+    val report: RecoveryReport,
+    val attempts: Int,
+    val decision: RecoveryRetryDecision,
+)
+
+/**
+ * Completes a same-route transaction or schedules exactly one structural retry when the optimistic
+ * session owner was invalidated. Dependency lambdas keep the decision deterministic in host tests.
+ */
+internal fun convergeFastPathCommit(
+    commit: () -> Boolean,
+    ownsTransaction: () -> Boolean,
+    canReconfigure: () -> Boolean,
+    reconfigure: () -> Unit,
+): Boolean {
+    val committed = commit()
+    if (!committed && ownsTransaction() && canReconfigure()) reconfigure()
+    return committed
+}
+
+/**
+ * Serializes optics intent publication and terminal acceptance on one monitor. Production supplies
+ * the engine monitor so desired fields, controller identity, rollback acceptance, and Ready state
+ * share the same boundary; host tests can supply an isolated monitor and force exact interleavings.
+ */
+internal class OpticsCommitGate(
+    private val generation: java.util.concurrent.atomic.AtomicLong =
+        java.util.concurrent.atomic.AtomicLong(0),
+    private val monitor: Any = Any(),
+) {
+    fun <T> begin(publishDesired: (generation: Long) -> T): T = synchronized(monitor) {
+        publishDesired(generation.incrementAndGet())
+    }
+
+    fun commit(
+        expectedGeneration: Long,
+        ownsTerminal: () -> Boolean = { true },
+        terminalMutation: () -> Unit,
+    ): Long? = synchronized(monitor) {
+        if (!reconfigurationOwnsGeneration(generation.get(), expectedGeneration) || !ownsTerminal()) {
+            null
+        } else {
+            terminalMutation()
+            expectedGeneration
+        }
+    }
+}
+
+/** Identity-safe, bounded retry ownership for pre-Ready camera preflight failures. */
+internal class ColdStartRetryGate(private val maxAttempts: Int) {
+    init {
+        require(maxAttempts > 0)
+    }
+
+    data class Token(val id: Long, val generation: Long)
+
+    sealed interface Failure {
+        data object Ignore : Failure
+        data object Exhausted : Failure
+        data class Retry(val token: Token) : Failure
+    }
+
+    private var nextId = 0L
+    private var attemptGeneration: Long? = null
+    private var attempts = 0
+    private var scheduled: Token? = null
+
+    @Synchronized
+    fun failed(
+        expectedGeneration: Long,
+        currentGeneration: Long,
+        canRun: Boolean,
+    ): Failure {
+        if (!canRun || expectedGeneration != currentGeneration) return Failure.Ignore
+        if (attemptGeneration != expectedGeneration) {
+            attemptGeneration = expectedGeneration
+            attempts = 0
+            scheduled = null
+        }
+        // The setup executor is serialized, but resume/input callbacks may observe the same failure
+        // while its retry is already scheduled. Keep one timer and one attempt owner.
+        if (scheduled != null) return Failure.Ignore
+        if (attempts >= maxAttempts) return Failure.Exhausted
+        attempts++
+        return Failure.Retry(Token(++nextId, expectedGeneration).also { scheduled = it })
+    }
+
+    @Synchronized
+    fun claim(token: Token, currentGeneration: Long, canRun: Boolean): Boolean {
+        if (!canRun || token != scheduled || token.generation != currentGeneration) return false
+        scheduled = null
+        return true
+    }
+
+    @Synchronized
+    fun abandon(token: Token) {
+        if (scheduled == token) scheduled = null
+    }
+
+    @Synchronized
+    fun success(expectedGeneration: Long) {
+        if (attemptGeneration != expectedGeneration) return
+        attempts = 0
+        attemptGeneration = null
+        scheduled = null
+    }
+
+    @Synchronized
+    fun cancel() {
+        attempts = 0
+        attemptGeneration = null
+        scheduled = null
+    }
+}
+
+/** A Ready callback may publish only while optics, session, and the engine-ready bit remain current. */
+internal fun cameraReadyPublicationIsCurrent(
+    currentOpticsGeneration: Long,
+    expectedOpticsGeneration: Long,
+    currentSessionGeneration: Long,
+    expectedSessionGeneration: Long,
+    cameraReady: Boolean,
+): Boolean = cameraReady &&
+    reconfigurationOwnsGeneration(currentOpticsGeneration, expectedOpticsGeneration) &&
+    currentSessionGeneration == expectedSessionGeneration
+
+/** Identity + generation gate used to admit a recorder against one accepted Camera2 session. */
+internal fun acceptedCameraSessionIsCurrent(
+    currentController: Any?,
+    acceptedController: Any?,
+    currentSessionGeneration: Long,
+    acceptedSessionGeneration: Long,
+    cameraReady: Boolean,
+    paused: Boolean,
+): Boolean = cameraReady && !paused && currentController === acceptedController &&
+    currentSessionGeneration == acceptedSessionGeneration
+
+/** A viewfinder tap may publish AF HOLD only against a live session that can run region AUTO AF. */
+internal fun tapPointAdmissionAllowed(
+    currentController: Any?,
+    acceptedController: Any?,
+    currentSessionGeneration: Long,
+    acceptedSessionGeneration: Long,
+    cameraReady: Boolean,
+    paused: Boolean,
+    canHoldFocus: Boolean,
+): Boolean = canHoldFocus && acceptedCameraSessionIsCurrent(
+    currentController = currentController,
+    acceptedController = acceptedController,
+    currentSessionGeneration = currentSessionGeneration,
+    acceptedSessionGeneration = acceptedSessionGeneration,
+    cameraReady = cameraReady,
+    paused = paused,
+)
+
+/** Completion/deferred submission owner: preview-output readiness is deliberately not an input. */
+internal fun tapFocusSessionOwnerIsCurrent(
+    currentAcceptedSession: Any?,
+    expectedAcceptedSession: Any,
+    currentController: Any?,
+    expectedController: Any,
+    currentSessionGeneration: Long,
+    expectedSessionGeneration: Long,
+    paused: Boolean,
+): Boolean = currentAcceptedSession === expectedAcceptedSession && !paused &&
+    currentController === expectedController && currentSessionGeneration == expectedSessionGeneration
+
+internal enum class TapFocusCompletionDecision {
+    IGNORE,
+    KEEP_PREVIOUS,
+    PUBLISH_HELD,
+    RETIRE,
+}
+
+/** Queue admission is deliberately absent: only the camera-thread submission result can hold. */
+internal fun tapFocusCompletionDecision(
+    attemptCurrent: Boolean,
+    submission: TapFocusSubmissionResult,
+    sessionCurrent: Boolean,
+): TapFocusCompletionDecision = when {
+    !attemptCurrent -> TapFocusCompletionDecision.IGNORE
+    submission == TapFocusSubmissionResult.REJECTED_PREVIOUS_RESTORED ->
+        TapFocusCompletionDecision.KEEP_PREVIOUS
+    submission == TapFocusSubmissionResult.FAILED_UNCERTAIN -> TapFocusCompletionDecision.RETIRE
+    !sessionCurrent -> TapFocusCompletionDecision.RETIRE
+    else -> TapFocusCompletionDecision.PUBLISH_HELD
+}
+
+/** Fresh Custom-WB gains plus the opaque accepted-session owner that produced them. */
+internal class CustomWbSample internal constructor(
+    val gains: WbGains,
+    internal val ownerToken: Any,
+)
+
+/** Accepted-session and WB-state ownership gate shared by callback and main-thread consumption. */
+internal fun customWbSampleOwnerIsCurrent(
+    currentAcceptedSession: Any?,
+    expectedAcceptedSession: Any?,
+    currentController: Any?,
+    expectedController: Any?,
+    currentSessionGeneration: Long,
+    expectedSessionGeneration: Long,
+    cameraReady: Boolean,
+    paused: Boolean,
+    wbMode: WbMode,
+    awbLocked: Boolean,
+): Boolean = expectedAcceptedSession != null &&
+    currentAcceptedSession === expectedAcceptedSession &&
+    acceptedCameraSessionIsCurrent(
+        currentController = currentController,
+        acceptedController = expectedController,
+        currentSessionGeneration = currentSessionGeneration,
+        acceptedSessionGeneration = expectedSessionGeneration,
+        cameraReady = cameraReady,
+        paused = paused,
+    ) && wbMode == WbMode.AUTO && !awbLocked
+
+/** A queued session reopen may act only while its complete desired packet still owns the engine. */
+internal fun sessionReopenMayProceed(
+    currentGeneration: Long,
+    expectedGeneration: Long,
+    expectedControllerMatches: Boolean,
+    paused: Boolean,
+    recording: Boolean,
+): Boolean = reconfigurationOwnsGeneration(currentGeneration, expectedGeneration) &&
+    expectedControllerMatches && !paused && !recording
+
+internal data class OpticsIntentState(
+    val mode: CaptureMode,
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val controls: ManualControls,
+    val overrideId: String?,
+    val declaration: TeleconverterDeclaration = teleconverterDeclaration(
+        phone = DEFAULT_PHONE_MODEL,
+        profile = DEFAULT_TELECONVERTER_PROFILE,
+        customMagnification = TELECONVERTER_MAGNIFICATION,
+    ),
+    // The diagnostic-pin half of the override pair: [overrideId] is the engine's ROUTED target,
+    // this is only ever a genuine setCameraOverride pin — the value the UI may present as an
+    // active override (a rollback restoring the routed id here surfaced the diagnostic row after
+    // every failed door, cycle-6 code-review F5).
+    val userPin: String? = null,
+    val photoExposureTimeNs: Long = controls.exposureTimeNs,
+    val requestedVideoSize: Size? = null,
+    // Facing rolls back with the packet like every other optics axis: a refused FRONT entry must
+    // restore BACK (and vice versa) under the exact owning generation, never optimistically.
+    val facing: CameraFacing = CameraFacing.BACK,
+    val route: CameraRoute = CameraRoute.BACK,
+)
+
+/** Returns the exact pre-intent optics only while that intent still owns the current generation. */
+internal fun rollbackOpticsState(
+    currentGeneration: Long,
+    expectedGeneration: Long,
+    snapshot: OpticsIntentState,
+): OpticsIntentState? = snapshot.takeIf {
+    reconfigurationOwnsGeneration(currentGeneration, expectedGeneration)
+}
+
+/**
+ * Whether moving the DNG intent from [from] to [to] changes the camera a REAR route resolves to.
+ * Only the non-TELE rear route asks the RAW law: TELE always pins the standalone 3× (whose session
+ * carries RAW by route, not by intent), and FRONT/EXTERNAL keep their one camera whatever DNG says.
+ */
+internal fun dngIntentChangesRearRoute(
+    video: Boolean,
+    teleconverter: Boolean,
+    from: Boolean,
+    to: Boolean,
+    rawForcesStandalone: Boolean,
+): Boolean = !teleconverter &&
+    standaloneRouteWanted(video, from, rawForcesStandalone) !=
+    standaloneRouteWanted(video, to, rawForcesStandalone)
+
+/** A rollback keeps a write that owned no transaction and happened after its baseline. */
+internal fun <T> keepNewerDirectWrite(current: T, baseline: T, directWriteSinceBaseline: Boolean): T =
+    if (directWriteSinceBaseline) current else baseline
+
+/**
+ * The DNG intent a rollback restores. A newer DIRECT write (one that owned no transaction) is an
+ * operator choice the failed door never saw, so it survives — but only while it leaves the
+ * restored route's standalone answer unchanged. Otherwise keeping it would pair the restored
+ * session with an intent that names a different camera and zoom scale (AGG2-1).
+ */
+internal fun rollbackRawWanted(
+    current: Boolean,
+    baseline: Boolean,
+    directWriteSinceBaseline: Boolean,
+    restoredVideo: Boolean,
+    restoredTeleconverter: Boolean,
+    restoredRoute: CameraRoute,
+    rawForcesStandalone: Boolean,
+): Boolean {
+    if (!directWriteSinceBaseline) return baseline
+    val movesRestoredRoute = restoredRoute == CameraRoute.BACK && dngIntentChangesRearRoute(
+        video = restoredVideo,
+        teleconverter = restoredTeleconverter,
+        from = baseline,
+        to = current,
+        rawForcesStandalone = rawForcesStandalone,
+    )
+    return if (movesRestoredRoute) baseline else current
+}
+
+/**
+ * Resolved encoder bitrate (bits/s) per attempt size for a FROZEN REC packet: the packet's own
+ * [codec] and [encoderRate], never the live Engine fields (AGG4-30). effectiveBpp scales the level
+ * up for the all-intra APV codec.
+ */
+internal fun frozenRecordingBitRate(
+    encoderRate: Double,
+    level: BitrateLevel,
+    codec: VideoCodec,
+): (width: Int, height: Int) -> Int = { width, height ->
+    videoBitRate(width, height, encoderRate, effectiveBpp(level, codec), codec)
+}
+
+/**
+ * Runs [cancel] for every owner, sealing each one: a throwing owner neither escapes to the caller
+ * nor skips the owners after it. Returns how many cancels threw (diagnostic only).
+ */
+internal fun <T> cancelEachSealed(owners: Iterable<T>, cancel: (T) -> Unit): Int =
+    owners.count { owner -> runCatching { cancel(owner) }.isFailure }
+
+/** How [CameraEngine]'s bounded retry disposed one preflight failure (MRG4-3). */
+internal enum class ColdStartRetryOutcome {
+    /** A retry is scheduled, another failure owns it, or the budget ended in the terminal status. */
+    OWNED,
+
+    /** A newer optics generation exists; its own door owns the next open. */
+    SUPERSEDED,
+
+    /**
+     * Pause/resume, a not-yet-started engine, closed native admission, or a pending GL input
+     * callback owns the next open of the newest intent.
+     */
+    LIFECYCLE_OWNED,
+
+    /** Nothing will retry (an active recorder, or no GL input with none pending): a real park. */
+    BLOCKED,
+}
+
+/** Result of [rawLossAnnouncementAtReady]: whether to announce, and the shape now announced. */
+internal data class RawLossAnnouncement(val announce: Boolean, val announcedShape: String?)
+
+/**
+ * The one RAW-loss announcement rule (AGG5-10). It speaks only when DNG is wanted, the route COULD
+ * carry RAW ([rawSelectable] — never FRONT, hi-res, or 10-bit video, where the OSD/caption already
+ * carry the structural state), and the accepted session nonetheless has no RAW (a drop-RAW ladder
+ * rung). It speaks once per session [shape]; a session WITH RAW, or no DNG wish, clears the latch.
+ * The ViewModel's Ready fold adopts a non-announcing result's shape at once, but an announcing one
+ * only after the status plate actually SHOWED it (MRG5-1): a notice the arbiter dropped under an
+ * unexpired ERROR or retained-take line must come back with the next Ready of that shape.
+ */
+internal fun rawLossAnnouncementAtReady(
+    rawWanted: Boolean,
+    rawSelectable: Boolean,
+    rawInSession: Boolean,
+    announcedShape: String?,
+    shape: String,
+): RawLossAnnouncement = when {
+    !rawWanted || rawInSession -> RawLossAnnouncement(announce = false, announcedShape = null)
+    !rawSelectable -> RawLossAnnouncement(announce = false, announcedShape = announcedShape)
+    announcedShape == shape -> RawLossAnnouncement(announce = false, announcedShape = shape)
+    else -> RawLossAnnouncement(announce = true, announcedShape = shape)
+}
+
+/**
+ * Whether resume() must re-bind the retained preview surface of an already-started Engine
+ * (AGG5-1 / AGG5-26). False on the ordinary foreground return, where the GL input exists and the
+ * preview already presented a real frame, so that path stays byte-identical.
+ */
+internal fun resumePreviewRebindWanted(inputSurfacePresent: Boolean, previewReady: Boolean): Boolean =
+    !inputSurfacePresent || !previewReady
+
+/**
+ * EXIF ExposureBias, in EV-step units, from whichever owner actually applied it (AGG5-46).
+ *
+ * Under admitted manual AE (every AE-OFF mode, including app-side photo PROGRAM — the PMA110
+ * default) the request carries no `CONTROL_AE_EXPOSURE_COMPENSATION`: EV moves the app-side loop's
+ * TARGET instead. The capture result then echoes the template default 0, not null, so reading the
+ * result recorded ExposureBias 0 on every app-side still whatever EV was dialed. The loop's modes
+ * (SHUTTER, ISO, PROGRAM) take the frozen shot intent; MANUAL runs no loop, so a dialed EV moved
+ * nothing and the bias is 0. HAL AE keeps the wire's own answer.
+ */
+internal fun exifExposureBiasSteps(
+    manualAe: Boolean,
+    exposureMode: ExposureMode,
+    resultSteps: Int?,
+    intentSteps: Int,
+): Int = when {
+    !manualAe -> resultSteps ?: intentSteps
+    exposureMode == ExposureMode.MANUAL -> 0
+    else -> intentSteps
+}
+
+/**
+ * The status for a REC start refused at the standby-microphone hand-off (AGG5-66). The claim and
+ * its release wait guard the ONE mic owner, and an audio-off take opens no AudioRecord: what
+ * actually refused it is the earlier recording owner still holding that claim, so it must not
+ * blame a microphone the take never asked for.
+ */
+internal fun recordingClaimRefusalStatus(recordAudio: Boolean): CameraStatusMessage =
+    if (recordAudio) CameraStatusMessage.MICROPHONE_BUSY else CameraStatusMessage.FINISHING_PREVIOUS_CLIP
+
+/** Why [CameraEngine]'s bounded retry refused to schedule; pure so the classification is pinned. */
+internal fun coldStartRetryRefusal(
+    generationCurrent: Boolean,
+    acquisitionOpen: Boolean,
+    started: Boolean,
+    paused: Boolean,
+    recorderActive: Boolean,
+    inputSurfacePresent: Boolean,
+    glInputPending: Boolean,
+): ColdStartRetryOutcome = when {
+    !generationCurrent -> ColdStartRetryOutcome.SUPERSEDED
+    !acquisitionOpen || !started || paused -> ColdStartRetryOutcome.LIFECYCLE_OWNED
+    recorderActive -> ColdStartRetryOutcome.BLOCKED
+    !inputSurfacePresent && glInputPending -> ColdStartRetryOutcome.LIFECYCLE_OWNED
+    !inputSurfacePresent -> ColdStartRetryOutcome.BLOCKED
+    // Every refusal condition is false: the retry COULD run, so nothing parks.
+    else -> ColdStartRetryOutcome.OWNED
+}
+
+internal enum class PreflightFailureDisposition {
+    /** Before the first Ready session (or with no controller): the bounded cold-start retry. */
+    COLD_RETRY,
+
+    /** A live controller and a pre-mutation baseline: roll back and re-accept it (AGG2-4). */
+    RESTORE_ROLLBACK,
+
+    /**
+     * A live controller and a POST-mutation baseline (a bare `reopenForSession()` door): the
+     * newest intent converges through the same bounded retry, never a parked Not-Ready (AGG4-2).
+     */
+    BARE_RETRY,
+}
+
+internal fun preflightFailureDisposition(
+    recoverColdPreflight: Boolean,
+    baselinePrecedesMutation: Boolean,
+): PreflightFailureDisposition = when {
+    recoverColdPreflight -> PreflightFailureDisposition.COLD_RETRY
+    baselinePrecedesMutation -> PreflightFailureDisposition.RESTORE_ROLLBACK
+    else -> PreflightFailureDisposition.BARE_RETRY
+}
+
+/**
+ * The preflight generation a [rollbackRestorableSessionGeneration] may additionally accept: only a
+ * transaction whose rollback baseline was frozen BEFORE its door mutated anything (AGG3-7). A bare
+ * reopen's post-mutation snapshot gets null, i.e. the ordinary baseline-generation rule, which its
+ * own pre-close invalidation has already moved — so it publishes Not-Ready.
+ */
+internal fun preflightRestorableSessionGeneration(
+    baselinePrecedesMutation: Boolean,
+    preflightSessionGeneration: Long,
+): Long? = preflightSessionGeneration.takeIf { baselinePrecedesMutation }
+
+/**
+ * The session generation a rollback may re-accept its baseline controller under, or null when it
+ * must publish Not-Ready. The baseline's own generation qualifies (nothing touched the session);
+ * so does the generation the failing door's OWN pre-close invalidation produced, because that bump
+ * retired no camera — the outgoing controller is still the one streaming (AGG2-4). Any other value
+ * means a camera error, pause, or newer door moved the session, and that stays non-restorable.
+ */
+internal fun rollbackRestorableSessionGeneration(
+    beforeReady: Boolean,
+    controllerMatches: Boolean,
+    paused: Boolean,
+    beforeSessionGeneration: Long,
+    currentSessionGeneration: Long,
+    preflightSessionGeneration: Long?,
+): Long? {
+    if (!beforeReady || !controllerMatches || paused) return null
+    return currentSessionGeneration.takeIf {
+        it == beforeSessionGeneration || it == preflightSessionGeneration
+    }
+}
+
+/**
+ * Whether a dual-open candidate controller may replace the streaming one. Evaluated inside the
+ * Engine monitor, where pause() nulls `controller`: a camera must never be installed (and opened)
+ * once the Engine is backgrounded or a recorder owns the session.
+ */
+internal fun dualOpenCandidateInstallAdmitted(
+    quarantined: Boolean,
+    glInputMayProceed: Boolean,
+    ownsTransaction: Boolean,
+    paused: Boolean,
+    recording: Boolean,
+): Boolean = !quarantined && glInputMayProceed && ownsTransaction && !paused && !recording
+
+/**
+ * Status for a structurally complete DNG kept private for launch recovery: a durable COMPLETE
+ * marker means only publication is delayed; without one, recovery's structural probe adopts it.
+ */
+internal fun retainedDngStatus(completionMarkerDurable: Boolean): CameraStatus =
+    if (completionMarkerDurable) {
+        CameraStatusMessage.DNG_SAVE_DELAYED.status()
+    } else {
+        CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(CameraStatusArgument.Text("DNG"))
+    }
+
+/** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
+internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =
+    if (cameraReady) current else pendingBaseline ?: current
+
+/**
+ * Whether a recalled optics packet changes the Camera2 route/session contract. A non-TELE Photo
+ * lens band is a unified-zoom preset on one logical camera, so the lens enum itself is deliberately
+ * absent: same-id recalls can commit controls through the request fast path without a blackout.
+ * [videoStreamSizeChanges] is part of that contract too: output dimensions are configured stream
+ * state, so a same-camera Video recall of a different resolution must reopen (AGG4-8).
+ */
+internal fun resolvedOpticsRequiresReconfigure(
+    beforeVideo: Boolean,
+    targetVideo: Boolean,
+    beforeTeleconverter: Boolean,
+    targetTeleconverter: Boolean,
+    beforeCameraId: String?,
+    targetCameraId: String?,
+    controllerAvailable: Boolean,
+    beforeReady: Boolean,
+    readyControllerMatches: Boolean,
+    videoStreamSizeChanges: Boolean,
+): Boolean = beforeVideo != targetVideo ||
+    beforeTeleconverter != targetTeleconverter ||
+    beforeCameraId == null || beforeCameraId != targetCameraId ||
+    !controllerAvailable || !beforeReady || !readyControllerMatches ||
+    videoStreamSizeChanges
+
+/** Interval shooting is photo-owned and is cancelled only on the Photo -> Video edge. */
+internal fun captureModeTransitionStopsTimelapse(currentVideo: Boolean, targetVideo: Boolean): Boolean =
+    !currentVideo && targetVideo
+
+/** Thread-safe ownership token for completion-paced capture sequences. */
+internal class CaptureSequenceGeneration {
+    private val current = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun restart(): Long = current.incrementAndGet()
+    fun stop() { current.incrementAndGet() }
+    fun owns(generation: Long): Boolean = current.get() == generation
+}
+
+/**
+ * Moves a preview-window bind off its framework callback while retaining terminal ordering.
+ *
+ * [isCurrent] is intentionally checked on both sides of [terminalGate]: a request can be current
+ * when it reaches the serialized lane, wait behind a native acquisition, then become stale while
+ * blocked. Only the second check authorizes publication to the GL handler.
+ */
+internal fun dispatchGenerationOwnedPreviewBind(
+    submit: (Runnable) -> Boolean,
+    terminalGate: TerminalAcquisitionGate,
+    isCurrent: () -> Boolean,
+    bind: () -> Unit,
+): Boolean = runCatching {
+    submit(
+        Runnable {
+            if (!isCurrent()) return@Runnable
+            terminalGate.runIfOpen {
+                if (isCurrent()) bind()
+            }
+        },
+    )
+}.getOrDefault(false)
+
+/**
+ * Gate that stops a queued native acquisition from resurrecting a released generation after
+ * teardown has begun.
+ *
+ * The monitor held by [runIfOpen] and [close] is LOAD-BEARING and must stay: the whole point is that
+ * a close cannot slip in mid-acquisition, so `close()` blocks until an in-flight block finishes and
+ * a block cannot start once close has won. `runIfOpen` therefore holds the monitor across a process
+ * lock plus a native camera open — hundreds of milliseconds, by design.
+ *
+ * [isOpen] is the ADVISORY half and deliberately does NOT take that monitor (2026-08-09). Its only
+ * caller is `nativeAcquisitionMayProceed`, which feeds the pure `nativeAcquisitionAllowed` predicate
+ * as a "should I bother starting this" hint; it participates in no compound operation, and the
+ * authoritative check is the one inside [runIfOpen]. Synchronizing it bought no correctness — the
+ * answer can change the instant it returns either way — and cost a MAIN-THREAD stall for as long as
+ * whatever the HAL was doing: device-diagnosed at 192 ms under rapid Photo↔Video churn on an
+ * SM-S918N (`Long monitor contention ... at TerminalAcquisitionGate.runIfOpen ... in isOpen()`,
+ * waiter tid == pid). A `@Volatile` read gives the same answer and the same visibility — `close()`
+ * still publishes under the monitor, and a volatile write happens-before the volatile read — without
+ * ever queueing behind camera work.
+ *
+ * Both directions are pinned by tests: `close waits for in-flight acquisition` and
+ * `isOpen does not block behind an in-flight acquisition`.
+ */
+internal class TerminalAcquisitionGate {
+    @Volatile private var open = true
+
+    /**
+     * Linearizes terminal shutdown with operations that can acquire a fresh native owner. The block
+     * is deliberately executed while holding the monitor: close either waits for the in-flight
+     * acquisition and owns its teardown, or prevents it from beginning.
+     */
+    @Synchronized
+    fun runIfOpen(block: () -> Unit): Boolean {
+        if (!open) return false
+        block()
+        return true
+    }
+
+    @Synchronized
+    fun close() {
+        open = false
+    }
+
+    /** Advisory, lock-free. See the class doc for why this must not take the monitor. */
+    fun isOpen(): Boolean = open
+}
+
+/** Merge only the manual bracket field into the freshest live controls. */
+internal fun manualAebStepControls(latest: ManualControls, exposureTimeNs: Long): ManualControls =
+    latest.copy(shutterMode = ShutterMode.SPEED, exposureTimeNs = exposureTimeNs)
+
+/** Merge only the auto bracket field into the freshest live controls. */
+internal fun autoAebStepControls(latest: ManualControls, exposureCompensation: Int): ManualControls =
+    latest.copy(exposureCompensation = exposureCompensation)
+
+/** Complete synchronous lens/TELE intent retained even when its async camera preflight is paused. */
+internal data class ResolvedLensOpticsIntent(
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val controls: ManualControls,
+    val preTeleUnifiedZoom: Float,
+)
+
+internal fun resolveLensOpticsIntent(
+    /**
+     * Whether the resolved route is a STANDALONE lens — not whether the mode is video.
+     *
+     * `zoomRatio` means two different things depending on the route: on the logical seamless camera
+     * it is MAIN-RELATIVE (0.6–20 spans the physical lenses), on a standalone lens it is LENS-LOCAL
+     * (1× is that lens's own field). This used to ask `mode == VIDEO`, which is true of the video
+     * route but MISSES the other standalone door: wanting DNG moves photo onto a standalone lens
+     * too. Tapping the 3× preset with DNG on then wrote the main-relative 3.0 into a lens-local
+     * slot, giving 3× digital zoom on the 70 mm lens — device-reproduced 2026-08-03 as "208 mm" in
+     * the OSD and 9.1× on the readout (3 × 70/23), with the wire zoom correctly at 3.0 in both
+     * cases. The value was never wrong; it was interpreted on the wrong scale.
+     */
+    standaloneRoute: Boolean,
+    /**
+     * The presets backed by a real lens here. A standalone route is pinned to ONE physical lens, so
+     * the lens-local divisor is the optical lens the route lands on — not the preset the user
+     * tapped. On a one-camera device those differ, and using the preset threw the framing away.
+     */
+    opticalPresets: Set<LensChoice>,
+    currentLens: LensChoice,
+    currentTeleconverter: Boolean,
+    currentControls: ManualControls,
+    currentPreTeleUnifiedZoom: Float,
+    requestedLens: LensChoice,
+    requestedTeleconverter: Boolean,
+    restorePreTele: Boolean,
+): ResolvedLensOpticsIntent {
+    val transition = resolveTeleZoomTransition(
+        nonTeleStandaloneRoute = standaloneRoute,
+        opticalPresets = opticalPresets,
+        currentLens = currentLens,
+        currentTeleconverter = currentTeleconverter,
+        currentZoomRatio = currentControls.zoomRatio,
+        currentPreTeleUnifiedZoom = currentPreTeleUnifiedZoom,
+        requestedLens = requestedLens,
+        requestedTeleconverter = requestedTeleconverter,
+        restorePreTele = restorePreTele,
+    )
+    return ResolvedLensOpticsIntent(
+        lens = transition.lens,
+        teleconverter = transition.teleconverter,
+        controls = currentControls.copy(zoomRatio = transition.zoomRatio),
+        preTeleUnifiedZoom = transition.preTeleUnifiedZoom,
+    )
+}
+
+/** The largest ratioW:ratioH rect centered within srcW×srcH. */
+internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)
+
+/**
+ * AUTO-exposure AEB compensation steps: a ±2-stop bracket around [center] converted through the
+ * camera's advertised [evStepStops], then clamped to its compensation-unit range.
+ * distinct() so a narrow range that clamps two steps to the same value doesn't fire duplicate
+ * identical frames (a 1-shot "bracket"). Pure and top-level like [centerCropBox] so the clamp and
+ * dedupe are unit-testable (the MANUAL branch's sibling, manualAebExposuresNs, already is).
+ */
+internal fun aeCompAebSteps(center: Int, lower: Int, upper: Int, evStepStops: Float): List<Int> {
+    val safeStep = evStepStops.takeIf { it.isFinite() && it > 0f } ?: (1f / 3f)
+    val twoStopsInUnits = kotlin.math.round(2f / safeStep).toInt().coerceAtLeast(1)
+    return listOf(center - twoStopsInUnits, center, center + twoStopsInUnits)
+        .map { it.coerceIn(lower, upper) }
+        .distinct()
+}
+
+/**
+ * Pure rect math behind the still-photo aspect crop, extracted so the 4:3/16:9 gating is
+ * unit-testable without a Bitmap (an unmocked android.jar stub on the JVM).
+ */
+internal fun centerCropBox(srcW: Int, srcH: Int, ratioW: Int, ratioH: Int): CropBox {
+    val heightForFullWidth = srcW * ratioH / ratioW
+    val (cropW, cropH) = if (heightForFullWidth <= srcH) {
+        srcW to heightForFullWidth
+    } else {
+        (srcH * ratioW / ratioH) to srcH
+    }
+    return CropBox((srcW - cropW) / 2, (srcH - cropH) / 2, cropW, cropH)
+}
+
+/**
+ * View-normalized tap [(nx,ny), origin top-left] → RAW-SENSOR-normalized metering point. The tapped
+ * point is in VIEW space; metering regions are in RAW-SENSOR space, so the centered tap is rotated
+ * by -(sensor orientation + the teleconverter's afocal 180°) and re-centered — NOT by
+ * previewRotationDegrees (which is only the afocal part the renderer adds). NOTE: this ignores the
+ * EIS/punch-in crop and offset, so the mapping is APPROXIMATE and needs on-device calibration — the
+ * axis signs (and possibly a horizontal mirror) may need flipping once validated. Pure and
+ * top-level so the CURRENT behavior is pinned by tests: any future calibration "fix" must land as
+ * an intentional test change, not a silent sign flip.
+ */
+internal fun viewTapToSensorPoint(
+    nx: Float,
+    ny: Float,
+    sensorOrientationDeg: Int,
+    afocal180: Boolean,
+): Pair<Float, Float> {
+    val total = ((sensorOrientationDeg + if (afocal180) 180 else 0) % 360 + 360) % 360
+    val px = nx - 0.5f
+    val py = ny - 0.5f
+    val rad = Math.toRadians(-total.toDouble())
+    val cos = Math.cos(rad).toFloat()
+    val sin = Math.sin(rad).toFloat()
+    val rx = px * cos - py * sin
+    val ry = px * sin + py * cos
+    return (rx + 0.5f).coerceIn(0f, 1f) to (ry + 0.5f).coerceIn(0f, 1f)
+}
+
+/**
+ * View tap → punch-in loupe center. The renderer rotates texcoords by previewRotationDegrees (the
+ * afocal 180° only — sensor orientation lives in the SurfaceTexture matrix, which the loupe center
+ * passes through unchanged). View space is y-DOWN while the texcoord/NDC space is y-UP, so the
+ * vertical tap offset is flipped before the content rotation, then re-centered. (Verified on
+ * device: without the y-flip a top tap sent the loupe to the bottom half.)
+ */
+internal fun viewTapToLoupeCenter(nx: Float, ny: Float, previewRotationDegrees: Int): Pair<Float, Float> {
+    val rad = Math.toRadians(previewRotationDegrees.toDouble())
+    val cos = Math.cos(rad).toFloat()
+    val sin = Math.sin(rad).toFloat()
+    val ax = nx - 0.5f
+    val ay = -(ny - 0.5f)
+    val lx = ax * cos - ay * sin
+    val ly = ax * sin + ay * cos
+    return (lx + 0.5f).coerceIn(0f, 1f) to (ly + 0.5f).coerceIn(0f, 1f)
+}
+
+/** Immutable event-time mapping stored by the rapid-tap latest-wins coalescer. */
+internal data class TapFocusGeometry(
+    val viewPoint: Pair<Float, Float>,
+    val sensorPoint: Pair<Float, Float>,
+    val loupePoint: Pair<Float, Float>,
+)
+
+internal fun mapTapFocusGeometry(
+    nx: Float,
+    ny: Float,
+    sensorOrientation: Int,
+    teleconverter: Boolean,
+    punchActive: Boolean,
+    sensorCenter: Pair<Float, Float>,
+    loupeCenter: Pair<Float, Float>,
+    previewRotationDegrees: Int,
+    // Display → TEXTURE mirror, for the loupe/content mapping. False on this device: the front
+    // stream is pre-mirrored and the preview shows it as-is, so displayed x == texture x.
+    mirrorX: Boolean,
+    // Display → ACTIVE-ARRAY mirror, for AE/AF metering regions. SEPARATE from [mirrorX] and
+    // usually its opposite on the front route: metering regions are array coordinates, and the
+    // array holds the TRUE scene while the preview shows it mirrored. Sharing one flag made the
+    // front route meter the horizontally opposite point (cycle-6 debugger F2) — a tap on the left
+    // of the selfie is on the right of the array. Applied to the RAW view x, before the rotation
+    // into array space, matching where the device-verified encoder un-mirror acts.
+    meteringMirrorX: Boolean,
+    // The WINDOW's rotation away from natural. 0 for a portrait-locked activity, non-zero only
+    // where Android 16+ ignores screenOrientation (sw600dp+). No defaults on these three (AGG6-37):
+    // a default is a fix-off switch, so a new caller that forgot the window or mirror term compiled
+    // and silently mapped every tap through the unrotated, unmirrored matrix.
+    windowRotationDeg: Int,
+): TapFocusGeometry {
+    // The tap arrives in the WINDOW's frame; viewTapToSensorPoint and viewTapToLoupeCenter both
+    // assume the device's NATURAL frame. Un-rotate ONCE here so neither has to grow its own window
+    // term and the metering/loupe/punch-in composition below stays byte-identical. viewPoint keeps
+    // the RAW display coordinates — the focus reticle is drawn in view space, not sensor space.
+    val (vx, vy) = RotationMath.unrotateViewPoint(nx, ny, windowRotationDeg)
+    val cx = if (mirrorX) 1f - vx else vx
+    val meterX = if (meteringMirrorX) 1f - vx else vx
+    val sensorRaw = viewTapToSensorPoint(meterX, vy, sensorOrientation, teleconverter)
+    val loupeRaw = viewTapToLoupeCenter(cx, vy, previewRotationDegrees)
+    if (!punchActive) return TapFocusGeometry(nx to ny, sensorRaw, loupeRaw)
+    val span = 1f - PUNCH_IN_CROP
+    return TapFocusGeometry(
+        viewPoint = nx to ny,
+        sensorPoint = loupeAdjustedTap(
+            sensorRaw.first,
+            sensorRaw.second,
+            sensorCenter.first,
+            sensorCenter.second,
+            span,
+        ),
+        loupePoint = loupeAdjustedTap(
+            loupeRaw.first,
+            loupeRaw.second,
+            loupeCenter.first,
+            loupeCenter.second,
+            span,
+        ),
+    )
+}
+
+/**
+ * Composes a rotated tap point through the ACTIVE punch-in loupe crop (AGG4-11/P2.8). While the
+ * loupe magnifies, the renderer samples `center + span·(p − 0.5)` — an affine map that commutes
+ * with the (orthonormal, center-pivoted) rotation stages, so the same composition is exact in
+ * BOTH the sensor space (metering) and the texcoord space (loupe recenter), each against its own
+ * current center. [span] = 1 − PUNCH_IN_CROP (the sampled fraction of the frame; 0.4 → 2.5×).
+ * Callers bypass this entirely when the loupe is off (the identity would require center 0.5).
+ */
+internal fun loupeAdjustedTap(
+    px: Float,
+    py: Float,
+    centerX: Float,
+    centerY: Float,
+    span: Float,
+): Pair<Float, Float> =
+    (centerX + span * (px - 0.5f)).coerceIn(0f, 1f) to (centerY + span * (py - 0.5f)).coerceIn(0f, 1f)

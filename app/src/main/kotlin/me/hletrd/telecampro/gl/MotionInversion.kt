@@ -1,0 +1,516 @@
+package me.hletrd.telecampro.gl
+
+import me.hletrd.telecampro.camera.MotionAgreement
+import me.hletrd.telecampro.camera.MotionInversionData
+import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.roundToInt
+
+/*
+ * Motion-inversion metric: "does the scene move the way the gyro says it should, or the opposite?"
+ *
+ * WHY THIS EXISTS. The afocal teleconverter is a telescope with no erecting prism, so the image it
+ * delivers is rotated 180 degrees, and the app corrects that by rotating the preview back — but ONLY
+ * when the operator has told it the converter is mounted. Passive glass cannot announce itself:
+ * there is no contact, no ID, and no optical trick that reports its presence (probed 2026-08-05 —
+ * even the stock OPPO camera has no detection whatsoever; its Teleconverter mode puts up a dialog
+ * with "Installed" / "Not installed" BUTTONS and asks the user, and its own guide text tells you to
+ * judge by whether the picture looks inverted). So a mismatch between the world and the setting is
+ * invisible to the app and silently wrong for the operator.
+ *
+ * The phone cannot see the glass. It CAN see what the glass does. A 180-degree rotation inverts the
+ * sign of image motion on BOTH axes, and the gyroscope independently knows which way the phone
+ * turned. Comparing the two answers the only question that matters.
+ *
+ * WHAT IT PROVES: that scene motion in the ANALYSED frame runs opposite to the rotation the gyro
+ * measured. That is a statement about the frame the app is currently producing — i.e. about whether
+ * the CURRENT rotation setting matches reality — and it therefore covers both failure directions at
+ * once: converter mounted with TELE off, and TELE on with no converter.
+ *
+ * WHAT IT DOES NOT PROVE: that a teleconverter specifically is attached. Any inverting optic, or a
+ * mirror rig, reads the same. The OSD wording must follow the proof: this path may say the image is
+ * INVERTED, and must never name the accessory it cannot see.
+ *
+ * IT MAY MISS; IT MUST NEVER FALSE-FIRE. Every ambiguous input is steered to
+ * [MotionAgreement.UNJUDGEABLE]. A miss costs the operator nothing — they set the toggle themselves,
+ * as they do today. A false fire tells them their correct setting is wrong.
+ *
+ * ## The metric
+ *
+ * The gyro supplies a predicted image-motion DIRECTION (a unit vector in analysis-frame
+ * coordinates). Scene displacement caused by rotation lies along that line, so instead of a 2D block
+ * search this walks 1D along the predicted axis, in both directions:
+ *
+ *     SAD(s) = sum over block of |cur(p) - prev(p - s*u)|     for s in [-S, +S]
+ *
+ * and asks which side of zero the minimum falls on. `s > 0` agrees with the gyro; `s < 0` opposes.
+ *
+ * WHY 1D ALONG THE AXIS, not a 2D search. Three reasons, in order of importance:
+ * 1. **It is scale-free.** Only the SIGN of `s` is read, never its magnitude, so the metric needs no
+ *    model of focal length, zoom ratio, crop, frame interval, or rolling shutter — every one of
+ *    which would otherwise have to be right, and each of which is a place to be quietly wrong. This
+ *    is what lets a 300 mm converted view and a bare 23 mm lens use identical thresholds.
+ * 2. It cannot alias. A 2D search over a window large enough for a 300 mm pan would routinely find
+ *    its true minimum outside the window and report an edge-clamped, meaningless vector.
+ * 3. It is ~30 SAD evaluations per block instead of ~600.
+ *
+ * PER-BLOCK VOTES, NOT A GLOBAL ESTIMATE. The frame verdict is a supermajority over independent
+ * block votes, so the block agreement fraction IS the confidence measure — which is exactly what the
+ * never-false-fire contract needs, and what a single global displacement could not supply. It also
+ * makes a moving subject harmless by construction: a car crossing the frame is one or two blocks
+ * voting against fourteen, not a corrupted global answer.
+ *
+ * DIRECTIONAL TEXTURE IS THE LOAD-BEARING GUARD. A block votes only if it carries structure ALONG
+ * the search axis. A clean vertical edge is perfectly sharp and perfectly uninformative about
+ * vertical motion — SAD(s) is flat, the minimum is noise, and the vote would be a coin flip. Since
+ * coin flips at scale produce a ~50/50 split rather than a supermajority they would mostly land as
+ * UNJUDGEABLE anyway, but "mostly" is not the contract, so the flat blocks are excluded before they
+ * can vote at all.
+ */
+
+/** Block edge in analysis pixels. */
+internal const val MOTION_BLOCK = 24
+
+/** Max |s| walked along the predicted axis, in analysis pixels. Also the required edge inset. */
+internal const val MOTION_SEARCH = 14
+
+/** Sample stride inside a block; 24/2 -> 12x12 = 144 samples, plenty for a sign. */
+internal const val MOTION_SAMPLE_STEP = 2
+
+/**
+ * The winning |s| must reach this, in analysis pixels. Below it the phone is effectively still and
+ * the "displacement" is sensor noise — sign meaningless. This is the stillness guard.
+ */
+internal const val MOTION_MIN_SHIFT = 2
+
+/**
+ * Mean absolute first difference ALONG the search axis that a block must carry to vote. Excludes
+ * flat sky and edges perpendicular to the motion, both of which make SAD(s) flat.
+ */
+internal const val MOTION_TEXTURE_FLOOR = 6.0
+
+/**
+ * The best SAD must beat the stationary hypothesis SAD(0) by this factor, else the block saw no
+ * motion it can localise and abstains.
+ */
+internal const val MOTION_IMPROVEMENT = 0.80
+
+/**
+ * The winning side must beat the OTHER side's best by this factor. Near 1.0 the two hypotheses fit
+ * equally well (periodic texture, a repeating fence) and the block abstains rather than guess.
+ */
+internal const val MOTION_SIDE_MARGIN = 0.85
+
+/** Fewer voting blocks than this and the frame is unjudgeable however lopsided the votes. */
+internal const val MOTION_MIN_VOTING_BLOCKS = 6
+
+/** Fraction of voting blocks that must agree. Deliberately far above a coin flip. */
+internal const val MOTION_SUPERMAJORITY = 0.80
+
+/**
+ * The gyro must report at least this much rotation over the frame interval for the frame to be
+ * judged. Guards the degenerate case the whole metric rests on: with no rotation there is no
+ * predicted direction, and any measured displacement is parallax or subject motion.
+ *
+ * UNITS ARE MILLIRADIANS, not pixels — deliberately. Converting the predicted rotation to pixels
+ * would require focal length, zoom ratio and crop, i.e. exactly the optical model this design exists
+ * without; being wrong about it by the converter's 4.3x would silently move the gate. An angular
+ * threshold needs none of that and means the same thing on every lens. 3 mrad over the ~166 ms
+ * analysis interval is ~1 deg/s: a slow deliberate pan clears it, a hand-held phone at rest does not.
+ */
+internal const val MOTION_MIN_PREDICTED_MRAD = 3.0
+
+/** Consecutive same-verdict frames required before the result may be shown. */
+internal const val MOTION_CONFIRM_FRAMES = 4
+
+/**
+ * ============ GYRO/FRAME ALIGNMENT — DEFECT FOUND 2026-08-11, FIXED 2026-08-12 ============
+ *
+ * THE GYRO INTERVAL USED TO BE MISALIGNED FROM THE FRAMES IT JUDGED, which is why no bisection ever
+ * settled honestly. Fixed; kept here because the symptom is worth recognising if it ever returns.
+ *
+ * WAS: `GlPipeline` drained the gyro at READBACK time, so the rotation covered the wall interval
+ * between two drain calls. The pixels in that readback left the sensor EARLIER — camera
+ * pipeline latency — so the metric compares image motion from moment T against rotation measured
+ * over an interval ending at roughly T + lag.
+ *
+ * A slow one-direction pan hides this completely: the rotation has one sign throughout, so a shifted
+ * window still points the same way and the verdict is right for the wrong reason. A reversing or
+ * shaky motion exposes it, because the direction flips INSIDE the lag window.
+ *
+ * MEASURED (PMA110, hand-held sweep, 11 judged frames, 141 block votes):
+ *   aggregate           80 agree / 61 oppose  = 57% — barely off a coin flip
+ *   predicted y > 0     64% MATCHES
+ *   predicted y < 0     43% MATCHES
+ * A ~20-point swing with the SIGN of the predicted direction. That must not happen: reversing a pan
+ * reverses the gyro reading and the image motion together, so a sign comparison is
+ * direction-invariant by construction. Correlation with direction is the defect's signature.
+ *
+ * NOW: the gyro is integrated over exactly [previousFrame.timestamp, currentFrame.timestamp].
+ * `SurfaceTexture.timestamp` is already the camera/sensor clock and is already consumed for encoder
+ * PTS (`GlPipeline`), so the frame side needs no new plumbing. What changes is `GyroEis`: it must
+ * retain timestamped samples and answer "rotation between these two instants" instead of the current
+ * `drainRotation()`, which can only answer "rotation since you last asked me".
+ *
+ * `GyroEis.rotationBetween` answers that window from a timestamped ring and returns NULL — never a
+ * fabricated zero — when it cannot (window outside the retained history, tracking disarmed, or the
+ * camera reporting a non-REALTIME timestamp source, where its clock is `System.nanoTime` and the
+ * two bases drift apart by accumulated deep sleep). `rotationBetweenSamples` is the pure seam and
+ * carries the reversal fence: rotate out and back, and the two legs must cancel.
+ *
+ * The signs below remain UNMEASURED. What changed is that measuring them no longer requires a
+ * gesture smooth enough to hide the defect.
+ *
+ * ============================ THE BISECTION GATE — READ BEFORE ENABLING ============================
+ *
+ * FALSE until the two signs below have been measured on a real device. While false the detector must
+ * be unreachable: no gyro registration, no readback rider, no OSD tag.
+ *
+ * WHY A GATE AND NOT A BEST GUESS. Everything else in this file degrades safely — a bad threshold
+ * costs coverage, an ambiguous frame goes UNJUDGEABLE. A wrong sign here does not degrade: it
+ * INVERTS every verdict, turning "may miss, must never false-fire" into "always false-fires". It
+ * would tell an operator with a correct setting that their setting is wrong, which is strictly worse
+ * than saying nothing, and it is the one error the metric's own statistics cannot detect.
+ *
+ * This codebase has paid for that lesson four separate times in this exact composition, all recorded
+ * in CLAUDE.md: the rear capture `+dev` vs `-dev` (every landscape-held still saved 180 out), the
+ * front/rear gravity term, the glyph counter-rotation (`+dev`, not `-dev` — invisible on symmetric
+ * icons until text rotated), and the EIS axis. Every one was found on hardware, none by reasoning.
+ *
+ * HOW TO BISECT (one session, ~10 minutes, no code changes needed beyond flipping these):
+ * 1. TELE off, converter physically OFF, so the frame is known-upright. Flip this flag true.
+ * 2. Pan RIGHT slowly and steadily, ~1 second. Read the logged verdict.
+ * 3. MATCHES means the signs are right. INVERTED means both are wrong — flip both constants.
+ * 4. Repeat panning UP. If yaw was right but pitch is wrong the verdict flips only on this axis, so
+ *    fix [MOTION_PITCH_SIGN] alone. (A 180 rotation flips BOTH, so a single-axis disagreement is
+ *    proof of a sign bug, never of an inverted image.)
+ * 5. Mount the converter, turn TELE ON, repeat step 2 — must still read MATCHES.
+ * 6. Turn TELE OFF with the converter still mounted — must now read INVERTED. That is the feature.
+ *
+ * Pin the outcome with a device note in CLAUDE.md, exactly as `captureRotationDegrees` did.
+ */
+internal const val MOTION_SIGNS_VERIFIED = false
+
+/**
+ * Scene-x per unit device YAW (rotation about the device's y axis), before the app's own rotation.
+ * UNVERIFIED — see [MOTION_SIGNS_VERIFIED]. Reasoning says panning right moves content left, hence
+ * negative; reasoning is exactly what has been wrong here four times, so it is not load-bearing.
+ */
+internal const val MOTION_YAW_SIGN = -1.0
+
+/**
+ * Scene-y per unit device PITCH (rotation about the device's x axis), before the app's own rotation.
+ * UNVERIFIED — see [MOTION_SIGNS_VERIFIED].
+ */
+internal const val MOTION_PITCH_SIGN = -1.0
+
+/**
+ * Gyro rotation -> predicted scene-motion direction in ANALYSIS-frame axes, or null when the phone
+ * did not turn enough to define one.
+ *
+ * The composition is deliberately shallow, because depth is where the sign bugs lived. Only ONE
+ * term here is unmeasured — the ([MOTION_YAW_SIGN], [MOTION_PITCH_SIGN]) pair. Everything else is
+ * already device-verified elsewhere and is reused rather than re-derived:
+ *
+ * - The SurfaceTexture transform already rotates the sampled image by `sensorOrientation`, so the
+ *   camera frame arrives device-upright and no sensor-orientation term belongs here. (This is the
+ *   same fact that makes `CameraEngine.previewRotationDegrees()` return only the afocal 180 rather
+ *   than any +/-sensorOrientation — both 270 and 90 read 90 off on device.)
+ * - [rotationDegrees] is whatever the analysis draw actually applied, taken from renderer state, not
+ *   recomputed. That is what makes the verdict mean "is the frame 180 out relative to the CURRENT
+ *   setting" and lets one test cover both failure directions.
+ * - [frontFacing] mirrors x because the ENCODER/ANALYSIS draws apply the x-inversion while the
+ *   preview does not — this HAL pre-mirrors the front stream (device-diagnosed 2026-07-23).
+ *
+ * @param yawRadians accumulated rotation about device y since the previous analysis frame
+ * @param pitchRadians accumulated rotation about device x since the previous analysis frame
+ * @param rotationDegrees rotation the analysis draw applied (0/90/180/270)
+ * @return (x, y) in milliradians, analysis axes (x right, y down), or null if below the angular gate
+ */
+internal fun predictedSceneMotion(
+    yawRadians: Float,
+    pitchRadians: Float,
+    rotationDegrees: Int,
+    frontFacing: Boolean,
+): DoubleArray? {
+    val yawMrad = yawRadians.toDouble() * 1000.0
+    val pitchMrad = pitchRadians.toDouble() * 1000.0
+
+    var x = MOTION_YAW_SIGN * yawMrad
+    var y = MOTION_PITCH_SIGN * pitchMrad
+
+    // Rotate into analysis axes by the SAME rotation the analysis draw applied. Whole quadrants
+    // only, so this is exact integer-ish arithmetic with no trig and no accumulation of error.
+    when (((rotationDegrees % 360) + 360) % 360) {
+        90 -> { val t = x; x = -y; y = t }
+        180 -> { x = -x; y = -y }
+        270 -> { val t = x; x = y; y = -t }
+    }
+
+    if (frontFacing) x = -x
+
+    return if (hypot(x, y) < MOTION_MIN_PREDICTED_MRAD) null else doubleArrayOf(x, y)
+}
+
+/**
+ * One frame's block votes -> verdict. Pure; the counters exist so a device bring-up can tell WHICH
+ * rule refused from a single log line (the ColorOS 300-row quota forbids per-frame logging).
+ */
+internal fun motionFrameVerdict(votingBlocks: Int, agreeVotes: Int, opposeVotes: Int): MotionAgreement {
+    if (votingBlocks < MOTION_MIN_VOTING_BLOCKS) return MotionAgreement.UNJUDGEABLE
+    val needed = MOTION_SUPERMAJORITY * votingBlocks
+    return when {
+        agreeVotes >= needed -> MotionAgreement.MATCHES
+        opposeVotes >= needed -> MotionAgreement.INVERTED
+        else -> MotionAgreement.UNJUDGEABLE
+    }
+}
+
+/**
+ * Whether a block's SAD profile is decisive enough to vote, given the best fit on each side of zero.
+ *
+ * @param bestPositive lowest SAD found at s > 0, or null if that side was unreachable
+ * @param bestNegative lowest SAD found at s < 0, or null if that side was unreachable
+ * @param stationary SAD at s = 0
+ */
+internal fun motionBlockDecisive(bestPositive: Long?, bestNegative: Long?, stationary: Long): Boolean {
+    if (bestPositive == null || bestNegative == null) return false
+    val winner = minOf(bestPositive, bestNegative)
+    val loser = maxOf(bestPositive, bestNegative)
+    // Saw real motion: the moved hypothesis must beat standing still by a clear margin.
+    if (winner > MOTION_IMPROVEMENT * stationary) return false
+    // And one side must beat the other, else both directions explain the block equally well.
+    if (loser == 0L) return false
+    return winner <= MOTION_SIDE_MARGIN * loser
+}
+
+/**
+ * Accumulated confidence across frames. Immutable; fold [observe] over successive frame verdicts.
+ *
+ * A single frame is never enough. Requiring [MOTION_CONFIRM_FRAMES] consecutive identical verdicts
+ * costs under a second at the ~6 Hz analysis cadence and removes the entire class of one-frame
+ * accidents — a passing truck, a shutter, a hand crossing the lens.
+ *
+ * UNJUDGEABLE does NOT reset a settled answer, it only fails to advance a pending one: a phone set
+ * down on a desk goes unjudgeable forever, and forgetting a correct verdict because the operator
+ * stopped moving would make the tag flicker exactly when nothing changed. A CONTRARY verdict does
+ * reset, immediately and to zero — that is the operator toggling the converter.
+ */
+internal data class MotionInversionConfidence(
+    val settled: MotionAgreement = MotionAgreement.UNJUDGEABLE,
+    val pending: MotionAgreement = MotionAgreement.UNJUDGEABLE,
+    val streak: Int = 0,
+) {
+    /** True once a real MATCHES/INVERTED answer has been confirmed and may be acted on. */
+    val confident: Boolean get() = settled != MotionAgreement.UNJUDGEABLE
+
+    fun observe(frame: MotionAgreement): MotionInversionConfidence = when {
+        frame == MotionAgreement.UNJUDGEABLE -> this
+        frame == pending -> {
+            val next = streak + 1
+            if (next >= MOTION_CONFIRM_FRAMES) {
+                MotionInversionConfidence(settled = frame, pending = frame, streak = next)
+            } else {
+                copy(streak = next)
+            }
+        }
+        // A verdict that contradicts what we were building drops the streak to this frame alone.
+        else -> MotionInversionConfidence(settled = settled, pending = frame, streak = 1)
+    }
+}
+
+/**
+ * Rec.2020 luma plane from an RGBA8888 analysis snapshot — same weights and the same ROUNDING as
+ * [computeFocusDetail], because this differences neighbours too and truncation's discontinuity at 0
+ * would inject a spurious edge into near-black regions.
+ */
+internal fun motionLuma(bytes: ByteArray, w: Int, h: Int, out: IntArray) {
+    var i = 0
+    var p = 0
+    val size = w * h
+    while (p < size) {
+        val r = bytes[i].toInt() and 0xFF
+        val g = bytes[i + 1].toInt() and 0xFF
+        val b = bytes[i + 2].toInt() and 0xFF
+        out[p] = (0.2627f * r + 0.678f * g + 0.0593f * b).roundToInt().coerceIn(0, 255)
+        p++
+        i += 4
+    }
+}
+
+/**
+ * Compares two consecutive analysis luma planes against a gyro-predicted motion direction.
+ *
+ * [predictedX]/[predictedY] are the direction the gyro expects the SCENE to move between the two
+ * frames, in analysis-frame axes (x right, y down), already carrying whatever rotation the analysis
+ * draw applied — build it with [predictedSceneMotion]. Magnitude is in MILLIRADIANS of device
+ * rotation: it gates judgeability via [MOTION_MIN_PREDICTED_MRAD] and is otherwise discarded, so no
+ * pixel/focal conversion is needed or wanted anywhere in this file.
+ *
+ * Pure and allocation-light: runs on the analysis executor over bytes an existing readback already
+ * produced, never on the GL thread.
+ */
+internal fun computeMotionInversion(
+    previous: IntArray,
+    current: IntArray,
+    w: Int,
+    h: Int,
+    predictedX: Double,
+    predictedY: Double,
+): MotionInversionData {
+    val size = w * h
+    if (w <= 0 || h <= 0 || previous.size < size || current.size < size) {
+        return MotionInversionData.UNJUDGED
+    }
+    val predictedLen = hypot(predictedX, predictedY)
+    // Not enough rotation to have a direction worth testing. This is the common resting case.
+    if (predictedLen < MOTION_MIN_PREDICTED_MRAD) return MotionInversionData.UNJUDGED
+
+    val ux = predictedX / predictedLen
+    val uy = predictedY / predictedLen
+
+    // Blocks must stay inside the frame at every offset, so inset the grid by the full search range.
+    val usableW = w - 2 * MOTION_SEARCH
+    val usableH = h - 2 * MOTION_SEARCH
+    if (usableW < MOTION_BLOCK || usableH < MOTION_BLOCK) return MotionInversionData.UNJUDGED
+    val blocksX = usableW / MOTION_BLOCK
+    val blocksY = usableH / MOTION_BLOCK
+    val totalBlocks = blocksX * blocksY
+    // Centre the grid so the dropped remainder is shared between opposite edges.
+    val originX = MOTION_SEARCH + (usableW - blocksX * MOTION_BLOCK) / 2
+    val originY = MOTION_SEARCH + (usableH - blocksY * MOTION_BLOCK) / 2
+
+    // Step along the axis in whole pixels; the unit vector is scaled per offset and rounded.
+    var voting = 0
+    var agree = 0
+    var oppose = 0
+
+    var by = 0
+    while (by < blocksY) {
+        var bx = 0
+        while (bx < blocksX) {
+            val x0 = originX + bx * MOTION_BLOCK
+            val y0 = originY + by * MOTION_BLOCK
+
+            if (motionDirectionalTexture(current, w, x0, y0, ux, uy) >= MOTION_TEXTURE_FLOOR) {
+                var stationary = -1L
+                var bestPos = Long.MAX_VALUE
+                var bestNeg = Long.MAX_VALUE
+
+                // Only the SIDE of the minimum is kept, never which offset produced it: reading the
+                // magnitude back would re-introduce every scale term this design exists to avoid.
+                var s = -MOTION_SEARCH
+                while (s <= MOTION_SEARCH) {
+                    val dx = (s * ux).roundToInt()
+                    val dy = (s * uy).roundToInt()
+                    val sad = motionBlockSad(previous, current, w, h, x0, y0, dx, dy)
+                    when {
+                        s == 0 -> stationary = sad
+                        // |s| below the stillness floor is neither evidence for nor against.
+                        abs(s) < MOTION_MIN_SHIFT -> Unit
+                        s > 0 -> if (sad < bestPos) bestPos = sad
+                        else -> if (sad < bestNeg) bestNeg = sad
+                    }
+                    s++
+                }
+
+                val decisive = stationary >= 0 &&
+                    motionBlockDecisive(
+                        bestPositive = bestPos.takeIf { it != Long.MAX_VALUE },
+                        bestNegative = bestNeg.takeIf { it != Long.MAX_VALUE },
+                        stationary = stationary,
+                    )
+                if (decisive) {
+                    voting++
+                    if (bestPos <= bestNeg) agree++ else oppose++
+                }
+            }
+            bx++
+        }
+        by++
+    }
+
+    return MotionInversionData(
+        verdict = motionFrameVerdict(voting, agree, oppose),
+        totalBlocks = totalBlocks,
+        votingBlocks = voting,
+        agreeVotes = agree,
+        opposeVotes = oppose,
+        predictedMrad = predictedLen.toFloat(),
+        predictedX = predictedX.toFloat(),
+        predictedY = predictedY.toFloat(),
+    )
+}
+
+/**
+ * Mean absolute first difference along the search axis inside one block of [luma].
+ *
+ * Measured on the CURRENT frame only: it asks whether this block could localise a shift along this
+ * axis at all, which is a property of the content, not of the pair.
+ */
+internal fun motionDirectionalTexture(
+    luma: IntArray,
+    w: Int,
+    x0: Int,
+    y0: Int,
+    ux: Double,
+    uy: Double,
+): Double {
+    // One-pixel step along the axis, rounded away from zero on the dominant component so a
+    // near-axis-aligned direction still produces a real offset rather than (0, 0).
+    val sx = if (abs(ux) >= abs(uy)) (if (ux >= 0) 1 else -1) else (ux.roundToInt())
+    val sy = if (abs(uy) > abs(ux)) (if (uy >= 0) 1 else -1) else (uy.roundToInt())
+    if (sx == 0 && sy == 0) return 0.0
+
+    var total = 0L
+    var n = 0
+    var y = 0
+    while (y < MOTION_BLOCK) {
+        var x = 0
+        while (x < MOTION_BLOCK) {
+            val px = x0 + x
+            val py = y0 + y
+            val a = luma[py * w + px]
+            val b = luma[(py + sy) * w + (px + sx)]
+            total += abs(a - b).toLong()
+            n++
+            x += MOTION_SAMPLE_STEP
+        }
+        y += MOTION_SAMPLE_STEP
+    }
+    return if (n == 0) 0.0 else total.toDouble() / n
+}
+
+/**
+ * Sum of absolute differences between the block in [current] and the same block in [previous]
+ * displaced by ([dx], [dy]). Callers guarantee the displaced read stays in bounds via the
+ * [MOTION_SEARCH] inset.
+ */
+internal fun motionBlockSad(
+    previous: IntArray,
+    current: IntArray,
+    w: Int,
+    h: Int,
+    x0: Int,
+    y0: Int,
+    dx: Int,
+    dy: Int,
+): Long {
+    var total = 0L
+    var y = 0
+    while (y < MOTION_BLOCK) {
+        var x = 0
+        while (x < MOTION_BLOCK) {
+            val px = x0 + x
+            val py = y0 + y
+            val qx = px - dx
+            val qy = py - dy
+            if (qx in 0 until w && qy in 0 until h) {
+                total += abs(current[py * w + px] - previous[qy * w + qx]).toLong()
+            }
+            x += MOTION_SAMPLE_STEP
+        }
+        y += MOTION_SAMPLE_STEP
+    }
+    return total
+}

@@ -1,14 +1,12 @@
-<svg width="160" height="160" viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Find X9 Ultra Tele Camera logo">
-  <rect x="4" y="4" width="152" height="152" rx="34" fill="#0B0B0D" stroke="#1E1E24" stroke-width="2"/>
-  <!-- outer lens ring -->
-  <circle cx="80" cy="70" r="34" fill="none" stroke="#E6E6EA" stroke-width="5"/>
-  <!-- inner aperture -->
-  <circle cx="80" cy="70" r="16" fill="#4C9AFF"/>
-  <circle cx="74" cy="64" r="5" fill="#Bcdcff" opacity="0.85"/>
-  <!-- periscope / tele barrel -->
-  <rect x="72" y="104" width="16" height="22" rx="3" fill="#E6E6EA"/>
-  <rect x="66" y="122" width="28" height="8" rx="4" fill="#4C9AFF"/>
-  <!-- 300mm tick marks -->
-  <rect x="40" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
-  <rect x="110" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
+<svg width="160" height="160" viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TeleCam Pro logo">
+  <rect x="4" y="4" width="152" height="152" rx="34" fill="#101A20" stroke="#1E2A31" stroke-width="2"/>
+  <!-- machined-glass telephoto barrel: the launcher foreground paths, centred and scaled -->
+  <g transform="translate(80,80) scale(2.2) translate(-52.6,-54.2)">
+<defs><linearGradient id="metal" gradientUnits="userSpaceOnUse" x1="35" y1="36" x2="68" y2="76"><stop offset="0" stop-color="#DCE5E6"/><stop offset="0.5" stop-color="#A7BBBF"/><stop offset="1" stop-color="#617980"/></linearGradient><radialGradient id="glass" gradientUnits="userSpaceOnUse" cx="62" cy="42" r="19"><stop offset="0" stop-color="#9CEBDD"/><stop offset="0.55" stop-color="#4BBBAF"/><stop offset="1" stop-color="#277A80"/></radialGradient></defs>
+<path fill="url(#metal)" fill-rule="evenodd" d="M29.6,59.8 L51.2,33.6 C56.06,29.955 64.8354,33.4472 70.8,41.4 C76.7646,49.3528 77.66,58.755 72.8,62.4 L41.6,75.8 C39.8328,77.1254 35.7138,74.6184 32.4,70.2 C29.0862,65.7816 27.8328,61.1254 29.6,59.8 Z M68.48,43.14 C73.318,49.5907 74.3388,56.9959 70.76,59.68 C67.1812,62.3641 60.358,59.3107 55.52,52.86 C50.682,46.4093 49.6612,39.0041 53.24,36.32 C56.8188,33.6359 63.642,36.6893 68.48,43.14 Z M34.12,59.16 L35.26,57.68 L45.22,70.96 L43.48,71.64 Z M38.52,55.86 L39.66,54.38 L49.62,67.66 L47.88,68.34 Z M42.92,52.56 L44.06,51.08 L54.02,64.36 L52.28,65.04 Z"/>
+<path fill="#DCE5E6" fill-rule="evenodd" d="M70.8,41.4 C76.7647,49.3529 77.6601,58.7549 72.8,62.4 C67.9399,66.0451 59.1647,62.5529 53.2,54.6 C47.2353,46.6471 46.3399,37.2451 51.2,33.6 C56.0601,29.9549 64.8353,33.4471 70.8,41.4 Z M68.48,43.14 C73.318,49.5907 74.3388,56.9959 70.76,59.68 C67.1812,62.3641 60.358,59.3107 55.52,52.86 C50.682,46.4093 49.6612,39.0041 53.24,36.32 C56.8188,33.6359 63.642,36.6893 68.48,43.14 Z"/>
+<path fill="url(#glass)" fill-rule="evenodd" d="M66.56,44.58 C70.1388,49.3517 70.9984,54.7512 68.48,56.64 C65.9616,58.5288 61.0188,56.1917 57.44,51.42 C53.8612,46.6483 53.0016,41.2488 55.52,39.36 C58.0384,37.4712 62.9812,39.8083 66.56,44.58 Z"/>
+<path fill="#4BBBAF" fill-rule="evenodd" d="M44.72,44.96 L46.7,42.6 L49.88,46.84 L47.9,49.2 Z"/>
+<path fill="#C7FFF0" fill-rule="evenodd" d="M59.56,44.58 C60.5872,45.9497 60.8827,47.4629 60.22,47.96 C59.5573,48.4571 58.1872,47.7497 57.16,46.38 C56.1328,45.0103 55.8373,43.4971 56.5,43 C57.1627,42.5029 58.5328,43.2103 59.56,44.58 Z"/>
+  </g>
 </svg>

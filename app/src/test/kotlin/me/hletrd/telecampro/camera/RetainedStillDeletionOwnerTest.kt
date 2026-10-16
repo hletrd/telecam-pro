@@ -1,0 +1,534 @@
+package me.hletrd.telecampro.camera
+
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import me.hletrd.telecampro.storage.PendingOutputDiscardResult
+import me.hletrd.telecampro.storage.CaptureFamilyKey
+import me.hletrd.telecampro.storage.CaptureFamilyMedia
+import me.hletrd.telecampro.storage.OrphanDisposition
+import me.hletrd.telecampro.storage.PendingJournalState
+import me.hletrd.telecampro.storage.PendingProbe
+import me.hletrd.telecampro.storage.orphanDisposition
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class RetainedStillDeletionOwnerTest {
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `tombstone capacity must be positive`() {
+        RetainedStillDeletionOwner<String>(maxTombstones = 0, discard = {
+            PendingOutputDiscardResult.DELETED
+        })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `discard retry count must be positive`() {
+        RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxDiscardAttempts = 0,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `unresolved discard capacity must be positive`() {
+        RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxUnresolvedDiscards = 0,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+    }
+
+    @Test
+    fun `deleted capture discards a retained still without a ViewModel continuation`() {
+        val discarded = mutableListOf<String>()
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
+
+        // Models the lifecycle fault: UI deletion publishes ownership, then the UI callback graph is
+        // gone before the already-accepted still tail reports its retained private row.
+        owner.markCaptureDeleted(17)
+        val disposition = owner.handleRetained("content://image/late", captureId = 17)
+
+        assertEquals(RetainedStillDisposition.DISCARD_DELETED_CAPTURE, disposition)
+        assertEquals(listOf("content://image/late"), discarded)
+    }
+
+    @Test
+    fun `live capture remains pending for recovery`() {
+        val discarded = mutableListOf<String>()
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
+
+        assertEquals(
+            RetainedStillDisposition.RETAIN_FOR_RECOVERY,
+            owner.handleRetained("content://image/live", captureId = 9),
+        )
+        assertTrue(discarded.isEmpty())
+        assertFalse(owner.ownRetainedForAsyncDiscard("content://image/live", captureId = 9))
+    }
+
+    @Test
+    fun `live publication success and failure retire their exact owner`() {
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 2, discard = {
+            PendingOutputDiscardResult.DELETED
+        })
+
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLICATION_FAILED,
+            owner.publishIfLive("content://image/fail", captureId = 7) { false },
+        )
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLICATION_FAILED,
+            owner.publishIfLive("content://image/throw", captureId = 7) {
+                throw java.io.IOException("provider offline")
+            },
+        )
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLISHED,
+            owner.publishIfLive("content://image/success", captureId = 8) { true },
+        )
+        owner.finishPublished("content://image/success", captureId = 8)
+        assertTrue(owner.markCaptureDeleted(8).isEmpty())
+    }
+
+    @Test
+    fun `deleted capture tombstones stay bounded and newest remain authoritative`() {
+        val discarded = mutableListOf<Int>()
+        val owner = RetainedStillDeletionOwner<Int>(maxTombstones = 2, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
+        owner.markCaptureDeleted(1)
+        owner.markCaptureDeleted(2)
+        owner.markCaptureDeleted(2) // duplicate refreshes recency without growing the set
+        owner.markCaptureDeleted(3)
+
+        assertEquals(2, owner.tombstoneCount())
+        assertEquals(RetainedStillDisposition.RETAIN_FOR_RECOVERY, owner.handleRetained(1, 1))
+        assertEquals(RetainedStillDisposition.DISCARD_DELETED_CAPTURE, owner.handleRetained(2, 2))
+        assertEquals(RetainedStillDisposition.DISCARD_DELETED_CAPTURE, owner.handleRetained(3, 3))
+        assertEquals(listOf(2, 3), discarded)
+    }
+
+    @Test
+    fun `delete racing publication is rechecked before a saved callback can win`() {
+        val publishEntered = CountDownLatch(1)
+        val releasePublish = CountDownLatch(1)
+        val discarded = mutableListOf<String>()
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
+        val result = AtomicReference<DeletedStillPublication>()
+        val publisher = Thread {
+            result.set(
+                owner.publishIfLive("content://image/dng", captureId = 31) {
+                    publishEntered.countDown()
+                    releasePublish.await()
+                    true
+                },
+            )
+        }
+
+        publisher.start()
+        assertTrue(publishEntered.await(5, TimeUnit.SECONDS))
+        // PUBLISHING rows are owned by the completion recheck, not deleted concurrently underneath
+        // the provider update.
+        assertTrue(owner.markCaptureDeleted(31).isEmpty())
+        releasePublish.countDown()
+        publisher.join(5_000)
+
+        assertFalse(publisher.isAlive)
+        assertEquals(DeletedStillPublication.DISCARD_DELETED_CAPTURE, result.get())
+        assertEquals(listOf("content://image/dng"), discarded)
+    }
+
+    @Test
+    fun `published callback window remains Engine-owned across ViewModel detach`() {
+        val discarded = mutableListOf<String>()
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.RECOVERY_MARKED
+        })
+
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLISHED,
+            owner.publishIfLive("content://image/heif", captureId = 44) { true },
+        )
+        // Models delete + immediate ViewModel callback detachment before emitSaved can run.
+        assertEquals(listOf("content://image/heif"), owner.markCaptureDeleted(44))
+        assertEquals(
+            RetainedStillDisposition.DISCARD_DELETED_CAPTURE,
+            owner.discardDeleted("content://image/heif", 44),
+        )
+        owner.finishPublished("content://image/heif", 44)
+
+        assertEquals(listOf("content://image/heif"), discarded)
+        assertEquals(0, owner.unresolvedDiscardCount())
+    }
+
+    @Test
+    fun `false journal plus delete remains typed and retries boundedly`() {
+        var durable = false
+        var attempts = 0
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            maxDiscardAttempts = 3,
+            discard = {
+                attempts++
+                if (durable) PendingOutputDiscardResult.RECOVERY_MARKED
+                else PendingOutputDiscardResult.UNRESOLVED
+            },
+        )
+        owner.markCaptureDeleted(55)
+
+        assertEquals(
+            RetainedStillDisposition.DISCARD_RETRY_PENDING,
+            owner.handleRetained("content://image/jpeg", 55),
+        )
+        assertEquals(3, attempts)
+        assertEquals(1, owner.unresolvedDiscardCount())
+
+        durable = true
+        assertEquals(0, owner.retryUnresolvedDiscards())
+        assertEquals(4, attempts)
+        assertEquals(0, owner.unresolvedDiscardCount())
+    }
+
+    @Test
+    fun `tombstoned publication with unresolved discard stays retry pending`() {
+        var publishCalled = false
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 2,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+        )
+        owner.markCaptureDeleted(56)
+
+        assertEquals(
+            DeletedStillPublication.DISCARD_RETRY_PENDING,
+            owner.publishIfLive("content://image/unresolved", captureId = 56) {
+                publishCalled = true
+                true
+            },
+        )
+        assertFalse(publishCalled)
+        assertEquals(1, owner.unresolvedDiscardCount())
+    }
+
+    @Test
+    fun `discard exceptions stay unresolved while active publication and tombstone stay owned`() {
+        var throws = true
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxDiscardAttempts = 1,
+            discard = {
+                if (throws) throw java.io.IOException("storage offline")
+                PendingOutputDiscardResult.DELETED
+            },
+        )
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLISHED,
+            owner.publishIfLive("content://image/active", captureId = 70) { true },
+        )
+        assertEquals(listOf("content://image/active"), owner.markCaptureDeleted(70))
+        assertEquals(
+            RetainedStillDisposition.DISCARD_RETRY_PENDING,
+            owner.discardDeleted("content://image/active", 70),
+        )
+        // An active/unresolved capture retains its tombstone even when nominal capacity is full.
+        owner.markCaptureDeleted(71)
+        assertEquals(2, owner.tombstoneCount())
+
+        throws = false
+        assertEquals(0, owner.retryUnresolvedDiscards())
+        owner.finishPublished("content://image/active", 70)
+        owner.markCaptureDeleted(72)
+        assertEquals(1, owner.tombstoneCount())
+    }
+
+    @Test
+    fun `rejected DNG dispatch transfers ownership without provider IO on caller`() {
+        var discardCalls = 0
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discardCalls++
+            PendingOutputDiscardResult.DELETED
+        })
+        owner.markCaptureDeleted(66)
+
+        assertTrue(owner.ownRetainedForAsyncDiscard("content://image/dng", 66))
+        assertEquals(0, discardCalls)
+        assertEquals(1, owner.unresolvedDiscardCount())
+        assertEquals(0, owner.retryUnresolvedDiscards())
+        assertEquals(1, discardCalls)
+    }
+
+    @Test
+    fun `more than 32 persistent failures stay bounded and close capture admission`() {
+        val durableFamilies = linkedSetOf<CaptureFamilyKey>()
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 32,
+            maxUnresolvedDiscards = 32,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+            persistDeletionIntent = { durableFamilies.add(it) },
+        )
+
+        repeat(40) { index ->
+            val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_000L + index, index.toLong())
+            owner.registerCaptureFamily(index, family)
+            owner.markCaptureDeleted(index)
+            assertEquals(
+                RetainedStillDisposition.DISCARD_RETRY_PENDING,
+                owner.discardDeleted("content://image/$index", index),
+            )
+        }
+
+        assertEquals(40, durableFamilies.size)
+        assertEquals(32, owner.unresolvedDiscardCount())
+        assertEquals(32, owner.tombstoneCount())
+        assertFalse(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `unowned registered families evict oldest entry at the configured bound`() {
+        val persisted = mutableListOf<CaptureFamilyKey>()
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 2,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { family -> persisted += family; true },
+        )
+        val first = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_001L, 1L)
+        val second = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_002L, 2L)
+        val third = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_003L, 3L)
+
+        owner.registerCaptureFamily(1, first)
+        owner.registerCaptureFamily(2, second)
+        owner.registerCaptureFamily(3, third)
+        owner.markCaptureDeleted(1)
+
+        assertTrue(persisted.isEmpty())
+        assertFalse(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `release retry then late failure remains deleted for replacement recovery`() {
+        val durableFamilies = linkedSetOf<CaptureFamilyKey>()
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_123L, 91L)
+        val oldEngineOwner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            maxDiscardAttempts = 1,
+            discard = { PendingOutputDiscardResult.UNRESOLVED },
+            persistDeletionIntent = { durableFamilies.add(it) },
+        )
+        oldEngineOwner.registerCaptureFamily(91, family)
+        oldEngineOwner.markCaptureDeleted(91)
+
+        // Engine release performs its final retry before the accepted save tail arrives.
+        assertEquals(0, oldEngineOwner.retryUnresolvedDiscards())
+        assertEquals(
+            RetainedStillDisposition.DISCARD_RETRY_PENDING,
+            oldEngineOwner.discardDeleted("content://image/late-after-release", 91),
+        )
+
+        // A replacement Engine/launch sees the family journal, so even COMPLETE valid bytes are
+        // deleted rather than adopted when the URI-level DISCARD and provider delete both failed.
+        assertTrue(family in durableFamilies)
+        assertEquals(
+            OrphanDisposition.DELETE,
+            orphanDisposition(
+                PendingJournalState.COMPLETE,
+                PendingProbe.VALID,
+                familyDeleted = family in durableFamilies,
+            ),
+        )
+    }
+
+    @Test
+    fun `deleted family becomes retirement eligible only after every producer is terminal`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_777L, 777L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { true },
+        )
+        owner.registerCaptureFamily(777, family)
+        owner.markCaptureDeleted(777)
+
+        assertEquals(null, owner.deletedFamilyIfProducersTerminal(777))
+        assertEquals(family, owner.markCaptureProducersTerminal(777))
+        assertEquals(family, owner.deletedFamilyIfProducersTerminal(777))
+        assertTrue(owner.retireDeletedCapture(777, family))
+        assertEquals(null, owner.deletedFamilyIfProducersTerminal(777))
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `process rescan retires every matching terminal local family`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_778L, 778L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { true },
+        )
+        owner.registerCaptureFamily(778, family)
+        owner.markCaptureDeleted(778)
+
+        assertEquals(0, owner.retireDeletedFamily(family))
+        assertEquals(family, owner.markCaptureProducersTerminal(778))
+        assertEquals(1, owner.retireDeletedFamily(family))
+        assertEquals(null, owner.deletedFamilyIfProducersTerminal(778))
+        assertEquals(0, owner.retireDeletedFamily(family))
+    }
+
+    @Test
+    fun `in-memory tombstone performs no persistence until ordered completion`() {
+        var persistenceCalls = 0
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_777L, 77L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { persistenceCalls++; true },
+        )
+        owner.registerCaptureFamily(77, family)
+
+        owner.markCaptureDeletedInMemory(77)
+
+        assertEquals(0, persistenceCalls)
+        assertFalse(owner.handleRetained("late.heic", 77) == RetainedStillDisposition.RETAIN_FOR_RECOVERY)
+        owner.completeDeletionDurability(77, durable = true)
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    /** AGG5-2: a failed marker closes admission only while that capture can still produce. */
+    @Test
+    fun `failed durability before producers are terminal closes admission until that edge`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_501L, 501L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        owner.registerCaptureFamily(501, family)
+
+        owner.markCaptureDeleted(501)
+        assertFalse("a live producer could still emit an unowned sibling", owner.canAdmitCapture())
+
+        owner.markCaptureProducersTerminal(501)
+        assertTrue("no tail can arrive any more: the shutter reopens", owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `failed durability after producers are terminal leaves admission open`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_502L, 502L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        owner.registerCaptureFamily(502, family)
+        owner.markCaptureProducersTerminal(502)
+
+        owner.markCaptureDeleted(502)
+
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    // MRG5-5: the third order. A tombstoned id whose family was evicted gets its terminal edge FIRST
+    // and the failed marker after; no later edge will come, so the marker must not close admission.
+    @Test
+    fun `terminal edge first then a failed marker leaves admission open without a family`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+        owner.markCaptureDeletedInMemory(601)
+
+        assertNull(owner.markCaptureProducersTerminal(601))
+        owner.completeDeletionDurability(601, durable = false)
+
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `a later durable marker reopens admission a failed one closed`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_503L, 503L)
+        val other = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_504L, 504L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
+        owner.registerCaptureFamily(503, family)
+        owner.registerCaptureFamily(504, other)
+        owner.markCaptureDeletedInMemory(503)
+        owner.markCaptureDeletedInMemory(504)
+        owner.completeDeletionDurability(503, durable = false)
+        owner.completeDeletionDurability(504, durable = false)
+        assertFalse(owner.canAdmitCapture())
+
+        owner.completeDeletionDurability(503, durable = true)
+        assertFalse("504 still guards a live producer", owner.canAdmitCapture())
+        owner.markCaptureProducersTerminal(504)
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    // AGG6-3: terminality is answered by a positive live set, so an old terminal edge is never
+    // forgotten. Under the former 32-entry terminal ring, 40 later terminal captures evicted id 0 and
+    // its failed marker closed admission for the Engine's life.
+    @Test
+    fun `a failed marker for a capture outlived by 40 terminal captures leaves admission open`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 32,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        repeat(41) { id ->
+            owner.registerCaptureFamily(id, CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_100_000L + id, id.toLong()))
+            owner.markCaptureProducersTerminal(id)
+        }
+
+        owner.markCaptureDeletedInMemory(0)
+        owner.completeDeletionDurability(0, durable = false)
+
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `a failed marker for an id this owner never registered leaves admission open`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+
+        owner.markCaptureDeleted(9_001)
+
+        assertTrue("no producer here can emit an unowned tail", owner.canAdmitCapture())
+    }
+
+    @Test
+    fun `a live producer outlives family eviction and keeps a failed marker fail-closed`() {
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 2,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { false },
+        )
+        repeat(40) { id ->
+            owner.registerCaptureFamily(id, CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_200_000L + id, id.toLong()))
+        }
+
+        owner.markCaptureDeleted(0)
+        assertFalse("capture 0 can still produce though its family was trimmed", owner.canAdmitCapture())
+        owner.markCaptureProducersTerminal(0)
+        assertTrue(owner.canAdmitCapture())
+    }
+}

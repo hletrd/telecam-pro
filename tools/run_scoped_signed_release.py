@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Run one immutable release build with upload-key secrets scoped to the child processes."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pathlib
+import subprocess
+import sys
+from collections.abc import Callable, Mapping, Sequence
+
+_TOOLS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+# Store-file/alias resolution is SHARED with build_immutable_release.py, so this helper and the
+# wrapper it runs resolve the same configured keystore. Owner decision 2026-10-13: there is no
+# approval flag, deny-list, or password floor here — the configured upload key is used as-is.
+from build_immutable_release import (
+    KEY_ALIAS_ENV,
+    KEY_PASSWORD_ENV,
+    STORE_PASSWORD_ENV,
+    UploadKeyGateError,
+    keytool_environment,
+    load_upload_key_prerequisite,
+)
+
+
+STORE_FILE_ENV = "TELECAMPRO_STORE_FILE"
+SECRET_FIELDS = {"storePassword": STORE_PASSWORD_ENV, "keyPassword": KEY_PASSWORD_ENV}
+MAX_CREDENTIAL_BYTES = 64 * 1024
+
+Run = Callable[..., subprocess.CompletedProcess[bytes]]
+
+
+# One refusal type for both wrappers; its message never includes a credential value.
+ScopedReleaseError = UploadKeyGateError
+
+
+def parse_scoped_credentials(payload: bytes) -> dict[str, str]:
+    if not payload or len(payload) > MAX_CREDENTIAL_BYTES:
+        raise ScopedReleaseError("scoped signing credentials are missing or oversized")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ScopedReleaseError("scoped signing credentials are not valid UTF-8") from error
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = raw_line.partition("=")
+        if not separator or key not in SECRET_FIELDS or key in values:
+            raise ScopedReleaseError("scoped signing credentials have an invalid field set")
+        if not value or any(ord(character) < 0x20 for character in value):
+            raise ScopedReleaseError("scoped signing credentials contain an invalid value")
+        values[key] = value
+    if values.keys() != SECRET_FIELDS.keys():
+        values.clear()
+        raise ScopedReleaseError("scoped signing credentials are incomplete")
+    return values
+
+
+def run_scoped_signed_release(
+    root: pathlib.Path,
+    tasks: Sequence[str],
+    output: pathlib.Path | None,
+    credentials: dict[str, str],
+    base_environment: Mapping[str, str] = os.environ,
+    run: Run = subprocess.run,
+) -> None:
+    child_environment: dict[str, str] | None = None
+    try:
+        prerequisite = load_upload_key_prerequisite(root, base_environment)
+        # SR5-3 (AGG5-17): the secrets share this environment with the inner wrapper (the evidence
+        # boundary) and its Gradle JVM, so it is the sealed allowlist, never the caller's whole
+        # shell: an ambient JAVA_TOOL_OPTIONS agent would read the password inside the JVM, and a
+        # PYTHONPATH sitecustomize could patch the wrapper's seal before it runs. The allowlist
+        # already omits TELECAMPRO_STORE_FILE.
+        child_environment = keytool_environment(base_environment)
+        child_environment[STORE_PASSWORD_ENV] = credentials["storePassword"]
+        child_environment[KEY_PASSWORD_ENV] = credentials["keyPassword"]
+        child_environment[KEY_ALIAS_ENV] = prerequisite.alias
+
+        # `-I -S`: isolated mode ignores every PYTHON* variable, the user site and the script
+        # directory on sys.path; `-S` also skips site-packages' sitecustomize. The wrapper imports
+        # only the standard library and its own tools directory, which it inserts itself.
+        command = [
+            sys.executable,
+            "-I",
+            "-S",
+            str(root.resolve() / "tools" / "build_immutable_release.py"),
+            "--root",
+            str(root.resolve()),
+        ]
+        if output is not None:
+            command.extend(("--output", str(output)))
+        command.extend(tasks)
+        built = run(command, cwd=root, env=child_environment, check=False)
+        if built.returncode != 0:
+            raise ScopedReleaseError("immutable signed release build failed")
+    finally:
+        # The helper is deliberately short-lived, but erase its mutable copies too. No secret is
+        # written to a file, placed in argv, returned, or exported into the caller's shell.
+        credentials.clear()
+        if child_environment is not None:
+            for name in (STORE_PASSWORD_ENV, KEY_PASSWORD_ENV):
+                if name in child_environment:
+                    child_environment[name] = ""
+                    child_environment.pop(name, None)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--root",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parent.parent,
+    )
+    parser.add_argument("--output", type=pathlib.Path)
+    parser.add_argument("--check-prerequisites", action="store_true")
+    parser.add_argument(
+        "tasks",
+        nargs="*",
+        default=[":app:lintRelease", ":app:assembleRelease", ":app:bundleRelease"],
+    )
+    args = parser.parse_args()
+    try:
+        load_upload_key_prerequisite(args.root, os.environ)
+        if args.check_prerequisites:
+            print("upload-key prerequisite satisfied (keystore.properties store file and alias resolve)")
+            return 0
+        credentials = parse_scoped_credentials(sys.stdin.buffer.read(MAX_CREDENTIAL_BYTES + 1))
+        run_scoped_signed_release(
+            root=args.root,
+            tasks=args.tasks,
+            output=args.output,
+            credentials=credentials,
+        )
+        return 0
+    except ScopedReleaseError as error:
+        print(f"scoped signed release refused: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

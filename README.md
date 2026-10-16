@@ -1,66 +1,231 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" width="112" alt="Find X9 Ultra Tele Camera logo" />
+<img src="docs/assets/logo.svg" width="112" alt="TeleCam Pro logo" />
 
-<h1>Find X9 Ultra Tele Camera</h1>
+<h1>TeleCam Pro</h1>
 
-<p><b>Professional camera app for OPPO Find X9 Ultra</b><br/>
-3x periscope telephoto + afocal teleconverter (300mm) · full manual control · afocal 180° flip · gyro EIS</p>
+<p><b>Manual camera for periscope telephoto phones and clip-on afocal teleconverters</b></p>
 
 <p>
-<img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
-<img src="https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
-<img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
+<a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro"><img src="https://img.shields.io/badge/Google%20Play-Download-414141?logo=googleplay&logoColor=white" alt="Get TeleCam Pro on Google Play" /></a>
+<img src="https://img.shields.io/badge/Android-13%2B%20(API%2033)-3DDC84?logo=android&logoColor=white" alt="Android 13 and newer" />
+<img src="https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
+<img src="https://img.shields.io/badge/Jetpack%20Compose-2026.09-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
-<img src="https://img.shields.io/badge/Gradle-9.6.1-02303A?logo=gradle&logoColor=white" alt="Gradle" />
-<img src="https://img.shields.io/badge/Device-Find%20X9%20Ultra%20(PMA110)-000000" alt="Find X9 Ultra" />
+<img src="https://img.shields.io/badge/License-Apache%202.0-000000" alt="Apache License 2.0" />
 </p>
+
+<p><a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro"><b>Get it on Google Play</b></a></p>
 
 </div>
 
+A clip-on afocal teleconverter turns a phone's periscope lens into a long telephoto — and breaks two
+assumptions every stock camera app makes. The image arrives **upside down**, because an afocal
+telescope has no erecting prism. And the light leaves it **collimated**, so the phone focuses near
+infinity and autofocus has almost nothing to work with.
+
+TeleCam Pro is built around those two facts, then filled out with the manual controls that kind of
+shooting needs.
+
 ## Features
 
-- **Single-device exclusive**: Android 16 (API 36), latest toolchain only (no backward compatibility).
-- **Afocal 180° flip**: The teleconverter is afocal, so images are flipped 180° on input → preview/photos/videos all corrected.
-- **Full manual control**: Focus (fine-tuning near infinity), ISO, shutter, WB, EV. Stop-snapping dials with haptic detents for exposure controls.
-- **Tap-to-focus**: Region-based autofocus that locks on the tapped point until focus mode changes.
-- **Device-orientation-aware capture**: Stills save upright in any phone hold (portrait/landscape/tilted), thanks to gyro-derived gravity orientation.
-- **Photos**: HEIF + JPEG + RAW (DNG) formats selectable. HEIF/JPEG with 180° pixel rotation; DNG with EXIF orientation tag.
-- **Video**: 10-bit HEVC (Main10, Rec.2020, HLG / Log); 8-bit AVC (H.264, SDR); AV1 software-only. Resolutions up to 8K; frame rates include 24/25/30/60 fps, drop-frame (23.976/29.97/59.94), and 120 fps high-speed. Exact bitrate displayed in Mbps. Open-Gate (full 4:3 sensor) recording. Audio AAC, ~128 kbps.
-- **Aspect ratios**: 4:3 (full sensor, no crop) and 16:9 (center crop).
-- **Settings persistence**: Pro controls and manual settings saved across app launches (toggle: "Remember Settings", default ON).
-- **Capture aids**: Focus peaking, zebra, grid, spirit level, punch-in zoom, histogram, waveform monitor.
+**Teleconverter**
+- Afocal 180° flip corrected in the main viewfinder, stills, and video. The optional Loupe Overview
+  currently reuses the same converter-fed stream and deliberately shows its raw delivered
+  orientation; an upright genuinely wide overview requires the planned second camera stream.
+- Tell the app which converter you mounted: pick your phone, then the optics that clamp onto it.
+  Presets cover the Hasselblad 300 mm and 230 mm, ZEISS 200 mm and 400 mm, generic 1.5/2/3× clip-ons,
+  and a custom magnification. Passive glass cannot identify itself, so this is a declaration — only
+  the *phone* is detected.
+- Each preset's magnification is derived from the tele lens it was designed for, so a converter used
+  on a different body reports its true focal length instead of the number printed on the barrel.
+- With TELE engaged the focal rail becomes a digital-zoom picker whose marks come from the lens's
+  advertised range × your converter. Marks the optics cannot reach are absent, not clamped.
 
-## Toolchain
+**Manual control**
+- PASM-style exposure, plus manual focus on a nonlinear slider that spends most of its travel near
+  infinity — where a collimated converter actually focuses.
+- ISO, shutter (speed or cine angle), WB presets + Kelvin/tint, EV, metering, and drive modes
+  (single / burst / AEB / timelapse), with stop-snapping haptic detents.
+- Every control is normalized to what the selected camera actually advertises; a value the hardware
+  cannot apply is not offered.
 
-See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setup.
+**Capture**
+- HEIF, JPEG and RAW (DNG), selectable separately or together. On the Find X9 Ultra, wanting RAW
+  moves photo onto a standalone camera (that HAL cannot carry RAW on its logical camera), so DNG is
+  offered on any rear lens that advertises it — not TELE only. Elsewhere DNG stays on the seamless
+  camera when that camera advertises RAW.
+- Video: HEVC/AVC up to 4K UHD, 24/25/30/60 fps plus NTSC drop-frame, bitrate presets to ~99 Mbps at 4K30,
+  Open Gate 4:3, AAC 48 kHz stereo.
+- Colour profiles for HLG, S-Log3, S-Log3.Cine and LogC3 on every device, plus the phone maker's own
+  log on that maker's phones (OPPO O-Log2 on the Find X9 Ultra; OPPO O-Log on the Find X8 Ultra,
+  Find X9, Find X9 Pro and OnePlus 15; Xiaomi Mi-Log on the Xiaomi 15 Ultra and 17 Ultra) — see the
+  honesty note below.
+- Video stabilization uses the device's own OIS + EIS path. At 300 mm, OIS is what cuts per-frame
+  motion blur; frame-warping EIS cannot.
 
-| Component | Version |
-|---|---|
-| AGP | 9.2.0 (Kotlin 2.3.10 built-in) |
-| Gradle | 9.6.1 |
-| Compose BOM | 2026.06.00 |
-| compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
-| JDK | 21 (aarch64) |
+**Viewfinder**
+- Sony-style: Fn, My Menu, MR banks, compact OSD. No tutorial banners or coach marks over the image.
+- Focus peaking, zebra, false colour, grid, spirit level, histogram, waveform.
+- A movable punch-in loupe, with an optional corner overview that marks the magnified field.
+- Pinch-to-zoom review of the last shot, in app.
 
-> compileSdk 37 satisfies the latest AndroidX (lifecycle 2.11.0); targetSdk/minSdk 36 target Android 16. AGP 9 has Kotlin built-in; the `kotlin.android` plugin is not applied.
+**Reliability**
+- Settings persist across launches, with separate toggles for keeping your lens and TELE choice.
+- A capture killed in the measured roughly 2–3 second post-admission harness window still finalizes.
+  The recovery design also retains a finished file whose MediaStore publish fails and adopts it at
+  the next launch rather than discarding it; sub-second kill timing is not claimed by that device
+  evidence.
+- A microphone failure mid-recording degrades the clip to video-only instead of losing the take.
+
+## What this app does not claim
+
+The input is always the ISP's **display-referred, already tone-mapped** rendition. Photo and SDR
+video use the standard 8-bit Camera2 session. Non-SDR video requests an HLG10 Camera2 session with
+the still readers removed, because this HAL crashes when HLG10 and the full-resolution still streams
+are combined.
+
+That has a consequence worth stating plainly: **the log and HLG profiles are mappings of that
+tone-mapped rendition, not scene-referred camera log.** GL decodes the accepted source transfer,
+matrices to the target gamut, and applies the S-Log3 / LogC3 / maker-log / HLG transfer function. The release GL
+render target remains 8-bit; HEVC then writes Main for SDR or Main10 for non-SDR output. Main10 is a
+real encoded-output fact, but it does **not** recover highlights the ISP has already removed, extend
+dynamic range, or make the pipeline end-to-end 10-bit.
+
+A genuinely scene-referred stream would need the vendor's authenticated camera SDK. The device's
+native log key is accepted by the HAL but changes nothing a third-party app can see — tested on
+device with both preview and record templates.
+
+> S-Log is a trademark of Sony Group Corporation; LogC is a trademark of ARRI. The profiles are this
+> app's own implementations of the published curve specifications, named to describe grading-workflow
+> compatibility. O-Log2 and O-Log are OPPO's names for its log formats and Mi-Log is Xiaomi's; each
+> is offered only on that maker's phones and follows the curve in the maker's published white paper
+> (O-Log2 with the paper's printed segment threshold 0.006 corrected to 0.01, the only value at which
+> its two segments meet), so the maker's own LUTs apply. None is supplied or endorsed by OPPO or
+> Xiaomi.
+
+## Device support
+
+Requires **Android 13 (API 33)** or newer. Hardware is resolved by enumerating Camera2 capabilities rather
+than by model name, so the app adapts to whatever lenses and controls a phone advertises. Two uses of
+the model name are deliberate. HAL workarounds measured on the Find X9 Ultra are keyed to its model in
+a single place (`camera/DeviceProfile.kt`), and every other device takes the capability-driven path.
+Separately, the model only preselects the Lens tab's phone dropdown (a declaration you can change);
+it never selects a camera route or a capability.
+
+Development and device verification happen on the **OPPO Find X9 Ultra**, which is also where the
+HAL workarounds in [`CLAUDE.md`](CLAUDE.md) were measured. Other devices are supported on a
+best-effort basis.
 
 ## Build
 
+### Android SDK setup
+
+Repository CLI entry points resolve one Android SDK authority in this order: an ignored
+`local.properties` `sdk.dir`, agreeing `ANDROID_HOME` / `ANDROID_SDK_ROOT` values, then the
+conventional macOS (`$HOME/Library/Android/sdk`) or Linux (`$HOME/Android/Sdk`) path. The selected
+SDK must contain Platform 37, Build Tools 36.0.0, and the latest stable Android Emulator package.
+The host test suite uses the Emulator package's `glslangValidator` to compile and link the exact
+shipping GLES shader strings. Install/update the stable-channel packages with the current
+`sdkmanager` syntax (`--channel=0` is the stable channel):
+
 ```bash
-./gradlew assembleDebug        # debug APK
-./gradlew installDebug          # install to device
+sdkmanager --channel=0 "platforms;android-37" "build-tools;36.0.0" "emulator"
 ```
 
-Requires JDK 21 + Android SDK (API 36, build-tools 36.0.0). Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
+For a non-conventional installation, configure it before any build:
 
-## Implementation Status
+```bash
+export ANDROID_HOME="/absolute/path/to/Android/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+```
 
-Complete scaffold + core implementation (Camera2 tele selection & manual control, GL 180° flip preview/encoder, HEIF+DNG+JPEG photos, device-orientation-aware capture, HEVC/AVC/AV1 video with runtime codec detection, settings persistence, Compose pro UI with stop-snapping exposure dials and tap-to-focus).
+Alternatively, put `sdk.dir=/absolute/path/to/Android/sdk` in the gitignored `local.properties`.
+`tools/verify_host.py` and both immutable build wrappers run the same pre-Gradle check and report the
+missing authority or component directly; no local SDK path belongs in Git.
 
-- ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
-- ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest pass.
-- ✅ **Verified on the Find X9 Ultra**: camera opens (standalone tele, no HAL crash), preview renders upright, auto-exposure + continuous-AF defaults, tap-to-focus locks on the tapped region, stop-snapping exposure dials. Output files pulled + inspected: HEIF (HEVC 4096×3072 4:3), DNG (valid 16-bit RAW), and video (HEVC 4K ~29.97 fps drop-frame, ~172 Mbps, AAC audio, playable).
-- ⏳ **On-device verification pending**: capture upright-ness in a deliberately-held portrait/landscape pose; the 8K / 4K120 / AV1 / Open-Gate video variants; 300 mm EIS stabilization; teleconverter OIS/EIS focal switching.
-- ⏳ **Tuning**: EIS gain scaling / gyro axis calibration, LOG curve tonality, and (optional) Dolby Vision.
-- 🚧 **Not started**: lens switcher (UW/main/3×/10×/front), some settings-UX polish, Play-release engineering (signing, R8, store assets). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
+For local development only (these mutable Gradle outputs are not device-evidence artifacts):
+
+```bash
+./gradlew assembleDebug        # debug APK
+./gradlew installDebug         # install to a connected device
+```
+
+Requires JDK 21, Android SDK Platform 37, Build Tools 36.0.0, and the stable Emulator package.
+Platform 37 is a compile-time
+requirement only; the runtime target stays API 36 and the install floor is API 33. AGP 9 bundles Kotlin, so the
+`kotlin.android` plugin is not applied.
+
+| Component | Version |
+|---|---|
+| AGP | 9.4.1 |
+| Gradle | 9.8.0 |
+| Kotlin / Compose compiler | 2.4.20 |
+| Compose BOM | 2026.09.00 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / 33 |
+| JDK | 21 |
+
+The Gradle wrapper is pinned to its published SHA-256, and resolved plugins and dependencies are
+checked against `gradle/verification-metadata.xml` in strict mode.
+
+### Release builds
+
+`python3 tools/build_immutable_release.py :app:bundleRelease` produces the Play App Bundle from a
+private export of the clean committed source. Direct Gradle release entry points are developer-only:
+their mutable `app/build/outputs` files and embedded clean-source identity are not immutable
+evidence. Legacy caller-supplied `immutableRelease*` properties are rejected, not authenticated;
+an unsigned same-user record cannot prove which process launched Gradle. The outer wrapper is the
+boundary: it seals the exported checkout and copied signing files, rechecks their identity after the
+build, freezes the complete allowlisted output set, and only then atomically publishes a unique
+`app/build/immutable-release/<commit>-<nonce>` root. That root includes
+`release-evidence.json` with the verified commit, tree, and output hashes; bundle, APK, and lint
+outputs live under its `bundle/release/`, `apk/release/`, and `logs/` directories. Unsigned binary inspection likewise
+uses `python3 tools/build_immutable_release.py :app:packageRelease` and the printed root's
+`apk/release/*-unsigned.apk`.
+Signing is driven by a gitignored `keystore.properties`. Its required `storeFile` is one normalized,
+repository-relative regular file that the immutable wrapper copies and seals; an ambient
+`TELECAMPRO_STORE_FILE` cannot override it. Secret values may come from
+`TELECAMPRO_KEY_ALIAS`, `TELECAMPRO_STORE_PASSWORD`, and `TELECAMPRO_KEY_PASSWORD` — no keys live in
+git, and release bundling fails fast rather than emitting an unsigned artifact. Release builds are
+R8-minified.
+
+The export runs git with no `GIT_*` variable, no system or global config or attributes, no hooks and
+no clone template, then proves every checked-out file against the commit's own blob ids, so an ambient
+filter or hook cannot change what is built. Gradle runs with the Kotlin compiler in-process, so a
+resident compile daemon from an earlier unsealed build is never reused. A user `gradle.properties`
+may set `org.gradle.logging.level` only to `quiet`, `warn` or `lifecycle`. The run refuses to start
+while `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS` is set — including the common
+`-Dfile.encoding=UTF-8` — so unset them for the release command (`env -u JAVA_TOOL_OPTIONS …`). The
+unpacked Gradle distribution's `lib/` jars are not re-verified after download; the evidence records
+that as an unverified input.
+
+This boundary detects mutation during the wrapper invocation and prevents accidental reuse of a
+mutable Gradle path. It is not process authentication against a malicious process already running as
+the same OS user: that process can rewrite user-owned files after publication. Preserve the unique
+output root, compare its receipt hashes before promotion, and rely on the signed AAB plus the release
+attestation for durable artifact identity.
+
+## Licence and trademarks
+
+Licensed under the [Apache License 2.0](LICENSE) — © 2026 Jiyong Youn.
+
+No ads, analytics, in-app purchases, accounts, or cloud sync. Published on
+[Google Play](https://play.google.com/store/apps/details?id=me.hletrd.telecampro); source at
+[`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro). The Play build is the same
+source, R8-minified and signed — the store listing adds no code and no tracking.
+
+Hardware and format names appear here and in the app only to say what the software works with.
+Apache-2.0 grants no trademark rights (§6), and the owners are listed in [`NOTICE`](NOTICE) —
+Hasselblad is a trademark of Victor Hasselblad AB, OPPO of Guangdong OPPO Mobile Telecommunications
+Corp., Ltd., ZEISS of Carl Zeiss AG, vivo of vivo Mobile Communication Co., Ltd., S-Log of Sony
+Group Corporation, and LogC of Arnold & Richter Cine Technik GmbH & Co. Betriebs KG. This project is
+independent of all of them. The bundled Inter typeface is © The Inter Project Authors under the SIL
+Open Font License 1.1 ([`docs/licenses/inter-OFL.txt`](docs/licenses/inter-OFL.txt)).
+
+## Documentation
+
+Hard-won device and HAL facts, and the conventions that follow from them, live in
+[`CLAUDE.md`](CLAUDE.md). The privacy policy lives in
+[`privacy-policy/`](privacy-policy/index.html); Play store assets in
+[`docs/assets/play/`](docs/assets/play/). The published app is on
+[Google Play](https://play.google.com/store/apps/details?id=me.hletrd.telecampro).

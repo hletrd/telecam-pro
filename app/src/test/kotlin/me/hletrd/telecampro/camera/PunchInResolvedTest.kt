@@ -1,0 +1,246 @@
+package me.hletrd.telecampro.camera
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The loupe magnifies to check critical focus at long focal lengths. On a ~21 mm selfie lens that
+ * crop buys nothing and makes the finder disagree with the saved file — preview narrow, picture
+ * full-frame — which is precisely how it was reported, twice.
+ */
+class PunchInResolvedTest {
+
+    @Test
+    fun theRearRouteAppliesTheOperatorsToggle() {
+        assertTrue(punchInResolved(enabled = true, frontFacing = false))
+        assertFalse(punchInResolved(enabled = false, frontFacing = false))
+    }
+
+    @Test
+    fun theFrontRouteNeverApplensTheLoupe() {
+        assertFalse(punchInResolved(enabled = true, frontFacing = true))
+        assertFalse(punchInResolved(enabled = false, frontFacing = true))
+    }
+
+    /**
+     * Suppressed, not cleared: the front route must not consume the toggle, or returning to the
+     * rear would silently drop an aid the operator had switched on.
+     */
+    @Test
+    fun theToggleSurvivesAFrontTrip() {
+        val intent = true
+        assertFalse("suppressed while front", punchInResolved(intent, frontFacing = true))
+        assertTrue("restored on return", punchInResolved(intent, frontFacing = false))
+    }
+}
+
+/**
+ * Leaving FRONT must restore the framing the operator had, not the lens preset. Once TELE has been
+ * used the preset is 3x for the rest of the session, so the preset fallback silently zoomed them in
+ * on every flip back (user-reported 2026-07-28).
+ */
+class RearReturnZoomTest {
+    private val pma110Optical = LensChoice.entries.toSet()
+
+    @Test
+    fun logicalPhotoRestoresTheUnifiedFramingHeldBeforeTheFrontTrip() {
+        // Standing at 1x with the lens choice pinned to the 3x by earlier TELE use.
+        assertEquals(1f, rearReturnZoom(false, 1f, 3f, pma110Optical), 0f)
+        assertEquals(5.5f, rearReturnZoom(false, 5.5f, 3f, pma110Optical), 0f)
+    }
+
+    @Test
+    fun videoAndPhotoDngConvertCanonicalFramingToTheSameStandaloneWireRatio() {
+        val videoStandalone = standaloneRouteWanted(true, false, true)
+        val photoDngStandalone = standaloneRouteWanted(false, true, true)
+        val fromVideo = unifiedZoomOf(LensChoice.TELE3X, 2f, videoStandalone, pma110Optical)
+        val fromPhotoDng = unifiedZoomOf(LensChoice.TELE3X, 2f, photoDngStandalone, pma110Optical)
+
+        // Video -> FRONT -> Photo+DNG: both endpoints are standalone, and unified 6x returns local 2x.
+        assertEquals(6f, fromVideo, 0f)
+        assertEquals(2f, rearReturnZoom(photoDngStandalone, fromVideo, 3f, pma110Optical), 1e-4f)
+        // Photo+DNG -> FRONT -> Video is the reverse transition and owns the same framing.
+        assertEquals(6f, fromPhotoDng, 0f)
+        assertEquals(2f, rearReturnZoom(videoStandalone, fromPhotoDng, 3f, pma110Optical), 1e-4f)
+    }
+
+    @Test
+    fun logicalReturnReBandsTheLensWhileAStandaloneReturnKeepsIt() {
+        // AGG4-23: unified 1.8 on the logical route is the MAIN band, whatever the stale lens was.
+        assertEquals(LensChoice.MAIN, rearReturnLens(false, 1.8f, LensChoice.ULTRAWIDE))
+        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(false, 0.6f, LensChoice.TELE3X))
+        // A standalone route reopens the lens itself; its zoom is lens-local and says nothing.
+        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(true, 3f, LensChoice.ULTRAWIDE))
+    }
+
+    @Test
+    fun fallbackPresetIsConvertedForTheTargetRoute() {
+        // A recall or settings restore exits front atomically, without going through the flip.
+        assertEquals(3f, rearReturnZoom(false, Float.NaN, 3f, pma110Optical), 0f)
+        assertEquals(1f, rearReturnZoom(true, Float.NaN, 3f, pma110Optical), 0f)
+    }
+
+    /**
+     * AGG3-1: the return divides by the RETAINED LENS's optical base — the exact inverse of the
+     * lens-based entry snapshot — and equals the value a save/MR substitution persists. Dividing by
+     * the ratio's base (`localZoomOf`) returned TELE3X 4.0 as 1.2 and MAIN 4.0 as 1.33.
+     */
+    @Test
+    fun standaloneReturnRoundTripsTheEntrySnapshotOnTheRetainedLens() {
+        val cases = listOf(
+            LensChoice.ULTRAWIDE to 2f,
+            LensChoice.MAIN to 4f,
+            LensChoice.MAIN to 3.5f,
+            LensChoice.TELE3X to 4f,
+            LensChoice.TELE3X to 2f,
+        )
+        for ((lens, local) in cases) {
+            val entry = unifiedZoomOf(lens, local, standaloneRoute = true, optical = pma110Optical)
+            val exit = rearReturnZoom(true, entry, lens.zoomPreset, pma110Optical)
+            assertEquals("$lens local $local", local, exit, 1e-4f)
+            // Independent oracle (AGG4-48): the persisted value must be the operator's own LITERAL
+            // lens-local zoom. Comparing it with rearReturnZoom compared that function with itself,
+            // since retainedRearWireZoom delegates to it.
+            assertEquals(
+                "$lens local $local: persisted value is the retained local zoom",
+                local,
+                me.hletrd.telecampro.ui.retainedRearWireZoom(
+                    entry, lens, teleconverter = false, targetStandalone = true, optical = pma110Optical,
+                ),
+                1e-4f,
+            )
+        }
+    }
+
+    @Test
+    fun cropOnlyStandaloneRouteUsesItsPhysicalOneXBase() {
+        // On a one-camera tablet the selected 3x band is a crop of MAIN, so unified 3x returns as
+        // local 3x rather than being divided by the band or flattened to local 1x.
+        assertEquals(
+            3f,
+            rearReturnZoom(true, 3f, 3f, setOf(LensChoice.MAIN)),
+            1e-4f,
+        )
+    }
+}
+
+/**
+ * 10-bit costs the in-REC snapshot (its session rung drops JPEG/RAW because HLG10 + full-res JPEG +
+ * RAW crashes this HAL), so it must be asked for only where the bits buy something — and, since
+ * native ISP log (2026-10-14), NOT for a log transfer on a camera that encodes S-Log3 itself: that
+ * session is the ordinary 8-bit one with stills.
+ */
+class TenBitSessionWantedTest {
+
+    private val logTransfers = ColorTransfer.entries.filter { it.isLog }
+
+    @Test
+    fun hlgVideoWantsTenBitWhateverTheCurveCapability() {
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.HLG, nativeLogCurveSupported = false))
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.HLG, nativeLogCurveSupported = true))
+    }
+
+    @Test
+    fun logVideoWithoutTheNativeCurveKeepsTheTenBitGlFallback() {
+        logTransfers.forEach {
+            assertTrue("$it fallback", tenBitSessionWanted(videoMode = true, transfer = it, nativeLogCurveSupported = false))
+            assertFalse("$it fallback is not native", nativeLogSessionWanted(true, it, nativeLogCurveSupported = false))
+        }
+    }
+
+    @Test
+    fun logVideoWithTheNativeCurveIsTheEightBitSessionWithStills() {
+        logTransfers.forEach {
+            assertFalse("$it native", tenBitSessionWanted(videoMode = true, transfer = it, nativeLogCurveSupported = true))
+            assertTrue("$it native", nativeLogSessionWanted(true, it, nativeLogCurveSupported = true))
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, it, nativeLogCurveSupported = true))
+        }
+    }
+
+    @Test
+    fun sdrVideoStaysEightBitAndNeverNative() {
+        listOf(false, true).forEach { supported ->
+            assertFalse(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SDR, nativeLogCurveSupported = supported))
+            assertFalse(nativeLogSessionWanted(true, ColorTransfer.SDR, supported))
+            assertEquals(VideoSessionShape.SDR, videoSessionShape(true, ColorTransfer.SDR, supported))
+        }
+    }
+
+    /** Photo must never pay the cost, whatever transfer happens to be remembered from video. */
+    @Test
+    fun photoNeverWantsTenBitOrTheNativeCurve() {
+        ColorTransfer.entries.forEach {
+            listOf(false, true).forEach { supported ->
+                assertFalse("photo asked for 10-bit with $it", tenBitSessionWanted(false, it, supported))
+                assertFalse("photo asked for native log with $it", nativeLogSessionWanted(false, it, supported))
+                assertEquals(VideoSessionShape.SDR, videoSessionShape(false, it, supported))
+            }
+        }
+    }
+
+    /**
+     * The reopen boundary: switching between log profiles on a native camera keeps the SAME shape
+     * (one S-Log3 transport curve; only the GL encode changes), while SDR <-> log and log <-> HLG
+     * cross a shape and must reconfigure.
+     */
+    @Test
+    fun shapeBoundariesMatchWhatTheSessionActuallyChanges() {
+        assertEquals(
+            videoSessionShape(true, ColorTransfer.SLOG3, true),
+            videoSessionShape(true, ColorTransfer.LOGC3, true),
+        )
+        // O-Log2 (2026-10-15) is one more GL encode of the same S-Log3 ISP transport: no reopen.
+        assertEquals(
+            videoSessionShape(true, ColorTransfer.SLOG3, true),
+            videoSessionShape(true, ColorTransfer.OLOG2, true),
+        )
+        // All three phone-maker logs (O-Log2 / O-Log / Mi-Log) are one more GL encode of that
+        // transport: the native ISP curve stays S-Log3, so switching among logs never reopens...
+        for (flavor in listOf(ColorTransfer.OLOG2, ColorTransfer.OLOG, ColorTransfer.MILOG)) {
+            assertEquals(VideoSessionShape.NATIVE_LOG, videoSessionShape(true, flavor, true))
+            // ...and on the GL fallback each shares the 10-bit HLG10 source shape like the other logs.
+            assertEquals(VideoSessionShape.TEN_BIT, videoSessionShape(true, flavor, false))
+        }
+        assertTrue(videoSessionShape(true, ColorTransfer.SDR, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
+        assertTrue(videoSessionShape(true, ColorTransfer.HLG, true) != videoSessionShape(true, ColorTransfer.SLOG3, true))
+        // Fallback camera: log and HLG share the 10-bit shape, exactly the pre-native behaviour.
+        assertEquals(
+            videoSessionShape(true, ColorTransfer.HLG, false),
+            videoSessionShape(true, ColorTransfer.SLOG3_CINE, false),
+        )
+    }
+}
+
+/**
+ * RAW is impossible on the logical photo camera — it advertises the capability and then errors the
+ * whole device seconds after a still that carries a RAW target. Every physical camera here really
+ * does support RAW, so wanting DNG moves photo onto a standalone lens instead of denying it.
+ */
+class StandaloneRouteWantedTest {
+
+    @Test
+    fun videoAlwaysTakesTheStandaloneRoute() {
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = false, rawForcesStandalone = true))
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = true, rawForcesStandalone = true))
+    }
+
+    @Test
+    fun photoWithoutRawKeepsTheSeamlessLogicalRoute() {
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false, rawForcesStandalone = true))
+    }
+
+    /** The point of the change: DNG at ANY focal length, not only through the teleconverter. */
+    @Test
+    fun photoWantingRawSwitchesToAStandaloneLens() {
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true, rawForcesStandalone = true))
+    }
+
+    /** Turning DNG back off must restore seamless zoom rather than stranding the standalone route. */
+    @Test
+    fun droppingRawReturnsToTheLogicalRoute() {
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true, rawForcesStandalone = true))
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false, rawForcesStandalone = true))
+    }
+}

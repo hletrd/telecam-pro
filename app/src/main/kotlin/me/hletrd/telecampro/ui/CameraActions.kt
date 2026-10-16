@@ -1,0 +1,249 @@
+package me.hletrd.telecampro.ui
+
+import android.util.Size
+import android.view.Surface
+import me.hletrd.telecampro.camera.Antibanding
+import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.BitrateLevel
+import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.ColorEffect
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.ExposureStep
+import me.hletrd.telecampro.camera.FlashMode
+import me.hletrd.telecampro.camera.FnSlot
+import me.hletrd.telecampro.camera.FocusMode
+import me.hletrd.telecampro.camera.GridType
+import me.hletrd.telecampro.camera.HardwareKeyAction
+import me.hletrd.telecampro.camera.AfSpotSize
+import me.hletrd.telecampro.camera.FrameLineType
+import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.MemorySlot
+import me.hletrd.telecampro.camera.PeakingColor
+import me.hletrd.telecampro.camera.PeakingLevel
+import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.ProcessingLevel
+import me.hletrd.telecampro.camera.ShutterMode
+import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.VideoCodec
+import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.WbMode
+
+/**
+ * Everything the stateless Compose UI can ask the engine to do. Implemented by CameraViewModel.
+ * The UI renders [me.hletrd.telecampro.camera.CameraUiState] and calls these — it never touches
+ * Camera2/GL directly.
+ */
+interface CameraActions {
+    // Preview surface lifecycle
+    fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int)
+    fun onPreviewSurfaceChanged(width: Int, height: Int)
+    fun onPreviewSurfaceDestroyed()
+
+    /**
+     * The app WINDOW's rotation away from the device's natural orientation (0/90/180/270). Only
+     * Compose observes configuration changes — the activity declares configChanges and is never
+     * recreated — so the UI is the only place that can source this. Always 0 on a portrait-locked
+     * phone; non-zero only where Android 16+ ignores screenOrientation (sw600dp+).
+     */
+    fun onWindowRotationChanged(degrees: Int)
+
+    /**
+     * How far the preview box runs behind the bottom chrome, as a fraction of the preview HEIGHT.
+     * Only the layout can measure it, and GL needs the same number to scissor the Loupe Overview to
+     * the rect the Compose border draws.
+     */
+    fun onFinderBottomClearanceChanged(fraction: Float)
+
+    // Focus
+    fun onFocusMode(mode: FocusMode)
+    fun onFocusSlider(slider: Float)
+    fun onAfLock(locked: Boolean)
+    fun onTapFocus(nx: Float, ny: Float)
+    fun onResetFocusPoint()
+
+    // Exposure
+    fun onIso(iso: Int)
+    fun onShutterNs(ns: Long)
+    fun onExposureCompensation(ev: Int)
+    fun onExposureMode(mode: ExposureMode)
+    fun onToggleAeLock(locked: Boolean)
+    fun onAntibanding(mode: Antibanding)
+    fun onShutterMode(mode: ShutterMode)
+    fun onShutterAngle(angle: Float)
+    fun onExposureStep(step: ExposureStep)
+
+    // White balance
+    fun onWbMode(mode: WbMode)
+    fun onWbKelvin(kelvin: Int)
+    fun onWbTint(tint: Int)
+    fun onToggleAwbLock(locked: Boolean)
+    fun onMeteringMode(mode: MeteringMode)
+    fun onAfSpotSize(size: AfSpotSize)
+    fun onToggleFacePriorityAf(enabled: Boolean)
+    fun onCaptureCustomWb()
+
+    // Processing
+    fun onEdge(level: ProcessingLevel)
+    fun onNoiseReduction(level: ProcessingLevel)
+    fun onColorEffect(effect: ColorEffect)
+
+    // Optics / output
+    fun onFlash(mode: FlashMode)
+    fun onToggleOis(enabled: Boolean)
+    fun onZoomRatio(ratio: Float)
+    // Pinch-to-zoom on the viewfinder: [factor] is the incremental pinch scale (1.0 = no change).
+    fun onPinchZoom(factor: Float)
+    /**
+     * The last finger of a pinch that actually zoomed has lifted. The gesture loop is the only place
+     * that knows this boundary exactly; the ViewModel otherwise has to infer it from a timer, and
+     * inferring it wrongly is what left a re-pinch inside the previous gesture's 700 ms tail without
+     * its zoom-OUT leading edge (AGG4-14). Advisory only: the timer-based re-arm remains the
+     * fallback for the input paths that never report a finger-up (hardware slide-zoom, ease glide).
+     */
+    fun onPinchEnd()
+    /**
+     * A TELE focal-rail mark: [totalMagnification] is the converter-equivalent TOTAL the user tapped
+     * (13×/30×/60×-class), not a lens-local ratio. The converter's host lens stays put — this is a
+     * discrete digital-zoom pick, never a lens change.
+     */
+    fun onTeleZoomMark(totalMagnification: Float)
+    fun onJpegQuality(quality: Int)
+
+    // Modes
+    fun onModeChange(mode: CaptureMode)
+    fun onTransfer(transfer: ColorTransfer)
+    fun onSetPhotoFormats(formats: PhotoFormats)
+    /** Hi-res (full-sensor) still INTENT; accepted truth is photoSessionOutputs.hiRes. */
+    fun onToggleHiResStill(enabled: Boolean)
+    fun onAspectRatio(ratio: AspectRatio)
+    fun onToggleRecordAudio(enabled: Boolean)
+    fun onAudioGain(gain: Float)
+    fun onAudioScene(scene: me.hletrd.telecampro.camera.AudioScene)
+    fun onAudioInputPreference(preference: me.hletrd.telecampro.camera.AudioInputPreference)
+    fun onToggleTeleconverter(enabled: Boolean)
+    /**
+     * Declares which PHONE the converter clamps onto. Seeded from `Build.MODEL` at first launch and
+     * overridable; it narrows the converter list and can therefore change the magnification.
+     */
+    fun onPhoneModel(model: me.hletrd.telecampro.camera.PhoneModel)
+    /** Declares WHICH converter is clamped on — a manual choice, never a detection. */
+    fun onTeleconverterProfile(profile: me.hletrd.telecampro.camera.TeleconverterProfile)
+    /** Magnification for [me.hletrd.telecampro.camera.TeleconverterProfile.CUSTOM] only. */
+    fun onTeleconverterCustomMagnification(value: Float)
+    fun onVideoCodec(codec: VideoCodec)
+    fun onBitrateLevel(level: BitrateLevel)
+    fun onVideoResolution(size: Size)
+    fun onVideoFrameRate(rate: VideoFrameRate)
+    fun onToggleOpenGate(enabled: Boolean)
+
+    // Stabilization
+    fun onVideoStabMode(mode: me.hletrd.telecampro.camera.VideoStabMode)
+
+    // Viewfinder assists
+    fun onTogglePeaking(enabled: Boolean)
+    fun onPeakingLevel(level: PeakingLevel)
+    fun onPeakingColor(color: PeakingColor)
+    fun onToggleZebra(enabled: Boolean)
+    fun onZebraLevel(level: me.hletrd.telecampro.camera.ZebraLevel)
+    fun onToggleFalseColor(enabled: Boolean)
+    fun onToggleHistogram(enabled: Boolean)
+    fun onToggleWaveform(enabled: Boolean)
+    fun onToggleGammaAssist(enabled: Boolean)
+    /** Native-log highlight headroom, whole stops 0..3 (Video tab; NativeLogCurve.kt). */
+    fun onLogEiOffset(stops: Int)
+    /** Optional Gyroflow .gcsv sidecar per video take (Video tab). */
+    fun onToggleGyroLog(enabled: Boolean)
+    fun onFrameLines(type: FrameLineType)
+    fun onGridType(type: GridType)
+    fun onToggleLevel(enabled: Boolean)
+    fun onTogglePunchIn(enabled: Boolean)
+
+    /**
+     * The FOCUS-RULER assist turning the loupe on and off by itself, as distinct from the operator
+     * asking for it. Same visible effect, but it must never reach the persisted settings: the ruler
+     * can be open when the app goes to the background, and then a loupe nobody asked for comes back
+     * on the next launch.
+     */
+    fun onAutoPunchIn(enabled: Boolean)
+    /**
+     * Same-stream Loupe Overview toggle (default OFF). Visibility additionally needs an active
+     * punch-in plus either TELE or unified zoom >= 3x; Photo requires 4:3, while Video deliberately
+     * ignores the unrelated still aspect.
+     */
+    fun onToggleTeleFinder(enabled: Boolean)
+
+    // Drive
+    fun onTimer(timer: ShutterTimer)
+    fun onDriveMode(mode: DriveMode)
+    fun onIntervalSec(sec: Int)
+
+    // Shutter
+    fun onCapturePhoto()
+    fun onToggleRecording()
+    fun onHardwareHalfPress(active: Boolean)
+
+    // Lens picks are ZOOM PRESETS — they do NOT bundle the teleconverter. TELE stays on only when
+    // it already is AND the pick is its 3× host lens; onToggleTeleconverter owns converter state.
+    fun onLens(choice: me.hletrd.telecampro.camera.LensChoice)
+
+    /** Flip between the rear route and the BASIC front (selfie) camera; never persisted. */
+    fun onToggleFrontCamera()
+
+    // Settings
+    fun onCameraOverride(id: String?)
+    fun onToggleRememberSettings(enabled: Boolean)
+    fun onTogglePreserveLensSelection(enabled: Boolean)
+    fun onTogglePreserveTeleconverter(enabled: Boolean)
+    fun onSetPhotoFnSlots(slots: List<FnSlot>)
+    fun onSetVideoFnSlots(slots: List<FnSlot>)
+    fun onSetMyMenuSlots(slots: List<FnSlot>)
+    fun onStoreMemorySlot(slot: MemorySlot)
+    fun onRecallMemorySlot(slot: MemorySlot)
+    fun onVolumeKeyAction(action: HardwareKeyAction)
+    fun onHalfPressAction(action: HardwareKeyAction)
+    fun onQuickButtonAction(action: HardwareKeyAction)
+    /** Deletes the frozen review URI through the authority required by its exact restore provenance. */
+    fun onDeleteLastMedia(
+        uri: android.net.Uri,
+        provenance: me.hletrd.telecampro.storage.MediaProvenance,
+    )
+
+    /**
+     * The full-screen media-review overlay opened/closed for its frozen [uri]. Returns true only
+     * when opening pinned that exact capture family; the UI must otherwise use file-only copy.
+     * [onCameraInputBlockedChange] owns the Compose-modal token shared with settings and Fn modals.
+     */
+    fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean
+    /** Acquires/releases only CameraScreen's Compose-modal token. */
+    fun onCameraInputBlockedChange(blocked: Boolean)
+    /** True only while the standby Video level meter is actually visible and unobscured. */
+    fun onStandbyAudioMeterVisibilityChanged(visible: Boolean)
+
+    /**
+     * True only while the histogram/waveform overlays are actually composed (expanded DISP, no
+     * modal above them). Gates the ~6 Hz scope-array publication into [CameraUiState] (perf review
+     * #6): with scopes enabled in settings but the compact DISP on screen, every analysis tick
+     * otherwise allocated ~37 KB of scope data and recomposed the whole tree for zero composed
+     * consumers. The MANUAL exposure-meter clause stays unconditional in the ViewModel — it reads
+     * histogram data with the overlays hidden.
+     */
+    fun onScopesVisibilityChanged(visible: Boolean)
+
+    /**
+     * The gallery thumb was tapped with NOTHING to review (fresh/reinstalled app). The ViewModel
+     * re-runs the bounded capture-restore query; MainActivity's permission decorator additionally
+     * requests visual-media READ access first when it is missing — after a reinstall the previous
+     * install's rows are owner-cleared and invisible without it (2026-08-01). Declining leaves the
+     * historic own-rows-only behavior.
+     */
+    fun onGalleryAccessRequested()
+
+    /**
+     * True while no full-screen modal covers the viewfinder. Gates the MANUAL-mode histogram
+     * publication, whose only consumer is the exposure meter — suppressed under the Fn overlay and
+     * covered by the sheet/review, so publishing there was ~6 Hz of whole-state copies nothing drew.
+     */
+    fun onExposureMeterVisibilityChanged(visible: Boolean)
+}
