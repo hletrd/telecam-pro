@@ -3633,9 +3633,10 @@ internal fun processStartEpochSecs(
  * - RELATIVE_PATH values are normalized with a trailing slash ("DCIM/TeleCamPro/"), so the pattern
  *   anchors on it — "DCIM/TeleCamPro%" would also sweep a hypothetical "DCIM/TeleCamProOther/".
  * - OWNER_PACKAGE_NAME makes ownership an EXPLICIT invariant (mirroring queryOwnedPublished):
- *   scoped storage without READ_MEDIA_* already hides other apps' rows today, but a future
- *   media-read permission would otherwise silently widen this delete sweep to any app's pending
- *   items under a same-named DCIM path.
+ *   scoped storage already hides other apps' rows from an app holding no READ_MEDIA_* permission
+ *   (none is declared since 2026-10-19, when Play's photo/video policy removed the READ trio),
+ *   but any media-read permission would otherwise silently widen this delete sweep to any app's
+ *   pending items under a same-named DCIM path.
  * - Placeholder count must equal the arg count; a drifted edit fails the test, not silently
  *   inside the sweep's runCatching.
  */

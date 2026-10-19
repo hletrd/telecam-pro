@@ -407,11 +407,11 @@ class ModeRollbackOwnershipRobolectricTest {
         val (viewModel, engine) = createAccepted(CaptureMode.VIDEO)
         assertTrue(standbyWanted(engine))
 
-        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, true)
+        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_PERMISSION, true)
         assertTrue(viewModel.state.value.cameraInputBlocked)
         assertFalse(standbyWanted(engine))
 
-        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, false)
+        viewModel.onCameraInputBlockOwnerChange(CameraInputBlockOwner.CAMERA_PERMISSION, false)
         assertFalse(viewModel.state.value.cameraInputBlocked)
         assertTrue(standbyWanted(engine))
     }

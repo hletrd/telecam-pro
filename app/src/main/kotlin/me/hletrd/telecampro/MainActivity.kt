@@ -78,9 +78,6 @@ import me.hletrd.telecampro.ui.windowFollowsDevice
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 
-private const val READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION =
-    "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
-
 private const val OBSCURED_TOUCH_FLAGS =
     MotionEvent.FLAG_WINDOW_IS_OBSCURED or MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED
 
@@ -430,18 +427,6 @@ class MainActivity : ComponentActivity() {
                     recordCameraPermissionResult(results[Manifest.permission.CAMERA])
                     refreshPermissionState()
                 }
-                val mediaAccessLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestMultiplePermissions(),
-                ) { _ ->
-                    // The visual-media picker/dialog has released its full-screen input ownership.
-                    vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, false)
-                    // Re-check LIVE state instead of the result map: Android 14+'s "Select photos"
-                    // choice reports the full permissions denied while granting USER_SELECTED, and
-                    // that partial grant is access (hasVisualMediaAccess). On any access, re-run
-                    // the capture restore so a previous install's rows can seed review; a decline
-                    // simply keeps the historic own-rows-only behavior — nothing to record.
-                    if (hasVisualMediaPermission()) vm.onGalleryAccessRequested()
-                }
                 val microphoneLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -567,40 +552,12 @@ class MainActivity : ComponentActivity() {
                             override fun onScopesVisibilityChanged(visible: Boolean) =
                                 vm.onScopesVisibilityChanged(visible)
 
-                            override fun onGalleryAccessRequested() {
-                                // Contextual media-access request (2026-08-01): the empty-gallery
-                                // tap IS the context, so the system dialog needs no rationale sheet.
-                                //
-                                // Branches on the access LEVEL, not on "is there any access"
-                                // (2026-08-06): a partial "Select photos" grant answers yes to the
-                                // latter, so this used to fall straight to the re-restore — which is
-                                // the very query that just came back empty. That left a partial-grant
-                                // user who had not hand-picked their own captures with no way to
-                                // widen the selection, ever. FULL still falls through to the
-                                // re-restore (it covers a grant made in Settings mid-session, and
-                                // there is nothing further to ask for).
-                                if (shouldRequestVisualMediaAccess(visualMediaAccess())) {
-                                    vm.onCameraInputBlockOwnerChange(CameraInputBlockOwner.MEDIA_PERMISSION, true)
-                                    val permissions = visualMediaPermissionsToRequest(
-                                        imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
-                                        videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
-                                        userSelectedGranted = hasPermission(
-                                            READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION,
-                                        ),
-                                        userSelectedPermissionAvailable = android.os.Build.VERSION.SDK_INT >= 34,
-                                    ).map { permission ->
-                                        when (permission) {
-                                            VisualMediaPermission.IMAGES -> Manifest.permission.READ_MEDIA_IMAGES
-                                            VisualMediaPermission.VIDEO -> Manifest.permission.READ_MEDIA_VIDEO
-                                            VisualMediaPermission.USER_SELECTED ->
-                                                READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION
-                                        }
-                                    }.toTypedArray()
-                                    mediaAccessLauncher.launch(permissions)
-                                } else {
-                                    vm.onGalleryAccessRequested()
-                                }
-                            }
+                            // The empty-gallery tap only re-runs the own-rows capture restore. It
+                            // used to request the visual-media READ trio first (2026-08-01); that
+                            // request is GONE (2026-10-19) — Play's Photo and Video Permissions
+                            // policy does not grant broad media access to a camera app, so scoped
+                            // storage's own-rows visibility is the whole story now.
+                            override fun onGalleryAccessRequested() = vm.onGalleryAccessRequested()
                         }
                     }
                     // The camera is permitted but the PLATFORM refuses it for this app (appops /
@@ -983,20 +940,6 @@ class MainActivity : ComponentActivity() {
             permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated) }
         }
     }
-
-    /** Live visual-media access truth, partial ("Select photos") grants included. */
-    private fun hasVisualMediaPermission(): Boolean = hasVisualMediaAccess(
-        imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
-        videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
-        userSelectedGranted = hasPermission(READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION),
-    )
-
-    /** Live access LEVEL — the finer answer, so a partial grant is distinguishable from a full one. */
-    private fun visualMediaAccess(): VisualMediaAccess = visualMediaAccessLevel(
-        imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
-        videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
-        userSelectedGranted = hasPermission(READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION),
-    )
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED

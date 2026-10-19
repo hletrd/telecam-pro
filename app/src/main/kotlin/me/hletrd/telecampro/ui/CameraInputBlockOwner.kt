@@ -5,7 +5,6 @@ internal enum class CameraInputBlockOwner {
     COMPOSE_MODAL,
     REVIEW,
     MICROPHONE_PERMISSION,
-    MEDIA_PERMISSION,
     CAMERA_PERMISSION,
     CAMERA_POLICY,
     OWNERLESS_DELETE,

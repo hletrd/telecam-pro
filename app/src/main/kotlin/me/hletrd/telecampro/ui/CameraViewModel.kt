@@ -2065,9 +2065,9 @@ class CameraViewModel private constructor(
 
     override fun onGalleryAccessRequested() {
         // Idempotent by construction: the restore only fills lastMediaUri while it is null and
-        // seedPriorCapture refuses to displace live captures, so a repeat tap (or the permission
-        // decorator calling through after a grant) cannot regress review state. Without media
-        // access the query still returns this install's own rows — same behavior as launch.
+        // seedPriorCapture refuses to displace live captures, so a repeat tap cannot regress review
+        // state. The app holds no media READ permission (removed 2026-10-19), so the query returns
+        // this install's own rows — the same query launch runs, retried on demand.
         restoreLatestPublishedCapture()
     }
 

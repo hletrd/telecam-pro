@@ -186,7 +186,7 @@
 
     <section id="en" class="policy-language" lang="en" aria-labelledby="en-title">
     <h1 id="en-title">Privacy Policy</h1>
-    <p class="updated">TeleCam Pro — last updated 24 August 2026</p>
+    <p class="updated">TeleCam Pro — last updated 19 October 2026</p>
 
     <section class="summary">
       <p>
@@ -220,20 +220,13 @@
             level meter is visible in armed Video mode.
           </td>
         </tr>
-        <tr>
-          <th scope="row">Photos and videos</th>
-          <td>
-            Lets the in-app gallery find package-owned media and ownerless files in DCIM/TeleCamPro
-            whose path, TeleCam filename format, media collection, extension, and MIME type all
-            match. Those checks recognize a legacy TeleCam-format file but cannot verify who created
-            it; the review labels its origin unverified and limits deletion to that file. It is
-            requested only when you tap the gallery button and there is nothing to show; declining
-            keeps the app working with media from the current installation. Reading happens on this
-            device only.
-          </td>
-        </tr>
       </tbody>
     </table>
+
+    <p>
+      TeleCam Pro requests no other permission. In particular, it does not request access to your
+      photo and video library.
+    </p>
 
     <p>
       Microphone input is processed locally. The visible standby meter reduces its input to a level
@@ -265,11 +258,14 @@
       names, contacts, location, identifiers, or usage data.
     </p>
     <p>
-      Granting photo and video access lets the app READ your library on this device; it does not send
-      anything anywhere. The app has no Internet permission at all, so it has no way to transmit what
-      it reads. The gallery looks for package-owned media and matching ownerless legacy TeleCam-format
-      candidates in DCIM/TeleCamPro. It cannot verify who created an ownerless match, so the review
-      labels its origin unverified and limits deletion to that file.
+      The app does not request access to your photo and video library, and it does not send
+      anything anywhere: it has no Internet permission at all. Its in-app gallery uses Android's
+      scoped storage, which shows the app the package-owned media it saved in DCIM/TeleCamPro on this
+      device. After a reinstall, captures from the earlier installation stay in your system gallery
+      but are not shown in the app. If Android exposes an ownerless file in DCIM/TeleCamPro whose
+      path, TeleCam filename format, media collection, extension, and MIME type all match, the app
+      treats it as a legacy TeleCam-format candidate: those checks cannot verify who created it, so
+      the review labels its origin unverified and limits deletion to that file.
     </p>
 
     <h2>Children</h2>
@@ -304,7 +300,7 @@
 
     <section id="ko" class="policy-language" lang="ko" aria-labelledby="ko-title">
       <h1 id="ko-title">개인정보처리방침</h1>
-      <p class="updated">TeleCam Pro — 최종 업데이트: 2026년 8월 24일</p>
+      <p class="updated">TeleCam Pro — 최종 업데이트: 2026년 10월 19일</p>
 
       <section class="summary">
         <p>
@@ -338,20 +334,13 @@
               대기 중 입력 레벨 미터가 보일 때에도 마이크를 사용합니다.
             </td>
           </tr>
-          <tr>
-            <th scope="row">사진 및 동영상</th>
-            <td>
-              앱 내 갤러리에서 현재 패키지가 소유한 미디어와 DCIM/TeleCamPro에 있는 소유자
-              없는 파일을 찾습니다. 소유자 없는 파일은 경로, TeleCam 파일명 형식, 미디어
-              컬렉션, 확장자, MIME 형식이 모두 맞아야 합니다. 이 조건으로 기존 TeleCam 형식
-              파일임은 확인할 수 있지만 만든 앱은 확인할 수 없습니다. 따라서 리뷰 화면에
-              출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다. 리뷰할 항목이
-              없는 상태에서 갤러리 버튼을 눌렀을 때만 권한을 요청합니다. 거부해도 현재 설치에서
-              만든 미디어는 계속 사용할 수 있습니다. 라이브러리는 이 기기에서만 읽습니다.
-            </td>
-          </tr>
         </tbody>
       </table>
+
+      <p>
+        TeleCam Pro는 이 밖의 권한을 요청하지 않습니다. 특히 사진 및 동영상 라이브러리 접근
+        권한을 요청하지 않습니다.
+      </p>
 
       <p>
         마이크 입력은 기기에서 처리합니다. 화면에 보이는 대기 레벨 미터는 입력을 음량 값으로만
@@ -384,11 +373,14 @@
         사용 데이터도 수집하지 않습니다.
       </p>
       <p>
-        사진 및 동영상 접근 권한을 허용하면 앱이 이 기기에서 라이브러리를 읽을 수 있지만 어떤
-        데이터도 전송하지 않습니다. 앱에는 인터넷 권한이 없으므로 읽은 내용을 외부로 보낼 수
-        없습니다. 갤러리는 현재 패키지가 소유한 미디어와 DCIM/TeleCamPro에서 조건이 맞는 소유자
-        없는 기존 TeleCam 형식 파일만 찾습니다. 소유자 없는 파일은 만든 앱을 확인할 수 없으므로
-        리뷰 화면에 출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다.
+        앱은 사진 및 동영상 라이브러리 접근 권한을 요청하지 않으며 어떤 데이터도 전송하지
+        않습니다. 앱에는 인터넷 권한이 없습니다. 앱 내 갤러리는 Android의 범위 지정 저장소를
+        사용하므로, 이 기기에서 앱이 DCIM/TeleCamPro에 저장한 현재 패키지 소유 미디어만 볼 수
+        있습니다. 앱을 다시 설치하면 이전 설치의 촬영물은 시스템 갤러리에 그대로 남지만 앱에는
+        표시되지 않습니다. Android가 DCIM/TeleCamPro에서 경로, TeleCam 파일명 형식, 미디어
+        컬렉션, 확장자, MIME 형식이 모두 맞는 소유자 없는 파일을 보여 주면 앱은 이를 기존
+        TeleCam 형식 파일 후보로 다룹니다. 이 조건으로는 만든 앱을 확인할 수 없으므로 리뷰
+        화면에 출처 미확인으로 표시하고 해당 파일만 삭제할 수 있게 제한합니다.
       </p>
 
       <h2>아동</h2>

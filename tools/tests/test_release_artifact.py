@@ -304,6 +304,35 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                     failures,
                 )
 
+    def test_packaged_manifest_names_play_policy_media_permissions(self) -> None:
+        # The READ_MEDIA trio was removed 2026-10-19 (Play Photo and Video Permissions policy). A
+        # dependency or a revert that brings one back must fail with the forbidden-permission reason.
+        for permission in (
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        ):
+            with self.subTest(permission=permission), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                permissions = release.expected_packaged_permissions("me.hletrd.telecampro") | {
+                    permission
+                }
+
+                failures = release.check_release_identity(
+                    root,
+                    attestation,
+                    run=self.runner(commit, manifest_permissions=permissions),
+                )
+
+                self.assertTrue(
+                    any(
+                        "forbidden permission" in item and permission in item
+                        for item in failures
+                    ),
+                    failures,
+                )
+
     def test_packaged_manifest_rejects_missing_disclosed_permission(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

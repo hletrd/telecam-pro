@@ -8,7 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from release_permissions import packaged_permission_declarations  # noqa: E402
+from release_permissions import (  # noqa: E402
+    EXPECTED_RELEASE_PERMISSIONS,
+    FORBIDDEN_RELEASE_PERMISSIONS,
+    packaged_permission_declarations,
+)
 
 
 def manifest(level: str) -> str:
@@ -30,6 +34,22 @@ class PermissionDeclarationTest(unittest.TestCase):
         # 0x12 = signature|privileged: a widened grant must not satisfy the private-guard check.
         self.assertEqual("0x00000012", packaged_permission_declarations(manifest("0x00000012"))[self.name])
         self.assertEqual("normal", packaged_permission_declarations(manifest("0x00000000"))[self.name])
+
+
+class PlayPolicyPermissionTest(unittest.TestCase):
+    def test_media_read_trio_is_forbidden_not_expected(self) -> None:
+        # Removed 2026-10-19 under Play's Photo and Video Permissions policy; never re-add.
+        trio = {
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        }
+        self.assertTrue(trio <= FORBIDDEN_RELEASE_PERMISSIONS)
+        self.assertFalse(EXPECTED_RELEASE_PERMISSIONS & FORBIDDEN_RELEASE_PERMISSIONS)
+        self.assertEqual(
+            {"android.permission.CAMERA", "android.permission.RECORD_AUDIO"},
+            set(EXPECTED_RELEASE_PERMISSIONS),
+        )
 
 
 if __name__ == "__main__":

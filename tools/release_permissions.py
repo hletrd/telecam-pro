@@ -9,9 +9,23 @@ EXPECTED_RELEASE_PERMISSIONS = frozenset(
     {
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
+    }
+)
+
+# Permissions that must NEVER reach the packaged manifest. The visual-media READ trio shipped from
+# 2026-08-01 for a reinstall gallery restore; Google Play flagged it under the Photo and Video
+# Permissions policy (broad photo/video access is reserved for apps whose core purpose needs it, and
+# a camera app reviewing its own captures does not qualify), so the owner removed it on 2026-10-19.
+# The exact-set check above would already reject them as "unexpected"; this named list makes the
+# failure say WHY, and check_docs.py pins the source manifest's tools:node="remove" guards to it.
+FORBIDDEN_RELEASE_PERMISSIONS = frozenset(
+    {
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
     }
 )
 

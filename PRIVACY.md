@@ -1,6 +1,6 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-08-24_
+_Last updated: 2026-10-19_
 
 TeleCam Pro is a camera app for Android phones and tablets. This policy covers its permissions, captured
 media, and data handling.
@@ -16,7 +16,9 @@ cloud sync, or `INTERNET` permission.
 |---|---|
 | **Camera** | Shows the viewfinder and captures photos and videos. |
 | **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. Before recording, it is also used while the input level meter is visible in armed Video mode. |
-| **Photos and videos** (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`) | Lets the in-app gallery find package-owned media and ownerless files in `DCIM/TeleCamPro` whose path, TeleCam filename format, media collection, extension, and MIME type all match. Those checks recognize a legacy TeleCam-format file but cannot verify who created it; the review labels its origin unverified and limits deletion to that file. Asked only when you tap the gallery button with nothing to review; declining keeps the app working with media from the current installation. Reading happens on this device only. |
+
+TeleCam Pro requests no other permission. In particular, it holds no photo or video library
+permission (no `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, or `READ_MEDIA_VISUAL_USER_SELECTED`).
 
 Microphone input is processed locally. The visible standby meter reduces its input to a level reading
 and does not save that audio; recorded audio remains in the video file on your device. Neither is
@@ -41,9 +43,14 @@ photo taken with it cannot record where you were.
 The app has no analytics, crash reporting, advertising, or tracking SDKs. It does not collect names,
 contacts, location, identifiers, or usage data.
 
-Granting photo and video access lets the app READ your library on this device; it does not send
-anything anywhere. The app has no Internet permission at all, so it has no way to transmit what it
-reads. The gallery applies the owner and legacy-format limits described above.
+The app does not request access to your photo and video library, and it does not send anything
+anywhere: it has no Internet permission at all. Its in-app gallery uses Android's scoped storage,
+which shows the app the package-owned media it saved in `DCIM/TeleCamPro` on this device. After a
+reinstall, captures from the earlier installation stay in your system gallery but are not shown in
+the app. If Android exposes an ownerless file in `DCIM/TeleCamPro` whose path, TeleCam filename
+format, media collection, extension, and MIME type all match, the app treats it as a legacy
+TeleCam-format candidate: those checks cannot verify who created it, so the review labels its origin
+unverified and limits deletion to that file.
 
 ## Children
 

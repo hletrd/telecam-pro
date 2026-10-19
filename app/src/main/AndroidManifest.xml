@@ -5,15 +5,17 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Visual-media READ access (user decision 2026-08-01): after a REINSTALL, MediaStore clears
-         the previous install's row ownership, and a permission-less app cannot see those rows on a
-         spec provider — the in-app gallery restore came back empty even though the files were
-         intact. Requested CONTEXTUALLY (first gallery tap with nothing to review), never at
-         launch; declining keeps the old own-rows-only behavior. USER_SELECTED joins so Android
-         14+'s partial "Select photos" grant is handled first-class instead of read as a denial. -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <!-- NO visual-media READ access (owner decision 2026-10-19, REVERSING 2026-08-01). Google Play
+         flagged READ_MEDIA_IMAGES / READ_MEDIA_VIDEO under its Photo and Video Permissions policy:
+         broad photo/video access is reserved for apps whose CORE purpose needs it (galleries,
+         editors), and a camera app reviewing its own captures does not qualify. Scoped storage
+         already shows the app its OWN MediaStore rows; the accepted cost is that after a reinstall
+         the previous install's captures are absent from in-app review (they stay in the system
+         Gallery). tools:node="remove" keeps a dependency AAR from merging any of the three back,
+         and tools/release_permissions.py fails the release gate if one reaches the merged manifest. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" tools:node="remove" />
 
     <!-- The entire privacy story (PRIVACY.md, Play Data Safety) rests on the MERGED manifest having
          no network permission. tools:node="remove" makes that build-enforced instead of true-by-

@@ -21,7 +21,7 @@ class CameraInputBlockOwnerTest {
 
     @Test
     fun `repeated acquire and release are idempotent`() {
-        val owner = CameraInputBlockOwner.MEDIA_PERMISSION
+        val owner = CameraInputBlockOwner.CAMERA_PERMISSION
         val acquired = cameraInputBlockOwnersAfter(emptySet(), owner, true)
         assertTrue(cameraInputBlockOwnersAfter(acquired, owner, true) === acquired)
         val released = cameraInputBlockOwnersAfter(acquired, owner, false)

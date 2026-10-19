@@ -1494,9 +1494,9 @@ fun CameraScreen(
                             currentActions.value.onReviewOpenChange(true, reviewOpenUri)
                             Unit
                         } else {
-                            // Nothing to review (fresh or reinstalled app): the tap asks for the
-                            // capture-restore instead — and, via MainActivity's decorator, for the
-                            // visual-media permission a reinstall restore needs (2026-08-01).
+                            // Nothing to review (fresh or reinstalled app): the tap retries the
+                            // own-rows capture-restore instead (no media permission is asked for
+                            // since 2026-10-19).
                             currentActions.value.onGalleryAccessRequested()
                         }
                     }

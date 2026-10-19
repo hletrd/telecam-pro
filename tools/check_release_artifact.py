@@ -29,6 +29,7 @@ from typing import Callable, Sequence
 try:
     from tools.release_permissions import (
         EXPECTED_RELEASE_PERMISSIONS,
+        FORBIDDEN_RELEASE_PERMISSIONS,
         PACKAGE_PRIVATE_PERMISSION_SUFFIX,
         expected_packaged_permissions,
         packaged_permission_declarations,
@@ -37,6 +38,7 @@ try:
 except ModuleNotFoundError:  # Direct `python3 tools/check_release_artifact.py` execution.
     from release_permissions import (
         EXPECTED_RELEASE_PERMISSIONS,
+        FORBIDDEN_RELEASE_PERMISSIONS,
         PACKAGE_PRIVATE_PERMISSION_SUFFIX,
         expected_packaged_permissions,
         packaged_permission_declarations,
@@ -767,6 +769,12 @@ def check_release_identity(
         application_id = packaged_application.group(1)
         expected_permissions = expected_packaged_permissions(application_id)
         effective_permissions = packaged_permissions(manifest)
+        forbidden = sorted(effective_permissions & FORBIDDEN_RELEASE_PERMISSIONS)
+        if forbidden:
+            failures.append(
+                "packaged manifest carries a forbidden permission "
+                f"(Play photo/video policy or no-network privacy contract): {forbidden}"
+            )
         if effective_permissions != expected_permissions:
             unexpected = sorted(effective_permissions - expected_permissions)
             missing = sorted(expected_permissions - effective_permissions)

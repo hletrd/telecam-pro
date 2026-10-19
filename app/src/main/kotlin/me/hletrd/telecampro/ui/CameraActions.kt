@@ -233,10 +233,11 @@ interface CameraActions {
 
     /**
      * The gallery thumb was tapped with NOTHING to review (fresh/reinstalled app). The ViewModel
-     * re-runs the bounded capture-restore query; MainActivity's permission decorator additionally
-     * requests visual-media READ access first when it is missing — after a reinstall the previous
-     * install's rows are owner-cleared and invisible without it (2026-08-01). Declining leaves the
-     * historic own-rows-only behavior.
+     * re-runs the bounded own-rows capture-restore query (a retry of the launch restore — e.g. after
+     * a transient provider failure). No permission is requested: the visual-media READ trio this
+     * once asked for was removed 2026-10-19 under Play's Photo and Video Permissions policy, so a
+     * previous install's owner-cleared captures stay out of in-app review (they remain in the
+     * system Gallery).
      */
     fun onGalleryAccessRequested()
 

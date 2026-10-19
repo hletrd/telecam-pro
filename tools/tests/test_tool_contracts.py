@@ -70,6 +70,8 @@ def run_documentation_gate_from_committed_export(
         # and policy under test; no ignored/private document is copied from the maintainer workspace.
         for relative in (
             "tools/check_docs.py",
+            "tools/release_permissions.py",
+            "app/src/main/AndroidManifest.xml",
             "tools/android_sdk.py",
             "tools/verify_host.py",
             "tools/build_immutable_debug.py",
@@ -887,9 +889,16 @@ class ConsolidatedHostGateTest(unittest.TestCase):
                 "FAIL  PRIVACY.md discloses capture metadata and no location",
             ),
             (
-                "READ your library on this device",
-                "uses your library",
-                "FAIL  PRIVACY.md discloses on-device library read without transmission",
+                "The app does not request access to your photo and video library",
+                "The app may access your photo and video library",
+                "FAIL  PRIVACY.md discloses no photo/video library permission and no transmission",
+            ),
+            (
+                # The READ_MEDIA trio was removed 2026-10-19 (Play Photo and Video Permissions
+                # policy); its grant wording must not drift back into the policy.
+                "Delete them in TeleCam Pro",
+                "Granting photo and video access lets the app read them. Delete them in TeleCam Pro",
+                "FAIL  PRIVACY.md carries no retired photo/video permission wording",
             ),
         )
         for current, stale, failure in fixtures:

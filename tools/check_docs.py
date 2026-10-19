@@ -26,9 +26,12 @@ import xml.etree.ElementTree as ET
 import zlib
 
 try:
-    from tools.release_permissions import EXPECTED_RELEASE_PERMISSIONS
+    from tools.release_permissions import (
+        EXPECTED_RELEASE_PERMISSIONS,
+        FORBIDDEN_RELEASE_PERMISSIONS,
+    )
 except ModuleNotFoundError:  # Direct `python3 tools/check_docs.py` execution.
-    from release_permissions import EXPECTED_RELEASE_PERMISSIONS
+    from release_permissions import EXPECTED_RELEASE_PERMISSIONS, FORBIDDEN_RELEASE_PERMISSIONS
 
 if sys.flags.optimize != 0:
     print("optimized Python is unsupported for the documentation gate", file=sys.stderr)
@@ -1031,8 +1034,38 @@ check('<section id="ko"' in privacy_html and 'lang="ko"' in privacy_html,
 check('hreflang="en"' in privacy_html and 'hreflang="ko"' in privacy_html,
       "published privacy page links both policy languages")
 
-declared = set(re.findall(r"android\.permission\.([A-Z_]+)", manifest))
-declared -= {"INTERNET", "ACCESS_NETWORK_STATE"}  # removed at merge by tools:node="remove"
+uses_permission_tags = re.findall(r"<uses-permission\b[^>]*>", manifest)
+removal_guards = {
+    match.group(1)
+    for tag in uses_permission_tags
+    if 'tools:node="remove"' in tag
+    for match in [re.search(r'android:name="android\.permission\.([A-Z_]+)"', tag)]
+    if match
+}
+declared = {
+    match.group(1)
+    for tag in uses_permission_tags
+    if 'tools:node="remove"' not in tag
+    for match in [re.search(r'android:name="android\.permission\.([A-Z_]+)"', tag)]
+    if match
+}
+forbidden_short = {
+    permission.removeprefix("android.permission.") for permission in FORBIDDEN_RELEASE_PERMISSIONS
+}
+# Google Play's Photo and Video Permissions policy flagged the READ_MEDIA trio (owner removed it
+# 2026-10-19). The source manifest must carry each one ONLY as a tools:node="remove" guard, so a
+# dependency AAR cannot merge one back and a revert cannot declare one silently.
+play_policy_media = {"READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "READ_MEDIA_VISUAL_USER_SELECTED"}
+check(
+    not (declared & forbidden_short),
+    "source manifest declares no forbidden permission",
+    str(sorted(declared & forbidden_short)),
+)
+check(
+    play_policy_media <= removal_guards,
+    "source manifest strips every READ_MEDIA permission at merge (tools:node=remove)",
+    str(sorted(play_policy_media - removal_guards)),
+)
 expected_declared = {
     permission.removeprefix("android.permission.")
     for permission in EXPECTED_RELEASE_PERMISSIONS
@@ -1047,9 +1080,6 @@ check(
 GROUPS = {
     "CAMERA": ("Camera",),
     "RECORD_AUDIO": ("Microphone",),
-    "READ_MEDIA_IMAGES": ("Photos and videos",),
-    "READ_MEDIA_VIDEO": ("Photos and videos",),
-    "READ_MEDIA_VISUAL_USER_SELECTED": ("Photos and videos",),
 }
 for perm in sorted(declared):
     names = GROUPS.get(perm)
@@ -1106,17 +1136,29 @@ privacy_metadata_facts = {
     "English in-app policy": ("camera", "lens", "exposure", "time metadata", "no location"),
     "Korean in-app policy": ("카메라", "렌즈", "노출", "촬영 시간", "위치 정보는 포함되지"),
 }
+# Since 2026-10-19 the app holds NO photo/video library permission (Play Photo and Video
+# Permissions policy). Every presentation must say so, and none may keep the retired grant wording.
 privacy_library_facts = {
-    "PRIVACY.md": ("read your library on this device", "does not send anything anywhere"),
+    "PRIVACY.md": (
+        "does not request access to your photo and video library", "does not send anything anywhere",
+    ),
     "privacy-policy/index.html": (
-        "read your library on this device", "does not send anything anywhere",
+        "does not request access to your photo and video library", "does not send anything anywhere",
     ),
-    "Korean published policy": ("이 기기에서 라이브러리를 읽을 수 있지만", "어떤 데이터도 전송하지 않습니다"),
+    "Korean published policy": ("사진 및 동영상 라이브러리 접근 권한을 요청하지 않", "어떤 데이터도 전송하지 않습니다"),
     "English in-app policy": (
-        "reads your library on this device only", "does not send anything anywhere",
+        "does not request access to your photo and video library", "does not send anything anywhere",
     ),
-    "Korean in-app policy": ("기기에서만 라이브러리를 읽으며", "어디에도 전송하지 않습니다"),
+    "Korean in-app policy": ("사진 및 동영상 라이브러리 접근 권한을 요청하지 않", "어디에도 전송하지 않습니다"),
 }
+retired_media_grant_wording = (
+    "granting photo and video access",
+    "photo and video access lets",
+    "media access reads",
+    "사진 및 동영상 접근 권한을 허용하면",
+    "사진 및 동영상 권한은",
+    "미디어 권한으로",
+)
 for label, presentation in privacy_presentations.items():
     check(
         all(fact in presentation for fact in privacy_metadata_facts[label]),
@@ -1124,7 +1166,11 @@ for label, presentation in privacy_presentations.items():
     )
     check(
         all(fact in presentation for fact in privacy_library_facts[label]),
-        f"{label} discloses on-device library read without transmission",
+        f"{label} discloses no photo/video library permission and no transmission",
+    )
+    check(
+        not any(phrase in presentation for phrase in retired_media_grant_wording),
+        f"{label} carries no retired photo/video permission wording",
     )
 
 # ---- version facts must match the build, not a memory of it ------------------------------------
