@@ -2,11 +2,11 @@
 
 Use this sheet for the parts that must be entered manually in Play Console.
 
-<!-- release-state: target=v1.0.3 artifact=none -->
+<!-- release-state: target=v1.0.4 artifact=none -->
 
 ## Upload Artifact
 
-> ## 🚫 NOT UPLOAD-READY — v1.0.3 must be cut from the finalized current HEAD.
+> ## 🚫 NOT UPLOAD-READY — v1.0.4 must be cut from the finalized current HEAD.
 >
 > The previously attested `8d5f461` cut predates current source changes. Its historical digest and
 > device evidence remain below as provenance, but they do not attest the current candidate and that
@@ -14,7 +14,7 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > output, not an immutable release identity: any later build can replace its bytes without changing
 > the path.
 >
-> Current source declares `versionCode 5` / `versionName 1.0.3`; it is the current
+> Current source declares `versionCode 6` / `versionName 1.0.4`; it is the current
 > source/release target, but **no current artifact candidate exists**. A new upload candidate exists
 > only after the final source commit is built, verified without inventing device evidence, copied to
 > a commit-and-digest-qualified path, and accepted by `tools/check_release_artifact.py` against a
@@ -29,8 +29,9 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > only `CAMERA` + `RECORD_AUDIO`; the source manifest strips all three READ_MEDIA permissions with
 > `tools:node="remove"`, and `tools/check_release_artifact.py` names any of them as a forbidden
 > packaged permission. The artifact sections below that list the trio describe historical cuts.
-> `versionCode 1` (v1.0, from `ca3d33c`), `versionCode 3` (v1.0.1) and `versionCode 4` (v1.0.2,
-> uploaded 2026-08-05 and active per the owner's Play Console, 2026-10-16) are ALL spent — Play
+> `versionCode 1` (v1.0, from `ca3d33c`), `versionCode 3` (v1.0.1), `versionCode 4` (v1.0.2,
+> uploaded 2026-08-05 and active per the owner's Play Console, 2026-10-16) and `versionCode 5`
+> (v1.0.3, uploaded and rejected under the Photo and Video Permissions policy, 2026-10-19) are ALL spent — Play
 > rejects a re-used versionCode outright (see the note in `app/build.gradle.kts`). Release notes live in
 > `docs/play-store-listing.md`.
 >
