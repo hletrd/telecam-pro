@@ -163,7 +163,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
 | **(app root — `me.hletrd.telecampro`)** | |
-| `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO at runtime, and the READ_MEDIA trio contextually (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Activity dispatch rejects both full and partial Android obscuration flags before Compose, while unflagged pointer input is delegated unchanged. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
+| `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO at runtime (ColorOS blocks pm grant) and nothing else: the visual-media READ trio it once asked for at an empty-gallery tap was removed 2026-10-19 under Play's Photo and Video Permissions policy, so that tap only retries the own-rows capture restore. CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Activity dispatch rejects both full and partial Android obscuration flags before Compose, while unflagged pointer input is delegated unchanged. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
 | `DebugCameraControlCommand.kt` | Process-local mailbox carrying shell measurement commands from the debug-only DUMP-protected component to MainActivity. The ordinary exported launcher never parses command extras; release has no exported mailbox producer. |
 | `CameraPermissionPolicy.kt` | Pure CAMERA-permission decision table: fresh install / cancelled prompt / genuine permanent denial, driven only by completed request history plus rationale state. |
 | `AudioDenialReason.kt` | The one owner of the persisted "audio off BECAUSE the microphone was denied" bit (`AudioDenialReasonStore`, shared by MainActivity and the ViewModel's memory-bank store) and `MemoryBankAudioProvenance`: bank provenance, recall's reason write, and the grant reconciliation that runs immediately after a recall as well as on resume (AGG4-9/49). The ViewModel owns the one provenance instance and runs both legs (AGG5-22). |
@@ -1590,7 +1590,7 @@ adb -s "$ANDROID_SERIAL" install -r "$EVIDENCE_APK"
 adb -s "$ANDROID_SERIAL" shell am start -n "$PACKAGE/$ACTIVITY"
 ```
 
-**Permissions:** CAMERA + RECORD_AUDIO, plus the visual-media READ trio requested contextually at the first empty-gallery tap, at runtime (ColorOS blocks pm grant; user grants on device once).
+**Permissions:** CAMERA + RECORD_AUDIO only, at runtime (ColorOS blocks pm grant; user grants on device once). No visual-media READ permission (READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED): declared 2026-08-01 for a reinstall gallery restore, removed 2026-10-19 after Play flagged it under the Photo and Video Permissions policy. The source manifest strips all three with `tools:node="remove"`, and the docs and release-artifact gates fail if one returns. In-app review is scoped storage's own-rows view; a reinstall's earlier captures stay in the system gallery only.
 
 ---
 

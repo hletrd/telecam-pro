@@ -1263,12 +1263,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   applied allocation-free to every PCM buffer that needs it, while RMS construction runs only when
   a non-null meter callback exists and the 100 ms emission cadence is due. Gain does not imply a
   discarded per-buffer level pass.
-  **The app requests CAMERA, RECORD_AUDIO, and (since 2026-08-01, user decision) the visual-media
-  READ trio — READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED — the last
-  requested CONTEXTUALLY at an empty-gallery tap only, because a REINSTALL clears MediaStore row
-  ownership and a permission-less app cannot see its previous install's captures on a spec
-  provider. Declining keeps own-rows-only behavior; a partial "Select photos" grant counts as
-  access (`hasVisualMediaAccess`). There is still NO location permission and no
+  **The app requests CAMERA and RECORD_AUDIO only. The visual-media READ trio — READ_MEDIA_IMAGES /
+  READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED — was REMOVED 2026-10-19 (owner decision) and
+  must not be re-added.** It was declared 2026-08-01 and requested at an empty-gallery tap so a
+  reinstall's owner-cleared captures could seed in-app review, but Google Play flagged it under the
+  Photo and Video Permissions policy ("use alternative system pickers"): broad photo/video access is
+  reserved for apps whose CORE purpose needs it (galleries, editors), and a camera app reviewing its
+  own captures does not qualify — an approved declaration did not protect it. In-app review is back
+  to scoped storage's own-rows visibility; the accepted cost is that after a reinstall the previous
+  install's captures appear only in the system Gallery. The empty-gallery tap now just retries the
+  own-rows restore (`onGalleryAccessRequested`). The source manifest strips all three with
+  `tools:node="remove"`, `tools/check_docs.py` pins those guards, and
+  `tools/check_release_artifact.py` names any of them in the packaged manifest as forbidden
+  (`FORBIDDEN_RELEASE_PERMISSIONS`). **There is still NO location permission and no
   location code, so captures carry no GPS tags** (verified by parsing a saved HEIF's TIFF IFDs: no
   GPS IFD pointer in IFD0 or ExifIFD). The one lane seeded from a HAL's own EXIF, the dormant-on-PMA110
   hi-res passthrough JPEG, strips the HAL's GPS directory, serials, owner name, unique id and

@@ -738,11 +738,14 @@ operator's existing capture to set this up.
   uninstall/reinstall path (or import a copied lookalike through a second package) that produces a
   real owner-null row on the test device.
 - Confirm the row remains under `DCIM/TeleCamPro` with a valid TeleCam filename and matching MIME.
-  Grant contextual visual-media access, then open the in-app review.
+  Then open the in-app review. The app holds NO visual-media permission since 2026-10-19 (the READ
+  trio was removed under Play's Photo and Video Permissions policy), so a spec provider is expected
+  to hide the owner-null row from the app entirely; record whether it is visible at all.
 - Repeat with an owner-null control whose filename or MIME does not match the save contract.
 
-**Pass:** the valid owner-null candidate is shown with the quiet “origin unverified” descriptor and
-file-only delete copy; the mismatched control is not restored. A row still owned by the current
+**Pass:** the valid owner-null candidate is either hidden by the provider (the expected spec result
+without media permission) or, if the provider exposes it, shown with the quiet “origin unverified”
+descriptor and file-only delete copy; the mismatched control is never restored. A row still owned by the current
 package has no unverified descriptor and retains its normal capture-family deletion scope.
 
 Record the Android build, provider package/version, row owner before/after, import/reinstall path, and

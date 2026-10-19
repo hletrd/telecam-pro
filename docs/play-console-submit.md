@@ -21,6 +21,14 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > SHA-256-protected attestation. Until then this sheet is preparation material, not upload approval.
 > The upload key that `keystore.properties` configures is the current upload key and is KEPT with
 > its current password (owner decision 2026-10-13); the next cut signs with it as-is.
+>
+> **The next cut drops the visual-media READ trio (owner decision 2026-10-19).** Play flagged
+> `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` under the Photo and Video Permissions policy ("use
+> alternative system pickers"): broad photo/video access is reserved for apps whose core purpose
+> needs it, and a camera app reviewing its own captures does not qualify. Current source declares
+> only `CAMERA` + `RECORD_AUDIO`; the source manifest strips all three READ_MEDIA permissions with
+> `tools:node="remove"`, and `tools/check_release_artifact.py` names any of them as a forbidden
+> packaged permission. The artifact sections below that list the trio describe historical cuts.
 > `versionCode 1` (v1.0, from `ca3d33c`), `versionCode 3` (v1.0.1) and `versionCode 4` (v1.0.2,
 > uploaded 2026-08-05 and active per the owner's Play Console, 2026-10-16) are ALL spent — Play
 > rejects a re-used versionCode outright (see the note in `app/build.gradle.kts`). Release notes live in
@@ -577,18 +585,17 @@ Summary:
 - Ads: No
 - Child-directed: No
 
-**Since 2026-08-01 the manifest also declares the visual-media READ trio (READ_MEDIA_IMAGES /
-READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED)** for the reinstall gallery restore. This
-reads the user's own captures ON DEVICE only — nothing is collected or transmitted, so the
-collect/share answers above stay "No".
+**Since 2026-10-19 the manifest declares NO photo/video library permission.** The visual-media
+READ trio (READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED), declared from
+2026-08-01 for a reinstall gallery restore, was removed after Play flagged it under the Photo and
+Video Permissions policy. In-app review is back to scoped storage's own-rows visibility: a
+reinstall's earlier captures stay in the system gallery but are not shown in the app (accepted
+cost). Nothing is collected or transmitted either way, so the collect/share answers above stay "No".
+`docs/play-data-safety.md` and `PRIVACY.md` carry the no-library-permission wording.
 
-Documentation status (2026-08-02): `docs/play-data-safety.md` and `PRIVACY.md` **both now carry the
-on-device library-access wording** — that half is done. While checking it, `PRIVACY.md` was found
-pointing users at `DCIM/X9Tele`; the shipped `MediaStoreWriter.CAPTURE_SUBDIR` is `TeleCamPro`, so
-the published policy named a folder that does not exist on the user's phone. Fixed in `ee80094`.
-
-**Still owner-only: the console answer itself.** The Data Safety "Photos and videos" ACCESS
-question has to be re-answered in Play Console at submission; no repo change can do that.
+**Still owner-only: the console answers themselves.** At the next submission, re-answer any Data
+Safety "Photos and videos" access answer that the trio prompted, and withdraw or update the Photo
+and Video Permissions declaration (Manual Console Sequence step 5); no repo change can do that.
 
 ## Assets
 
@@ -738,21 +745,20 @@ and must not turn historical device evidence into exact-current-artifact verific
 3. Upload the exact attested `aab_path`, never a fresh lookup of `app-release.aab`. Re-run the checker
    immediately before the console upload. Any source, artifact, attestation, version, or signer
    change invalidates the result and requires a new cut.
-4. Enter the Store Listing and Data Safety answers from this repository. **The Data Safety "Photos
-   and videos" ACCESS question must be re-answered** for the visual-media READ trio (see Data
-   Safety below) — the last submission-ready answer set predates it.
-5. **App content → Photo and Video Permissions: file the broad-access declaration.** Required
-   because the manifest carries `READ_MEDIA_IMAGES` + `READ_MEDIA_VIDEO`; the per-permission
-   justification text is prepared verbatim in `docs/play-data-safety.md` § "Photo and Video
-   Permissions declaration", along with the answer to Play's "why not the photo picker" follow-up.
-   Google's stated consequence for shipping the broad pair without an approved declaration is
-   REMOVAL, not rejection, so this is not an optional step.
+4. Enter the Store Listing and Data Safety answers from this repository. **Re-check the Data
+   Safety "Photos and videos" access answer**: the visual-media READ trio it was answered for is
+   gone since 2026-10-19 (see Data Safety below).
+5. **App content → Photo and Video Permissions: no declaration is needed any more.** The manifest
+   no longer carries `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` / `READ_MEDIA_VISUAL_USER_SELECTED`
+   (removed 2026-10-19 after Play flagged the app under this policy: a camera app reviewing its own
+   captures does not qualify for broad photo/video access). Upload the trio-free artifact, then
+   confirm in the console that the policy issue clears and that no stale declaration remains.
+   `docs/play-data-safety.md` § "Photo and Video Permissions declaration" records why.
 
-   **Status: DONE for the live listing** — confirmed by the owner 2026-08-06 (declaration filed,
-   release approved). This step exists because that fact lived ONLY in the console: an adversarial
-   review read the repo, found no checklist entry and no record, and graded the dimension a D on the
-   reasonable inference that an unrecorded step was an unperformed one. Re-confirm on any release
-   that changes the media permissions; leave alone otherwise.
+   **History:** the broad-access declaration was filed and the release approved (owner, 2026-08-06);
+   Play later flagged the same declaration under the "use alternative system pickers" rule, which is
+   what led to the removal. This step stays in the sequence because that fact otherwise lives ONLY
+   in the console.
 6. Upload the icon and feature graphic. **Do not upload any checked-in phone or tablet
    screenshots:** phone frames 02 and 06 are stale, and all four tablet frames lack immutable
    capture provenance. This step remains blocked until both screenshot validity manifests say

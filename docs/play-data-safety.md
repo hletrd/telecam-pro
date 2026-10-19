@@ -5,7 +5,11 @@ Use this as the source of truth when filling Play Console > Policy > App content
 ## Evidence
 
 - Package name: `me.hletrd.telecampro`
-- Declared permissions: `CAMERA`, `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`
+- Declared permissions: `CAMERA`, `RECORD_AUDIO` — nothing else
+- No photo/video library permission. `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, and
+  `READ_MEDIA_VISUAL_USER_SELECTED` were removed on 2026-10-19 after Play flagged them under the
+  Photo and Video Permissions policy; the source manifest strips them with `tools:node="remove"` and
+  the release gate fails if one reaches the packaged manifest
 - No declared `INTERNET` permission
 - No ads, analytics, accounts, cloud sync, or crash telemetry SDKs of any kind
 - NO build variant bundles a third-party OEM SDK. The OPPO CameraUnit/OCS availability probe and its
@@ -18,8 +22,9 @@ Use this as the source of truth when filling Play Console > Policy > App content
   through Android MediaStore.
 - Touch events Android marks as fully or partially obscured are rejected at the Activity boundary
   before camera, settings, permission, or delete controls receive them.
-- A bounded restore query treats current-package MediaStore ownership as authorship evidence. An
-  owner-null row is only a recognized legacy TeleCam-format candidate when its TeleCam directory,
+- A bounded restore query runs under scoped storage only, so it sees the current package's own
+  MediaStore rows; it treats that ownership as authorship evidence. If a provider exposes an
+  owner-null row, it is only a recognized legacy TeleCam-format candidate when its TeleCam directory,
   filename grammar, collection, extension, and MIME all match. Those public attributes do not prove
   authorship; the UI labels the origin unverified and permits file-only deletion.
 - Privacy policy URL: `https://hletrd.github.io/telecam-pro/privacy-policy/`
@@ -46,27 +51,12 @@ Official references:
 
 ## Photo and Video Permissions declaration
 
-Play requires a 250-character justification per permission on the "Photo and Video Permissions"
-form. Paste verbatim:
-
-**READ_MEDIA_IMAGES** (221/250)
-
-```text
-Lists package-owned images and owner-null legacy TeleCam-format candidates in DCIM/TeleCamPro. Owner-null matches use name/MIME checks, are labeled unverified, and get file-only deletion. Requested only from empty review.
-```
-
-**READ_MEDIA_VIDEO** (221/250)
-
-```text
-Lists package-owned videos and owner-null legacy TeleCam-format candidates in DCIM/TeleCamPro. Owner-null matches use name/MIME checks, are labeled unverified, and get file-only deletion. Requested only from empty review.
-```
-
-If Play asks why the Android photo picker is not used instead: the picker exists to let a user CHOOSE
-an arbitrary file. This app instead makes a bounded query of `DCIM/TeleCamPro`. MediaStore ownership
-verifies rows from the current package. An owner-null row is admitted only as an unverifiable legacy
-TeleCam-format candidate after path/name/collection/extension/MIME checks; an imported lookalike can
-match, so the UI says its origin is unverified and deletion remains file-only. A picker cannot express
-this narrow folder-and-format restore query.
+Not needed. Since 2026-10-19 the app declares no `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` /
+`READ_MEDIA_VISUAL_USER_SELECTED`, so the Play Console "Photo and Video Permissions" form has nothing
+to justify. The earlier justifications were rejected: Play reserves broad photo/video access for apps
+whose core purpose needs it (galleries, editors), and a camera app reviewing its own captures does
+not qualify. Scoped storage already shows the app its own captures; the accepted cost is that a
+reinstall's earlier captures appear only in the system gallery, not in in-app review.
 
 ## Data Types
 
@@ -84,11 +74,9 @@ Use this wording in any free-text notes if Play review asks for clarification:
 ```text
 TeleCam Pro uses Camera for the viewfinder and photo/video capture. Microphone input is processed
 locally when recording enabled video audio and while the visible input level meter is active in armed
-Video mode; standby meter input is not saved. Captures are saved through Android MediaStore. Photo and
-video library access (READ_MEDIA_*) makes a bounded on-device query for current-package rows and
-owner-null legacy TeleCam-format candidates under DCIM/TeleCamPro. Owner-null candidates pass
-path/name/MIME controls but are labeled origin-unverified and limited to file-only deletion. Access
-is requested contextually. The app
+Video mode; standby meter input is not saved. Captures are saved through Android MediaStore. The app
+requests no photo/video library permission; its in-app review uses scoped storage and shows only the
+captures this installation saved under DCIM/TeleCamPro. The app
 declares no INTERNET permission and includes no ads, analytics, accounts, cloud sync, crash telemetry,
-or OEM SDK. Microphone, capture, and library data are not uploaded, collected, or shared by the developer.
+or OEM SDK. Microphone and capture data are not uploaded, collected, or shared by the developer.
 ```
