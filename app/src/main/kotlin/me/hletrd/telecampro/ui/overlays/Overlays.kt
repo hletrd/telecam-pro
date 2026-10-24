@@ -181,7 +181,12 @@ fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
             GridType.CENTER -> drawCenterMark(color, width)
             GridType.NONE -> Unit
         }
-        draw(GuideKeylineInk, 3.dp.toPx())
+        // A lighter keyline than the other guides' opaque 3 dp: the grid is the one guide drawn
+        // across the WHOLE frame, and at 3 dp of solid black each line read as a heavy 10 px bar on
+        // any bright scene (owner-reported on PMA110, 2026-10-25). 70 % over 2 dp still holds the
+        // 3:1 floor GuideContrastComposeTest pins on white, black and mid-grey (mid-grey is the
+        // binding case: ~3.5:1 here, below 3:1 from ~60 % down).
+        draw(Color.Black.copy(alpha = 0.70f), 2.dp.toPx())
         draw(lineColor, strokeWidth)
     }
 }
