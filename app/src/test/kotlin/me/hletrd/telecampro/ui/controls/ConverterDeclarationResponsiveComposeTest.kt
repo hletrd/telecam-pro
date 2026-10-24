@@ -176,7 +176,7 @@ class ConverterDeclarationResponsiveComposeTest {
                 "OPPO Find X9 Ultra", "OPPO Find X9 Pro", "OPPO Find X9s Pro", "OPPO Find X10",
                 "OPPO Find X10 Pro Max", "vivo X200 Ultra", "vivo X300", "vivo X300 Pro", "vivo X300s",
                 "vivo X300 Ultra", "vivo X500", "vivo X500 Pro", "vivo X500 Pro Max", "HONOR Magic8 Pro",
-                "HONOR Magic8 RSR Porsche Design", "HONOR Magic9", "HONOR Magic9 Pro Max",
+                "HONOR Magic8 RSR", "HONOR Magic9", "HONOR Magic9 Pro Max",
                 "Other",
             ),
         )
@@ -197,7 +197,7 @@ class ConverterDeclarationResponsiveComposeTest {
                 "OPPO Find X9 Ultra", "OPPO Find X9 Pro", "OPPO Find X9s Pro", "OPPO Find X10",
                 "OPPO Find X10 Pro Max", "vivo X200 Ultra", "vivo X300", "vivo X300 Pro", "vivo X300s",
                 "vivo X300 Ultra", "vivo X500", "vivo X500 Pro", "vivo X500 Pro Max", "HONOR Magic8 Pro",
-                "HONOR Magic8 RSR Porsche Design", "HONOR Magic9", "HONOR Magic9 Pro Max",
+                "HONOR Magic8 RSR", "HONOR Magic9", "HONOR Magic9 Pro Max",
                 "기타",
             ),
         )

@@ -344,7 +344,7 @@
     <string name="phone_vivo_x500_pro" translatable="false">vivo X500 Pro</string>
     <string name="phone_vivo_x500_pro_max" translatable="false">vivo X500 Pro Max</string>
     <string name="phone_honor_magic8_pro" translatable="false">HONOR Magic8 Pro</string>
-    <string name="phone_honor_magic8_rsr" translatable="false">HONOR Magic8 RSR Porsche Design</string>
+    <string name="phone_honor_magic8_rsr" translatable="false">HONOR Magic8 RSR</string>
     <string name="phone_honor_magic9" translatable="false">HONOR Magic9</string>
     <string name="phone_honor_magic9_pro_max" translatable="false">HONOR Magic9 Pro Max</string>
     <string name="phone_other">Other</string>
@@ -546,7 +546,7 @@
          abbreviations above: these are translated, because a disclaimer a reader cannot read is not
          a disclaimer. -->
     <string name="legal_trademark_log">S-Log is a trademark of Sony Group Corporation. LogC is a trademark of Arnold &amp; Richter Cine Technik GmbH &amp; Co. Betriebs KG (ARRI). O-Log2 and O-Log are OPPO’s names for its log formats, and Mi-Log is Xiaomi’s; each is offered only on that maker’s phones, follows the curve in the maker’s published white paper, and is not supplied or endorsed by OPPO or Xiaomi. Xiaomi is a trademark of Xiaomi Inc.</string>
-    <string name="legal_trademark_hardware">Hasselblad is a trademark of Victor Hasselblad AB. OPPO is a trademark of Guangdong OPPO Mobile Telecommunications Corp., Ltd. ZEISS is a trademark of Carl Zeiss AG. vivo is a trademark of vivo Mobile Communication Co., Ltd.</string>
+    <string name="legal_trademark_hardware">Hasselblad is a trademark of Victor Hasselblad AB. OPPO is a trademark of Guangdong OPPO Mobile Telecommunications Corp., Ltd. ZEISS is a trademark of Carl Zeiss AG. vivo is a trademark of vivo Mobile Communication Co., Ltd. HONOR is a trademark of Honor Device Co., Ltd.</string>
     <string name="legal_no_affiliation">This app is independent and is not affiliated with, endorsed by, or sponsored by any of them. Names describe compatibility only.</string>
     <string name="legal_typeface">UI typeface: Inter, © The Inter Project Authors, SIL Open Font License 1.1.</string>
     <string name="legal_app_license">TeleCam Pro © 2026 Jiyong Youn — Apache License 2.0. Source: github.com/hletrd/telecam-pro</string>
