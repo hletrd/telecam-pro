@@ -80,6 +80,8 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -713,6 +715,14 @@ fun CameraScreen(
         // The preview box's resolved top, exported for the TopBar's seam rule (the bar renders in a
         // SIBLING scope of the BoxWithConstraints that computes it).
         var previewTopForChromePx by remember { mutableIntStateOf(0) }
+        // The bottom seam rule's inputs and answer ([bottomRailSeamOffsetPx]): the rail section's REST
+        // span, measured by the capture pane before its offset applies, and the offset this scope
+        // resolves against the preview's bottom edge. Same root-at-window-origin coordinates as
+        // [previewTopForChromePx] and the TopBar seam.
+        var railSectionTopPx by remember { mutableIntStateOf(0) }
+        var railSectionBottomPx by remember { mutableIntStateOf(0) }
+        var railSeamOffsetPx by remember { mutableIntStateOf(0) }
+        val eightDpSeamGapPx = with(LocalDensity.current) { 8.dp.roundToPx() }
         // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
         // must align with the image frame) lives in a box sized to the displayed preview aspect, so
         // the FULL capture field is always visible. Letterboxing at the Compose layer — instead of
@@ -746,17 +756,29 @@ fun CameraScreen(
                 bottomReservePx = bottomReserveForLayoutPx,
             )
             previewTopForChromePx = topOffsetPx
+            val previewBottomPx = topOffsetPx + previewHeightPx
+            railSeamOffsetPx = bottomRailSeamOffsetPx(
+                previewBottomPx = previewBottomPx,
+                railTopPx = railSectionTopPx,
+                railBottomPx = railSectionBottomPx,
+                gapPx = eightDpSeamGapPx,
+            )
             // How far the preview runs BEHIND the bottom chrome, plus breathing room — the number
             // the Loupe Overview needs and the one no fraction of the preview box could stand in
             // for. Measured, the preview overshoots the chrome by 13 dp on a 411 dp phone in 4:3
             // and 90 dp on a 941 dp tablet, so a fraction tuned on either shape sat the overview
             // on the focal rail on the other. Kept as a FRACTION of the preview height because GL
             // resolves the same rect in pixels from its own surface size; a fraction is the only
-            // form both can read without a unit conversion.
+            // form both can read without a unit conversion. A rail section the seam rule lifted
+            // onto the image is chrome on the image too: the overview must clear its new top.
             finderBottomClearanceFraction = if (previewHeightPx > 0) {
-                val previewBottomPx = topOffsetPx + previewHeightPx
                 val chromeTopPx = constraints.maxHeight - bottomReserveForLayoutPx
-                val overshootPx = (previewBottomPx - chromeTopPx).coerceAtLeast(0)
+                val liftedRailTopPx = if (railSeamOffsetPx < 0) {
+                    railSectionTopPx + railSeamOffsetPx
+                } else {
+                    Int.MAX_VALUE
+                }
+                val overshootPx = (previewBottomPx - minOf(chromeTopPx, liftedRailTopPx)).coerceAtLeast(0)
                 (overshootPx + sixteenDpPx).toFloat() / previewHeightPx
             } else 0f
             // Push to the engine so GL scissors the overview to the same rect this border draws.
@@ -1417,55 +1439,73 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // M shows its exposure triple at all times; with the info overlay open the Fn chips
-                // already carry the same values, so the line would only duplicate them.
-                if (!detailsVisible && state.controls.exposureMode == ExposureMode.MANUAL) {
-                    ManualExposureReadout(
-                        text = manualExposureReadout(
-                            apertureF = state.caps?.lensApertureF,
-                            exposureNs = state.controls.effectiveExposureNs(),
-                            iso = state.controls.iso,
-                        ),
-                    )
-                }
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
-                    // concepts — the selfie route has exactly one lens, so a disabled rail would
-                    // advertise choices that cannot exist (same rationale as the TELE chip).
-                    if (state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.BACK && state.cameraRoutes.back) {
-                        FocalRail(
-                            state = state,
-                            onLens = actions::onLens,
-                            onTeleZoomMark = actions::onTeleZoomMark,
-                            glyphRotation = overlayRotation,
-                            modifier = Modifier.fillMaxWidth(),
+                // The RAIL SECTION (readout + focal rail + Fn) is one piece of chrome for the bottom
+                // seam rule ([bottomRailSeamOffsetPx]): when the preview's bottom edge would cut
+                // through it, it lifts onto the image as a unit. Measured BEFORE the offset (outer
+                // modifier), so the rule always tests the rest span and the lift cannot feed back
+                // into its own input; offset, not padding, so the cluster's height — and with it
+                // [previewTopPx]'s reserve — is unchanged.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { coordinates ->
+                            val top = coordinates.positionInRoot().y.roundToInt()
+                            railSectionTopPx = top
+                            railSectionBottomPx = top + coordinates.size.height
+                        }
+                        .offset { IntOffset(0, railSeamOffsetPx) },
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // M shows its exposure triple at all times; with the info overlay open the Fn chips
+                    // already carry the same values, so the line would only duplicate them.
+                    if (!detailsVisible && state.controls.exposureMode == ExposureMode.MANUAL) {
+                        ManualExposureReadout(
+                            text = manualExposureReadout(
+                                apertureF = state.caps?.lensApertureF,
+                                exposureNs = state.controls.effectiveExposureNs(),
+                                iso = state.controls.iso,
+                            ),
                         )
                     }
-                    if (!detailsVisible) {
-                        // Residual, not raw gravity — see the FnOverlay note: with the window free to
-                        // turn, gravity alone would move Fn to the thumb edge of a layout that had
-                        // already moved. It also made two identical tablets disagree (Fn LEFT of the
-                        // chips on TB331FC, RIGHT on TB336ZU) purely from each one's stale flat-desk
-                        // gravity hold.
-                        val entryAnchor = fnEntryAnchor(overlayRotation.roundToInt())
-                        CompactFnButton(
-                            onClick = {
-                                modalFocusOrigin = ModalFocusOrigin.FUNCTION_MENU
-                                currentActions.value.onCameraInputBlockedChange(true)
-                                fnOverlayVisible = true
-                            },
-                            glyphRotation = overlayRotation,
-                            modifier = Modifier
-                                .focusRequester(functionMenuFocusRequester)
-                                .then(when (entryAnchor) {
-                                FnEntryAnchor.START -> Modifier
-                                    .align(AbsoluteAlignment.CenterLeft)
-                                    .absolutePadding(left = 12.dp)
-                                FnEntryAnchor.END -> Modifier
-                                    .align(AbsoluteAlignment.CenterRight)
-                                    .absolutePadding(right = 12.dp)
-                                }),
-                        )
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
+                        // concepts — the selfie route has exactly one lens, so a disabled rail would
+                        // advertise choices that cannot exist (same rationale as the TELE chip).
+                        if (state.activeCameraRoute == me.hletrd.telecampro.camera.CameraRoute.BACK && state.cameraRoutes.back) {
+                            FocalRail(
+                                state = state,
+                                onLens = actions::onLens,
+                                onTeleZoomMark = actions::onTeleZoomMark,
+                                glyphRotation = overlayRotation,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        if (!detailsVisible) {
+                            // Residual, not raw gravity — see the FnOverlay note: with the window free to
+                            // turn, gravity alone would move Fn to the thumb edge of a layout that had
+                            // already moved. It also made two identical tablets disagree (Fn LEFT of the
+                            // chips on TB331FC, RIGHT on TB336ZU) purely from each one's stale flat-desk
+                            // gravity hold.
+                            val entryAnchor = fnEntryAnchor(overlayRotation.roundToInt())
+                            CompactFnButton(
+                                onClick = {
+                                    modalFocusOrigin = ModalFocusOrigin.FUNCTION_MENU
+                                    currentActions.value.onCameraInputBlockedChange(true)
+                                    fnOverlayVisible = true
+                                },
+                                glyphRotation = overlayRotation,
+                                modifier = Modifier
+                                    .focusRequester(functionMenuFocusRequester)
+                                    .then(when (entryAnchor) {
+                                    FnEntryAnchor.START -> Modifier
+                                        .align(AbsoluteAlignment.CenterLeft)
+                                        .absolutePadding(left = 12.dp)
+                                    FnEntryAnchor.END -> Modifier
+                                        .align(AbsoluteAlignment.CenterRight)
+                                        .absolutePadding(right = 12.dp)
+                                    }),
+                            )
+                        }
                     }
                 }
 

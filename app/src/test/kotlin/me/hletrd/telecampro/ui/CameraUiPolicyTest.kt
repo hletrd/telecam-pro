@@ -304,6 +304,36 @@ class CameraUiPolicyTest {
         assertEquals((3168 - 1920) / 2, top)          // no reserve yet -> centered, not sunk
     }
 
+    // bottomRailSeamOffsetPx: the rail section sits wholly on the band or wholly on the image. Numbers
+    // are the PMA110 PHOTO 4:3 screen at the owner's display size (2026-10-25): preview bottom 2430 px,
+    // rail section (Fn circle) 2408..2531 px, 8 dp = 28 px.
+
+    @Test
+    fun `a preview edge through the rail lifts the rail wholly onto the image`() {
+        val offset = bottomRailSeamOffsetPx(previewBottomPx = 2430, railTopPx = 2408, railBottomPx = 2531, gapPx = 28)
+        assertEquals(2430 - 28 - 2531, offset)       // rail bottom lands 8 dp above the edge
+        assertTrue(offset < 0)
+    }
+
+    @Test
+    fun `a preview edge merely touching the rail top also lifts it`() {
+        // 2 px above the rail: no pixel overlaps, but the chips would sit glued to the image edge.
+        assertTrue(bottomRailSeamOffsetPx(previewBottomPx = 2406, railTopPx = 2408, railBottomPx = 2531, gapPx = 28) < 0)
+    }
+
+    @Test
+    fun `a preview that clears the rail or covers it leaves it in place`() {
+        // Clears with room: the 4:3 preview on a tall phone, the rail wholly on the band.
+        assertEquals(0, bottomRailSeamOffsetPx(previewBottomPx = 2300, railTopPx = 2408, railBottomPx = 2531, gapPx = 28))
+        // Covers with room: 16:9, the whole cluster already on the image.
+        assertEquals(0, bottomRailSeamOffsetPx(previewBottomPx = 2840, railTopPx = 2408, railBottomPx = 2531, gapPx = 28))
+    }
+
+    @Test
+    fun `an unmeasured rail never moves`() {
+        assertEquals(0, bottomRailSeamOffsetPx(previewBottomPx = 2430, railTopPx = 0, railBottomPx = 0, gapPx = 28))
+    }
+
     @Test
     fun `frame-detail math is armed only where the tag could ever appear`() {
         // Stable, route-level refusals only. The per-frame gates (mid-scan, zoom gesture, stale

@@ -628,6 +628,32 @@ internal fun previewTopPx(
     return min(centerTop, max(topChromeMinPx, clearingTop))
 }
 
+/**
+ * Vertical offset (px, never positive) for the bottom cluster's RAIL SECTION — the M exposure
+ * readout, the focal rail and the compact Fn button. The bottom twin of the TopBar seam rule: chrome
+ * sits wholly on the image or wholly on the band, never across the edge.
+ *
+ * [previewTopPx] lifts a 4:3 preview to clear the cluster but may not climb into the top chrome, so
+ * where status bar + top row + the 3:4 image + the cluster outgrow the window, the image's bottom
+ * edge lands INSIDE the rail row. Device-seen on PMA110 at the owner's display size (411 x 905 dp,
+ * 2026-10-25): the edge ran along the top of the zoom chips and through the Fn circle, reported as a
+ * broken PHOTO layout. The band below is what is too short, so the section moves UP onto the image,
+ * its bottom [gapPx] above the edge, exactly when its rest span — widened by [gapPx] so a bare touch
+ * counts too — contains the edge. 16:9 (the whole cluster already on the image) and any preview that
+ * clears the cluster answer 0. [railTopPx]/[railBottomPx] are the section's REST span (measured
+ * before the offset is applied), in the same coordinates as [previewBottomPx].
+ */
+internal fun bottomRailSeamOffsetPx(
+    previewBottomPx: Int,
+    railTopPx: Int,
+    railBottomPx: Int,
+    gapPx: Int,
+): Int {
+    if (railBottomPx <= railTopPx) return 0
+    val straddles = previewBottomPx > railTopPx - gapPx && previewBottomPx < railBottomPx + gapPx
+    return if (straddles) previewBottomPx - gapPx - railBottomPx else 0
+}
+
 internal data class FocalRailState(
     val selected: Boolean,
     val enabled: Boolean,
