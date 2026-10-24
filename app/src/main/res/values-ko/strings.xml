@@ -213,6 +213,7 @@
     <string name="status_still_capture_unavailable">사진 촬영을 사용할 수 없습니다</string>
     <string name="status_processed_still_unavailable_dng_only">HEIF/JPEG를 사용할 수 없음 · DNG만 가능</string>
     <string name="status_raw_unavailable">RAW를 사용할 수 없습니다</string>
+    <string name="status_dng_without_digital_zoom">DNG는 디지털 줌 없이 저장됩니다</string>
     <string name="status_finishing_previous_photo">이전 사진을 마무리하는 중</string>
     <string name="status_photo_capture_failed">사진 촬영에 실패했습니다</string>
     <string name="status_photo_save_failed">사진 저장에 실패했습니다</string>

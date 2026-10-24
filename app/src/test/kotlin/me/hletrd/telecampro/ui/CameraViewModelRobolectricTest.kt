@@ -996,6 +996,46 @@ class CameraViewModelRobolectricTest {
         )
     }
 
+    // Owner decision 2026-10-25: a DNG keeps the lens's full field (Camera2 never crops RAW by the
+    // zoom ratio). The notice rides a `_state` observer on Dispatchers.Main, so this drives it through
+    // real state writes: silent baseline, once on entry, never per zoom tick, again only after leaving.
+    @Test fun `DNG digital-zoom notice is published once per entry into the state`() {
+        val (v, _) = createViewModel()
+        fun shown(): Boolean {
+            idleFor(0)
+            val message = v.state.value.status?.message
+            setState(v) { it.copy(status = null) }
+            return message == CameraStatusMessage.DNG_WITHOUT_DIGITAL_ZOOM
+        }
+        fun zoom(ratio: Float) = setState(v) { it.copy(controls = it.controls.copy(zoomRatio = ratio)) }
+        setState(v) {
+            it.copy(
+                mode = CaptureMode.PHOTO,
+                cameraReady = true,
+                teleconverterMode = true,
+                lens = LensChoice.TELE3X,
+                photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true),
+                photoSessionOutputs = PhotoSessionOutputs(processed = true, raw = true),
+                controls = it.controls.copy(zoomRatio = 1f),
+            )
+        }
+        assertFalse("the 13× baseline (lens-local 1.0) matches the DNG", shown())
+        zoom(2.33f)
+        assertTrue("30× enters the state", shown())
+        zoom(2.4f)
+        assertFalse("a zoom tick inside the state never reposts", shown())
+        zoom(4.67f)
+        assertFalse(shown())
+        zoom(1f)
+        assertFalse("leaving is silent", shown())
+        zoom(4.67f)
+        assertTrue("leaving re-armed it", shown())
+        setState(v) { it.copy(photoFormats = PhotoFormats()) }
+        assertFalse("DNG off leaves the state", shown())
+        setState(v) { it.copy(photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true)) }
+        assertTrue("DNG on while zoomed enters it", shown())
+    }
+
     // AGG5-11 / TE5-10: the edge latches only when the plate SHOWED the notice. Dropped under an
     // unexpired retained-take line, it used to latch anyway and no later Ready re-announced it.
     @Test fun `DNG-only notice dropped under a retained take is announced by the next Ready`() {

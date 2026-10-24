@@ -38,6 +38,7 @@ internal fun CameraStatusMessage.stringResourceId(): Int = when (this) {
     CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE -> R.string.status_still_capture_unavailable
     CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY -> R.string.status_processed_still_unavailable_dng_only
     CameraStatusMessage.RAW_UNAVAILABLE -> R.string.status_raw_unavailable
+    CameraStatusMessage.DNG_WITHOUT_DIGITAL_ZOOM -> R.string.status_dng_without_digital_zoom
     CameraStatusMessage.FINISHING_PREVIOUS_PHOTO -> R.string.status_finishing_previous_photo
     CameraStatusMessage.PHOTO_CAPTURE_FAILED -> R.string.status_photo_capture_failed
     CameraStatusMessage.PHOTO_SAVE_FAILED -> R.string.status_photo_save_failed

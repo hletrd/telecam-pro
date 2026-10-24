@@ -222,6 +222,7 @@
     <string name="status_still_capture_unavailable">Still capture unavailable</string>
     <string name="status_processed_still_unavailable_dng_only">HEIF/JPEG unavailable · DNG only</string>
     <string name="status_raw_unavailable">RAW unavailable</string>
+    <string name="status_dng_without_digital_zoom">DNG saves without digital zoom</string>
     <string name="status_finishing_previous_photo">Finishing previous photo</string>
     <string name="status_photo_capture_failed">Photo capture failed</string>
     <string name="status_photo_save_failed">Photo save failed</string>

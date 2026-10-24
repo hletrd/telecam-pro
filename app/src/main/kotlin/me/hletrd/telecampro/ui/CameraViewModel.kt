@@ -16,6 +16,7 @@ import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import me.hletrd.telecampro.camera.Antibanding
 import me.hletrd.telecampro.camera.AfIndication
 import me.hletrd.telecampro.camera.AspectRatio
@@ -45,6 +46,8 @@ import me.hletrd.telecampro.MemoryBankAudioProvenance
 import me.hletrd.telecampro.bankAudioOffByDenial
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.dngOnlySubstitution
+import me.hletrd.telecampro.camera.DngDigitalZoomNotice
+import me.hletrd.telecampro.camera.dngZoomFraming
 import me.hletrd.telecampro.camera.RawLossAnnouncement
 import me.hletrd.telecampro.camera.rawLossAnnouncementAtReady
 import me.hletrd.telecampro.camera.cameraPolicyPublishedState
@@ -152,9 +155,14 @@ import me.hletrd.telecampro.video.AudioRouteStatus
 import me.hletrd.telecampro.video.CodecInventory
 import me.hletrd.telecampro.video.EncoderCaps
 import me.hletrd.telecampro.video.audioUnavailableLabel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import java.lang.ref.WeakReference
 
@@ -784,6 +792,11 @@ class CameraViewModel private constructor(
     // MRG5-1). The Engine used to latch this at emission, so a notice dropped under an unexpired
     // ERROR was lost for that shape for good; the fold now latches it only when shown.
     private var rawLossAnnouncedShape: String? = null
+    // Main-confined: the "DNG saves without digital zoom" edge latch (DngDigitalZoom.kt), fed by
+    // [dngDigitalZoomObserver] below. Cancelled explicitly in onCleared: host tests clear this
+    // ViewModel through onCleared alone, which never closes viewModelScope.
+    private val dngDigitalZoomNotice = DngDigitalZoomNotice()
+    private var dngDigitalZoomObserver: Job? = null
     // The plate's off-screen parts (AGG4-65 / AGG5-11): a PROGRESS condition waiting behind an event,
     // a higher event a RESPONSE is covering, and when the shown status expires (uptime ms). `shown`
     // itself lives in `_state.status`. Guarded by the camera-ready publication gate's status
@@ -1504,6 +1517,25 @@ class CameraViewModel private constructor(
         }
         refreshMemorySlotInfo()
         refreshStandbyAudioMeter()
+        // A DNG never carries digital zoom (DngDigitalZoom.kt). Derived from the WHOLE state rather
+        // than hooked into each door: zoom, the DNG chip, TELE, lens, mode, MR recall, restore,
+        // rollback and the Ready fold all move one of its inputs, and a missed door would be a
+        // missed notice. map + distinctUntilChanged keeps the ~60 Hz pinch ticks and the telemetry
+        // emissions from reaching the latch at all — only a change of the classified framing does.
+        // Dispatchers.Main, NOT viewModelScope's Main.immediate: an immediate resume runs INSIDE the
+        // emitting `_state.update`, i.e. inside publishStatus's status monitor and before its timer
+        // arm, and this collector publishes a status of its own. Started after the restore above,
+        // so its first Ready observation already carries the restored packet (the latch's baseline).
+        dngDigitalZoomObserver = viewModelScope.launch(Dispatchers.Main) {
+            _state
+                .map { it.dngZoomFraming(rawForcesStandalone = engine.rawForcesStandalone) }
+                .distinctUntilChanged()
+                .collect { framing ->
+                    if (!cleared && dngDigitalZoomNotice.observe(framing)) {
+                        showStatus(CameraStatusMessage.DNG_WITHOUT_DIGITAL_ZOOM)
+                    }
+                }
+        }
     }
 
     private fun restoreLatestPublishedCapture() {
@@ -4975,6 +5007,8 @@ class CameraViewModel private constructor(
 
     override fun onCleared() {
         cleared = true
+        dngDigitalZoomObserver?.cancel()
+        dngDigitalZoomObserver = null
         infoRefresh.stop()
         // Completion posts and teardown share main. Close first so a queued provider result cannot
         // publish, then remove its already-posted Runnable with every other stale ViewModel task.

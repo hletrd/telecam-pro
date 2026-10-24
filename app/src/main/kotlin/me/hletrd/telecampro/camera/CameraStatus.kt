@@ -32,6 +32,7 @@ enum class CameraStatusMessage {
     STILL_CAPTURE_UNAVAILABLE,
     PROCESSED_STILL_UNAVAILABLE_DNG_ONLY,
     RAW_UNAVAILABLE,
+    DNG_WITHOUT_DIGITAL_ZOOM,
     FINISHING_PREVIOUS_PHOTO,
     PHOTO_CAPTURE_FAILED,
     PHOTO_SAVE_FAILED,
@@ -133,6 +134,9 @@ fun CameraStatusMessage.status(
         CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON,
         CameraStatusMessage.DELETE_CANCELED,
         CameraStatusMessage.FILE_ALREADY_REMOVED,
+        // A fact about the file, not a fault (DngDigitalZoom.kt): the DNG is the sensor's own field
+        // and saves; only the digital zoom stays in the HEIF/JPEG. Polite, 2.5 s, once per entry.
+        CameraStatusMessage.DNG_WITHOUT_DIGITAL_ZOOM,
         -> CameraStatusSeverity.INFO
 
         CameraStatusMessage.VIDEO_SAVED,
