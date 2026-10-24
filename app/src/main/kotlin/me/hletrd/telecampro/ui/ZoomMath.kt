@@ -11,10 +11,11 @@ import me.hletrd.telecampro.camera.localZoomOf
 import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
-import me.hletrd.telecampro.ui.controls.LENS_CAPTION_ROUNDING_BAND
+import me.hletrd.telecampro.camera.LENS_CAPTION_ROUNDING_BAND
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
 import me.hletrd.telecampro.camera.standaloneRouteWanted
+import me.hletrd.telecampro.camera.standaloneMainDivisorMm
 import me.hletrd.telecampro.camera.teleDisplayBase
 import kotlin.math.abs
 import kotlin.math.max
@@ -24,8 +25,9 @@ import java.util.Locale
 internal data class ZoomBounds(val lower: Float, val upper: Float)
 
 /**
- * The ONE main-relative zoom DISPLAY multiplier (DES4-1): TELE uses the converter scale (13–60×
- * round numbers on the kit optic; the caps-measured 69.4 mm would read 59.5× at the 60× ceiling),
+ * The ONE main-relative zoom DISPLAY multiplier (DES4-1): TELE uses the converter scale
+ * ([teleDisplayBase]: 13–60× round numbers on the kit optic; the caps-measured 69.4 mm would read
+ * 59.5× at the 60× ceiling),
  * other standalone routes use openedLensEquiv ÷ measured mainEquiv (≈3.0× at the 3× tele's native
  * position). The HUD pill, the Fn/My-Menu ZOOM value, the Quick Zoom ruler ([zoomRulerScale],
  * AGG4-73) and the Shoot-tab Zoom slider (AGG5-12) MUST all read through this — the Fn tile used to
@@ -43,15 +45,16 @@ internal data class ZoomBounds(val lower: Float, val upper: Float)
  * dividing PMA110's 23.4 mm main by itself moved every PMA110 standalone readout by ~1.7% and read
  * the 230 mm lens as "9.8×" while the rail and `unifiedZoomOf` called it 10× (MRG5-4).
  *
- * [teleconverterMagnification] is the SELECTED converter's magnification (CameraUiState.
- * teleconverterMagnification). It is an explicit parameter, never a global read, so this whole file
- * stays pure and JVM-testable — and so a caller can never silently display the kit optic's scale
- * while a different converter is mounted. No parameter has a default (AGG4-47 / AGG5-50): an
+ * [teleDisplayBase] is the SELECTED converter's whole display scale (`CameraUiState.
+ * teleDisplayBase`: magnification × declared-or-measured host tele ÷ the main divisor). It is an
+ * explicit parameter, never a global read, so this whole file stays pure and JVM-testable — and so
+ * a caller can never silently display the kit optic's scale, or PMA110's 70 ÷ 23 lens ratio, while a
+ * different converter or phone is in force. No parameter has a default (AGG4-47 / AGG5-50): an
  * omitted route input used to compile into the PMA110 answer.
  */
 internal fun zoomDisplayMultiplier(
     teleconverter: Boolean,
-    teleconverterMagnification: Float,
+    teleDisplayBase: Float,
     equivalentFocalMm: Float?,
     frontFacing: Boolean,
     activeRoute: CameraRoute?,
@@ -62,25 +65,12 @@ internal fun zoomDisplayMultiplier(
     // front camera has no place on it — front-equiv ÷ main-equiv would read "0.9×" at the selfie
     // 1× — so front zoom displays as its honest lens-local ratio.
     activeRoute?.lensLocalZoom == true || frontFacing -> 1f
-    teleconverter -> teleDisplayBase(teleconverterMagnification)
+    teleconverter -> teleDisplayBase
     !standaloneRoute -> 1f
     else -> {
         val main = standaloneMainDivisorMm(measuredMainEquivMm)
         (equivalentFocalMm?.takeIf { it.isFinite() && it > 0f } ?: main) / main
     }
-}
-
-/**
- * The standalone display divisor (MRG5-4): the same rule `lensFocalCaption` applies to the "23 mm"
- * literal. Within [LENS_CAPTION_ROUNDING_BAND] of the nominal main, the nominal IS that lens's round
- * label, so PMA110 (23.4 mm) keeps dividing by 23 and stays byte-identical; outside it the measured
- * main is the truth (a 26 or 27 mm tablet main reads "1.0×"). Unknown, zero or non-finite measured
- * values fall back to the nominal, as before the inventory arrives.
- */
-internal fun standaloneMainDivisorMm(measuredMainEquivMm: Float?): Float {
-    val nominal = LensChoice.MAIN.targetEquivMm
-    val measured = measuredMainEquivMm?.takeIf { it.isFinite() && it > 0f } ?: return nominal
-    return if (kotlin.math.abs(measured - nominal) > nominal * LENS_CAPTION_ROUNDING_BAND) measured else nominal
 }
 
 /**
@@ -92,7 +82,7 @@ internal fun standaloneMainDivisorMm(measuredMainEquivMm: Float?): Float {
 internal val CameraUiState.mainRelativeZoomMultiplier: Float
     get() = zoomDisplayMultiplier(
         teleconverter = teleconverterMode,
-        teleconverterMagnification = teleconverterMagnification,
+        teleDisplayBase = teleDisplayBase,
         equivalentFocalMm = displayedRouteEquivMm,
         frontFacing = facing == CameraFacing.FRONT,
         activeRoute = activeCameraRoute,
@@ -178,19 +168,21 @@ internal fun formatDisplayZoom(localZoomRatio: Float, displayMultiplier: Float):
  *
  * The TELE ceiling is a cap on TOTAL magnification ([TELE_MAX_DISPLAY_ZOOM]), so the LOCAL ceiling
  * it produces moves inversely with the converter: a weaker optic earns more digital zoom before
- * reaching the same total. Live caps still narrow it below.
+ * reaching the same total. Live caps still narrow it below. [teleDisplayBase] is the converter's
+ * whole display scale (`CameraUiState.teleDisplayBase`), so the ceiling also follows the host and
+ * main lenses this phone actually has, not PMA110's 70 ÷ 23.
  */
 internal fun effectiveZoomBounds(
     capsLower: Float?,
     capsUpper: Float?,
     teleconverter: Boolean,
-    teleconverterMagnification: Float,
+    teleDisplayBase: Float,
 ): ZoomBounds? {
     if (!teleconverter) {
         if (capsLower == null || capsUpper == null || capsLower > capsUpper) return null
         return ZoomBounds(capsLower, capsUpper)
     }
-    val teleUpper = TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification)
+    val teleUpper = TELE_MAX_DISPLAY_ZOOM / teleDisplayBase
     val lower = max(1f, capsLower ?: 1f)
     val upper = min(teleUpper, capsUpper ?: teleUpper)
     return if (lower <= upper) ZoomBounds(lower, upper) else ZoomBounds(upper, upper)
@@ -217,11 +209,11 @@ internal fun effectiveZoomBounds(
 internal fun teleZoomMarks(
     capsLower: Float?,
     capsUpper: Float?,
-    teleconverterMagnification: Float,
+    teleDisplayBase: Float,
 ): List<Float> {
-    val base = teleDisplayBase(teleconverterMagnification)
+    val base = teleDisplayBase
     if (!base.isFinite() || base <= 0f) return emptyList()
-    val bounds = effectiveZoomBounds(capsLower, capsUpper, true, teleconverterMagnification)
+    val bounds = effectiveZoomBounds(capsLower, capsUpper, true, base)
         ?: return emptyList()
     val floor = bounds.lower * base
     val ceiling = bounds.upper * base
@@ -267,14 +259,15 @@ internal fun normalizeZoomRequest(
     currentApplied: Float,
     bounds: ZoomBounds?,
     teleconverter: Boolean,
-    teleconverterMagnification: Float,
+    teleDisplayBase: Float,
 ): Float {
     var value = bounds?.let { requested.coerceIn(it.lower, it.upper) } ?: requested
     if (!teleconverter || !value.isFinite()) return value
 
     // The marks are TOTAL-magnification numbers (30×/60×), so the local ratio they correspond to
-    // depends on the mounted converter — derive the scale once and use it for both directions.
-    val displayBase = teleDisplayBase(teleconverterMagnification)
+    // depends on the mounted converter AND its host/main lenses — the caller derives that scale
+    // once ([teleDisplayBase]) and it is used for both directions.
+    val displayBase = teleDisplayBase
     val requestedDisplay = value * displayBase
     val currentDisplay = currentApplied * displayBase
     val snap = TELE_ZOOM_SNAPS.firstOrNull { mark ->
@@ -589,7 +582,11 @@ internal fun restoredOptics(
     mode: CaptureMode,
     requestedLens: LensChoice,
     teleconverter: Boolean,
-    teleconverterMagnification: Float,
+    /**
+     * The RESTORED declaration's display scale (`TeleconverterDeclaration.displayBase`) — the
+     * magnification and host focal restored WITH this packet, never the outgoing ones.
+     */
+    teleDisplayBase: Float,
     savedZoomRatio: Float,
     /**
      * Whether the restored PHOTO route is a standalone lens (wanting DNG moves photo off the logical
@@ -612,10 +609,11 @@ internal fun restoredOptics(
             teleconverter = true,
             // Same converter-dependent local ceiling as effectiveZoomBounds: a persisted ratio that
             // was legal under one converter can exceed the total-magnification cap under a stronger
-            // one, so restore clamps against the magnification being restored WITH it.
+            // one (or on a longer host lens), so restore clamps against the scale being restored
+            // WITH it.
             zoomRatio = safeZoom.coerceIn(
                 1f,
-                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase,
             ),
         )
     }

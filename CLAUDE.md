@@ -666,8 +666,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the 80 mm Magic9). Plus the generic 1.5/2/3× clip-ons, CUSTOM, and the
   pure helpers (`effectiveMagnification`, `normalizeMagnification`, `detectPhone`,
   `defaultConverterFor`, `reconcileConverter`, `effectiveFocalMm`) plus
-  `teleDisplayBase(magnification)` — the function that REPLACED the top-level `TELE_DISPLAY_BASE`
-  val. `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default and as the anchor every
+  `teleDisplayBase(magnification, hostTeleEquivMm, mainEquivMm)` — the function that REPLACED the
+  top-level `TELE_DISPLAY_BASE` val; its host is the SAME declared-or-measured host the focal uses and
+  its main is `standaloneMainDivisorMm` (PMA110 stays 70 ÷ 23; read only via
+  `CameraUiState.teleDisplayBase` / `TeleconverterDeclaration.displayBase`).
+  `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default and as the anchor every
   older test and document quotes. A kit's `magnification` derives from the telephoto its GLASS was
   designed for (`designHostMm`, else its own host phone), never the selected one: moving glass to
   another body does not regrind it. Consumers read `CameraUiState.teleconverterMagnification` /
@@ -696,7 +699,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      capabilities (`CameraSelector2` picks by measured equivalent focal, never by id). No
      capability, route, or request decision may branch on a model string.
   4. **`TELE_MAX_DISPLAY_ZOOM` (60×) stays FIXED and does not scale with the converter.** It caps
-     TOTAL magnification, so the local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(m)`)
+     TOTAL magnification, so the local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`)
      widens as the converter weakens — a 2× converter earns nearly the full 1–10× digital range,
      and ordinary capability reconciliation clamps whatever the lens cannot actually deliver.
   5. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter

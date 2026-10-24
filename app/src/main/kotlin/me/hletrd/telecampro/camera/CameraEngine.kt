@@ -606,7 +606,7 @@ class CameraEngine internal constructor(
             capabilities = cameraCaps.controlCapabilities(),
             mode = mode,
             teleconverter = teleconverterMode,
-            teleconverterMagnification = teleconverterMagnification,
+            teleDisplayBase = teleDisplayBase,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
@@ -1473,6 +1473,17 @@ class CameraEngine internal constructor(
     @Volatile private var acceptedOpticalPresets: Set<LensChoice> = LensInventory.ALL.optical
 
     /**
+     * The inventory's MEASURED main-lens focal, retained for the same reason as
+     * [acceptedOpticalPresets]: TELE's local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`)
+     * divides by the main divisor ([standaloneMainDivisorMm]), and the ViewModel reads the very same
+     * measurement from the published inventory (`CameraUiState.teleDisplayBase`). Null until the
+     * enumeration runs — the same "no measurement" the VM's `LensInventory.ALL` placeholder carries,
+     * so both sides divide by the nominal 23 mm until then. PMA110's ~23.4 mm main stays inside the
+     * rounding band, so its ceiling never moves.
+     */
+    @Volatile private var acceptedMainEquivMm: Float? = null
+
+    /**
      * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.
      * Runs on [setupExecutor] (several Binder IPCs) beside the other one-shot enumerations, and the
      * zoom half reads the PHOTO-HOME route's advertised range — device-static like the lens list,
@@ -1501,6 +1512,7 @@ class CameraEngine internal constructor(
         }
         val inventory = lensInventoryOf(equivalents, range)
         acceptedOpticalPresets = inventory.optical
+        acceptedMainEquivMm = inventory.presetEquivMm[LensChoice.MAIN]
         // acceptedOpticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder
         // resolves FINDER_MIN_ZOOM against unifiedZoomOf(..., optical = acceptedOpticalPresets).
         // Enumeration is
@@ -1812,6 +1824,12 @@ class CameraEngine internal constructor(
         get() = teleconverterDeclaration.magnification
     private val teleconverterHostEquivMm: Float
         get() = teleconverterDeclaration.hostTeleEquivMm
+    // TELE's TOTAL-magnification scale, read from ONE declaration snapshot (magnification + host
+    // focal travel together, so a concurrent MR recall can never pair halves) over the measured main
+    // the ViewModel's `CameraUiState.teleDisplayBase` divides by — the engine's local ceiling and the
+    // UI's marks/snaps/pill therefore agree on every phone, not only on PMA110's nominal 70 ÷ 23.
+    private val teleDisplayBase: Float
+        get() = teleconverterDeclaration.displayBase(acceptedMainEquivMm)
     @Volatile private var videoMode = false
     // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
     // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
@@ -2989,7 +3007,7 @@ class CameraEngine internal constructor(
                                 capabilities = routeCaps.controlCapabilities(),
                                 mode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
                                 teleconverter = teleconverterMode,
-                                teleconverterMagnification = teleconverterMagnification,
+                                teleDisplayBase = teleDisplayBase,
                                 capsLower = range?.lower,
                                 capsUpper = range?.upper,
                             )
@@ -3157,7 +3175,7 @@ class CameraEngine internal constructor(
                             capabilities = routeCaps.controlCapabilities(),
                             mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
                             teleconverter = routeTeleconverter,
-                            teleconverterMagnification = teleconverterMagnification,
+                            teleDisplayBase = teleDisplayBase,
                             capsLower = range?.lower,
                             capsUpper = range?.upper,
                         )
@@ -4999,7 +5017,7 @@ class CameraEngine internal constructor(
         val hi = if (teleconverterMode) {
             minOf(
                 r?.upper ?: Float.MAX_VALUE,
-                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase,
             )
         } else {
             r?.upper ?: Float.MAX_VALUE
@@ -5075,7 +5093,7 @@ class CameraEngine internal constructor(
         val hi = if (teleconverterMode) {
             minOf(
                 r?.upper ?: Float.MAX_VALUE,
-                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase,
             )
         } else {
             r?.upper ?: Float.MAX_VALUE

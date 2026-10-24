@@ -7,9 +7,10 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.LensInventory
+import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
-import me.hletrd.telecampro.camera.teleDisplayBase
+import me.hletrd.telecampro.camera.TeleconverterProfile
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -37,6 +38,8 @@ class MainRelativeZoomMultiplierRobolectricTest {
         rawForcesStandalone: Boolean = true,
         inventory: LensInventory = pmaInventory,
         teleconverter: Boolean = false,
+        phone: PhoneModel = PhoneModel.FIND_X9_ULTRA,
+        converter: TeleconverterProfile = TeleconverterProfile.EXPLORER_300,
         facing: CameraFacing = CameraFacing.BACK,
         route: CameraRoute = CameraRoute.BACK,
         lens: LensChoice = LensChoice.MAIN,
@@ -49,6 +52,8 @@ class MainRelativeZoomMultiplierRobolectricTest {
         rawForcesStandalone = rawForcesStandalone,
         lensInventory = inventory,
         teleconverterMode = teleconverter,
+        phoneModel = phone,
+        teleconverterProfile = converter,
         facing = facing,
         activeCameraRoute = route,
         caps = ViewModelTestAccess.caps(zoomRatioRange = Range(1f, 10f), equivalentFocalMm = equivMm),
@@ -97,8 +102,10 @@ class MainRelativeZoomMultiplierRobolectricTest {
 
     @Test
     fun `TELE and FRONT keep their own scales`() {
+        // PMA110: the measured 23.4 mm main stays inside the band, so the converter scale is the
+        // historical (70 / 23) x 4.286 = 300 / 23 bit for bit.
         assertEquals(
-            teleDisplayBase(TELECONVERTER_MAGNIFICATION),
+            (70f / 23f) * TELECONVERTER_MAGNIFICATION,
             state(CaptureMode.PHOTO, equivMm = 69.4f, teleconverter = true).mainRelativeZoomMultiplier,
             0f,
         )
@@ -108,6 +115,22 @@ class MainRelativeZoomMultiplierRobolectricTest {
                 .mainRelativeZoomMultiplier,
             0f,
         )
+    }
+
+    @Test
+    fun `the TELE pill follows the declared 85 mm host, not PMA110's 70 mm`() {
+        // vivo X300 Ultra + ZEISS 4.7x: local 1.0 is 85 / 23 x (400 / 85) = 400 / 23 ≈ 17.4x total.
+        // The hardwired 70 mm host read the same framing as ≈ 14.3x while the focal said 400 mm.
+        val vivo = state(
+            CaptureMode.PHOTO,
+            equivMm = 85f,
+            teleconverter = true,
+            phone = PhoneModel.VIVO_X300_ULTRA,
+            converter = TeleconverterProfile.ZEISS_400,
+        )
+        assertEquals(400f / 23f, vivo.mainRelativeZoomMultiplier, 1e-4f)
+        assertEquals(vivo.teleDisplayBase, vivo.mainRelativeZoomMultiplier, 0f)
+        assertEquals("17.4×", formatDisplayZoom(1f, vivo.mainRelativeZoomMultiplier))
     }
 
     // AGG6-25: during the reopen a door started, `caps` are still the OUTGOING camera while the zoom

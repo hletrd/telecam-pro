@@ -8,6 +8,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ControlCapabilityNormalizationTest {
+    // The kit optic's TELE display scale on PMA110 (declared 70 mm host, nominal 23 mm main).
+    private val kitDisplayBase = teleDisplayBase(
+        TELECONVERTER_MAGNIFICATION,
+        PhoneModel.FIND_X9_ULTRA.teleEquivMm,
+        LensChoice.MAIN.targetEquivMm,
+    )
 
     @Test
     fun `route normalization makes a sparse fast recall stable before ready`() {
@@ -44,7 +50,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = caps,
             mode = CaptureMode.PHOTO,
             teleconverter = false,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+            teleDisplayBase = kitDisplayBase,
             capsLower = 1f,
             capsUpper = 8f,
         )
@@ -67,7 +73,7 @@ class ControlCapabilityNormalizationTest {
                 capabilities = caps,
                 mode = CaptureMode.PHOTO,
                 teleconverter = false,
-                teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+                teleDisplayBase = kitDisplayBase,
                 capsLower = 1f,
                 capsUpper = 8f,
             ),
@@ -209,7 +215,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = offOnly,
             mode = CaptureMode.VIDEO,
             teleconverter = false,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+            teleDisplayBase = kitDisplayBase,
             capsLower = 1f,
             capsUpper = 4f,
         )
@@ -244,7 +250,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = routeCaps,
             mode = CaptureMode.PHOTO,
             teleconverter = true,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+            teleDisplayBase = kitDisplayBase,
             capsLower = 1f,
             capsUpper = 10f,
         )
@@ -279,7 +285,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = normalRoute,
             mode = CaptureMode.VIDEO,
             teleconverter = false,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+            teleDisplayBase = kitDisplayBase,
             capsLower = 1f,
             capsUpper = 10f,
         )
@@ -534,7 +540,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = wideCaps,
             mode = CaptureMode.PHOTO,
             teleconverter = false,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+            teleDisplayBase = kitDisplayBase,
             capsLower = 1f,
             capsUpper = 20f,
         )
@@ -544,7 +550,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = narrowCaps,
             mode = CaptureMode.PHOTO,
             teleconverter = false,
-            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+            teleDisplayBase = kitDisplayBase,
             capsLower = 1f,
             capsUpper = 10f,
         )

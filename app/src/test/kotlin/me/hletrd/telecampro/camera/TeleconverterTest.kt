@@ -403,24 +403,161 @@ class TeleconverterTest {
         )
     }
 
+    // ---- Display base: (host tele ÷ main divisor) × magnification ----
+
+    // PMA110's inputs: the DECLARED Find X9 Ultra host and the main divisor its MEASURED ~23.4 mm
+    // main resolves to (inside the caption band, so the nominal 23 mm).
+    private val pma110Host = PhoneModel.FIND_X9_ULTRA.teleEquivMm
+    private val pma110Main = standaloneMainDivisorMm(23.4f)
+
+    // PMA110's device-measured back lenses (ultrawide / main / 3x periscope / 10x periscope).
+    private val pma110Inventory = lensInventoryOf(listOf(14f, 23.4f, 69.4f, 230f), 0.6f to 20f)
+
     @Test
     fun `tele display base reproduces the historical 13x at the kit magnification`() {
-        val base = teleDisplayBase(TELECONVERTER_MAGNIFICATION)
+        val base = teleDisplayBase(TELECONVERTER_MAGNIFICATION, pma110Host, pma110Main)
         assertEquals((70f / 23f) * (300f / 70f), base, 1e-4f)
         assertEquals(300f / 23f, base, 1e-4f)
     }
 
     @Test
+    fun `PMA110 display base is bit-identical to the 70 over 23 law it replaced`() {
+        // The one-argument body was exactly `(TELE3X.targetEquivMm / MAIN.targetEquivMm) * m`. Every
+        // converter a Find X9 Ultra can select must land on the SAME float bits through every reader
+        // — the free law, the declaration the ENGINE reads (its local ceiling), and the live UI state
+        // (marks, snaps, pill) — both before the inventory arrives and after it measures 23.4 mm.
+        val selections = PhoneModel.FIND_X9_ULTRA.converters()
+            .filterNot { it.isCustom }
+            .map { it to TELECONVERTER_MAGNIFICATION } +
+            listOf(1.1f, 2.5f, 4.286f, 7.3f, 10f).map { TeleconverterProfile.CUSTOM to it }
+        selections.forEach { (profile, custom) ->
+            val m = effectiveMagnification(profile, custom)
+            val legacy = (LensChoice.TELE3X.targetEquivMm / LensChoice.MAIN.targetEquivMm) * m
+            assertEquals(legacy.toRawBits(), teleDisplayBase(m, pma110Host, pma110Main).toRawBits())
+            listOf(LensInventory.ALL, pma110Inventory).forEach { inventory ->
+                val state = CameraUiState(
+                    phoneModel = PhoneModel.FIND_X9_ULTRA,
+                    teleconverterProfile = profile,
+                    teleconverterCustomMagnification = custom,
+                    lensInventory = inventory,
+                )
+                assertEquals("$profile/$custom UI", legacy.toRawBits(), state.teleDisplayBase.toRawBits())
+                val engine = teleconverterDeclaration(
+                    phone = PhoneModel.FIND_X9_ULTRA,
+                    profile = profile,
+                    customMagnification = custom,
+                    measuredOtherHostEquivMm = state.teleconverterHostEquivMm,
+                ).displayBase(inventory.presetEquivMm[LensChoice.MAIN])
+                assertEquals("$profile/$custom engine", legacy.toRawBits(), engine.toRawBits())
+            }
+        }
+    }
+
+    @Test
+    fun `an 85 mm host scales the total magnification by its own focal`() {
+        // vivo X300 Ultra + ZEISS 4.7x: the marks floor at 85/23 x 400/85 = 400/23 ≈ 17.4x. The
+        // hardwired 70 mm host drew ≈ 14.3x for the same glass while the focal readout said 400 mm.
+        val state = CameraUiState(
+            phoneModel = PhoneModel.VIVO_X300_ULTRA,
+            teleconverterProfile = TeleconverterProfile.ZEISS_400,
+        )
+        assertEquals(85f, state.teleconverterHostEquivMm, 0f)
+        assertEquals((85f / 23f) * (400f / 85f), state.teleDisplayBase, 1e-4f)
+        assertEquals(400f / 23f, state.teleDisplayBase, 1e-4f)
+        assertEquals(400f, state.teleconverterFocalMm, 1e-3f)
+        // The scale and the focal now agree: total magnification = effective focal ÷ main.
+        assertEquals(state.teleconverterFocalMm / 23f, state.teleDisplayBase, 1e-4f)
+        val hardwired = (70f / 23f) * TeleconverterProfile.ZEISS_400.magnification
+        assertTrue("85 mm host must not read the 70 mm scale", state.teleDisplayBase - hardwired > 3f)
+        // A host-dependent scale moves the local ceiling under the fixed 60x total cap.
+        assertEquals(60f / (400f / 23f), TELE_MAX_DISPLAY_ZOOM / state.teleDisplayBase, 1e-4f)
+        // The ZEISS 2.35x on the X200 Ultra's 85 mm periscope: 200/23 ≈ 8.7x.
+        val x200 = CameraUiState(
+            phoneModel = PhoneModel.VIVO_X200_ULTRA,
+            teleconverterProfile = TeleconverterProfile.ZEISS_200_X200,
+        )
+        assertEquals(200f / 23f, x200.teleDisplayBase, 1e-4f)
+    }
+
+    @Test
+    fun `an unrecognised phone uses its measured main and measured host`() {
+        // Lenovo TB336ZU: ONE 26 mm back lens, so the clip-on clamps onto the main itself and a
+        // generic 2x is a 2x total — not the 2 x 70/23 ≈ 6.1x the PMA110 lens ratio claimed.
+        val single = lensInventoryOf(listOf(26f), 1f to 8f)
+        val tablet = CameraUiState(
+            phoneModel = PhoneModel.OTHER,
+            teleconverterProfile = TeleconverterProfile.GENERIC_2,
+            lensInventory = single,
+        )
+        assertEquals(26f, tablet.teleconverterHostEquivMm, 0f)
+        assertEquals(2f, tablet.teleDisplayBase, 1e-6f)
+        // A measured 78 mm tele over the same out-of-band 26 mm main: 78/26 = 3x per unit of glass.
+        val twoLens = lensInventoryOf(listOf(26f, 78f), 1f to 8f)
+        val withTele = tablet.copy(lensInventory = twoLens)
+        assertEquals(78f, withTele.teleconverterHostEquivMm, 0f)
+        assertEquals((78f / 26f) * 2f, withTele.teleDisplayBase, 1e-5f)
+        // The engine reads the same law through the declaration over the same measurement.
+        listOf(tablet, withTele).forEach { state ->
+            val engine = teleconverterDeclaration(
+                phone = state.phoneModel,
+                profile = state.teleconverterProfile,
+                customMagnification = state.teleconverterCustomMagnification,
+                measuredOtherHostEquivMm = state.teleconverterHostEquivMm,
+            ).displayBase(state.lensInventory.presetEquivMm[LensChoice.MAIN])
+            assertEquals(state.teleDisplayBase.toRawBits(), engine.toRawBits())
+        }
+    }
+
+    @Test
+    fun `non-finite or non-positive lens inputs fall back to the nominal 70 over 23`() {
+        val nominal = teleDisplayBase(2f, 70f, 23f)
+        assertEquals(((70f / 23f) * 2f).toRawBits(), nominal.toRawBits())
+        listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, 0f, -70f).forEach { bad ->
+            assertEquals("host $bad", nominal.toRawBits(), teleDisplayBase(2f, bad, 23f).toRawBits())
+            assertEquals("main $bad", nominal.toRawBits(), teleDisplayBase(2f, 70f, bad).toRawBits())
+            assertEquals("both $bad", nominal.toRawBits(), teleDisplayBase(2f, bad, bad).toRawBits())
+        }
+        // A declaration with no (or a corrupt) measured main divides by the nominal 23 mm.
+        val declaration = teleconverterDeclaration(
+            phone = PhoneModel.FIND_X9_ULTRA,
+            profile = TeleconverterProfile.GENERIC_2,
+            customMagnification = TELECONVERTER_MAGNIFICATION,
+            measuredOtherHostEquivMm = Float.NaN,
+        )
+        listOf(null, Float.NaN, 0f, -1f).forEach { measured ->
+            assertEquals("main $measured", nominal.toRawBits(), declaration.displayBase(measured).toRawBits())
+        }
+        // OTHER with an unreadable host keeps the nominal 70 mm host the declaration falls back to.
+        val other = teleconverterDeclaration(
+            phone = PhoneModel.OTHER,
+            profile = TeleconverterProfile.GENERIC_2,
+            customMagnification = TELECONVERTER_MAGNIFICATION,
+            measuredOtherHostEquivMm = Float.POSITIVE_INFINITY,
+        )
+        assertEquals(nominal.toRawBits(), other.displayBase(null).toRawBits())
+    }
+
+    @Test
     fun `a weaker converter earns a higher local zoom ceiling under the fixed display cap`() {
         // The 60x ceiling is a cap on TOTAL magnification, so the digital headroom moves inversely.
-        val kitCeiling = TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(TELECONVERTER_MAGNIFICATION)
-        val weakCeiling = TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(2f)
+        val kitCeiling =
+            TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(TELECONVERTER_MAGNIFICATION, pma110Host, pma110Main)
+        val weakCeiling = TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(2f, pma110Host, pma110Main)
         assertTrue("weaker converter should allow more digital zoom", weakCeiling > kitCeiling)
         assertEquals(60f / (300f / 23f), kitCeiling, 1e-4f)
     }
 
     @Test
-    fun `display base scales linearly with magnification`() {
-        assertEquals(2f * teleDisplayBase(2f), teleDisplayBase(4f), 1e-4f)
+    fun `display base scales linearly with magnification and with the host focal`() {
+        assertEquals(
+            2f * teleDisplayBase(2f, pma110Host, pma110Main),
+            teleDisplayBase(4f, pma110Host, pma110Main),
+            1e-4f,
+        )
+        assertEquals(
+            (85f / 70f) * teleDisplayBase(2f, 70f, 23f),
+            teleDisplayBase(2f, 85f, 23f),
+            1e-4f,
+        )
     }
 }

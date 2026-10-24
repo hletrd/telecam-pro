@@ -17,6 +17,7 @@ import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HardwareKeyAction
+import me.hletrd.telecampro.camera.LENS_CAPTION_ROUNDING_BAND
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.ProcessingLevel
 import me.hletrd.telecampro.camera.ShutterMode
@@ -258,9 +259,6 @@ internal fun lensFocalCaption(
     }
     return formatFocalMm(honest)
 }
-
-/** Within this fraction of the preset, the round label IS the lens's own marketing focal. */
-internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
 
 
 /**

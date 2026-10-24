@@ -219,6 +219,16 @@ data class TeleconverterDeclaration(
 ) {
     val magnification: Float
         get() = effectiveMagnification(profile, customMagnification)
+
+    /**
+     * [teleDisplayBase] for THIS declaration on a device whose measured main lens is
+     * [measuredMainEquivMm] (the inventory's MAIN preset focal; null before enumeration). The
+     * declaration already owns the magnification and the host focal, so the engine and the
+     * settings/MR restore path read the scale through here instead of re-pairing halves —
+     * `CameraUiState.teleDisplayBase` is the same law over the live UI state.
+     */
+    internal fun displayBase(measuredMainEquivMm: Float?): Float =
+        teleDisplayBase(magnification, hostTeleEquivMm, standaloneMainDivisorMm(measuredMainEquivMm))
 }
 
 /** Builds a reconciled declaration whose named-phone host can never disagree with its identity. */
@@ -308,9 +318,31 @@ fun effectiveFocalMm(magnification: Float, baseEquivMm: Float = LensChoice.TELE3
     magnification * baseEquivMm
 
 /**
- * TELE mode's DISPLAY zoom scale (converter-equivalent, main-relative): local 1.0 on the 3× lens
- * with the 4.286× converter ≈ 13×. Formerly the top-level `TELE_DISPLAY_BASE` constant; it became a
- * function when the magnification became selectable.
+ * TELE mode's DISPLAY zoom scale (converter-equivalent, main-relative): local 1.0 on the converter's
+ * host lens is ([hostTeleEquivMm] ÷ [mainEquivMm]) × [magnification] — the 4.286× kit on PMA110's
+ * 70 mm periscope over its 23 mm main ≈ 13×. Formerly the top-level `TELE_DISPLAY_BASE` constant; it
+ * became a function when the magnification became selectable, and took its two lens focals when the
+ * converter stopped being PMA110-only.
+ *
+ * The one-argument form hardwired PMA110's NOMINAL 70 ÷ 23, so on every other host every TOTAL-
+ * magnification number was wrong while the focal readout beside it was right: ZEISS 4.7× on a vivo
+ * X300 Ultra's 85 mm periscope drew a "14×" floor instead of ~17×, and the 13×/30×/60× marks, the
+ * magnetic snaps, the pill and the local-zoom ceiling all inherited that error. The inputs are now
+ * the SAME ones the focal readout uses:
+ *  - [hostTeleEquivMm] is `CameraUiState.teleconverterHostEquivMm` / [TeleconverterDeclaration.
+ *    hostTeleEquivMm] — the DECLARED phone's tele for a named kit phone, the MEASURED host lens
+ *    ([LensInventory.teleHostEquivMm]) for [PhoneModel.OTHER];
+ *  - [mainEquivMm] is [standaloneMainDivisorMm] of the measured main — the nominal 23 mm while the
+ *    measured main is within [LENS_CAPTION_ROUNDING_BAND] of it, the measured main otherwise (the
+ *    same rule the standalone zoom pill divides by, so TC and non-TC readouts share one "1×").
+ *
+ * PMA110 is byte-identical by construction: FIND_X9_ULTRA declares exactly 70 mm and its measured
+ * ~23.4 mm main sits inside the band, so this evaluates the very `(70f / 23f) * magnification`
+ * expression it replaced. A non-finite or non-positive [hostTeleEquivMm] / [mainEquivMm] falls back
+ * to that nominal 70 / 23 rather than producing an infinite or NaN scale; [magnification] is passed
+ * through untouched because [effectiveMagnification] already guarantees it finite and in range.
+ * There are deliberately NO default parameter values (AGG4-47 / AGG5-50): an omitted lens input
+ * used to compile into the PMA110 answer, which is exactly the defect this signature removes.
  *
  * [TELE_MAX_DISPLAY_ZOOM] stays a FIXED display ceiling rather than scaling with the converter, so
  * the local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`) moves inversely with
@@ -318,5 +350,8 @@ fun effectiveFocalMm(magnification: Float, baseEquivMm: Float = LensChoice.TELE3
  * the intended reading — 60× is a cap on total magnification, not on the digital portion — and the
  * ordinary capability reconciliation still clamps the result to what the lens actually offers.
  */
-fun teleDisplayBase(magnification: Float): Float =
-    (LensChoice.TELE3X.targetEquivMm / LensChoice.MAIN.targetEquivMm) * magnification
+fun teleDisplayBase(magnification: Float, hostTeleEquivMm: Float, mainEquivMm: Float): Float {
+    val host = hostTeleEquivMm.takeIf { it.isFinite() && it > 0f } ?: LensChoice.TELE3X.targetEquivMm
+    val main = mainEquivMm.takeIf { it.isFinite() && it > 0f } ?: LensChoice.MAIN.targetEquivMm
+    return (host / main) * magnification
+}

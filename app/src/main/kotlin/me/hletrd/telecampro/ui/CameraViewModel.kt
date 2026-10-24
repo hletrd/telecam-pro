@@ -124,7 +124,6 @@ import me.hletrd.telecampro.camera.detectPhone
 import me.hletrd.telecampro.camera.effectiveFocalMm
 import me.hletrd.telecampro.camera.normalizeMagnification
 import me.hletrd.telecampro.camera.reconcileConverter
-import me.hletrd.telecampro.camera.teleDisplayBase
 import me.hletrd.telecampro.camera.teleconverterDeclaration
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoStabMode
@@ -955,6 +954,12 @@ class CameraViewModel private constructor(
                         measuredOtherHostEquivMm = current.teleconverterHostEquivMm,
                     ),
                 )
+                // The measured main (and OTHER's measured host) are TELE display-scale inputs too
+                // (`teleDisplayBase`): a restored TELE ratio legal under the pre-enumeration 70 / 23
+                // scale can sit past the 60x total cap once a 26 mm main or 85 mm host is known.
+                // Same re-clamp as a converter pick, AFTER the engine holds the matching host; a
+                // no-op whenever the scale did not move, which is every PMA110 launch.
+                reconcileZoomToTeleconverterOptic()
                 refreshMemorySlotInfo()
             }
         }
@@ -1662,12 +1667,16 @@ class CameraViewModel private constructor(
             measuredOtherHostEquivMm = hostTeleEquivMmFor(e.phoneModel),
         )
         val restoredConverter = restoredDeclaration.profile
-        val restoredMagnification = restoredDeclaration.magnification
         val restoredOptics = restoredOptics(
             mode = e.mode,
             requestedLens = requestedLens,
             teleconverter = requestedTeleconverter,
-            teleconverterMagnification = restoredMagnification,
+            // The recalled phone's host focal moves the TELE ceiling as much as its converter does
+            // (an 85 mm vivo host reads ~17x where PMA110's 70 mm reads ~14x for the same glass), so
+            // the scale comes from the declaration restored WITH this packet over the measured main.
+            teleDisplayBase = restoredDeclaration.displayBase(
+                _state.value.lensInventory.presetEquivMm[LensChoice.MAIN],
+            ),
             savedZoomRatio = requestedZoom,
             photoStandalone = e.mode == CaptureMode.PHOTO && restoredRouteStandalone,
         )
@@ -2606,14 +2615,14 @@ class CameraViewModel private constructor(
             range?.lower,
             range?.upper,
             s.teleconverterMode,
-            s.teleconverterMagnification,
+            s.teleDisplayBase,
         )
         val z = normalizeZoomRequest(
             requested = ratio,
             currentApplied = currentZoomBase(),
             bounds = bounds,
             teleconverter = s.teleconverterMode,
-            teleconverterMagnification = s.teleconverterMagnification,
+            teleDisplayBase = s.teleDisplayBase,
         )
         zoomGlide.pendingRatio = z
         if (zoomGlide.flushScheduled) return z // the scheduled flush picks up this newest value
@@ -2699,7 +2708,7 @@ class CameraViewModel private constructor(
             range.lower,
             range.upper,
             s.teleconverterMode,
-            s.teleconverterMagnification,
+            s.teleDisplayBase,
         ) ?: return
         val base = zoomGlide.easeTarget ?: currentZoomBase()
         val wasIdle = zoomGlide.easeTarget == null
@@ -3217,7 +3226,7 @@ class CameraViewModel private constructor(
             range?.lower,
             range?.upper,
             teleconverter = true,
-            teleconverterMagnification = s.teleconverterMagnification,
+            teleDisplayBase = s.teleDisplayBase,
         ) ?: return
         val z = s.controls.zoomRatio.coerceIn(bounds.lower, bounds.upper)
         if (z == s.controls.zoomRatio) return
@@ -3543,9 +3552,9 @@ class CameraViewModel private constructor(
             range?.lower,
             range?.upper,
             teleconverter = true,
-            teleconverterMagnification = s.teleconverterMagnification,
+            teleDisplayBase = s.teleDisplayBase,
         ) ?: return
-        val base = teleDisplayBase(s.teleconverterMagnification)
+        val base = s.teleDisplayBase
         if (!base.isFinite() || base <= 0f || !totalMagnification.isFinite()) return
         val z = (totalMagnification / base).coerceIn(bounds.lower, bounds.upper)
         // A discrete pick OWNS the framing: a coalesced pending ratio or a hardware-key glide still
@@ -3758,7 +3767,7 @@ class CameraViewModel private constructor(
             capabilities = caps.controlCapabilities(),
             mode = current.mode,
             teleconverter = current.teleconverterMode,
-            teleconverterMagnification = current.teleconverterMagnification,
+            teleDisplayBase = current.teleDisplayBase,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
@@ -3792,7 +3801,7 @@ class CameraViewModel private constructor(
                 capabilities = caps.controlCapabilities(),
                 mode = current.mode,
                 teleconverter = current.teleconverterMode,
-                teleconverterMagnification = current.teleconverterMagnification,
+                teleDisplayBase = current.teleDisplayBase,
                 capsLower = range?.lower,
                 capsUpper = range?.upper,
             )

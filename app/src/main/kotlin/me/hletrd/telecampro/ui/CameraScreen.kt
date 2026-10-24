@@ -164,7 +164,6 @@ import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.ViewfinderFocusActionAvailability
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
-import me.hletrd.telecampro.camera.teleDisplayBase
 import me.hletrd.telecampro.camera.viewfinderFocusActionAvailability
 import me.hletrd.telecampro.storage.MediaProvenance
 import me.hletrd.telecampro.ui.controls.formatZoomMark
@@ -2945,13 +2944,14 @@ internal fun FocalRail(
                 val marks = teleZoomMarks(
                     range?.lower,
                     range?.upper,
-                    state.teleconverterMagnification,
+                    state.teleDisplayBase,
                 )
                 // The rail speaks TOTAL magnification while the controls carry the LENS-LOCAL ratio,
-                // so the current framing crosses into the marks' scale exactly once, here.
+                // so the current framing crosses into the marks' scale exactly once, here — on the
+                // SAME state-derived scale the marks were built from (host/main included).
                 val activeMark = selectedTeleZoomMark(
                     marks,
-                    state.controls.zoomRatio * teleDisplayBase(state.teleconverterMagnification),
+                    state.controls.zoomRatio * state.teleDisplayBase,
                 )
                 marks.forEach { mark ->
                     // ONE value feeds the drawn text and the spoken name so they cannot drift, and

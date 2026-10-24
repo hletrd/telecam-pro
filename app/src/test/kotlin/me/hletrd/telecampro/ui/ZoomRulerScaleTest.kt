@@ -1,6 +1,8 @@
 package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.CameraRoute
+import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.teleDisplayBase
@@ -14,6 +16,13 @@ import org.junit.Test
  * ([zoomDisplayMultiplier]) and writes `display / base` back lens-local.
  */
 class ZoomRulerScaleTest {
+    // The kit optic on PMA110's declared 70 mm host over the nominal 23 mm main divisor.
+    private val kitBase = teleDisplayBase(
+        TELECONVERTER_MAGNIFICATION,
+        PhoneModel.FIND_X9_ULTRA.teleEquivMm,
+        LensChoice.MAIN.targetEquivMm,
+    )
+
     private fun multiplier(
         equivMm: Float?,
         teleconverter: Boolean = false,
@@ -22,7 +31,7 @@ class ZoomRulerScaleTest {
         measuredMain: Float? = 23f,
     ) = zoomDisplayMultiplier(
         teleconverter = teleconverter,
-        teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+        teleDisplayBase = kitBase,
         equivalentFocalMm = equivMm,
         frontFacing = route == CameraRoute.FRONT,
         activeRoute = route,
@@ -64,7 +73,8 @@ class ZoomRulerScaleTest {
 
     @Test fun `converter scale keeps its total-magnification cap`() {
         val base = multiplier(69f, teleconverter = true)
-        assertEquals(teleDisplayBase(TELECONVERTER_MAGNIFICATION), base, 1e-4f)
+        assertEquals(kitBase, base, 1e-4f)
+        assertEquals(300f / 23f, base, 1e-4f)
         val scale = zoomRulerScale(1f, 10f, base, teleconverter = true)
         assertEquals(TELE_MAX_DISPLAY_ZOOM, scale.hi, 1e-4f)
         assertEquals(TELE_MAX_DISPLAY_ZOOM / base, scale.localFor(1f), 1e-4f)

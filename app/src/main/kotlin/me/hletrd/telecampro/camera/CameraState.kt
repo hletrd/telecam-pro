@@ -382,11 +382,11 @@ enum class AudioInputPreference {
 // The teleconverter's magnification, its preset catalog, and the derived display/focal scales now
 // live in Teleconverter.kt — they stopped being constants when the converter became selectable.
 // `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default; `TELE_DISPLAY_BASE` became
-// the `teleDisplayBase(magnification)` function.
+// the `teleDisplayBase(magnification, hostTeleEquivMm, mainEquivMm)` function.
 
 // TELE mode's DISPLAY zoom ceiling (converter-equivalent, main-relative). Deliberately NOT scaled
 // by the converter: it caps TOTAL magnification, so the local-zoom headroom derived from it
-// (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(m)`) widens as the converter weakens. The user-spec
+// (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`) widens as the converter weakens. The user-spec
 // range is 13–60× on the kit optic, with magnetic snaps at 30× / 60×.
 const val TELE_MAX_DISPLAY_ZOOM = 60f
 
@@ -1045,6 +1045,28 @@ internal fun lensInventoryOf(
         teleHostEquivMm = teleHost,
         presetEquivMm = presetEquiv,
     )
+}
+
+/** Within this fraction of the preset, the round label IS the lens's own marketing focal. */
+internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
+
+/**
+ * The main-lens divisor of every main-relative zoom readout (MRG5-4): the same rule
+ * `lensFocalCaption` applies to the "23 mm" literal. Within [LENS_CAPTION_ROUNDING_BAND] of the
+ * nominal main, the nominal IS that lens's round label, so PMA110 (23.4 mm) keeps dividing by 23 and
+ * stays byte-identical; outside it the measured main is the truth (a 26 or 27 mm tablet main reads
+ * "1.0×"). Unknown, zero or non-finite measured values fall back to the nominal, as before the
+ * inventory arrives.
+ *
+ * Lives in the camera layer (it moved from `ui/ZoomMath.kt`) because the ENGINE needs it too: the
+ * converter's [teleDisplayBase] divides by it, and the engine clamps TELE zoom against
+ * `TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`. One definition keeps the standalone pill, the TC marks
+ * and the engine's local ceiling on the same "1×".
+ */
+internal fun standaloneMainDivisorMm(measuredMainEquivMm: Float?): Float {
+    val nominal = LensChoice.MAIN.targetEquivMm
+    val measured = measuredMainEquivMm?.takeIf { it.isFinite() && it > 0f } ?: return nominal
+    return if (kotlin.math.abs(measured - nominal) > nominal * LENS_CAPTION_ROUNDING_BAND) measured else nominal
 }
 
 /**
@@ -2044,6 +2066,26 @@ data class CameraUiState(
         } else {
             phoneModel.teleEquivMm
         }
+
+    /**
+     * TELE's TOTAL-magnification display scale for the live state — the ONE place the UI reads the
+     * three inputs of the top-level `teleDisplayBase` law, so the rail marks, the snaps, the pill,
+     * the Fn/ruler values and every local-zoom ceiling cannot assemble their own: the converter in
+     * force, the SAME host focal [teleconverterFocalMm] multiplies ([teleconverterHostEquivMm]), and
+     * the main divisor the standalone pill divides by ([standaloneMainDivisorMm] of the inventory's
+     * measured MAIN). On PMA110 that is 70 ÷ 23 × m, exactly the pre-fix value; on a vivo X300
+     * Ultra the ZEISS 4.7× floor reads 85 ÷ 23 × 4.706 ≈ 17×, not the "14×" the hardwired 70 mm
+     * host produced. The engine reads the same law through `TeleconverterDeclaration.displayBase`
+     * over the same inventory measurement, so its local ceiling agrees with these marks.
+     */
+    val teleDisplayBase: Float
+        // Qualified: this property shadows the free function's simple name inside the class.
+        get() = me.hletrd.telecampro.camera.teleDisplayBase(
+            magnification = teleconverterMagnification,
+            hostTeleEquivMm = teleconverterHostEquivMm,
+            mainEquivMm = standaloneMainDivisorMm(lensInventory.presetEquivMm[LensChoice.MAIN]),
+        )
+
     /**
      * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.
      *
