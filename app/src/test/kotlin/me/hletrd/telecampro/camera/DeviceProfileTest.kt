@@ -82,6 +82,9 @@ class DeviceProfileTest {
     private val nativeLogTable = mapOf(
         // OPPO O-Log2 — Find X9 Ultra.
         "PMA110" to ColorTransfer.OLOG2, "CPH2841" to ColorTransfer.OLOG2, "PMA120" to ColorTransfer.OLOG2,
+        // OPPO O-Log2 — Find X10, Find X10 Pro Max (oppo.com product pages; GENERIC quirks).
+        "PMW110" to ColorTransfer.OLOG2, "CPH2911" to ColorTransfer.OLOG2, "OPG09" to ColorTransfer.OLOG2,
+        "PMX110" to ColorTransfer.OLOG2, "CPH2913" to ColorTransfer.OLOG2,
         // OPPO O-Log V1 — Find X8 Ultra, OnePlus 15, Find X9, Find X9 Pro.
         "PKJ110" to ColorTransfer.OLOG, "PKU110" to ColorTransfer.OLOG,
         "PLK110" to ColorTransfer.OLOG, "CPH2745" to ColorTransfer.OLOG,

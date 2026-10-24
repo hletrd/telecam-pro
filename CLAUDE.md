@@ -911,7 +911,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 
   | Flavor (shader code) | Curve source | `Build.MODEL` (Google Play supported-devices CSV, 2026-10-15) |
   |---|---|---|
-  | `OLOG2` O-Log2 (6) | OPPO "O-Log2 White Paper" 2026-04-17, oppo.com/en/o-log-technical-downloads | Find X9 Ultra PMA110, CPH2841, PMA120 (satellite) — all PMA110 quirks |
+  | `OLOG2` O-Log2 (6) | OPPO "O-Log2 White Paper" 2026-04-17, oppo.com/en/o-log-technical-downloads | Find X9 Ultra PMA110, CPH2841, PMA120 (satellite) — all PMA110 quirks; Find X10 PMW110, CPH2911, OPG09 and Find X10 Pro Max PMX110, CPH2913 (O-Log2 per oppo.com product pages) — GENERIC quirks |
   | `OLOG` O-Log V1 (7) | OPPO "O-Log White Paper" V1 2025-10-22 + its `O-Log_to_ACES_AP0_V1.dctl` | Find X8 Ultra PKJ110, PKU110; OnePlus 15 PLK110, CPH2745, CPH2747, CPH2749; Find X9 PLJ110, CPH2797, OPG07; Find X9 Pro PLG110, PLG120, CPH2791 |
   | `MILOG` Mi-Log (8) | Xiaomi "Xiaomi Log Profile White Paper" Dec 2024, via colour-science `xiaomi_mi_log.py` | Xiaomi 15 Ultra 25010PN30C/G/I, 25019PNF3C; Xiaomi 17 Ultra 2512BPNDAC/G/I, 25128PNA1C |
 

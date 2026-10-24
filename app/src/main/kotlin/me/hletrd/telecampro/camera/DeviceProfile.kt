@@ -129,7 +129,11 @@ internal data class DeviceProfile(
          * (https://storage.googleapis.com/play_public/supported_devices.csv, fetched 2026-10-15);
          * which phones carry which log is from the makers' white papers:
          *  - O-Log2 — OPPO "O-Log2 White Paper" (2026-04-17) for the Find X9 Ultra:
-         *    PMA110 / PMA120 (China, satellite), CPH2841 (global).
+         *    PMA110 / PMA120 (China, satellite), CPH2841 (global). The paper itself lists no devices;
+         *    OPPO's Find X10 and Find X10 Pro Max product pages (oppo.com/en and /cn, 2026-09-22
+         *    launch) name O-Log2 for those phones: Find X10 PMW110 (China), CPH2911 (global), OPG09
+         *    (Japan); Find X10 Pro Max PMX110 (China), CPH2913 (global) — Play CSV fetched 2026-10-25.
+         *    They take GENERIC quirks: the PMA110 set is measured on the X9 Ultra only.
          *  - O-Log (V1) — OPPO "O-Log White Paper" V1 (2025-10-22) lists Find X8 Ultra, OnePlus 15,
          *    Find X9, Find X9 Pro: Find X8 Ultra PKJ110 / PKU110 (China, satellite); OnePlus 15
          *    PLK110 (China), CPH2745 / CPH2747 / CPH2749 (India / global / North America); Find X9
@@ -146,6 +150,7 @@ internal data class DeviceProfile(
             val key = model?.trim()?.uppercase()
             return when (key) {
                 "PMA110", "CPH2841", "PMA120" -> PMA110
+                in OLOG2_MODELS -> GENERIC.copy(nativeLogFlavor = ColorTransfer.OLOG2)
                 in OLOG_MODELS -> GENERIC.copy(nativeLogFlavor = ColorTransfer.OLOG)
                 in MILOG_MODELS -> GENERIC.copy(nativeLogFlavor = ColorTransfer.MILOG)
                 else -> GENERIC
@@ -153,6 +158,10 @@ internal data class DeviceProfile(
         }
 
         // Sourced per [resolve]'s KDoc. Every Find X9 Ultra code carries OLOG2 through [PMA110].
+        private val OLOG2_MODELS = setOf(
+            "PMW110", "CPH2911", "OPG09", // OPPO Find X10
+            "PMX110", "CPH2913", // OPPO Find X10 Pro Max
+        )
         private val OLOG_MODELS = setOf(
             "PKJ110", "PKU110", // OPPO Find X8 Ultra
             "PLK110", "CPH2745", "CPH2747", "CPH2749", // OnePlus 15
