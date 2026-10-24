@@ -28,6 +28,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
@@ -134,6 +135,9 @@ class ConverterDeclarationResponsiveComposeTest {
         ).assertCountEquals(1)
 
         options.forEach { value ->
+            // The phone list outgrew one popup screen (18 entries since 2026-10-25): bring each option
+            // into view first, as an operator would, so its bounds are the laid-out ones.
+            compose.onNode(hasText(value).and(inPopup)).performScrollTo()
             val item = compose.onNode(hasText(value).and(inPopup))
                 .assertHasClickAction()
                 .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton))
@@ -167,7 +171,14 @@ class ConverterDeclarationResponsiveComposeTest {
             context = context,
             label = "Phone",
             selected = "OPPO Find X9 Ultra",
-            options = listOf("OPPO Find X9 Ultra", "OPPO Find X9 Pro", "vivo X200 Ultra", "vivo X300 Ultra", "Other"),
+            // Every phone in declaration order (PhoneModel.entries), the longest brand name included.
+            options = listOf(
+                "OPPO Find X9 Ultra", "OPPO Find X9 Pro", "OPPO Find X9s Pro", "OPPO Find X10",
+                "OPPO Find X10 Pro Max", "vivo X200 Ultra", "vivo X300", "vivo X300 Pro", "vivo X300s",
+                "vivo X300 Ultra", "vivo X500", "vivo X500 Pro", "vivo X500 Pro Max", "HONOR Magic8 Pro",
+                "HONOR Magic8 RSR Porsche Design", "HONOR Magic9", "HONOR Magic9 Pro Max",
+                "Other",
+            ),
         )
     }
 
@@ -182,7 +193,13 @@ class ConverterDeclarationResponsiveComposeTest {
             context = context,
             label = "휴대폰",
             selected = "기타",
-            options = listOf("OPPO Find X9 Ultra", "OPPO Find X9 Pro", "vivo X200 Ultra", "vivo X300 Ultra", "기타"),
+            options = listOf(
+                "OPPO Find X9 Ultra", "OPPO Find X9 Pro", "OPPO Find X9s Pro", "OPPO Find X10",
+                "OPPO Find X10 Pro Max", "vivo X200 Ultra", "vivo X300", "vivo X300 Pro", "vivo X300s",
+                "vivo X300 Ultra", "vivo X500", "vivo X500 Pro", "vivo X500 Pro Max", "HONOR Magic8 Pro",
+                "HONOR Magic8 RSR Porsche Design", "HONOR Magic9", "HONOR Magic9 Pro Max",
+                "기타",
+            ),
         )
     }
 

@@ -655,15 +655,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the fits-anything generics and CUSTOM). A flat chip row listing every brand's converters at once
   was the first shape and the user rejected it on device — optics that cannot mount on your phone
   should not be offered beside the ones that can. `camera/Teleconverter.kt` owns both enums, the
-  five first-party kits (Hasselblad 300 mm = 300/70 ≈ 4.286× on the X9 Ultra; Hasselblad 230 mm =
-  230/70 ≈ 3.29× on the X9 Pro; ZEISS 200 mm = 200/85 ≈ 2.35× on the X200 Ultra AND the X300 Ultra;
-  ZEISS 400 mm = 400/85 ≈ 4.71× on the X300 Ultra), the generic 1.5/2/3× clip-ons, CUSTOM, and the
+  first-party kit catalog (2026-10-25: every OFFICIAL maker kit found — Xiaomi, Samsung, OnePlus
+  and realme sell none; model codes from Google Play's supported-devices CSV, focals from the makers'
+  pages): OPPO Hasselblad 300 mm = 300/70 ≈ 4.286× on the X9 Ultra; the 3.28× kit (230/70) on the
+  X9 Pro and X10 Pro Max, and on the 65 mm X9s Pro / X10, where OPPO's printed "253 mm" is a
+  footnoted software crop and the app reports the optical ≈ 214 mm; vivo ZEISS 2.35× (200/85, Gen 1
+  and Gen 2) on the X200 Ultra, X300 / Pro / s / Ultra and X500 / Pro / Pro Max (≈ 169 mm on the
+  72 mm X500), and the 4.7× Gen 2 Ultra (400/85) on the X300 Ultra and X500 Pro Max; HONOR's 2.35×
+  on the Magic8 Pro / RSR and G200 / G500 (200/85, 500/85) on the Magic9 Pro Max (G200 ≈ 188 mm on
+  the 80 mm Magic9). Plus the generic 1.5/2/3× clip-ons, CUSTOM, and the
   pure helpers (`effectiveMagnification`, `normalizeMagnification`, `detectPhone`,
   `defaultConverterFor`, `reconcileConverter`, `effectiveFocalMm`) plus
   `teleDisplayBase(magnification)` — the function that REPLACED the top-level `TELE_DISPLAY_BASE`
   val. `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default and as the anchor every
-  older test and document quotes. A kit's `magnification` derives from ITS OWN host phone, never the
-  selected one: moving glass to another body does not regrind it. Consumers read `CameraUiState.teleconverterMagnification` /
+  older test and document quotes. A kit's `magnification` derives from the telephoto its GLASS was
+  designed for (`designHostMm`, else its own host phone), never the selected one: moving glass to
+  another body does not regrind it. Consumers read `CameraUiState.teleconverterMagnification` /
   `.teleconverterFocalMm`, so the profile and its custom value can never drift apart, and the old
   hardcoded `300f` / `"300 mm"` readouts (OSD, EXIF, Fn tile, MR summary, lens caption) are derived.
   Six rules hold this together:
@@ -702,9 +709,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      `1e-2`, because makers TRUNCATE — 230/70 = 3.2857 is sold as "3.28×", and a ±5e-3 band fails)
      and the exact ratios at `delta = 0`, which is what catches a preset that adopted a sibling's.
   6. **A phone with TWO official converters offers both, and defaults to the BASE one.** The vivo
-     X300 Ultra takes the 200 mm and the 400 mm, so its narrowed list carries both — but
-     `defaultConverterFor` is `firstOrNull { it.phone == phone }`, which returns the base kit only
-     because `ZEISS_200_X300` is DECLARED BEFORE `ZEISS_400`. That ordering is load-bearing and
+     X300 Ultra takes the 200 mm and the 400 mm (so do the X500 Pro Max and, as G200 / G500, the
+     HONOR Magic9 Pro Max), so its narrowed list carries both — but `defaultConverterFor` is
+     `firstOrNull { it.phone == phone }`, which returns the base kit only because `ZEISS_200_X300`
+     is DECLARED BEFORE `ZEISS_400` (likewise each later pair). That ordering is load-bearing and
      invisible, so a test pins it: reordering the enum must fail rather than silently default those
      users to the exotic 4.7× optic. `reconcileConverter` keeps a generic/custom across a phone
      change and replaces a foreign kit, so no selection can outlive the phone that offered it —

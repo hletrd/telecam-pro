@@ -334,11 +334,28 @@
     <string name="phone_oppo_find_x9_pro" translatable="false">OPPO Find X9 Pro</string>
     <string name="phone_vivo_x200_ultra" translatable="false">vivo X200 Ultra</string>
     <string name="phone_vivo_x300_ultra" translatable="false">vivo X300 Ultra</string>
+    <string name="phone_oppo_find_x9s_pro" translatable="false">OPPO Find X9s Pro</string>
+    <string name="phone_oppo_find_x10" translatable="false">OPPO Find X10</string>
+    <string name="phone_oppo_find_x10_pro_max" translatable="false">OPPO Find X10 Pro Max</string>
+    <string name="phone_vivo_x300" translatable="false">vivo X300</string>
+    <string name="phone_vivo_x300_pro" translatable="false">vivo X300 Pro</string>
+    <string name="phone_vivo_x300s" translatable="false">vivo X300s</string>
+    <string name="phone_vivo_x500" translatable="false">vivo X500</string>
+    <string name="phone_vivo_x500_pro" translatable="false">vivo X500 Pro</string>
+    <string name="phone_vivo_x500_pro_max" translatable="false">vivo X500 Pro Max</string>
+    <string name="phone_honor_magic8_pro" translatable="false">HONOR Magic8 Pro</string>
+    <string name="phone_honor_magic8_rsr" translatable="false">HONOR Magic8 RSR Porsche Design</string>
+    <string name="phone_honor_magic9" translatable="false">HONOR Magic9</string>
+    <string name="phone_honor_magic9_pro_max" translatable="false">HONOR Magic9 Pro Max</string>
     <string name="phone_other">Other</string>
     <string name="converter_hasselblad_300" translatable="false">Hasselblad 300 mm</string>
     <string name="converter_hasselblad_230" translatable="false">Hasselblad 230 mm</string>
     <string name="converter_zeiss_200" translatable="false">ZEISS 200 mm</string>
     <string name="converter_zeiss_400" translatable="false">ZEISS 400 mm</string>
+    <string name="converter_hasselblad_253" translatable="false">Hasselblad 253 mm</string>
+    <string name="converter_honor_200" translatable="false">HONOR 200 mm</string>
+    <string name="converter_honor_g200" translatable="false">HONOR G200</string>
+    <string name="converter_honor_g500" translatable="false">HONOR G500</string>
     <string name="converter_generic_15">Generic 1.5×</string>
     <string name="converter_generic_2">Generic 2×</string>
     <string name="converter_generic_3">Generic 3×</string>

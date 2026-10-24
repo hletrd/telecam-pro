@@ -664,14 +664,33 @@ approved_nontranslatable_resources = {
     "label_fps",
     "label_fn",
     "label_open_gate",
+    # Phone and kit names IDENTIFY a rightsholder's product (CLAUDE.md, EN+KO rule): the official
+    # teleconverter catalog of 2026-10-25 (camera/Teleconverter.kt).
     "phone_oppo_find_x9_ultra",
     "phone_oppo_find_x9_pro",
+    "phone_oppo_find_x9s_pro",
+    "phone_oppo_find_x10",
+    "phone_oppo_find_x10_pro_max",
     "phone_vivo_x200_ultra",
+    "phone_vivo_x300",
+    "phone_vivo_x300_pro",
+    "phone_vivo_x300s",
     "phone_vivo_x300_ultra",
+    "phone_vivo_x500",
+    "phone_vivo_x500_pro",
+    "phone_vivo_x500_pro_max",
+    "phone_honor_magic8_pro",
+    "phone_honor_magic8_rsr",
+    "phone_honor_magic9",
+    "phone_honor_magic9_pro_max",
     "converter_hasselblad_300",
     "converter_hasselblad_230",
+    "converter_hasselblad_253",
     "converter_zeiss_200",
     "converter_zeiss_400",
+    "converter_honor_200",
+    "converter_honor_g200",
+    "converter_honor_g500",
 }
 default_resource_root = ET.parse(ROOT / "app/src/main/res/values/strings.xml").getroot()
 korean_resource_root = ET.parse(ROOT / "app/src/main/res/values-ko/strings.xml").getroot()

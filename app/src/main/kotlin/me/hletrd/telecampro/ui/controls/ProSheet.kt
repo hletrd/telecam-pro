@@ -160,19 +160,52 @@ private fun proSheetTabLabel(tab: ProSheetTab): String = stringResource(
 private fun phoneModelLabel(model: PhoneModel): String = stringResource(when (model) {
     PhoneModel.FIND_X9_ULTRA -> R.string.phone_oppo_find_x9_ultra
     PhoneModel.FIND_X9_PRO -> R.string.phone_oppo_find_x9_pro
+    PhoneModel.FIND_X9S_PRO -> R.string.phone_oppo_find_x9s_pro
+    PhoneModel.FIND_X10 -> R.string.phone_oppo_find_x10
+    PhoneModel.FIND_X10_PRO_MAX -> R.string.phone_oppo_find_x10_pro_max
     PhoneModel.VIVO_X200_ULTRA -> R.string.phone_vivo_x200_ultra
+    PhoneModel.VIVO_X300 -> R.string.phone_vivo_x300
+    PhoneModel.VIVO_X300_PRO -> R.string.phone_vivo_x300_pro
+    PhoneModel.VIVO_X300S -> R.string.phone_vivo_x300s
     PhoneModel.VIVO_X300_ULTRA -> R.string.phone_vivo_x300_ultra
+    PhoneModel.VIVO_X500 -> R.string.phone_vivo_x500
+    PhoneModel.VIVO_X500_PRO -> R.string.phone_vivo_x500_pro
+    PhoneModel.VIVO_X500_PRO_MAX -> R.string.phone_vivo_x500_pro_max
+    PhoneModel.HONOR_MAGIC8_PRO -> R.string.phone_honor_magic8_pro
+    PhoneModel.HONOR_MAGIC8_RSR -> R.string.phone_honor_magic8_rsr
+    PhoneModel.HONOR_MAGIC9 -> R.string.phone_honor_magic9
+    PhoneModel.HONOR_MAGIC9_PRO_MAX -> R.string.phone_honor_magic9_pro_max
     PhoneModel.OTHER -> R.string.phone_other
 })
 
 @Composable
 private fun teleconverterProfileLabel(profile: TeleconverterProfile): String = stringResource(when (profile) {
     TeleconverterProfile.EXPLORER_300 -> R.string.converter_hasselblad_300
-    TeleconverterProfile.HASSELBLAD_230 -> R.string.converter_hasselblad_230
+    TeleconverterProfile.HASSELBLAD_230,
+    TeleconverterProfile.HASSELBLAD_230_X10_PRO_MAX,
+    -> R.string.converter_hasselblad_230
+    TeleconverterProfile.HASSELBLAD_X10,
+    TeleconverterProfile.HASSELBLAD_X9S_PRO,
+    -> R.string.converter_hasselblad_253
     TeleconverterProfile.ZEISS_200_X200,
     TeleconverterProfile.ZEISS_200_X300,
+    TeleconverterProfile.ZEISS_200_X300_BASE,
+    TeleconverterProfile.ZEISS_200_X300_PRO,
+    TeleconverterProfile.ZEISS_200_X300S,
+    TeleconverterProfile.ZEISS_200_X500,
+    TeleconverterProfile.ZEISS_200_X500_PRO,
+    TeleconverterProfile.ZEISS_200_X500_PRO_MAX,
     -> R.string.converter_zeiss_200
-    TeleconverterProfile.ZEISS_400 -> R.string.converter_zeiss_400
+    TeleconverterProfile.ZEISS_400,
+    TeleconverterProfile.ZEISS_400_X500_PRO_MAX,
+    -> R.string.converter_zeiss_400
+    TeleconverterProfile.HONOR_200_MAGIC8_PRO,
+    TeleconverterProfile.HONOR_200_MAGIC8_RSR,
+    -> R.string.converter_honor_200
+    TeleconverterProfile.HONOR_G200_MAGIC9,
+    TeleconverterProfile.HONOR_G200_MAGIC9_PRO_MAX,
+    -> R.string.converter_honor_g200
+    TeleconverterProfile.HONOR_G500 -> R.string.converter_honor_g500
     TeleconverterProfile.GENERIC_1_5 -> R.string.converter_generic_15
     TeleconverterProfile.GENERIC_2 -> R.string.converter_generic_2
     TeleconverterProfile.GENERIC_3 -> R.string.converter_generic_3
