@@ -179,4 +179,15 @@ class LensFocalCaptionMakerScaleTest {
         assertEquals(35f, state.presetFramingEquivMm(LensChoice.MAIN), 0f)
         assertEquals(85f, state.presetFramingEquivMm(LensChoice.TELE3X), 0f)
     }
+
+    @Test
+    fun `an unmeasured inventory answers zero, as the caption expects`() {
+        // Before enumeration nothing is measured, so the caption falls back to its round literal.
+        val placeholder = CameraUiState(phoneModel = PhoneModel.VIVO_X300_ULTRA)
+        LensChoice.entries.forEach { assertEquals(0f, placeholder.presetFramingEquivMm(it), 0f) }
+        // A zoom range with no readable lens measures every preset as 0 mm: no main to scale.
+        val zoomOnly = lensInventoryOf(emptyList(), 0.5f to 10f, homeEquivMm = null)
+        val state = CameraUiState(phoneModel = PhoneModel.VIVO_X300_ULTRA, lensInventory = zoomOnly)
+        assertEquals(0f, state.presetFramingEquivMm(LensChoice.TELE3X), 0f)
+    }
 }
