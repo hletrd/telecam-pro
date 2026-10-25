@@ -24,6 +24,7 @@ import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.EngineCallbackKey
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.PhotoFormats
@@ -227,7 +228,7 @@ class CameraViewModelRobolectricTest {
 
         v.onZoomRatio(5f)
 
-        assertEquals(LensChoice.forZoom(v.state.value.controls.zoomRatio), v.state.value.lens)
+        assertEquals(LensChoice.forZoom(v.state.value.controls.zoomRatio, ZoomPresets.NOMINAL), v.state.value.lens)
         assertEquals(LensChoice.TELE3X, v.state.value.lens)
     }
 

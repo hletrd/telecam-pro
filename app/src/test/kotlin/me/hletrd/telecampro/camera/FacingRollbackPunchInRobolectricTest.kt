@@ -121,8 +121,8 @@ class FacingRollbackPunchInRobolectricTest {
             .filterIsInstance<LensChoice>()
             .toSet()
         assertEquals(
-            unifiedZoomOf(LensChoice.TELE3X, 2f, true, CameraUiState().lensInventory.optical),
-            unifiedZoomOf(LensChoice.TELE3X, 2f, true, engineOptical),
+            unifiedZoomOf(LensChoice.TELE3X, 2f, true, CameraUiState().lensInventory.optical, presets = ZoomPresets.NOMINAL),
+            unifiedZoomOf(LensChoice.TELE3X, 2f, true, engineOptical, presets = ZoomPresets.NOMINAL),
             0f,
         )
     }

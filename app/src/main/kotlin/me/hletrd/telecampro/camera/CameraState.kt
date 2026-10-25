@@ -456,9 +456,9 @@ fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled &
  * [optical] empty (caps not read yet) answers 1×, i.e. keep the ratio as-is: the honest fallback,
  * since an unknown inventory cannot prove a crop is unnecessary.
  */
-fun opticalBaseFor(unified: Float, optical: Set<LensChoice>): LensChoice =
-    optical.filter { it.zoomPreset <= unified + 1e-3f }.maxByOrNull { it.zoomPreset }
-        ?: optical.minByOrNull { it.zoomPreset }
+fun opticalBaseFor(unified: Float, optical: Set<LensChoice>, presets: ZoomPresets): LensChoice =
+    optical.filter { presets.position(it) <= unified + 1e-3f }.maxByOrNull { presets.position(it) }
+        ?: optical.minByOrNull { presets.position(it) }
         ?: LensChoice.MAIN
 
 /**
@@ -471,21 +471,26 @@ fun opticalBaseFor(unified: Float, optical: Set<LensChoice>): LensChoice =
  * The base is the OPTICAL lens the route lands on, not the band the user tapped: on a one-camera
  * device the "3×" band is a crop of the 1× lens, so multiplying by 3 would double-count it.
  * [unifiedZoomOf] and [localZoomOf] therefore round-trip on both device shapes.
+ *
+ * Every preset's place on the unified scale is the DECLARED phone's ([ZoomPresets]): the Find X10's
+ * tele sits at its maker's 2.8, not at PMA110's 3, so a Photo→Video remap at the "2.8×" chip lands
+ * on the tele lens instead of a 2.8× crop of the main.
  */
 fun unifiedZoomOf(
     lens: LensChoice,
     zoomRatio: Float,
     standaloneRoute: Boolean,
     optical: Set<LensChoice>,
+    presets: ZoomPresets,
 ): Float = if (standaloneRoute) {
-    opticalBaseFor(lens.zoomPreset, optical).zoomPreset * zoomRatio.coerceAtLeast(1f)
+    presets.position(opticalBaseFor(presets.position(lens), optical, presets)) * zoomRatio.coerceAtLeast(1f)
 } else {
     zoomRatio
 }
 
 /** The LENS-LOCAL ratio a standalone route needs to sit at main-relative [unified]. */
-fun localZoomOf(unified: Float, optical: Set<LensChoice>): Float =
-    (unified / opticalBaseFor(unified, optical).zoomPreset).coerceAtLeast(1f)
+fun localZoomOf(unified: Float, optical: Set<LensChoice>, presets: ZoomPresets): Float =
+    (unified / presets.position(opticalBaseFor(unified, optical, presets))).coerceAtLeast(1f)
 
 /** Complete route-owned zoom result for one TELE on/off transition. */
 internal data class TeleZoomTransition(
@@ -505,6 +510,7 @@ internal data class TeleZoomTransition(
 internal fun resolveTeleZoomTransition(
     nonTeleStandaloneRoute: Boolean,
     opticalPresets: Set<LensChoice>,
+    presets: ZoomPresets,
     currentLens: LensChoice,
     currentTeleconverter: Boolean,
     currentZoomRatio: Float,
@@ -522,6 +528,7 @@ internal fun resolveTeleZoomTransition(
                 zoomRatio = currentZoomRatio,
                 standaloneRoute = nonTeleStandaloneRoute,
                 optical = opticalPresets,
+                presets = presets,
             )
         }
         return TeleZoomTransition(
@@ -534,12 +541,12 @@ internal fun resolveTeleZoomTransition(
 
     val unified = currentPreTeleUnifiedZoom
         .takeIf { restorePreTele && it.isFinite() && it > 0f }
-        ?: requestedLens.zoomPreset
+        ?: presets.position(requestedLens)
     return TeleZoomTransition(
-        lens = LensChoice.forZoom(unified),
+        lens = LensChoice.forZoom(unified, presets),
         teleconverter = false,
         zoomRatio = if (nonTeleStandaloneRoute) {
-            localZoomOf(unified, opticalPresets)
+            localZoomOf(unified, opticalPresets, presets)
         } else {
             unified
         },
@@ -666,6 +673,7 @@ val CameraUiState.unifiedZoom: Float
             rawForcesStandalone = rawForcesStandalone,
         ),
         optical = lensInventory.optical,
+        presets = zoomPresets,
     )
 
 /**
@@ -695,12 +703,14 @@ val CameraUiState.unifiedZoom: Float
 fun rearReturnZoom(
     targetStandaloneRoute: Boolean,
     preFrontUnifiedZoom: Float,
+    /** The retained lens's [ZoomPresets.position] on the same [presets]. */
     lensPreset: Float,
     opticalPresets: Set<LensChoice>,
+    presets: ZoomPresets,
 ): Float {
     val unified = preFrontUnifiedZoom.takeIf { it.isFinite() && it > 0f } ?: lensPreset
     if (!targetStandaloneRoute) return unified
-    return (unified / opticalBaseFor(lensPreset, opticalPresets).zoomPreset).coerceAtLeast(1f)
+    return (unified / presets.position(opticalBaseFor(lensPreset, opticalPresets, presets))).coerceAtLeast(1f)
 }
 
 /**
@@ -717,7 +727,8 @@ fun rearReturnLens(
     targetStandaloneRoute: Boolean,
     returnedZoom: Float,
     currentLens: LensChoice,
-): LensChoice = if (targetStandaloneRoute) currentLens else LensChoice.forZoom(returnedZoom)
+    presets: ZoomPresets,
+): LensChoice = if (targetStandaloneRoute) currentLens else LensChoice.forZoom(returnedZoom, presets)
 
 /**
  * The engine-resolved half of the finder gate: user toggle, plus either TELE mounted or unified
@@ -1118,7 +1129,15 @@ internal fun logicalZoomDisplayFactor(phone: PhoneModel, homeEquivMm: Float?): F
  * afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
  * app-side gyro warping).
  */
-enum class LensChoice(val targetEquivMm: Float, val zoomPreset: Float) {
+enum class LensChoice(
+    val targetEquivMm: Float,
+    /**
+     * The GENERIC unified position (PMA110's 0.6 / 1 / 3 / 10, and every [PhoneModel.OTHER]): what
+     * [ZoomPresets.NOMINAL] carries and what the phone-independent enumeration tests a zoom range
+     * against. Every route conversion reads the DECLARED phone's [ZoomPresets] instead.
+     */
+    val zoomPreset: Float,
+) {
     ULTRAWIDE(14f, 0.6f),
     MAIN(23f, 1f),
     TELE3X(70f, 3f),
@@ -1129,17 +1148,128 @@ enum class LensChoice(val targetEquivMm: Float, val zoomPreset: Float) {
     companion object {
         /**
          * The lens band a MAIN-relative zoom sits in — which chip to highlight while a pinch sweeps
-         * the logical camera's unified 0.6–20× range (the HAL crosses the physical lenses at ~these
-         * ratios). Pure for JVM tests.
+         * the logical camera's unified range (the HAL crosses the physical lenses at ~these ratios).
+         * The thresholds are the declared phone's own chip positions ([ZoomPresets.bandOf]), so the
+         * Find X10's "2.8×" is TELE3X, not the main band PMA110's 3 would put it in. Pure for JVM
+         * tests.
          */
-        fun forZoom(zoom: Float): LensChoice = when {
-            zoom < 1f -> ULTRAWIDE
-            zoom < 3f -> MAIN
-            zoom < 10f -> TELE3X
-            else -> TELE10X
-        }
+        fun forZoom(zoom: Float, presets: ZoomPresets): LensChoice = presets.bandOf(zoom)
     }
 }
+
+/**
+ * Where each [LensChoice] chip sits for the DECLARED phone — the owner decision of 2026-10-25,
+ * "follow how the maker does it": the four preset identities (and their persisted names) stay, but
+ * a named phone's chips carry its maker's numbers ([MakerZoom]): 0.5× on the Find X10 Pro Max,
+ * 2.8× on the Find X10, 1.5× for the vivo X300 Ultra's 35 mm main.
+ *
+ * Two numbers per preset, on two scales that differ only on the logical route's display factor
+ * ([logicalZoomDisplayFactor]):
+ *  - its LABEL ([label]) is the maker's chip number on the maker's 1×-relative DISPLAY scale, the
+ *    one the HUD pill reads through `mainRelativeZoomMultiplier`;
+ *  - its POSITION ([position]) is that number on the UNIFIED scale every route conversion uses
+ *    ([unifiedZoomOf], [localZoomOf], [opticalBaseFor], [bandOf]) — the logical camera's own wire
+ *    scale, i.e. label ÷ the logical display factor. A chip therefore APPLIES its label: tapping it
+ *    puts the pill on the same number.
+ *
+ * The MAIN chip is the one rounding exception: it names the main lens, whose own field is the
+ * logical camera's 1.0 by definition, so where the maker number lands within
+ * [LENS_CAPTION_ROUNDING_BAND] of 1.0 it sits on 1.0 exactly (vivo's "1.5×" is 35 ÷ 23 ≈ 1.52, and
+ * 1.5 ÷ 1.52 would ask for a field 1.4 % wider than the main lens, where a HAL may already hand the
+ * frame to the ultrawide).
+ *
+ * WHICH presets exist is still the enumeration's answer ([LensInventory]); [tenXOffered] can only
+ * withhold TELE10X where the maker's official chip row has no 10× ([MakerZoom.hidesTenX]).
+ */
+data class ZoomPresets(
+    val ultraWide: Float,
+    val main: Float,
+    val tele: Float,
+    val tenX: Float,
+    val ultraWideLabel: Float,
+    val mainLabel: Float,
+    val teleLabel: Float,
+    val tenXLabel: Float,
+    val tenXOffered: Boolean,
+) {
+    /** The preset's place on the UNIFIED (logical-camera wire) scale. */
+    fun position(choice: LensChoice): Float = when (choice) {
+        LensChoice.ULTRAWIDE -> ultraWide
+        LensChoice.MAIN -> main
+        LensChoice.TELE3X -> tele
+        LensChoice.TELE10X -> tenX
+    }
+
+    /** The maker's chip number for the preset, on the display scale (rendered by `lensLabel`). */
+    fun label(choice: LensChoice): Float = when (choice) {
+        LensChoice.ULTRAWIDE -> ultraWideLabel
+        LensChoice.MAIN -> mainLabel
+        LensChoice.TELE3X -> teleLabel
+        LensChoice.TELE10X -> tenXLabel
+    }
+
+    /** Whether the declared maker shows this preset at all ([LensInventory] still decides existence). */
+    fun offers(choice: LensChoice): Boolean = choice != LensChoice.TELE10X || tenXOffered
+
+    /** The band a unified [zoom] sits in: below a chip's position it belongs to the chip before it. */
+    fun bandOf(zoom: Float): LensChoice = when {
+        zoom < main -> LensChoice.ULTRAWIDE
+        zoom < tele -> LensChoice.MAIN
+        zoom < tenX -> LensChoice.TELE3X
+        else -> LensChoice.TELE10X
+    }
+
+    companion object {
+        /** The generic presets: PMA110's 0.6 / 1 / 3 / 10, and every undeclared phone's. */
+        val NOMINAL = ZoomPresets(
+            ultraWide = LensChoice.ULTRAWIDE.zoomPreset,
+            main = LensChoice.MAIN.zoomPreset,
+            tele = LensChoice.TELE3X.zoomPreset,
+            tenX = LensChoice.TELE10X.zoomPreset,
+            ultraWideLabel = LensChoice.ULTRAWIDE.zoomPreset,
+            mainLabel = LensChoice.MAIN.zoomPreset,
+            teleLabel = LensChoice.TELE3X.zoomPreset,
+            tenXLabel = LensChoice.TELE10X.zoomPreset,
+            tenXOffered = true,
+        )
+    }
+}
+
+/**
+ * [ZoomPresets] for the declared [phone] over the photo-home camera's measured equivalent
+ * ([LensInventory.homeEquivMm]). [PhoneModel.OTHER] is [ZoomPresets.NOMINAL]; a named phone takes
+ * its [MakerZoom] chips, each divided by [logicalZoomDisplayFactor] onto the unified scale.
+ *
+ * PMA110 is identical by construction: FIND_X9_ULTRA declares 0.6 / 1 / 3 with a 10× chip, and its
+ * logical display factor is exactly 1f, so every division is by 1f and the result EQUALS
+ * [ZoomPresets.NOMINAL] before and after the inventory arrives (pinned by a test).
+ */
+internal fun zoomPresetsFor(phone: PhoneModel, homeEquivMm: Float?): ZoomPresets {
+    val maker = phone.makerZoom ?: return ZoomPresets.NOMINAL
+    val factor = logicalZoomDisplayFactor(phone, homeEquivMm)
+    val main = (maker.mainChip / factor).let {
+        if (kotlin.math.abs(it - 1f) <= LENS_CAPTION_ROUNDING_BAND) 1f else it
+    }
+    return ZoomPresets(
+        ultraWide = maker.ultraWideChip / factor,
+        main = main,
+        tele = maker.teleChip / factor,
+        tenX = LensChoice.TELE10X.zoomPreset / factor,
+        ultraWideLabel = maker.ultraWideChip,
+        mainLabel = maker.mainChip,
+        teleLabel = maker.teleChip,
+        tenXLabel = LensChoice.TELE10X.zoomPreset,
+        tenXOffered = !maker.hidesTenX,
+    )
+}
+
+/**
+ * The presets the rail and the Lens menu OFFER: the enumeration's [LensInventory.available], minus a
+ * preset the declared maker does not show ([ZoomPresets.offers]), in rail order. One answer for both
+ * surfaces, so the menu can never offer a chip the viewfinder hides.
+ */
+fun offeredLensChoices(inventory: LensInventory, presets: ZoomPresets): List<LensChoice> =
+    LensChoice.entries.filter { it in inventory.available && presets.offers(it) }
 
 /** Shutter drive mode. */
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
@@ -2141,6 +2271,14 @@ data class CameraUiState(
     /** The LOGICAL route's display multiplier for the live state ([logicalZoomDisplayFactor]). */
     val logicalZoomDisplayFactor: Float
         get() = me.hletrd.telecampro.camera.logicalZoomDisplayFactor(phoneModel, lensInventory.homeEquivMm)
+
+    /**
+     * The declared phone's lens chips for the live state ([zoomPresetsFor]) — the ONE scale every UI
+     * conversion, band and chip label reads; the engine derives the same value from its own
+     * declaration and inventory measurement.
+     */
+    val zoomPresets: ZoomPresets
+        get() = zoomPresetsFor(phoneModel, lensInventory.homeEquivMm)
 
     /**
      * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.

@@ -47,39 +47,39 @@ class RearReturnZoomTest {
     @Test
     fun logicalPhotoRestoresTheUnifiedFramingHeldBeforeTheFrontTrip() {
         // Standing at 1x with the lens choice pinned to the 3x by earlier TELE use.
-        assertEquals(1f, rearReturnZoom(false, 1f, 3f, pma110Optical), 0f)
-        assertEquals(5.5f, rearReturnZoom(false, 5.5f, 3f, pma110Optical), 0f)
+        assertEquals(1f, rearReturnZoom(false, 1f, 3f, pma110Optical, presets = ZoomPresets.NOMINAL), 0f)
+        assertEquals(5.5f, rearReturnZoom(false, 5.5f, 3f, pma110Optical, presets = ZoomPresets.NOMINAL), 0f)
     }
 
     @Test
     fun videoAndPhotoDngConvertCanonicalFramingToTheSameStandaloneWireRatio() {
         val videoStandalone = standaloneRouteWanted(true, false, true)
         val photoDngStandalone = standaloneRouteWanted(false, true, true)
-        val fromVideo = unifiedZoomOf(LensChoice.TELE3X, 2f, videoStandalone, pma110Optical)
-        val fromPhotoDng = unifiedZoomOf(LensChoice.TELE3X, 2f, photoDngStandalone, pma110Optical)
+        val fromVideo = unifiedZoomOf(LensChoice.TELE3X, 2f, videoStandalone, pma110Optical, presets = ZoomPresets.NOMINAL)
+        val fromPhotoDng = unifiedZoomOf(LensChoice.TELE3X, 2f, photoDngStandalone, pma110Optical, presets = ZoomPresets.NOMINAL)
 
         // Video -> FRONT -> Photo+DNG: both endpoints are standalone, and unified 6x returns local 2x.
         assertEquals(6f, fromVideo, 0f)
-        assertEquals(2f, rearReturnZoom(photoDngStandalone, fromVideo, 3f, pma110Optical), 1e-4f)
+        assertEquals(2f, rearReturnZoom(photoDngStandalone, fromVideo, 3f, pma110Optical, presets = ZoomPresets.NOMINAL), 1e-4f)
         // Photo+DNG -> FRONT -> Video is the reverse transition and owns the same framing.
         assertEquals(6f, fromPhotoDng, 0f)
-        assertEquals(2f, rearReturnZoom(videoStandalone, fromPhotoDng, 3f, pma110Optical), 1e-4f)
+        assertEquals(2f, rearReturnZoom(videoStandalone, fromPhotoDng, 3f, pma110Optical, presets = ZoomPresets.NOMINAL), 1e-4f)
     }
 
     @Test
     fun logicalReturnReBandsTheLensWhileAStandaloneReturnKeepsIt() {
         // AGG4-23: unified 1.8 on the logical route is the MAIN band, whatever the stale lens was.
-        assertEquals(LensChoice.MAIN, rearReturnLens(false, 1.8f, LensChoice.ULTRAWIDE))
-        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(false, 0.6f, LensChoice.TELE3X))
+        assertEquals(LensChoice.MAIN, rearReturnLens(false, 1.8f, LensChoice.ULTRAWIDE, presets = ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(false, 0.6f, LensChoice.TELE3X, presets = ZoomPresets.NOMINAL))
         // A standalone route reopens the lens itself; its zoom is lens-local and says nothing.
-        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(true, 3f, LensChoice.ULTRAWIDE))
+        assertEquals(LensChoice.ULTRAWIDE, rearReturnLens(true, 3f, LensChoice.ULTRAWIDE, presets = ZoomPresets.NOMINAL))
     }
 
     @Test
     fun fallbackPresetIsConvertedForTheTargetRoute() {
         // A recall or settings restore exits front atomically, without going through the flip.
-        assertEquals(3f, rearReturnZoom(false, Float.NaN, 3f, pma110Optical), 0f)
-        assertEquals(1f, rearReturnZoom(true, Float.NaN, 3f, pma110Optical), 0f)
+        assertEquals(3f, rearReturnZoom(false, Float.NaN, 3f, pma110Optical, presets = ZoomPresets.NOMINAL), 0f)
+        assertEquals(1f, rearReturnZoom(true, Float.NaN, 3f, pma110Optical, presets = ZoomPresets.NOMINAL), 0f)
     }
 
     /**
@@ -97,8 +97,8 @@ class RearReturnZoomTest {
             LensChoice.TELE3X to 2f,
         )
         for ((lens, local) in cases) {
-            val entry = unifiedZoomOf(lens, local, standaloneRoute = true, optical = pma110Optical)
-            val exit = rearReturnZoom(true, entry, lens.zoomPreset, pma110Optical)
+            val entry = unifiedZoomOf(lens, local, standaloneRoute = true, optical = pma110Optical, presets = ZoomPresets.NOMINAL)
+            val exit = rearReturnZoom(true, entry, lens.zoomPreset, pma110Optical, presets = ZoomPresets.NOMINAL)
             assertEquals("$lens local $local", local, exit, 1e-4f)
             // Independent oracle (AGG4-48): the persisted value must be the operator's own LITERAL
             // lens-local zoom. Comparing it with rearReturnZoom compared that function with itself,
@@ -108,6 +108,7 @@ class RearReturnZoomTest {
                 local,
                 me.hletrd.telecampro.ui.retainedRearWireZoom(
                     entry, lens, teleconverter = false, targetStandalone = true, optical = pma110Optical,
+                    presets = ZoomPresets.NOMINAL,
                 ),
                 1e-4f,
             )
@@ -120,7 +121,7 @@ class RearReturnZoomTest {
         // local 3x rather than being divided by the band or flattened to local 1x.
         assertEquals(
             3f,
-            rearReturnZoom(true, 3f, 3f, setOf(LensChoice.MAIN)),
+            rearReturnZoom(true, 3f, 3f, setOf(LensChoice.MAIN), presets = ZoomPresets.NOMINAL),
             1e-4f,
         )
     }

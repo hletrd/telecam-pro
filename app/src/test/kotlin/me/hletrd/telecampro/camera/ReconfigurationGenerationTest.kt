@@ -226,6 +226,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE3X, resolved.lens)
@@ -247,6 +248,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = false,
             restorePreTele = true,
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE10X, resolved.lens)
@@ -269,6 +271,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertTrue(resolved.teleconverter)
@@ -290,6 +293,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(15f, resolved.preTeleUnifiedZoom)
 
@@ -303,6 +307,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(10f, clamped.preTeleUnifiedZoom)
     }
@@ -320,6 +325,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
         val engineEnter = resolveLensOpticsIntent(
             standaloneRoute = true,
@@ -331,6 +337,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(3f, enter.preTeleUnifiedZoom, 0f)
@@ -347,6 +354,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = false,
             restorePreTele = true,
+            presets = ZoomPresets.NOMINAL,
         )
         val engineExit = resolveLensOpticsIntent(
             standaloneRoute = true,
@@ -358,11 +366,12 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = false,
             restorePreTele = true,
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE3X, exit.lens)
         assertEquals(1f, exit.zoomRatio, 0f)
-        assertEquals(3f, unifiedZoomOf(exit.lens, exit.zoomRatio, true, optical), 0f)
+        assertEquals(3f, unifiedZoomOf(exit.lens, exit.zoomRatio, true, optical, presets = ZoomPresets.NOMINAL), 0f)
         assertEquals(exit.zoomRatio, engineExit.controls.zoomRatio, 0f)
     }
 
@@ -379,6 +388,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = true,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(3f, enter.preTeleUnifiedZoom, 0f)
 
@@ -392,9 +402,10 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE3X,
             requestedTeleconverter = false,
             restorePreTele = true,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(3f, exit.zoomRatio, 0f)
-        assertEquals(3f, unifiedZoomOf(exit.lens, exit.zoomRatio, true, onlyMain), 0f)
+        assertEquals(3f, unifiedZoomOf(exit.lens, exit.zoomRatio, true, onlyMain, presets = ZoomPresets.NOMINAL), 0f)
     }
 
     @Test
@@ -411,6 +422,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.MAIN,
             requestedTeleconverter = false,
             restorePreTele = false,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.MAIN, resolved.lens)
         assertFalse(resolved.teleconverter)
@@ -428,6 +440,7 @@ class ReconfigurationGenerationTest {
             requestedLens = LensChoice.TELE10X,
             requestedTeleconverter = false,
             restorePreTele = true,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE10X, noBaseline.lens)
         assertEquals(10f, noBaseline.controls.zoomRatio)

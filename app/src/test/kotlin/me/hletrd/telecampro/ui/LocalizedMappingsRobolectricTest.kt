@@ -28,6 +28,7 @@ import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.ui.controls.localizedLabel
 import me.hletrd.telecampro.video.AudioPortKind
 import me.hletrd.telecampro.video.AudioRouteAvailability
@@ -124,6 +125,6 @@ class LocalizedMappingsRobolectricTest {
             CameraStatusArgument.Number(42),
         )
 
-        assertRendered { status.resolve(it) }
+        assertRendered { status.resolve(it, ZoomPresets.NOMINAL) }
     }
 }

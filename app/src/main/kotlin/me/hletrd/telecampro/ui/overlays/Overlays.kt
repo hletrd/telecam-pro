@@ -1146,7 +1146,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             null -> null
             FocusConfidenceSource.FRAME_DETAIL -> stringResource(R.string.focus_confidence_soft)
             FocusConfidenceSource.AF_LIMIT -> state.macroCloserLens?.let {
-                stringResource(R.string.focus_confidence_too_close_lens, lensLabel(it))
+                stringResource(R.string.focus_confidence_too_close_lens, lensLabel(it, state.zoomPresets))
             } ?: stringResource(R.string.focus_confidence_too_close)
         }
         focusConfidenceTag?.let { tag ->

@@ -93,6 +93,7 @@ import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.opticalBaseFor
 import me.hletrd.telecampro.camera.resolveTeleZoomTransition
 import me.hletrd.telecampro.camera.unifiedZoomOf
+import me.hletrd.telecampro.camera.zoomPresetsFor
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
 import me.hletrd.telecampro.camera.withEdit
@@ -1644,14 +1645,19 @@ class CameraViewModel private constructor(
             requestedFormats.dngRaw,
             engine.rawForcesStandalone,
         )
+        // The RESTORED phone's chips: a preset lands where that maker puts it, and a unified ratio
+        // re-bands on that phone's chip positions, never the outgoing phone's.
+        val restoredPresets = zoomPresetsFor(e.phoneModel, _state.value.lensInventory.homeEquivMm)
         val requestedZoom = if (preserveChangedOptics) {
             if (requestedTeleconverter) {
                 1f
             } else if (restoredRouteStandalone) {
-                (requestedLens.zoomPreset / opticalBaseFor(requestedLens.zoomPreset, _state.value.lensInventory.optical).zoomPreset)
+                val preset = restoredPresets.position(requestedLens)
+                val optical = _state.value.lensInventory.optical
+                (preset / restoredPresets.position(opticalBaseFor(preset, optical, restoredPresets)))
                     .coerceAtLeast(1f)
             } else {
-                requestedLens.zoomPreset
+                restoredPresets.position(requestedLens)
             }
         } else {
             c.zoomRatio
@@ -1679,6 +1685,7 @@ class CameraViewModel private constructor(
             ),
             savedZoomRatio = requestedZoom,
             photoStandalone = e.mode == CaptureMode.PHOTO && restoredRouteStandalone,
+            presets = restoredPresets,
         )
         val currentState = _state.value
         val restoredRoute = recalledCameraRoute(currentState.cameraRoutes, currentState.activeCameraRoute)
@@ -2687,7 +2694,7 @@ class CameraViewModel private constructor(
             !s.teleconverterMode && s.activeCameraRoute == CameraRoute.BACK &&
             !standaloneRouteFor(s)
         ) {
-            LensChoice.forZoom(z)
+            LensChoice.forZoom(z, s.zoomPresets)
         } else {
             s.lens
         }
@@ -2849,6 +2856,7 @@ class CameraViewModel private constructor(
             // DNG keeps PHOTO on a standalone lens too, so there is no unified↔local gap to bridge.
             photoIsStandalone = standaloneRouteFor(before, videoMode = false),
             optical = before.lensInventory.optical,
+            presets = before.zoomPresets,
         )
         _state.update {
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
@@ -2961,6 +2969,7 @@ class CameraViewModel private constructor(
                 teleconverter = s.teleconverterMode,
                 lensLocalRoute = s.activeCameraRoute.lensLocalZoom,
                 optical = s.lensInventory.optical,
+                presets = s.zoomPresets,
             )
         } else {
             null
@@ -3110,6 +3119,7 @@ class CameraViewModel private constructor(
             val transition = resolveTeleZoomTransition(
                 nonTeleStandaloneRoute = standaloneRouteFor(it),
                 opticalPresets = it.lensInventory.optical,
+                presets = it.zoomPresets,
                 currentLens = it.lens,
                 currentTeleconverter = it.teleconverterMode,
                 currentZoomRatio = it.controls.zoomRatio,
@@ -3489,6 +3499,7 @@ class CameraViewModel private constructor(
             teleconverter = teleconverter,
             targetStandalone = targetStandalone,
             optical = state.lensInventory.optical,
+            presets = state.zoomPresets,
         )
     }
 
@@ -3518,10 +3529,13 @@ class CameraViewModel private constructor(
                         // Divide by the OPTICAL lens the standalone route lands on, not by the
                         // preset: on a one-camera device "3×" is a crop of the main lens, and a flat
                         // 1× would throw that framing away (device-seen: 3× read 27 mm, not 81 mm).
-                        (choice.zoomPreset / opticalBaseFor(choice.zoomPreset, it.lensInventory.optical).zoomPreset)
-                            .coerceAtLeast(1f)
+                        val preset = it.zoomPresets.position(choice)
+                        val base = opticalBaseFor(preset, it.lensInventory.optical, it.zoomPresets)
+                        (preset / it.zoomPresets.position(base)).coerceAtLeast(1f)
                     } else {
-                        choice.zoomPreset
+                        // The declared maker's chip, on the unified scale: the chip applies its
+                        // own label (2.8× on a Find X10), not PMA110's 3.
+                        it.zoomPresets.position(choice)
                     },
                 ),
             )
@@ -3593,6 +3607,7 @@ class CameraViewModel private constructor(
                 zoomRatio = before.controls.zoomRatio,
                 standaloneRoute = before.teleconverterMode || standaloneRouteFor(before),
                 optical = before.lensInventory.optical,
+                presets = before.zoomPresets,
             )
         }
         engine.setFrontCamera(entering)
@@ -3615,8 +3630,9 @@ class CameraViewModel private constructor(
                     rearReturnZoom(
                         targetStandaloneRoute = targetStandaloneRoute,
                         preFrontUnifiedZoom = preFrontRearUnifiedZoom,
-                        lensPreset = it.lens.zoomPreset,
+                        lensPreset = it.zoomPresets.position(it.lens),
                         opticalPresets = it.lensInventory.optical,
+                        presets = it.zoomPresets,
                     )
                 } else {
                     1f
@@ -3627,7 +3643,7 @@ class CameraViewModel private constructor(
                     // Same re-band as the engine (AGG4-23): a logical return reads its band from
                     // the returned unified zoom, never the stale pre-front lens.
                     lens = if (it.cameraRoutes.back) {
-                        rearReturnLens(targetStandaloneRoute, returnedZoom, it.lens)
+                        rearReturnLens(targetStandaloneRoute, returnedZoom, it.lens, it.zoomPresets)
                     } else {
                         it.lens
                     },
@@ -3775,7 +3791,7 @@ class CameraViewModel private constructor(
             !current.teleconverterMode && current.activeCameraRoute == CameraRoute.BACK &&
             !standaloneRouteFor(current)
         ) {
-            LensChoice.forZoom(normalizedControls.zoomRatio)
+            LensChoice.forZoom(normalizedControls.zoomRatio, current.zoomPresets)
         } else {
             current.lens
         }

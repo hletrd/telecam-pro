@@ -179,14 +179,16 @@ internal fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
     MeteringMode.SPOT -> "Spot"
 }
 
-// Magnification labels throughout (0.6×/1×/3×/10×), matching stock camera apps — "UW" was the odd
-// one out (user feedback).
-internal fun lensLabel(lens: me.hletrd.telecampro.camera.LensChoice): String = when (lens) {
-    me.hletrd.telecampro.camera.LensChoice.ULTRAWIDE -> "0.6×"
-    me.hletrd.telecampro.camera.LensChoice.MAIN -> "1×"
-    me.hletrd.telecampro.camera.LensChoice.TELE3X -> "3×"
-    me.hletrd.telecampro.camera.LensChoice.TELE10X -> "10×"
-}
+// Magnification labels throughout, matching stock camera apps — "UW" was the odd one out (user
+// feedback). The number is the DECLARED phone's maker chip ([ZoomPresets.label], owner decision
+// 2026-10-25): 0.6× / 1× / 3× / 10× on PMA110 and every undeclared phone, 2.8× for the Find X10 tele,
+// 0.5× for the Find X10 Pro Max ultrawide, 1.5× for the vivo X300 Ultra's 35 mm main. The rail's
+// tight typography ([formatZoomMark]) prints exactly the historical strings for the generic presets.
+// No default for [presets] (AGG4-47): an omitted argument would print PMA110's numbers on every phone.
+internal fun lensLabel(
+    lens: me.hletrd.telecampro.camera.LensChoice,
+    presets: me.hletrd.telecampro.camera.ZoomPresets,
+): String = formatZoomMark(presets.label(lens))
 
 internal fun exposureModeLetter(mode: ExposureMode): String = when (mode) {
     ExposureMode.PROGRAM -> "P"

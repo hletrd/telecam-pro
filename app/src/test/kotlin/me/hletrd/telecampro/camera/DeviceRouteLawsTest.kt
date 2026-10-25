@@ -641,6 +641,7 @@ class LensZoomScaleFollowsRouteTest {
         requestedLens = requested,
         requestedTeleconverter = false,
         restorePreTele = false,
+        presets = ZoomPresets.NOMINAL,
     )
 
     @Test
@@ -707,10 +708,10 @@ class UnifiedZoomRoundTripTest {
     @Test
     fun `round-trips on a multi-lens phone`() {
         multiLens.forEach { lens ->
-            val local = localZoomOf(lens.zoomPreset, multiLens)
+            val local = localZoomOf(lens.zoomPreset, multiLens, presets = ZoomPresets.NOMINAL)
             assertEquals(
                 lens.zoomPreset,
-                unifiedZoomOf(lens, local, standaloneRoute = true, optical = multiLens),
+                unifiedZoomOf(lens, local, standaloneRoute = true, optical = multiLens, presets = ZoomPresets.NOMINAL),
                 1e-3f,
             )
         }
@@ -719,10 +720,10 @@ class UnifiedZoomRoundTripTest {
     @Test
     fun `round-trips on a one-camera device, where band and physical lens differ`() {
         listOf(LensChoice.MAIN, LensChoice.TELE3X, LensChoice.TELE10X).forEach { lens ->
-            val local = localZoomOf(lens.zoomPreset, oneCamera)
+            val local = localZoomOf(lens.zoomPreset, oneCamera, presets = ZoomPresets.NOMINAL)
             assertEquals(
                 lens.zoomPreset,
-                unifiedZoomOf(lens, local, standaloneRoute = true, optical = oneCamera),
+                unifiedZoomOf(lens, local, standaloneRoute = true, optical = oneCamera, presets = ZoomPresets.NOMINAL),
                 1e-3f,
             )
         }
@@ -730,13 +731,13 @@ class UnifiedZoomRoundTripTest {
 
     @Test
     fun `the logical route passes the ratio through untouched`() {
-        assertEquals(3f, unifiedZoomOf(LensChoice.TELE3X, 3f, standaloneRoute = false, optical = multiLens), 0f)
-        assertEquals(7.5f, unifiedZoomOf(LensChoice.MAIN, 7.5f, standaloneRoute = false, optical = multiLens), 0f)
+        assertEquals(3f, unifiedZoomOf(LensChoice.TELE3X, 3f, standaloneRoute = false, optical = multiLens, presets = ZoomPresets.NOMINAL), 0f)
+        assertEquals(7.5f, unifiedZoomOf(LensChoice.MAIN, 7.5f, standaloneRoute = false, optical = multiLens, presets = ZoomPresets.NOMINAL), 0f)
     }
 
     @Test
     fun `the band is never used as the multiplier when it is only a crop`() {
         // Tablet: 3x band, 3.0 local. Using the BAND would give 9; the optical base gives 3.
-        assertEquals(3f, unifiedZoomOf(LensChoice.TELE3X, 3f, standaloneRoute = true, optical = oneCamera), 1e-3f)
+        assertEquals(3f, unifiedZoomOf(LensChoice.TELE3X, 3f, standaloneRoute = true, optical = oneCamera, presets = ZoomPresets.NOMINAL), 1e-3f)
     }
 }

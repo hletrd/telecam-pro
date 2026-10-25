@@ -351,7 +351,7 @@ class CameraUiPolicyTest {
     fun `the focus-confidence OSD tag renders only what its proof supports`() {
         fun tag(state: CameraUiState) = focusConfidenceLabel(
             state.focusConfidence,
-            state.macroCloserLens?.let(::lensLabel),
+            state.macroCloserLens?.let { lensLabel(it, state.zoomPresets) },
         )
         assertNull("no proof, no tag", tag(CameraUiState()))
         assertEquals(

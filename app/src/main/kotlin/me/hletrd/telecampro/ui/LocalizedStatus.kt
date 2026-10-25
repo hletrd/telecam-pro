@@ -79,13 +79,17 @@ internal fun CameraStatusMessage.stringResourceId(): Int = when (this) {
     CameraStatusMessage.COULD_NOT_DELETE_FILE -> R.string.status_could_not_delete_file
 }
 
-internal fun CameraStatus.resolve(context: Context): String {
+internal fun CameraStatus.resolve(
+    context: Context,
+    // The declared phone's chips, so "3× lens unavailable" names the chip the operator tapped.
+    presets: me.hletrd.telecampro.camera.ZoomPresets,
+): String {
     val args = arguments.map<CameraStatusArgument, Any> {
         when (it) {
             is CameraStatusArgument.Text -> it.value
             is CameraStatusArgument.Number -> it.value
             is CameraStatusArgument.AudioInput -> it.value.resolve(context)
-            is CameraStatusArgument.Lens -> lensLabel(it.value)
+            is CameraStatusArgument.Lens -> lensLabel(it.value, presets)
         }
     }.toTypedArray()
     return context.getString(message.stringResourceId(), *args)

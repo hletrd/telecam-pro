@@ -14,12 +14,15 @@ import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.ProcessingLevel
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
+import me.hletrd.telecampro.camera.ZoomPresets
+import me.hletrd.telecampro.camera.zoomPresetsFor
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -160,8 +163,48 @@ class ControlLabelsTest {
             LensChoice.TELE3X to "3×",
             LensChoice.TELE10X to "10×",
         ),
-        ::lensLabel,
+        { lensLabel(it, ZoomPresets.NOMINAL) },
     )
+
+    @Test
+    fun `PMA110 lens labels are the historical strings before and after the inventory`() {
+        // FIND_X9_ULTRA's maker chips ARE the generic set, so its labels may never move: no home
+        // measurement (pre-inventory) and its measured 23.4 mm logical camera print the same copy.
+        listOf(null, 23.4f).forEach { home ->
+            assertLabels(
+                mapOf(
+                    LensChoice.ULTRAWIDE to "0.6×",
+                    LensChoice.MAIN to "1×",
+                    LensChoice.TELE3X to "3×",
+                    LensChoice.TELE10X to "10×",
+                ),
+                { lensLabel(it, zoomPresetsFor(PhoneModel.FIND_X9_ULTRA, home)) },
+            )
+        }
+    }
+
+    @Test
+    fun `a named phone's chips read its maker's numbers`() {
+        // Owner data 2026-10-25 ("follow how the maker does it"): the four presets keep their
+        // identities, the label is the maker's chip.
+        fun labels(phone: PhoneModel, home: Float?) =
+            LensChoice.entries.associateWith { lensLabel(it, zoomPresetsFor(phone, home)) }
+        assertEquals("2.8×", labels(PhoneModel.FIND_X10, 23f)[LensChoice.TELE3X])
+        assertEquals("2.8×", labels(PhoneModel.FIND_X9S_PRO, 23f)[LensChoice.TELE3X])
+        assertEquals("0.5×", labels(PhoneModel.FIND_X10_PRO_MAX, 24f)[LensChoice.ULTRAWIDE])
+        assertEquals("3×", labels(PhoneModel.FIND_X10_PRO_MAX, 24f)[LensChoice.TELE3X])
+        assertEquals("3.5×", labels(PhoneModel.VIVO_X300_PRO, 24f)[LensChoice.TELE3X])
+        assertEquals("3.1×", labels(PhoneModel.VIVO_X500, 23f)[LensChoice.TELE3X])
+        assertEquals("3.7×", labels(PhoneModel.HONOR_MAGIC8_PRO, 23f)[LensChoice.TELE3X])
+        assertEquals("3.5×", labels(PhoneModel.HONOR_MAGIC9, 23f)[LensChoice.TELE3X])
+        val ultra = labels(PhoneModel.VIVO_X300_ULTRA, 35f)
+        assertEquals("0.6×", ultra[LensChoice.ULTRAWIDE])
+        assertEquals("1.5×", ultra[LensChoice.MAIN])
+        assertEquals("3.7×", ultra[LensChoice.TELE3X])
+        assertEquals("10×", ultra[LensChoice.TELE10X])
+        // An undeclared phone keeps the generic chips.
+        assertEquals(labels(PhoneModel.FIND_X9_ULTRA, 23.4f), labels(PhoneModel.OTHER, 26f))
+    }
 
     @Test
     fun `drive mode labels`() = assertLabels(

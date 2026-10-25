@@ -618,7 +618,7 @@ class CameraEngine internal constructor(
         // the lens-local 1.0 was read as main-relative and collapsed the band to 1×, so the rail
         // highlighted 1× while the focal readout correctly said 69 mm (device-reported 2026-08-04).
         if (lensBandFollowsZoom(videoMode, teleconverterMode, activeCameraRoute)) {
-            lensChoice = LensChoice.forZoom(controls.zoomRatio)
+            lensChoice = LensChoice.forZoom(controls.zoomRatio, zoomPresets)
         }
         seedGlZoom()
     }
@@ -1485,6 +1485,15 @@ class CameraEngine internal constructor(
     @Volatile private var acceptedMainEquivMm: Float? = null
 
     /**
+     * The inventory's MEASURED photo-home camera equivalent ([LensInventory.homeEquivMm]), retained
+     * for the same reason: the declared phone's chip positions ([zoomPresets]) divide the maker's
+     * numbers by the logical display factor it feeds, and the ViewModel reads the very same
+     * measurement from the published inventory (`CameraUiState.zoomPresets`). Null until the
+     * enumeration runs, where both sides stand in the declared main.
+     */
+    @Volatile private var acceptedHomeEquivMm: Float? = null
+
+    /**
      * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.
      * Runs on [setupExecutor] (several Binder IPCs) beside the other one-shot enumerations, and the
      * zoom half reads the PHOTO-HOME route's advertised range — device-static like the lens list,
@@ -1517,6 +1526,7 @@ class CameraEngine internal constructor(
         val inventory = lensInventoryOf(equivalents, range, homeCaps?.equivalentFocalMm)
         acceptedOpticalPresets = inventory.optical
         acceptedMainEquivMm = inventory.presetEquivMm[LensChoice.MAIN]
+        acceptedHomeEquivMm = inventory.homeEquivMm.takeIf { it > 0f }
         // acceptedOpticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder
         // resolves FINDER_MIN_ZOOM against unifiedZoomOf(..., optical = acceptedOpticalPresets).
         // Enumeration is
@@ -1834,6 +1844,12 @@ class CameraEngine internal constructor(
     // UI's marks/snaps/pill therefore agree on every phone, not only on PMA110's nominal 70 ÷ 23.
     private val teleDisplayBase: Float
         get() = teleconverterDeclaration.displayBase(acceptedMainEquivMm)
+    // The DECLARED phone's lens-chip positions over the measured home camera — the same
+    // `zoomPresetsFor` law the ViewModel's `CameraUiState.zoomPresets` reads, from the same phone (the
+    // declaration) and the same measurement, so a chip's band and every unified↔local conversion
+    // agree on both sides. PMA110 resolves to ZoomPresets.NOMINAL, i.e. the historical presets.
+    private val zoomPresets: ZoomPresets
+        get() = zoomPresetsFor(teleconverterDeclaration.phone, acceptedHomeEquivMm)
     @Volatile private var videoMode = false
     // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
     // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
@@ -3025,7 +3041,7 @@ class CameraEngine internal constructor(
                             // Same route-scale predicate as reconcileControlsWithCaps: `!enabled`
                             // alone read a DNG Photo lens-local ratio as unified (AGG-3).
                             if (lensBandFollowsZoom(enabled, teleconverterMode, activeCameraRoute)) {
-                                lensChoice = LensChoice.forZoom(controls.zoomRatio)
+                                lensChoice = LensChoice.forZoom(controls.zoomRatio, zoomPresets)
                             }
                             seedGlZoom()
                             overrideId = id
@@ -3191,7 +3207,7 @@ class CameraEngine internal constructor(
                         )
                         if (!enabledVideo) photoExposureTimeNs = controls.exposureTimeNs
                         if (lensBandFollowsZoom(enabledVideo, routeTeleconverter, route)) {
-                            lensChoice = LensChoice.forZoom(controls.zoomRatio)
+                            lensChoice = LensChoice.forZoom(controls.zoomRatio, zoomPresets)
                         }
                         seedGlZoom()
                         overrideId = id
@@ -4219,6 +4235,7 @@ class CameraEngine internal constructor(
                     videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
                 ),
                 opticalPresets = acceptedOpticalPresets,
+                presets = zoomPresets,
                 currentLens = lensChoice,
                 currentTeleconverter = teleconverterMode,
                 currentControls = controls,
@@ -4349,6 +4366,7 @@ class CameraEngine internal constructor(
                     zoomRatio = controls.zoomRatio,
                     standaloneRoute = sourceStandaloneRoute,
                     optical = acceptedOpticalPresets,
+                    presets = zoomPresets,
                 )
             }
             setActiveCameraRoute(targetRoute)
@@ -4365,15 +4383,16 @@ class CameraEngine internal constructor(
                     rearReturnZoom(
                         targetStandaloneRoute = targetStandaloneRoute,
                         preFrontUnifiedZoom = preFrontRearUnifiedZoom,
-                        lensPreset = lensChoice.zoomPreset,
+                        lensPreset = zoomPresets.position(lensChoice),
                         opticalPresets = acceptedOpticalPresets,
+                        presets = zoomPresets,
                     )
                 },
             )
             // Leaving onto the logical route re-bands from the zoom just returned (AGG4-23); TC is
             // always off here (forced off on entry, refused while FRONT).
             if (targetRoute == CameraRoute.BACK) {
-                lensChoice = rearReturnLens(targetStandaloneRoute, controls.zoomRatio, lensChoice)
+                lensChoice = rearReturnLens(targetStandaloneRoute, controls.zoomRatio, lensChoice, zoomPresets)
             }
             // A front trip drops the pre-TELE return framing: the snapshot is an absolute ratio in
             // a rear scale, and TELE does not survive the trip (leaving FRONT lands on the plain
@@ -8326,6 +8345,7 @@ class CameraEngine internal constructor(
                         videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
                     ),
                     optical = acceptedOpticalPresets,
+                    presets = zoomPresets,
                 ),
             )
             // Suppressing an identical re-push is safe for GL generations too: RendererAssists
@@ -9529,6 +9549,8 @@ internal fun resolveLensOpticsIntent(
      * tapped. On a one-camera device those differ, and using the preset threw the framing away.
      */
     opticalPresets: Set<LensChoice>,
+    /** The declared phone's chip positions: where [requestedLens] lands, and the bands. */
+    presets: ZoomPresets,
     currentLens: LensChoice,
     currentTeleconverter: Boolean,
     currentControls: ManualControls,
@@ -9540,6 +9562,7 @@ internal fun resolveLensOpticsIntent(
     val transition = resolveTeleZoomTransition(
         nonTeleStandaloneRoute = standaloneRoute,
         opticalPresets = opticalPresets,
+        presets = presets,
         currentLens = currentLens,
         currentTeleconverter = currentTeleconverter,
         currentZoomRatio = currentControls.zoomRatio,

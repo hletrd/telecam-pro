@@ -48,55 +48,90 @@ enum class PhoneModel(
     // fetched 2026-10-25, last modified 2026-10-24). Telephoto focals: the makers' own spec pages.
     // A phone with NO code in that list is still offered for MANUAL selection — detection only
     // preselects, so a missing code costs the auto-pick and nothing else.
-    // Maker zoom rows (2026-10-25): lens focals and the focal the maker calls 1x, from the same
-    // spec pages; each row's comment names its lenses (ultrawide / main / tele) and the source.
+    // Maker zoom rows (2026-10-25): lens focals, the focal the maker calls 1x and its rail chips,
+    // from the same spec pages; each row names its lenses (ultrawide / main / tele) and its source.
+    // A chip list marked "unverified" was not found on an official page: those rows keep 0.6x for
+    // the ultrawide and the enumeration's say over 10x. MakerZoom(1x mm, declared main mm, chips).
     // OPPO: Find X9 Ultra / X9 Pro (oppo.com product pages), Find X9s Pro and Find X10 / X10 Pro Max
     // (oppo.com/cn and oppo.com/en, 2026-09-22 launch). PMA120 = Find X9 Ultra satellite edition.
-    // Find X9 Ultra: 14 / 23 / 70 / 230 mm, 1x = 23 mm (oppo.com).
-    FIND_X9_ULTRA(70f, listOf("PMA110", "CPH2841", "PMA120"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Find X9 Pro: 15 / 23 / 70 mm, 1x = 23 mm (oppo.com).
-    FIND_X9_PRO(70f, listOf("PLG110", "PLG120", "CPH2791"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Find X9s Pro: 15 / 23 / 65 mm, 1x = 23 mm (oppo.com/cn).
-    FIND_X9S_PRO(65f, listOf("PME110"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Find X10: 15 / 23 / 65 mm, 1x = 23 mm (oppo.com/cn, oppo.com/en).
-    FIND_X10(65f, listOf("PMW110", "CPH2911", "OPG09"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Find X10 Pro Max: 13 / 24 / 70 mm, 1x = 24 mm (oppo.com/cn, oppo.com/en).
-    FIND_X10_PRO_MAX(70f, listOf("PMX110", "CPH2913"), MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
+    // Find X9 Ultra: 14 / 23 / 70 / 230 mm, 1x = 23 mm (oppo.com); stock chips 0.6 · 1 · 2 · 3 · 6 ·
+    // 10, of which the rail has kept 0.6 / 1 / 3 / 10 since PMA110 shipped.
+    FIND_X9_ULTRA(
+        70f,
+        listOf("PMA110", "CPH2841", "PMA120"),
+        MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f),
+    ),
+    // Find X9 Pro: 15 / 23 / 70 mm, 1x = 23 mm (oppo.com); chips unverified.
+    FIND_X9_PRO(70f, listOf("PLG110", "PLG120", "CPH2791"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f)),
+    // Find X9s Pro: 15 / 23 / 65 mm, 1x = 23 mm; official chips 0.6 · 1 · 2 · 2.8 · 5.6 (oppo.com/cn).
+    FIND_X9S_PRO(65f, listOf("PME110"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 2.8f, hidesTenX = true)),
+    // Find X10: 15 / 23 / 65 mm, 1x = 23 mm; official chips 0.6 · 1 · 2 · 2.8 · 5.6 (oppo.com/cn, /en).
+    FIND_X10(
+        65f,
+        listOf("PMW110", "CPH2911", "OPG09"),
+        MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 2.8f, hidesTenX = true),
+    ),
+    // Find X10 Pro Max: 13 / 24 / 70 mm, 1x = 24 mm; official chips 0.5 · 1 · 2 · 3 · 6 (oppo.com).
+    FIND_X10_PRO_MAX(
+        70f,
+        listOf("PMX110", "CPH2913"),
+        MakerZoom(24f, 24f, ultraWideChip = 0.5f, teleChip = 3f, hidesTenX = true),
+    ),
 
     // vivo: the ZEISS extenders are built for an 85 mm telephoto (vivo FAQ 1925 / 2137); the X300
     // Ultra's 14/35/85 mm and the X500's 72 mm are from vivo.com / vivo.com.cn spec pages.
     // V2547DA is also the X300 Ultra satellite edition; V2602DA the X500 Pro Max satellite edition.
     // The X300 and X300s carry a 70 mm telephoto, not 85 (vivo.com.cn: "3x光学变焦"; the X300s page
     // adds "200mm 需要进行数码裁切后实现" — their ZEISS 200 mm needs an in-camera crop).
-    // X200 Ultra: 14 / 35 / 85 mm; vivo.com.cn "以 23mm 为 1x", so its 35 mm main is "1.5x".
-    VIVO_X200_ULTRA(85f, listOf("V2454A", "V2454DA"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 35f)),
-    // X300: 15 / 23 / 70 mm, 1x = 23 mm (vivo.com.cn, "3x光学变焦").
-    VIVO_X300(70f, listOf("V2509A", "V2515"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // X300 Pro: 15 / 24 / 85 mm, 1x = 24 mm (vivo.com.cn, "3.5x").
-    VIVO_X300_PRO(85f, listOf("V2502A", "V2502DA", "V2514"), MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
-    // X300s: 15 / 23 / 70 mm, 1x = 23 mm (vivo.com.cn, "3x").
-    VIVO_X300S(70f, listOf("V2548A"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // X300 Ultra: 14 / 35 / 85 mm; vivo.com.cn "*1x 指 23mm", so its 35 mm main is "1.5x".
-    VIVO_X300_ULTRA(85f, listOf("V2547A", "V2547DA", "V2562"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 35f)),
-    // X500: 15 / 23 / 72 mm, 1x = 23 mm (vivo.com.cn, "3.1x").
-    VIVO_X500(72f, listOf("V2609A"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // X500 Pro and X500 Pro Max: 15 / 24 / 85 mm, 1x = 24 mm (vivo.com.cn, "3.5x").
+    // X200 Ultra: 14 / 35 / 85 mm; vivo.com.cn "以 23mm 为 1x", so the 35 mm main is 1.5x and the
+    // 85 mm tele 3.7x; chips otherwise unverified.
+    VIVO_X200_ULTRA(
+        85f,
+        listOf("V2454A", "V2454DA"),
+        MakerZoom(23f, 35f, ultraWideChip = 0.6f, mainChip = 1.5f, teleChip = 3.7f),
+    ),
+    // X300: 15 / 23 / 70 mm, 1x = 23 mm (vivo.com.cn, "3x光学变焦"); chips unverified.
+    VIVO_X300(70f, listOf("V2509A", "V2515"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f)),
+    // X300 Pro: 15 / 24 / 85 mm, 1x = 24 mm (vivo.com.cn, "3.5x"); 0.6x, 3.5x and 10x seen there.
+    VIVO_X300_PRO(
+        85f,
+        listOf("V2502A", "V2502DA", "V2514"),
+        MakerZoom(24f, 24f, ultraWideChip = 0.6f, teleChip = 3.5f),
+    ),
+    // X300s: 15 / 23 / 70 mm, 1x = 23 mm (vivo.com.cn, "3x"); chips unverified.
+    VIVO_X300S(70f, listOf("V2548A"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f)),
+    // X300 Ultra: 14 / 35 / 85 mm; vivo.com.cn "*1x 指 23mm", so the 35 mm main is 1.5x and the
+    // 85 mm tele 3.7x; chips otherwise unverified.
+    VIVO_X300_ULTRA(
+        85f,
+        listOf("V2547A", "V2547DA", "V2562"),
+        MakerZoom(23f, 35f, ultraWideChip = 0.6f, mainChip = 1.5f, teleChip = 3.7f),
+    ),
+    // X500: 15 / 23 / 72 mm, 1x = 23 mm (vivo.com.cn, "3.1x"); chips unverified.
+    VIVO_X500(72f, listOf("V2609A"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3.1f)),
+    // X500 Pro and X500 Pro Max: 15 / 24 / 85 mm, 1x = 24 mm (vivo.com.cn, "3.5x"); chips unverified.
     VIVO_X500_PRO(
         85f,
         listOf("V2608A", "V2608DA", "V2621", "V2622"),
-        MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f),
+        MakerZoom(24f, 24f, ultraWideChip = 0.6f, teleChip = 3.5f),
     ),
-    VIVO_X500_PRO_MAX(85f, listOf("V2602A", "V2602DA", "V2610"), MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
+    VIVO_X500_PRO_MAX(
+        85f,
+        listOf("V2602A", "V2602DA", "V2610"),
+        MakerZoom(24f, 24f, ultraWideChip = 0.6f, teleChip = 3.5f),
+    ),
 
     // HONOR: honor.com kit and phone pages. Only the global Magic8 Pro is in Google Play's list.
-    // Magic8 Pro: 12 / 23 / 85 mm, 1x = 23 mm (honor.com, "3.7x").
-    HONOR_MAGIC8_PRO(85f, listOf("BKQ-N49"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Magic8 RSR: 23 / 85 mm, 1x = 23 mm (honor.com/cn).
-    HONOR_MAGIC8_RSR(85f, makerZoom = MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Magic9: 23 / 80 mm, 1x = 23 mm (honor.com/cn, "3.5X").
-    HONOR_MAGIC9(80f, makerZoom = MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
-    // Magic9 Pro Max: 24 / 85 mm, 1x = 24 mm (honor.com/cn, "3.5X").
-    HONOR_MAGIC9_PRO_MAX(85f, makerZoom = MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
+    // Magic8 Pro: 12 / 23 / 85 mm, 1x = 23 mm (honor.com, "3.7x"); chips unverified — its 12 mm
+    // ultrawide is 12 ÷ 23 = 0.52, which no maker prints as 0.6x.
+    HONOR_MAGIC8_PRO(85f, listOf("BKQ-N49"), MakerZoom(23f, 23f, ultraWideChip = 0.5f, teleChip = 3.7f)),
+    // Magic8 RSR: ? / 23 / 85 mm, 1x = 23 mm (honor.com/cn, "3.7x"); ultrawide and chips unverified.
+    HONOR_MAGIC8_RSR(85f, makerZoom = MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3.7f)),
+    // Magic9: ? / 23 / 80 mm, 1x = 23 mm (honor.com/cn, "3.5X"); ultrawide and chips unverified.
+    HONOR_MAGIC9(80f, makerZoom = MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3.5f)),
+    // Magic9 Pro Max: ? / 24 / 85 mm, 1x = 24 mm (honor.com/cn, "3.5X"); ultrawide and chips
+    // unverified.
+    HONOR_MAGIC9_PRO_MAX(85f, makerZoom = MakerZoom(24f, 24f, ultraWideChip = 0.6f, teleChip = 3.5f)),
 
     /**
      * Anything without a first-party kit. Offers only the generic clip-ons and CUSTOM, so it needs
@@ -132,6 +167,21 @@ data class MakerZoom(
      * equivalent until the lens enumeration publishes one ([logicalZoomDisplayFactor]).
      */
     val mainEquivMm: Float,
+    /**
+     * The rail chip numbers, on the maker's 1×-relative scale: what the ULTRAWIDE, MAIN and TELE3X
+     * chips read and the zoom they apply (`ZoomPresets`). The ultrawide is round(ultrawide ÷ 1×) in
+     * the maker's own style — 0.6× for its 14–15 mm lenses — the main is 1× unless the main is not
+     * the 1× lens (vivo's 35 mm "1.5×"), and the tele is the "N×" the maker prints for it.
+     */
+    val ultraWideChip: Float,
+    val mainChip: Float = 1f,
+    val teleChip: Float,
+    /**
+     * True where the maker's OFFICIAL chip row has no 10× and the phone has no 10× lens: TELE10X is
+     * then not offered, however far the zoom range reaches. False defers to the enumeration, which
+     * is also the answer for every row whose chips are unverified.
+     */
+    val hidesTenX: Boolean = false,
 )
 
 /** The phone assumed before detection runs — this app's reason for existing. */
@@ -402,9 +452,10 @@ fun effectiveFocalMm(magnification: Float, baseEquivMm: Float = LensChoice.TELE3
  *    8.7× and the Gen 2 Ultra at ≈ 17.4× — vivo's own numbers — not ÷ its measured 35 mm main.
  *
  * PMA110 is byte-identical by construction: FIND_X9_ULTRA declares exactly 70 mm and a 23 mm 1×,
- * so this evaluates the very `(70f / 23f) * magnification` expression it replaced. A non-finite or non-positive [hostTeleEquivMm] / [mainEquivMm] falls back
- * to that nominal 70 / 23 rather than producing an infinite or NaN scale; [magnification] is passed
- * through untouched because [effectiveMagnification] already guarantees it finite and in range.
+ * so this evaluates the very `(70f / 23f) * magnification` expression it replaced. A non-finite or
+ * non-positive [hostTeleEquivMm] / [mainEquivMm] falls back to that nominal 70 / 23 rather than
+ * producing an infinite or NaN scale; [magnification] is passed through untouched because
+ * [effectiveMagnification] already guarantees it finite and in range.
  * There are deliberately NO default parameter values (AGG4-47 / AGG5-50): an omitted lens input
  * used to compile into the PMA110 answer, which is exactly the defect this signature removes.
  *

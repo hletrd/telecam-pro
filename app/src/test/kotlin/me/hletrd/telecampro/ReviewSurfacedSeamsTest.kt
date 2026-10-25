@@ -6,6 +6,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.afTelemetryBelongsToRepeatingRequest
@@ -132,13 +133,13 @@ class ReviewSurfacedSeamsTest {
 
     @Test
     fun `forZoom band boundaries follow the logical camera's crossings`() {
-        assertEquals(LensChoice.ULTRAWIDE, LensChoice.forZoom(0.6f))
-        assertEquals(LensChoice.MAIN, LensChoice.forZoom(1f))
-        assertEquals(LensChoice.MAIN, LensChoice.forZoom(2.99f))
-        assertEquals(LensChoice.TELE3X, LensChoice.forZoom(3f))
-        assertEquals(LensChoice.TELE3X, LensChoice.forZoom(9.99f))
-        assertEquals(LensChoice.TELE10X, LensChoice.forZoom(10f))
-        assertEquals(LensChoice.TELE10X, LensChoice.forZoom(20f))
+        assertEquals(LensChoice.ULTRAWIDE, LensChoice.forZoom(0.6f, ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.MAIN, LensChoice.forZoom(1f, ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.MAIN, LensChoice.forZoom(2.99f, ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.TELE3X, LensChoice.forZoom(3f, ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.TELE3X, LensChoice.forZoom(9.99f, ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.TELE10X, LensChoice.forZoom(10f, ZoomPresets.NOMINAL))
+        assertEquals(LensChoice.TELE10X, LensChoice.forZoom(20f, ZoomPresets.NOMINAL))
     }
 
     // --- ColorProfiles.mimeFor -------------------------------------------------------------------

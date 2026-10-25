@@ -658,6 +658,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   and a rail left with a single preset renders nothing (pinch still covers the range). The Optics
   focal caption follows the same honesty: the round literal survives only within 10% of the
   measured equivalent (PMA110's ~69.4 mm 3× still reads "70 mm"; the tablet's main reads "26 mm").
+  **The chips follow the DECLARED phone's maker (owner decision 2026-10-25).** The four
+  `LensChoice` identities and their persisted names stay; `PhoneModel.makerZoom` (one row per
+  phone, with its source) gives each its maker number — 0.5× on the Find X10 Pro Max, 2.8× on the
+  Find X9s Pro / X10, 3.5× / 3.1× / 3.7× on the vivo and HONOR teles, 1.5× for the vivo X200 / X300
+  Ultra's 35 mm main. `ZoomPresets` (`zoomPresetsFor(phone, LensInventory.homeEquivMm)`) carries the
+  label and the chip's POSITION on the unified scale (label ÷ `logicalZoomDisplayFactor`; MAIN lands
+  on 1.0 exactly when within the band), so a chip APPLIES its label; every conversion and band
+  (`unifiedZoomOf`/`localZoomOf`/`opticalBaseFor`/`LensChoice.forZoom`, the Photo floor) takes that
+  required `presets` argument on both engine and VM. Enumeration still decides which chips exist;
+  `hidesTenX` only withholds 10× where the official row has none (X9s Pro, X10, X10 Pro Max).
+  `OTHER` and PMA110 resolve to `ZoomPresets.NOMINAL` (0.6/1/3/10, pinned bit-identical).
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
 - **The teleconverter's MAGNIFICATION is a setting, not a constant — and never a detection

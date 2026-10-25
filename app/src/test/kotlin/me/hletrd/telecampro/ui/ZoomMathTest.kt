@@ -4,6 +4,7 @@ import me.hletrd.telecampro.camera.reconcileZoomWithCaps
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
@@ -69,6 +70,7 @@ class ZoomMathTest {
             frontFacing = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE3X, modeFlip.lens)
         assertEquals(2f, modeFlip.controls.zoomRatio, 0f)
@@ -132,7 +134,7 @@ class ZoomMathTest {
     }
 
     @Test fun `photo restore keeps unified framing and derives lens band`() {
-        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, false, kitBase, 10.5f, photoStandalone = false)
+        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, false, kitBase, 10.5f, photoStandalone = false, presets = ZoomPresets.NOMINAL)
         assertEquals(LensChoice.TELE10X, restored.lens)
         assertEquals(10.5f, restored.zoomRatio, 0f)
     }
@@ -143,12 +145,14 @@ class ZoomMathTest {
         val restored = restoredOptics(
             CaptureMode.PHOTO, LensChoice.TELE3X, false, kitBase, 1f,
             photoStandalone = true,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertEquals(1f, restored.zoomRatio, 0f)
         val sixX = restoredOptics(
             CaptureMode.PHOTO, LensChoice.TELE3X, false, kitBase, 2f,
             photoStandalone = true,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE3X, sixX.lens)
         assertEquals(2f, sixX.zoomRatio, 0f)
@@ -157,6 +161,7 @@ class ZoomMathTest {
             restoredOptics(
                 CaptureMode.PHOTO, LensChoice.TELE10X, false, kitBase, Float.NaN,
                 photoStandalone = true,
+                presets = ZoomPresets.NOMINAL,
             ).zoomRatio,
             0f,
         )
@@ -171,12 +176,14 @@ class ZoomMathTest {
             teleconverter = false,
             lensLocalRoute = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE3X, optics.lens)
         assertEquals(1f, optics.controls.zoomRatio, 0.001f)
         val sixX = remapRouteScaleOptics(
             LensChoice.TELE3X, ManualControls(zoomRatio = 6f), false, true, false, false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE3X, sixX.lens)
         assertEquals(2f, sixX.controls.zoomRatio, 0.001f)
@@ -191,6 +198,7 @@ class ZoomMathTest {
             teleconverter = false,
             lensLocalRoute = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.TELE3X, optics.lens)
         assertEquals(LensChoice.TELE3X.zoomPreset, optics.controls.zoomRatio, 0.001f)
@@ -198,19 +206,19 @@ class ZoomMathTest {
 
     @Test fun `route scale remap is inert when the route answer or a local route does not change`() {
         val controls = ManualControls(zoomRatio = 3f)
-        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, true, true, false, false, optical = LensChoice.entries.toSet()).controls)
-        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, true, false, optical = LensChoice.entries.toSet()).controls)
-        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, false, true, optical = LensChoice.entries.toSet()).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, true, true, false, false, optical = LensChoice.entries.toSet(), presets = ZoomPresets.NOMINAL).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, true, false, optical = LensChoice.entries.toSet(), presets = ZoomPresets.NOMINAL).controls)
+        assertEquals(controls, remapRouteScaleOptics(LensChoice.TELE3X, controls, false, true, false, true, optical = LensChoice.entries.toSet(), presets = ZoomPresets.NOMINAL).controls)
     }
 
     @Test fun `video restore keeps selected lens and local zoom`() {
-        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, kitBase, 2.25f, photoStandalone = false)
+        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, kitBase, 2.25f, photoStandalone = false, presets = ZoomPresets.NOMINAL)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertEquals(2.25f, restored.zoomRatio, 0f)
     }
 
     @Test fun `video restore clamps legacy local zoom to 10x`() {
-        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, kitBase, 20f, photoStandalone = false)
+        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, kitBase, 20f, photoStandalone = false, presets = ZoomPresets.NOMINAL)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertEquals(10f, restored.zoomRatio, 0f)
     }
@@ -218,18 +226,18 @@ class ZoomMathTest {
     @Test fun `non-finite restore falls back to a valid mode representation`() {
         assertEquals(
             1f,
-            restoredOptics(CaptureMode.VIDEO, LensChoice.TELE10X, false, kitBase, Float.NaN, photoStandalone = false).zoomRatio,
+            restoredOptics(CaptureMode.VIDEO, LensChoice.TELE10X, false, kitBase, Float.NaN, photoStandalone = false, presets = ZoomPresets.NOMINAL).zoomRatio,
             0f,
         )
         assertEquals(
             LensChoice.TELE3X.zoomPreset,
-            restoredOptics(CaptureMode.PHOTO, LensChoice.TELE3X, false, kitBase, Float.POSITIVE_INFINITY, photoStandalone = false).zoomRatio,
+            restoredOptics(CaptureMode.PHOTO, LensChoice.TELE3X, false, kitBase, Float.POSITIVE_INFINITY, photoStandalone = false, presets = ZoomPresets.NOMINAL).zoomRatio,
             0f,
         )
     }
 
     @Test fun `tele restore clamps local zoom to converter display ceiling`() {
-        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, kitBase, 9f, photoStandalone = false)
+        val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, kitBase, 9f, photoStandalone = false, presets = ZoomPresets.NOMINAL)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertTrue(restored.teleconverter)
         assertEquals(60f, restored.zoomRatio * kitBase, 0.001f)
@@ -246,6 +254,7 @@ class ZoomMathTest {
             lensLocalRoute = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE10X, remapped.lens)
@@ -263,6 +272,7 @@ class ZoomMathTest {
             lensLocalRoute = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE10X, remapped.lens)
@@ -281,6 +291,7 @@ class ZoomMathTest {
             lensLocalRoute = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE3X, remapped.lens)
@@ -303,6 +314,7 @@ class ZoomMathTest {
             lensLocalRoute = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(LensChoice.TELE3X, remapped.lens)
@@ -333,6 +345,7 @@ class ZoomMathTest {
             lensLocalRoute = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(33_333_333L, video.controls.exposureTimeNs)
 
@@ -352,6 +365,7 @@ class ZoomMathTest {
             lensLocalRoute = false,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
 
         assertEquals(500_000_000L, photo.controls.exposureTimeNs)
@@ -544,6 +558,7 @@ class ZoomMathTest {
             lensLocalRoute = true,
             photoIsStandalone = false,
             optical = LensChoice.entries.toSet(),
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(LensChoice.MAIN, optics.lens)
         assertEquals(5f, optics.controls.zoomRatio, 0f)
@@ -639,12 +654,12 @@ class ZoomMathTest {
     fun `tele restore clamps against the converter being restored with it`() {
         // 9x local is legal under a weak converter but past the total cap under the kit optic — the
         // restore must clamp against the magnification arriving in the SAME packet, not a constant.
-        val weak = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, pma110Base(2f), 9f, photoStandalone = false)
+        val weak = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, pma110Base(2f), 9f, photoStandalone = false, presets = ZoomPresets.NOMINAL)
         assertEquals(9f, weak.zoomRatio, 0.001f)
         assertTrue(9f * pma110Base(2f) < TELE_MAX_DISPLAY_ZOOM)
         assertEquals(
             60f,
-            restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, kitBase, 9f, photoStandalone = false)
+            restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, kitBase, 9f, photoStandalone = false, presets = ZoomPresets.NOMINAL)
                 .zoomRatio * kitBase,
             0.001f,
         )
@@ -941,7 +956,7 @@ class ZoomMathTest {
         assertNull(selectedTeleZoomMark(marks, Float.NaN))
     }
 
-    // AGG2-5 / CR2-3: the FRONT-retained rear snapshot is `unifiedZoomOf(lens, z)` (base from the
+    // AGG2-5 / CR2-3: the FRONT-retained rear snapshot is `unifiedZoomOf(lens, z, presets = ZoomPresets.NOMINAL)` (base from the
     // LENS); converting it back with `localZoomOf` takes the base from the RATIO, i.e. the 10x lens
     // once `3z >= 10`, so a TELE at local 4.0 (unified 12) persisted as 1.2.
     @Test
@@ -949,17 +964,18 @@ class ZoomMathTest {
         val optical = LensChoice.entries.toSet()
         val unified = me.hletrd.telecampro.camera.unifiedZoomOf(
             LensChoice.TELE3X, 4f, standaloneRoute = true, optical = optical,
+            presets = ZoomPresets.NOMINAL,
         )
         assertEquals(12f, unified, 1e-4f)
         assertEquals(
             4f,
-            retainedRearWireZoom(unified, LensChoice.TELE3X, teleconverter = true, targetStandalone = true, optical),
+            retainedRearWireZoom(unified, LensChoice.TELE3X, teleconverter = true, targetStandalone = true, optical, presets = ZoomPresets.NOMINAL),
             1e-4f,
         )
         // Same law for a non-TC standalone (Video / DNG) 3x lens zoomed past 3.33x.
         assertEquals(
             4f,
-            retainedRearWireZoom(unified, LensChoice.TELE3X, teleconverter = false, targetStandalone = true, optical),
+            retainedRearWireZoom(unified, LensChoice.TELE3X, teleconverter = false, targetStandalone = true, optical, presets = ZoomPresets.NOMINAL),
             1e-4f,
         )
     }
@@ -994,26 +1010,26 @@ class ZoomMathTest {
         val optical = LensChoice.entries.toSet()
         assertEquals(
             12f,
-            retainedRearWireZoom(12f, LensChoice.TELE3X, teleconverter = false, targetStandalone = false, optical),
+            retainedRearWireZoom(12f, LensChoice.TELE3X, teleconverter = false, targetStandalone = false, optical, presets = ZoomPresets.NOMINAL),
             0f,
         )
         for (lens in LensChoice.entries) {
             for (local in listOf(1f, 1.5f, 3.4f, 4f, 7f)) {
-                val unified = me.hletrd.telecampro.camera.unifiedZoomOf(lens, local, true, optical)
+                val unified = me.hletrd.telecampro.camera.unifiedZoomOf(lens, local, true, optical, presets = ZoomPresets.NOMINAL)
                 assertEquals(
                     "$lens local $local",
                     local,
-                    retainedRearWireZoom(unified, lens, teleconverter = false, targetStandalone = true, optical),
+                    retainedRearWireZoom(unified, lens, teleconverter = false, targetStandalone = true, optical, presets = ZoomPresets.NOMINAL),
                     1e-4f,
                 )
             }
         }
         // A one-camera device: the 3x band is a crop of the main lens, so the divisor is 1x.
         val mainOnly = setOf(LensChoice.MAIN)
-        val crop = me.hletrd.telecampro.camera.unifiedZoomOf(LensChoice.TELE3X, 4f, true, mainOnly)
+        val crop = me.hletrd.telecampro.camera.unifiedZoomOf(LensChoice.TELE3X, 4f, true, mainOnly, presets = ZoomPresets.NOMINAL)
         assertEquals(
             4f,
-            retainedRearWireZoom(crop, LensChoice.TELE3X, teleconverter = false, targetStandalone = true, mainOnly),
+            retainedRearWireZoom(crop, LensChoice.TELE3X, teleconverter = false, targetStandalone = true, mainOnly, presets = ZoomPresets.NOMINAL),
             1e-4f,
         )
     }

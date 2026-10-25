@@ -16,6 +16,7 @@ import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.PhoneModel
+import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.camera.logicalZoomDisplayFactor
 import me.hletrd.telecampro.camera.oneXReferenceMm
 import me.hletrd.telecampro.camera.teleDisplayBase
@@ -118,7 +119,7 @@ internal val CameraUiState.mainRelativeZoomMultiplier: Float
 internal val CameraUiState.displayedRouteEquivMm: Float?
     get() {
         if (cameraReady) return caps?.equivalentFocalMm
-        val reached = opticalBaseFor(lens.zoomPreset, lensInventory.optical)
+        val reached = opticalBaseFor(zoomPresets.position(lens), lensInventory.optical, zoomPresets)
         return lensInventory.presetEquivMm[reached]?.takeIf { it.isFinite() && it > 0f }
             ?: caps?.equivalentFocalMm
     }
@@ -457,6 +458,8 @@ internal fun remapModeOptics(
     photoIsStandalone: Boolean,
     /** Optical presets, so the conversion divides by the lens the route reaches (one-camera safe). */
     optical: Set<LensChoice>,
+    /** The declared phone's chip positions (`CameraUiState.zoomPresets`) the bands follow. */
+    presets: ZoomPresets,
 ): ModeOptics {
     // PROGRAM is app-owned in Photo but normally HAL-owned in Video. Clear the Photo-derived flag
     // on an actual Video entry; route capability normalization may re-enable it later when a sparse
@@ -475,19 +478,24 @@ internal fun remapModeOptics(
         return ModeOptics(lens, modeControls)
     }
     return if (toMode == CaptureMode.VIDEO) {
-        val band = LensChoice.forZoom(modeControls.zoomRatio)
+        val band = LensChoice.forZoom(modeControls.zoomRatio, presets)
         ModeOptics(
             lens = band,
             controls = modeControls.copy(
-                zoomRatio = localZoomOf(modeControls.zoomRatio, optical).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
+                zoomRatio = localZoomOf(modeControls.zoomRatio, optical, presets).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
             ),
         )
     } else {
         ModeOptics(
             lens = lens,
             controls = modeControls.copy(
-                zoomRatio = unifiedZoomOf(lens, modeControls.zoomRatio, standaloneRoute = true, optical = optical)
-                    .coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM),
+                zoomRatio = unifiedZoomOf(
+                    lens = lens,
+                    zoomRatio = modeControls.zoomRatio,
+                    standaloneRoute = true,
+                    optical = optical,
+                    presets = presets,
+                ).coerceIn(minPhotoUnifiedZoom(presets), MAX_PHOTO_UNIFIED_ZOOM),
             ),
         )
     }
@@ -512,14 +520,15 @@ internal fun remapRouteScaleOptics(
     lensLocalRoute: Boolean,
     // No default (AGG5-50): see [remapModeOptics].
     optical: Set<LensChoice>,
+    presets: ZoomPresets,
 ): ModeOptics {
     if (fromStandalone == toStandalone || teleconverter || lensLocalRoute) return ModeOptics(lens, controls)
     return if (toStandalone) {
-        val unified = controls.zoomRatio.takeIf { it.isFinite() } ?: lens.zoomPreset
+        val unified = controls.zoomRatio.takeIf { it.isFinite() } ?: presets.position(lens)
         ModeOptics(
-            lens = LensChoice.forZoom(unified),
+            lens = LensChoice.forZoom(unified, presets),
             controls = controls.copy(
-                zoomRatio = localZoomOf(unified, optical).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
+                zoomRatio = localZoomOf(unified, optical, presets).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
             ),
         )
     } else {
@@ -527,8 +536,8 @@ internal fun remapRouteScaleOptics(
         ModeOptics(
             lens = lens,
             controls = controls.copy(
-                zoomRatio = unifiedZoomOf(lens, local, standaloneRoute = true, optical = optical)
-                    .coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM),
+                zoomRatio = unifiedZoomOf(lens, local, standaloneRoute = true, optical = optical, presets = presets)
+                    .coerceIn(minPhotoUnifiedZoom(presets), MAX_PHOTO_UNIFIED_ZOOM),
             ),
         )
     }
@@ -552,6 +561,7 @@ internal fun retainedRearWireZoom(
     teleconverter: Boolean,
     targetStandalone: Boolean,
     optical: Set<LensChoice>,
+    presets: ZoomPresets,
 ): Float {
     val routeLens = if (teleconverter) LensChoice.TELE3X else lens
     // ONE conversion with the live FRONT→rear return (AGG3-1): the persisted value and the zoom the
@@ -559,8 +569,9 @@ internal fun retainedRearWireZoom(
     return rearReturnZoom(
         targetStandaloneRoute = targetStandalone,
         preFrontUnifiedZoom = unified,
-        lensPreset = routeLens.zoomPreset,
+        lensPreset = presets.position(routeLens),
         opticalPresets = optical,
+        presets = presets,
     )
 }
 
@@ -607,11 +618,16 @@ internal fun restoredOptics(
      * `false` default WAS that bug for any caller that forgot it.
      */
     photoStandalone: Boolean,
+    /**
+     * The RESTORED phone's chip positions (`zoomPresetsFor(restored phone, inventory)`), the scale
+     * a unified ratio is re-banded on — never the outgoing phone's.
+     */
+    presets: ZoomPresets,
 ): RestoredOptics {
     val lensLocal = mode == CaptureMode.VIDEO || photoStandalone
     val safeZoom = savedZoomRatio.takeIf { it.isFinite() } ?: when {
         teleconverter || lensLocal -> 1f
-        else -> requestedLens.zoomPreset
+        else -> presets.position(requestedLens)
     }
     if (teleconverter) {
         return RestoredOptics(
@@ -630,10 +646,19 @@ internal fun restoredOptics(
     return if (lensLocal) {
         RestoredOptics(requestedLens, false, safeZoom.coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM))
     } else {
-        val unified = safeZoom.coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM)
-        RestoredOptics(LensChoice.forZoom(unified), false, unified)
+        val unified = safeZoom.coerceIn(minPhotoUnifiedZoom(presets), MAX_PHOTO_UNIFIED_ZOOM)
+        RestoredOptics(LensChoice.forZoom(unified, presets), false, unified)
     }
 }
+
+/**
+ * The unified Photo floor the remaps and restore clamp to: the generic 0.6, or lower where the
+ * declared phone's ultrawide chip sits lower ([ZoomPresets.position]) — the Find X10 Pro Max's 0.5×,
+ * or a vivo Ultra's 0.6× on its 35 mm-based logical scale (≈ 0.39) — so a restored ultrawide
+ * framing is not pushed onto the main lens. PMA110's chip is exactly 0.6, so its floor is unchanged.
+ */
+private fun minPhotoUnifiedZoom(presets: ZoomPresets): Float =
+    minOf(MIN_PHOTO_ZOOM, presets.position(LensChoice.ULTRAWIDE))
 
 private const val SNAP_FRACTION = 0.06f
 private const val SNAP_EPSILON = 0.001f

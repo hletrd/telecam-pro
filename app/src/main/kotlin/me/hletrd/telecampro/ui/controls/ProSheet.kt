@@ -1306,9 +1306,9 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             label = stringResource(R.string.label_lens),
             // Same enumerated inventory the viewfinder rail uses — a preset this device cannot
             // reach must not be offered in the menu either.
-            options = LensChoice.entries.filter { it in state.lensInventory.available },
+            options = me.hletrd.telecampro.camera.offeredLensChoices(state.lensInventory, state.zoomPresets),
             selected = state.lens,
-            labelFor = ::lensLabel,
+            labelFor = { lensLabel(it, state.zoomPresets) },
             onSelect = actions::onLens,
             enabled = rearOpticsMutable,
         )

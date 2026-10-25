@@ -11,6 +11,7 @@ import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.status
+import me.hletrd.telecampro.camera.ZoomPresets
 import me.hletrd.telecampro.ui.review.mediaDeleteConfirmationCopy
 import me.hletrd.telecampro.video.AudioPortKind
 import me.hletrd.telecampro.video.AudioRouteAvailability
@@ -51,8 +52,8 @@ class KoreanLocalizationRobolectricTest {
                 else -> emptyArray()
             }
             val status = id.status(*argument)
-            assertTrue(status.resolve(english).isNotBlank())
-            assertTrue(status.resolve(korean).isNotBlank())
+            assertTrue(status.resolve(english, ZoomPresets.NOMINAL).isNotBlank())
+            assertTrue(status.resolve(korean, ZoomPresets.NOMINAL).isNotBlank())
             assertEquals(status.durationMs, id.status(*argument).durationMs)
         }
     }
@@ -93,13 +94,13 @@ class KoreanLocalizationRobolectricTest {
             "MR2: 비어 있음",
             CameraStatusMessage.MEMORY_SLOT_EMPTY
                 .status(CameraStatusArgument.Text("MR2"))
-                .resolve(ko),
+                .resolve(ko, ZoomPresets.NOMINAL),
         )
         assertEquals(
             "MR2 불러오기 완료",
             CameraStatusMessage.MEMORY_SLOT_LOADED
                 .status(CameraStatusArgument.Text("MR2"))
-                .resolve(ko),
+                .resolve(ko, ZoomPresets.NOMINAL),
         )
     }
 
@@ -136,8 +137,8 @@ class KoreanLocalizationRobolectricTest {
             CameraStatusMessage.VIDEO_SAVE_DELAYED.status(),
             CameraStatusMessage.OUTPUT_SAVED_PENDING.status(CameraStatusArgument.Text("HEIF")),
         ).forEach { status ->
-            val english = status.resolve(en)
-            val korean = status.resolve(ko)
+            val english = status.resolve(en, ZoomPresets.NOMINAL)
+            val korean = status.resolve(ko, ZoomPresets.NOMINAL)
             assertTrue(english, english.endsWith("It is saved after the app is fully closed and opened again."))
             assertFalse(english, english.contains("next time the app starts"))
             assertFalse(english, english.contains("retry", ignoreCase = true))
@@ -150,8 +151,8 @@ class KoreanLocalizationRobolectricTest {
     @Test
     fun `an unvalidated clip is promised a check, never a save`() {
         // REG3-1 / DES3-4: recovery adopts it only if its structural probe passes.
-        val english = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("en"))
-        val korean = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("ko"))
+        val english = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("en"), ZoomPresets.NOMINAL)
+        val korean = CameraStatusMessage.VIDEO_KEPT_UNVERIFIED.status().resolve(context("ko"), ZoomPresets.NOMINAL)
         assertTrue(english, english.endsWith("It is checked after the app is fully closed and opened again."))
         assertFalse(english, english.contains("saved"))
         assertTrue(korean, korean.endsWith("앱을 완전히 종료한 뒤 다시 열면 확인합니다."))
@@ -162,8 +163,8 @@ class KoreanLocalizationRobolectricTest {
     fun `a still whose recovery marker failed speaks outcome, not mechanism`() {
         // DES3-4: "Recovery marker" is an implementation term the operator cannot act on.
         val status = CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status(CameraStatusArgument.Text("DNG"))
-        val english = status.resolve(context("en"))
-        val korean = status.resolve(context("ko"))
+        val english = status.resolve(context("en"), ZoomPresets.NOMINAL)
+        val korean = status.resolve(context("ko"), ZoomPresets.NOMINAL)
         assertEquals("DNG kept privately. It may not be recoverable.", english)
         assertFalse(english, english.contains("marker", ignoreCase = true))
         assertEquals("DNG 파일을 임시 보관했지만 복구되지 않을 수 있습니다.", korean)

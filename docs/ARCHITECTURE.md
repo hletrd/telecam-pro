@@ -755,7 +755,7 @@ or the visible lens choice (`CameraEngine.resolveNonTeleId`):
 
 | State | Camera | Zoom semantics |
 |---|---|---|
-| Photo, TC off, processed only | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets; chip highlight follows `LensChoice.forZoom`. |
+| Photo, TC off, processed only | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets at the declared phone's maker positions (`ZoomPresets`); chip highlight follows `LensChoice.forZoom(zoom, presets)`. |
 | Photo, TC off, RAW/DNG wanted | **Standalone rear lens** matching the selected band (PMA110 profile; GENERIC stays on the logical camera) | Lens-local zoom; on PMA110 wanting RAW is a route input because the logical path cannot safely carry it (`DeviceProfile.rawRequiresStandalone`). DNG is not TELE-only. Lens changes reopen and route-scale conversion follows the standalone home. A GENERIC device keeps DNG on the seamless logical camera with unified zoom. |
 | Video, TC off | **Standalone lens** matching the band | Lens-local 1–10× digital; lens changes reopen. The logical camera's EIS (Standard AND Active) leaks its uncorrected warp margin (~6% of width) into the stream — preview AND recorded file — so video must not live there. |
 | TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG is offered only when that standalone session advertises RAW. |

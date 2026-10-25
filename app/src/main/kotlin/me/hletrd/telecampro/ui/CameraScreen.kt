@@ -159,6 +159,7 @@ import me.hletrd.telecampro.camera.teleFinderVisible
 import me.hletrd.telecampro.camera.faceFrameFocused
 import me.hletrd.telecampro.camera.faceFramesVisible
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.offeredLensChoices
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.ViewfinderFocusActionAvailability
@@ -1346,7 +1347,7 @@ fun CameraScreen(
         }
 
         state.status?.let { status ->
-            val message = status.resolve(LocalContext.current)
+            val message = status.resolve(LocalContext.current, state.zoomPresets)
             // Centered transient toast ("Video saved" / errors). Previously pinned near the
             // top, where it collided with the OSD status row (300mm / codec / etc.) — QA-reported.
             // This is the channel for capture/permission/storage ERRORS, so its scrim rides the tested
@@ -2972,21 +2973,24 @@ internal fun FocalRail(
                 }
             } else {
                 // ENUMERATED, not hardcoded: only the presets this hardware can actually deliver
-                // (see LensInventory). A single surviving preset is not a choice, so the rail stays
-                // empty rather than showing one dead-looking chip — pinch still covers that device's
-                // whole range.
-                val offered = LensChoice.entries.filter { it in state.lensInventory.available }
+                // (see LensInventory), minus a 10× the declared maker does not show. A single
+                // surviving preset is not a choice, so the rail stays empty rather than showing one
+                // dead-looking chip — pinch still covers that device's whole range.
+                val presets = state.zoomPresets
+                val offered = offeredLensChoices(state.lensInventory, presets)
                     .takeIf { it.size > 1 }
                     .orEmpty()
                 offered.forEach { choice ->
                     val optical = choice in state.lensInventory.optical
+                    // ONE value feeds the drawn text and the spoken name: the maker's chip number.
+                    val label = lensLabel(choice, presets)
                     RailChip(
-                        label = lensLabel(choice),
+                        label = label,
                         // Same honesty rule the tele marks already follow: a digital-zoom preset is
                         // not a lens, so it must not be spoken as one.
                         contentDescription = stringResource(
                             if (optical) R.string.a11y_lens_optical else R.string.a11y_lens_zoom,
-                            lensLabel(choice),
+                            label,
                         ),
                         presentation = focalRailState(
                             choice = choice,
