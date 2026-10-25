@@ -16,6 +16,29 @@ class ControlLabelBranchTest {
     }
 
     @Test
+    fun `soundtrack format labels stay Latin and each format names its own trade-off`() {
+        assertLabels(
+            mapOf(
+                me.hletrd.telecampro.video.AudioCodec.AAC_LC to "AAC-LC",
+                me.hletrd.telecampro.video.AudioCodec.HE_AAC to "HE-AAC",
+                me.hletrd.telecampro.video.AudioCodec.HE_AAC_V2 to "HE-AAC v2",
+                me.hletrd.telecampro.video.AudioCodec.XHE_AAC to "xHE-AAC",
+            ),
+            ::audioCodecLabel,
+        )
+        val captions = me.hletrd.telecampro.video.AudioCodec.entries.map(::audioCodecCaption)
+        assertEquals(
+            listOf(
+                me.hletrd.telecampro.R.string.caption_audio_aac_lc,
+                me.hletrd.telecampro.R.string.caption_audio_he_aac,
+                me.hletrd.telecampro.R.string.caption_audio_he_aac_v2,
+                me.hletrd.telecampro.R.string.caption_audio_xhe_aac,
+            ),
+            captions,
+        )
+    }
+
+    @Test
     fun `exposure and autofocus option labels are exhaustive`() {
         assertLabels(
             mapOf(
