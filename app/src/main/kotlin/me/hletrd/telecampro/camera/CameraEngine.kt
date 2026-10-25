@@ -1475,11 +1475,12 @@ class CameraEngine internal constructor(
     /**
      * The inventory's MEASURED main-lens focal, retained for the same reason as
      * [acceptedOpticalPresets]: TELE's local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`)
-     * divides by the main divisor ([standaloneMainDivisorMm]), and the ViewModel reads the very same
-     * measurement from the published inventory (`CameraUiState.teleDisplayBase`). Null until the
-     * enumeration runs — the same "no measurement" the VM's `LensInventory.ALL` placeholder carries,
-     * so both sides divide by the nominal 23 mm until then. PMA110's ~23.4 mm main stays inside the
-     * rounding band, so its ceiling never moves.
+     * divides by the 1× reference ([oneXReferenceMm]), and the ViewModel reads the very same
+     * measurement from the published inventory (`CameraUiState.teleDisplayBase`). Only
+     * [PhoneModel.OTHER] consults it — a named phone divides by its maker's declared 1×. Null until
+     * the enumeration runs — the same "no measurement" the VM's `LensInventory.ALL` placeholder
+     * carries, so both sides divide by the nominal 23 mm until then. PMA110 declares 23 mm, the
+     * nominal its ~23.4 mm main resolved to, so its ceiling never moves.
      */
     @Volatile private var acceptedMainEquivMm: Float? = null
 
@@ -1505,12 +1506,15 @@ class CameraEngine internal constructor(
         } else {
             cachedExternal()?.logicalId
         }
-        val range = homeId?.let { id ->
+        val homeCaps = homeId?.let { id ->
             val logical = id.substringBefore(':')
             val physical = id.substringAfter(':', "").takeIf { it.isNotEmpty() }
-            cachedCaps(logical, physical)?.zoomRatioRange?.let { it.lower to it.upper }
+            cachedCaps(logical, physical)
         }
-        val inventory = lensInventoryOf(equivalents, range)
+        val range = homeCaps?.zoomRatioRange?.let { it.lower to it.upper }
+        // The home camera's own equivalent is what its zoomRatio 1.0 means — the LOGICAL route's
+        // display factor divides it by the declared maker's 1× (logicalZoomDisplayFactor).
+        val inventory = lensInventoryOf(equivalents, range, homeCaps?.equivalentFocalMm)
         acceptedOpticalPresets = inventory.optical
         acceptedMainEquivMm = inventory.presetEquivMm[LensChoice.MAIN]
         // acceptedOpticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder
@@ -1528,7 +1532,7 @@ class CameraEngine internal constructor(
             android.util.Log.i(
                 "CameraEngine",
                 "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
-                    "available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
+                    "home=${inventory.homeEquivMm} available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
             )
         }
         // Latch only on a real publication: setting it first meant a null listener at this instant

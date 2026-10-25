@@ -95,9 +95,38 @@ class MainRelativeZoomMultiplierRobolectricTest {
             optical = setOf(LensChoice.MAIN),
             presetEquivMm = mapOf(LensChoice.MAIN to 26f, LensChoice.TELE3X to 78f),
         )
-        val s = state(CaptureMode.VIDEO, equivMm = 26f, inventory = tablet)
+        // An unrecognised tablet seeds OTHER, whose 1× is its measured main.
+        val s = state(CaptureMode.VIDEO, equivMm = 26f, inventory = tablet, phone = PhoneModel.OTHER)
         assertEquals(1f, s.mainRelativeZoomMultiplier, 0f)
         assertEquals("3.0×", formatDisplayZoom(3f, s.mainRelativeZoomMultiplier))
+    }
+
+    @Test
+    fun `a named phone reads its maker's 1x on the logical and the standalone route`() {
+        // vivo X300 Ultra: the logical camera's own 1.0 is its 35 mm main, which vivo calls 1.5x.
+        val ultra = LensInventory(
+            available = LensChoice.entries.toSet(),
+            optical = setOf(LensChoice.ULTRAWIDE, LensChoice.MAIN, LensChoice.TELE3X),
+            presetEquivMm = mapOf(LensChoice.MAIN to 35f, LensChoice.TELE3X to 85f),
+            homeEquivMm = 35f,
+        )
+        val photo = state(CaptureMode.PHOTO, equivMm = 35f, inventory = ultra, phone = PhoneModel.VIVO_X300_ULTRA)
+        assertEquals(35f / 23f, photo.mainRelativeZoomMultiplier, 1e-6f)
+        assertEquals("1.5×", formatDisplayZoom(1f, photo.mainRelativeZoomMultiplier))
+        val video = state(
+            CaptureMode.VIDEO,
+            equivMm = 85f,
+            inventory = ultra,
+            phone = PhoneModel.VIVO_X300_ULTRA,
+            lens = LensChoice.TELE3X,
+        )
+        assertEquals("3.7×", formatDisplayZoom(1f, video.mainRelativeZoomMultiplier))
+        // The same hardware declared OTHER keeps today's generic reading: 35 mm is its own 1×.
+        val other = state(CaptureMode.PHOTO, equivMm = 35f, inventory = ultra, phone = PhoneModel.OTHER)
+        assertEquals(1f, other.mainRelativeZoomMultiplier, 0f)
+        // PMA110 with the logical camera measured stays exactly 1:1.
+        val pma = state(CaptureMode.PHOTO, equivMm = 23.4f, inventory = pmaInventory.copy(homeEquivMm = 23.4f))
+        assertEquals(1f, pma.mainRelativeZoomMultiplier, 0f)
     }
 
     @Test
@@ -159,6 +188,7 @@ class MainRelativeZoomMultiplierRobolectricTest {
             inventory = tablet,
             lens = LensChoice.TELE3X,
             cameraReady = false,
+            phone = PhoneModel.OTHER,
         )
         assertEquals("3.0×", formatDisplayZoom(3f, tabletReopen.mainRelativeZoomMultiplier))
         // No measurement yet: the caps answer as before.

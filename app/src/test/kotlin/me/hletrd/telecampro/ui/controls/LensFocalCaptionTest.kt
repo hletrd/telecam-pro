@@ -104,6 +104,7 @@ class LensFocalCaptionRouteRegressionTest {
     private val pma110 = me.hletrd.telecampro.camera.lensInventoryOf(
         listOf(14f, 23f, 69.4f, 230f),
         0.6f to 20f,
+        homeEquivMm = null,
     )
 
     @Test

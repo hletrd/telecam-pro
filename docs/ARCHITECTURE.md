@@ -825,12 +825,16 @@ the WIRE value between main-relative and lens-local scales; what the operator RE
 times `zoomDisplayMultiplier` (`ui/ZoomMath.kt`), and every readout — the pill, Fn chip/value, zoom
 ruler and Shoot-tab slider — takes it only through `CameraUiState.mainRelativeZoomMultiplier`, the one
 place its route inputs are assembled. FRONT and lens-local-zoom routes display 1:1; TELE with the
-converter displays `teleDisplayBase(magnification)`; the LOGICAL seamless route displays 1:1 because
-its wire zoom is already main-relative (AGG5-49 — PMA110's measured 23.4 mm ÷ nominal 23 mm used to
-read "3.1×" at the 3× preset). A standalone route divides its measured equivalent by
-`standaloneMainDivisorMm`: the nominal 23 mm while the measured main is within
-`LENS_CAPTION_ROUNDING_BAND` of it (PMA110 stays byte-identical), the measured main otherwise (a 26 mm
-tablet main reads "1.0×"; MRG5-4). Device readouts are `docs/FIELD_CHECKS.md` A10.
+converter displays `teleDisplayBase(magnification, host, oneXReferenceMm)`. The "1×" is the DECLARED
+phone's maker 1× (`oneXReferenceMm` = `PhoneModel.makerZoom.oneXEquivMm`, 23 or 24 mm; owner decision
+2026-10-25); `PhoneModel.OTHER` keeps the measured-main rule — the nominal 23 mm while the measured
+main is within `LENS_CAPTION_ROUNDING_BAND` of it, the measured main otherwise (a 26 mm tablet main
+reads "1.0×"; MRG5-4). A standalone route divides its measured equivalent by that 1×. The LOGICAL
+seamless route displays its wire zoom × `logicalZoomDisplayFactor`: 1:1 while the logical camera's
+measured equivalent (`LensInventory.homeEquivMm`) is inside the band of the maker 1× (AGG5-49 —
+PMA110's measured 23.4 mm ÷ 23 mm used to read "3.1×" at the 3× preset), measured ÷ maker 1× outside
+it (the vivo X300 Ultra's 35 mm logical 1.0 reads "1.5×"), and always 1:1 on OTHER. PMA110 declares
+23 mm, so it stays byte-identical. Device readouts are `docs/FIELD_CHECKS.md` A10.
 
 This zoom coalescer is separate from the general `ManualControls` packet throttle, which applies the
 newest full-control snapshot every 40 ms (25 Hz) during continuous dial input. The controller pairs

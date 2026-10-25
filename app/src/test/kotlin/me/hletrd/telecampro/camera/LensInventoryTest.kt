@@ -21,14 +21,14 @@ class LensInventoryTest {
 
     @Test
     fun `PMA110 keeps all four presets, every one of them optical`() {
-        val inv = lensInventoryOf(pma110Lenses, 0.6f to 20f)
+        val inv = lensInventoryOf(pma110Lenses, 0.6f to 20f, homeEquivMm = null)
         assertEquals(LensChoice.entries.toSet(), inv.available)
         assertEquals(LensChoice.entries.toSet(), inv.optical)
     }
 
     @Test
     fun `a single-camera tablet drops the presets it cannot reach`() {
-        val inv = lensInventoryOf(tabletLenses, 1f to 8f)
+        val inv = lensInventoryOf(tabletLenses, 1f to 8f, homeEquivMm = null)
         assertFalse("0.6x is below the 1.0 zoom floor", LensChoice.ULTRAWIDE in inv.available)
         assertFalse("10x is above the 8.0 zoom ceiling", LensChoice.TELE10X in inv.available)
         assertTrue(LensChoice.MAIN in inv.available)
@@ -42,27 +42,27 @@ class LensInventoryTest {
     fun `a real periscope counts as optical across the tolerance band`() {
         // Real "3x" lenses land anywhere from ~65 to ~85 mm; all of them must match TELE3X.
         for (equiv in listOf(65f, 70f, 80f, 85f)) {
-            val inv = lensInventoryOf(listOf(23f, equiv), 1f to 5f)
+            val inv = lensInventoryOf(listOf(23f, equiv), 1f to 5f, homeEquivMm = null)
             assertTrue("$equiv mm should read as the 3x lens", LensChoice.TELE3X in inv.optical)
         }
         // A 2x (46 mm) lens is NOT a 3x: it stays out of the optical set.
-        assertFalse(LensChoice.TELE3X in lensInventoryOf(listOf(23f, 46f), 1f to 5f).optical)
+        assertFalse(LensChoice.TELE3X in lensInventoryOf(listOf(23f, 46f), 1f to 5f, homeEquivMm = null).optical)
     }
 
     @Test
     fun `an ultrawide-only-by-zoom device still offers 0-6x when the range reaches it`() {
         // Some phones advertise a sub-1.0 zoom floor on the logical camera without exposing the
         // ultrawide as a separate id; the preset is genuinely reachable there.
-        val inv = lensInventoryOf(listOf(24f), 0.5f to 10f)
+        val inv = lensInventoryOf(listOf(24f), 0.5f to 10f, homeEquivMm = null)
         assertTrue(LensChoice.ULTRAWIDE in inv.available)
         assertFalse(LensChoice.ULTRAWIDE in inv.optical)
     }
 
     @Test
     fun `an unreadable enumeration degrades to the full set rather than an empty rail`() {
-        assertEquals(LensInventory.ALL, lensInventoryOf(emptyList(), null))
+        assertEquals(LensInventory.ALL, lensInventoryOf(emptyList(), null, homeEquivMm = null))
         // Zero/negative equivalents are unreadable characteristics, not lenses.
-        assertFalse(LensChoice.TELE10X in lensInventoryOf(listOf(0f, -1f), 1f to 4f).available)
+        assertFalse(LensChoice.TELE10X in lensInventoryOf(listOf(0f, -1f), 1f to 4f, homeEquivMm = null).available)
     }
 }
 
@@ -75,7 +75,7 @@ class LensInventoryVerificationTest {
     fun `each preset carries ITS OWN measured focal, not the route's`() {
         // PMA110: all four optical. The seamless photo route reports ~23 mm for EVERY preset, which
         // is why the caption must read this map instead of caps.equivalentFocalMm.
-        val inv = lensInventoryOf(listOf(14f, 23f, 69.4f, 230f), 0.6f to 20f)
+        val inv = lensInventoryOf(listOf(14f, 23f, 69.4f, 230f), 0.6f to 20f, homeEquivMm = null)
         assertEquals(14f, inv.presetEquivMm[LensChoice.ULTRAWIDE]!!, 0.01f)
         assertEquals(23f, inv.presetEquivMm[LensChoice.MAIN]!!, 0.01f)
         assertEquals(69.4f, inv.presetEquivMm[LensChoice.TELE3X]!!, 0.01f)
@@ -85,7 +85,7 @@ class LensInventoryVerificationTest {
     @Test
     fun `a zoom-only preset reports what the crop actually delivers`() {
         // One 26 mm lens, zoom to 8x: 3x is digital and really is ~78 mm, not the 70 mm label.
-        val inv = lensInventoryOf(listOf(26f), 1f to 8f)
+        val inv = lensInventoryOf(listOf(26f), 1f to 8f, homeEquivMm = null)
         assertEquals(26f, inv.presetEquivMm[LensChoice.MAIN]!!, 0.01f)
         assertEquals(78f, inv.presetEquivMm[LensChoice.TELE3X]!!, 0.01f)
     }
@@ -93,14 +93,14 @@ class LensInventoryVerificationTest {
     @Test
     fun `one lens cannot claim two presets through overlapping bands`() {
         // 18 mm sits inside BOTH the ultrawide and main bands; mutual-nearest gives it to main only.
-        val inv = lensInventoryOf(listOf(18f), 1f to 4f)
+        val inv = lensInventoryOf(listOf(18f), 1f to 4f, homeEquivMm = null)
         assertFalse("18 mm must not read as an ultrawide lens", LensChoice.ULTRAWIDE in inv.optical)
         assertTrue(LensChoice.MAIN in inv.optical)
     }
 
     @Test
     fun `two lenses nearest the same preset keep the closer one`() {
-        val inv = lensInventoryOf(listOf(21f, 24f, 70f), 1f to 10f)
+        val inv = lensInventoryOf(listOf(21f, 24f, 70f), 1f to 10f, homeEquivMm = null)
         assertEquals(24f, inv.presetEquivMm[LensChoice.MAIN]!!, 0.01f)
         assertTrue(LensChoice.TELE3X in inv.optical)
     }

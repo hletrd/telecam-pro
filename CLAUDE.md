@@ -326,12 +326,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   TB336ZU 26/78 mm, TB331FC 27/81 mm — the tablets' ×3 readings are the crop, and are correct.
   **The DISPLAY multiplier is a separate law with ONE owner (cycle 5, AGG5-49 + MRG5-4).**
   `zoomDisplayMultiplier`, read only through `CameraUiState.mainRelativeZoomMultiplier`, feeds the
-  pill, Fn chip/value, ruler and Shoot-tab slider. It is 1:1 on the logical seamless route (its wire
-  zoom is already main-relative; multiplying by measured 23.4 ÷ nominal 23 read "3.1×" at the 3×
-  preset — a scale applied twice). On a standalone route it divides by the nominal 23 mm while the
-  measured main is within `LENS_CAPTION_ROUNDING_BAND` (10 %) of it, so PMA110 stays on 23, and by
-  the measured main otherwise (a 26 mm tablet main reads "1.0×", not "1.1×"). The focal
-  readings above predate this display law; its readouts are `docs/FIELD_CHECKS.md` A10.
+  pill, Fn chip/value, ruler and Shoot-tab slider. Its "1×" follows the DECLARED phone's maker
+  (owner decision 2026-10-25): `oneXReferenceMm` is `PhoneModel.makerZoom.oneXEquivMm` (23 mm, or
+  24 mm on the Find X10 Pro Max / X300 Pro / X500 Pro / Pro Max / Magic9 Pro Max; 23 mm on the
+  35 mm-main vivo Ultras, whose main vivo calls "1.5×"); only `PhoneModel.OTHER` keeps the
+  measured-main rule — the nominal 23 mm while the measured main is within
+  `LENS_CAPTION_ROUNDING_BAND` (10 %) of it, the measured main otherwise (a 26 mm tablet main reads
+  "1.0×", not "1.1×"). A standalone route divides its measured lens by that 1×. The logical
+  seamless route reads its wire zoom × `logicalZoomDisplayFactor`: 1:1 while the logical camera's
+  own measured equivalent (`LensInventory.homeEquivMm`) is inside the band of the maker 1×
+  (multiplying PMA110's wire by 23.4 ÷ 23 read "3.1×" at the 3× preset — a scale applied twice),
+  measured ÷ maker 1× outside it (35 ÷ 23 on a vivo Ultra), always 1:1 on OTHER. PMA110 declares
+  23 mm, so every readout is byte-identical. The focal readings above predate this display law;
+  its readouts are `docs/FIELD_CHECKS.md` A10.
 - **setRepeatingRequest STALLS this HAL's preview ~180 ms per swap (measured 2026-07-14) — live
   zoom is GL-rendered.** Swapping the repeating request (zoom tick, control change, AE-OFF manual
   values, HAL-AE alike) gaps the stream 170–250 ms; per-tick zoom submits made zoom read as ~5 fps
@@ -673,7 +680,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `defaultConverterFor`, `reconcileConverter`, `effectiveFocalMm`) plus
   `teleDisplayBase(magnification, hostTeleEquivMm, mainEquivMm)` — the function that REPLACED the
   top-level `TELE_DISPLAY_BASE` val; its host is the SAME declared-or-measured host the focal uses and
-  its main is `standaloneMainDivisorMm` (PMA110 stays 70 ÷ 23; read only via
+  its main is `oneXReferenceMm`, the maker's 1× (PMA110 stays 70 ÷ 23; read only via
   `CameraUiState.teleDisplayBase` / `TeleconverterDeclaration.displayBase`).
   `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default and as the anchor every
   older test and document quotes. A kit's `magnification` derives from the telephoto its GLASS was

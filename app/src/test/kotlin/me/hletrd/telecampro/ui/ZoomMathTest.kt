@@ -10,7 +10,8 @@ import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
-import me.hletrd.telecampro.camera.standaloneMainDivisorMm
+import me.hletrd.telecampro.camera.logicalZoomDisplayFactor
+import me.hletrd.telecampro.camera.oneXReferenceMm
 import me.hletrd.telecampro.camera.teleDisplayBase
 import me.hletrd.telecampro.ui.controls.formatZoomMark
 import org.junit.Assert.assertEquals
@@ -22,12 +23,13 @@ import java.util.Locale
 
 class ZoomMathTest {
     // PMA110's display scale for magnification [m]: the declared FIND_X9_ULTRA 70 mm host over
-    // the nominal 23 mm main its measured ~23.4 mm main resolves to. The production law now takes
-    // both lenses explicitly; pinning them here is what keeps every number below at its PMA110 value.
+    // the 23 mm 1× OPPO declares (the nominal its measured ~23.4 mm main resolved to before). The
+    // production law takes both lenses explicitly; pinning them here is what keeps every number
+    // below at its PMA110 value.
     private fun pma110Base(m: Float): Float = teleDisplayBase(
         magnification = m,
         hostTeleEquivMm = PhoneModel.FIND_X9_ULTRA.teleEquivMm,
-        mainEquivMm = standaloneMainDivisorMm(23.4f),
+        mainEquivMm = oneXReferenceMm(PhoneModel.FIND_X9_ULTRA, 23.4f),
     )
 
     // The kit optic's display base — the value the deleted TELE_DISPLAY_BASE constant held.
@@ -50,6 +52,8 @@ class ZoomMathTest {
                 activeRoute = CameraRoute.EXTERNAL,
                 standaloneRoute = true,
                 measuredMainEquivMm = null,
+                phone = PhoneModel.OTHER,
+                homeEquivMm = null,
             ),
             0f,
         )
@@ -520,6 +524,8 @@ class ZoomMathTest {
             activeRoute = CameraRoute.FRONT,
             standaloneRoute = true,
             measuredMainEquivMm = 23.4f,
+            phone = PhoneModel.OTHER,
+            homeEquivMm = null,
         )
         assertEquals(1f, front, 0f)
         assertEquals("2.0×", formatDisplayZoom(2f, front))
@@ -609,6 +615,8 @@ class ZoomMathTest {
                 activeRoute = CameraRoute.BACK,
                 standaloneRoute = true,
                 measuredMainEquivMm = null,
+                phone = PhoneModel.OTHER,
+                homeEquivMm = null,
             ),
             0f,
         )
@@ -646,11 +654,11 @@ class ZoomMathTest {
     fun `an 85 mm host draws its own floor, snaps and ceiling`() {
         // vivo X300 Ultra + ZEISS 4.7x: the native field is 85/23 x 400/85 = 400/23 ≈ 17.4x. The
         // hardwired PMA110 70/23 ratio drew a "14x" floor for the same glass, and every snap and the
-        // local ceiling inherited that error.
+        // local ceiling inherited that error. vivo's 1× is 23 mm even over the measured 35 mm main.
         val vivoBase = teleDisplayBase(
             magnification = TeleconverterProfile.ZEISS_400.magnification,
             hostTeleEquivMm = PhoneModel.VIVO_X300_ULTRA.teleEquivMm,
-            mainEquivMm = standaloneMainDivisorMm(null),
+            mainEquivMm = oneXReferenceMm(PhoneModel.VIVO_X300_ULTRA, 35f),
         )
         val marks = teleZoomMarks(1f, 10f, vivoBase)
         assertEquals(listOf("17.4×", "30×", "60×"), marks.map { formatZoomMark(it) })
@@ -674,7 +682,9 @@ class ZoomMathTest {
                 frontFacing = false,
                 activeRoute = CameraRoute.BACK,
                 standaloneRoute = true,
-                measuredMainEquivMm = null,
+                measuredMainEquivMm = 35f,
+                phone = PhoneModel.VIVO_X300_ULTRA,
+                homeEquivMm = 35f,
             ),
             0f,
         )
@@ -693,7 +703,7 @@ class ZoomMathTest {
 
     // AGG5-49 / RG5-2: the LOGICAL seamless route's wire zoom is already main-relative, so its own
     // measured equivalent must not scale it again — PMA110's 23.4 mm logical camera read "3.1×" at
-    // the 3× preset. Every route-input combination that lands on the logical camera stays 1:1.
+    // the 3× preset. An undeclared phone (OTHER) stays 1:1 at every measured equivalent.
     @Test
     fun `logical seamless route displays its wire zoom 1 to 1 at any measured equivalent`() {
         for (equiv in floatArrayOf(23f, 23.4f, 26f)) {
@@ -705,6 +715,8 @@ class ZoomMathTest {
                 activeRoute = CameraRoute.BACK,
                 standaloneRoute = false,
                 measuredMainEquivMm = equiv,
+                phone = PhoneModel.OTHER,
+                homeEquivMm = null,
             )
             assertEquals(1f, logical, 0f)
             assertEquals("3.0×", formatDisplayZoom(3f, logical))
@@ -737,28 +749,107 @@ class ZoomMathTest {
     }
 
     @Test
-    fun `the standalone divisor keeps the nominal inside the caption band`() {
-        assertEquals(23f, standaloneMainDivisorMm(25.2f), 0f)
-        assertEquals(23f, standaloneMainDivisorMm(20.8f), 0f)
-        assertEquals(25.5f, standaloneMainDivisorMm(25.5f), 0f)
-        assertEquals(20.5f, standaloneMainDivisorMm(20.5f), 0f)
-        assertEquals(23f, standaloneMainDivisorMm(null), 0f)
-        assertEquals(23f, standaloneMainDivisorMm(Float.NaN), 0f)
-        assertEquals(23f, standaloneMainDivisorMm(-1f), 0f)
+    fun `the OTHER divisor keeps the nominal inside the caption band`() {
+        assertEquals(23f, oneXReferenceMm(PhoneModel.OTHER, 25.2f), 0f)
+        assertEquals(23f, oneXReferenceMm(PhoneModel.OTHER, 20.8f), 0f)
+        assertEquals(25.5f, oneXReferenceMm(PhoneModel.OTHER, 25.5f), 0f)
+        assertEquals(20.5f, oneXReferenceMm(PhoneModel.OTHER, 20.5f), 0f)
+        assertEquals(23f, oneXReferenceMm(PhoneModel.OTHER, null), 0f)
+        assertEquals(23f, oneXReferenceMm(PhoneModel.OTHER, Float.NaN), 0f)
+        assertEquals(23f, oneXReferenceMm(PhoneModel.OTHER, -1f), 0f)
+    }
+
+    // ---- The declared phone's maker 1× (owner decision 2026-10-25) ----
+
+    @Test
+    fun `a named phone divides by the focal its maker calls 1x, whatever the measured main`() {
+        listOf(null, Float.NaN, 20f, 23.4f, 26f, 35f).forEach { measured ->
+            assertEquals(23f, oneXReferenceMm(PhoneModel.FIND_X9_ULTRA, measured), 0f)
+            assertEquals(24f, oneXReferenceMm(PhoneModel.FIND_X10_PRO_MAX, measured), 0f)
+            assertEquals(23f, oneXReferenceMm(PhoneModel.VIVO_X300_ULTRA, measured), 0f)
+            assertEquals(24f, oneXReferenceMm(PhoneModel.VIVO_X300_PRO, measured), 0f)
+        }
+    }
+
+    @Test
+    fun `PMA110 multipliers are bit-identical before and after the inventory, on every route`() {
+        // The pre-change law over PMA110's inputs: logical 1:1, standalone measured ÷ nominal 23 mm
+        // (its 23.4 mm main sat inside the band), TELE the kit base — before the inventory (no
+        // measurement) and after it (23.4 mm main, 23.4 mm logical camera).
+        val pma110 = PhoneModel.FIND_X9_ULTRA
+        for (measured in listOf<Float?>(null, 23.4f)) {
+            for (equiv in listOf(14f, 23.4f, 69.4f, 230f)) {
+                val logical = rearMultiplier(equiv, standalone = false, measuredMain = measured, home = measured, phone = pma110)
+                assertEquals(1f.toRawBits(), logical.toRawBits())
+                val standalone = rearMultiplier(equiv, measuredMain = measured, home = measured, phone = pma110)
+                assertEquals((equiv / 23f).toRawBits(), standalone.toRawBits())
+                assertEquals(
+                    rearMultiplier(equiv, measuredMain = measured, phone = PhoneModel.OTHER).toRawBits(),
+                    standalone.toRawBits(),
+                )
+            }
+            assertEquals(
+                kitBase.toRawBits(),
+                rearMultiplier(null, teleconverter = true, measuredMain = measured, home = measured, phone = pma110).toRawBits(),
+            )
+        }
+        assertEquals(1f, logicalZoomDisplayFactor(PhoneModel.FIND_X9_ULTRA, 23.4f), 0f)
+        assertEquals(1f, logicalZoomDisplayFactor(PhoneModel.FIND_X9_ULTRA, null), 0f)
+    }
+
+    @Test
+    fun `a 35 mm-based logical camera reads vivo's own 1_5x at its wire 1_0`() {
+        // vivo X300 Ultra: "*1x 指 23mm", so the logical camera's own 35 mm 1.0 is 35 ÷ 23 on the
+        // maker scale — and a standalone main lens reads the same number.
+        val ultra = PhoneModel.VIVO_X300_ULTRA
+        val logical = rearMultiplier(35f, standalone = false, measuredMain = 35f, home = 35f, phone = ultra)
+        assertEquals(35f / 23f, logical, 1e-6f)
+        assertEquals("1.5×", formatDisplayZoom(1f, logical))
+        assertEquals("3.7×", formatDisplayZoom(85f / 35f, logical))
+        assertEquals("1.5×", formatDisplayZoom(1f, rearMultiplier(35f, measuredMain = 35f, phone = ultra)))
+        assertEquals("3.7×", formatDisplayZoom(1f, rearMultiplier(85f, measuredMain = 35f, phone = ultra)))
+        // Before the enumeration publishes, the DECLARED 35 mm main stands in for the measurement.
+        assertEquals(35f / 23f, logicalZoomDisplayFactor(ultra, null), 1e-6f)
+        assertEquals(35f / 23f, logicalZoomDisplayFactor(PhoneModel.VIVO_X200_ULTRA, 0f), 1e-6f)
+        // A logical 1.0 within the caption band of the maker 1× stays 1:1 (no "1.1×" at 1×).
+        assertEquals(1f, logicalZoomDisplayFactor(PhoneModel.VIVO_X300_PRO, 24.6f), 0f)
+        assertEquals(1f, logicalZoomDisplayFactor(PhoneModel.FIND_X10, 23.9f), 0f)
+        // An undeclared phone never scales its logical route.
+        assertEquals(1f, logicalZoomDisplayFactor(PhoneModel.OTHER, 35f), 0f)
+    }
+
+    @Test
+    fun `a 24 mm maker 1x reads its own main as 1x and its tele by that 1x`() {
+        // Find X10 Pro Max: 13 / 24 / 70 mm; dividing by 23 read its main as "1.0×" only by rounding
+        // (1.04) and its ultrawide as "0.6×" where OPPO prints 0.5x.
+        val phone = PhoneModel.FIND_X10_PRO_MAX
+        assertEquals(1f, rearMultiplier(24f, measuredMain = 24f, phone = phone), 0f)
+        assertEquals("0.5×", formatDisplayZoom(1f, rearMultiplier(13f, measuredMain = 24f, phone = phone)))
+        assertEquals("2.9×", formatDisplayZoom(1f, rearMultiplier(70f, measuredMain = 24f, phone = phone)))
+        // X300 Pro: 85 mm over vivo's 24 mm 1× is the printed "3.5x".
+        assertEquals(
+            "3.5×",
+            formatDisplayZoom(1f, rearMultiplier(85f, measuredMain = 24f, phone = PhoneModel.VIVO_X300_PRO)),
+        )
     }
 
     private fun rearMultiplier(
         equivalentFocalMm: Float?,
         teleconverter: Boolean = false,
         measuredMain: Float? = null,
+        phone: PhoneModel = PhoneModel.OTHER,
+        home: Float? = null,
+        standalone: Boolean = true,
     ): Float = zoomDisplayMultiplier(
         teleconverter = teleconverter,
         teleDisplayBase = kitBase,
         equivalentFocalMm = equivalentFocalMm,
         frontFacing = false,
         activeRoute = CameraRoute.BACK,
-        standaloneRoute = true,
+        standaloneRoute = standalone,
+        phone = phone,
         measuredMainEquivMm = measuredMain,
+        homeEquivMm = home,
     )
 
     // ---------------------------------------------------------------------------

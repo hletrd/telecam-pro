@@ -974,6 +974,14 @@ data class LensInventory(
      * of "70 mm" (verification 2026-08-02, caught before release).
      */
     val presetEquivMm: Map<LensChoice, Float> = emptyMap(),
+    /**
+     * MEASURED 35 mm-equivalent of the PHOTO-HOME route's camera — the logical multicamera where one
+     * exists, else the standalone lens the engine opens for the main preset. Its zoomRatio 1.0 is
+     * this focal, so it is what the LOGICAL route's wire zoom is relative to and what
+     * [logicalZoomDisplayFactor] divides by the declared phone's 1× reference. Zero when unreadable
+     * (and before enumeration), which falls back to the declared main.
+     */
+    val homeEquivMm: Float = 0f,
 ) {
     companion object {
         /**
@@ -997,9 +1005,12 @@ internal const val LENS_MATCH_TOLERANCE = 1.35f
 internal fun lensInventoryOf(
     backLensEquivMm: List<Float>,
     zoomRange: Pair<Float, Float>?,
+    /** The photo-home camera's measured equivalent ([LensInventory.homeEquivMm]); null = unreadable. */
+    homeEquivMm: Float?,
 ): LensInventory {
     val usableLenses = backLensEquivMm.filter { it > 0f }
-    if (usableLenses.isEmpty() && zoomRange == null) return LensInventory.ALL
+    val home = homeEquivMm?.takeIf { it.isFinite() && it > 0f } ?: 0f
+    if (usableLenses.isEmpty() && zoomRange == null) return LensInventory.ALL.copy(homeEquivMm = home)
     // The lens a converter clamps onto is the one the route resolver would pick: closest to the 3x
     // target (CameraSelector2 uses the same "closest measured equivalent" rule).
     val teleHost = usableLenses.minByOrNull { kotlin.math.abs(it - LensChoice.TELE3X.targetEquivMm) } ?: 0f
@@ -1044,6 +1055,7 @@ internal fun lensInventoryOf(
         optical = optical,
         teleHostEquivMm = teleHost,
         presetEquivMm = presetEquiv,
+        homeEquivMm = home,
     )
 }
 
@@ -1051,22 +1063,50 @@ internal fun lensInventoryOf(
 internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
 
 /**
- * The main-lens divisor of every main-relative zoom readout (MRG5-4): the same rule
- * `lensFocalCaption` applies to the "23 mm" literal. Within [LENS_CAPTION_ROUNDING_BAND] of the
- * nominal main, the nominal IS that lens's round label, so PMA110 (23.4 mm) keeps dividing by 23 and
- * stays byte-identical; outside it the measured main is the truth (a 26 or 27 mm tablet main reads
- * "1.0×"). Unknown, zero or non-finite measured values fall back to the nominal, as before the
- * inventory arrives.
+ * The "1×" every main-relative zoom readout divides by — the standalone pill, the TC marks, the
+ * converter's [teleDisplayBase] and the engine's local TELE ceiling (`TELE_MAX_DISPLAY_ZOOM /
+ * teleDisplayBase`) — so all of them share one 1×.
  *
- * Lives in the camera layer (it moved from `ui/ZoomMath.kt`) because the ENGINE needs it too: the
- * converter's [teleDisplayBase] divides by it, and the engine clamps TELE zoom against
- * `TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`. One definition keeps the standalone pill, the TC marks
- * and the engine's local ceiling on the same "1×".
+ * A NAMED [phone] uses the focal its maker calls 1× ([MakerZoom.oneXEquivMm], owner decision
+ * 2026-10-25): 23 mm on the Find X9 Ultra, 24 mm on the Find X10 Pro Max, and 23 mm on the vivo
+ * X300 Ultra even though its main is 35 mm — vivo itself calls that main "1.5×". The phone is the
+ * operator's declaration (detection only preselects it), so this reads a product fact about the
+ * declared maker's scale, not a capability.
+ *
+ * [PhoneModel.OTHER] keeps the measured-main rule (MRG5-4), the same one `lensFocalCaption` applies
+ * to the "23 mm" literal: within [LENS_CAPTION_ROUNDING_BAND] of the nominal 23 mm, the nominal IS
+ * that lens's round label; outside it the measured main is the truth (a 26 or 27 mm tablet main
+ * reads "1.0×"). Unknown, zero or non-finite measured values fall back to the nominal, as before
+ * the inventory arrives.
+ *
+ * PMA110 is byte-identical by construction: FIND_X9_ULTRA declares 23 mm, exactly the nominal its
+ * measured 23.4 mm main resolved to under the old rule, before and after the inventory arrives.
  */
-internal fun standaloneMainDivisorMm(measuredMainEquivMm: Float?): Float {
+internal fun oneXReferenceMm(phone: PhoneModel, measuredMainEquivMm: Float?): Float {
+    phone.makerZoom?.let { return it.oneXEquivMm }
     val nominal = LensChoice.MAIN.targetEquivMm
     val measured = measuredMainEquivMm?.takeIf { it.isFinite() && it > 0f } ?: return nominal
     return if (kotlin.math.abs(measured - nominal) > nominal * LENS_CAPTION_ROUNDING_BAND) measured else nominal
+}
+
+/**
+ * The LOGICAL seamless route's display multiplier: its wire zoom is relative to the logical
+ * camera's OWN 1.0, i.e. to its measured equivalent ([homeEquivMm], the inventory's
+ * [LensInventory.homeEquivMm]), so on the declared maker's scale that wire value reads ×
+ * (measured ÷ [MakerZoom.oneXEquivMm]) — but only when that ratio is outside
+ * [LENS_CAPTION_ROUNDING_BAND]; inside it the wire value already IS the maker's number and the
+ * route stays 1:1 (AGG5-49: PMA110's 23.4 mm logical camera ÷ 23 read "3.1×" at the 3× preset).
+ *
+ * So the vivo X300 Ultra's 35 mm-based logical camera reads its own 1.0 as 35 ÷ 23 ≈ "1.5×", which
+ * is what vivo prints, while every phone whose logical 1.0 is its 23/24 mm main — PMA110 included,
+ * exactly 1f — is unchanged. Before the enumeration publishes a measurement the DECLARED main
+ * ([MakerZoom.mainEquivMm]) stands in. [PhoneModel.OTHER] declares no maker scale and stays 1:1.
+ */
+internal fun logicalZoomDisplayFactor(phone: PhoneModel, homeEquivMm: Float?): Float {
+    val maker = phone.makerZoom ?: return 1f
+    val reference = maker.oneXEquivMm
+    val home = homeEquivMm?.takeIf { it.isFinite() && it > 0f } ?: maker.mainEquivMm
+    return if (kotlin.math.abs(home - reference) > reference * LENS_CAPTION_ROUNDING_BAND) home / reference else 1f
 }
 
 /**
@@ -2076,10 +2116,10 @@ data class CameraUiState(
      * three inputs of the top-level `teleDisplayBase` law, so the rail marks, the snaps, the pill,
      * the Fn/ruler values and every local-zoom ceiling cannot assemble their own: the converter in
      * force, the SAME host focal [teleconverterFocalMm] multiplies ([teleconverterHostEquivMm]), and
-     * the main divisor the standalone pill divides by ([standaloneMainDivisorMm] of the inventory's
-     * measured MAIN). On PMA110 that is 70 ÷ 23 × m, exactly the pre-fix value; on a vivo X300
-     * Ultra the ZEISS 4.7× floor reads 85 ÷ 23 × 4.706 ≈ 17×, not the "14×" the hardwired 70 mm
-     * host produced. The engine reads the same law through `TeleconverterDeclaration.displayBase`
+     * the 1× the standalone pill divides by ([oneXReferenceMm]: the declared maker's 1×, or for
+     * OTHER the inventory's measured MAIN). On PMA110 that is 70 ÷ 23 × m, exactly the pre-fix
+     * value; on a vivo X300 Ultra the ZEISS 4.7× floor reads 85 ÷ 23 × 4.706 ≈ 17.4× (vivo's 1× is
+     * 23 mm), not the "14×" the hardwired 70 mm host produced. The engine reads the same law through `TeleconverterDeclaration.displayBase`
      * over the same inventory measurement, so its local ceiling agrees with these marks.
      */
     val teleDisplayBase: Float
@@ -2087,8 +2127,20 @@ data class CameraUiState(
         get() = me.hletrd.telecampro.camera.teleDisplayBase(
             magnification = teleconverterMagnification,
             hostTeleEquivMm = teleconverterHostEquivMm,
-            mainEquivMm = standaloneMainDivisorMm(lensInventory.presetEquivMm[LensChoice.MAIN]),
+            mainEquivMm = oneXReferenceMm,
         )
+
+    /**
+     * The "1×" of every main-relative readout for the live state ([oneXReferenceMm]): the declared
+     * phone's maker 1×, or for OTHER the inventory's measured MAIN under the caption band.
+     */
+    val oneXReferenceMm: Float
+        // Qualified: this property shadows the free function's simple name inside the class.
+        get() = me.hletrd.telecampro.camera.oneXReferenceMm(phoneModel, lensInventory.presetEquivMm[LensChoice.MAIN])
+
+    /** The LOGICAL route's display multiplier for the live state ([logicalZoomDisplayFactor]). */
+    val logicalZoomDisplayFactor: Float
+        get() = me.hletrd.telecampro.camera.logicalZoomDisplayFactor(phoneModel, lensInventory.homeEquivMm)
 
     /**
      * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.

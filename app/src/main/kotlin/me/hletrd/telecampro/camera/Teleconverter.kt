@@ -37,42 +37,71 @@ enum class PhoneModel(
     val teleEquivMm: Float,
     /** `Build.MODEL` values for this phone, matched case-insensitively. */
     val deviceModels: List<String> = emptyList(),
+    /**
+     * How the MAKER numbers zoom on this phone ([MakerZoom]). Null only for [OTHER], which declares
+     * no maker and keeps the measured-main rule ([oneXReferenceMm]); a test pins it non-null on every
+     * named phone, so a new row cannot silently fall back to the generic scale.
+     */
+    val makerZoom: MakerZoom? = null,
 ) {
     // Build.MODEL codes: Google Play supported-devices CSV (play_public/supported_devices.csv,
     // fetched 2026-10-25, last modified 2026-10-24). Telephoto focals: the makers' own spec pages.
     // A phone with NO code in that list is still offered for MANUAL selection — detection only
     // preselects, so a missing code costs the auto-pick and nothing else.
+    // Maker zoom rows (2026-10-25): lens focals and the focal the maker calls 1x, from the same
+    // spec pages; each row's comment names its lenses (ultrawide / main / tele) and the source.
     // OPPO: Find X9 Ultra / X9 Pro (oppo.com product pages), Find X9s Pro and Find X10 / X10 Pro Max
     // (oppo.com/cn and oppo.com/en, 2026-09-22 launch). PMA120 = Find X9 Ultra satellite edition.
-    FIND_X9_ULTRA(70f, listOf("PMA110", "CPH2841", "PMA120")),
-    FIND_X9_PRO(70f, listOf("PLG110", "PLG120", "CPH2791")),
-    FIND_X9S_PRO(65f, listOf("PME110")),
-    FIND_X10(65f, listOf("PMW110", "CPH2911", "OPG09")),
-    FIND_X10_PRO_MAX(70f, listOf("PMX110", "CPH2913")),
+    // Find X9 Ultra: 14 / 23 / 70 / 230 mm, 1x = 23 mm (oppo.com).
+    FIND_X9_ULTRA(70f, listOf("PMA110", "CPH2841", "PMA120"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Find X9 Pro: 15 / 23 / 70 mm, 1x = 23 mm (oppo.com).
+    FIND_X9_PRO(70f, listOf("PLG110", "PLG120", "CPH2791"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Find X9s Pro: 15 / 23 / 65 mm, 1x = 23 mm (oppo.com/cn).
+    FIND_X9S_PRO(65f, listOf("PME110"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Find X10: 15 / 23 / 65 mm, 1x = 23 mm (oppo.com/cn, oppo.com/en).
+    FIND_X10(65f, listOf("PMW110", "CPH2911", "OPG09"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Find X10 Pro Max: 13 / 24 / 70 mm, 1x = 24 mm (oppo.com/cn, oppo.com/en).
+    FIND_X10_PRO_MAX(70f, listOf("PMX110", "CPH2913"), MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
 
     // vivo: the ZEISS extenders are built for an 85 mm telephoto (vivo FAQ 1925 / 2137); the X300
     // Ultra's 14/35/85 mm and the X500's 72 mm are from vivo.com / vivo.com.cn spec pages.
     // V2547DA is also the X300 Ultra satellite edition; V2602DA the X500 Pro Max satellite edition.
     // The X300 and X300s carry a 70 mm telephoto, not 85 (vivo.com.cn: "3x光学变焦"; the X300s page
     // adds "200mm 需要进行数码裁切后实现" — their ZEISS 200 mm needs an in-camera crop).
-    VIVO_X200_ULTRA(85f, listOf("V2454A", "V2454DA")),
-    VIVO_X300(70f, listOf("V2509A", "V2515")),
-    VIVO_X300_PRO(85f, listOf("V2502A", "V2502DA", "V2514")),
-    VIVO_X300S(70f, listOf("V2548A")),
-    VIVO_X300_ULTRA(85f, listOf("V2547A", "V2547DA", "V2562")),
-    VIVO_X500(72f, listOf("V2609A")),
-    VIVO_X500_PRO(85f, listOf("V2608A", "V2608DA", "V2621", "V2622")),
-    VIVO_X500_PRO_MAX(85f, listOf("V2602A", "V2602DA", "V2610")),
+    // X200 Ultra: 14 / 35 / 85 mm; vivo.com.cn "以 23mm 为 1x", so its 35 mm main is "1.5x".
+    VIVO_X200_ULTRA(85f, listOf("V2454A", "V2454DA"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 35f)),
+    // X300: 15 / 23 / 70 mm, 1x = 23 mm (vivo.com.cn, "3x光学变焦").
+    VIVO_X300(70f, listOf("V2509A", "V2515"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // X300 Pro: 15 / 24 / 85 mm, 1x = 24 mm (vivo.com.cn, "3.5x").
+    VIVO_X300_PRO(85f, listOf("V2502A", "V2502DA", "V2514"), MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
+    // X300s: 15 / 23 / 70 mm, 1x = 23 mm (vivo.com.cn, "3x").
+    VIVO_X300S(70f, listOf("V2548A"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // X300 Ultra: 14 / 35 / 85 mm; vivo.com.cn "*1x 指 23mm", so its 35 mm main is "1.5x".
+    VIVO_X300_ULTRA(85f, listOf("V2547A", "V2547DA", "V2562"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 35f)),
+    // X500: 15 / 23 / 72 mm, 1x = 23 mm (vivo.com.cn, "3.1x").
+    VIVO_X500(72f, listOf("V2609A"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // X500 Pro and X500 Pro Max: 15 / 24 / 85 mm, 1x = 24 mm (vivo.com.cn, "3.5x").
+    VIVO_X500_PRO(
+        85f,
+        listOf("V2608A", "V2608DA", "V2621", "V2622"),
+        MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f),
+    ),
+    VIVO_X500_PRO_MAX(85f, listOf("V2602A", "V2602DA", "V2610"), MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
 
     // HONOR: honor.com kit and phone pages. Only the global Magic8 Pro is in Google Play's list.
-    HONOR_MAGIC8_PRO(85f, listOf("BKQ-N49")),
-    HONOR_MAGIC8_RSR(85f),
-    HONOR_MAGIC9(80f),
-    HONOR_MAGIC9_PRO_MAX(85f),
+    // Magic8 Pro: 12 / 23 / 85 mm, 1x = 23 mm (honor.com, "3.7x").
+    HONOR_MAGIC8_PRO(85f, listOf("BKQ-N49"), MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Magic8 RSR: 23 / 85 mm, 1x = 23 mm (honor.com/cn).
+    HONOR_MAGIC8_RSR(85f, makerZoom = MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Magic9: 23 / 80 mm, 1x = 23 mm (honor.com/cn, "3.5X").
+    HONOR_MAGIC9(80f, makerZoom = MakerZoom(oneXEquivMm = 23f, mainEquivMm = 23f)),
+    // Magic9 Pro Max: 24 / 85 mm, 1x = 24 mm (honor.com/cn, "3.5X").
+    HONOR_MAGIC9_PRO_MAX(85f, makerZoom = MakerZoom(oneXEquivMm = 24f, mainEquivMm = 24f)),
 
     /**
      * Anything without a first-party kit. Offers only the generic clip-ons and CUSTOM, so it needs
-     * no host focal of its own — those magnifications are intrinsic.
+     * no host focal of its own — those magnifications are intrinsic. It declares no [makerZoom]
+     * either: an unknown phone's 1× is its MEASURED main lens ([oneXReferenceMm]).
      */
     // Labelled just "Other": the row it renders in is already labelled "Phone", so the old
     // "Other phone" read back as "Phone   Other phone".
@@ -83,6 +112,27 @@ enum class PhoneModel(
     fun converters(): List<TeleconverterProfile> =
         TeleconverterProfile.entries.filter { it.phone == null || it.phone == this }
 }
+
+/**
+ * How one maker numbers zoom on its own phone (owner decision 2026-10-25: "follow how the maker does
+ * it"). The phone is the operator's DECLARATION — [detectPhone] only preselects it — so this is a
+ * product fact about the stock camera's scale, never a capability: which lenses exist and what the
+ * zoom range covers are still ENUMERATED from Camera2 (`LensInventory`).
+ */
+data class MakerZoom(
+    /**
+     * The 35 mm-equivalent focal the maker calls "1×" (23 mm, or 24 mm on the phones built around a
+     * 24 mm main). Every main-relative DISPLAY number divides by it ([oneXReferenceMm]): the HUD pill,
+     * the Fn/ruler values and the TC marks read the maker's own scale on that phone.
+     */
+    val oneXEquivMm: Float,
+    /**
+     * The DECLARED main lens. It equals [oneXEquivMm] except on the vivo X200 / X300 Ultra, whose
+     * 35 mm main is the maker's "1.5×". Only the stand-in for the logical camera's MEASURED
+     * equivalent until the lens enumeration publishes one ([logicalZoomDisplayFactor]).
+     */
+    val mainEquivMm: Float,
+)
 
 /** The phone assumed before detection runs — this app's reason for existing. */
 val DEFAULT_PHONE_MODEL = PhoneModel.FIND_X9_ULTRA
@@ -234,12 +284,13 @@ data class TeleconverterDeclaration(
     /**
      * [teleDisplayBase] for THIS declaration on a device whose measured main lens is
      * [measuredMainEquivMm] (the inventory's MAIN preset focal; null before enumeration). The
-     * declaration already owns the magnification and the host focal, so the engine and the
-     * settings/MR restore path read the scale through here instead of re-pairing halves —
-     * `CameraUiState.teleDisplayBase` is the same law over the live UI state.
+     * declaration already owns the magnification, the host focal and the PHONE whose 1× the scale
+     * divides by ([oneXReferenceMm]), so the engine and the settings/MR restore path read the scale
+     * through here instead of re-pairing halves — `CameraUiState.teleDisplayBase` is the same law
+     * over the live UI state.
      */
     internal fun displayBase(measuredMainEquivMm: Float?): Float =
-        teleDisplayBase(magnification, hostTeleEquivMm, standaloneMainDivisorMm(measuredMainEquivMm))
+        teleDisplayBase(magnification, hostTeleEquivMm, oneXReferenceMm(phone, measuredMainEquivMm))
 }
 
 /** Builds a reconciled declaration whose named-phone host can never disagree with its identity. */
@@ -343,13 +394,15 @@ fun effectiveFocalMm(magnification: Float, baseEquivMm: Float = LensChoice.TELE3
  *  - [hostTeleEquivMm] is `CameraUiState.teleconverterHostEquivMm` / [TeleconverterDeclaration.
  *    hostTeleEquivMm] — the DECLARED phone's tele for a named kit phone, the MEASURED host lens
  *    ([LensInventory.teleHostEquivMm]) for [PhoneModel.OTHER];
- *  - [mainEquivMm] is [standaloneMainDivisorMm] of the measured main — the nominal 23 mm while the
- *    measured main is within [LENS_CAPTION_ROUNDING_BAND] of it, the measured main otherwise (the
- *    same rule the standalone zoom pill divides by, so TC and non-TC readouts share one "1×").
+ *  - [mainEquivMm] is [oneXReferenceMm] — the focal the declared phone's MAKER calls 1×
+ *    ([MakerZoom.oneXEquivMm]: 23 mm, or 24 mm on a 24 mm-main phone), and on [PhoneModel.OTHER]
+ *    the nominal 23 mm while the measured main is within [LENS_CAPTION_ROUNDING_BAND] of it, the
+ *    measured main otherwise (the same rule the standalone zoom pill divides by, so TC and non-TC
+ *    readouts share one "1×"). So the ZEISS 2.35× on a vivo X300 Ultra floors at 85 × 2.353 ÷ 23 ≈
+ *    8.7× and the Gen 2 Ultra at ≈ 17.4× — vivo's own numbers — not ÷ its measured 35 mm main.
  *
- * PMA110 is byte-identical by construction: FIND_X9_ULTRA declares exactly 70 mm and its measured
- * ~23.4 mm main sits inside the band, so this evaluates the very `(70f / 23f) * magnification`
- * expression it replaced. A non-finite or non-positive [hostTeleEquivMm] / [mainEquivMm] falls back
+ * PMA110 is byte-identical by construction: FIND_X9_ULTRA declares exactly 70 mm and a 23 mm 1×,
+ * so this evaluates the very `(70f / 23f) * magnification` expression it replaced. A non-finite or non-positive [hostTeleEquivMm] / [mainEquivMm] falls back
  * to that nominal 70 / 23 rather than producing an infinite or NaN scale; [magnification] is passed
  * through untouched because [effectiveMagnification] already guarantees it finite and in range.
  * There are deliberately NO default parameter values (AGG4-47 / AGG5-50): an omitted lens input

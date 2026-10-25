@@ -414,10 +414,10 @@ class TeleconverterTest {
     // PMA110's inputs: the DECLARED Find X9 Ultra host and the main divisor its MEASURED ~23.4 mm
     // main resolves to (inside the caption band, so the nominal 23 mm).
     private val pma110Host = PhoneModel.FIND_X9_ULTRA.teleEquivMm
-    private val pma110Main = standaloneMainDivisorMm(23.4f)
+    private val pma110Main = oneXReferenceMm(PhoneModel.FIND_X9_ULTRA, 23.4f)
 
     // PMA110's device-measured back lenses (ultrawide / main / 3x periscope / 10x periscope).
-    private val pma110Inventory = lensInventoryOf(listOf(14f, 23.4f, 69.4f, 230f), 0.6f to 20f)
+    private val pma110Inventory = lensInventoryOf(listOf(14f, 23.4f, 69.4f, 230f), 0.6f to 20f, homeEquivMm = 23.4f)
 
     @Test
     fun `tele display base reproduces the historical 13x at the kit magnification`() {
@@ -486,10 +486,55 @@ class TeleconverterTest {
     }
 
     @Test
+    fun `every named phone declares its maker zoom scale, and OTHER declares none`() {
+        PhoneModel.entries.filter { it != PhoneModel.OTHER }.forEach { phone ->
+            val maker = phone.makerZoom
+            assertTrue("${phone.name} must declare its maker 1x", maker != null)
+            assertTrue(phone.name, maker!!.oneXEquivMm == 23f || maker.oneXEquivMm == 24f)
+            assertTrue(phone.name, maker.mainEquivMm >= maker.oneXEquivMm)
+        }
+        assertNull(PhoneModel.OTHER.makerZoom)
+        // The only phones whose main is not their maker's 1x: vivo's 35 mm-main Ultras.
+        assertEquals(
+            setOf(PhoneModel.VIVO_X200_ULTRA, PhoneModel.VIVO_X300_ULTRA),
+            PhoneModel.entries.filter { it.makerZoom?.let { m -> m.mainEquivMm != m.oneXEquivMm } == true }.toSet(),
+        )
+    }
+
+    @Test
+    fun `the TC floor is the maker's own number, divided by the maker 1x`() {
+        // Owner data 2026-10-25: X300 Ultra + G2 = 85 × 2.353 ÷ 23 ≈ 8.7x, + G2 Ultra ≈ 17.4x; X300
+        // Pro + G2 ≈ 8.3x (vivo's 1x there is 24 mm); Find X10 Pro Max kit = 230 ÷ 24 ≈ 9.6x. The
+        // measured main must not move these: the X300 Ultra's 35 mm main is vivo's "1.5x".
+        fun base(phone: PhoneModel, profile: TeleconverterProfile, measuredMain: Float, host: Float = phone.teleEquivMm): Float {
+            val inventory = lensInventoryOf(listOf(14f, measuredMain, host), 0.4f to 10f, homeEquivMm = measuredMain)
+            val state = CameraUiState(phoneModel = phone, teleconverterProfile = profile, lensInventory = inventory)
+            val engine = teleconverterDeclaration(phone, profile, TELECONVERTER_MAGNIFICATION, state.teleconverterHostEquivMm)
+                .displayBase(inventory.presetEquivMm[LensChoice.MAIN])
+            assertEquals("${phone.name} engine/UI", state.teleDisplayBase.toRawBits(), engine.toRawBits())
+            return state.teleDisplayBase
+        }
+        val g2 = base(PhoneModel.VIVO_X300_ULTRA, TeleconverterProfile.ZEISS_200_X300, measuredMain = 35f)
+        assertEquals(85f * (200f / 85f) / 23f, g2, 1e-4f)
+        assertEquals(8.7f, g2, 0.05f)
+        val g2Ultra = base(PhoneModel.VIVO_X300_ULTRA, TeleconverterProfile.ZEISS_400, measuredMain = 35f)
+        assertEquals(17.4f, g2Ultra, 0.05f)
+        val x300Pro = base(PhoneModel.VIVO_X300_PRO, TeleconverterProfile.ZEISS_200_X300_PRO, measuredMain = 24f)
+        assertEquals(200f / 24f, x300Pro, 1e-4f)
+        assertEquals(8.3f, x300Pro, 0.05f)
+        val x10ProMax = base(PhoneModel.FIND_X10_PRO_MAX, TeleconverterProfile.HASSELBLAD_230_X10_PRO_MAX, 24f)
+        assertEquals(230f / 24f, x10ProMax, 1e-4f)
+        assertEquals(9.6f, x10ProMax, 0.05f)
+        // Find X10: the 3.28x glass on a 65 mm tele over OPPO's 23 mm 1x ≈ 9.3x optical floor.
+        val x10 = base(PhoneModel.FIND_X10, TeleconverterProfile.HASSELBLAD_X10, 23f)
+        assertEquals((230f / 70f) * 65f / 23f, x10, 1e-4f)
+    }
+
+    @Test
     fun `an unrecognised phone uses its measured main and measured host`() {
         // Lenovo TB336ZU: ONE 26 mm back lens, so the clip-on clamps onto the main itself and a
         // generic 2x is a 2x total — not the 2 x 70/23 ≈ 6.1x the PMA110 lens ratio claimed.
-        val single = lensInventoryOf(listOf(26f), 1f to 8f)
+        val single = lensInventoryOf(listOf(26f), 1f to 8f, homeEquivMm = null)
         val tablet = CameraUiState(
             phoneModel = PhoneModel.OTHER,
             teleconverterProfile = TeleconverterProfile.GENERIC_2,
@@ -498,7 +543,7 @@ class TeleconverterTest {
         assertEquals(26f, tablet.teleconverterHostEquivMm, 0f)
         assertEquals(2f, tablet.teleDisplayBase, 1e-6f)
         // A measured 78 mm tele over the same out-of-band 26 mm main: 78/26 = 3x per unit of glass.
-        val twoLens = lensInventoryOf(listOf(26f, 78f), 1f to 8f)
+        val twoLens = lensInventoryOf(listOf(26f, 78f), 1f to 8f, homeEquivMm = null)
         val withTele = tablet.copy(lensInventory = twoLens)
         assertEquals(78f, withTele.teleconverterHostEquivMm, 0f)
         assertEquals((78f / 26f) * 2f, withTele.teleDisplayBase, 1e-5f)

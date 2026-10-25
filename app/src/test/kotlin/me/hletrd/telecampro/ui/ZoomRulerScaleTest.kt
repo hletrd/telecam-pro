@@ -36,7 +36,9 @@ class ZoomRulerScaleTest {
         frontFacing = route == CameraRoute.FRONT,
         activeRoute = route,
         standaloneRoute = standalone,
+        phone = PhoneModel.FIND_X9_ULTRA,
         measuredMainEquivMm = measuredMain,
+        homeEquivMm = 23.4f,
     )
 
     @Test fun `standalone 70 mm lens reads 3x like the chip, not 1x`() {

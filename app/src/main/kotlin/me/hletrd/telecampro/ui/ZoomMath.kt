@@ -15,7 +15,9 @@ import me.hletrd.telecampro.camera.LENS_CAPTION_ROUNDING_BAND
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
 import me.hletrd.telecampro.camera.standaloneRouteWanted
-import me.hletrd.telecampro.camera.standaloneMainDivisorMm
+import me.hletrd.telecampro.camera.PhoneModel
+import me.hletrd.telecampro.camera.logicalZoomDisplayFactor
+import me.hletrd.telecampro.camera.oneXReferenceMm
 import me.hletrd.telecampro.camera.teleDisplayBase
 import kotlin.math.abs
 import kotlin.math.max
@@ -35,12 +37,14 @@ internal data class ZoomBounds(val lower: Float, val upper: Float)
  * state, and a "1.0×" slider under a "3.0×" chip was two magnifications for one framing. UI call
  * sites read it through [mainRelativeZoomMultiplier] so no surface can assemble its own inputs.
  *
- * The LOGICAL seamless route is 1:1 (AGG5-49 / RG5-2): its wire zoom is ALREADY main-relative
- * (`unifiedZoomOf` returns it unchanged), so multiplying it by the logical camera's own measured
- * equivalent ÷ the nominal 23 mm read "3.1×" at the 3× preset on PMA110 (23.4 mm) — a scale
- * applied twice. On a standalone route the divisor follows the focal-caption honesty rule
- * ([standaloneMainDivisorMm]): the nominal 23 mm while the MEASURED main ([measuredMainEquivMm],
- * the inventory's MAIN preset focal) is within [LENS_CAPTION_ROUNDING_BAND] of it, the measured
+ * The LOGICAL seamless route reads its wire zoom × [logicalZoomDisplayFactor]: 1:1 wherever the
+ * logical camera's own 1.0 is within [LENS_CAPTION_ROUNDING_BAND] of the declared phone's 1× (AGG5-49
+ * / RG5-2 — multiplying PMA110's wire zoom by its 23.4 mm logical equivalent ÷ 23 read "3.1×" at the
+ * 3× preset, a scale applied twice), and (measured logical equivalent ÷ maker 1×) where it is not —
+ * the vivo X300 Ultra's 35 mm-based wire 1.0 is vivo's "1.5×". [PhoneModel.OTHER] stays 1:1. On a
+ * standalone route the divisor is [oneXReferenceMm]: the declared maker's 1× (23 or 24 mm) on a
+ * named phone, and on OTHER the focal-caption honesty rule — the nominal 23 mm while the MEASURED
+ * main ([measuredMainEquivMm], the inventory's MAIN preset focal) is within the band, the measured
  * main otherwise. A 26 mm tablet main read "1.1×" at the very lens the rail calls "1×" (CT5-6), but
  * dividing PMA110's 23.4 mm main by itself moved every PMA110 standalone readout by ~1.7% and read
  * the 230 mm lens as "9.8×" while the rail and `unifiedZoomOf` called it 10× (MRG5-4).
@@ -59,22 +63,26 @@ internal fun zoomDisplayMultiplier(
     frontFacing: Boolean,
     activeRoute: CameraRoute?,
     standaloneRoute: Boolean,
+    /** The DECLARED phone: its maker's 1× is the reference ([oneXReferenceMm]). */
+    phone: PhoneModel,
     measuredMainEquivMm: Float?,
+    /** The photo-home camera's measured equivalent ([logicalZoomDisplayFactor]). */
+    homeEquivMm: Float?,
 ): Float = when {
     // The main-relative scale is a REAR concept (which rear lens the unified zoom sits on). The
     // front camera has no place on it — front-equiv ÷ main-equiv would read "0.9×" at the selfie
     // 1× — so front zoom displays as its honest lens-local ratio.
     activeRoute?.lensLocalZoom == true || frontFacing -> 1f
     teleconverter -> teleDisplayBase
-    !standaloneRoute -> 1f
+    !standaloneRoute -> logicalZoomDisplayFactor(phone, homeEquivMm)
     else -> {
-        val main = standaloneMainDivisorMm(measuredMainEquivMm)
+        val main = oneXReferenceMm(phone, measuredMainEquivMm)
         (equivalentFocalMm?.takeIf { it.isFinite() && it > 0f } ?: main) / main
     }
 }
 
 /**
- * [zoomDisplayMultiplier] for the live UI state: the ONE place its seven inputs are read, so the
+ * [zoomDisplayMultiplier] for the live UI state: the ONE place its nine inputs are read, so the
  * pill, chip, Fn value, ruler and Shoot-tab slider cannot disagree about the route they are on.
  * The standalone answer is the same [standaloneRouteWanted] law `CameraUiState.unifiedZoom`
  * converts with.
@@ -91,7 +99,9 @@ internal val CameraUiState.mainRelativeZoomMultiplier: Float
             rawWanted = photoFormats.dngRaw,
             rawForcesStandalone = rawForcesStandalone,
         ),
+        phone = phoneModel,
         measuredMainEquivMm = lensInventory.presetEquivMm[LensChoice.MAIN],
+        homeEquivMm = lensInventory.homeEquivMm,
     )
 
 /**
