@@ -77,16 +77,22 @@ internal class P010InputBridge private constructor(
 
     companion object {
         /**
-         * Full-range BT.2020 YCbCr with an SDR-class transfer label — the tag the stock O-Log2 stream
-         * itself wears. It names the matrix the HAL encodes with and the driver decodes with when GL
-         * samples the buffer, so RGB round-trips; the S-Log3 code values stay full-range, which is
-         * what the GL decode (`slog3Inverse`) expects.
+         * JFIF (full-range BT.601 YCbCr) — the matrix this HAL ACTUALLY encodes the P010 stream with,
+         * whatever the reader requests (device-measured 2026-10-25, standalone camera 2, STANDARD
+         * profile): BT.2020, BT.709 and BT.601 requests all produced identical YCbCr bits, and those
+         * bits equal the same session's YUV_420_888 stream, which the HAL itself stamps JFIF. The tag
+         * is not cosmetic: it is what the driver decodes with when GL samples the buffer. Adreno
+         * decodes a BT.2020 tag exactly as BT.2020 (GL mean RGB matched a BT.2020-full decode to 0.2
+         * codes), so the BT.2020 tag this bridge first shipped with — copied from the stock O-Log2
+         * stream, whose private pipeline is a different one — skewed saturated colour by up to ~24
+         * ten-bit codes and ~5° of hue (neutrals exact). Every non-BT.2020 tag takes the driver's one
+         * default decode, the same one the 8-bit PRIVATE stream has always taken, within ~3 codes of
+         * an exact BT.601-full decode; an exact decode would need GL_EXT_YUV_target (ESSL 3.00).
+         *
+         * Primaries are sRGB either way: (SRGB, P010, STANDARD) is the only STANDARD colour space this
+         * camera advertises, so the ISP has already clipped anything outside BT.709 before our curve.
          */
-        val DATASPACE: Int = DataSpace.pack(
-            DataSpace.STANDARD_BT2020,
-            DataSpace.TRANSFER_SMPTE_170M,
-            DataSpace.RANGE_FULL,
-        )
+        val DATASPACE: Int = DataSpace.DATASPACE_JFIF
 
         // Camera side: a few in flight plus one being forwarded. GL side: the SurfaceTexture latches
         // the newest frame and releases older ones, so the writer rarely holds more than two.

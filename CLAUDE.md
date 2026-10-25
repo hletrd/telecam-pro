@@ -1011,7 +1011,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   STANDARD), so `P010InputBridge` takes the camera stream in a P010 reader and an `ImageWriter`
   attaches each buffer, zero-copy, to the EXISTING GL input SurfaceTexture: raw Y sampled in GL showed
   94 distinct levels vs 27 for the same scene through an 8-bit stream, `SurfaceTexture.timestamp`
-  equals `Image.timestamp`, 30 fps. The ENCODER target must be ten-bit too — a 0.40–0.45 grey ramp
+  equals `Image.timestamp`, 30 fps. **The bridge tags its buffers JFIF, because that is the matrix
+  the HAL encodes P010 with (corrected 2026-10-25 — it first shipped wearing the stock O-Log2
+  stream's BT.2020 tag).** BT.2020, BT.709 and BT.601 reader requests produced identical YCbCr bits,
+  equal to the same session's YUV_420_888 stream that the HAL stamps JFIF; the tag only steers the
+  DECODE, and Adreno decodes a BT.2020 tag exactly as BT.2020 (GL mean RGB vs a BT.2020-full decode:
+  0.2 codes) while every other tag takes its one default decode — the 8-bit PRIVATE stream's, within
+  ~3 codes of exact BT.601-full. The BT.2020 tag therefore skewed saturated colour by up to ~24
+  ten-bit codes / ~5° of hue with neutrals exact, which is why grey-wall checks never saw it. The
+  primaries are sRGB in both paths: `(SRGB, *, STANDARD)` is this camera's only STANDARD colour space
+  (BT.2020 exists only as `BT2020_HLG` + HLG10), so the ISP clips to BT.709 before any curve and the
+  shader's 709→target gamut matrix is a decode of that, not a choice. The ENCODER target must be ten-bit too — a 0.40–0.45 grey ramp
   reached the file as clean 10-bit steps through RGBA1010102 and as dithered 8-bit through RGBA8888 —
   and Java EGL cannot create the `EGL_KHR_no_config_context` context a per-surface config needs (EGL14
   rejects a null config), so a `tenBitNativeLogBridge` profile starts EVERY GL generation on
