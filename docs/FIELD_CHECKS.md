@@ -753,7 +753,10 @@ Builds before 2026-10-26 could not write the parameters: AudioFlinger silently d
 `mEffectType(0)` for every Directionality choice (2026-10-25, `CLAUDE.md`). The app now declares the
 permission (owner decision). First confirm the shipping path in logcat (`OplusAudAlgoManager` /
 `AudioFlingerExtImpl logSetParametersForDebug`): `effectType 2` for Sound Focus, `5` for Sound Stage,
-`0` for Standard, and the effect back at `0` after Stop.
+`0` for Standard, and the effect back at `0` after Stop. Done 2026-10-26 for Sound Stage on the
+immutable debug build: session id, orientation 0, focus zoom 1.0 and `effect_type=5` reached the HAL
+(`effectType 5`, profile `mEffectType(5)`), and `effect_type=0` followed Stop. What remains is the
+listening test below.
 
 - Record the same scene twice, Sound Focus on then off, with a sound source clearly off to one side.
 

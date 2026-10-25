@@ -942,8 +942,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   closed release set is now CAMERA + RECORD_AUDIO + MODIFY_AUDIO_SETTINGS (`tools/release_permissions.py`).
   The shipping path (`VideoRecorder.applyAudioScene`) sends session id, orientation, focus zoom (and
   focus angle for Sound Focus), then the effect type for EVERY scene, `STANDARD` as `0`, and resets a
-  non-standard effect to `0` when the take ends so the next app's capture does not inherit it. That
-  path's HAL readback is PENDING DEVICE (`docs/FIELD_CHECKS.md` D1). Facts it respects: the stock
+  non-standard effect to `0` when the take ends so the next app's capture does not inherit it.
+  Device-verified 2026-10-26: Sound Stage logged `effectType 5` / `mEffectType(5)` during a take and
+  `effectType 0` after Stop; the off-axis listening check is `docs/FIELD_CHECKS.md` D1. Facts it respects: the stock
   camera sends `effect_type=0` for ordinary video (Pro and normal Video) — the enum's old
   `STANDARD(1)` was a value no stock capture shows — plus `orientation`, `camera_id`, `telephoto` and
   `focus_zoom` (`camera_id`/`telephoto` are not sent until stock's TC-mode values are measured); and stock gets the HAL's
