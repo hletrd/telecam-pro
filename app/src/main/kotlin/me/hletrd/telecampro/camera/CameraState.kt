@@ -1401,6 +1401,12 @@ enum class VideoFrameRate(
     // Dormant in the shipping picker; see availableFor and CameraViewModel's restore guard.
     FPS_120(120.0, 120, false, highSpeed = true);
 
+    /** The exact rate as [rateNumerator]/[rateDenominator] fps: 30000/1001 for 29.97, 30/1 for 30. */
+    val rateNumerator: Int get() = if (dropFrame) fps * 1000 else fps
+
+    /** See [rateNumerator]. */
+    val rateDenominator: Int get() = if (dropFrame) 1001 else 1
+
     companion object {
         /** The default: 29.97 fps NTSC drop-frame (the standard cine/broadcast rate). */
         val DEFAULT = FPS_29_97

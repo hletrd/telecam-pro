@@ -706,6 +706,8 @@ class VideoRecorder(private val context: Context) {
                     // is an invariant breach that must surface as THIS loop's failure, never a
                     // silent no-op (qa-adversary Finding 1).
                     val format = onCodec(teardown.videoFault) { codec.outputFormat }
+                    // Whole-tick frame periods for every offered rate ([VIDEO_TRACK_TIME_SCALE]).
+                    format.setInteger(MP4_TIME_SCALE_KEY, VIDEO_TRACK_TIME_SCALE)
                     videoTrack = checkNotNull(muxer) { "muxer released before video format" }
                         .addTrack(format)
                     videoStartupProof.observeFormat()
@@ -2996,3 +2998,16 @@ private fun writePcm16Le(buf: ByteBuffer, byteIndex: Int, sample: Short) {
     buf.put(byteIndex, (value and 0xff).toByte())
     buf.put(byteIndex + 1, (value shr 8).toByte())
 }
+
+/**
+ * The MP4 video track timescale. MediaMuxer's default 90 kHz cannot hold the 59.94 frame period
+ * (1501.5 ticks), and MPEG4Writer then "fudges" every duration within 100 µs of the previous one onto
+ * it: 1501 ticks for 47 frames and 1511 on the 48th, a file stamped ~59.952 fps although the encoder
+ * received exact 16683/16684 µs steps (device-measured 2026-10-26). 120 kHz holds every offered period
+ * in whole ticks — 59.94 = 2002, 29.97 = 4004, 23.976 = 5005, 25 = 4800, 120 = 1000 — so the exact grid
+ * of the constant-rate encoder clock reaches the file unchanged.
+ */
+internal const val VIDEO_TRACK_TIME_SCALE = 120_000
+
+/** MediaFormat key MediaMuxer maps to MPEG4Writer's track timescale (Utils.cpp, Android 13 and later). */
+internal const val MP4_TIME_SCALE_KEY = "time-scale"

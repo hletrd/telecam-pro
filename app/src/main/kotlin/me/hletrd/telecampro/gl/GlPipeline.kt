@@ -128,6 +128,12 @@ class GlPipeline(
     // GL-thread only. Told the encoder base exactly once per output (the optional Gyroflow gyro
     // log rebases its IMU rows onto the same first-frame timestamp the video PTS starts from).
     private var encoderFirstFrameSink: GyroLogFirstFrameSink? = null
+    // GL-thread only, one per encoder output: puts every recorded frame on the exact constant-rate
+    // grid of the take's frame rate (ConstantRateFrameClock). Null = raw sensor timestamps (the
+    // dormant high-speed path, whose capture and playback rates differ).
+    private var encoderFrameClock: ConstantRateFrameClock? = null
+    // Longest gap-fill burst of the current take (ns of GL-thread time), for the per-take row.
+    private var encoderFillBurstMaxNs = 0L
 
     private var transfer: ColorTransfer? = null
     // Front-route stream-mirror fact. ROUTE state like the rotation/sensor-orientation pair (NOT a
@@ -744,6 +750,10 @@ class GlPipeline(
         admission: EncoderOutputAdmission? = null,
         onRuntimeFailure: ((Throwable) -> Unit)? = null,
         firstFrameSink: GyroLogFirstFrameSink? = null,
+        // The take's exact frame rate as a fraction (30000/1001 for 29.97); 0 = keep raw sensor
+        // timestamps ([ConstantRateFrameClock]).
+        rateNumerator: Int = 0,
+        rateDenominator: Int = 0,
         onApplied: ((Result<Unit>) -> Unit)? = null,
     ) {
         val h = handler
@@ -832,6 +842,20 @@ class GlPipeline(
                         encoderEgl = accepted
                         encoderSignal = signal
                         encoderFirstFrameSink = firstFrameSink
+                        encoderFrameClock = if (rateNumerator > 0 && rateDenominator > 0) {
+                            ConstantRateFrameClock(
+                                rateNumerator.toLong(),
+                                rateDenominator.toLong(),
+                                // A fill is a burst of draws + swaps on THIS thread, which also draws
+                                // the viewfinder, so it is bounded: a third of a second of slots
+                                // (10 at 29.97, 20 at 59.94) covers the longest ordinary stall
+                                // measured, a mid-REC repeating-request swap (~235 + 67 ms); a longer
+                                // gap means the camera itself stopped and stays a hole.
+                                maxFillSlots = encoderMaxFillSlots(rateNumerator, rateDenominator),
+                            )
+                        } else {
+                            null
+                        }
                     },
                     discard = { revoked ->
                         try {
@@ -870,6 +894,18 @@ class GlPipeline(
         encoderBaseSet = false
         encoderBaseNs = 0L
         encoderFirstFrameSink = null
+        // One row per take: how often the grid dropped a fast sensor's frame or filled a gap.
+        encoderFrameClock?.takeIf { it.placedFrames > 0 }?.let { clock ->
+            if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+                android.util.Log.i(
+                    "GlPipeline",
+                    "EncoderClock: placed=${clock.placedFrames} dropped=${clock.droppedFrames} " +
+                        "filled=${clock.filledSlots} maxFillBurstMs=${encoderFillBurstMaxNs / 1_000_000.0}",
+                )
+            }
+        }
+        encoderFrameClock = null
+        encoderFillBurstMaxNs = 0L
     }
 
     /** Releases the current encoder EGLSurface before resolving its pending attachment. */
@@ -1315,21 +1351,36 @@ class GlPipeline(
         val ownedSignal = encoderSignal
         if (ownedEncoder != EGL14.EGL_NO_SURFACE && ownedSignal?.isActive() == true) {
             var encoderFrameSwapped = false
-            try {
+            val ts = st.timestamp
+            // The constant-rate grid decides how many slots this frame fills: 0 = a fast sensor's
+            // frame landing on an already-filled slot (skip the draw entirely), >1 = repeats filling
+            // a camera gap. A frame without a sensor timestamp keeps the legacy single draw at PTS 0.
+            val clock = encoderFrameClock?.takeIf { ts > 0L }
+            val emissions = clock?.place(ts) ?: 1
+            if (emissions > 0) try {
                 core.makeCurrent(ownedEncoder)
-                // Un-mirror the pre-mirrored front stream so the FILE keeps the true scene
-                // (rear routes pass false and are untouched).
-                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontRoute, frontStreamPreMirrored))
                 // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
-                val ts = st.timestamp
                 if (!encoderBaseSet && ts > 0L) {
                     encoderBaseNs = ts
                     encoderBaseSet = true
                     // One atomic store on the sink side; never blocks the encoder draw.
                     encoderFirstFrameSink?.let { sink -> runCatching { sink.onFirstEncodedFrame(ts) } }
                 }
-                core.setPresentationTime(ownedEncoder, if (encoderBaseSet) ts - encoderBaseNs else 0L)
-                core.swapBuffers(ownedEncoder)
+                val burstStartNs = if (emissions > 1) System.nanoTime() else 0L
+                for (emission in 0 until emissions) {
+                    // Un-mirror the pre-mirrored front stream so the FILE keeps the true scene
+                    // (rear routes pass false and are untouched). Redrawn per fill: the back buffer
+                    // is undefined after each swap.
+                    renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontRoute, frontStreamPreMirrored))
+                    core.setPresentationTime(
+                        ownedEncoder,
+                        clock?.presentationNs(emission) ?: if (encoderBaseSet) ts - encoderBaseNs else 0L,
+                    )
+                    core.swapBuffers(ownedEncoder)
+                }
+                if (emissions > 1) {
+                    encoderFillBurstMaxNs = maxOf(encoderFillBurstMaxNs, System.nanoTime() - burstStartNs)
+                }
                 encoderFrameSwapped = true
                 // Never leave the codec window current between frames. Apart from making detach
                 // truthful, this ensures a stop triggered by the ready callback is queued only

@@ -842,9 +842,29 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   33.3 ms minimum for 3840×2160 yet records ~60 fps there, so `DeviceProfile.
   videoMinFrameDurationsUnderstated` skips that gate on the PMA110 profile. High-speed 120 fps is
   excluded because its constrained session crashes this HAL.
-- **The recorded cadence is the SENSOR's, and PMA110 cannot be asked for an NTSC rate (device-
-  measured 2026-10-05, TELE 4K and 1080p).** Encoder PTS are the SurfaceTexture sensor timestamps,
-  so a file's frame interval is exactly what the camera delivered. That cadence is a fixed sensor
+- **The SENSOR cannot be asked for an NTSC rate, so the FILE is retimed onto the exact grid (device-
+  measured 2026-10-05 and 2026-10-26; grid since 2026-10-26, owner decision "29.97, 59.94 and 23.976
+  are the standard").** Encoder PTS USED TO BE the SurfaceTexture sensor timestamps, so a file's frame
+  interval was exactly what the camera delivered — up to 0.24 % off the tag, a 1.4 s audio drift per
+  ten minutes in an editor that conforms to the tagged rate. `ConstantRateFrameClock` (GL thread, one
+  per encoder output) now puts each real frame on the slot of the exact `rateNumerator/rateDenominator`
+  grid nearest its capture time (≤ half a slot away; slot 0 is the first frame, whose sensor timestamp
+  stays the video PTS 0 the A/V anchor and the gyro log use): a frame landing on a filled slot is
+  dropped, a camera gap is filled by repeating the current frame. A fill is one burst of draws + swaps
+  on the GL thread that also draws the viewfinder, so it is capped at a third of a second of slots
+  (`encoderMaxFillSlots`: 10 at 29.97, 20 at 59.94 — a whole second was the first cap and the review
+  flagged it); a longer gap stays a hole. Integer rates take the same grid. The MP4 video track also
+  needs a **120 kHz timescale** (`VIDEO_TRACK_TIME_SCALE`, MediaFormat `time-scale` → MPEG4Writer
+  kKeyTimeScale, Android 13+): at the 90 kHz default 59.94 is 1501.5 ticks, and MPEG4Writer reuses a
+  duration within 100 µs of the previous one, so a 59.94 take came out 1501 × 47 + 1511 — stamped
+  ~59.952 fps although the encoder received exact 16683/16684 µs steps (perfetto). 120 kHz holds
+  every offered period in whole ticks. Device-verified 2026-10-26: 29.97 takes in P (30 s), RAW log
+  (30 s) and M (45 s) each `r_frame_rate = avg_frame_rate = 30000/1001`, every delta exactly 3003
+  ticks at 90 kHz; after the timescale change a 20 s 59.94 P take with an induced mid-REC stall was
+  every delta exactly 2002 ticks at 120 kHz (filled 43, longest fill burst 61 ms after a 208 ms camera
+  stall), and a 36 s 23.976 take every delta 5005 with the one drop its fast 24.0096 fps sensor
+  predicts; all decode clean. The dormant high-speed path (`captureRate > 0`) keeps raw timestamps.
+  The history below is why. That cadence is a fixed sensor
   mode chosen from the `[fps,fps]` range and the AE mode: HAL-AE video (P) runs 16.80 ms (59.52 fps)
   for "59.94" and 33.44 ms (29.90 fps) for "29.97"; AE-off (S/ISO/M) runs 16.66 ms (60.04) and
   33.32 ms (30.01). `SENSOR_FRAME_DURATION` is IGNORED inside that range: M-mode 29.97 (requesting
@@ -881,7 +901,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the developer and the camera clean (`missing(camera=0 developed=0)` in the debug develop profile).
   It keeps the frame count true to the NTSC tag, which is what keeps a constant-rate editor in sync;
   removing the cap would trade the periodic 67 ms hole for a 0.13 % rate mismatch (~0.8 s per
-  10 min in such an editor). Owner decision pending; do not "fix" one side silently.
+  10 min in such an editor). DECIDED 2026-10-26 for the exact grid: the drop now happens in
+  `ConstantRateFrameClock` at the same rate but without the timestamp hole (the FrameDropper's cap stays
+  and no longer fires, since grid spacing equals its interval). Video P stays on HAL AE: an app-side
+  loop would have to swap the repeating request for every exposure step, and a swap mid-REC froze the
+  file 218–235 ms plus one more frame (7 frames, device-measured 2026-10-26).
 - **Audio sits on the video clock, minus the encoder's priming (measured 2026-10-25).** Video PTS 0
   is the first encoded frame's sensor timestamp; audio PTS 0 used to be just the first PCM sample
   read, so takes carried a per-take offset (logged 62–101 ms apart). On a REALTIME camera clock the
@@ -944,7 +968,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   and is typed `application/octet-stream` (2026-10-14, UNVERIFIED on device).** MediaProvider refuses
   non-media MIME types under DCIM, and a typed `text/csv` makes it append `.csv` to the `.gcsv` name
   (`FileUtils.splitFileName`), which breaks Gyroflow's same-stem lookup. Rows are timed against the
-  encoder's first-frame SurfaceTexture timestamp (video PTS 0) in the camera clock domain. The
+  encoder's first-frame SurfaceTexture timestamp (video PTS 0) in the camera clock domain. Since the
+  constant-rate grid (2026-10-26) a frame's PTS can sit up to half a frame from its capture time while
+  the rows stay on capture time, a bounded sawtooth Gyroflow's sync has to absorb. The
   written readout direction is the true geometry (PMA110 rear 3, TELE/front 2), but Gyroflow
   documents support for 0/1 only. Sync, axis signs, and readout behaviour still need an on-device
   Gyroflow import (rear, TELE, front) before any of it is claimed.

@@ -7277,6 +7277,10 @@ class CameraEngine internal constructor(
                 rec.onFirstVideoFrame(ts)
                 gyroFirstFrameSink?.onFirstEncodedFrame(ts)
             },
+            // Exact constant-rate file timing (ConstantRateFrameClock). The dormant high-speed path
+            // (captureRate > 0) keeps raw timestamps: its capture and playback rates differ.
+            rateNumerator = if (captureRate > 0.0) 0 else rate.rateNumerator,
+            rateDenominator = if (captureRate > 0.0) 0 else rate.rateDenominator,
         ) { result ->
             // GlPipeline guarantees exactly-once result delivery, so a plain atomic publication is
             // sufficient and avoids identity-CAS semantics on Kotlin's boxed Result value class.
