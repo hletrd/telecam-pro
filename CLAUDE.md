@@ -983,10 +983,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   paper sits behind a developer login); vivo Log (no public formula); Honor (a patent only; Magic9
   reportedly records LogC3, which is already offered universally); Huawei and Google Pixel (no
   native log curve published).
-  **The vendor native log key is still INERT for third-party Camera2 (settled 2026-07-09).**
+  **The vendor log key alone did not activate native log in the measured third-party sessions
+  (2026-07-09; scope corrected 2026-10-25).**
   `com.oplus.log.video.mode` is advertised in the tele's request+session
-  keys and the HAL ACCEPTS it ("applied" logs), but it changes NOTHING a third-party session can
-  see: with the key set (as session parameter + on every request), the preview AND the recorded clip
+  keys and the HAL ACCEPTS it ("applied" logs), but those tests showed no native-log output:
+  with the key set (as session parameter + on every request), the preview AND the recorded clip
   stay display-referred 709 — tested with both `TEMPLATE_PREVIEW` and `TEMPLATE_RECORD` repeating
   requests on device, judged in a lit scene. (Earlier "the file recorded as log" was the BT.2020
   full-range container tag being misread by players as a washed look; an "applied" log line only
@@ -1023,7 +1024,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO / Xiaomi native-log
   attribution (EN+KO) sit in the Setup tab.
 
-- **Ten-bit native log = a P010 stream bridged into GL; the stock O-Log2 pipeline stays out of reach
+- **Ten-bit native log = a P010 stream bridged into GL; the stock O-Log2 pipeline remains unreproduced
   (device-measured PMA110 2026-10-25).** Three things the 07-28 investigation recorded as walls are
   FALSE: every rear camera (0–5) and the front list YCBCR_P010 (format `54` = `0x36`, 48–49 sizes
   incl. 3840×2160) and advertise `(SRGB, P010, STANDARD)` in the colour-space profiles (the old read
@@ -1063,9 +1064,28 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   O-Log2) run a 2-exposure DOL usecase (`HDRFeatureMode 1`, sensor mode 21, DRC gain, a
   `com.oplus.gamma.info` LUT); a third-party session with the stock op mode `0x830b`, the String key
   `com.oplus.camera.mode = "pro_video_log_mode"`, `log.video.mode = 0`, `is.from.main.menu = 1`, the
-  stock P010 stream shape and even `com.oplus.packageName = com.oplus.camera` (echoed, so package
-  identity is ruled out) never left `HDRFeatureMode 0`. Ten-bit native log is ten bits of the SAME
+  stock P010 stream shape and even `com.oplus.packageName = com.oplus.camera` (echoed in results)
+  never left `HDRFeatureMode 0`. An echoed repeating-request value does not establish the identity
+  consumed at configure time, so the earlier claim that this ruled out package-dependent routing
+  was too strong. Ten-bit native log is ten bits of the SAME
   un-S-curved, clip-bounded ISP signal, not the stock pipeline's latitude.
+- **Stock Log investigation reopened with a concrete session-routing candidate (2026-10-25,
+  STATIC evidence only).** Current connected PMA110 firmware is `PMA110_17.0.0.106(CN01)` and stock
+  Camera is `7.006.119`; the preserved comparison APK is `6.031.451` (different SHA-256), so the
+  historical failed combinations do not settle the current firmware. In the CURRENT
+  `/odm/lib64/libextensionlayer.so`, `InitPackageName` reads the session's
+  `com.oplus.is.sdk.camera.package` first byte. A nonzero byte OR a package-name prefix matching
+  the configured `SystemCamera` sets the flag consumed by `SelectSensorMode`, which branches to
+  `SelectSensorModeForSystemCam` instead of `SelectSensorModeForOtherCam`. The framework's
+  `OplusCameraManager.parseSessionParameters` also reads this byte array (tests for `1`), and the
+  tag is advertised in current Camera2 session keys. This is a candidate for a direct Camera2
+  experiment, NOT a decision to restore the declined authenticated SDK. Setting the flag is NOT
+  yet proven to reproduce DOL, O-Log2 pixels, gamut, noise reduction or stabilization. The current
+  firmware's stock baseline and an otherwise identical flag-off/flag-on session must be captured;
+  compare actual sensor selection, HDR/exposure metadata and saved pixels. Do not replace the
+  shipping tone-curve/P010 path or claim stock equivalence from static code or a tag echo. The
+  initial live session was already recording, so this investigation did not interrupt it to run
+  that experiment. Optional private detail: `docs/reviews/2026-10-25-stock-log-routing.md`.
 - **RAW log (EXPERIMENTAL) = S-Log3 developed in-app from the RAW stream (owner request 2026-10-25;
   `docs/FIELD_CHECKS.md` A19).** A Video-tab toggle, offered for S-Log3 / S-Log3.Cine only (a log the
   app develops itself has no reason to imitate a phone maker's curve) on a RAW-developable rear camera

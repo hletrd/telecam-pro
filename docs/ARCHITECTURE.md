@@ -968,8 +968,10 @@ unused.
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
 **Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
-them. Native vendor log is inert for third-party Camera2; Auto HDR and in-sensor zoom were removed after
-HAL stability testing. See CLAUDE.md for the per-key notes.
+them. The vendor log flag did not activate stock log in the third-party combinations measured so far;
+this is not a general impossibility result. A current-firmware session-routing candidate was found by
+static analysis on 2026-10-25 and still needs a device A/B (CLAUDE.md, stock Log investigation).
+Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.
 
 **Video resolution and frame rates:**
 
