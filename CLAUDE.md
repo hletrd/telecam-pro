@@ -842,7 +842,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   33.367 ms) and 30 (33.333 ms) produced byte-identical cadences, so making the app-side frame
   interval exact for drop-frame rates was measured, changed nothing, and was reverted. The container
   still tags the selected rate; players and NLEs follow the real timestamps.
-- **Recorded single-frame drops have two sources (perfetto-bisected on PMA110, 2026-10-13).**
+- **Recorded single-frame drops have three sources (two perfetto-bisected on PMA110, 2026-10-13;
+  the third measured 2026-10-25).**
   (1) STEADY STATE, camera side: the HAL's sensor timestamps skip a slot when its 3A nodes run long
   (AWB p50 0.2 ms / p99 33 ms / max 69 ms; AF p99 13 ms) and the next request is admitted late —
   the request thread SLEEPS, it is not CPU-starved, and the camera→app queue never exceeds one
@@ -856,6 +857,63 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   audio rendezvous (audio off keeps it) and NOT fixed by KEY_PRIORITY 0 + KEY_OPERATING_RATE
   (tried, no gain, reverted). Root cause still open. Measure drops from the FILE only: a
   `dumpsys media.camera` during REC is itself heavy enough to cause GL-side drops.
+  (3) BY DESIGN, encoder side (measured 2026-10-25): `KEY_MAX_FPS_TO_ENCODER` = the selected rate
+  makes GraphicBufferSource's FrameDropper trim a faster sensor down to it, so a 29.97 selection over
+  PMA110's 30.01 fps RAW-log/AE-off cadence drops ONE frame every ~25.7 s, the first at ~1.5 s (its
+  2 ms jitter allowance): 24 single-frame gaps in a 10-minute RAW log take, every other frame present,
+  the developer and the camera clean (`missing(camera=0 developed=0)` in the debug develop profile).
+  It keeps the frame count true to the NTSC tag, which is what keeps a constant-rate editor in sync;
+  removing the cap would trade the periodic 67 ms hole for a 0.13 % rate mismatch (~0.8 s per
+  10 min in such an editor). Owner decision pending; do not "fix" one side silently.
+- **Audio sits on the video clock, minus the encoder's priming (measured 2026-10-25).** Video PTS 0
+  is the first encoded frame's sensor timestamp; audio PTS 0 used to be just the first PCM sample
+  read, so takes carried a per-take offset (logged 62–101 ms apart). On a REALTIME camera clock the
+  recorder anchors sample 0 with `AudioRecord.getTimestamp(TIMEBASE_BOOTTIME)` and shifts every AAC
+  frame at the muxer by (sample-0 capture − first-frame sensor time − priming), frozen per take;
+  other clock sources keep the unanchored timeline, and a gap over 1 s is treated as a clock
+  mismatch. Priming matters because MediaMuxer writes no encoder-delay edit list, so every player
+  decodes the warm-up first: `c2.android.aac.encoder` LC 2048, HE-AAC 4096, HE-AAC v2 6142 (≈ 6144)
+  samples, `c2.android.xheaac.encoder` 0 (`AacEncoderProbeTest`: an impulse through encode + the
+  platform decoder, identical at every bitrate). Evidence (vibration bursts timed on the audio
+  envelope and on the gyro sidecar with one 20 %-of-peak criterion, immutable debug `c892e1c8`):
+  sound −60 ms EARLY before the anchor; +33/+32/+36 ms late with the anchor alone — the 42.7 ms LC
+  priming; with both, LC −17, HE-AAC +10, HE-AAC v2 +12, xHE-AAC −9 ms. HE/HEv2 also depend on the
+  DECODER's SBR delay (the host decoder here is ffmpeg's), and the gyro's own filter delay biases
+  every reading early, so a clap take is the remaining ground truth (`docs/FIELD_CHECKS.md` D6).
+- **The soundtrack format is a device-enumerated choice, AAC only (2026-10-25).** MediaMuxer's MP4
+  writer (`MPEG4Writer.getFourCCForMime`) takes AAC, AMR-NB and AMR-WB audio and nothing else; AMR is
+  narrowband speech, and the Opus/FLAC encoders this phone ships cannot be muxed. So the Video tab
+  offers AAC-LC (default, 192 kb/s — unchanged), HE-AAC, HE-AAC v2 and xHE-AAC, each ONLY when a
+  REGULAR encoder advertises that profile at 48 kHz (`video/AudioEncoding.kt`), with bitrate presets
+  inside its advertised range — a board whose image lacks an encoder or its licence lists fewer, and
+  REGULAR_CODECS already hides PMA110's `special-codec` `c2.qti.aac.hw.encoder` (LC-only, ≤ 192 kb/s).
+  PMA110 offers all four (platform `c2.android.aac.encoder` and the mainline
+  `c2.android.xheaac.encoder`); every preset was accepted and hit within ~6 % on device. HE-AAC v2
+  is parametric stereo, so a mono route records HE-AAC v1. Editor/player import of the non-LC
+  formats is `docs/FIELD_CHECKS.md` D7.
+- **Sound Focus / Sound Stage are NOT in effect as shipped (device-measured 2026-10-25).**
+  `AudioManager.setParameters` needs MODIFY_AUDIO_SETTINGS, which the closed release permission set
+  (CAMERA + RECORD_AUDIO, `tools/release_permissions.py`) does not declare, so AudioFlinger drops every
+  `vendor_audiorecord_*` write SILENTLY: the HAL logged `mEffectType(0)` for all three Directionality
+  choices, and the getParameters "echo" the recorder logs is always empty because ColorOS answers those
+  keys only to "system or list" apps. With the permission (debug-manifest experiment) the writes land:
+  `OplusAudAlgoManager: effectType 5`, `orientation 0`, profile `mEffectType(5)`. Adding it is an owner
+  decision (it changes the closed permission set). Two facts any fix must respect: the stock camera
+  sends `effect_type=0` for ordinary video (Pro and normal Video), not the `STANDARD(1)` this enum
+  assumes, plus `orientation`, `camera_id`, `telephoto` and `focus_zoom`; and stock gets the HAL's
+  4-capsule camcorder algorithm (`algo input channels(4)`) through a system-set `CamcorderSwitchMic=true`
+  that a third-party app cannot flip (sending `oplus_camera_record=true` ourselves changed nothing;
+  we always get 2 channels). The `audio_policy` logcat (`AudioFlingerExtImpl logSetParametersForDebug`,
+  `OplusAudAlgoManager`) is the probe for all of this.
+- **The built-in microphones are a bottom + top pair, 16-bit ≤ 48 kHz (measured 2026-10-25).**
+  `getMicrophones`: bottom (y = 0.6 cm) and back/top (y = 14.6 cm), no channel mapping declared — so
+  stereo is physical left/right only in LANDSCAPE, and which landscape maps which way depends on the
+  orientation the HAL is told (`docs/FIELD_CHECKS.md` D8). Every built-in input profile in
+  `dumpsys media.audio_policy` is PCM 16-bit ≤ 48 kHz (a 4-channel `fast_raw_input` mask exists);
+  AudioRecord GRANTS float, 24/32-bit and 96 kHz requests but converts them from that, so they add no
+  resolution. UNPROCESSED is declared supported, and a 4-channel index mask is granted. A USB input
+  profile offers PCM 32-bit / float up to 192 kHz. MediaMuxer cannot carry PCM in MP4 (AAC/AMR only);
+  Media3's `Mp4Muxer` can (16/24/32-bit integer and 32-bit float tracks).
 - **The Gyroflow gyro log (`.gcsv`, opt-in) lands in `Documents/TeleCamPro/`, not beside the clip,
   and is typed `application/octet-stream` (2026-10-14, UNVERIFIED on device).** MediaProvider refuses
   non-media MIME types under DCIM, and a typed `text/csv` makes it append `.csv` to the `.gcsv` name

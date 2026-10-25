@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ☐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-eight remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -21,10 +21,12 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**D1** needs an off-axis sound source,
+**D1** is blocked until the app may write the vendor audio parameters (MODIFY_AUDIO_SETTINGS, an owner decision) and then needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
-run of ordinary clips plus one more take, and **E1/E2/E3/E4** need real MediaProvider ownership,
+run of ordinary clips plus one more take, **D6** needs one clap in front of the lens, **D7** needs the
+four soundtrack formats imported into the editors you use, **D8** needs finger snaps left and right
+with the phone held in each landscape, and **E1/E2/E3/E4** need real MediaProvider ownership,
 system-consent, reset/reindex, and pending-expiry behavior. B1 closed the rotation
 work end to end; C1 confirmed the afocal
 correction against real converter glass. C3 is closed as an honest no-observable-difference result,
@@ -641,6 +643,16 @@ pass 2 ~1.7 ms GPU, 301/301 frames; process CPU 56 % in preview (was 83 %; nativ
 session `ois=0 vstab=0` with the explicit OIS OFF (vstab OFF alone read `ois=1`). The phone lay static
 on the floor, so stabilization EFFECT is unmeasured — the handheld pairs above are the open half.
 
+**Immutable debug `edb99792`, 10-minute soak 2026-10-25 (1×, 4K 29.97, Stabilization Active, audio
+on):** 18 411 frames over 614.3 s, full software decode clean, no repeated, black or spiked frame; the
+develop profile read `missing(camera=1 developed=0)` over 64 windows (the one camera skip at start)
+at 30.0 fps; the 24 single-frame gaps in the file are the encoder's NTSC cap trimming the 30.01 fps
+sensor, one every ~25.7 s (`CLAUDE.md`, drop source 3), not the RAW route. App RSS 388 → 393 MB, thermal
+status 0 throughout. Against the stock Pro Video O-Log2 4K30 at 1× over the same 10 minutes from the
+same start temperature: system CPU 425 vs 421 %, camera HAL 127 vs 178 %, app 92 vs 46 % (debug,
+JIT-only), codec process 33 vs 13 % (our encoder input is RGBA from GL and the codec converts it), GPU
+busy 33 vs 23 %; skin +3.7 vs +2.9 °C, GPU sensor +5.8 vs +4.2 °C, battery +2.5 vs +1.8 °C.
+
 ## B. Held in hand — 3 min
 
 ### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)
@@ -734,9 +746,12 @@ difference,” not “confirmed working.”
 
 ## D. Audio, quiet room — 2 min
 
-### D1. Sound Focus off-axis rejection — ◯ OPEN
+### D1. Sound Focus off-axis rejection — ◯ OPEN (blocked)
 
-Parameter acceptance is verified; the acoustic effect has never been heard.
+Parameter acceptance was NOT verified, and on PMA110 as shipped it does not happen: AudioFlinger
+silently drops `vendor_audiorecord_*` writes from an app without MODIFY_AUDIO_SETTINGS, and the HAL
+logged `mEffectType(0)` for every Directionality choice (2026-10-25, `CLAUDE.md`). Run this only on a
+build that may write the parameters, and confirm `OplusAudAlgoManager: effectType 2` in logcat first.
 
 - Record the same scene twice, Sound Focus on then off, with a sound source clearly off to one side.
 
@@ -827,6 +842,46 @@ which). The seventh take starts normally, and no logcat row reports `UNSAFE_RECO
 recorder quarantine. Record each clip's track list.
 
 ---
+
+### D6. A/V sync against a clap — ◯ OPEN 2026-10-25
+
+The recorder anchors audio to the first video frame's capture time and removes the encoder's priming
+(`CLAUDE.md`). Vibration bursts against the gyro sidecar read LC −17 / HE-AAC +10 / HE-AAC v2 +12 /
+xHE-AAC −9 ms on immutable debug `c892e1c8` (−60 ms before the fix), but the gyro carries its own
+filter delay; a clap is seen and heard at one instant.
+
+- PMA110, **VIDEO**, 29.97 fps, any route, AAC-LC. Clap three times, hands framed and in focus, 1 m
+  from the phone; repeat once with HE-AAC.
+- Find the first frame showing the hands closed and the audio onset of each clap (any editor's
+  waveform at frame zoom, or `ffprobe` packet times plus an envelope).
+
+**Pass:** sound and closed hands within one frame (±33 ms), never sound clearly first.
+
+### D7. The four soundtrack formats import and play — ◯ OPEN 2026-10-25
+
+Every format decodes cleanly with ffmpeg 8 (`profile=xHE-AAC` read back for xHE-AAC), and
+`AacEncoderProbeTest` decodes all four with the platform decoder; the editors are unchecked.
+
+- Record ~10 s with each of AAC-LC 192, HE-AAC 64, HE-AAC v2 32 and xHE-AAC 128 kb/s.
+- Play each in the system Gallery and import each into the editors you deliver with (Resolve,
+  Premiere, Final Cut, CapCut, …).
+
+**Pass:** AAC-LC everywhere. Record which editors refuse or mute HE-AAC v2 or xHE-AAC — the format
+captions promise "plays in every player and editor" only for AAC-LC and warn for xHE-AAC.
+
+### D8. Stereo left/right in both landscape holds — ◯ OPEN 2026-10-25
+
+The two built-in capsules sit at the phone's bottom and top, so left/right is physical only in
+landscape and depends on the orientation the audio HAL is told — and the recorder tells it nothing in
+Standard, and (until D1's permission question is settled) nothing in any mode.
+
+- Hold the phone in landscape with the camera facing a quiet scene. Record ~8 s: snap once clearly on
+  the image's LEFT, then once on its RIGHT. Repeat in the other landscape hold, in Standard and in
+  Sound Stage.
+- In each clip, compare the two channels' level at each snap.
+
+**Pass:** the left snap is louder in the left channel and the right snap in the right channel, in
+BOTH holds. A swap in one hold means the HAL needs the orientation parameter in that mode.
 
 ## E. MediaProvider provenance — disposable test media
 
