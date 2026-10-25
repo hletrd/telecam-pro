@@ -7,6 +7,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.MediaCodec
 import android.media.MediaMuxer
 import android.media.MediaRecorder
@@ -181,6 +182,19 @@ class VideoRecorder(private val context: Context) {
     private var audioChannelCount = ColorProfiles.AUDIO_CHANNELS
     private var onRoute: ((AudioRouteStatus) -> Unit)? = null
 
+    // A/V capture-time alignment ([audioCaptureOffsetUs]). Video PTS 0 is the first encoded frame's
+    // sensor timestamp; audio PTS 0 used to be simply the first PCM sample read, so the two tracks
+    // were offset by whatever separated those instants — sound ~56 ms AHEAD of the picture on the
+    // PMA110 RAW log route (vibration bursts against the gyro sidecar, 2026-10-25). The GL thread
+    // reports the first frame ([onFirstVideoFrame], one atomic store); the audio thread anchors
+    // sample 0 by AudioRecord.getTimestamp in the camera's clock and shifts every AAC frame by the
+    // difference at the muxer, once per take. Only on a REALTIME camera clock (same base as
+    // TIMEBASE_BOOTTIME); any other source keeps the unanchored PTS.
+    private var cameraClockRealtime = false
+    private val firstVideoFrameNs = AtomicLong(0L)
+    @Volatile private var audioSample0CaptureNs = 0L
+    private var audioPtsOffsetUs: Long? = null
+
     private fun <T> nativeOperation(block: () -> T): T = when (
         val outcome = nativeOperations.run(block)
     ) {
@@ -238,6 +252,7 @@ class VideoRecorder(private val context: Context) {
         onRoute: ((AudioRouteStatus) -> Unit)? = null,
         onLevel: ((AudioLevelFrame) -> Unit)? = null,
         onFailure: ((Throwable) -> Unit)? = null,
+        cameraClockRealtime: Boolean = false,
     ): Surface? {
         val admittedCandidates = encoderCandidates
             .filter { encoderSelectionAdmitsTransfer(it, transfer) }
@@ -279,6 +294,7 @@ class VideoRecorder(private val context: Context) {
         this.onRoute = onRoute
         this.onLevel = onLevel
         this.onFailure = onFailure
+        this.cameraClockRealtime = cameraClockRealtime
         val descriptor = nativeOperation {
             MediaStoreWriter.openParcelFd(context, uri, "rw")?.also { pfd = it }
         } ?: run {
@@ -825,6 +841,14 @@ class VideoRecorder(private val context: Context) {
      * guarded: we log the HAL echo (getParameters) so device acceptance is verifiable, and a
      * rejected param never affects recording. No-op for STANDARD.
      */
+    /**
+     * GL thread, once per take: the sensor timestamp the video PTS is rebased from. One atomic
+     * store; never blocks the encoder draw.
+     */
+    fun onFirstVideoFrame(timestampNs: Long) {
+        if (timestampNs > 0L) firstVideoFrameNs.compareAndSet(0L, timestampNs)
+    }
+
     private fun applyAudioScene(record: AudioRecord) {
         if (audioScene == AudioScene.STANDARD) return
         val am = context.getSystemService(AudioManager::class.java) ?: return
@@ -889,6 +913,9 @@ class VideoRecorder(private val context: Context) {
         val heldAudioPeaks = FloatArray(audioChannelCount)
         // Bulk scratch for [processRecordingPcm]; sized once by the codec's fixed input capacity.
         var pcmScratch = ByteArray(0)
+        // Sample-0 capture anchor, polled after reads until the HAL publishes a timestamp.
+        val captureTimestamp = AudioTimestamp()
+        var anchorAttempts = 0
 
         while (true) {
             when (audioWorkerLoopDisposition(terminallyQuarantined.get(), audioDegradedMidRec)) {
@@ -930,6 +957,16 @@ class VideoRecorder(private val context: Context) {
                                 codec.queueInputBuffer(inIdx, 0, readOutcome.byteCount, ptsUs, 0)
                             }
                             totalSamples += readOutcome.byteCount / bytesPerFrame
+                            if (cameraClockRealtime && audioSample0CaptureNs == 0L &&
+                                anchorAttempts++ < MAX_AUDIO_ANCHOR_ATTEMPTS &&
+                                record.getTimestamp(captureTimestamp, AudioTimestamp.TIMEBASE_BOOTTIME) ==
+                                AudioRecord.SUCCESS
+                            ) {
+                                audioSample0CaptureNs = audioSampleCaptureNs(
+                                    captureTimestamp.framePosition, captureTimestamp.nanoTime,
+                                    0L, ColorProfiles.AUDIO_SAMPLE_RATE,
+                                )
+                            }
                         }
                         AudioReadOutcome.Retry -> onCodec(teardown.audioFault) {
                             codec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
@@ -980,7 +1017,7 @@ class VideoRecorder(private val context: Context) {
                 } else if (outIdx >= 0) {
                     val buf = onCodec(teardown.audioFault) { codec.getOutputBuffer(outIdx) }
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
-                    if (info.size > 0 && buf != null && awaitMuxerStart()) {
+                    if (info.size > 0 && buf != null && awaitMuxerStart() && alignAudioPts(info)) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
                         muxerLock.withLock {
@@ -1006,6 +1043,31 @@ class VideoRecorder(private val context: Context) {
                 // keep draining until EOS output seen (handled by return above)
             }
         }
+    }
+
+    /**
+     * Audio thread, at the muxer: shifts [info] onto the video timeline by this take's capture
+     * offset (resolved at the first write — the muxer only starts once the video track exists, so
+     * the first frame is known by then — and frozen for the take). False drops an AAC frame captured
+     * before the first video frame.
+     */
+    private fun alignAudioPts(info: MediaCodec.BufferInfo): Boolean {
+        val offsetUs = audioPtsOffsetUs ?: audioCaptureOffsetUs(
+            audioSample0CaptureNs, firstVideoFrameNs.get(), cameraClockRealtime,
+        ).also { offset ->
+            audioPtsOffsetUs = offset
+            if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+                val raw = if (audioSample0CaptureNs > 0L && firstVideoFrameNs.get() > 0L) {
+                    "%.1f".format((audioSample0CaptureNs - firstVideoFrameNs.get()) / 1e6)
+                } else {
+                    "n/a"
+                }
+                android.util.Log.i(TAG, "A/V align: audio0-video0=${raw}ms applied=${offset / 1000.0}ms realtime=$cameraClockRealtime")
+            }
+        }
+        val aligned = alignedAudioPtsUs(info.presentationTimeUs, offsetUs) ?: return false
+        info.presentationTimeUs = aligned
+        return true
     }
 
     /** True when enough time has passed since the last [onLevel] emit for a new one to go out. */
@@ -1191,6 +1253,8 @@ class VideoRecorder(private val context: Context) {
     private companion object {
         const val TAG = "VideoRecorder"
         const val TIMEOUT_US = 10_000L
+        /** Reads to poll AudioRecord.getTimestamp for the sample-0 anchor (~4 s of 21 ms buffers). */
+        const val MAX_AUDIO_ANCHOR_ATTEMPTS = 200
         const val TRACK_RENDEZVOUS_TIMEOUT_MS = 1_000L
         const val VIDEO_STARTUP_PROOF_TIMEOUT_MS = 4_000L
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
@@ -2701,6 +2765,32 @@ internal fun muxerStopFailureIsTerminal(
  */
 internal fun audioPtsUs(totalSamples: Long, sampleRate: Int): Long =
     1_000_000L * totalSamples / sampleRate
+
+/**
+ * Capture time of PCM frame [frame] from one AudioRecord timestamp pair: [anchorFrame] was captured
+ * at [anchorNs] (AudioTimestamp framePosition / nanoTime), frames are 1/[sampleRate] apart.
+ */
+internal fun audioSampleCaptureNs(anchorFrame: Long, anchorNs: Long, frame: Long, sampleRate: Int): Long =
+    anchorNs + (frame - anchorFrame) * 1_000_000_000L / sampleRate
+
+/**
+ * The shift that puts audio PTS on the video timeline (whose 0 is the first encoded frame's sensor
+ * timestamp): audio sample 0's capture time minus that frame's, in µs. Zero — the unanchored
+ * behaviour — unless the camera clock is REALTIME (the TIMEBASE_BOOTTIME base), both instants are
+ * known, and the gap is plausible (≤ [MAX_AUDIO_CAPTURE_OFFSET_NS]; anything larger is a clock
+ * mismatch, not a pipeline latency, and must not move the soundtrack).
+ */
+internal fun audioCaptureOffsetUs(audioSample0Ns: Long, firstVideoFrameNs: Long, cameraClockRealtime: Boolean): Long {
+    if (!cameraClockRealtime || audioSample0Ns <= 0L || firstVideoFrameNs <= 0L) return 0L
+    val offsetNs = audioSample0Ns - firstVideoFrameNs
+    if (kotlin.math.abs(offsetNs) > MAX_AUDIO_CAPTURE_OFFSET_NS) return 0L
+    return offsetNs / 1_000L
+}
+
+/** [ptsUs] on the video timeline, or null for a frame that predates the first video frame. */
+internal fun alignedAudioPtsUs(ptsUs: Long, offsetUs: Long): Long? = (ptsUs + offsetUs).takeIf { it >= 0L }
+
+internal const val MAX_AUDIO_CAPTURE_OFFSET_NS = 1_000_000_000L
 
 /**
  * Resolves the AAC channel count for a capture device: stereo when the device advertises >=2

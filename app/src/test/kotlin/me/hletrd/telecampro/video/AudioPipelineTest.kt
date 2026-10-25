@@ -100,4 +100,37 @@ class AudioPipelineTest {
     fun audioRead_negativeAfterStopRequested_isNormalEos() {
         assertSame(AudioReadOutcome.Stopped, classifyAudioRead(-6, running = false))
     }
+
+    @Test
+    fun audioSampleCapture_walksFromTheTimestampAnchor() {
+        // Frame 4 800 was captured at t = 10 s: frame 0 lies 100 ms earlier at 48 kHz.
+        assertEquals(9_900_000_000L, audioSampleCaptureNs(4_800, 10_000_000_000L, 0, 48_000))
+        assertEquals(10_000_000_000L, audioSampleCaptureNs(4_800, 10_000_000_000L, 4_800, 48_000))
+        assertEquals(10_001_000_000L, audioSampleCaptureNs(4_800, 10_000_000_000L, 4_848, 48_000))
+    }
+
+    @Test
+    fun audioCaptureOffset_movesAudioOntoTheVideoTimeline() {
+        // Sample 0 captured 56 ms after the first frame's exposure began: audio starts at +56 ms.
+        assertEquals(56_000L, audioCaptureOffsetUs(1_000_056_000_000L, 1_000_000_000_000L, true))
+        // Captured before it: frames earlier than the first video frame fall below zero.
+        assertEquals(-30_000L, audioCaptureOffsetUs(1_000_000_000_000L, 1_000_030_000_000L, true))
+    }
+
+    @Test
+    fun audioCaptureOffset_staysUnanchoredWithoutAComparableClock() {
+        assertEquals(0L, audioCaptureOffsetUs(1_000_056_000_000L, 1_000_000_000_000L, false))
+        assertEquals(0L, audioCaptureOffsetUs(0L, 1_000_000_000_000L, true))
+        assertEquals(0L, audioCaptureOffsetUs(1_000_056_000_000L, 0L, true))
+        // A gap past the plausibility bound is a clock mismatch, never a latency.
+        assertEquals(0L, audioCaptureOffsetUs(1_001_000_000_001L, 1_000_000_000_000L, true))
+        assertEquals(1_000_000L, audioCaptureOffsetUs(1_001_000_000_000L, 1_000_000_000_000L, true))
+    }
+
+    @Test
+    fun alignedAudioPts_dropsOnlyFramesBeforeTheFirstVideoFrame() {
+        assertEquals(56_000L, alignedAudioPtsUs(0L, 56_000L))
+        assertEquals(0L, alignedAudioPtsUs(30_000L, -30_000L))
+        assertEquals(null, alignedAudioPtsUs(21_333L, -30_000L))
+    }
 }

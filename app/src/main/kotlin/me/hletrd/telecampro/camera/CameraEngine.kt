@@ -7083,6 +7083,10 @@ class CameraEngine internal constructor(
                 onRoute = { route -> onAudioRoute?.invoke(route) },
                 onLevel = { lvl -> onAudioLevel?.invoke(lvl) },
                 onFailure = reportRecorderFailure,
+                // Audio PTS anchors to the video timeline only where sensor timestamps share the
+                // AudioTimestamp BOOTTIME base (VideoRecorder.audioCaptureOffsetUs).
+                cameraClockRealtime = caps?.timestampSource ==
+                    android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
             )
         }
         if (!nativeSetupAdmitted) {
@@ -7221,7 +7225,12 @@ class CameraEngine internal constructor(
             acceptedEncoderSize.height,
             admission = encoderAdmission,
             onRuntimeFailure = reportRecorderFailure,
-            firstFrameSink = gyroFirstFrameSink,
+            // The recorder's A/V anchor and the optional gyro sidecar share the one first-frame
+            // timestamp the encoder PTS is rebased from; both are single atomic stores.
+            firstFrameSink = { ts ->
+                rec.onFirstVideoFrame(ts)
+                gyroFirstFrameSink?.onFirstEncodedFrame(ts)
+            },
         ) { result ->
             // GlPipeline guarantees exactly-once result delivery, so a plain atomic publication is
             // sufficient and avoids identity-CAS semantics on Kotlin's boxed Result value class.
