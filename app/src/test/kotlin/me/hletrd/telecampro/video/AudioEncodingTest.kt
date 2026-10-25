@@ -120,4 +120,16 @@ class AudioEncodingTest {
         assertEquals(RecordingAudioEncoding(), RecordingAudioEncoding.resolve(AudioCodec.XHE_AAC, 96, emptyMap()))
         assertEquals(256_000, RecordingAudioEncoding().bitrate)
     }
+
+    @Test
+    fun `the channel setting caps the device count and never promises channels the input lacks`() {
+        assertEquals(2, cappedAudioChannelCount(2, AudioChannelMode.STEREO))
+        assertEquals(1, cappedAudioChannelCount(2, AudioChannelMode.MONO))
+        // A mono route (e.g. a Bluetooth headset) stays mono under STEREO.
+        assertEquals(1, cappedAudioChannelCount(1, AudioChannelMode.STEREO))
+        // A four-capsule input is still capped at the setting.
+        assertEquals(2, cappedAudioChannelCount(4, AudioChannelMode.STEREO))
+        // A route that reports no count opens one channel rather than none.
+        assertEquals(1, cappedAudioChannelCount(0, AudioChannelMode.STEREO))
+    }
 }
