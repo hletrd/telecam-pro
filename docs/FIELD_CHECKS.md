@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -20,6 +20,7 @@ few FRONT presses with DNG on, **A13** needs the status plate watched through re
 REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log REC take with a still
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
+**A18** needs native-log REC takes on the main and TELE routes plus one SDR and one HLG take,
 **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -538,6 +539,49 @@ at the 1/6 step; P exposure 8.30 → 2.08 ms; M at ISO 100 8.30 → 2.07 ms) and
 excluded) in M: preview p98 decoded to 0.206 / 0.057 / 0.023 / 0.011 for EI 0 / +1 / +2 / +3 —
 the ISP output is not exposure-linear under the programmed curve (an adaptive pre-curve gain). +2
 also showed banding and desaturation. A GENERIC device would need its own run of this check.
+
+### A18. Ten-bit native log through the P010 bridge, stills and SDR unchanged — ◐ HALF DONE 2026-10-25 (developer build; evidence rerun owed)
+
+Native-log VIDEO sessions on a measured route carry the GL stream as YCBCR_P010 (STANDARD profile)
+through `P010InputBridge` (ImageReader → ImageWriter → the GL input SurfaceTexture), and every GL
+generation on a `tenBitNativeLogBridge` profile runs an RGBA1010102 EGL config so the encoder target
+keeps the ten bits. Every stage was measured in a standalone probe on 2026-10-25 (BACKLOG); this
+check proves the app wiring.
+
+- PMA110, **VIDEO**, transfer **S-Log3**, main 1× route. Logcat must show `EGL config requested
+  tenBit=true, RGBA1010102=true` and `Session configured (... nativeLog=true, p010=true, jpeg=true,
+  raw=true ...)`; `dumpsys media.camera` must list the GL stream as `format 0x36, dataspace 0x8c60000`.
+  The Video tab caption reads "· 10-bit, clips at sensor white".
+- Record 5 s with one **in-REC still** (DNG on). Repeat on **TELE** (TC on, `0x80b4`).
+- Switch to **SDR** (AVC, then HEVC) and record 5 s each; switch to **HLG** and record 5 s; take a
+  Photo-mode still. Flip Photo ↔ Video and S-Log3 ↔ SDR a few times (bridge ↔ direct producer
+  hand-off on the GL input Surface).
+
+**Pass:** the S-Log3 clips are HEVC Main 10, `bt2020` full range, black ≈ Y10 95, with a smooth-patch
+distinct-level count well above the same scene recorded with the bridge off; the in-REC stills (JPEG
+and DNG) save normally; the SDR and HLG clips decode and look like before (no colour shift, no
+corruption) — they now pass through a ten-bit EGL target; the Photo still is normal; no
+`CAMERA_ERROR`, no `P010 bridge refused` line on the measured routes, and no black or frozen preview
+across the hand-offs. A refused bridge must fall back to the same rung at 8 bits (caption "8-bit").
+
+**Result 2026-10-25 — every item passed on a DEVELOPER build; the evidence-grade rerun is still
+owed.** PMA110, an uncommitted `feat/native-log-p010` worktree built with `assembleDebug` and installed
+as `me.hletrd.telecampro.p010` (a separate package, so a concurrent session's `.debug` app was not
+overwritten) — not the immutable wrapper APK CLAUDE.md requires for evidence, hence ◐. Logcat:
+`EGL config requested tenBit=true, RGBA1010102=true`; S-Log3 main route `Session configured
+(fallback=0, hlg=false, nativeLog=true, p010=true, jpeg=true, raw=true)` with dumpsys `3840 x 2160,
+format 0x36, dataspace 0x8c60000` beside JPEG 4080×3064 and RAW; TELE `operation_mode 0x80b4`, same
+P010 stream beside JPEG and RAW 4096×3072. Caption "· 10-bit, clips at sensor white". Clips: main
+S-Log3 HEVC Main 10 `yuv420p10le` bt2020 full, 558 frames, Y10 min 103, a 128×128 centre patch used
+all 37 codes of its 162–198 range; TELE S-Log3 Main 10, 153 frames, black 98, all 21 codes of 211–231;
+the in-REC HEIF saved with the stock tone map. SDR HEVC Main and AVC High: 8-bit bt709 limited, 152
+frames each, clean decode, floor G/R 0.80 and B/R 0.885 against the HAL still's 0.78 / 0.89 (no
+colour shift through the ten-bit EGL). HLG: Main 10 arib-std-b67 bt2020, 154 frames, clean decode.
+Photo HEIF normal. Four Photo ↔ Video flips with S-Log3: no crash, live preview, zero
+`P010InputBridge` threads afterwards; the `ImageReader$ListenerHandler … dead thread` warnings also
+appear with SDR (no bridge), so they are pre-existing. The same-scene bridge-off A/B was measured in
+the standalone probe (raw Y 94 vs 27 levels), not in the app. Rerun the main S-Log3 take and one SDR
+take from the immutable debug APK to close this.
 
 ## B. Held in hand — 3 min
 

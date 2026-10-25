@@ -151,7 +151,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   is REALLY 10-bit, and it buys that by dropping the stills (corrected 2026-08-05 — this bullet said
   "SDR/8-bit shipping session … `tenBit = false`" flatly, which stopped being true when video gained
   its own session and was still being quoted as a hard constraint months later; narrowed again
-  2026-10-14 — native ISP log is the 8-bit session WITH stills, see the log bullet).** The HAL fact
+  2026-10-14 — native ISP log is the 8-bit session WITH stills, see the log bullet; and again
+  2026-10-25 — on a `tenBitNativeLogBridge` profile native log is TEN-bit WITH stills, through the
+  P010 bridge, see that bullet: the stills⇔10-bit trade belongs to HLG10, not to ten bits).** The HAL fact
   is unchanged and is the whole reason for the split: HLG10 preview + full-res JPEG + RAW together
   crash it. So the trade is structural, not a limitation — `tenBitSessionWanted(videoMode, transfer,
   nativeLogCurveSupported) = videoMode && transfer != SDR && !nativeLogSessionWanted(...)`
@@ -169,17 +171,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   **What is still NOT claimable, and this is the part that must survive any rewrite of this bullet:**
   the SOURCE is the ISP's display-referred, already tone-mapped stream. Ten-bit video is a real
   10-bit *encode* of that stream, NOT recovered HDR and NOT scene-referred capture — see the next
-  two bullets, which remain correct as written. Photo, any video left on SDR, and native-log video
-  stay 8-bit (native log is un-S-curved, not un-clipped — see the log bullet).
+  two bullets, which remain correct as written. Photo and any video left on SDR stay 8-bit; native-log
+  video is 8-bit except through the P010 bridge, where it is ten bits of the SAME un-S-curved,
+  clip-bounded signal (native log is un-S-curved, not un-clipped — see the log bullet).
 - **HLG is a display-referred mapping, not recovered HDR.** The input stage follows accepted session
   truth: standard photo/SDR-video input takes the BT.1886 2.4 decode, while non-SDR video first takes
   the inverse HLG decode/reference-white normalization from its HLG10 Camera2 stream. The common
   display-light signal then maps through linear BT.709→BT.2020, the explicit reference-white/OOTF
   scale, and the BT.2100 HLG OETF (`Shaders.kt`; CPU anchors host-tested). In both cases the ISP has
-  already tone-mapped the scene, so clipped/rolled-off highlights cannot be recovered. The release
-  EGL target remains 8-bit even though the non-SDR source and HEVC Main10 output are 10-bit-class
-  stages; playback appearance still needs a real HDR display and none of this is an end-to-end
-  10-bit or scene-referred claim.
+  already tone-mapped the scene, so clipped/rolled-off highlights cannot be recovered. The EGL target
+  is 8-bit except on a `tenBitNativeLogBridge` profile, whose every GL generation runs RGBA1010102
+  (2026-10-25, P010 bridge bullet) — so on PMA110 the HLG10 source now reaches the Main10 encoder at
+  ten bits too; playback appearance still needs a real HDR display and none of this is a
+  scene-referred claim.
 - **RAW only on the standalone camera — in BOTH failure modes (extended 2026-07-14).** RAW routed
   through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
   0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
@@ -889,8 +893,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   code ≈ 0.596 at the default Log EI offset 0 (headroom above it only through the offset — next
   bullet); whether QTI local tone mapping (ADRC/LTM — tags
   QTI-internal, absent from `availableRequestKeys`, so no public key controls them) still runs
-  under a programmed curve is UNMEASURED; and the 8-bit stream plus the 8-bit EGL target limit
-  precision (S-Log3 spends ~130 of 256 codes). The recorded-file and in-REC-still behaviour of
+  under a programmed curve is UNMEASURED; and an 8-bit stream or EGL target limits precision
+  (S-Log3 spends ~130 of 256 codes) — lifted on a `tenBitNativeLogBridge` profile, where the P010
+  bridge and the RGBA1010102 EGL target carry ten bits end to end (next-but-one bullet). The recorded-file and in-REC-still behaviour of
   this product path remains a field check (`docs/FIELD_CHECKS.md` A15). The owner's "file doesn't look like log" on the GL
   path was the ISP's S-curve UNDER a correctly applied GL log (S-Log3 clip of the wall: file centre
   Y10 p50 = 0.318 vs preview 0.31), not a missing curve. The debug `tonecurve` experiment hook that
@@ -995,6 +1000,39 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO / Xiaomi native-log
   attribution (EN+KO) sit in the Setup tab.
 
+- **Ten-bit native log = a P010 stream bridged into GL; the stock O-Log2 pipeline stays out of reach
+  (device-measured PMA110 2026-10-25).** Three things the 07-28 investigation recorded as walls are
+  FALSE: every rear camera (0–5) and the front list YCBCR_P010 (format `54` = `0x36`, 48–49 sizes
+  incl. 3840×2160) and advertise `(SRGB, P010, STANDARD)` in the colour-space profiles (the old read
+  grepped a decimal dump for a hex literal); `ImageReader.Builder.setDefaultHardwareBufferFormat
+  (YCBCR_P010)` + `setDefaultDataSpace` set any dataspace from public API; and P010 + STANDARD keeps
+  JPEG + RAW in the same session (configured on cam 2, and on cam 4 under `0x80b4`). GL still cannot
+  be a camera's P010 consumer (a PRIVATE SurfaceTexture stream stays 8-bit NV12 UBWC under
+  STANDARD), so `P010InputBridge` takes the camera stream in a P010 reader and an `ImageWriter`
+  attaches each buffer, zero-copy, to the EXISTING GL input SurfaceTexture: raw Y sampled in GL showed
+  94 distinct levels vs 27 for the same scene through an 8-bit stream, `SurfaceTexture.timestamp`
+  equals `Image.timestamp`, 30 fps. The ENCODER target must be ten-bit too — a 0.40–0.45 grey ramp
+  reached the file as clean 10-bit steps through RGBA1010102 and as dithered 8-bit through RGBA8888 —
+  and Java EGL cannot create the `EGL_KHR_no_config_context` context a per-surface config needs (EGL14
+  rejects a null config), so a `tenBitNativeLogBridge` profile starts EVERY GL generation on
+  RGBA1010102; SDR AVC/HEVC, HLG, preview and Photo were device-checked unchanged through it (no
+  colour shift; FIELD_CHECKS A18). Gating: `tenBitNativeLogBridgeSupported` = profile flag (PMA110
+  family only — GENERIC unmeasured) + curve capability + `(P010, STANDARD)` advertised + the GL input
+  size among the P010 sizes + not FRONT, resolved by `CameraEngine.tenBitNativeLogStreamFor` into
+  `CameraController.open(tenBitNativeLogStream)`. The controller tries the bridge first on each rung
+  and a refusal retries the SAME rung on the 8-bit SurfaceTexture; `tenBitNativeLogConfigured` /
+  `PhotoSessionOutputs.tenBitNativeLog` are accepted truth (the Video-tab caption says "10-bit" only
+  then). The writer is a PRODUCER on the GL input Surface — one producer at a time — so the bridge
+  closes after the device in teardown, before any next session connects there. The repeated
+  `ImageReader$ListenerHandler … dead thread` warning on Photo↔Video flips is PRE-EXISTING (six per
+  eight flips with SDR and no bridge); do not chase it as a bridge leak (bridge threads were 0 after
+  the flips). **What it is NOT:** the stock PRO VIDEO O-Log2. Both stock PRO VIDEO sessions (SDR and
+  O-Log2) run a 2-exposure DOL usecase (`HDRFeatureMode 1`, sensor mode 21, DRC gain, a
+  `com.oplus.gamma.info` LUT); a third-party session with the stock op mode `0x830b`, the String key
+  `com.oplus.camera.mode = "pro_video_log_mode"`, `log.video.mode = 0`, `is.from.main.menu = 1`, the
+  stock P010 stream shape and even `com.oplus.packageName = com.oplus.camera` (echoed, so package
+  identity is ruled out) never left `HDRFeatureMode 0`. Ten-bit native log is ten bits of the SAME
+  un-S-curved, clip-bounded ISP signal, not the stock pipeline's latitude.
 - **Log EI offset — HIDDEN on the PMA110 profile (device-measured 2026-10-15, owner decision).**
   On PMA110 the ISP's output under the programmed S-Log3 curve is NOT exposure-linear: M mode, AE
   off, fixed ISO 100, a lit wall, exposure ×1 / ×½ / ×¼ / ×⅛ decoded to 1 / 0.28 / 0.11 / 0.052 of
@@ -1527,6 +1565,7 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ ZslAdmission     pure pseudo-ZSL serve/refuse predicate (logical/front photo routes)
+             ├─ P010InputBridge  ten-bit native log: P010 reader → ImageWriter → GL input SurfaceTexture
              ├─ FacePriority     Face Priority AF gate/request keys/readout gate/sensor→view map (pure)
              ├─ StartupTrace     buffered debug cold-start stopwatch (one line; quota-safe)
              ├─ focus/MacroProximity focus-confidence proofs + hold + OSD wording (pure+tested)
