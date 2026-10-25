@@ -664,8 +664,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   pages): OPPO Hasselblad 300 mm = 300/70 ≈ 4.286× on the X9 Ultra; the 3.28× kit (230/70) on the
   X9 Pro and X10 Pro Max, and on the 65 mm X9s Pro / X10, where OPPO's printed "253 mm" is a
   footnoted software crop and the app reports the optical ≈ 214 mm; vivo ZEISS 2.35× (200/85, Gen 1
-  and Gen 2) on the X200 Ultra, X300 / Pro / s / Ultra and X500 / Pro / Pro Max (≈ 169 mm on the
-  72 mm X500), and the 4.7× Gen 2 Ultra (400/85) on the X300 Ultra and X500 Pro Max; HONOR's 2.35×
+  and Gen 2) on the X200 Ultra, X300 / Pro / s / Ultra and X500 / Pro / Pro Max (≈ 165 mm on the
+  70 mm X300 / X300s, whose printed 200 mm is a vivo crop; ≈ 169 mm on the 72 mm X500), and the
+  4.7× Gen 2 Ultra (400/85) on the X300 Ultra and X500 Pro Max; HONOR's 2.35×
   on the Magic8 Pro / RSR and G200 / G500 (200/85, 500/85) on the Magic9 Pro Max (G200 ≈ 188 mm on
   the 80 mm Magic9). Plus the generic 1.5/2/3× clip-ons, CUSTOM, and the
   pure helpers (`effectiveMagnification`, `normalizeMagnification`, `detectPhone`,

@@ -23,6 +23,8 @@ class TeleconverterTest {
     private val designHostKits = mapOf(
         TeleconverterProfile.HASSELBLAD_X10 to 70f,
         TeleconverterProfile.HASSELBLAD_X9S_PRO to 70f,
+        TeleconverterProfile.ZEISS_200_X300_BASE to 85f,
+        TeleconverterProfile.ZEISS_200_X300S to 85f,
         TeleconverterProfile.ZEISS_200_X500 to 85f,
         TeleconverterProfile.HONOR_G200_MAGIC9 to 85f,
     )
@@ -121,6 +123,10 @@ class TeleconverterTest {
         assertEquals(230f / 70f * 65f, focalOn(TeleconverterProfile.HASSELBLAD_X10), 1e-3f) // ~214 mm
         assertEquals(230f / 70f * 65f, focalOn(TeleconverterProfile.HASSELBLAD_X9S_PRO), 1e-3f)
         assertEquals(200f / 85f * 72f, focalOn(TeleconverterProfile.ZEISS_200_X500), 1e-3f) // ~169 mm
+        // The X300 and X300s telephoto is 70 mm (vivo: "3x光学变焦"), so their 2.35x kit is ~165 mm.
+        assertEquals(200f / 85f * 70f, focalOn(TeleconverterProfile.ZEISS_200_X300_BASE), 1e-3f)
+        assertEquals(200f / 85f * 70f, focalOn(TeleconverterProfile.ZEISS_200_X300S), 1e-3f)
+        assertEquals(165f, focalOn(TeleconverterProfile.ZEISS_200_X300_BASE), 0.5f) // 164.7 mm, not 200
         assertEquals(200f / 85f * 80f, focalOn(TeleconverterProfile.HONOR_G200_MAGIC9), 1e-3f) // ~188 mm
         // On the body each kit was computed on, the sold figure comes back exactly.
         assertEquals(230f, focalOn(TeleconverterProfile.HASSELBLAD_230_X10_PRO_MAX), 1e-3f)

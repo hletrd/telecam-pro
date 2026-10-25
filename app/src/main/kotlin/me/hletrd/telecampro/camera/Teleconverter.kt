@@ -53,10 +53,12 @@ enum class PhoneModel(
     // vivo: the ZEISS extenders are built for an 85 mm telephoto (vivo FAQ 1925 / 2137); the X300
     // Ultra's 14/35/85 mm and the X500's 72 mm are from vivo.com / vivo.com.cn spec pages.
     // V2547DA is also the X300 Ultra satellite edition; V2602DA the X500 Pro Max satellite edition.
+    // The X300 and X300s carry a 70 mm telephoto, not 85 (vivo.com.cn: "3x光学变焦"; the X300s page
+    // adds "200mm 需要进行数码裁切后实现" — their ZEISS 200 mm needs an in-camera crop).
     VIVO_X200_ULTRA(85f, listOf("V2454A", "V2454DA")),
-    VIVO_X300(85f, listOf("V2509A", "V2515")),
+    VIVO_X300(70f, listOf("V2509A", "V2515")),
     VIVO_X300_PRO(85f, listOf("V2502A", "V2502DA", "V2514")),
-    VIVO_X300S(85f, listOf("V2548A")),
+    VIVO_X300S(70f, listOf("V2548A")),
     VIVO_X300_ULTRA(85f, listOf("V2547A", "V2547DA", "V2562")),
     VIVO_X500(72f, listOf("V2609A")),
     VIVO_X500_PRO(85f, listOf("V2608A", "V2608DA", "V2621", "V2622")),
@@ -141,10 +143,15 @@ enum class TeleconverterProfile(
      */
     ZEISS_400(400f, 0f, PhoneModel.VIVO_X300_ULTRA),
 
-    /** The same 2.35× glass on the rest of the X300 line (vivo FAQ 2137: 85 → 200 mm on each). */
-    ZEISS_200_X300_BASE(200f, 0f, PhoneModel.VIVO_X300),
+    /**
+     * The same 2.35× glass on the rest of the X300 line (vivo FAQ 2137). The X300 Pro has the 85 mm
+     * telephoto it was computed on; the X300 and X300s have a 70 mm one, where vivo's "200 mm" is
+     * "需要进行数码裁切后实现" (reached with an in-camera crop). The glass stays 2.35×, so on those two
+     * the app reports the OPTICAL 2.353 × 70 ≈ 165 mm.
+     */
+    ZEISS_200_X300_BASE(200f, 0f, PhoneModel.VIVO_X300, designHostMm = 85f),
     ZEISS_200_X300_PRO(200f, 0f, PhoneModel.VIVO_X300_PRO),
-    ZEISS_200_X300S(200f, 0f, PhoneModel.VIVO_X300S),
+    ZEISS_200_X300S(200f, 0f, PhoneModel.VIVO_X300S, designHostMm = 85f),
 
     /**
      * Gen 2 on the X500, whose telephoto is 72 mm. vivo.com.cn prints "等效 200mm vivo 蔡司增距镜 G2*"
