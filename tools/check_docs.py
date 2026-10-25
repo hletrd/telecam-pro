@@ -51,6 +51,8 @@ PRIVATE_DOCS = {
     "docs/TESTING.md",
     "docs/UX_POLICY.md",
     "docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md",
+    # Gitignored investigation notes CLAUDE.md cites as "Optional private detail" (2026-10-25).
+    "docs/reviews/2026-10-25-stock-log-routing.md",
 }
 COMMITTED_AUTHORITY_DOCS = (
     "README.md",
