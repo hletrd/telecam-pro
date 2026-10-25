@@ -41,7 +41,10 @@ internal fun dngSkipsDigitalZoom(
 
 /** One observation of the DNG-versus-processed framing, as the notice latch consumes it. */
 internal enum class DngZoomFraming {
-    /** Not announced now: not Ready (a reopen, pause, cold start), or VIDEO (see [dngZoomFraming]). */
+    /**
+     * Not announced now: not Ready (a reopen, pause, cold start), VIDEO, or a full-screen modal over
+     * the viewfinder (see [dngZoomFraming]).
+     */
     NO_STILL,
 
     /** The next DNG matches the processed framing: no DNG, a logical route, or native lens zoom. */
@@ -74,6 +77,12 @@ internal fun dngZoomFraming(
  *   (owner review 2026-10-25): the plate would speak at REC start, about a still the operator is
  *   not taking, in the one moment the viewfinder must stay clean. VIDEO HOLDS the latch like
  *   Not-Ready, so a Photo→Video→Photo trip does not repeat it.
+ * - Not while a full-screen modal covers the viewfinder ([CameraUiState.cameraInputBlocked]: the
+ *   settings sheet, Fn, review). The Output → DNG chip lives IN the settings sheet, so turning DNG on
+ *   at 30× published the notice behind the sheet and it expired unseen (device-found on PMA110,
+ *   2026-10-25). The modal HOLDS the latch, so the decision is taken when the viewfinder is back:
+ *   DNG turned on inside the sheet announces as the sheet closes; off-then-on inside one sheet visit
+ *   is no net change and stays silent.
  * - The DNG truth is `CameraEngine.capturePhoto`'s own normalization of the REQUEST against the
  *   accepted session's readers ([normalizedFor]) — so hi-res, FRONT, a drop-RAW rung and a
  *   still-less session all answer "no DNG" exactly as the shot will.
@@ -84,7 +93,7 @@ internal fun dngZoomFraming(
  *   state copy that defaults to the PMA110 answer until the first route inventory.
  */
 internal fun CameraUiState.dngZoomFraming(rawForcesStandalone: Boolean): DngZoomFraming = dngZoomFraming(
-    stillPossible = cameraReady && mode == CaptureMode.PHOTO,
+    stillPossible = cameraReady && mode == CaptureMode.PHOTO && !cameraInputBlocked,
     stillWritesDng = photoFormats.normalizedFor(photoSessionOutputs, heifStandInAvailable).dngRaw,
     wireZoomLensLocal = activeCameraRoute.lensLocalZoom || teleconverterMode ||
         standaloneRouteWanted(

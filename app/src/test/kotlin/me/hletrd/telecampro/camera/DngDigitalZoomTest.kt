@@ -99,6 +99,22 @@ class DngDigitalZoomTest {
     }
 
     @Test
+    fun `a full-screen modal holds the decision until the viewfinder is back`() {
+        // The DNG chip lives in the settings sheet: turning it on at 30x must announce when the sheet
+        // closes, not behind it.
+        val notice = DngDigitalZoomNotice()
+        val dngOff = teleDng.copy(photoFormats = teleDng.photoFormats.copy(dngRaw = false))
+        assertFalse(notice.observe(dngOff.framing()))                                  // baseline
+        assertEquals(DngZoomFraming.NO_STILL, teleDng.copy(cameraInputBlocked = true).framing())
+        assertFalse(notice.observe(teleDng.copy(cameraInputBlocked = true).framing())) // sheet open
+        assertTrue(notice.observe(teleDng.framing()))                                   // sheet closed
+        // Off then on inside ONE sheet visit is no net change: silent.
+        assertFalse(notice.observe(dngOff.copy(cameraInputBlocked = true).framing()))
+        assertFalse(notice.observe(teleDng.copy(cameraInputBlocked = true).framing()))
+        assertFalse(notice.observe(teleDng.framing()))
+    }
+
+    @Test
     fun `announced only in PHOTO on a Ready session`() {
         assertEquals(DngZoomFraming.NO_STILL, teleDng.copy(cameraReady = false).framing())
         val videoStandby = teleDng.copy(mode = CaptureMode.VIDEO, teleconverterMode = false)
