@@ -117,12 +117,13 @@ enum class TeleconverterProfile(
     HASSELBLAD_230_X10_PRO_MAX(230f, 0f, PhoneModel.FIND_X10_PRO_MAX),
 
     /**
-     * The kit OPPO sells for its 65 mm telephotos (Find X10; Find X9s Pro). OPPO prints "253 mm" and
-     * footnotes that its teleconverter focals are "based on … software cropping": 253 ÷ 65 = 3.89 is
-     * a crop, not glass. Modelled as the 3.28× optic OPPO prints as 230 mm on its 70 mm bodies (the
-     * same kit name on the X10 Pro Max; dpreview and kit reviews give 3.28× for the X9s Pro kit), so
-     * the app reports the OPTICAL 3.286 × 65 ≈ 214 mm. Labelled "253 mm" so the owner recognises it.
-     * Inferred, not printed by OPPO as a magnification — CUSTOM covers a different reading.
+     * The kit OPPO sells for its 65 mm telephotos (Find X10; Find X9s Pro). OPPO's Find X10 launch
+     * press release states "3.28x optical magnification" for the series' kits, and its product page
+     * prints "253mm" with footnote 5: equivalent focals are "based on OPPO laboratory testing and
+     * software cropping" (253 = 11 × 23 mm). So the glass is 3.28× and the app reports the OPTICAL
+     * 3.286 × 65 ≈ 214 mm; the label keeps OPPO's "253 mm" so the owner recognises the kit. The X9s
+     * Pro's own page prints no focal for its kit; 3.28× there is from secondary sources (163.com).
+     * OPPO warns the X10 and X10 Pro Max kits are NOT interchangeable, hence separate entries.
      */
     HASSELBLAD_X10(230f, 0f, PhoneModel.FIND_X10, designHostMm = 70f),
     HASSELBLAD_X9S_PRO(230f, 0f, PhoneModel.FIND_X9S_PRO, designHostMm = 70f),
@@ -146,9 +147,10 @@ enum class TeleconverterProfile(
     ZEISS_200_X300S(200f, 0f, PhoneModel.VIVO_X300S),
 
     /**
-     * Gen 2 on the X500, whose telephoto is 72 mm. vivo labels it "200 mm-equivalent" there but does
-     * not state a different magnification for the same G2 glass, so it stays the 2.35× optic designed
-     * for 85 mm: optically 2.353 × 72 ≈ 169 mm, the figure the app reports.
+     * Gen 2 on the X500, whose telephoto is 72 mm. vivo.com.cn prints "等效 200mm vivo 蔡司增距镜 G2*"
+     * with the footnote "等效焦段切换数据源自 vivo 实验室，结合机内拍照模式，数码裁切而得" — the 200 mm
+     * includes an in-camera digital crop. The glass is the 2.35× optic vivo states on its 85 mm
+     * bodies, so the app reports the OPTICAL 2.353 × 72 ≈ 169 mm.
      */
     ZEISS_200_X500(200f, 0f, PhoneModel.VIVO_X500, designHostMm = 85f),
     ZEISS_200_X500_PRO(200f, 0f, PhoneModel.VIVO_X500_PRO),
@@ -162,9 +164,11 @@ enum class TeleconverterProfile(
     HONOR_200_MAGIC8_RSR(200f, 0f, PhoneModel.HONOR_MAGIC8_RSR),
 
     /**
-     * HONOR G200 / G500. HONOR prints focals only (200 / 500 mm); the magnifications 2.35× / 5.88× are
-     * those focals ÷ the Magic9 Pro Max's 85 mm telephoto, the same derivation every kit here uses.
-     * The plain Magic9's telephoto is 80 mm, so the same G200 glass reads 2.353 × 80 ≈ 188 mm there.
+     * HONOR G200 / G500. honor.com/cn prints "叠加 85mm 镜头，等效 200mm" / "等效 500mm" for the Magic9
+     * Pro Max, so the magnifications are 200 / 85 = 2.35× and 500 / 85 = 5.88× — the same derivation
+     * every kit here uses. The Magic9's own G200 SKU prints "200mm ～ 5400mm … 基于荣耀Magic9 产品换算"
+     * with the footnote that equivalent zoom is "结合机内拍摄模式，数码裁切而得" (an in-camera crop), so
+     * on its 80 mm telephoto the 2.35× glass is OPTICALLY 2.353 × 80 ≈ 188 mm, the figure reported.
      * G500 after G200 for the same default-order reason as the ZEISS pair.
      */
     HONOR_G200_MAGIC9(200f, 0f, PhoneModel.HONOR_MAGIC9, designHostMm = 85f),
