@@ -2280,10 +2280,6 @@ data class CameraUiState(
         // Qualified: this property shadows the free function's simple name inside the class.
         get() = me.hletrd.telecampro.camera.oneXReferenceMm(phoneModel, lensInventory.presetEquivMm[LensChoice.MAIN])
 
-    /** The LOGICAL route's display multiplier for the live state ([logicalZoomDisplayFactor]). */
-    val logicalZoomDisplayFactor: Float
-        get() = me.hletrd.telecampro.camera.logicalZoomDisplayFactor(phoneModel, lensInventory.homeEquivMm)
-
     /**
      * The declared phone's lens chips for the live state ([zoomPresetsFor]) — the ONE scale every UI
      * conversion, band and chip label reads; the engine derives the same value from its own
