@@ -147,3 +147,18 @@ data class RecordingAudioEncoding(
 
 /** [samples] at the 48 kHz recording rate, in µs. */
 internal fun audioSamplesToUs(samples: Int): Long = samples.toLong() * 1_000_000L / ColorProfiles.AUDIO_SAMPLE_RATE
+
+/**
+ * How many channels the operator wants recorded (owner request 2026-10-25). A CAP, never a promise:
+ * the input device decides what it can deliver ([resolveAudioChannelCount] — a mono Bluetooth
+ * headset stays mono under STEREO), and the take records the smaller of the two. The armed level
+ * meter opens the same count, so the monitor shows exactly the channels the next take will carry.
+ */
+enum class AudioChannelMode(val maxChannels: Int) {
+    MONO(1),
+    STEREO(2),
+}
+
+/** The channel count a take (and the armed meter) opens: the device's own count under the cap. */
+internal fun cappedAudioChannelCount(deviceChannels: Int, mode: AudioChannelMode): Int =
+    deviceChannels.coerceIn(1, mode.maxChannels)

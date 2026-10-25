@@ -1883,6 +1883,7 @@ class CameraViewModel private constructor(
             e.audioCodec, e.audioBitrateKbps, encoderInventory.audioOptions,
         )
         engine.setAudioEncoding(restoredAudioCodec, restoredAudioKbps)
+        engine.setAudioChannelMode(e.audioChannelMode)
         engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(safeFrameRate)
         // Restore the user-selected recording resolution ("Remember Settings" previously dropped it
@@ -1948,6 +1949,7 @@ class CameraViewModel private constructor(
                 audioScene = e.audioScene,
                 audioCodec = restoredAudioCodec,
                 audioBitrateKbps = restoredAudioKbps,
+                audioChannelMode = e.audioChannelMode,
                 gammaAssist = e.gammaAssist,
                 gyroLog = e.gyroLog,
                 rawLog = e.rawLog,
@@ -2042,6 +2044,7 @@ class CameraViewModel private constructor(
             audioScene = s.audioScene,
             audioCodec = s.audioCodec,
             audioBitrateKbps = s.audioBitrateKbps,
+            audioChannelMode = s.audioChannelMode,
             audioInputPreference = s.audioInputPreference,
             photoFnSlots = s.photoFnSlots,
             videoFnSlots = s.videoFnSlots,
@@ -3132,6 +3135,13 @@ class CameraViewModel private constructor(
         if (rejectIfRecording()) return
         val state = _state.value
         applyAudioEncoding(me.hletrd.telecampro.video.normalizeAudioEncoding(state.audioCodec, kbps, state.audioEncoderOptions))
+    }
+
+    override fun onAudioChannelMode(mode: me.hletrd.telecampro.video.AudioChannelMode) {
+        if (rejectIfRecording()) return
+        engine.setAudioChannelMode(mode)
+        _state.update { it.copy(audioChannelMode = mode, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
 
     private fun applyAudioEncoding(encoding: Pair<me.hletrd.telecampro.video.AudioCodec, Int>) {

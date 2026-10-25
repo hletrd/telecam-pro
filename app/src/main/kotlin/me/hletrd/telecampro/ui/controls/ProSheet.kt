@@ -1679,9 +1679,20 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         // "Record Audio", not a verbatim restatement of the section header above it — and the bare
         // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).
         label = stringResource(R.string.label_record_audio),
+        hint = stringResource(R.string.hint_record_audio),
         checked = state.recordAudio,
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
+    )
+    // Channel cap (AudioEncoding.kt AudioChannelMode): the armed meter shows the same count.
+    SegmentedSelector(
+        label = stringResource(R.string.label_audio_channels),
+        hint = stringResource(R.string.hint_audio_channels),
+        options = me.hletrd.telecampro.video.AudioChannelMode.entries,
+        selected = state.audioChannelMode,
+        labelFor = { labelContext.audioChannelLabel(it) },
+        onSelect = actions::onAudioChannelMode,
+        enabled = state.recordAudio && recordingMutable,
     )
     // Soundtrack format (video/AudioEncoding.kt): only what this device's encoders can record, so a
     // board without an encoder (or its licence) lists fewer — or, with no AAC encoder, no rows.

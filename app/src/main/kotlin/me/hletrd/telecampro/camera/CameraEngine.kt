@@ -1912,6 +1912,7 @@ class CameraEngine internal constructor(
     // Requested soundtrack format; resolved against the encoder inventory at REC admission.
     @Volatile private var audioCodec = me.hletrd.telecampro.video.AudioCodec.AAC_LC
     @Volatile private var audioBitrateKbps = me.hletrd.telecampro.video.AudioCodec.AAC_LC.defaultKbps
+    @Volatile private var audioChannelMode = me.hletrd.telecampro.video.AudioChannelMode.STEREO
     @Volatile private var aspectRatio = AspectRatio.W4_3
     var onStatus: ((CameraStatus?) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.STATUS)
@@ -4138,6 +4139,19 @@ class CameraEngine internal constructor(
     fun setAudioInputPreference(p: AudioInputPreference) {
         if (audioInputPreference == p) return
         audioInputPreference = p
+        if (standbyAudioMonitorWanted) {
+            standbyAudioController.disable()
+            standbyAudioController.setEnabled(true)
+        }
+    }
+
+    /**
+     * Channel cap for the next take; the armed meter reopens at the new count so the monitor shows
+     * what will be recorded, exactly like an input change.
+     */
+    fun setAudioChannelMode(mode: me.hletrd.telecampro.video.AudioChannelMode) {
+        if (audioChannelMode == mode) return
+        audioChannelMode = mode
         if (standbyAudioMonitorWanted) {
             standbyAudioController.disable()
             standbyAudioController.setEnabled(true)
@@ -7100,6 +7114,7 @@ class CameraEngine internal constructor(
                 cameraClockRealtime = caps?.timestampSource ==
                     android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                 audioEncoding = takeAudioEncoding,
+                audioChannelMode = audioChannelMode,
             )
         }
         if (!nativeSetupAdmitted) {
@@ -8839,6 +8854,7 @@ class CameraEngine internal constructor(
         audioGain = { audioGain },
         onLevels = { levels -> onAudioLevel?.invoke(levels) },
         audioInputPreference = { audioInputPreference },
+        audioChannelMode = { audioChannelMode },
         canStart = {
             nativeAcquisitionMayProceed() && !paused && recorder == null && !recorderTeardownInFlight
         },

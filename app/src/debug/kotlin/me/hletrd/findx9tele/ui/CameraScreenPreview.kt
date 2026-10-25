@@ -87,6 +87,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onAudioScene(scene: me.hletrd.telecampro.camera.AudioScene) = Unit
     override fun onAudioCodec(codec: me.hletrd.telecampro.video.AudioCodec) = Unit
     override fun onAudioBitrate(kbps: Int) = Unit
+    override fun onAudioChannelMode(mode: me.hletrd.telecampro.video.AudioChannelMode) = Unit
     override fun onAudioInputPreference(preference: me.hletrd.telecampro.camera.AudioInputPreference) = Unit
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
     override fun onPhoneModel(model: me.hletrd.telecampro.camera.PhoneModel) = Unit

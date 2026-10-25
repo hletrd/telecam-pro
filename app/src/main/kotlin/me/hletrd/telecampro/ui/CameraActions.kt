@@ -124,6 +124,7 @@ interface CameraActions {
     /** Soundtrack format (video/AudioEncoding.kt); the bitrate snaps to one that format offers. */
     fun onAudioCodec(codec: me.hletrd.telecampro.video.AudioCodec)
     fun onAudioBitrate(kbps: Int)
+    fun onAudioChannelMode(mode: me.hletrd.telecampro.video.AudioChannelMode)
     fun onAudioInputPreference(preference: me.hletrd.telecampro.camera.AudioInputPreference)
     fun onToggleTeleconverter(enabled: Boolean)
     /**

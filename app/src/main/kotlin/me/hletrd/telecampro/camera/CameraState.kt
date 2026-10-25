@@ -1952,6 +1952,7 @@ data class CameraUiState(
     // once the encoder inventory loads; the rows list only what this device can record.
     val audioCodec: me.hletrd.telecampro.video.AudioCodec = me.hletrd.telecampro.video.AudioCodec.AAC_LC,
     val audioBitrateKbps: Int = me.hletrd.telecampro.video.AudioCodec.AAC_LC.defaultKbps,
+    val audioChannelMode: me.hletrd.telecampro.video.AudioChannelMode = me.hletrd.telecampro.video.AudioChannelMode.STEREO,
     val audioEncoderOptions: Map<me.hletrd.telecampro.video.AudioCodec, me.hletrd.telecampro.video.AudioEncoderOption> = emptyMap(),
     /**
      * Live input level per CHANNEL (0..1 RMS), in interleave order; empty while the meter is off.

@@ -423,6 +423,7 @@ private class AndroidStandbyAudioInput(
 private fun createAndroidStandbyAudioInput(
     context: Context,
     preference: AudioInputPreference,
+    channelMode: me.hletrd.telecampro.video.AudioChannelMode,
 ): StandbyAudioSetupResult {
     val sampleRate = 48_000
     // The meter must listen to the SAME microphone the next take will record from. Before this it
@@ -430,9 +431,14 @@ private fun createAndroidStandbyAudioInput(
     // but left the armed meter reading the phone's own capsule — the operator could not check the
     // external mic was live until after a take (2026-08-02).
     val device = runCatching { AudioInputInspector.preferredDevice(context, preference) }.getOrNull()
-    val channelCount = resolveAudioChannelCount(
-        device?.channelCounts,
-        device != null && AudioInputInspector.isBluetoothInput(device.type),
+    // Capped exactly as the next take will be (VideoRecorder.channelCountFor), so the armed monitor
+    // shows the operator's channel count.
+    val channelCount = me.hletrd.telecampro.video.cappedAudioChannelCount(
+        resolveAudioChannelCount(
+            device?.channelCounts,
+            device != null && AudioInputInspector.isBluetoothInput(device.type),
+        ),
+        channelMode,
     )
     val channelMask =
         if (channelCount >= ColorProfiles.AUDIO_CHANNELS) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
@@ -518,6 +524,8 @@ internal class StandbyAudioController(
          * each AudioRecord generation must resolve the choice that is current when it opens.
          */
         audioInputPreference: () -> AudioInputPreference,
+        /** Read LIVE like [audioInputPreference]: the channel cap the next take records with. */
+        audioChannelMode: () -> me.hletrd.telecampro.video.AudioChannelMode,
         canStart: () -> Boolean,
         recorderAbsent: () -> Boolean,
         isPaused: () -> Boolean,
@@ -540,7 +548,9 @@ internal class StandbyAudioController(
         permissionGranted = {
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         },
-        audioSetup = StandbyAudioSetup { createAndroidStandbyAudioInput(context, audioInputPreference()) },
+        audioSetup = StandbyAudioSetup {
+            createAndroidStandbyAudioInput(context, audioInputPreference(), audioChannelMode())
+        },
         threadLauncher = StandbyThreadLauncher { name, task ->
             runCatching { Thread({ task() }, name).start() }.isSuccess
         },

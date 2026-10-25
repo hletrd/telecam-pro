@@ -107,6 +107,8 @@ data class ExtraSettings(
     // the device's encoders once the inventory loads.
     val audioCodec: AudioCodec = AudioCodec.AAC_LC,
     val audioBitrateKbps: Int = AudioCodec.AAC_LC.defaultKbps,
+    // Missing key = STEREO, what every take recorded before the setting existed.
+    val audioChannelMode: me.hletrd.telecampro.video.AudioChannelMode = me.hletrd.telecampro.video.AudioChannelMode.STEREO,
     val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
     val videoFnSlots: List<FnSlot> = FnSlot.VIDEO_DEFAULT,
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
@@ -413,6 +415,7 @@ class SettingsStore(
                 audioInputPreference = enumOr(safeString("${prefix}audioInputPreference", null), ed.audioInputPreference),
                 audioCodec = enumOr(safeString("${prefix}audioCodec", null), ed.audioCodec),
                 audioBitrateKbps = safeInt("${prefix}audioBitrateKbps", ed.audioBitrateKbps).takeIf { it > 0 } ?: ed.audioBitrateKbps,
+                audioChannelMode = enumOr(safeString("${prefix}audioChannelMode", null), ed.audioChannelMode),
                 photoFnSlots = normalizeFnSlots(
                     enumListOr(
                         safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
@@ -521,6 +524,7 @@ class SettingsStore(
         putString("${prefix}audioInputPreference", e.audioInputPreference.name)
         putString("${prefix}audioCodec", e.audioCodec.name)
         putInt("${prefix}audioBitrateKbps", e.audioBitrateKbps)
+        putString("${prefix}audioChannelMode", e.audioChannelMode.name)
         putString("${prefix}photoFnSlots", e.photoFnSlots.joinToString(",") { it.name })
         putString("${prefix}videoFnSlots", e.videoFnSlots.joinToString(",") { it.name })
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })

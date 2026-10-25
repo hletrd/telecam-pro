@@ -381,6 +381,9 @@
     <string name="video_native_log_source_10bit">Encoded by the camera’s ISP from its linear signal · 10-bit, clips at sensor white</string>
     <string name="video_raw_log_source">Developed in-app from the sensor RAW · 10-bit, clips at sensor white</string>
     <string name="label_raw_log">RAW Log (Experimental)</string>
+    <string name="label_audio_channels">Channels</string>
+    <string name="audio_channels_mono">Mono</string>
+    <string name="audio_channels_stereo">Stereo</string>
     <string name="caption_audio_aac_lc">Plays in every player and editor.</string>
     <string name="caption_audio_he_aac">Small files at low bitrates; high frequencies are reconstructed rather than coded.</string>
     <string name="caption_audio_he_aac_v2">Smallest stereo files; the stereo image is reconstructed from parameters.</string>

@@ -375,6 +375,14 @@ internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.APV -> "APV Intra"
 }
 
+internal fun android.content.Context.audioChannelLabel(mode: me.hletrd.telecampro.video.AudioChannelMode): String =
+    getString(
+        when (mode) {
+            me.hletrd.telecampro.video.AudioChannelMode.MONO -> me.hletrd.telecampro.R.string.audio_channels_mono
+            me.hletrd.telecampro.video.AudioChannelMode.STEREO -> me.hletrd.telecampro.R.string.audio_channels_stereo
+        },
+    )
+
 /** Format names stay Latin in every locale, like the video codec names above. */
 internal fun audioCodecLabel(codec: me.hletrd.telecampro.video.AudioCodec): String = when (codec) {
     me.hletrd.telecampro.video.AudioCodec.AAC_LC -> "AAC-LC"

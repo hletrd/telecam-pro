@@ -195,6 +195,9 @@ class VideoRecorder(private val context: Context) {
     // ([aacPrimingSamples]): MediaMuxer writes no encoder-delay edit list, so every player decodes
     // that many samples of warm-up first, and audio PTS move earlier by it to land on time.
     private var audioEncoding = RecordingAudioEncoding()
+    // Audio thread only: whether [applyAudioScene] wrote this take's effect into the HAL.
+    @Volatile private var audioSceneApplied = false
+    private var audioChannelMode = AudioChannelMode.STEREO
     private var audioPrimingUs = 0L
     private val firstVideoFrameNs = AtomicLong(0L)
     @Volatile private var audioSample0CaptureNs = 0L
@@ -259,6 +262,7 @@ class VideoRecorder(private val context: Context) {
         onFailure: ((Throwable) -> Unit)? = null,
         cameraClockRealtime: Boolean = false,
         audioEncoding: RecordingAudioEncoding = RecordingAudioEncoding(),
+        audioChannelMode: AudioChannelMode = AudioChannelMode.STEREO,
     ): Surface? {
         val admittedCandidates = encoderCandidates
             .filter { encoderSelectionAdmitsTransfer(it, transfer) }
@@ -302,6 +306,7 @@ class VideoRecorder(private val context: Context) {
         this.onFailure = onFailure
         this.cameraClockRealtime = cameraClockRealtime
         this.audioEncoding = audioEncoding
+        this.audioChannelMode = audioChannelMode
         val descriptor = nativeOperation {
             MediaStoreWriter.openParcelFd(context, uri, "rw")?.also { pfd = it }
         } ?: run {
@@ -1266,11 +1271,13 @@ class VideoRecorder(private val context: Context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun channelCountFor(device: AudioDeviceInfo?): Int =
+    private fun channelCountFor(device: AudioDeviceInfo?): Int = cappedAudioChannelCount(
         resolveAudioChannelCount(
             device?.channelCounts,
             device != null && AudioInputInspector.isBluetoothInput(device.type),
-        )
+        ),
+        audioChannelMode,
+    )
 
     private fun channelMaskFor(channelCount: Int): Int =
         if (channelCount >= ColorProfiles.AUDIO_CHANNELS) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO

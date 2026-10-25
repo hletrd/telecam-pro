@@ -101,6 +101,7 @@ class PerformQuickFnTest {
         override fun onAudioScene(scene: AudioScene) = hit("onAudioScene($scene)")
         override fun onAudioCodec(codec: me.hletrd.telecampro.video.AudioCodec) = hit("onAudioCodec($codec)")
         override fun onAudioBitrate(kbps: Int) = hit("onAudioBitrate($kbps)")
+        override fun onAudioChannelMode(mode: me.hletrd.telecampro.video.AudioChannelMode) = hit("onAudioChannelMode($mode)")
         override fun onAudioInputPreference(preference: AudioInputPreference) = hit("onAudioInputPreference")
         override fun onToggleTeleconverter(enabled: Boolean) = hit("onToggleTeleconverter($enabled)")
         override fun onPhoneModel(model: me.hletrd.telecampro.camera.PhoneModel) = hit("onPhoneModel($model)")
