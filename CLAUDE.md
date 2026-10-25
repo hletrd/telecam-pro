@@ -1066,6 +1066,62 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   stock P010 stream shape and even `com.oplus.packageName = com.oplus.camera` (echoed, so package
   identity is ruled out) never left `HDRFeatureMode 0`. Ten-bit native log is ten bits of the SAME
   un-S-curved, clip-bounded ISP signal, not the stock pipeline's latitude.
+- **RAW log (EXPERIMENTAL) = S-Log3 developed in-app from the RAW stream (owner request 2026-10-25;
+  `docs/FIELD_CHECKS.md` A19).** A Video-tab toggle, offered for S-Log3 / S-Log3.Cine only (a log the
+  app develops itself has no reason to imitate a phone maker's curve) on a RAW-developable rear camera
+  at a rate the RAW stream sustains — RAW16 is advertised AND measured at 33.3 ms on cams 2/3/4, so
+  ≤ 30 fps (`rawStreamSustains`). `RawLogBridge` is tried FIRST on each rung (RAW log → P010 → 8-bit;
+  a refusal retries the same rung on native log) and the session's ONLY output is the RAW reader —
+  the HAL accepted that on cam 4 at rung 0. A RAW-only session still runs AE/AWB/AF (the developer
+  takes WB gains, dynamic black, the lens-shading map — requested ON — and the crop zoom from each
+  result). The developer (own EGL ES 3 thread) renders RGBA1010102 S-Log3 over S-Gamut3.Cine into an
+  EGL window surface on the GL input Surface with the sensor timestamp, so preview/encoder/scopes/REC
+  are untouched; GL learns `uSourceWide`, and the log branches read the decode UNclamped in linear
+  709 so S-Gamut3.Cine round-trips exactly — the log never passes THROUGH a 709 clip (owner: "log
+  must not be 709-based, gamma or gamut"); measured 5.7 % of a warm interior outside 709 kept vs 0 %
+  on the native path. Four facts that each cost a wrong turn: (1) **PMA110's ForwardMatrix1 ==
+  ForwardMatrix2 == the standard sRGB→XYZ(D50) matrix to 1/128** — a placeholder that treats camera
+  RGB as sRGB (camera→709 through it is identity ±0.01, i.e. NO colour correction); the ColorMatrix
+  pair is real (differs D65 vs StdA), so `forwardMatrixInformative` rejects the identical FM pair
+  from the DATA and the DNG ColorMatrix + Bradford path runs. (2) An EGL-produced frame carries buffer
+  transform 0 while camera frames carry the sensor rotation, and Java EGL cannot set one —
+  `SourceTransformEmulation` post-multiplies GLConsumer's own matrix (`camera = egl · T`). (3) The
+  probe's first develop had R/B SWAPPED at green sites and resampled 4080→3840 by nearest site, which
+  the encoder's co-sited chroma turned into a ±20-code 16 px checker; the app does MHC on whole Bayer
+  tiles and resamples in linear light. (4) The developer swaps ASYNC (`eglSwapInterval 0`): a thread
+  parked in eglSwapBuffers kept the GL input Surface connected past close's 1 s wait, and the next
+  P010 writer was refused (one 8-bit landing in 22 OFF transitions before the fix). Costs, in the UI
+  caption: no stills, no ISP NR/sharpening, 10-bit sensor range. Colour vs a chart, a thermal
+  soak and clipped highlights remain A19 field checks — the ColorMatrix rendering differs visibly
+  from the ISP's tuned look and neither is claimed as ground truth.
+  **Stabilization is the app's GYRO EIS, and the converter is why it must be (2026-10-25).** The HAL's
+  EIS works on ISP output and never reaches RAW, and its OIS, engaged even in a RAW-only session
+  (`ois=1`), compensates as if no converter were there: through the inverting Keplerian converter a
+  rotation θ moves the image by −M·f·θ, so a bare-lens OIS adding −f·θ makes it WORSE, ×(M+1)/M — and
+  no OIS samples are published (`availableOisDataModes` absent) to subtract it. So the RAW session
+  turns HAL video stabilization AND `LENS_OPTICAL_STABILIZATION_MODE` OFF while EIS runs — **vstab
+  OFF alone left `ois=1`; the explicit OIS OFF gives `ois=0`** — and `stab/RawEisMath` +
+  `stab/RawEisGyro` correct everything: F = +f bare, −M·f with TELE; 8 rolling-shutter row bands
+  timed by `SENSOR_TIMESTAMP` + exposure/2 + skew·row (gyro and camera share `elapsedRealtimeNanos`,
+  timestampSource REALTIME); a causal smoother pushed toward the real path until the window fits. The
+  Stabilization setting drives it (Standard 10 % / Active 20 % margin). On-device effectiveness and
+  the TELE sign are A19 field checks — compiled math is not shake removed.
+  **Resource facts (measured, cam 4 RAW 4096×3072 at 30 fps):** the per-frame CPU upload dominated —
+  RAW16 straight from client memory 6.6 ms; RAW10 (offered at the same 33.3 ms) plus only the rows the
+  demosaic reads 4.7 ms; the same bytes through two PBOs **2.4 ms** (2.1 ms is a plain copy, bounded by
+  reading the camera's buffer — only a zero-copy AHardwareBuffer import, NDK-only, removes it). Four
+  bytes per RGBA8UI texel did NOT help (upload unchanged, pass 1 doubled on the dynamic component
+  pick). Process CPU 83 % → 56 % in preview with EIS (native log 46 %). **`lensShadingApplied =
+  TRUE` is FALSE on every rear camera:** the RAW corners read 0.16–0.50 of centre and the DNG's own
+  GainMap applies ~2.9× there, so the developer's shading step is required. Two tooling traps:
+  **`dumpsys meminfo <pid>` FORCE-STOPS the app on ColorOS** (`am_kill … stop … due to from pid
+  <shell>`; read `/proc/<pid>/status` instead), and `kgsl gpubusy` is relative to the current GPU
+  clock (unreadable without root), so only the in-app GPU timer queries give absolute pass cost.
+- **ISP noise reduction is honoured OFF on the log stream (device-measured 2026-10-25).** Fixed ISO
+  1600 · 1/62 s, S-Log3 curve on the P010 stream: luma high-frequency energy (mean |Laplacian|) 9.7
+  with NR OFF vs 7.0 FAST / HQ; EDGE_MODE made no measurable difference on that defocused scene. The
+  app default is already OFF for both (`ManualControls`), so log needs no override — and forcing one
+  would overrule an operator who picks NR deliberately.
 - **Log EI offset — HIDDEN on the PMA110 profile (device-measured 2026-10-15, owner decision).**
   On PMA110 the ISP's output under the programmed S-Log3 curve is NOT exposure-linear: M mode, AE
   off, fixed ISO 100, a lit wall, exposure ×1 / ×½ / ×¼ / ×⅛ decoded to 1 / 0.28 / 0.11 / 0.052 of
@@ -1599,6 +1655,7 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ ZslAdmission     pure pseudo-ZSL serve/refuse predicate (logical/front photo routes)
              ├─ P010InputBridge  ten-bit native log: P010 reader → ImageWriter → GL input SurfaceTexture
+             ├─ RawLogBridge     EXPERIMENTAL RAW log: RAW reader → own EGL thread → S-Log3/S-Gamut3.Cine → GL input
              ├─ FacePriority     Face Priority AF gate/request keys/readout gate/sensor→view map (pure)
              ├─ StartupTrace     buffered debug cold-start stopwatch (one line; quota-safe)
              ├─ focus/MacroProximity focus-confidence proofs + hold + OSD wording (pure+tested)

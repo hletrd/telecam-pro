@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -20,6 +20,7 @@ few FRONT presses with DNG on, **A13** needs the status plate watched through re
 REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log REC take with a still
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
+**A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
 **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -549,7 +550,9 @@ check proves the app wiring.
 
 - PMA110, **VIDEO**, transfer **S-Log3**, main 1× route. Logcat must show `EGL config requested
   tenBit=true, RGBA1010102=true` and `Session configured (... nativeLog=true, p010=true, jpeg=true,
-  raw=true ...)`; `dumpsys media.camera` must list the GL stream as `format 0x36, dataspace 0x8c60000`.
+  raw=true ...)`; `dumpsys media.camera` must list the GL stream as `format 0x36, dataspace 0x8c60000`
+  (since `f92aa731`, 2026-10-25: `dataspace 0x8c20000` — JFIF, the matrix the HAL actually encodes
+  P010 with; the evidence below predates that fix and stands for its own commit).
   The Video tab caption reads "· 10-bit, clips at sensor white".
 - Record 5 s with one **in-REC still** (DNG on). Repeat on **TELE** (TC on, `0x80b4`).
 - Switch to **SDR** (AVC, then HEVC) and record 5 s each; switch to **HLG** and record 5 s; take a
@@ -591,6 +594,52 @@ Photo HEIF normal. Four Photo ↔ Video flips with S-Log3: no crash, live previe
 `P010InputBridge` threads afterwards; the `ImageReader$ListenerHandler … dead thread` warnings also
 appear with SDR (no bridge), so they are pre-existing. The same-scene bridge-off A/B was measured in
 the standalone probe (raw Y 94 vs 27 levels), not in the app.
+
+### A19. RAW log (experimental): S-Log3 developed from RAW, hand-offs clean — ◐ HALF DONE 2026-10-25
+
+The Video-tab toggle **RAW Log (Experimental)** (S-Log3 / S-Log3.Cine, ≤ 30 fps) replaces the
+session's camera outputs with one RAW_SENSOR stream that `RawLogBridge` develops on the GPU into
+S-Log3 over S-Gamut3.Cine (ColorMatrix + Bradford path on PMA110, whose ForwardMatrix pair is an
+sRGB placeholder) and hands to the GL input SurfaceTexture.
+
+- PMA110, **VIDEO**, transfer **S-Log3.Cine**, 29.97 fps, 3× route; turn the toggle on. `dumpsys
+  media.camera` must list ONE stream, `4096 x 3072, format 0x20`; the caption reads "Developed in-app
+  from the sensor RAW · 10-bit…"; the OSD tag reads `SG3C RAW`; the viewfinder is upright and framed
+  like the native-log 3× view.
+- Record 8 s. Turn the toggle off (expect `format 0x36` P010 + JPEG + RAW back), on again, switch to
+  LogC3 (expect P010 native log while the toggle stays on), and take a Photo-mode still.
+- **Stabilization (gyro EIS, the core):** hand-hold the phone on a detailed subject and record ~10 s
+  with Stabilization **Active**, then ~10 s with **Off**; repeat both with the converter mounted and
+  **TELE** on. Score each pair with frame-to-frame phase correlation (jitter = motion minus its
+  15-frame moving average). The 3A line must read `ois=0 vstab=0` during every RAW log take with EIS.
+- Open: a colour-chart comparison against a reference (the RAW path is colorimetric from OPPO's
+  ColorMatrix data; the ISP path is OPPO's tuned look — they differ visibly on a warm interior), a
+  10-minute thermal/cadence soak, and a lit scene with clipped highlights (neutral clamp, no magenta).
+
+**Pass (stabilization):** the Active takes carry clearly less jitter than the Off takes, bare AND
+through TELE — a TELE Active take with MORE jitter than its Off take means the converter's sign (−M)
+is wrong for that optic.
+
+**Pass:** HEVC Main 10, `bt2020` full range, ~30 fps with no recurring gaps, AAC present; codes ≥ the
+S-Log3 floor; no 16 px chroma checker (the probe's resample bug — fold test < 2 codes at every
+period); colours outside BT.709 kept (the native path clips them); every OFF lands on P010, never the
+8-bit stream; the Photo still saves JPG + HEIC + DNG.
+
+**Developer-build run 2026-10-25 (`assembleDebug`, not the immutable wrapper — hence ◐):** RAW-only
+session `4096 x 3072, format 0x20` on cam 4 at the first rung; clip HEVC Main 10 2160×3840 bt2020
+full, 241 frames / 8.03 s = 29.89 fps (median 33.32 ms, one 66 ms gap) and 301 frames / 29.91 fps on
+the swap-interval-0 build, AAC 48 kHz stereo; fold test Cb 1.1 / Cr 0.4 at p16 (native clip 1.0 /
+1.1); 5.72 % of the frame outside BT.709 kept vs 0.00 % on the native path; OFF → P010 in 21 of 22
+transitions — the one 8-bit landing preceded the async-producer fix (`eglSwapInterval 0`, so a
+parked developer thread cannot keep the GL input Surface connected), 0 of 6 since; Photo still saved
+`jpg, heic, dng`.
+
+**Developer-build run 2026-10-25, resource pass + EIS (still `assembleDebug`):** RAW10 session
+(`4096 x 3072, format 0x25`) with the picture intact; per frame on cam 4 upload 2.4 ms CPU (RAW10, only
+the demosaic's rows, two PBOs; was 6.6 ms RAW16), develop call 4.2 ms CPU with EIS, pass 1 ~4.1 ms +
+pass 2 ~1.7 ms GPU, 301/301 frames; process CPU 56 % in preview (was 83 %; native log 46 %); EIS
+session `ois=0 vstab=0` with the explicit OIS OFF (vstab OFF alone read `ois=1`). The phone lay static
+on the floor, so stabilization EFFECT is unmeasured — the handheld pairs above are the open half.
 
 ## B. Held in hand — 3 min
 
