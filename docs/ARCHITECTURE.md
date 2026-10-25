@@ -969,8 +969,11 @@ unused.
 
 **Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
 them. The vendor log flag did not activate stock log in the third-party combinations measured so far;
-this is not a general impossibility result. A current-firmware session-routing candidate was found by
-static analysis on 2026-10-25 and still needs a device A/B (CLAUDE.md, stock Log investigation).
+this is not a general impossibility result. A session-routing candidate common to both CameraUnit
+versions was found on 2026-10-25; the stock ColorOS 16/17 recordings share the same session, sensor
+and stream signature. The candidate still needs a third-party device A/B (CLAUDE.md, stock Log
+investigation). Native O-Log2 input would require a distinct source decoder and measured YUV matrix;
+the existing S-Log3/JFIF transport assumptions are not valid evidence for that unimplemented path.
 Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.
 
 **Video resolution and frame rates:**
