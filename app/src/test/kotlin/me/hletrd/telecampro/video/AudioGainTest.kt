@@ -170,6 +170,45 @@ class AudioGainTest {
     }
 
     @Test
+    fun `the fused recording pass equals gain then peaks then levels`() {
+        val random = java.util.Random(7)
+        for (gain in floatArrayOf(1f, 0.5f, 2.37f, 8f, Float.NaN)) {
+            for (channels in 1..2) {
+                for (byteCount in intArrayOf(0, 1, 2, 7, 8, 4096, 4095)) {
+                    val samples = ShortArray((byteCount + 1) / 2) { (random.nextInt(65536) - 32768).toShort() }
+                    val reference = pcmBuffer(*samples)
+                    val fused = pcmBuffer(*samples).apply { position(1.coerceAtMost(limit())) }
+                    val referencePeaks = FloatArray(channels) { 0.01f }
+                    val fusedPeaks = referencePeaks.copyOf()
+
+                    applyPcmGain(reference, byteCount, gain)
+                    accumulatePcmPeaks(reference, byteCount, channels, referencePeaks)
+                    val referenceLevels = measurePcmLevels(reference, byteCount, channels)
+                    val fusedLevels = processRecordingPcm(
+                        fused, byteCount, gain, channels, fusedPeaks, ByteArray(byteCount + 3), measureLevel = true,
+                    )!!
+
+                    val where = "gain=$gain channels=$channels bytes=$byteCount"
+                    assertEquals(where, reference.array().toList(), fused.array().toList())
+                    assertEquals(where, referencePeaks.toList(), fusedPeaks.toList())
+                    assertEquals(where, referenceLevels.toList(), fusedLevels.toList())
+                    // The caller's position survives the bulk copies.
+                    assertEquals(where, 1.coerceAtMost(fused.limit()), fused.position())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the fused recording pass skips the level unless asked`() {
+        val buf = pcmBuffer(1000, -2000)
+        val peaks = FloatArray(1)
+        assertNull(processRecordingPcm(buf, 4, 2f, 1, peaks, ByteArray(4), measureLevel = false))
+        assertEquals(listOf<Short>(2000, -4000), samplesOf(buf, 2).toList())
+        assertEquals(4000f / 32768f, peaks.single(), 0f)
+    }
+
+    @Test
     fun `overload classifier preserves exact PCM threshold sides`() {
         assertEquals(AudioOverloadState.NORMAL, audioOverloadState(31_129f / 32768f))
         assertEquals(AudioOverloadState.NEAR_CLIPPING, audioOverloadState(31_130f / 32768f))

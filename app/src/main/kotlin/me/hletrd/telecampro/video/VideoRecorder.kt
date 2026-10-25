@@ -887,6 +887,8 @@ class VideoRecorder(private val context: Context) {
         var sentEos = false
         var eosAttempts = 0
         val heldAudioPeaks = FloatArray(audioChannelCount)
+        // Bulk scratch for [processRecordingPcm]; sized once by the codec's fixed input capacity.
+        var pcmScratch = ByteArray(0)
 
         while (true) {
             when (audioWorkerLoopDisposition(terminallyQuarantined.get(), audioDegradedMidRec)) {
@@ -913,19 +915,15 @@ class VideoRecorder(private val context: Context) {
                             // transient between throttled UI emits is not lost. RMS and the one
                             // immutable peak snapshot are allocated only at the meter cadence.
                             val emitDue = onLevel != null && levelEmitDue()
-                            applyPcmGain(pcmBuffer, readOutcome.byteCount, audioGain)
-                            accumulatePcmPeaks(
-                                pcmBuffer, readOutcome.byteCount, audioChannelCount, heldAudioPeaks,
+                            if (pcmScratch.size < readOutcome.byteCount) {
+                                pcmScratch = ByteArray(pcmBuffer.capacity().coerceAtLeast(readOutcome.byteCount))
+                            }
+                            val rms = processRecordingPcm(
+                                pcmBuffer, readOutcome.byteCount, audioGain, audioChannelCount,
+                                heldAudioPeaks, pcmScratch, measureLevel = emitDue,
                             )
-                            if (emitDue) {
-                                maybeEmitLevel(
-                                    AudioLevelFrame(
-                                        rms = measurePcmLevels(
-                                            pcmBuffer, readOutcome.byteCount, audioChannelCount,
-                                        ),
-                                        peaks = heldAudioPeaks.copyOf(),
-                                    ),
-                                )
+                            if (rms != null) {
+                                maybeEmitLevel(AudioLevelFrame(rms = rms, peaks = heldAudioPeaks.copyOf()))
                                 heldAudioPeaks.fill(0f)
                             }
                             onCodec(teardown.audioFault) {
@@ -2796,6 +2794,65 @@ internal fun applyGainAndMaybeMeasureLevel(
 ): FloatArray? {
     applyPcmGain(buf, byteCount, gain)
     return if (measureLevel) measurePcmLevels(buf, byteCount, channelCount) else null
+}
+
+/**
+ * The recording hot path: [applyPcmGain] + [accumulatePcmPeaks] + (when [measureLevel])
+ * [measurePcmLevels] fused into ONE pass over a bulk copy in [scratch], with exactly their results
+ * (pinned against them in AudioGainTest). The three ByteBuffer helpers cost ~13 % of a core at
+ * 48 kHz stereo on PMA110 (device-profiled 2026-10-25): every sample paid several
+ * `DirectByteBuffer.get/put` calls, each bounds-checked through `Buffer.checkIndex`. Here the
+ * buffer is touched by one bulk get (and one bulk put when the gain is not unity), and the caller's
+ * position, limit, and byte order are preserved. [scratch] must hold [byteCount] bytes; returns
+ * the per-channel RMS when [measureLevel], else null.
+ */
+internal fun processRecordingPcm(
+    buf: ByteBuffer,
+    byteCount: Int,
+    gain: Float,
+    channelCount: Int,
+    heldPeaks: FloatArray,
+    scratch: ByteArray,
+    measureLevel: Boolean,
+): FloatArray? {
+    require(byteCount in 0..buf.limit())
+    require(scratch.size >= byteCount)
+    val channels = channelCount.coerceAtLeast(1)
+    require(heldPeaks.size == channels)
+    val safeGain = normalizeAudioGain(gain)
+    val amplify = safeGain != 1f
+    val position = buf.position()
+    buf.position(0)
+    buf.get(scratch, 0, byteCount)
+    val sampleCount = byteCount / Short.SIZE_BYTES
+    val frames = sampleCount / channels
+    val usable = frames * channels
+    val sums = if (measureLevel) DoubleArray(channels) else null
+    var channel = 0
+    for (sampleIndex in 0 until sampleCount) {
+        val byteIndex = sampleIndex * Short.SIZE_BYTES
+        var sample = ((scratch[byteIndex + 1].toInt() shl 8) or (scratch[byteIndex].toInt() and 0xff))
+            .toShort().toInt()
+        if (amplify) {
+            sample = (sample * safeGain).roundToInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            scratch[byteIndex] = (sample and 0xff).toByte()
+            scratch[byteIndex + 1] = (sample shr 8).toByte()
+        }
+        if (sampleIndex < usable) {
+            val peak = (kotlin.math.abs(sample) / PCM_16_FULL_SCALE).toFloat().coerceIn(0f, 1f)
+            if (peak > heldPeaks[channel]) heldPeaks[channel] = peak
+            if (sums != null) sums[channel] += sample.toDouble() * sample
+            channel = if (channel + 1 == channels) 0 else channel + 1
+        }
+    }
+    if (amplify) {
+        buf.position(0)
+        buf.put(scratch, 0, byteCount)
+    }
+    buf.position(position)
+    if (sums == null) return null
+    if (frames == 0) return FloatArray(channels)
+    return FloatArray(channels) { c -> (sqrt(sums[c] / frames) / PCM_16_FULL_SCALE).toFloat().coerceIn(0f, 1f) }
 }
 
 private fun readPcm16Le(buf: ByteBuffer, byteIndex: Int): Short {
