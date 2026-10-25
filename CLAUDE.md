@@ -459,6 +459,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   readers) and then continues on the ordinary ladder from rung 1, so attempt 1 is HLG10 + the
   processed still reader (`SessionFallbackLadderTest`; changing it needs a PMA110 measurement). TELE tries vendor full/degraded plans, then regular full/degraded plans,
   and reserves both preview-only variants for last. Keep it; different capability combos fail on this HAL.
+  **A SYNCHRONOUS device-fatal throw STOPS the ladder (2026-10-26).** When the HAL fails stream
+  configuration with anything but BAD_VALUE, Camera3Device enters its ERROR state and
+  `createCaptureSession` throws CAMERA_ERROR; every later rung then fails in microseconds on the dead
+  device. `configureFailureIsDeviceFatal` (CAMERA_ERROR / DISCONNECTED / DISABLED) reports once and
+  leaves the reopen to the Engine's bounded recovery; a soft rejection (onConfigureFailed with no
+  throw, or a synchronous IllegalArgumentException) walks the ladder as before. Camera2 delivers BOTH
+  the throw AND onConfigureFailed for one failed attempt, so `ConfigureAttemptGate` lets exactly one
+  handle it — both used to, which ran two retry chains and scheduled two recoveries whose reopens
+  evicted each other (`ConfigureAttempt.kt`).
   When hi-res is wanted (capability-gated; dormant on PMA110) the ladder PREPENDS a hi-res rung:
   attempt 0 is the full plan's hi-res variant with RAW forced off, and every later attempt maps
   onto the ORDINARY ladder shifted by one — a failed hi-res attempt falls back to full-WITH-RAW
@@ -1181,6 +1190,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   at a rate the RAW stream sustains — RAW16 is advertised AND measured at 33.3 ms on cams 2/3/4, so
   ≤ 30 fps (`rawStreamSustains`). `RawLogBridge` is tried FIRST on each rung (RAW log → P010 → 8-bit;
   a refusal retries the same rung on native log) and the session's ONLY output is the RAW reader —
+  **always on the REGULAR session type, never the 0x80b4 TC operation mode** (device-measured
+  2026-10-26: RAW-only on camera 4 under 0x80b4 failed configure with -38 and put the camera device in
+  ERROR, so TELE + RAW log froze the app and every relaunch, which restores both, froze again; on the
+  regular type it configures at fallback 0, TELE off/on toggles cleanly and a take records). A RAW log
+  attempt that does kill the device is reported as `RawLogConfigureFatalException`, and the Engine
+  leaves RAW log out of that route (`rawLogRefusedRoute`, cleared when the operator turns RAW log on)
+  so bounded recovery reopens on native log —
   the HAL accepted that on cam 4 at rung 0. A RAW-only session still runs AE/AWB/AF (the developer
   takes WB gains, dynamic black, the lens-shading map — requested ON — and the crop zoom from each
   result). The developer (own EGL ES 3 thread) renders RGBA1010102 S-Log3 over S-Gamut3.Cine into an
@@ -1407,7 +1423,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   still-installed controller retains its error/disconnect authority across same-controller fast
   commits and pending optics generations. A replaced controller's late callback is inert. An owned
   fault advances the session generation, invalidates Ready and accepted outputs, claims any recorder,
-  then reports and schedules bounded recovery exactly once.
+  then reports and schedules bounded recovery exactly once — once per CONTROLLER
+  (`recoveryScheduledFor`), not once per report: a controller can report a configure failure and its
+  device's onError back to back, and each used to schedule its own reopen.
 - **EGL output release is checked unbind → destroy.** Move current ownership to a surviving preview
   output or to no surface before destroying an outgoing preview/encoder EGLSurface. Codec teardown
   requires verified current-ownership release plus either destroyed outputs or checked terminal EGL

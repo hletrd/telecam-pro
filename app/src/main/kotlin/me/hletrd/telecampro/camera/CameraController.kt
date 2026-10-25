@@ -206,6 +206,9 @@ class CameraController internal constructor(
     // One gate-bypassing completion re-read per capture CHAIN (AGG4-37); armed by a chain head.
     private val chainCharsReread = ChainCharacteristicsReread()
     private var configAttempt = 0
+    // One handler per configure attempt: a HAL configure failure both throws out of
+    // createCaptureSession AND posts onConfigureFailed (ConfigureAttempt.kt).
+    private val configureGate = ConfigureAttemptGate()
     // HAL video stabilization mode for the repeating preview/video request (CONTROL_VIDEO_
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
@@ -822,6 +825,7 @@ class CameraController internal constructor(
         if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
 
         val attempt = configAttempt
+        val attemptToken = configureGate.begin()
         // The measured JPEG-blob failure belongs to PMA110's LOGICAL camera only. FRONT uses YUV on
         // the first two rungs to feed pseudo-ZSL, but must retain its previously proven HAL-JPEG
         // fallback when that optional session shape is rejected.
@@ -965,11 +969,16 @@ class CameraController internal constructor(
         }
 
         val sessionConfig = regularOrVendorSessionConfiguration(
-            vendorOperationMode = plan.useVendorOperationMode,
+            // A RAW log attempt always takes the REGULAR session type. The TC operation mode exists to
+            // select the 300 mm TC OIS profile, and a RAW log session turns OIS off for its own gyro
+            // EIS; device-measured 2026-10-26, RAW-only on camera 4 under 0x80b4 failed configure
+            // with -38 and left the camera device in its ERROR state.
+            vendorOperationMode = plan.useVendorOperationMode && rawBridge == null,
             outputs = configs,
             callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
+                    if (!configureGate.claim(attemptToken)) { runCatching { s.close() }; return }
                     session = s
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = sessionHlg
@@ -1019,6 +1028,8 @@ class CameraController internal constructor(
                     // would throw, convert into a spurious onError, and race the replacement
                     // controller's own bring-up (2026-07-30 review L5).
                     if (closed) return
+                    // The synchronous throw below already handled this attempt when it came with one.
+                    if (!configureGate.claim(attemptToken)) return
                     // A failed RAW log attempt retries the SAME rung on the native-log path: the
                     // RAW-only shape was the experiment, not the rung.
                     if (rawLogBridge != null) {
@@ -1074,6 +1085,27 @@ class CameraController internal constructor(
         StartupTrace.mark(startupTraceOwner, "createCaptureSession")
         val sessionAdmitted = runNativeAcquisition {
             runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
+                // Camera2 also posts onConfigureFailed for this attempt; whichever runs first owns it,
+                // and this synchronous path always runs first.
+                if (!configureGate.claim(attemptToken)) return@onFailure
+                if (configureFailureIsDeviceFatal(failure)) {
+                    // The device itself is gone: every rung below would fail on it in microseconds.
+                    // Report once and let the Engine's bounded recovery reopen a fresh device. A RAW log
+                    // attempt is reported as such so that reopen leaves RAW log out.
+                    val rawLog = rawLogBridge != null
+                    Log.e(TAG, "createCaptureSession failed the camera device at fallback $attempt (rawLog=$rawLog, p010=${p010Bridge != null}); not walking the ladder: ${failure.message}")
+                    onError.onError(
+                        if (rawLog) {
+                            RawLogConfigureFatalException(
+                                rawLogRouteKey(selection.logicalId, selection.physicalId, teleconverterMode),
+                                failure,
+                            )
+                        } else {
+                            failure
+                        },
+                    )
+                    return@onFailure
+                }
                 if (rawLogBridge != null) {
                     // Same rung, native log, exactly as onConfigureFailed above.
                     rawLogRefused = true
@@ -1155,6 +1187,7 @@ class CameraController internal constructor(
      * still gets a live preview instead of a dead viewfinder.
      */
     private fun configureHighSpeed(camera: CameraDevice, preview: Surface, onReady: Ready, onError: ErrorCb) {
+        val attemptToken = configureGate.begin()
         val cfg = OutputConfiguration(preview).apply {
             selection.physicalId?.let { setPhysicalCameraId(it) }
         }
@@ -1163,6 +1196,7 @@ class CameraController internal constructor(
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return }
+                    if (!configureGate.claim(attemptToken)) { runCatching { s.close() }; return }
                     session = s
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
                         android.util.Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
@@ -1175,6 +1209,7 @@ class CameraController internal constructor(
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
                     if (closed) return // late-callback guard, same as the regular ladder above
+                    if (!configureGate.claim(attemptToken)) return // the synchronous throw owned it
                     if (BuildConfig.DEBUG) Log.w(TAG, "High-speed session config failed at ${highSpeedFps}fps; falling back to regular session")
                     highSpeedFps = 0
                     configAttempt = 0
@@ -1190,6 +1225,12 @@ class CameraController internal constructor(
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "high-speed session params with vendor stabilization/log failed: ${it.message}") }
         val sessionAdmitted = runNativeAcquisition {
             runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
+                if (!configureGate.claim(attemptToken)) return@onFailure
+                if (configureFailureIsDeviceFatal(it)) {
+                    Log.e(TAG, "createCaptureSession(HIGH_SPEED) failed the camera device; not falling back on it: ${it.message}")
+                    onError.onError(it)
+                    return@onFailure
+                }
                 if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
                 highSpeedFps = 0
                 configAttempt = 0

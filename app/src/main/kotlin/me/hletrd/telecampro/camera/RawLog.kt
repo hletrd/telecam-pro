@@ -59,6 +59,15 @@ fun rawLogSettingVisible(transfer: ColorTransfer, caps: CameraCaps, fps: Double)
 private const val RAW_CADENCE_TOLERANCE = 0.005
 
 /**
+ * The route a RAW log refusal is remembered for ([RawLogConfigureFatalException]): the opened camera
+ * and whether the teleconverter declaration is on, the only route term the measured failure depends on
+ * (camera 4 with TELE on, 2026-10-26). The controller and the Engine build it from the same open
+ * arguments, so a refusal recorded by one is recognised by the other.
+ */
+internal fun rawLogRouteKey(logicalId: String, physicalId: String?, teleconverter: Boolean): String =
+    "$logicalId/${physicalId.orEmpty()}/${if (teleconverter) "tc" else "bare"}"
+
+/**
  * The RAW log route's gyro EIS configuration (stab/RawEisMath.kt, camera/RawLogBridge.kt). The HAL's
  * EIS works on ISP output and never touches RAW, so stabilizing a RAW log take is the app's job; the
  * existing Stabilization setting picks the level. [converterMagnification] is the declared converter's

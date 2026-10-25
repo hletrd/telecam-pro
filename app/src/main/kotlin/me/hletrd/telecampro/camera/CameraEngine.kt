@@ -277,6 +277,10 @@ class CameraEngine internal constructor(
     // non-flipping one is a direct write counted here so an older rollback keeps it.
     @Volatile private var rawLogEnabled = false
     private var rawLogEnabledDirectWrites = 0L
+    // The route whose RAW log attempt failed the camera device ([RawLogConfigureFatalException],
+    // [rawLogRouteKey]); later opens of that route leave RAW log out, so bounded recovery reopens on
+    // native log instead of dying the same way. Process-lifetime; turning RAW log on again clears it.
+    @Volatile private var rawLogRefusedRoute: String? = null
     private val gyroLog = me.hletrd.telecampro.video.GyroLogRecorder(context) {
         onStatus?.invoke(CameraStatusMessage.GYRO_LOG_NOT_SAVED.status())
     }
@@ -941,6 +945,7 @@ class CameraEngine internal constructor(
                 "requestGeneration=${expectedController.latestPreviewRequestGeneration} " +
                 "mode=${acceptedMode.name} cameraId=$acceptedCameraId ready=$effectiveReady"
             cameraRecoveryAttempts = 0
+            recoveryScheduledFor = null
             if (cameraPolicyBlocked) {
                 // A session was accepted, so whatever refused us is gone. Retract the gate in the
                 // same commit that publishes Ready — leaving it up over a live camera would be a
@@ -1899,6 +1904,10 @@ class CameraEngine internal constructor(
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
     // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
     @Volatile private var cameraRecoveryAttempts = 0
+    // The controller whose failure already owns the one scheduled recovery. One controller can report
+    // more than once (a configure failure and the device's own onError, 2026-10-26), and each report
+    // used to schedule a reopen: two reopens 35 ms apart evicted each other. Guarded by `this`.
+    private var recoveryScheduledFor: CameraController? = null
     // Latched by an owned policy-block failure; cleared by any accepted session, so the gate cannot
     // outlive the user clearing the block and returning to the app.
     @Volatile private var cameraPolicyBlocked = false
@@ -3801,6 +3810,8 @@ class CameraEngine internal constructor(
             onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status())
             return
         }
+        // Turning it on is the operator asking to try again: forget a route that refused it.
+        if (enabled) rawLogRefusedRoute = null
         val before = rawLogWanted(selection, caps)
         val after = rawLogWanted(selection, caps, enabled = enabled)
         if (after == before) {
@@ -3912,6 +3923,8 @@ class CameraEngine internal constructor(
     ) {
         val outcome = synchronized(this) {
             if (!activeCameraFailureBelongsToController(controller, failedController)) return
+            // Before recovery reopens: that reopen must not repeat the attempt that failed the device.
+            if (failure is RawLogConfigureFatalException) rawLogRefusedRoute = failure.routeKey
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
             val tapPublication = retireTapFocusLocked(rebuildPreview = false)
             cameraReady = false
@@ -4007,6 +4020,10 @@ class CameraEngine internal constructor(
     private fun scheduleCameraRecovery(failedController: CameraController) {
         if (!nativeAcquisitionMayProceed() || !started || paused || recorder != null) return
         if (controller !== failedController) return
+        synchronized(this) {
+            if (recoveryScheduledFor === failedController) return
+            recoveryScheduledFor = failedController
+        }
         if (cameraRecoveryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS) {
             // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
             // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
@@ -8509,7 +8526,10 @@ class CameraEngine internal constructor(
 
     /** The GL input stream size for the RAW log developer on [sel]/[c], or null ([rawLogWanted]). */
     private fun rawLogStreamFor(sel: TeleSelection, c: CameraCaps, stream: Size): Size? =
-        stream.takeIf { rawLogWanted(sel, c) }
+        stream.takeIf {
+            rawLogWanted(sel, c) &&
+                rawLogRefusedRoute != rawLogRouteKey(sel.logicalId, sel.physicalId, teleconverterMode)
+        }
 
     /**
      * The GL input stream size for the ten-bit native-log bridge on route [c], or null when the
