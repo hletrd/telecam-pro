@@ -839,7 +839,9 @@ class VideoRecorder(private val context: Context) {
         audioThread = thread(name = "audio-encode") {
             try {
                 runAudio(record, codec)
+                resetAudioScene()
             } catch (t: Exception) {
+                runCatching { resetAudioScene() }
                 // Only an AAC codec throw latched teardown.audioFault (inside [onCodec]); a mic read
                 // fault or an audio-track muxer write ending this thread is no codec evidence, so a
                 // real native stop() failure of that healthy codec still quarantines (AGG6-6).
@@ -861,45 +863,51 @@ class VideoRecorder(private val context: Context) {
     }
 
     /**
-     * Applies the device's Sound Focus / Sound Stage effect via the vendor audio-HAL parameters
-     * (`vendor_audiorecord_effect_type` etc.). Uses [AudioManager.setParameters] (public, forwards
-     * to the audio HAL) while our CAMCORDER-source AudioRecord is live — the standard recording
-     * source the audio HAL applies the effect to. Best-effort and fully guarded: a rejected param
-     * never affects recording. No-op for STANDARD.
+     * Hands the camcorder audio HAL the take's directionality and orientation through the vendor
+     * parameters (`vendor_audiorecord_effect_type` etc.), via [AudioManager.setParameters] while our
+     * CAMCORDER-source AudioRecord is built but not yet started — the order the stock camera uses.
+     * Sent for EVERY scene, Standard included: orientation is what maps the bottom + top capsule
+     * pair onto left/right when the phone is held landscape, and a Standard take that sent nothing
+     * inherited whatever the previous app left in the HAL. Best-effort: a rejected param never
+     * affects recording.
      *
-     * NOT IN EFFECT on PMA110 as shipped (device-measured 2026-10-25): AudioFlinger refuses
-     * setParameters from an app without MODIFY_AUDIO_SETTINGS, silently, and the manifest declares
-     * only CAMERA + RECORD_AUDIO — the HAL logged `mEffectType(0)` for every scene. With the
-     * permission (debug experiment) the writes land (`OplusAudAlgoManager: effectType 5`,
-     * `orientation 0`). The echo read below cannot prove either way: ColorOS answers getParameters
-     * for these keys only to "system or list" apps, so it is always empty for us.
+     * Needs MODIFY_AUDIO_SETTINGS: without it AudioFlinger drops every write SILENTLY (PMA110
+     * measured 2026-10-25: `mEffectType(0)` for all three scenes until the permission was declared;
+     * with it, `OplusAudAlgoManager: effectType 5`, `orientation 0`). Reading the values back is
+     * pointless — ColorOS answers those keys only to "system or list" apps — so the applied values
+     * are logged from our side and the HAL's own `OplusAudAlgoManager` lines are the proof.
      */
     private fun applyAudioScene(record: AudioRecord) {
-        if (audioScene == AudioScene.STANDARD) return
         val am = context.getSystemService(AudioManager::class.java) ?: return
-        val support = runCatching { am.getParameters("vendor_audiorecord_track_support") }.getOrNull()
         fun set(kv: String) { runCatching { am.setParameters(kv) } }
         // Session id scopes the param to our record where the HAL honors it; harmless if ignored.
-        val sid = record.audioSessionId
-        set("vendor_audiorecord_session_id=$sid")
-        set("vendor_audiorecord_effect_type=${audioScene.effectType}")
+        set("vendor_audiorecord_session_id=${record.audioSessionId}")
         set("vendor_audiorecord_orientation=$audioOrientation")
+        // The stock camera sends the zoom with every scene; Sound Focus aims its beam by it.
+        set("vendor_audiorecord_focus_zoom=$audioZoom")
         if (audioScene == AudioScene.SOUND_FOCUS) {
-            set("vendor_audiorecord_focus_zoom=$audioZoom")
             // Pickup angle narrows as zoom rises: ~60° at 1× down to ~36° by 6× (stock uses 36/60).
             val angle = (60f - (audioZoom.coerceIn(1f, 6f) - 1f) / 5f * 24f)
             set("vendor_audiorecord_focus_angle=$angle")
         }
-        val echo = runCatching {
-            am.getParameters(
-                "vendor_audiorecord_effect_type;vendor_audiorecord_focus_angle;" +
-                    "vendor_audiorecord_focus_zoom;vendor_audiorecord_orientation",
-            )
-        }.getOrNull()
+        set("vendor_audiorecord_effect_type=${audioScene.effectType}")
+        audioSceneApplied = true
         if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
-            android.util.Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
-                "trackSupport=[$support] echo=[$echo]")
+            android.util.Log.i(
+                TAG,
+                "audioScene=$audioScene effect=${audioScene.effectType} zoom=$audioZoom orient=$audioOrientation",
+            )
         }
+    }
+
+    /**
+     * Audio thread, when the take's audio ends: the HAL keeps the last effect for the NEXT camcorder
+     * capture of ANY app, so a Sound Focus/Stage take puts it back to the stock default (0).
+     */
+    private fun resetAudioScene() {
+        if (!audioSceneApplied || audioScene.effectType == AudioScene.STANDARD.effectType) return
+        val am = context.getSystemService(AudioManager::class.java) ?: return
+        runCatching { am.setParameters("vendor_audiorecord_effect_type=${AudioScene.STANDARD.effectType}") }
     }
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {

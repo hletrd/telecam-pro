@@ -47,7 +47,11 @@ class PlayPolicyPermissionTest(unittest.TestCase):
         self.assertTrue(trio <= FORBIDDEN_RELEASE_PERMISSIONS)
         self.assertFalse(EXPECTED_RELEASE_PERMISSIONS & FORBIDDEN_RELEASE_PERMISSIONS)
         self.assertEqual(
-            {"android.permission.CAMERA", "android.permission.RECORD_AUDIO"},
+            {
+                "android.permission.CAMERA",
+                "android.permission.RECORD_AUDIO",
+                "android.permission.MODIFY_AUDIO_SETTINGS",
+            },
             set(EXPECTED_RELEASE_PERMISSIONS),
         )
 

@@ -356,13 +356,16 @@ enum class MeteringMode { MATRIX, CENTER, SPOT }
  * audio-HAL parameters (`vendor_audiorecord_effect_type` + friends) — NOT the standard
  * `AudioRecord.setPreferredMicrophoneDirection`, which the PMA110 HAL rejects. [effectType]
  * is the vendor int the HAL expects:
- *  - STANDARD (1) — normal stereo pickup.
+ *  - STANDARD (0) — normal stereo pickup: what the STOCK camera sends for ordinary video, Pro and
+ *    normal Video alike (`AudioFlingerExtImpl logSetParametersForDebug`, 2026-10-25). This was 1
+ *    until then, a value no stock capture shows and that never reached the HAL anyway (no
+ *    MODIFY_AUDIO_SETTINGS).
  *  - SOUND_FOCUS (2) — directional "audio zoom": narrows the pickup toward the framed subject and
  *    tightens with optical/digital zoom (the 300 mm use case). Sets focus_zoom + focus_angle too.
  *  - SOUND_STAGE (5) — widened spatial stereo image.
  */
 enum class AudioScene(val effectType: Int) {
-    STANDARD(1),
+    STANDARD(0),
     SOUND_FOCUS(2),
     SOUND_STAGE(5),
 }

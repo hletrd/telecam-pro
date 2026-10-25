@@ -5,7 +5,9 @@ Use this as the source of truth when filling Play Console > Policy > App content
 ## Evidence
 
 - Package name: `me.hletrd.telecampro`
-- Declared permissions: `CAMERA`, `RECORD_AUDIO` — nothing else
+- Declared permissions: `CAMERA`, `RECORD_AUDIO` (runtime) and `MODIFY_AUDIO_SETTINGS` (install-time,
+  added 2026-10-25: passes the Sound Focus / Sound Stage choice and the device orientation to the
+  camcorder audio HAL; it reads no data) — nothing else
 - No photo/video library permission. `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, and
   `READ_MEDIA_VISUAL_USER_SELECTED` were removed on 2026-10-19 after Play flagged them under the
   Photo and Video Permissions policy; the source manifest strips them with `tools:node="remove"` and

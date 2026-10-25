@@ -1101,6 +1101,7 @@ check(
 GROUPS = {
     "CAMERA": ("Camera",),
     "RECORD_AUDIO": ("Microphone",),
+    "MODIFY_AUDIO_SETTINGS": ("Audio settings",),
 }
 for perm in sorted(declared):
     names = GROUPS.get(perm)

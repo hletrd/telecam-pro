@@ -9,6 +9,10 @@ EXPECTED_RELEASE_PERMISSIONS = frozenset(
     {
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
+        # Install-time (normal), added 2026-10-25 by owner decision: AudioFlinger refuses
+        # AudioManager.setParameters without it, and the vendor camcorder audio HAL takes Sound
+        # Focus / Sound Stage and the device orientation only that way. No access to audio content.
+        "android.permission.MODIFY_AUDIO_SETTINGS",
     }
 )
 

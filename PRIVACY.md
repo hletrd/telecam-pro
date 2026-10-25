@@ -1,6 +1,6 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-10-19_
+_Last updated: 2026-10-25_
 
 TeleCam Pro is a camera app for Android phones and tablets. This policy covers its permissions, captured
 media, and data handling.
@@ -16,6 +16,7 @@ cloud sync, or `INTERNET` permission.
 |---|---|
 | **Camera** | Shows the viewfinder and captures photos and videos. |
 | **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. Before recording, it is also used while the input level meter is visible in armed Video mode. |
+| **Audio settings** (`MODIFY_AUDIO_SETTINGS`) | Granted at install, no prompt. Passes the selected audio directionality (Standard, Sound Focus, Sound Stage) and how the phone is held to the phone's own recording audio processing. It gives no access to any audio. |
 
 TeleCam Pro requests no other permission. In particular, it holds no photo or video library
 permission (no `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, or `READ_MEDIA_VISUAL_USER_SELECTED`).

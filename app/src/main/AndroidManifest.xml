@@ -4,6 +4,11 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Install-time (normal) permission: AudioFlinger drops AudioManager.setParameters without it,
+         and the camcorder audio HAL takes the Sound Focus / Sound Stage choice and the device
+         orientation only through vendor parameters (VideoRecorder.applyAudioScene). It grants no
+         access to audio content. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!-- NO visual-media READ access (owner decision 2026-10-19, REVERSING 2026-08-01). Google Play
          flagged READ_MEDIA_IMAGES / READ_MEDIA_VIDEO under its Photo and Video Permissions policy:
