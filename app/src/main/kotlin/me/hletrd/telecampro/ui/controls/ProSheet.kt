@@ -1293,7 +1293,8 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
                 // The SELECTED preset's own measured focal, never the active route's: on the
                 // seamless photo route every preset rides one logical camera, so its ~23 mm
                 // equivalent described 1x only and made 3x read "23 mm" (verification 2026-08-02).
-                measuredEquivMm = state.lensInventory.presetEquivMm[state.lens] ?: 0f,
+                // A digital preset frames the main × its own chip position on the declared scale.
+                measuredEquivMm = state.presetFramingEquivMm(state.lens),
             )
         } else {
             null

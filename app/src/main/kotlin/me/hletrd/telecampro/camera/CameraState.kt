@@ -2292,6 +2292,24 @@ data class CameraUiState(
     val zoomPresets: ZoomPresets
         get() = zoomPresetsFor(phoneModel, lensInventory.homeEquivMm)
 
+    /**
+     * What [choice]'s chip actually frames here, in 35 mm-equivalent mm, for the Optics focal caption:
+     * the matched lens for an OPTICAL preset ([LensInventory.presetEquivMm]), else the main lens
+     * scaled by the chip's own position on the declared phone's scale ([zoomPresets]). The
+     * inventory's own digital figure scales the main by the GENERIC preset (main × 10 for the 10×),
+     * which on a vivo X300 Ultra's 35 mm main read 350 mm under a chip that applies vivo's 10× =
+     * 230 mm. For the generic presets the two are the same product of the same operands, so PMA110
+     * (all four optical) and every undeclared phone read exactly what they read before. Zero when
+     * unmeasured.
+     */
+    fun presetFramingEquivMm(choice: LensChoice): Float {
+        val measured = lensInventory.presetEquivMm[choice] ?: return 0f
+        if (choice in lensInventory.optical) return measured
+        val main = lensInventory.presetEquivMm[LensChoice.MAIN]?.takeIf { it.isFinite() && it > 0f }
+            ?: return measured
+        return main * zoomPresets.position(choice)
+    }
+
     /** The declared phone's TC magnetic stops ([teleZoomSnapsFor]): rail marks and snapping alike. */
     val teleZoomSnaps: List<Float>
         get() = teleZoomSnapsFor(phoneModel)

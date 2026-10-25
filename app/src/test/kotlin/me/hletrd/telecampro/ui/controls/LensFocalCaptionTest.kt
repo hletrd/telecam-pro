@@ -1,8 +1,11 @@
 package me.hletrd.telecampro.ui.controls
 
+import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.effectiveFocalMm
+import me.hletrd.telecampro.camera.lensInventoryOf
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -135,5 +138,45 @@ class LensFocalCaptionRouteRegressionTest {
             "23 mm",
             lensFocalCaption(LensChoice.TELE3X, teleconverter = false, teleconverterFocalMm = 300f, measuredEquivMm = 23f),
         )
+    }
+}
+
+/**
+ * The caption reads what a chip FRAMES on the declared phone's scale (`presetFramingEquivMm`): an
+ * optical preset is its measured lens, a digital one the main × the chip's own position.
+ */
+class LensFocalCaptionMakerScaleTest {
+    @Test
+    fun `PMA110 and an undeclared tablet read exactly the inventory's figures`() {
+        val pma110 = lensInventoryOf(listOf(14f, 23.4f, 69.4f, 230f), 0.6f to 20f, homeEquivMm = 23.4f)
+        val state = CameraUiState(lensInventory = pma110)
+        LensChoice.entries.forEach { lens ->
+            assertEquals(
+                pma110.presetEquivMm.getValue(lens).toRawBits(),
+                state.presetFramingEquivMm(lens).toRawBits(),
+            )
+        }
+        val tablet = lensInventoryOf(listOf(26f), 1f to 8f, homeEquivMm = 26f)
+        val other = CameraUiState(phoneModel = PhoneModel.OTHER, lensInventory = tablet)
+        assertEquals(
+            tablet.presetEquivMm.getValue(LensChoice.TELE3X).toRawBits(),
+            other.presetFramingEquivMm(LensChoice.TELE3X).toRawBits(),
+        )
+        assertEquals("78 mm", lensFocalCaption(LensChoice.TELE3X, false, 300f, other.presetFramingEquivMm(LensChoice.TELE3X)))
+    }
+
+    @Test
+    fun `a vivo Ultra's digital 10x reads vivo's 230 mm, not 10 x its 35 mm main`() {
+        val ultra = lensInventoryOf(listOf(14f, 35f, 85f), 0.4f to 30f, homeEquivMm = 35f)
+        val state = CameraUiState(phoneModel = PhoneModel.VIVO_X300_ULTRA, lensInventory = ultra)
+        assertEquals(350f, ultra.presetEquivMm.getValue(LensChoice.TELE10X), 1e-3f)
+        assertEquals(230f, state.presetFramingEquivMm(LensChoice.TELE10X), 1e-3f)
+        assertEquals(
+            "230 mm",
+            lensFocalCaption(LensChoice.TELE10X, false, 300f, state.presetFramingEquivMm(LensChoice.TELE10X)),
+        )
+        // Optical presets keep their measured lens.
+        assertEquals(35f, state.presetFramingEquivMm(LensChoice.MAIN), 0f)
+        assertEquals(85f, state.presetFramingEquivMm(LensChoice.TELE3X), 0f)
     }
 }
