@@ -61,21 +61,31 @@ enum class PhoneModel(
         listOf("PMA110", "CPH2841", "PMA120"),
         MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f),
     ),
-    // Find X9 Pro: 15 / 23 / 70 mm, 1x = 23 mm (oppo.com); chips unverified.
-    FIND_X9_PRO(70f, listOf("PLG110", "PLG120", "CPH2791"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f)),
+    // Find X9 Pro: 15 / 23 / 70 mm, 1x = 23 mm (oppo.com); chips unverified. OPPO prints its kit's
+    // TC stops as 10 / 20 / 40x: the 10x is the optical floor, 20 / 40 snap. (Literal lists, not a
+    // shared top-level val: a PhoneModel row reading TeleconverterKt would initialise that file
+    // class mid-enum, and its DEFAULT_TELECONVERTER_PROFILE would then build TeleconverterProfile
+    // against PhoneModel entries not yet assigned.)
+    FIND_X9_PRO(
+        70f,
+        listOf("PLG110", "PLG120", "CPH2791"),
+        MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 3f, teleZoomStops = listOf(20f, 40f)),
+    ),
     // Find X9s Pro: 15 / 23 / 65 mm, 1x = 23 mm; official chips 0.6 · 1 · 2 · 2.8 · 5.6 (oppo.com/cn).
     FIND_X9S_PRO(65f, listOf("PME110"), MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 2.8f, hidesTenX = true)),
     // Find X10: 15 / 23 / 65 mm, 1x = 23 mm; official chips 0.6 · 1 · 2 · 2.8 · 5.6 (oppo.com/cn, /en).
+    // TC stops 11 / 20 / 40x, where 11x is a crop of the kit's ~9.3x optical floor: 20 / 40 snap.
     FIND_X10(
         65f,
         listOf("PMW110", "CPH2911", "OPG09"),
-        MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 2.8f, hidesTenX = true),
+        MakerZoom(23f, 23f, ultraWideChip = 0.6f, teleChip = 2.8f, hidesTenX = true, teleZoomStops = listOf(20f, 40f)),
     ),
     // Find X10 Pro Max: 13 / 24 / 70 mm, 1x = 24 mm; official chips 0.5 · 1 · 2 · 3 · 6 (oppo.com).
+    // TC stops 10 / 20 / 40x (the 10x is the optical floor, ≈ 9.6x on the 24 mm scale).
     FIND_X10_PRO_MAX(
         70f,
         listOf("PMX110", "CPH2913"),
-        MakerZoom(24f, 24f, ultraWideChip = 0.5f, teleChip = 3f, hidesTenX = true),
+        MakerZoom(24f, 24f, ultraWideChip = 0.5f, teleChip = 3f, hidesTenX = true, teleZoomStops = listOf(20f, 40f)),
     ),
 
     // vivo: the ZEISS extenders are built for an 85 mm telephoto (vivo FAQ 1925 / 2137); the X300
@@ -182,6 +192,11 @@ data class MakerZoom(
      * is also the answer for every row whose chips are unverified.
      */
     val hidesTenX: Boolean = false,
+    /**
+     * The maker's TC magnetic stops, in total magnification, where its kit page prints them; null
+     * keeps the generic [TELE_ZOOM_SNAPS] ([teleZoomSnapsFor]).
+     */
+    val teleZoomStops: List<Float>? = null,
 )
 
 /** The phone assumed before detection runs — this app's reason for existing. */

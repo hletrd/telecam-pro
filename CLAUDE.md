@@ -724,7 +724,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   4. **`TELE_MAX_DISPLAY_ZOOM` (60×) stays FIXED and does not scale with the converter.** It caps
      TOTAL magnification, so the local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`)
      widens as the converter weakens — a 2× converter earns nearly the full 1–10× digital range,
-     and ordinary capability reconciliation clamps whatever the lens cannot actually deliver.
+     and ordinary capability reconciliation clamps whatever the lens cannot actually deliver. The
+     magnetic stops between floor and ceiling follow the declared maker (`teleZoomSnapsFor`):
+     OPPO's 20× / 40× on the Find X9 Pro / X10 / X10 Pro Max, the generic `TELE_ZOOM_SNAPS`
+     30× / 60× everywhere else (PMA110 included). The floor mark stays the OPTICAL field — the
+     app never adopts a maker's cropped start such as the X10's printed 11×.
   5. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter
      focal ÷ the host tele focal it was designed for) so the arithmetic is auditable against the
      maker's printed figure — and host focals differ: the Hasselblad kits target a 70 mm periscope,

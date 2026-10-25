@@ -2630,6 +2630,7 @@ class CameraViewModel private constructor(
             bounds = bounds,
             teleconverter = s.teleconverterMode,
             teleDisplayBase = s.teleDisplayBase,
+            snaps = s.teleZoomSnaps,
         )
         zoomGlide.pendingRatio = z
         if (zoomGlide.flushScheduled) return z // the scheduled flush picks up this newest value

@@ -2946,6 +2946,7 @@ internal fun FocalRail(
                     range?.lower,
                     range?.upper,
                     state.teleDisplayBase,
+                    state.teleZoomSnaps,
                 )
                 // The rail speaks TOTAL magnification while the controls carry the LENS-LOCAL ratio,
                 // so the current framing crosses into the marks' scale exactly once, here — on the

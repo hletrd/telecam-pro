@@ -387,7 +387,8 @@ enum class AudioInputPreference {
 // TELE mode's DISPLAY zoom ceiling (converter-equivalent, main-relative). Deliberately NOT scaled
 // by the converter: it caps TOTAL magnification, so the local-zoom headroom derived from it
 // (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase`) widens as the converter weakens. The user-spec
-// range is 13–60× on the kit optic, with magnetic snaps at 30× / 60×.
+// range is 13–60× on the kit optic, with magnetic snaps at 30× / 60× (the declared maker's own
+// stops where known — [teleZoomSnapsFor]).
 const val TELE_MAX_DISPLAY_ZOOM = 60f
 
 // Loupe Overview: an opt-in corner viewport re-drawing the FULL current camera frame while the
@@ -949,7 +950,18 @@ fun finderContainsTopLeftPoint(
 // teleDisplayBase), which is why `normalizeZoomRequest` converts in both directions instead of
 // comparing raw ratios. On a weak enough converter the 60× mark simply falls outside the lens's
 // range and the ordinary bounds clamp swallows it; that is intended, not a missing case.
-val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
+// This is the GENERIC pair — PMA110's, and every phone whose maker's converter stops are not known;
+// a named phone may declare its maker's own ([MakerZoom.teleZoomStops], read via [teleZoomSnapsFor]).
+val TELE_ZOOM_SNAPS: List<Float> = listOf(30f, 60f)
+
+/**
+ * The TC magnetic stops for the DECLARED [phone] (owner decision 2026-10-25): its maker's where
+ * known — OPPO prints 20× / 40× for the Find X9 Pro, X10 and X10 Pro Max kits — else
+ * [TELE_ZOOM_SNAPS]. Only the intermediate stops follow the maker: the rail's floor stays the
+ * converter's own OPTICAL field (`teleZoomMarks`), never a maker's cropped start such as the X10's
+ * 11×, and the ceiling stays [TELE_MAX_DISPLAY_ZOOM].
+ */
+fun teleZoomSnapsFor(phone: PhoneModel): List<Float> = phone.makerZoom?.teleZoomStops ?: TELE_ZOOM_SNAPS
 
 /**
  * Which [LensChoice] presets THIS device can actually deliver, and which of those are a real lens
@@ -2279,6 +2291,10 @@ data class CameraUiState(
      */
     val zoomPresets: ZoomPresets
         get() = zoomPresetsFor(phoneModel, lensInventory.homeEquivMm)
+
+    /** The declared phone's TC magnetic stops ([teleZoomSnapsFor]): rail marks and snapping alike. */
+    val teleZoomSnaps: List<Float>
+        get() = teleZoomSnapsFor(phoneModel)
 
     /**
      * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.

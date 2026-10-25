@@ -12,7 +12,6 @@ import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.LENS_CAPTION_ROUNDING_BAND
-import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.PhoneModel
@@ -207,8 +206,10 @@ internal fun effectiveZoomBounds(
  * 0.6/1/3/10 lens presets. They are DERIVED PER DEVICE, never literals:
  *  - the floor is the converter's own native field ([teleDisplayBase] scaled by the lens's own zoom
  *    floor, which is 1.0 on every route that reaches here — so ordinarily the base itself),
- *  - [TELE_ZOOM_SNAPS] contributes the round intermediate stops that lie STRICTLY inside the span,
- *    which is what keeps the rail's marks and the magnetic snapping the same set of numbers,
+ *  - [snaps] (the declared phone's stops, `CameraUiState.teleZoomSnaps`: the generic 30× / 60×, or a
+ *    maker's own such as OPPO's 20× / 40×) contributes the round intermediate stops that lie
+ *    STRICTLY inside the span, which is what keeps the rail's marks and the magnetic snapping the
+ *    same set of numbers,
  *  - the ceiling is whatever [effectiveZoomBounds] says this lens can actually reach — the SAME seam
  *    application clamps through, so every drawn mark is reachable by construction.
  *
@@ -221,6 +222,7 @@ internal fun teleZoomMarks(
     capsLower: Float?,
     capsUpper: Float?,
     teleDisplayBase: Float,
+    snaps: List<Float>,
 ): List<Float> {
     val base = teleDisplayBase
     if (!base.isFinite() || base <= 0f) return emptyList()
@@ -232,7 +234,7 @@ internal fun teleZoomMarks(
     val marks = mutableListOf(floor)
     // sorted() rather than trusting the constant's declaration order: the rail draws these left to
     // right and must stay ascending no matter how the snap list is later edited.
-    TELE_ZOOM_SNAPS.sorted().forEach { snap ->
+    snaps.sorted().forEach { snap ->
         if (snap > floor && snap < ceiling) marks.addDistinctMark(snap)
     }
     marks.addDistinctMark(ceiling)
@@ -271,6 +273,8 @@ internal fun normalizeZoomRequest(
     bounds: ZoomBounds?,
     teleconverter: Boolean,
     teleDisplayBase: Float,
+    /** The SAME stops the rail draws ([teleZoomMarks]); no default, so no caller snaps to PMA110's. */
+    snaps: List<Float>,
 ): Float {
     var value = bounds?.let { requested.coerceIn(it.lower, it.upper) } ?: requested
     if (!teleconverter || !value.isFinite()) return value
@@ -281,7 +285,7 @@ internal fun normalizeZoomRequest(
     val displayBase = teleDisplayBase
     val requestedDisplay = value * displayBase
     val currentDisplay = currentApplied * displayBase
-    val snap = TELE_ZOOM_SNAPS.firstOrNull { mark ->
+    val snap = snaps.firstOrNull { mark ->
         val band = mark * SNAP_FRACTION
         val requestedDistance = abs(requestedDisplay - mark)
         val currentDistance = abs(currentDisplay - mark)

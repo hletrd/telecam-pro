@@ -9,6 +9,8 @@ import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
+import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
+import me.hletrd.telecampro.camera.teleZoomSnapsFor
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.normalizedForCaptureMode
 import me.hletrd.telecampro.camera.logicalZoomDisplayFactor
@@ -102,6 +104,7 @@ class ZoomMathTest {
             bounds = bounds,
             teleconverter = true,
             teleDisplayBase = kitBase,
+            snaps = TELE_ZOOM_SNAPS,
         )
         assertEquals(30f, normalized * kitBase, 0.001f)
     }
@@ -116,6 +119,7 @@ class ZoomMathTest {
                 bounds,
                 teleconverter = true,
                 teleDisplayBase = kitBase,
+                snaps = TELE_ZOOM_SNAPS,
             )
         }
         assertTrue(current * kitBase > 33f)
@@ -129,6 +133,7 @@ class ZoomMathTest {
             bounds,
             teleconverter = true,
             teleDisplayBase = kitBase,
+            snaps = TELE_ZOOM_SNAPS,
         )
         assertEquals(60f, normalized * kitBase, 0.001f)
     }
@@ -611,6 +616,7 @@ class ZoomMathTest {
             bounds = bounds,
             teleconverter = true,
             teleDisplayBase = kitBase,
+            snaps = TELE_ZOOM_SNAPS,
         )
         assertEquals(30f, normalized * kitBase, 0.001f)
     }
@@ -646,6 +652,7 @@ class ZoomMathTest {
             bounds = weak,
             teleconverter = true,
             teleDisplayBase = pma110Base(2f),
+            snaps = TELE_ZOOM_SNAPS,
         )
         assertEquals(30f, snapped * pma110Base(2f), 0.001f)
     }
@@ -675,7 +682,7 @@ class ZoomMathTest {
             hostTeleEquivMm = PhoneModel.VIVO_X300_ULTRA.teleEquivMm,
             mainEquivMm = oneXReferenceMm(PhoneModel.VIVO_X300_ULTRA, 35f),
         )
-        val marks = teleZoomMarks(1f, 10f, vivoBase)
+        val marks = teleZoomMarks(1f, 10f, vivoBase, snaps = TELE_ZOOM_SNAPS)
         assertEquals(listOf("17.4×", "30×", "60×"), marks.map { formatZoomMark(it) })
         val bounds = effectiveZoomBounds(1f, 10f, teleconverter = true, teleDisplayBase = vivoBase)!!
         assertEquals(TELE_MAX_DISPLAY_ZOOM / vivoBase, bounds.upper, 1e-4f)
@@ -685,6 +692,7 @@ class ZoomMathTest {
             bounds = bounds,
             teleconverter = true,
             teleDisplayBase = vivoBase,
+            snaps = TELE_ZOOM_SNAPS,
         )
         assertEquals(30f, snapped * vivoBase, 0.001f)
         // The pill reads the same scale the marks were drawn on.
@@ -876,7 +884,7 @@ class ZoomMathTest {
     fun `kit optic on this device offers its native field, the round stops, and the ceiling`() {
         // PMA110's standalone tele advertises 1-10x digital, which is more headroom than the 60x
         // total cap needs — so the span is the converter's own 13x up to exactly 60x.
-        val marks = teleZoomMarks(1f, 10f, kitBase)
+        val marks = teleZoomMarks(1f, 10f, kitBase, snaps = TELE_ZOOM_SNAPS)
         assertEquals(3, marks.size)
         assertEquals(kitBase, marks[0], 0.001f)
         assertEquals(30f, marks[1], 0.001f)
@@ -884,11 +892,84 @@ class ZoomMathTest {
         assertEquals(listOf("13×", "30×", "60×"), marks.map { formatZoomMark(it) })
     }
 
+    // ---- TC stops follow the declared maker (owner decision 2026-10-25) ----
+
+    @Test
+    fun `PMA110 keeps its 13x, 30x and 60x marks and snaps`() {
+        assertEquals(TELE_ZOOM_SNAPS, teleZoomSnapsFor(PhoneModel.FIND_X9_ULTRA))
+        assertEquals(listOf(30f, 60f), TELE_ZOOM_SNAPS)
+        val marks = teleZoomMarks(1f, 10f, kitBase, snaps = teleZoomSnapsFor(PhoneModel.FIND_X9_ULTRA))
+        assertEquals(listOf("13×", "30×", "60×"), marks.map { formatZoomMark(it) })
+        val snapped = normalizeZoomRequest(
+            requested = 29f / kitBase,
+            currentApplied = 25f / kitBase,
+            bounds = kitBounds(1f, 10f, teleconverter = true),
+            teleconverter = true,
+            teleDisplayBase = kitBase,
+            snaps = teleZoomSnapsFor(PhoneModel.FIND_X9_ULTRA),
+        )
+        assertEquals(30f, snapped * kitBase, 0.001f)
+    }
+
+    @Test
+    fun `OPPO's 3_28x kits snap at the 20x and 40x the maker prints`() {
+        listOf(PhoneModel.FIND_X9_PRO, PhoneModel.FIND_X10, PhoneModel.FIND_X10_PRO_MAX).forEach { phone ->
+            assertEquals(phone.name, listOf(20f, 40f), teleZoomSnapsFor(phone))
+        }
+        // Find X10: 3.28x glass on its 65 mm tele over OPPO's 23 mm 1x. The floor is the OPTICAL
+        // ≈ 9.3x; the app does not invent OPPO's cropped 11x start.
+        val x10Base = teleDisplayBase(
+            magnification = TeleconverterProfile.HASSELBLAD_X10.magnification,
+            hostTeleEquivMm = PhoneModel.FIND_X10.teleEquivMm,
+            mainEquivMm = oneXReferenceMm(PhoneModel.FIND_X10, 23f),
+        )
+        val x10Marks = teleZoomMarks(1f, 10f, x10Base, snaps = teleZoomSnapsFor(PhoneModel.FIND_X10))
+        assertEquals(listOf("9.3×", "20×", "40×", "60×"), x10Marks.map { formatZoomMark(it) })
+        val bounds = effectiveZoomBounds(1f, 10f, teleconverter = true, teleDisplayBase = x10Base)
+        val snapped = normalizeZoomRequest(
+            requested = 19.5f / x10Base,
+            currentApplied = 16f / x10Base,
+            bounds = bounds,
+            teleconverter = true,
+            teleDisplayBase = x10Base,
+            snaps = teleZoomSnapsFor(PhoneModel.FIND_X10),
+        )
+        assertEquals(20f, snapped * x10Base, 0.001f)
+        // The generic 30x is NOT a stop there: a request at 29x stays at 29x.
+        val free = normalizeZoomRequest(
+            requested = 29f / x10Base,
+            currentApplied = 25f / x10Base,
+            bounds = bounds,
+            teleconverter = true,
+            teleDisplayBase = x10Base,
+            snaps = teleZoomSnapsFor(PhoneModel.FIND_X10),
+        )
+        assertEquals(29f, free * x10Base, 0.001f)
+        // Find X10 Pro Max: 230 mm over its 24 mm 1x ≈ 9.6x floor, then 20x and 40x.
+        val proMaxBase = teleDisplayBase(
+            magnification = TeleconverterProfile.HASSELBLAD_230_X10_PRO_MAX.magnification,
+            hostTeleEquivMm = PhoneModel.FIND_X10_PRO_MAX.teleEquivMm,
+            mainEquivMm = oneXReferenceMm(PhoneModel.FIND_X10_PRO_MAX, 24f),
+        )
+        assertEquals(
+            listOf("9.6×", "20×", "40×", "60×"),
+            teleZoomMarks(1f, 10f, proMaxBase, snaps = teleZoomSnapsFor(PhoneModel.FIND_X10_PRO_MAX))
+                .map { formatZoomMark(it) },
+        )
+    }
+
+    @Test
+    fun `every other phone keeps the generic stops`() {
+        PhoneModel.entries
+            .filterNot { it in setOf(PhoneModel.FIND_X9_PRO, PhoneModel.FIND_X10, PhoneModel.FIND_X10_PRO_MAX) }
+            .forEach { assertEquals(it.name, TELE_ZOOM_SNAPS, teleZoomSnapsFor(it)) }
+    }
+
     @Test
     fun `a weaker converter moves the base without moving the round stops`() {
         // The stops are TOTAL magnifications, so they stay 30/60 while the native field halves —
         // and the weaker optic still reaches 60x because its local ceiling widens inversely.
-        val marks = teleZoomMarks(1f, 10f, pma110Base(2f))
+        val marks = teleZoomMarks(1f, 10f, pma110Base(2f), snaps = TELE_ZOOM_SNAPS)
         assertEquals(pma110Base(2f), marks[0], 0.001f)
         assertEquals(listOf("6.1×", "30×", "60×"), marks.map { formatZoomMark(it) })
     }
@@ -897,7 +978,7 @@ class ZoomMathTest {
     fun `a lens that cannot reach a stop never draws it`() {
         // 2x digital on the kit optic tops out at ~26x: 30x and 60x are unreachable, and a chip that
         // cannot be activated is worse than a missing one.
-        val marks = teleZoomMarks(1f, 2f, kitBase)
+        val marks = teleZoomMarks(1f, 2f, kitBase, snaps = TELE_ZOOM_SNAPS)
         assertEquals(2, marks.size)
         assertEquals(kitBase, marks[0], 0.001f)
         assertEquals(2f * kitBase, marks[1], 0.001f)
@@ -917,7 +998,7 @@ class ZoomMathTest {
         ).forEach { (lower, upper, magnification) ->
             val bounds = effectiveZoomBounds(lower, upper, true, pma110Base(magnification))!!
             val base = pma110Base(magnification)
-            val marks = teleZoomMarks(lower, upper, pma110Base(magnification))
+            val marks = teleZoomMarks(lower, upper, pma110Base(magnification), snaps = TELE_ZOOM_SNAPS)
             assertTrue("$magnification: empty", marks.isNotEmpty())
             assertEquals("$magnification: ascending", marks.sorted(), marks)
             marks.forEach { mark ->
@@ -931,13 +1012,13 @@ class ZoomMathTest {
 
     @Test
     fun `a lens pinned to one zoom degenerates to a single mark`() {
-        val marks = teleZoomMarks(1f, 1f, kitBase)
+        val marks = teleZoomMarks(1f, 1f, kitBase, snaps = TELE_ZOOM_SNAPS)
         assertEquals(listOf("13×"), marks.map { formatZoomMark(it) })
     }
 
     @Test
     fun `a tapped mark highlights itself after the round trip through the local scale`() {
-        val marks = teleZoomMarks(1f, 10f, kitBase)
+        val marks = teleZoomMarks(1f, 10f, kitBase, snaps = TELE_ZOOM_SNAPS)
         marks.forEach { mark ->
             // Exactly what activation does: total -> lens-local ratio -> back through the display
             // base for the highlight. Float drift here must never de-select the tapped chip.
@@ -948,7 +1029,7 @@ class ZoomMathTest {
 
     @Test
     fun `a free pinch between marks highlights none of them`() {
-        val marks = teleZoomMarks(1f, 10f, kitBase)
+        val marks = teleZoomMarks(1f, 10f, kitBase, snaps = TELE_ZOOM_SNAPS)
         assertNull(selectedTeleZoomMark(marks, 22f))
         // A value that deliberately escaped the 6% magnetic snap band reads as unselected rather
         // than keeping the chip lit at a framing it no longer describes.
