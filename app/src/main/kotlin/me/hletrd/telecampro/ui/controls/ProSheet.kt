@@ -82,6 +82,10 @@ import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.ExposureStep
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AudioScene
+import me.hletrd.telecampro.camera.STILL_QUALITY_MAX
+import me.hletrd.telecampro.camera.STILL_QUALITY_MIN
+import me.hletrd.telecampro.camera.STILL_QUALITY_STEP
+import me.hletrd.telecampro.camera.normalizeStillQuality
 import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.CameraUiState
@@ -1003,10 +1007,17 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // the same value to HeifCapture), and HEIF is a default output — the old name claimed the
         // control skipped a HEIF-only shooter's files (UI review #8).
         label = stringResource(R.string.label_still_quality),
+        hint = stringResource(R.string.hint_still_quality),
         valueLabel = state.controls.jpegQuality.toString(),
-        value = state.controls.jpegQuality.toFloat().coerceIn(1f, 100f),
-        onValueChange = { actions.onJpegQuality(it.roundToInt()) },
-        valueRange = 1f..100f,
+        value = state.controls.jpegQuality.toFloat()
+            .coerceIn(STILL_QUALITY_MIN.toFloat(), STILL_QUALITY_MAX.toFloat()),
+        // Snaps to the 5-step grid (normalizeStillQuality): only changed steps reach the VM.
+        onValueChange = { raw ->
+            val snapped = normalizeStillQuality(raw.roundToInt())
+            if (snapped != state.controls.jpegQuality) actions.onJpegQuality(snapped)
+        },
+        valueRange = STILL_QUALITY_MIN.toFloat()..STILL_QUALITY_MAX.toFloat(),
+        keyboardStep = STILL_QUALITY_STEP.toFloat(),
     )
     // "Release", the Sony group name for drive mode + interval + self-timer. A bare "Drive" header
     // would only echo the row directly under it, but WITHOUT a header here the three release rows
@@ -1105,18 +1116,31 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.shutterDialEnabled,
     )
     val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
+    // The same stop marks as the Fn ISO ruler (isoStops, at the Step setting — 1/3 EV by default),
+    // indexed, not a linear ISO axis: a linear 50–12800 slider moved hundreds of ISO per pixel at the
+    // top and could not land a standard value by touch (owner, 2026-10-25).
+    val isoMarks = remember(isoRange.lower, isoRange.upper, controls.exposureStep) {
+        isoStops(isoRange.lower, isoRange.upper, controls.exposureStep.ev)
+    }
+    val isoIndex = isoMarks.indices.minByOrNull { kotlin.math.abs(isoMarks[it] - controls.iso) } ?: 0
     LabeledSlider(
         label = stringResource(R.string.label_iso),
+        hint = stringResource(R.string.hint_iso),
         valueLabel = controls.iso.toString(),
-        value = controls.iso.toFloat().coerceIn(isoRange.lower.toFloat(), isoRange.upper.toFloat()),
-        onValueChange = { actions.onIso(it.roundToInt()) },
-        valueRange = isoRange.lower.toFloat()..isoRange.upper.toFloat(),
-        enabled = availability.isoDialEnabled &&
+        value = isoIndex.toFloat(),
+        onValueChange = { raw ->
+            val mark = isoMarks[raw.roundToInt().coerceIn(0, isoMarks.lastIndex)]
+            if (mark != controls.iso) actions.onIso(mark)
+        },
+        valueRange = 0f..(isoMarks.lastIndex.coerceAtLeast(1)).toFloat(),
+        keyboardStep = 1f,
+        enabled = availability.isoDialEnabled && isoMarks.size > 1 &&
             (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
 
     SegmentedSelector(
         label = stringResource(R.string.label_metering),
+        hint = stringResource(R.string.hint_metering),
         options = availability.meteringModes,
         selected = controls.meteringMode,
         labelFor = { labelContext.localizedLabel(it) },

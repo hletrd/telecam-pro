@@ -337,7 +337,7 @@ class SettingsStore(
                 // ticker's log-space math (a 0 makes target/cur = Inf -> NaN loop).
                 zoomRatio = safeFloat("${prefix}zoomRatio", d.zoomRatio)
                     .let { if (it.isFinite()) it.coerceIn(0.1f, 100f) else d.zoomRatio },
-                jpegQuality = safeInt("${prefix}jpegQuality", d.jpegQuality),
+                jpegQuality = me.hletrd.telecampro.camera.normalizeStillQuality(safeInt("${prefix}jpegQuality", d.jpegQuality)),
             )
             val ed = ExtraSettings()
             val restoredPhone = enumOr(safeString("${prefix}phoneModel", null), missingPhoneModel())

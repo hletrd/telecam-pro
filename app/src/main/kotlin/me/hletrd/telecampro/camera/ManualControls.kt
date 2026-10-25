@@ -492,6 +492,20 @@ internal val STANDARD_ISO_LADDER = intArrayOf(
     32000, 40000, 51200, 64000, 80000, 102400,
 )
 
+/**
+ * Still quality on its offered grid (owner request 2026-10-25): 40 to 100 in steps of 5. Below ~40
+ * JPEG/HEIF blocking is visible at a glance, and single-unit steps on a phone slider were not
+ * settable by touch. The slider snaps through this, and a restored value off the grid (any older
+ * blob, e.g. 92) takes its nearest step.
+ */
+internal fun normalizeStillQuality(quality: Int): Int =
+    (Math.round(quality / STILL_QUALITY_STEP.toDouble()) * STILL_QUALITY_STEP).toInt()
+        .coerceIn(STILL_QUALITY_MIN, STILL_QUALITY_MAX)
+
+internal const val STILL_QUALITY_MIN = 40
+internal const val STILL_QUALITY_MAX = 100
+internal const val STILL_QUALITY_STEP = 5
+
 /** The [STANDARD_ISO_LADDER] mark nearest [iso] in stops (log distance); ISO <= 0 maps to the lowest. */
 internal fun snapIsoToStandardStop(iso: Int): Int {
     if (iso <= 0) return STANDARD_ISO_LADDER.first()
