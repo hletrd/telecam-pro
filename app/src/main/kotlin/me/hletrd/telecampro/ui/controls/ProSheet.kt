@@ -229,6 +229,7 @@ internal fun PhoneModelDropdown(
     val labels = PhoneModel.entries.associateWith { phoneModelLabel(it) }
     DropdownRow(
         label = stringResource(R.string.label_phone),
+        hint = stringResource(R.string.hint_phone),
         options = PhoneModel.entries,
         selected = selected,
         labelFor = labels::getValue,
@@ -251,6 +252,7 @@ internal fun TeleconverterProfileDropdown(
     val labels = options.associateWith { teleconverterProfileLabel(it) }
     DropdownRow(
         label = stringResource(R.string.label_converter),
+        hint = stringResource(R.string.hint_converter),
         options = options,
         selected = selected,
         labelFor = labels::getValue,
@@ -964,6 +966,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     }
     SegmentedSelector(
         label = stringResource(R.string.label_aspect),
+        hint = stringResource(R.string.hint_aspect),
         options = AspectRatio.entries,
         selected = state.aspectRatio,
         labelFor = ::aspectRatioLabel,
@@ -987,6 +990,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             SectionHeader(stringResource(R.string.section_framing))
             LabeledSlider(
                 label = stringResource(R.string.label_zoom),
+                hint = stringResource(R.string.hint_zoom),
                 valueLabel = formatZoomMultiplier(scale.display(state.controls.zoomRatio)),
                 value = scale.display(state.controls.zoomRatio).coerceIn(scale.lo, scale.hi),
                 onValueChange = { v -> actions.onZoomRatio(scale.localForDisplay(v)) },
@@ -1010,6 +1014,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_release))
     SegmentedSelector(
         label = stringResource(R.string.label_drive),
+        hint = stringResource(R.string.hint_drive),
         options = DriveMode.entries,
         selected = state.driveMode,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1020,6 +1025,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     }
     SegmentedSelector(
         label = stringResource(R.string.label_self_timer),
+        hint = stringResource(R.string.hint_self_timer),
         options = ShutterTimer.entries,
         selected = state.timer,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1034,6 +1040,7 @@ internal fun TimelapseIntervalSlider(intervalSec: Int, onIntervalSec: (Int) -> U
     val normalized = normalizeTimelapseIntervalSeconds(intervalSec)
     LabeledSlider(
         label = stringResource(R.string.label_interval),
+        hint = stringResource(R.string.hint_interval),
         valueLabel = "${normalized}s",
         value = normalized.toFloat(),
         onValueChange = { onIntervalSec(it.roundToInt()) },
@@ -1056,6 +1063,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
         label = stringResource(R.string.label_mode),
+        hint = stringResource(R.string.hint_exposure_mode),
         options = availability.exposureModes,
         selected = controls.exposureMode,
         labelFor = { exposureModeLetter(it) },
@@ -1064,12 +1072,14 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
     ToggleRow(
         label = stringResource(R.string.label_ae_lock),
+        hint = stringResource(R.string.hint_ae_lock),
         checked = controls.aeLock,
         onCheckedChange = actions::onToggleAeLock,
         enabled = availability.aeLockEnabled,
     )
     SegmentedSelector(
         label = stringResource(R.string.label_flicker),
+        hint = stringResource(R.string.hint_flicker),
         options = availability.antibandingModes,
         selected = controls.antibanding,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1078,6 +1088,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_shutter),
+        hint = stringResource(R.string.hint_shutter),
         options = ShutterMode.entries,
         selected = controls.shutterMode,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1086,6 +1097,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_step),
+        hint = stringResource(R.string.hint_step),
         options = ExposureStep.entries,
         selected = controls.exposureStep,
         labelFor = { "${exposureStepLabel(it)} EV" },
@@ -1117,6 +1129,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_white_balance))
     SegmentedSelector(
         label = stringResource(R.string.label_wb),
+        hint = stringResource(R.string.hint_wb),
         options = availability.wbModes,
         selected = controls.wbMode,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1126,6 +1139,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     if (controls.wbMode == WbMode.MANUAL) {
         LabeledSlider(
             label = stringResource(R.string.label_kelvin),
+            hint = stringResource(R.string.hint_kelvin),
             valueLabel = "${controls.wbKelvin}K",
             value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
             onValueChange = { actions.onWbKelvin(it.roundToInt()) },
@@ -1134,6 +1148,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         )
         LabeledSlider(
             label = stringResource(R.string.label_tint),
+            hint = stringResource(R.string.hint_tint),
             valueLabel = "%+d".format(Locale.US, controls.wbTint),
             value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
             onValueChange = { actions.onWbTint(it.roundToInt()) },
@@ -1185,6 +1200,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_autofocus))
     SegmentedSelector(
         label = stringResource(R.string.label_af),
+        hint = stringResource(R.string.hint_af),
         options = availability.focusModes,
         selected = controls.focusMode,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1194,6 +1210,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     // Sony Focus Area: Spot S/M/L — the size of the tap-AF/metering region.
     SegmentedSelector(
         label = stringResource(R.string.label_spot_size),
+        hint = stringResource(R.string.hint_spot_size),
         options = AfSpotSize.entries,
         selected = controls.afSpotSize,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1203,6 +1220,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     if (controls.focusMode != FocusMode.MANUAL) {
         ToggleRow(
             label = stringResource(R.string.label_af_lock),
+            hint = stringResource(R.string.hint_af_lock),
             checked = controls.afLock,
             onCheckedChange = actions::onAfLock,
             enabled = availability.afLockEnabled,
@@ -1241,9 +1259,10 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         },
     )
     SectionHeader(stringResource(R.string.section_mf_assist))
-    ToggleRow(label = stringResource(R.string.label_peaking), checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
+    ToggleRow(label = stringResource(R.string.label_peaking), checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking, hint = stringResource(R.string.hint_peaking))
     SegmentedSelector(
         label = stringResource(R.string.label_peaking_level),
+        hint = stringResource(R.string.hint_peaking_level),
         options = PeakingLevel.entries,
         selected = state.peakingLevel,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1252,6 +1271,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_peaking_color),
+        hint = stringResource(R.string.hint_peaking_color),
         options = PeakingColor.entries,
         selected = state.peakingColor,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1427,7 +1447,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     if (state.caps?.oisAvailable == true) {
-        ToggleRow(label = stringResource(R.string.label_photo_ois), checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
+        ToggleRow(label = stringResource(R.string.label_photo_ois), checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis, hint = stringResource(R.string.hint_photo_ois))
     }
 }
 
@@ -1451,6 +1471,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_recording_format))
     SegmentedSelector(
         label = stringResource(R.string.label_codec),
+        hint = stringResource(R.string.hint_video_codec),
         options = codecOptions,
         selected = codec,
         labelFor = ::videoCodecLabel,
@@ -1462,6 +1483,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // list to the camera's 4:3 sizes.
     ToggleRow(
         label = stringResource(R.string.label_open_gate_43),
+        hint = stringResource(R.string.hint_open_gate),
         checked = state.openGate,
         onCheckedChange = actions::onToggleOpenGate,
         enabled = recordingMutable,
@@ -1488,6 +1510,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     } else {
         SegmentedSelector(
             label = stringResource(R.string.label_resolution),
+            hint = stringResource(R.string.hint_resolution),
             options = resolutionOptions,
             selected = state.videoResolution,
             labelFor = ::videoResolutionLabel,
@@ -1511,6 +1534,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     } else {
         SegmentedSelector(
             label = stringResource(R.string.label_fps),
+            hint = stringResource(R.string.hint_fps),
             options = fpsOptions,
             selected = state.videoFrameRate,
             labelFor = ::videoFrameRateLabel,
@@ -1520,6 +1544,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }
     SegmentedSelector(
         label = stringResource(R.string.label_bitrate),
+        hint = stringResource(R.string.hint_video_bitrate),
         options = BitrateLevel.entries,
         selected = state.bitrateLevel,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1650,6 +1675,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         }
         SegmentedSelector(
             label = stringResource(R.string.label_bitrate),
+            hint = stringResource(R.string.hint_audio_bitrate),
             options = audioOptions[state.audioCodec]?.bitratesKbps.orEmpty(),
             selected = state.audioBitrateKbps,
             labelFor = { "$it kbps" },
@@ -1659,6 +1685,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }
     SegmentedSelector(
         label = stringResource(R.string.label_input),
+        hint = stringResource(R.string.hint_input),
         options = AudioInputPreference.entries,
         selected = state.audioInputPreference,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1676,6 +1703,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         // mics listen (subject-aimed Sound Focus vs wide Sound Stage) — "Scene" read as a picture
         // style and was reported un-findable (2026-07-31).
         label = stringResource(R.string.label_directionality),
+        hint = stringResource(R.string.hint_directionality),
         options = AudioScene.entries,
         selected = state.audioScene,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1684,6 +1712,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
     LabeledSlider(
         label = stringResource(R.string.label_gain),
+        hint = stringResource(R.string.hint_gain),
         // NOT formatZoomMultiplier: that formatter is documented as the shared ZOOM typography, and
         // coupling a gain readout to it means any future zoom-only change (a suffix, a clamp, a
         // locale rule) silently reformats audio gain.
@@ -1705,6 +1734,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_processing))
     SegmentedSelector(
         label = stringResource(R.string.label_sharpness),
+        hint = stringResource(R.string.hint_sharpness),
         options = availability.edgeModes,
         selected = controls.edge,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1713,6 +1743,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_nr),
+        hint = stringResource(R.string.hint_nr),
         options = availability.noiseReductionModes,
         selected = controls.noiseReduction,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1721,6 +1752,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_color),
+        hint = stringResource(R.string.hint_color),
         options = availability.colorEffects,
         selected = controls.colorEffect,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1738,16 +1770,18 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // shows the normal image, the recorded file stays log.
     ToggleRow(
         label = stringResource(R.string.label_gamma_disp_assist),
+        hint = stringResource(R.string.hint_gamma_disp_assist),
         checked = state.gammaAssist,
         onCheckedChange = actions::onToggleGammaAssist,
         enabled = state.transfer.isLog,
     )
     SectionHeader(stringResource(R.string.section_exposure_aids))
-    ToggleRow(label = stringResource(R.string.label_zebra), checked = state.zebra, onCheckedChange = actions::onToggleZebra)
+    ToggleRow(label = stringResource(R.string.label_zebra), checked = state.zebra, onCheckedChange = actions::onToggleZebra, hint = stringResource(R.string.hint_zebra))
     SegmentedSelector(
         // "Level" with % values (Sony: "Zebra Level"): the old label named IRE while every chip
         // printed a percent sign — one unit promised, another worn (UI review #19).
         label = stringResource(R.string.label_zebra_level),
+        hint = stringResource(R.string.hint_zebra_level),
         options = ZebraLevel.entries,
         selected = state.zebraLevel,
         labelFor = {
@@ -1761,14 +1795,15 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onZebraLevel,
         enabled = state.zebra,
     )
-    ToggleRow(label = stringResource(R.string.label_false_color), checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
-    ToggleRow(label = stringResource(R.string.label_histogram), checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
-    ToggleRow(label = stringResource(R.string.label_waveform), checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
+    ToggleRow(label = stringResource(R.string.label_false_color), checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor, hint = stringResource(R.string.hint_false_color))
+    ToggleRow(label = stringResource(R.string.label_histogram), checked = state.histogram, onCheckedChange = actions::onToggleHistogram, hint = stringResource(R.string.hint_histogram))
+    ToggleRow(label = stringResource(R.string.label_waveform), checked = state.waveform, onCheckedChange = actions::onToggleWaveform, hint = stringResource(R.string.hint_waveform))
     SectionHeader(stringResource(R.string.section_framing))
     // Beside Grid, not under Monitor (UI review #20): both are framing overlays, and filing half of
     // them a section away made a user scanning for framing marks miss this one.
     SegmentedSelector(
         label = stringResource(R.string.label_frame_lines),
+        hint = stringResource(R.string.hint_frame_lines),
         options = FrameLineType.entries,
         selected = state.frameLines,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1776,15 +1811,16 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     )
     SegmentedSelector(
         label = stringResource(R.string.label_grid),
+        hint = stringResource(R.string.hint_grid),
         options = GridType.entries,
         selected = state.grid,
         labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onGridType,
     )
-    ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel)
+    ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel, hint = stringResource(R.string.hint_level))
     SectionHeader(stringResource(R.string.section_focus_aids))
     // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
-    ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
+    ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn, hint = stringResource(R.string.hint_loupe))
     // NO section header here (UI review #9): the overview stopped being teleconverter-specific
     // when the zoom floor qualified any lens (2026-07-29) — the old "Teleconverter" header was the
     // stale claim the caption below already refutes — and the row's parent GATE is the Loupe toggle
@@ -1893,17 +1929,20 @@ private fun AdvancedTab(
     SectionHeader(stringResource(R.string.section_startup))
     ToggleRow(
         label = stringResource(R.string.label_remember_settings),
+        hint = stringResource(R.string.hint_remember_settings),
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
     ToggleRow(
         label = stringResource(R.string.label_remember_lens),
+        hint = stringResource(R.string.hint_remember_lens),
         checked = state.preserveLensSelection,
         onCheckedChange = actions::onTogglePreserveLensSelection,
         enabled = state.rememberSettings,
     )
     ToggleRow(
         label = stringResource(R.string.label_remember_teleconverter),
+        hint = stringResource(R.string.hint_remember_teleconverter),
         checked = state.preserveTeleconverter,
         onCheckedChange = actions::onTogglePreserveTeleconverter,
         enabled = state.rememberSettings,
@@ -1921,6 +1960,7 @@ private fun AdvancedTab(
     // (MainActivity routes both to it) — say so in the label (cycle-6 D-13).
     SegmentedSelector(
         label = stringResource(R.string.label_full_press_volume),
+        hint = stringResource(R.string.hint_full_press_volume),
         options = HardwareKeyAction.entries,
         selected = state.volumeKeyAction,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1928,6 +1968,7 @@ private fun AdvancedTab(
     )
     SegmentedSelector(
         label = stringResource(R.string.label_half_press),
+        hint = stringResource(R.string.hint_half_press),
         options = HardwareKeyAction.entries,
         selected = state.halfPressAction,
         labelFor = { labelContext.localizedLabel(it) },
@@ -1937,6 +1978,7 @@ private fun AdvancedTab(
     // (AEL, Loupe) blip on/off within one press, which is honest to what the key delivers.
     SegmentedSelector(
         label = stringResource(R.string.label_quick_button),
+        hint = stringResource(R.string.hint_quick_button),
         options = HardwareKeyAction.entries,
         selected = state.quickButtonAction,
         labelFor = { labelContext.localizedLabel(it) },

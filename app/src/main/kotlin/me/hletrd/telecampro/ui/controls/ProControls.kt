@@ -290,6 +290,20 @@ internal fun <T> SegmentedSelector(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    hint: String? = null,
+) {
+    Captioned(hint) { SegmentedSelectorCore(label, options, selected, labelFor, onSelect, modifier, enabled) }
+}
+
+@Composable
+private fun <T> SegmentedSelectorCore(
+    label: String,
+    options: List<T>,
+    selected: T,
+    labelFor: (T) -> String,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Column(
         modifier = modifier
@@ -416,6 +430,21 @@ private fun OutputFormatChip(
 /** Label + value header with a pro-camera-style tick slider beneath it. */
 @Composable
 internal fun LabeledSlider(
+    label: String,
+    valueLabel: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    keyboardStep: Float? = null,
+    hint: String? = null,
+) {
+    Captioned(hint) { LabeledSliderCore(label, valueLabel, value, onValueChange, valueRange, modifier, enabled, keyboardStep) }
+}
+
+@Composable
+private fun LabeledSliderCore(
     label: String,
     valueLabel: String,
     value: Float,
@@ -635,6 +664,18 @@ internal fun ToggleRow(
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    hint: String? = null,
+) {
+    Captioned(hint) { ToggleRowCore(label, checked, onCheckedChange, modifier, enabled) }
+}
+
+@Composable
+private fun ToggleRowCore(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val accessibility = toggleSettingSemantics(
         label,
@@ -790,6 +831,20 @@ internal fun LabelValueRow(
  */
 @Composable
 internal fun <T> DropdownRow(
+    label: String,
+    options: List<T>,
+    selected: T,
+    labelFor: (T) -> String,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    hint: String? = null,
+) {
+    Captioned(hint) { DropdownRowCore(label, options, selected, labelFor, onSelect, modifier, enabled) }
+}
+
+@Composable
+private fun <T> DropdownRowCore(
     label: String,
     options: List<T>,
     selected: T,
