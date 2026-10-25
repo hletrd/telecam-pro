@@ -4,6 +4,7 @@ import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MAX_SECONDS
 import me.hletrd.telecampro.camera.TIMELAPSE_INTERVAL_MIN_SECONDS
 import me.hletrd.telecampro.camera.normalizeTimelapseIntervalSeconds
+import me.hletrd.telecampro.camera.declaredPresetEquivMm
 
 import android.util.Range
 import androidx.activity.compose.BackHandler
@@ -1295,6 +1296,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
                 // equivalent described 1x only and made 3x read "23 mm" (verification 2026-08-02).
                 // A digital preset frames the main × its own chip position on the declared scale.
                 measuredEquivMm = state.presetFramingEquivMm(state.lens),
+                declaredEquivMm = state.phoneModel.declaredPresetEquivMm(state.lens),
             )
         } else {
             null

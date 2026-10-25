@@ -4,6 +4,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
+import me.hletrd.telecampro.camera.declaredPresetEquivMm
 import me.hletrd.telecampro.camera.effectiveFocalMm
 import me.hletrd.telecampro.camera.lensInventoryOf
 import org.junit.Assert.assertEquals
@@ -189,5 +190,34 @@ class LensFocalCaptionMakerScaleTest {
         val zoomOnly = lensInventoryOf(emptyList(), 0.5f to 10f, homeEquivMm = null)
         val state = CameraUiState(phoneModel = PhoneModel.VIVO_X300_ULTRA, lensInventory = zoomOnly)
         assertEquals(0f, state.presetFramingEquivMm(LensChoice.TELE3X), 0f)
+    }
+}
+
+/** The caption's round literal follows the DECLARED phone's own printed focal (owner: follow the maker). */
+class LensFocalCaptionDeclaredPhoneTest {
+    private val kitFocal = effectiveFocalMm(TELECONVERTER_MAGNIFICATION)
+    @Test
+    fun `a named phone's caption rounds to its own printed focal`() {
+        fun caption(phone: PhoneModel, lens: LensChoice, measured: Float) = lensFocalCaption(
+            lens,
+            teleconverter = false,
+            teleconverterFocalMm = kitFocal,
+            measuredEquivMm = measured,
+            declaredEquivMm = phone.declaredPresetEquivMm(lens),
+        )
+        // Find X10's 65 mm tele sat inside PMA110's 70 mm band and read "70 mm".
+        assertEquals("65 mm", caption(PhoneModel.FIND_X10, LensChoice.TELE3X, 65.2f))
+        // vivo X300 Ultra's MAIN chip opens its 35 mm main.
+        assertEquals("35 mm", caption(PhoneModel.VIVO_X300_ULTRA, LensChoice.MAIN, 35.4f))
+        assertEquals("24 mm", caption(PhoneModel.FIND_X10_PRO_MAX, LensChoice.MAIN, 24.3f))
+        // PMA110 declares its own 23 / 70 mm: byte-identical ("70 mm" at the measured 69.4 mm).
+        assertEquals("70 mm", caption(PhoneModel.FIND_X9_ULTRA, LensChoice.TELE3X, 69.4f))
+        assertEquals("23 mm", caption(PhoneModel.FIND_X9_ULTRA, LensChoice.MAIN, 23.4f))
+        // OTHER declares nothing: the generic literal + measured rule, unchanged.
+        assertEquals(0f, PhoneModel.OTHER.declaredPresetEquivMm(LensChoice.TELE3X), 0f)
+        // The table carries no ultrawide or 10x focal: those presets keep the generic literal.
+        assertEquals(0f, PhoneModel.FIND_X10.declaredPresetEquivMm(LensChoice.ULTRAWIDE), 0f)
+        assertEquals(0f, PhoneModel.FIND_X9_ULTRA.declaredPresetEquivMm(LensChoice.TELE10X), 0f)
+        assertEquals("70 mm", caption(PhoneModel.OTHER, LensChoice.TELE3X, 65.2f))
     }
 }

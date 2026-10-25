@@ -414,6 +414,22 @@ fun detectPhone(deviceModel: String?): PhoneModel? {
 }
 
 /**
+ * The maker's OWN round focal for a lens preset on a named phone, 0 when the table has none (OTHER,
+ * and the ultrawide / 10× presets whose focals the table does not carry). The Optics caption's round
+ * literal is PMA110's optics (14 / 23 / 70 / 230 mm), and within its 10 % band that literal
+ * survived on other hardware too: Find X10's 65 mm telephoto read "70 mm". A named phone's caption
+ * rounds to ITS printed focal instead — PMA110 declares 23 / 70 mm, so it is unchanged.
+ */
+internal fun PhoneModel.declaredPresetEquivMm(lens: LensChoice): Float {
+    val maker = makerZoom ?: return 0f
+    return when (lens) {
+        LensChoice.MAIN -> maker.mainEquivMm
+        LensChoice.TELE3X -> teleEquivMm
+        LensChoice.ULTRAWIDE, LensChoice.TELE10X -> 0f
+    }
+}
+
+/**
  * The converter to select when [phone] becomes the chosen phone: its first kit, or the first generic
  * when it has none. Keeps the two dropdowns consistent — a converter for a phone you are not on is
  * never left selected.

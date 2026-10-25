@@ -242,8 +242,12 @@ internal fun lensFocalCaption(
     // 10% it IS the round marketing label for that lens — which is the documented readout style, and
     // keeps PMA110 byte-identical (its measured 3x is ~69.4 mm and must keep reading "70 mm").
     measuredEquivMm: Float = 0f,
+    // The declared phone's own printed focal for this preset (PhoneModel.declaredPresetEquivMm), 0
+    // when unknown. It replaces PMA110's literal as the round label, so a named phone's 65 mm tele
+    // reads "65 mm" rather than PMA110's "70 mm" inside the same 10 % band.
+    declaredEquivMm: Float = 0f,
 ): String {
-    val preset = when (lens) {
+    val preset = declaredEquivMm.takeIf { it > 0f } ?: when (lens) {
         me.hletrd.telecampro.camera.LensChoice.ULTRAWIDE -> 14f
         me.hletrd.telecampro.camera.LensChoice.MAIN -> 23f
         me.hletrd.telecampro.camera.LensChoice.TELE3X -> 70f
