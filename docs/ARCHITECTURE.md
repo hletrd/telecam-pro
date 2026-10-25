@@ -969,12 +969,15 @@ unused.
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — on PMA110 muxing APV-in-MP4 broke the encoder mid-drain (device observation; the platform documents APV-in-MP4 from SDK 36). |
 
 **Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
-them. The vendor log flag did not activate stock log in the third-party combinations measured so far;
-this is not a general impossibility result. A session-routing candidate common to both CameraUnit
-versions was found on 2026-10-25; the stock ColorOS 16/17 recordings share the same session, sensor
-and stream signature. The candidate still needs a third-party device A/B (CLAUDE.md, stock Log
-investigation). Native O-Log2 input would require a distinct source decoder and measured YUV matrix;
-the existing S-Log3/JFIF transport assumptions are not valid evidence for that unimplemented path.
+them. The shipping Log path remains the programmed ISP curve/GL pipeline described below. Separate
+research on 2026-10-25/26 reached the stock O-Log2 route on ColorOS 17 through paired Camera2 session
+tags (`is.sdk.camera.package=1` and `is.from.extension=1`), with real Main10 files and identical
+reported stock/probe gamma arrays at matched exposure. This is not integrated in TeleCam Pro.
+The probe's ImageWriter bridge variants fail on both native and generic control sessions (cause not
+isolated), standalone routes have different HDR metadata, and the tested `0x80b4` TC combination
+does not yield the same Log gamma. Native input needs
+a distinct O-Log2 source decode and verified YUV matrix; current S-Log3/JFIF assumptions cannot be
+reused. See CLAUDE.md's stock Log entry for the recipe, authentication/presence trap and evidence limits.
 Auto HDR and in-sensor zoom were removed after HAL stability testing. See CLAUDE.md for the per-key notes.
 
 **Video resolution and frame rates:**
@@ -1048,8 +1051,9 @@ Color-profile rendering happens in the fragment shader:
   so the bridge closes after the device in teardown and before any next session connects to that
   Surface. A failed bridge attempt retries the same ladder rung on the 8-bit SurfaceTexture.
   `PhotoSessionOutputs.tenBitNativeLog` carries the accepted answer to the Video tab caption.
-  Not claimed: highlight latitude (the sensor clip is unchanged) or the stock O-Log2 pipeline (its
-  2-exposure DOL + DRC usecase, which no third-party session entered in any measured shape).
+  Not claimed for this SHIPPING transport: extra highlight latitude (the sensor clip is unchanged)
+  or the stock O-Log2 pipeline. The latter's 2-exposure DOL + DRC route has now been reached by an
+  independent probe through different session tags; it is not what this bridge currently requests.
 - **RAW log, EXPERIMENTAL** (`camera/RawLogBridge.kt`, `RawLog.kt`, `RawDevelopMath.kt`, measured
   PMA110 2026-10-25): an operator toggle under Transfer, offered for S-Log3 / S-Log3.Cine on a
   RAW-developable rear camera at a rate the RAW stream sustains (≤ 30 fps on PMA110, whose RAW is

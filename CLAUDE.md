@@ -1093,7 +1093,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   explicit SDR-class transfer). A trademark footnote for Sony/ARRI and an OPPO / Xiaomi native-log
   attribution (EN+KO) sit in the Setup tab.
 
-- **Ten-bit native log = a P010 stream bridged into GL; the stock O-Log2 pipeline remains unreproduced
+- **Ten-bit native log = a P010 stream bridged into GL; this SHIPPING ISP-curve path differs from stock O-Log2
   (device-measured PMA110 2026-10-25).** Three things the 07-28 investigation recorded as walls are
   FALSE: every rear camera (0–5) and the front list YCBCR_P010 (format `54` = `0x36`, 48–49 sizes
   incl. 3840×2160) and advertise `(SRGB, P010, STANDARD)` in the colour-space profiles (the old read
@@ -1134,40 +1134,47 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `com.oplus.gamma.info` LUT); a third-party session with the stock op mode `0x830b`, the String key
   `com.oplus.camera.mode = "pro_video_log_mode"`, `log.video.mode = 0`, `is.from.main.menu = 1`, the
   stock P010 stream shape and even `com.oplus.packageName = com.oplus.camera` (echoed in results)
-  never left `HDRFeatureMode 0`. An echoed repeating-request value does not establish the identity
+  did not leave `HDRFeatureMode 0` in those earlier trials. The later two-tag experiment below
+  reaches the stock route. An echoed repeating-request value does not establish the identity
   consumed at configure time, so the earlier claim that this ruled out package-dependent routing
   was too strong. Ten-bit native log is ten bits of the SAME
   un-S-curved, clip-bounded ISP signal, not the stock pipeline's latitude.
-- **Stock Log investigation reopened with a concrete session-routing candidate (2026-10-25;
-  candidate STATIC, stock baseline observed on both versions).** Current connected PMA110 firmware is `PMA110_17.0.0.106(CN01)` and stock
-  Camera is `7.006.119`; the preserved comparison APK is `6.031.451` (different SHA-256), so the
-  historical failed combinations do not settle the current firmware. In the CURRENT
-  `/odm/lib64/libextensionlayer.so`, `InitPackageName` reads the session's
-  `com.oplus.is.sdk.camera.package` first byte. A nonzero byte OR a package-name prefix matching
-  the configured `SystemCamera` sets the flag consumed by `SelectSensorMode`, which branches to
-  `SelectSensorModeForSystemCam` instead of `SelectSensorModeForOtherCam`. The framework's
-  `OplusCameraManager.parseSessionParameters` also reads this byte array (tests for `1`), and the
-  tag is advertised in current Camera2 session keys. This is a candidate for a direct Camera2
-  experiment, NOT a decision to restore the declined authenticated SDK. Setting the flag is NOT
-  yet proven to reproduce DOL, O-Log2 pixels, gamut, noise reduction or stabilization. The owner
-  confirmed the ColorOS 17 upgrade, and a later read-only capture of their STOCK O-Log2 recording
-  matched the preserved ColorOS 16 baseline: `0x830b`, `pro_video_log_mode`, log mode 0, HDR mode 1,
-  two exposures, sensor mode 21, 4K P010 + 1080p `0x7fa30c09` preview, both STANDARD + `0x8c60000`.
-  This is a common pipeline signature, NOT a matched-exposure/pixel-equivalence result.
-  Both CameraUnit JARs have the same Log configure-stage method and VideoMode eligibility method
-  after normalizing generated lambda names. The CURRENT upper OEM UI layer also ORs the SDK byte
-  into its system-path flag, setting capability bit 43; `OUsecaseFactory` selects full multi/single
-  camera processing for that bit and `OUsecaseLite` otherwise. The old OEM factory has the same
-  branch with internal bit 42 (its UI-layer binary is unavailable). Use named Camera2 keys, NEVER
-  these native enum numbers: 168 of 455 shared result-tag names also changed their numeric tag IDs.
-  An otherwise identical flag-off/flag-on/flag-off third-party comparison is still required;
-  compare actual sensor selection, HDR/exposure metadata and saved pixels. Do not replace the
-  shipping tone-curve/P010 path or claim stock equivalence from static code or a tag echo. The
-  initial live sessions were already recording, so this investigation did not interrupt them to run
-  that experiment. Integration must distinguish O-Log2 input from the current S-Log3 source decoder,
-  remeasure the P010 YUV matrix (the generic source's JFIF override is not a stock-source fact), and
-  test the `0x80b4` TC mode separately from `0x830b`. Optional private detail:
-  `docs/reviews/2026-10-25-stock-log-routing.md`.
+- **Stock O-Log2 processing route reached through direct Camera2 (PMA110, ColorOS 17,
+  2026-10-25/26; RESEARCH, not integrated in the product).** On `PMA110_17.0.0.106(CN01)`, Camera
+  `7.006.119`, an independent probe with no SDK dependency, root, package impersonation or app Log
+  shader produces the stock route. The missing configure-time pair is
+  `com.oplus.is.sdk.camera.package = byteArrayOf(1)` AND `com.oplus.is.from.extension = 1` (int).
+  Tested with logical camera 0, session type `0x830b`, `com.oplus.camera.mode` carrying NUL-terminated
+  `pro_video_log_mode`, `com.oplus.log.video.mode = 0` (a format selection, NOT an enable boolean),
+  `com.oplus.camera.is.from.main.menu = 1`, TEMPLATE_RECORD, 1080p PRIVATE preview and 4K P010 record
+  or Main10 encoder surface, STANDARD profile, dataspace `0x8c60000`. Tags were set on session AND
+  repeating requests. This does not restore the declined authenticated CameraUnit SDK.
+  **The service and HAL gates differ.** The SDK byte selects full OEM processing instead of
+  `OUsecaseLite`; but CameraService's `afterEndConfigure` authenticates the SDK tag's PRESENCE,
+  including byte 0. With no extension marker, both 0 and 1 throw `SecurityException` after HAL
+  configuration. The extension marker selects the service's extension path (both system CameraUnit
+  versions use it). A fallback must OMIT the SDK tag; zero is not OFF.
+  **Device proof:** at identical requested exposure, SDK-byte 0 → 1 → 0 with the extension marker
+  changes sensor 47/HDR 0/no gamma LUT/P010 median Y10 7 → sensor 21/HDR 1/two exposures/1024-entry
+  Log LUT/median 191 → the original result. Camera → encoder directly saves real 4K HEVC Main10,
+  BT.2020 full-range `bt2020-10` files. At actual ISO 800 / 33,322,214 ns, stock and probe report
+  IDENTICAL 1024-entry Log, 257-entry IPE and 257-entry preview gamma arrays, plus identical WB
+  gains. A 361-frame/12.088 s probe clip fully decodes without errors (one startup frame gap).
+  This establishes the route and reported curves, not pixel identity or a certified stop count.
+  **Limits:** standalone main 2 / tele 4 under `0x830b` produce Log LUTs and flat pixels but report
+  HDR mode 0, so full stock merge is not established there. The tested tele 4 + TC `0x80b4` +
+  `pro_video_log_mode` combination reports HDR 1/two exposures but an SDR-like gamma (starts
+  0,64,128); additional TC combinations remain open.
+  Stock reports `VideoColorBT709=1`; the extension route returns 0 even if 1 is requested. The
+  native source reaches a ten-bit GL sampler, but the independent probe's GL/encoder bridge variants
+  end with CAMERA_ERROR(3). A generic same-camera control also fails, so the cause is not established
+  as native-Log-specific; sustained product integration remains open. Do not substitute the current
+  S-Log3 source decoder or generic-source JFIF override for the native O-Log2 source, or apply a
+  second Log OETF. Preserve the shipping fallback until the product session/colour path is proven.
+  The two ColorOS versions share the Log configure-stage method and stock session/stream/sensor
+  signature, but this two-tag route is device-tested on 17 only. Resolve vendor keys by NAME:
+  168 of 455 shared result tags changed numeric IDs across the update. Optional private detail:
+  `docs/reviews/2026-10-25-stock-log-routing.md`; local evidence `.context/stock-log-2026-10-26/`.
 - **RAW log (EXPERIMENTAL) = S-Log3 developed in-app from the RAW stream (owner request 2026-10-25;
   `docs/FIELD_CHECKS.md` A19).** A Video-tab toggle, offered for S-Log3 / S-Log3.Cine only (a log the
   app develops itself has no reason to imitate a phone maker's curve) on a RAW-developable rear camera
