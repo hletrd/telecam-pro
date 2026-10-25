@@ -407,7 +407,7 @@ class CameraEngine internal constructor(
     @Volatile private var previewStreamSize = Size(1920, 1080)
     @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
     @Volatile private var videoEncoderCandidates: List<EncoderSelection> = emptyList()
-    @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.ULTRA
+    @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.HIGH
     @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
     @Volatile private var openGate = false
     @Volatile private var driveMode: DriveMode = DriveMode.SINGLE
@@ -416,9 +416,9 @@ class CameraEngine internal constructor(
     // Hidden while Video is active, but transaction-owned like every visible optics control: a
     // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
     @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
-    @Volatile private var transfer = ColorTransfer.HLG
+    @Volatile private var transfer = ColorTransfer.SDR
     /** Operator's next-Video curve; Photo keeps this while its active GL/Camera2 transfer is SDR. */
-    @Volatile private var requestedVideoTransfer = ColorTransfer.HLG
+    @Volatile private var requestedVideoTransfer = ColorTransfer.SDR
     // Latest controller-published GL brightness-simulation gain (see wireController), cached so a
     // replacement GL generation is re-seeded with the live value in the gl.start callback —
     // GlPipeline drops posts before start, and the controller's change gate won't republish.
@@ -1895,7 +1895,7 @@ class CameraEngine internal constructor(
     private val modeIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val lensIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
-    @Volatile private var videoStabMode = VideoStabMode.ENHANCED
+    @Volatile private var videoStabMode = VideoStabMode.STANDARD
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
     // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
     @Volatile private var cameraRecoveryAttempts = 0

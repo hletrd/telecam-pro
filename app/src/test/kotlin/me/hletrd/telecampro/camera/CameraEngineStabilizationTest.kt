@@ -57,13 +57,14 @@ class CameraEngineStabilizationTest {
             CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION,
         )
 
-        harness.engine.setVideoStabMode(VideoStabMode.STANDARD)
-        assertEquals(VideoStabMode.STANDARD, harness.engine.requestedMode())
+        // The engine starts at STANDARD (the default since 2026-10-25), so each step is a real change.
+        harness.engine.setVideoStabMode(VideoStabMode.ENHANCED)
+        assertEquals(VideoStabMode.ENHANCED, harness.engine.requestedMode())
         assertEquals(listOf("apply", "reopen"), harness.effects)
 
         harness.effects.clear()
-        harness.engine.setVideoStabMode(VideoStabMode.ENHANCED)
-        assertEquals(VideoStabMode.ENHANCED, harness.engine.requestedMode())
+        harness.engine.setVideoStabMode(VideoStabMode.STANDARD)
+        assertEquals(VideoStabMode.STANDARD, harness.engine.requestedMode())
         assertEquals(listOf("apply", "reopen"), harness.effects)
     }
 

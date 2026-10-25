@@ -1550,6 +1550,9 @@ internal fun largestCenteredRect(
  * can be the only output when the active standalone session actually exposes RAW.
  */
 data class PhotoFormats(
+    // Constructor defaults are a CONSTRUCTION convenience that many derivations lean on
+    // (`PhotoFormats(heif = false, dngRaw = true)` means "DNG only"); they are NOT the app's default
+    // request — that is [DEFAULT].
     val heif: Boolean = true,
     val jpeg: Boolean = false,
     // RAW is session-dependent and therefore starts off on the logical-camera default. TELE or an
@@ -1563,6 +1566,16 @@ data class PhotoFormats(
      * "no capture target".
      */
     val wantsProcessedStill: Boolean get() = heif || jpeg
+
+    companion object {
+        /**
+         * The app's default still request: JPEG (2026-10-25, owner: general-purpose defaults) —
+         * it opens everywhere, where HEIF does not on every desktop and web service. HEIF stays one
+         * tap away. Read by the initial UI state, the settings fallback, [withDefaultIfEmpty], and
+         * the quiet-OSD rule; never change the constructor defaults to move it.
+         */
+        val DEFAULT = PhotoFormats(heif = false, jpeg = true)
+    }
 }
 
 /**
@@ -1850,7 +1863,7 @@ internal class TapFocusPublicationGate {
 
 /** Keeps a persisted/pre-session request non-empty without guessing which session outputs exist. */
 internal fun PhotoFormats.withDefaultIfEmpty(): PhotoFormats =
-    if (wantsProcessedStill || dngRaw) this else copy(heif = true)
+    if (wantsProcessedStill || dngRaw) this else copy(heif = PhotoFormats.DEFAULT.heif, jpeg = PhotoFormats.DEFAULT.jpeg)
 
 /**
  * Resolves a request against readers that actually survived session fallback. Available requested
@@ -1937,8 +1950,8 @@ internal fun dngOnlySubstitution(request: PhotoFormats, outputs: PhotoSessionOut
 data class CameraUiState(
     val mode: CaptureMode = CaptureMode.PHOTO,
     val controls: ManualControls = ManualControls(),
-    val transfer: ColorTransfer = ColorTransfer.HLG,
-    val photoFormats: PhotoFormats = PhotoFormats(),
+    val transfer: ColorTransfer = ColorTransfer.SDR,
+    val photoFormats: PhotoFormats = PhotoFormats.DEFAULT,
     // Reader truth from the accepted session, never inferred from route capabilities. Cleared while
     // opening/reconfiguring so stale fallback outputs cannot admit a capture.
     val photoSessionOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
@@ -2027,10 +2040,10 @@ data class CameraUiState(
     val teleconverterCustomMagnification: Float = TELECONVERTER_MAGNIFICATION,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
     // per-frame motion blur (see [VideoStabMode]).
-    val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
+    val videoStabMode: VideoStabMode = VideoStabMode.STANDARD,
     // Video
     val videoCodec: VideoCodec = VideoCodec.HEVC,
-    val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
+    val bitrateLevel: BitrateLevel = BitrateLevel.HIGH,
     val videoResolution: Size = Size(3840, 2160),
     /** Actual encoder raster while REC owns a configured component; null outside recording. */
     val activeEncoderResolution: Size? = null,

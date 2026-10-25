@@ -88,7 +88,7 @@ class PhotoFormatsTest {
     @Test
     fun `pre-session persisted request becomes non-empty without assuming raw availability`() {
         assertEquals(
-            PhotoFormats(heif = true),
+            PhotoFormats.DEFAULT,
             PhotoFormats(heif = false, jpeg = false, dngRaw = false).withDefaultIfEmpty(),
         )
         assertEquals(

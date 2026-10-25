@@ -77,10 +77,10 @@ class AudioEncodingTest {
         assertEquals(AudioCodec.XHE_AAC to 96, normalizeAudioEncoding(AudioCodec.XHE_AAC, 96, options))
         // Unoffered bitrate: the nearest preset of the same format.
         assertEquals(AudioCodec.AAC_LC to 256, normalizeAudioEncoding(AudioCodec.AAC_LC, 240, options))
-        // Unavailable format: AAC-LC at its default (the format every take used before).
+        // Unavailable format: AAC-LC at its default.
         val lcOnly = buildAudioEncoderOptions(listOf(pma110[1]))
             .filterKeys { it == AudioCodec.AAC_LC }
-        assertEquals(AudioCodec.AAC_LC to 192, normalizeAudioEncoding(AudioCodec.XHE_AAC, 96, lcOnly))
+        assertEquals(AudioCodec.AAC_LC to 256, normalizeAudioEncoding(AudioCodec.XHE_AAC, 96, lcOnly))
         // No LC either: whatever exists, at its default when offered, else its first preset.
         val xheOnly = buildAudioEncoderOptions(listOf(pma110[3]))
         assertEquals(AudioCodec.XHE_AAC to 128, normalizeAudioEncoding(AudioCodec.HE_AAC, 64, xheOnly))
@@ -118,6 +118,6 @@ class AudioEncodingTest {
             RecordingAudioEncoding.resolve(AudioCodec.HE_AAC_V2, 32, options),
         )
         assertEquals(RecordingAudioEncoding(), RecordingAudioEncoding.resolve(AudioCodec.XHE_AAC, 96, emptyMap()))
-        assertEquals(192_000, RecordingAudioEncoding().bitrate)
+        assertEquals(256_000, RecordingAudioEncoding().bitrate)
     }
 }

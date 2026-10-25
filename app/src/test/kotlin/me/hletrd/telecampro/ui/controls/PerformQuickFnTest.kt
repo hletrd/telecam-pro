@@ -213,8 +213,8 @@ class PerformQuickFnTest {
             videoStabChoices = VideoStabMode.entries,
         )
         assertEquals(
-            listOf("onVideoStabMode(${VideoStabMode.OFF})"),
-            dispatched(FnSlot.STABILIZATION, idleVideo), // default ENHANCED -> OFF
+            listOf("onVideoStabMode(${VideoStabMode.ENHANCED})"),
+            dispatched(FnSlot.STABILIZATION, idleVideo), // default STANDARD -> ENHANCED
         )
         assertEquals(listOf("onDriveMode(${DriveMode.BURST})"), dispatched(FnSlot.DRIVE, idle))
         assertEquals(listOf("onGridType(${GridType.GOLDEN})"), dispatched(FnSlot.GRID, idle))
@@ -222,7 +222,7 @@ class PerformQuickFnTest {
             listOf("onFrameLines(${FrameLineType.CINEMA})"),
             dispatched(FnSlot.FRAME_LINES, idle),
         )
-        assertEquals(listOf("onTransfer(${ColorTransfer.SLOG3})"), dispatched(FnSlot.TRANSFER, idleVideo))
+        assertEquals(listOf("onTransfer(${ColorTransfer.HLG})"), dispatched(FnSlot.TRANSFER, idleVideo))
         assertEquals(
             emptyList<String>(),
             dispatched(FnSlot.TRANSFER, idleVideo.copy(tenBitEncodeAvailable = false)),

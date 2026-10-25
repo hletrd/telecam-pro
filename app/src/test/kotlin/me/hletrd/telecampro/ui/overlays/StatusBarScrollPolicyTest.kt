@@ -54,12 +54,12 @@ class StatusBarScrollPolicyTest {
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(facing = CameraFacing.FRONT, activeCameraRoute = CameraRoute.FRONT), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(activeCameraRoute = CameraRoute.EXTERNAL), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(videoCodec = VideoCodec.AVC), "70 mm", false))
-        assertNotEquals(key, statusBarPriorityResetKey(base.copy(transfer = ColorTransfer.SDR), "70 mm", false))
+        assertNotEquals(key, statusBarPriorityResetKey(base.copy(transfer = ColorTransfer.HLG), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(openGate = true), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(recordAudio = false), "70 mm", false))
         assertNotEquals(
             key,
-            statusBarPriorityResetKey(base.copy(videoStabMode = VideoStabMode.STANDARD), "70 mm", false),
+            statusBarPriorityResetKey(base.copy(videoStabMode = VideoStabMode.ENHANCED), "70 mm", false),
         )
     }
 

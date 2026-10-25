@@ -500,11 +500,11 @@ class SettingsStoreTest {
     }
 
     @Test
-    fun `audio format defaults to AAC-LC 192 and round-trips through the main blob and an MR bank`() {
+    fun `audio format defaults to AAC-LC 256 and round-trips through the main blob and an MR bank`() {
         val store = SettingsStore(FakePrefs())
         store.save(ManualControls(), ExtraSettings())
         assertEquals(me.hletrd.telecampro.video.AudioCodec.AAC_LC, store.load()?.extras?.audioCodec)
-        assertEquals(192, store.load()?.extras?.audioBitrateKbps)
+        assertEquals(256, store.load()?.extras?.audioBitrateKbps)
         store.save(ManualControls(), ExtraSettings(audioCodec = me.hletrd.telecampro.video.AudioCodec.XHE_AAC, audioBitrateKbps = 96))
         assertEquals(me.hletrd.telecampro.video.AudioCodec.XHE_AAC, store.load()?.extras?.audioCodec)
         assertEquals(96, store.load()?.extras?.audioBitrateKbps)
@@ -521,7 +521,7 @@ class SettingsStoreTest {
         val prefs = FakePrefs(mutableMapOf("hasSaved" to true, "audioCodec" to "DOLBY", "audioBitrateKbps" to -5))
         val extras = SettingsStore(prefs).load()?.extras
         assertEquals(me.hletrd.telecampro.video.AudioCodec.AAC_LC, extras?.audioCodec)
-        assertEquals(192, extras?.audioBitrateKbps)
+        assertEquals(256, extras?.audioBitrateKbps)
     }
 
     @Test

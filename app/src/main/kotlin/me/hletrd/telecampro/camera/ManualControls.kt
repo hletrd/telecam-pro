@@ -57,10 +57,11 @@ data class ManualControls(
     // faces in AF-S/AF-C. Default OFF keeps the pre-feature request byte-identical. The preference
     // is never normalized away on a route without face detection; the request/UI gate decides.
     val facePriorityAf: Boolean = false,
-    // Processing — OFF by default: pros want a clean, un-sharpened, un-denoised signal to grade
-    // themselves (and it keeps the afocal-tele image honest). The user opts into edge/NR per shot.
-    val edge: ProcessingLevel = ProcessingLevel.OFF,
-    val noiseReduction: ProcessingLevel = ProcessingLevel.OFF,
+    // Processing — FAST (the HAL's standard rendering) by default since 2026-10-25 (owner: defaults
+    // are general-purpose recommended values): OFF read as noisy, soft photos to anyone not grading
+    // their own. OFF stays one tap away for a clean signal to grade (log, RAW-adjacent work).
+    val edge: ProcessingLevel = ProcessingLevel.FAST,
+    val noiseReduction: ProcessingLevel = ProcessingLevel.FAST,
     val colorEffect: ColorEffect = ColorEffect.NONE,
     // Optics
     val flash: FlashMode = FlashMode.OFF,

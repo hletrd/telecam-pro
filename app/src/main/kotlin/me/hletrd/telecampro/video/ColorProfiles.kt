@@ -35,7 +35,8 @@ object ColorProfiles {
 
     const val AUDIO_SAMPLE_RATE = 48_000
     const val AUDIO_CHANNELS = 2
-    const val AUDIO_BIT_RATE = 192_000
+    // 256 kb/s AAC-LC stereo (2026-10-25): what the stock camera records; was 192.
+    const val AUDIO_BIT_RATE = 256_000
 
     /**
      * Applies the frame-rate keys shared by every video encoder. [encoderRate] is the TRUE rate as

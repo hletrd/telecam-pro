@@ -246,14 +246,17 @@ class ReviewSurfacedSeamsTest {
     }
 
     @Test
-    fun `compact strip is silent in video and for the default HEIF-only selection`() {
+    fun `compact strip is silent in video and for the default JPEG-only selection`() {
         val videoState = CameraUiState(mode = CaptureMode.VIDEO)
         assertNull(compactPhotoFormatLabel(videoState))
-        val defaultPhoto = CameraUiState(
+        val defaultPhoto = CameraUiState(mode = CaptureMode.PHOTO, photoFormats = PhotoFormats.DEFAULT)
+        assertNull(compactPhotoFormatLabel(defaultPhoto))
+        // HEIF-only was the default until 2026-10-25; it is now a choice and names itself.
+        val heifOnly = CameraUiState(
             mode = CaptureMode.PHOTO,
             photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = false),
         )
-        assertNull(compactPhotoFormatLabel(defaultPhoto))
+        assertEquals("HEIF", compactPhotoFormatLabel(heifOnly))
         val withDng = CameraUiState(
             mode = CaptureMode.PHOTO,
             photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true),

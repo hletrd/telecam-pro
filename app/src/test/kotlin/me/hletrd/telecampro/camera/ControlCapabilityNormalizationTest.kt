@@ -499,6 +499,10 @@ class ControlCapabilityNormalizationTest {
             focusDistanceDiopters = 2f,
             iso = 6400,
             exposureCompensation = 6,
+            // Empty caps advertise no edge/NR mode, so those resolve to OFF; this case is about the
+            // NUMERIC fields, so request the value the capability fallback keeps.
+            edge = ProcessingLevel.OFF,
+            noiseReduction = ProcessingLevel.OFF,
         )
         assertEquals(requested, requested.normalizedFor(CameraControlCapabilities()))
         assertEquals(

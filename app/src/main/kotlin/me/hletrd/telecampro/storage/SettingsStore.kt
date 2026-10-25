@@ -47,9 +47,11 @@ import me.hletrd.telecampro.camera.VideoFrameRate
  * value a fresh install would show.
  */
 data class ExtraSettings(
-    val transfer: ColorTransfer = ColorTransfer.HLG,
-    val heif: Boolean = true,
-    val jpeg: Boolean = false,
+    // General-purpose defaults (owner, 2026-10-25): SDR plays correctly on every screen and editor
+    // (HLG needs an HDR display), and JPEG opens everywhere (HEIF does not on every desktop/web).
+    val transfer: ColorTransfer = ColorTransfer.SDR,
+    val heif: Boolean = false,
+    val jpeg: Boolean = true,
     val dngRaw: Boolean = false,
     val mode: CaptureMode = CaptureMode.PHOTO,
     // Video stores a frame-rate-clamped live shutter in ManualControls. Keep the last Photo value
@@ -63,7 +65,8 @@ data class ExtraSettings(
     val phoneModel: PhoneModel = DEFAULT_PHONE_MODEL,
     val teleconverterProfile: TeleconverterProfile = DEFAULT_TELECONVERTER_PROFILE,
     val teleconverterCustomMagnification: Float = TELECONVERTER_MAGNIFICATION,
-    val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
+    // Standard (2026-10-25): Active's larger crop is a choice for walking shots, not a default.
+    val videoStabMode: VideoStabMode = VideoStabMode.STANDARD,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     val timer: ShutterTimer = ShutterTimer.OFF,
     val driveMode: DriveMode = DriveMode.SINGLE,
@@ -84,7 +87,8 @@ data class ExtraSettings(
     // against the restored route, so restoring true on an inapplicable route is harmless.
     val hiResStill: Boolean = false,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
-    val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
+    // High (~40 Mb/s 4K30 HEVC, 2026-10-25): the upload-grade rate; Ultra/Max stay for grading.
+    val bitrateLevel: BitrateLevel = BitrateLevel.HIGH,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     // User-selected recording resolution as "WxH" ("" = never chosen -> the engine auto-picks the
     // largest size for the lens). A plain string keeps ExtraSettings JVM-pure (android.util.Size

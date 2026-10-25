@@ -810,7 +810,10 @@ internal fun photoFormatLabel(formats: PhotoFormats): String = buildString {
 internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
     if (state.mode != CaptureMode.PHOTO) return null
     val formats = state.osdPhotoFormats
-    if (formats.heif && !formats.jpeg && !formats.dngRaw) return null
+    // The DEFAULT still format is quiet; any other choice names itself. Compared against the default
+    // itself, not a literal: this hard-coded HEIF-only until JPEG became the default (2026-10-25),
+    // which would have put a "JPG" tag on every fresh viewfinder.
+    if (formats == PhotoFormats.DEFAULT) return null
     return photoFormatLabel(formats)
 }
 
