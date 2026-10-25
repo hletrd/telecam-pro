@@ -131,4 +131,16 @@ class ColorProfilesFormatTest {
             MediaFormat.KEY_COLOR_TRANSFER,
         )
     }
+
+    @Test
+    fun `the AAC format carries the take's profile and bitrate, LC 192 by default`() {
+        val default = ColorProfiles.aacFormat(2)
+        assertEquals(MediaCodecInfo.CodecProfileLevel.AACObjectLC, default.getInteger(MediaFormat.KEY_AAC_PROFILE))
+        assertEquals(192_000, default.getInteger(MediaFormat.KEY_BIT_RATE))
+        assertEquals(48_000, default.getInteger(MediaFormat.KEY_SAMPLE_RATE))
+        val xhe = ColorProfiles.aacFormat(2, AudioCodec.XHE_AAC.aacProfile, 96_000)
+        assertEquals(MediaCodecInfo.CodecProfileLevel.AACObjectXHE, xhe.getInteger(MediaFormat.KEY_AAC_PROFILE))
+        assertEquals(96_000, xhe.getInteger(MediaFormat.KEY_BIT_RATE))
+        assertEquals(1, ColorProfiles.aacFormat(1).getInteger(MediaFormat.KEY_CHANNEL_COUNT))
+    }
 }

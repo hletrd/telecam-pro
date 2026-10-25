@@ -191,6 +191,11 @@ class VideoRecorder(private val context: Context) {
     // difference at the muxer, once per take. Only on a REALTIME camera clock (same base as
     // TIMEBASE_BOOTTIME); any other source keeps the unanchored PTS.
     private var cameraClockRealtime = false
+    // The take's soundtrack format ([RecordingAudioEncoding]) and its encoder's measured priming
+    // ([aacPrimingSamples]): MediaMuxer writes no encoder-delay edit list, so every player decodes
+    // that many samples of warm-up first, and audio PTS move earlier by it to land on time.
+    private var audioEncoding = RecordingAudioEncoding()
+    private var audioPrimingUs = 0L
     private val firstVideoFrameNs = AtomicLong(0L)
     @Volatile private var audioSample0CaptureNs = 0L
     private var audioPtsOffsetUs: Long? = null
@@ -253,6 +258,7 @@ class VideoRecorder(private val context: Context) {
         onLevel: ((AudioLevelFrame) -> Unit)? = null,
         onFailure: ((Throwable) -> Unit)? = null,
         cameraClockRealtime: Boolean = false,
+        audioEncoding: RecordingAudioEncoding = RecordingAudioEncoding(),
     ): Surface? {
         val admittedCandidates = encoderCandidates
             .filter { encoderSelectionAdmitsTransfer(it, transfer) }
@@ -295,6 +301,7 @@ class VideoRecorder(private val context: Context) {
         this.onLevel = onLevel
         this.onFailure = onFailure
         this.cameraClockRealtime = cameraClockRealtime
+        this.audioEncoding = audioEncoding
         val descriptor = nativeOperation {
             MediaStoreWriter.openParcelFd(context, uri, "rw")?.also { pfd = it }
         } ?: run {
@@ -797,9 +804,16 @@ class VideoRecorder(private val context: Context) {
         audioChannelCount = channelCount
         nativeOperation { applyAudioScene(record) }
 
+        // The inventory's encoder by name (AudioEncoding.kt); the platform default when the name is
+        // unknown or refused. A configure failure below degrades to video-only like any audio setup.
         val codec = nativeOperation {
-            MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC).also { audioCodec = it }
+            (
+                audioEncoding.codecName?.let { name -> runCatching { MediaCodec.createByCodecName(name) }.getOrNull() }
+                    ?: MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC)
+                ).also { audioCodec = it }
         }
+        val recordedCodec = effectiveAudioCodec(audioEncoding.codec, audioChannelCount)
+        audioPrimingUs = audioSamplesToUs(aacPrimingSamples(codec.name, recordedCodec) ?: 0)
         // Field assignment BEFORE configure/start: if either throws, the caller's failure cleanup
         // releases audioCodec — a local-only codec would leak the HW encoder instance.
         // A configure/start throw latches teardown.audioFault: the caller's failure cleanup then
@@ -807,7 +821,7 @@ class VideoRecorder(private val context: Context) {
         nativeOperation {
             teardown.audioCodecSetupCall {
                 codec.configure(
-                    ColorProfiles.aacFormat(audioChannelCount),
+                    ColorProfiles.aacFormat(audioChannelCount, recordedCodec.aacProfile, audioEncoding.bitrate),
                     null,
                     null,
                     MediaCodec.CONFIGURE_FLAG_ENCODE,
@@ -1047,14 +1061,14 @@ class VideoRecorder(private val context: Context) {
 
     /**
      * Audio thread, at the muxer: shifts [info] onto the video timeline by this take's capture
-     * offset (resolved at the first write — the muxer only starts once the video track exists, so
-     * the first frame is known by then — and frozen for the take). False drops an AAC frame captured
-     * before the first video frame.
+     * offset minus the encoder's priming (resolved at the first write — the muxer only starts once
+     * the video track exists, so the first frame is known by then — and frozen for the take). False
+     * drops an AAC frame that would land before the first video frame: warm-up or pre-roll only.
      */
     private fun alignAudioPts(info: MediaCodec.BufferInfo): Boolean {
-        val offsetUs = audioPtsOffsetUs ?: audioCaptureOffsetUs(
-            audioSample0CaptureNs, firstVideoFrameNs.get(), cameraClockRealtime,
-        ).also { offset ->
+        val offsetUs = audioPtsOffsetUs ?: (
+            audioCaptureOffsetUs(audioSample0CaptureNs, firstVideoFrameNs.get(), cameraClockRealtime) - audioPrimingUs
+            ).also { offset ->
             audioPtsOffsetUs = offset
             if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
                 val raw = if (audioSample0CaptureNs > 0L && firstVideoFrameNs.get() > 0L) {
@@ -1062,7 +1076,12 @@ class VideoRecorder(private val context: Context) {
                 } else {
                     "n/a"
                 }
-                android.util.Log.i(TAG, "A/V align: audio0-video0=${raw}ms applied=${offset / 1000.0}ms realtime=$cameraClockRealtime")
+                android.util.Log.i(
+                    TAG,
+                    "A/V align: audio0-video0=${raw}ms priming=${audioPrimingUs / 1000.0}ms " +
+                        "applied=${offset / 1000.0}ms realtime=$cameraClockRealtime " +
+                        "audio=${audioEncoding.codec}/${audioEncoding.bitrate / 1000}k",
+                )
             }
         }
         val aligned = alignedAudioPtsUs(info.presentationTimeUs, offsetUs) ?: return false

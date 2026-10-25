@@ -1634,6 +1634,29 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
     )
+    // Soundtrack format (video/AudioEncoding.kt): only what this device's encoders can record, so a
+    // board without an encoder (or its licence) lists fewer — or, with no AAC encoder, no rows.
+    val audioOptions = state.audioEncoderOptions
+    if (audioOptions.isNotEmpty()) {
+        Captioned(stringResource(audioCodecCaption(state.audioCodec))) {
+            SegmentedSelector(
+                label = stringResource(R.string.label_codec),
+                options = me.hletrd.telecampro.video.AudioCodec.entries.filter { it in audioOptions },
+                selected = state.audioCodec,
+                labelFor = ::audioCodecLabel,
+                onSelect = actions::onAudioCodec,
+                enabled = state.recordAudio && recordingMutable,
+            )
+        }
+        SegmentedSelector(
+            label = stringResource(R.string.label_bitrate),
+            options = audioOptions[state.audioCodec]?.bitratesKbps.orEmpty(),
+            selected = state.audioBitrateKbps,
+            labelFor = { "$it kbps" },
+            onSelect = actions::onAudioBitrate,
+            enabled = state.recordAudio && recordingMutable,
+        )
+    }
     SegmentedSelector(
         label = stringResource(R.string.label_input),
         options = AudioInputPreference.entries,

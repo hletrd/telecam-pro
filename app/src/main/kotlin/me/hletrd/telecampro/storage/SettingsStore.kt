@@ -7,6 +7,7 @@ import me.hletrd.telecampro.camera.DiagnosticLog
 import me.hletrd.telecampro.camera.AfSpotSize
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AudioScene
+import me.hletrd.telecampro.video.AudioCodec
 import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.CaptureMode
@@ -101,6 +102,11 @@ data class ExtraSettings(
     val audioGain: Float = 1f,
     val audioScene: AudioScene = AudioScene.STANDARD,
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
+    // The requested soundtrack format (video/AudioEncoding.kt). Missing keys restore the format every
+    // take used before the setting existed: AAC-LC at 192 kb/s. The ViewModel normalizes both against
+    // the device's encoders once the inventory loads.
+    val audioCodec: AudioCodec = AudioCodec.AAC_LC,
+    val audioBitrateKbps: Int = AudioCodec.AAC_LC.defaultKbps,
     val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
     val videoFnSlots: List<FnSlot> = FnSlot.VIDEO_DEFAULT,
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
@@ -405,6 +411,8 @@ class SettingsStore(
                 audioGain = normalizeAudioGain(safeFloat("${prefix}audioGain", ed.audioGain)),
                 audioScene = enumOr(safeString("${prefix}audioScene", null), ed.audioScene),
                 audioInputPreference = enumOr(safeString("${prefix}audioInputPreference", null), ed.audioInputPreference),
+                audioCodec = enumOr(safeString("${prefix}audioCodec", null), ed.audioCodec),
+                audioBitrateKbps = safeInt("${prefix}audioBitrateKbps", ed.audioBitrateKbps).takeIf { it > 0 } ?: ed.audioBitrateKbps,
                 photoFnSlots = normalizeFnSlots(
                     enumListOr(
                         safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
@@ -511,6 +519,8 @@ class SettingsStore(
         putFloat("${prefix}audioGain", e.audioGain)
         putString("${prefix}audioScene", e.audioScene.name)
         putString("${prefix}audioInputPreference", e.audioInputPreference.name)
+        putString("${prefix}audioCodec", e.audioCodec.name)
+        putInt("${prefix}audioBitrateKbps", e.audioBitrateKbps)
         putString("${prefix}photoFnSlots", e.photoFnSlots.joinToString(",") { it.name })
         putString("${prefix}videoFnSlots", e.videoFnSlots.joinToString(",") { it.name })
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })

@@ -381,6 +381,10 @@
     <string name="video_native_log_source_10bit">Encoded by the camera’s ISP from its linear signal · 10-bit, clips at sensor white</string>
     <string name="video_raw_log_source">Developed in-app from the sensor RAW · 10-bit, clips at sensor white</string>
     <string name="label_raw_log">RAW Log (Experimental)</string>
+    <string name="caption_audio_aac_lc">Plays in every player and editor.</string>
+    <string name="caption_audio_he_aac">Small files at low bitrates; high frequencies are reconstructed rather than coded.</string>
+    <string name="caption_audio_he_aac_v2">Smallest stereo files; the stereo image is reconstructed from parameters.</string>
+    <string name="caption_audio_xhe_aac">Efficient at every bitrate, but some players and editors cannot decode it yet.</string>
     <string name="caption_raw_log">Develops S-Log3 from the sensor RAW in the app: wide gamut, no ISP noise reduction or sharpening. 10-bit RAW, gyro stabilization with OIS off, no stills, up to 30 fps.</string>
     <string name="caption_raw_log_inactive">Not active on this camera route · native log in use</string>
     <string name="mr_default_photo_name">Photo %1$s</string>

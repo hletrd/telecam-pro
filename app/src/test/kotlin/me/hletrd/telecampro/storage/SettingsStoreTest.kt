@@ -500,6 +500,31 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun `audio format defaults to AAC-LC 192 and round-trips through the main blob and an MR bank`() {
+        val store = SettingsStore(FakePrefs())
+        store.save(ManualControls(), ExtraSettings())
+        assertEquals(me.hletrd.telecampro.video.AudioCodec.AAC_LC, store.load()?.extras?.audioCodec)
+        assertEquals(192, store.load()?.extras?.audioBitrateKbps)
+        store.save(ManualControls(), ExtraSettings(audioCodec = me.hletrd.telecampro.video.AudioCodec.XHE_AAC, audioBitrateKbps = 96))
+        assertEquals(me.hletrd.telecampro.video.AudioCodec.XHE_AAC, store.load()?.extras?.audioCodec)
+        assertEquals(96, store.load()?.extras?.audioBitrateKbps)
+        store.savePreset(
+            MemorySlot.MR3, ManualControls(),
+            ExtraSettings(audioCodec = me.hletrd.telecampro.video.AudioCodec.HE_AAC_V2, audioBitrateKbps = 32), "n", "s",
+        )
+        assertEquals(me.hletrd.telecampro.video.AudioCodec.HE_AAC_V2, store.loadPreset(MemorySlot.MR3)?.extras?.audioCodec)
+        assertEquals(32, store.loadPreset(MemorySlot.MR3)?.extras?.audioBitrateKbps)
+    }
+
+    @Test
+    fun `a corrupt audio format or bitrate restores the defaults`() {
+        val prefs = FakePrefs(mutableMapOf("hasSaved" to true, "audioCodec" to "DOLBY", "audioBitrateKbps" to -5))
+        val extras = SettingsStore(prefs).load()?.extras
+        assertEquals(me.hletrd.telecampro.video.AudioCodec.AAC_LC, extras?.audioCodec)
+        assertEquals(192, extras?.audioBitrateKbps)
+    }
+
+    @Test
     fun `gyro log round-trips through the main blob and an MR bank`() {
         val store = SettingsStore(FakePrefs())
         store.save(ManualControls(), ExtraSettings(gyroLog = true))

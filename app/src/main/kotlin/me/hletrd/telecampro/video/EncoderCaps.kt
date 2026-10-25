@@ -24,7 +24,12 @@ data class EncoderSelection(
  */
 class CodecInventory internal constructor(
     private val candidates: Map<VideoCodec, List<EncoderSelection>>,
+    /** Per soundtrack format, the encoder that records it here ([buildAudioEncoderOptions]). */
+    val audioOptions: Map<AudioCodec, AudioEncoderOption> = emptyMap(),
 ) {
+    /** The soundtrack formats this device can record, in [AudioCodec] order. */
+    val availableAudioCodecs: List<AudioCodec> = AudioCodec.entries.filter { it in audioOptions }
+
     val availableVideoCodecs: List<VideoCodec> =
         listOf(VideoCodec.HEVC, VideoCodec.AVC).filter { candidates[it].orEmpty().isNotEmpty() }
     val heifEncodeAvailable: Boolean = candidates[VideoCodec.HEVC].orEmpty().isNotEmpty()
@@ -50,6 +55,8 @@ internal data class CodecComponent(
     val hardwareAccelerated: Boolean,
     /** null means the capability query failed; Main10 must then fail closed. */
     val hevcProfiles: Set<Int>?,
+    /** AAC encoder capabilities, or null when the component is no AAC encoder (or the query failed). */
+    val aac: AacEncoderCapabilities? = null,
 )
 
 /**
@@ -89,7 +96,7 @@ internal fun buildCodecInventory(components: List<CodecComponent>): CodecInvento
             if (candidates.isNotEmpty()) put(codec, candidates)
         }
     }
-    return CodecInventory(candidatesByCodec.toMap())
+    return CodecInventory(candidatesByCodec.toMap(), buildAudioEncoderOptions(components))
 }
 
 /** Fail-closed boundary for platform-list and component-metadata failures. */
@@ -214,6 +221,9 @@ object EncoderCaps {
             val advertisesHevc = supportedTypes.any {
                 it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)
             }
+            val advertisesAac = supportedTypes.any {
+                it.equals(MediaFormat.MIMETYPE_AUDIO_AAC, ignoreCase = true)
+            }
             CodecComponent(
                 name = info.name,
                 encoder = runCatching { info.isEncoder }.getOrDefault(false),
@@ -229,6 +239,22 @@ object EncoderCaps {
                     }.getOrNull()
                 } else {
                     emptySet()
+                },
+                aac = if (advertisesAac && runCatching { info.isEncoder }.getOrDefault(false)) {
+                    runCatching {
+                        val caps = info.getCapabilitiesForType(MediaFormat.MIMETYPE_AUDIO_AAC)
+                        // A component without audio capabilities offers nothing to record with.
+                        val audio = caps.audioCapabilities ?: return@runCatching null
+                        AacEncoderCapabilities(
+                            profiles = caps.profileLevels.mapTo(mutableSetOf()) { it.profile },
+                            minBitrate = audio.bitrateRange.lower,
+                            maxBitrate = audio.bitrateRange.upper,
+                            supports48k = audio.isSampleRateSupported(ColorProfiles.AUDIO_SAMPLE_RATE),
+                            maxChannels = audio.maxInputChannelCount,
+                        )
+                    }.getOrNull()
+                } else {
+                    null
                 },
             )
         }

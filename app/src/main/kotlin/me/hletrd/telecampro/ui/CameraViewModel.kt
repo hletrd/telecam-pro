@@ -1877,6 +1877,12 @@ class CameraViewModel private constructor(
         engine.setOpenGate(e.openGate)
         engine.setAudioGain(e.audioGain)
         engine.setAudioScene(e.audioScene)
+        // Normalized against the encoders when the inventory is already in; otherwise kept as
+        // requested and normalized by applyEncoderInventory when it lands.
+        val (restoredAudioCodec, restoredAudioKbps) = me.hletrd.telecampro.video.normalizeAudioEncoding(
+            e.audioCodec, e.audioBitrateKbps, encoderInventory.audioOptions,
+        )
+        engine.setAudioEncoding(restoredAudioCodec, restoredAudioKbps)
         engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(safeFrameRate)
         // Restore the user-selected recording resolution ("Remember Settings" previously dropped it
@@ -1940,6 +1946,8 @@ class CameraViewModel private constructor(
                 recordAudio = e.recordAudio,
                 audioGain = normalizeAudioGain(e.audioGain),
                 audioScene = e.audioScene,
+                audioCodec = restoredAudioCodec,
+                audioBitrateKbps = restoredAudioKbps,
                 gammaAssist = e.gammaAssist,
                 gyroLog = e.gyroLog,
                 rawLog = e.rawLog,
@@ -2032,6 +2040,8 @@ class CameraViewModel private constructor(
             recordAudio = s.recordAudio,
             audioGain = s.audioGain,
             audioScene = s.audioScene,
+            audioCodec = s.audioCodec,
+            audioBitrateKbps = s.audioBitrateKbps,
             audioInputPreference = s.audioInputPreference,
             photoFnSlots = s.photoFnSlots,
             videoFnSlots = s.videoFnSlots,
@@ -3109,6 +3119,28 @@ class CameraViewModel private constructor(
         markChanged(FnSlot.AUDIO_SCENE)
         scheduleSettingsSave()
     }
+    override fun onAudioCodec(codec: me.hletrd.telecampro.video.AudioCodec) {
+        if (rejectIfRecording()) return
+        // A new format keeps the current bitrate when it offers it, else takes that format's default.
+        val options = _state.value.audioEncoderOptions
+        val requestedKbps = _state.value.audioBitrateKbps.takeIf { it in options[codec]?.bitratesKbps.orEmpty() }
+            ?: codec.defaultKbps
+        applyAudioEncoding(me.hletrd.telecampro.video.normalizeAudioEncoding(codec, requestedKbps, options))
+    }
+
+    override fun onAudioBitrate(kbps: Int) {
+        if (rejectIfRecording()) return
+        val state = _state.value
+        applyAudioEncoding(me.hletrd.telecampro.video.normalizeAudioEncoding(state.audioCodec, kbps, state.audioEncoderOptions))
+    }
+
+    private fun applyAudioEncoding(encoding: Pair<me.hletrd.telecampro.video.AudioCodec, Int>) {
+        val (codec, kbps) = encoding
+        engine.setAudioEncoding(codec, kbps)
+        _state.update { it.copy(audioCodec = codec, audioBitrateKbps = kbps, activeMemorySlot = null) }
+        scheduleSettingsSave()
+    }
+
     override fun onAudioInputPreference(preference: AudioInputPreference) {
         if (rejectIfRecording()) return
         engine.setAudioInputPreference(preference)
@@ -3318,6 +3350,10 @@ class CameraViewModel private constructor(
             _state.value.nativeLogFlavor,
         )
         val safeFormats = requestedFormats.normalizedForEncoder(inventory.heifEncodeAvailable)
+        val (safeAudioCodec, safeAudioKbps) = me.hletrd.telecampro.video.normalizeAudioEncoding(
+            before.audioCodec, before.audioBitrateKbps, inventory.audioOptions,
+        )
+        engine.setAudioEncoding(safeAudioCodec, safeAudioKbps)
         engine.setVideoPipeline(
             inventory.candidatesFor(safeCodec, safeTransfer),
             safeTransfer,
@@ -3359,6 +3395,9 @@ class CameraViewModel private constructor(
                 encoderInventoryLoaded = true,
                 availableVideoCodecs = codecs,
                 videoCodec = safeCodec,
+                audioEncoderOptions = inventory.audioOptions,
+                audioCodec = safeAudioCodec,
+                audioBitrateKbps = safeAudioKbps,
                 heifAvailable = inventory.heifEncodeAvailable,
                 photoFormats = safeFormats,
                 tenBitEncodeAvailable = inventory.tenBitEncodeAvailable,

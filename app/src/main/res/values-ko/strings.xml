@@ -347,6 +347,10 @@
     <string name="video_native_log_source_10bit">카메라 ISP가 선형 신호를 직접 인코딩합니다 · 10비트, 센서 화이트에서 클리핑</string>
     <string name="video_raw_log_source">센서 RAW에서 앱이 직접 현상합니다 · 10비트, 센서 화이트에서 클리핑</string>
     <string name="label_raw_log">RAW 로그 (실험적)</string>
+    <string name="caption_audio_aac_lc">모든 플레이어와 편집기에서 재생됩니다.</string>
+    <string name="caption_audio_he_aac">낮은 비트레이트에서 작은 파일. 고음역은 부호화하지 않고 복원합니다.</string>
+    <string name="caption_audio_he_aac_v2">가장 작은 스테레오 파일. 스테레오 이미지는 파라미터로 복원합니다.</string>
+    <string name="caption_audio_xhe_aac">모든 비트레이트에서 효율적이지만, 아직 일부 플레이어와 편집기에서 재생되지 않습니다.</string>
     <string name="caption_raw_log">센서 RAW에서 앱이 직접 S-Log3를 현상합니다: 넓은 색역, ISP 노이즈 감소·샤프닝 없음. 10비트 RAW, OIS를 끈 자이로 손떨림 보정, 사진 없음, 최대 30fps.</string>
     <string name="caption_raw_log_inactive">이 카메라 경로에서는 동작하지 않습니다 · 네이티브 로그 사용 중</string>
     <string name="mr_default_photo_name">사진 %1$s</string>

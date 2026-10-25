@@ -375,6 +375,22 @@ internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.APV -> "APV Intra"
 }
 
+/** Format names stay Latin in every locale, like the video codec names above. */
+internal fun audioCodecLabel(codec: me.hletrd.telecampro.video.AudioCodec): String = when (codec) {
+    me.hletrd.telecampro.video.AudioCodec.AAC_LC -> "AAC-LC"
+    me.hletrd.telecampro.video.AudioCodec.HE_AAC -> "HE-AAC"
+    me.hletrd.telecampro.video.AudioCodec.HE_AAC_V2 -> "HE-AAC v2"
+    me.hletrd.telecampro.video.AudioCodec.XHE_AAC -> "xHE-AAC"
+}
+
+/** What choosing [codec] trades, one line under the row. */
+internal fun audioCodecCaption(codec: me.hletrd.telecampro.video.AudioCodec): Int = when (codec) {
+    me.hletrd.telecampro.video.AudioCodec.AAC_LC -> me.hletrd.telecampro.R.string.caption_audio_aac_lc
+    me.hletrd.telecampro.video.AudioCodec.HE_AAC -> me.hletrd.telecampro.R.string.caption_audio_he_aac
+    me.hletrd.telecampro.video.AudioCodec.HE_AAC_V2 -> me.hletrd.telecampro.R.string.caption_audio_he_aac_v2
+    me.hletrd.telecampro.video.AudioCodec.XHE_AAC -> me.hletrd.telecampro.R.string.caption_audio_xhe_aac
+}
+
 internal fun videoFrameRateLabel(rate: VideoFrameRate): String = when (rate) {
     VideoFrameRate.FPS_23_976 -> "23.976"
     VideoFrameRate.FPS_24 -> "24"

@@ -121,6 +121,9 @@ interface CameraActions {
     fun onToggleRecordAudio(enabled: Boolean)
     fun onAudioGain(gain: Float)
     fun onAudioScene(scene: me.hletrd.telecampro.camera.AudioScene)
+    /** Soundtrack format (video/AudioEncoding.kt); the bitrate snaps to one that format offers. */
+    fun onAudioCodec(codec: me.hletrd.telecampro.video.AudioCodec)
+    fun onAudioBitrate(kbps: Int)
     fun onAudioInputPreference(preference: me.hletrd.telecampro.camera.AudioInputPreference)
     fun onToggleTeleconverter(enabled: Boolean)
     /**

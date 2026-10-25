@@ -1909,6 +1909,9 @@ class CameraEngine internal constructor(
     @Volatile private var audioGain = 1f
     @Volatile private var audioScene = AudioScene.STANDARD
     @Volatile private var audioInputPreference = AudioInputPreference.AUTO
+    // Requested soundtrack format; resolved against the encoder inventory at REC admission.
+    @Volatile private var audioCodec = me.hletrd.telecampro.video.AudioCodec.AAC_LC
+    @Volatile private var audioBitrateKbps = me.hletrd.telecampro.video.AudioCodec.AAC_LC.defaultKbps
     @Volatile private var aspectRatio = AspectRatio.W4_3
     var onStatus: ((CameraStatus?) -> Unit)?
         get() = callbackSink.function1(EngineCallbackKey.STATUS)
@@ -4116,6 +4119,11 @@ class CameraEngine internal constructor(
     fun setAudioGain(g: Float) { audioGain = normalizeAudioGain(g) }
     /** Directional-audio scene (Sound Focus/Stage); applies on the next [startRecording]. */
     fun setAudioScene(s: AudioScene) { audioScene = s }
+    /** Soundtrack format + bitrate (video/AudioEncoding.kt); applies on the next [startRecording]. */
+    fun setAudioEncoding(codec: me.hletrd.telecampro.video.AudioCodec, kbps: Int) {
+        audioCodec = codec
+        audioBitrateKbps = kbps
+    }
     /**
      * Preferred audio input; resolved against connected AudioDeviceInfo entries at record start AND
      * by every standby-meter generation.
@@ -7070,6 +7078,10 @@ class CameraEngine internal constructor(
             return false
         }
         var configuredSurface: Surface? = null
+        // Frozen once for the take: the request normalized against THIS device's encoders.
+        val takeAudioEncoding = me.hletrd.telecampro.video.RecordingAudioEncoding.resolve(
+            audioCodec, audioBitrateKbps, me.hletrd.telecampro.video.EncoderCaps.currentInventory().audioOptions,
+        )
         val nativeSetupAdmitted = UnsafeRecorderQuarantine.runPendingNativeSetup(processAdmission) {
             configuredSurface = rec.start(
                 uri, encoderSize, rate.encoderRate, captureRate, attemptBitRate,
@@ -7087,6 +7099,7 @@ class CameraEngine internal constructor(
                 // AudioTimestamp BOOTTIME base (VideoRecorder.audioCaptureOffsetUs).
                 cameraClockRealtime = caps?.timestampSource ==
                     android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
+                audioEncoding = takeAudioEncoding,
             )
         }
         if (!nativeSetupAdmitted) {
@@ -7272,7 +7285,8 @@ class CameraEngine internal constructor(
                     (if (acceptedEncoderSize != encoderSize) " (asked ${encoderSize.width}x${encoderSize.height})" else "") +
                     " bitrate=${rec.configuredBitRate ?: requestedBitRate} " +
                     "fps=${String.format(java.util.Locale.US, "%.9f", rate.encoderRate)} " +
-                    "transfer=${fileTransfer.name} audio=$recordAudio",
+                    "transfer=${fileTransfer.name} audio=$recordAudio" +
+                    (if (recordAudio) " ${takeAudioEncoding.codec}/${takeAudioEncoding.bitrate / 1000}k/${takeAudioEncoding.codecName}" else ""),
             )
         }
         return true

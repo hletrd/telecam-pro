@@ -1948,6 +1948,11 @@ data class CameraUiState(
         availability = AudioRouteAvailability.AUTO,
     ),
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
+    // Soundtrack format + bitrate (video/AudioEncoding.kt), normalized against [audioEncoderOptions]
+    // once the encoder inventory loads; the rows list only what this device can record.
+    val audioCodec: me.hletrd.telecampro.video.AudioCodec = me.hletrd.telecampro.video.AudioCodec.AAC_LC,
+    val audioBitrateKbps: Int = me.hletrd.telecampro.video.AudioCodec.AAC_LC.defaultKbps,
+    val audioEncoderOptions: Map<me.hletrd.telecampro.video.AudioCodec, me.hletrd.telecampro.video.AudioEncoderOption> = emptyMap(),
     /**
      * Live input level per CHANNEL (0..1 RMS), in interleave order; empty while the meter is off.
      * A list rather than one number because a stereo or multi-capsule external mic can lose ONE
