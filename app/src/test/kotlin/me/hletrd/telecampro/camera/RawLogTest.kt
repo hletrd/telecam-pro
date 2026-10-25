@@ -99,4 +99,15 @@ class RawLogTest {
         // Without RAW log the plan's HLG truth is untouched.
         assertTrue(acceptedPhotoSessionOutputs(hlgPlan, false, false, false).hlg)
     }
+
+    @Test
+    fun `a missing frame is a whole skipped interval, not jitter`() {
+        val period = 33_333_333L
+        assertEquals(0, missingFrames(0L, period, period))
+        assertEquals(0, missingFrames(period, 2 * period + 10_000_000L, period))
+        assertEquals(1, missingFrames(period, 3 * period, period))
+        assertEquals(3, missingFrames(period, 5 * period + 1_000_000L, period))
+        assertEquals(0, missingFrames(period, period, period))
+        assertEquals(0, missingFrames(period, 3 * period, 0L))
+    }
 }

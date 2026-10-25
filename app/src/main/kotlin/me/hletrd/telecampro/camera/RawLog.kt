@@ -101,3 +101,13 @@ internal fun rawEisConfigFor(
 
 private const val RAW_EIS_STANDARD_MARGIN = 0.10
 private const val RAW_EIS_STRONG_MARGIN = 0.20
+
+/**
+ * Sensor frames missing between two consecutive timestamps at [frameDurationNs] cadence (DEBUG drop
+ * attribution in camera/RawLogBridge.kt): a 2× interval is one missing frame, and anything under 1.5×
+ * is cadence jitter, not a drop. Zero for the first frame or an unknown duration.
+ */
+internal fun missingFrames(previousNs: Long, currentNs: Long, frameDurationNs: Long): Int {
+    if (previousNs <= 0L || frameDurationNs <= 0L || currentNs <= previousNs) return 0
+    return (Math.round((currentNs - previousNs).toDouble() / frameDurationNs) - 1).toInt().coerceAtLeast(0)
+}

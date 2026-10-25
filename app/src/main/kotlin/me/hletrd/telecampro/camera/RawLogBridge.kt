@@ -16,6 +16,7 @@ import android.opengl.EGLSurface
 import android.opengl.GLES30
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
 import me.hletrd.telecampro.BuildConfig
@@ -152,8 +153,14 @@ internal class RawLogBridge private constructor(
         // EIS row timing: each row is exposed from timestamp + skew·(row / height) for the exposure.
         val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
         val skewNs = result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L
-        params = FrameParams(g, matrix, black, white, lsc, zoom, exposureNs, skewNs)
-        if (BuildConfig.DEBUG) resultsSeen++
+        val frameDurationNs = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
+        params = FrameParams(g, matrix, black, white, lsc, zoom, exposureNs, skewNs, frameDurationNs)
+        if (BuildConfig.DEBUG) {
+            resultsSeen++
+            val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+            resultsMissing += missingFrames(lastResultTimestampNs, ts, frameDurationNs)
+            lastResultTimestampNs = ts
+        }
     }
 
     // Camera-thread scratch for the shading-map comparison in [onResult].
@@ -162,6 +169,12 @@ internal class RawLogBridge private constructor(
     // DEBUG-only: camera results seen (camera thread) vs frames developed (bridge thread), so the
     // profile can say how many frames the developer dropped behind acquireLatestImage.
     @Volatile private var resultsSeen = 0
+
+    // DEBUG-only: sensor frames the CAMERA skipped (result timestamp gaps), camera thread. With the
+    // developed-frame gaps in [DevelopProfiler] this attributes a frame missing from a clip: camera,
+    // developer (acquireLatestImage), or downstream of the GL input Surface.
+    @Volatile private var resultsMissing = 0
+    private var lastResultTimestampNs = 0L
 
     private fun onImage(r: ImageReader) {
         val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return
@@ -222,6 +235,7 @@ internal class RawLogBridge private constructor(
         val zoom: Float,
         val exposureNs: Long,
         val skewNs: Long,
+        val frameDurationNs: Long,
     )
 
     /**
@@ -246,6 +260,11 @@ internal class RawLogBridge private constructor(
         private var gpuFrames = 0
         private var windowStart = System.nanoTime()
         private var resultsAtWindowStart = resultsSeen
+        private var cameraMissingAtWindowStart = resultsMissing
+        private var developedMissing = 0
+        private var lastDevelopedTimestampNs = 0L
+        private var latencyNs = 0L
+        private var latencyMaxNs = 0L
 
         init {
             if (timerQueries) GLES30.glGenQueries(queries.size, queries, 0)
@@ -261,8 +280,12 @@ internal class RawLogBridge private constructor(
 
         private var copyNs = 0L
 
-        fun frameDone(upload: Long, develop: Long, copy: Long) {
+        fun frameDone(upload: Long, develop: Long, copy: Long, timestampNs: Long, frameDurationNs: Long, latency: Long) {
             frames++
+            developedMissing += missingFrames(lastDevelopedTimestampNs, timestampNs, frameDurationNs)
+            lastDevelopedTimestampNs = timestampNs
+            latencyNs += latency
+            latencyMaxNs = maxOf(latencyMaxNs, latency)
             uploadNs += upload
             copyNs += copy
             developNs += develop
@@ -296,6 +319,7 @@ internal class RawLogBridge private constructor(
             val seconds = (System.nanoTime() - windowStart) / 1e9
             if (frames > 0) {
                 val results = resultsSeen - resultsAtWindowStart
+                val cameraMissing = resultsMissing - cameraMissingAtWindowStart
                 val g = gpuFrames.coerceAtLeast(1)
                 // To a cache file, not logcat: this process routinely sits over the ColorOS 300-row
                 // quota during a session, which silently ate these rows (measured 2026-10-25).
@@ -308,7 +332,9 @@ internal class RawLogBridge private constructor(
                             "pass1(gpu)=${"%.2f".format(gpuNs[0] / 1e6 / g)}ms pass2(gpu)=${"%.2f".format(gpuNs[1] / 1e6 / g)}ms"
                         } else {
                             "gpu=n/a"
-                        },
+                        } +
+                        " missing(camera=$cameraMissing developed=$developedMissing) " +
+                        "latency=${"%.1f".format(latencyNs / 1e6 / frames)}/${"%.1f".format(latencyMaxNs / 1e6)}ms",
                 )
             }
             frames = 0
@@ -320,6 +346,10 @@ internal class RawLogBridge private constructor(
             gpuFrames = 0
             windowStart = System.nanoTime()
             resultsAtWindowStart = resultsSeen
+            cameraMissingAtWindowStart = resultsMissing
+            developedMissing = 0
+            latencyNs = 0
+            latencyMaxNs = 0
         }
     }
 
@@ -527,7 +557,10 @@ internal class RawLogBridge private constructor(
             check(EGL14.eglSwapBuffers(display, surface)) {
                 "eglSwapBuffers 0x${Integer.toHexString(EGL14.eglGetError())}"
             }
-            profiler?.frameDone(uploaded - start, System.nanoTime() - start, lastCopyNs)
+            profiler?.frameDone(
+                uploaded - start, System.nanoTime() - start, lastCopyNs, image.timestamp, p.frameDurationNs,
+                SystemClock.elapsedRealtimeNanos() - image.timestamp,
+            )
         }
 
         fun emitTerminalProfile() = profiler?.emit(terminal = true)
