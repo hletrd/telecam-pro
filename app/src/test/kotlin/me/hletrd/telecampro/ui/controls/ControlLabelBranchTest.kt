@@ -36,6 +36,13 @@ class ControlLabelBranchTest {
             ),
             captions,
         )
+        assertEquals(
+            listOf(
+                me.hletrd.telecampro.R.string.audio_channels_mono,
+                me.hletrd.telecampro.R.string.audio_channels_stereo,
+            ),
+            me.hletrd.telecampro.video.AudioChannelMode.entries.map(::audioChannelLabel),
+        )
     }
 
     @Test

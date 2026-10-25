@@ -1685,12 +1685,15 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         enabled = recordingMutable,
     )
     // Channel cap (AudioEncoding.kt AudioChannelMode): the armed meter shows the same count.
+    val channelLabels = me.hletrd.telecampro.video.AudioChannelMode.entries.associateWith {
+        stringResource(audioChannelLabel(it))
+    }
     SegmentedSelector(
         label = stringResource(R.string.label_audio_channels),
         hint = stringResource(R.string.hint_audio_channels),
         options = me.hletrd.telecampro.video.AudioChannelMode.entries,
         selected = state.audioChannelMode,
-        labelFor = { labelContext.audioChannelLabel(it) },
+        labelFor = { channelLabels.getValue(it) },
         onSelect = actions::onAudioChannelMode,
         enabled = state.recordAudio && recordingMutable,
     )
