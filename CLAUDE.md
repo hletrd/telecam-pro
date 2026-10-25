@@ -883,7 +883,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **The soundtrack format is a device-enumerated choice, AAC only (2026-10-25).** MediaMuxer's MP4
   writer (`MPEG4Writer.getFourCCForMime`) takes AAC, AMR-NB and AMR-WB audio and nothing else; AMR is
   narrowband speech, and the Opus/FLAC encoders this phone ships cannot be muxed. So the Video tab
-  offers AAC-LC (default, 192 kb/s — unchanged), HE-AAC, HE-AAC v2 and xHE-AAC, each ONLY when a
+  offers AAC-LC (default 256 kb/s since 2026-10-26; it was 192), HE-AAC, HE-AAC v2 and xHE-AAC, each ONLY when a
   REGULAR encoder advertises that profile at 48 kHz (`video/AudioEncoding.kt`), with bitrate presets
   inside its advertised range — a board whose image lacks an encoder or its licence lists fewer, and
   REGULAR_CODECS already hides PMA110's `special-codec` `c2.qti.aac.hw.encoder` (LC-only, ≤ 192 kb/s).
@@ -891,16 +891,21 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `c2.android.xheaac.encoder`); every preset was accepted and hit within ~6 % on device. HE-AAC v2
   is parametric stereo, so a mono route records HE-AAC v1. Editor/player import of the non-LC
   formats is `docs/FIELD_CHECKS.md` D7.
-- **Sound Focus / Sound Stage are NOT in effect as shipped (device-measured 2026-10-25).**
-  `AudioManager.setParameters` needs MODIFY_AUDIO_SETTINGS, which the closed release permission set
-  (CAMERA + RECORD_AUDIO, `tools/release_permissions.py`) does not declare, so AudioFlinger drops every
-  `vendor_audiorecord_*` write SILENTLY: the HAL logged `mEffectType(0)` for all three Directionality
-  choices, and the getParameters "echo" the recorder logs is always empty because ColorOS answers those
-  keys only to "system or list" apps. With the permission (debug-manifest experiment) the writes land:
-  `OplusAudAlgoManager: effectType 5`, `orientation 0`, profile `mEffectType(5)`. Adding it is an owner
-  decision (it changes the closed permission set). Two facts any fix must respect: the stock camera
-  sends `effect_type=0` for ordinary video (Pro and normal Video), not the `STANDARD(1)` this enum
-  assumes, plus `orientation`, `camera_id`, `telephoto` and `focus_zoom`; and stock gets the HAL's
+- **Sound Focus / Sound Stage need MODIFY_AUDIO_SETTINGS, which the app now DECLARES (owner decision
+  2026-10-26; measured 2026-10-25).** `AudioManager.setParameters` needs that permission; without it
+  AudioFlinger drops every `vendor_audiorecord_*` write SILENTLY: the HAL logged `mEffectType(0)` for
+  all three Directionality choices, and a getParameters "echo" is always empty because ColorOS answers
+  those keys only to "system or list" apps (the recorder no longer reads one). With the permission
+  (debug-manifest experiment) the writes land: `OplusAudAlgoManager: effectType 5`, `orientation 0`,
+  profile `mEffectType(5)`. It is a normal (install-time) permission, so nothing new is prompted; the
+  closed release set is now CAMERA + RECORD_AUDIO + MODIFY_AUDIO_SETTINGS (`tools/release_permissions.py`).
+  The shipping path (`VideoRecorder.applyAudioScene`) sends session id, orientation, focus zoom (and
+  focus angle for Sound Focus), then the effect type for EVERY scene, `STANDARD` as `0`, and resets a
+  non-standard effect to `0` when the take ends so the next app's capture does not inherit it. That
+  path's HAL readback is PENDING DEVICE (`docs/FIELD_CHECKS.md` D1). Facts it respects: the stock
+  camera sends `effect_type=0` for ordinary video (Pro and normal Video) — the enum's old
+  `STANDARD(1)` was a value no stock capture shows — plus `orientation`, `camera_id`, `telephoto` and
+  `focus_zoom` (`camera_id`/`telephoto` are not sent until stock's TC-mode values are measured); and stock gets the HAL's
   4-capsule camcorder algorithm (`algo input channels(4)`) through a system-set `CamcorderSwitchMic=true`
   that a third-party app cannot flip (sending `oplus_camera_record=true` ourselves changed nothing;
   we always get 2 channels). The `audio_policy` logcat (`AudioFlingerExtImpl logSetParametersForDebug`,
@@ -944,7 +949,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
   main lens with TELE off; separate default-on Setup toggles preserve the last lens selection and
-  TELE mode when restoring saved settings.
+  TELE mode when restoring saved settings. **Fresh defaults are general-purpose, not pro-flat (owner
+  request 2026-10-26):** photo JPEG only (`PhotoFormats.DEFAULT`; the constructor's own defaults stay
+  HEIF so derived values do not change meaning, and the OSD format tag stays silent at the default),
+  video transfer SDR, Stabilization Standard, bitrate High, AAC-LC 256 kb/s stereo, NR and edge FAST.
+  The persisted blob and the engine seeds carry the same values, and host tests pin each. Every menu
+  setting carries a one-line `hint_*` caption (EN+KO); still quality snaps to 40–100 in steps of 5
+  (`normalizeStillQuality`, also applied on load) and the menu ISO slider moves on the 1/3-stop marks.
 - **Log = NATIVE ISP S-Log3 where the camera takes a programmed tone curve; GL log otherwise
   (rewritten 2026-10-14 — this bullet's title said "GL-only" until the public tone-map path was
   measured).** Device facts, PMA110, 2026-10-14: every camera (HAL 0–5) advertises
@@ -1211,8 +1222,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **ISP noise reduction is honoured OFF on the log stream (device-measured 2026-10-25).** Fixed ISO
   1600 · 1/62 s, S-Log3 curve on the P010 stream: luma high-frequency energy (mean |Laplacian|) 9.7
   with NR OFF vs 7.0 FAST / HQ; EDGE_MODE made no measurable difference on that defocused scene. The
-  app default is already OFF for both (`ManualControls`), so log needs no override — and forcing one
-  would overrule an operator who picks NR deliberately.
+  app default is FAST for both since 2026-10-26 (`ManualControls`; general-purpose defaults, owner
+  request — it was OFF), so a log take keeps the default's mild NR unless the operator picks OFF. Log
+  deliberately gets no override: forcing one would overrule an operator who picks NR deliberately.
 - **Log EI offset — HIDDEN on the PMA110 profile (device-measured 2026-10-15, owner decision).**
   On PMA110 the ISP's output under the programmed S-Log3 curve is NOT exposure-linear: M mode, AE
   off, fixed ISO 100, a lit wall, exposure ×1 / ×½ / ×¼ / ×⅛ decoded to 1 / 0.28 / 0.11 / 0.052 of
@@ -1492,7 +1504,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   applied allocation-free to every PCM buffer that needs it, while RMS construction runs only when
   a non-null meter callback exists and the 100 ms emission cadence is due. Gain does not imply a
   discarded per-buffer level pass.
-  **The app requests CAMERA and RECORD_AUDIO only. The visual-media READ trio — READ_MEDIA_IMAGES /
+  **The app requests CAMERA and RECORD_AUDIO at runtime and declares one install-time permission,
+  MODIFY_AUDIO_SETTINGS (2026-10-26, for the Sound Focus / Sound Stage parameters — see that bullet).
+  The visual-media READ trio — READ_MEDIA_IMAGES /
   READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED — was REMOVED 2026-10-19 (owner decision) and
   must not be re-added.** It was declared 2026-08-01 and requested at an empty-gallery tap so a
   reinstall's owner-cleared captures could seed in-app review, but Google Play flagged it under the

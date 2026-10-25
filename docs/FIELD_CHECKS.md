@@ -9,7 +9,7 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ☐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · A19 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · D6 ◐ · D7 ☐ · D8 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
 Twenty-eight remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
@@ -21,10 +21,10 @@ REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log R
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
 **A19** needs handheld EIS takes (bare and TELE), the immutable-APK run, a colour chart, a thermal soak and a clipped-highlight scene,
-**D1** is blocked until the app may write the vendor audio parameters (MODIFY_AUDIO_SETTINGS, an owner decision) and then needs an off-axis sound source,
+**D1** needs the logcat readback on the current build and then an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
-run of ordinary clips plus one more take, **D6** needs one clap in front of the lens, **D7** needs the
+run of ordinary clips plus one more take, **D6** needs one HE-AAC clap take, **D7** needs the
 four soundtrack formats imported into the editors you use, **D8** needs finger snaps left and right
 with the phone held in each landscape, and **E1/E2/E3/E4** need real MediaProvider ownership,
 system-consent, reset/reindex, and pending-expiry behavior. B1 closed the rotation
@@ -746,12 +746,14 @@ difference,” not “confirmed working.”
 
 ## D. Audio, quiet room — 2 min
 
-### D1. Sound Focus off-axis rejection — ◯ OPEN (blocked)
+### D1. Sound Focus off-axis rejection — ◯ OPEN (unblocked 2026-10-26)
 
-Parameter acceptance was NOT verified, and on PMA110 as shipped it does not happen: AudioFlinger
-silently drops `vendor_audiorecord_*` writes from an app without MODIFY_AUDIO_SETTINGS, and the HAL
-logged `mEffectType(0)` for every Directionality choice (2026-10-25, `CLAUDE.md`). Run this only on a
-build that may write the parameters, and confirm `OplusAudAlgoManager: effectType 2` in logcat first.
+Builds before 2026-10-26 could not write the parameters: AudioFlinger silently drops
+`vendor_audiorecord_*` writes from an app without MODIFY_AUDIO_SETTINGS, and the HAL logged
+`mEffectType(0)` for every Directionality choice (2026-10-25, `CLAUDE.md`). The app now declares the
+permission (owner decision). First confirm the shipping path in logcat (`OplusAudAlgoManager` /
+`AudioFlingerExtImpl logSetParametersForDebug`): `effectType 2` for Sound Focus, `5` for Sound Stage,
+`0` for Standard, and the effect back at `0` after Stop.
 
 - Record the same scene twice, Sound Focus on then off, with a sound source clearly off to one side.
 
@@ -843,7 +845,7 @@ recorder quarantine. Record each clip's track list.
 
 ---
 
-### D6. A/V sync against a clap — ◯ OPEN 2026-10-25
+### D6. A/V sync against a clap — ◐ HALF DONE 2026-10-25 (AAC-LC done, HE-AAC open)
 
 The recorder anchors audio to the first video frame's capture time and removes the encoder's priming
 (`CLAUDE.md`). Vibration bursts against the gyro sidecar read LC −17 / HE-AAC +10 / HE-AAC v2 +12 /
@@ -857,12 +859,18 @@ filter delay; a clap is seen and heard at one instant.
 
 **Pass:** sound and closed hands within one frame (±33 ms), never sound clearly first.
 
+**Result 2026-10-25 (AAC-LC):** PMA110, VIDEO, TELE with the converter, 29.97 selection (sensor
+cadence 33.322 ms), AAC-LC 192 kb/s, debug build with the sample-0 anchor and priming compensation.
+In an 8.43 s clip (252 frames) both claps' audio onsets fall inside the first frame that shows the
+hands closed: onset 0.9017 s in the frame at 0.900 s (+1.7 ms), onset 1.3691 s in the frame at
+1.366 s (+3.1 ms). Sound is never first. The HE-AAC repeat is still open.
+
 ### D7. The four soundtrack formats import and play — ◯ OPEN 2026-10-25
 
 Every format decodes cleanly with ffmpeg 8 (`profile=xHE-AAC` read back for xHE-AAC), and
 `AacEncoderProbeTest` decodes all four with the platform decoder; the editors are unchecked.
 
-- Record ~10 s with each of AAC-LC 192, HE-AAC 64, HE-AAC v2 32 and xHE-AAC 128 kb/s.
+- Record ~10 s with each of AAC-LC 256 (the default), HE-AAC 64, HE-AAC v2 32 and xHE-AAC 128 kb/s.
 - Play each in the system Gallery and import each into the editors you deliver with (Resolve,
   Premiere, Final Cut, CapCut, …).
 
@@ -873,7 +881,7 @@ captions promise "plays in every player and editor" only for AAC-LC and warn for
 
 The two built-in capsules sit at the phone's bottom and top, so left/right is physical only in
 landscape and depends on the orientation the audio HAL is told — and the recorder tells it nothing in
-Standard, and (until D1's permission question is settled) nothing in any mode.
+Standard on builds before 2026-10-26, and nothing in any mode before the app declared MODIFY_AUDIO_SETTINGS; current builds send the orientation in every mode.
 
 - Hold the phone in landscape with the camera facing a quiet scene. Record ~8 s: snap once clearly on
   the image's LEFT, then once on its RIGHT. Repeat in the other landscape hold, in Standard and in
