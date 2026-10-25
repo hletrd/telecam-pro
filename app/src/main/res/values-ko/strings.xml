@@ -344,6 +344,7 @@
     <string name="video_tone_mapped_source">카메라에서 이미 톤 매핑된 스트림에 적용됩니다</string>
     <string name="video_maker_log_caption">이 휴대폰 제조사의 자체 로그 포맷 · 제조사가 배포한 LUT용</string>
     <string name="video_native_log_source">카메라 ISP가 선형 신호를 직접 인코딩합니다 · 8비트, 센서 화이트에서 클리핑</string>
+    <string name="video_native_log_source_10bit">카메라 ISP가 선형 신호를 직접 인코딩합니다 · 10비트, 센서 화이트에서 클리핑</string>
     <string name="mr_default_photo_name">사진 %1$s</string>
     <string name="mr_default_video_name">동영상 %1$s</string>
     <string name="label_output">출력</string>

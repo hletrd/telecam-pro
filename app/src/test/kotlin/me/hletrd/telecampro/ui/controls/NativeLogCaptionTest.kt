@@ -78,6 +78,52 @@ class NativeLogCaptionTest {
         assertEquals(R.string.video_tone_mapped_source, transferSourceCaption(ColorTransfer.HLG, nativeLogCurveSupported = true))
     }
 
+    @Test
+    fun `native log reads 10-bit only on an accepted P010 bridge session`() {
+        ColorTransfer.entries.filter { it.isLog }.forEach {
+            assertEquals(
+                "$it",
+                R.string.video_native_log_source_10bit,
+                transferSourceCaption(it, nativeLogCurveSupported = true, tenBitNativeLogSession = true),
+            )
+            assertEquals(
+                "$it, bridge refused or not accepted",
+                R.string.video_native_log_source,
+                transferSourceCaption(it, nativeLogCurveSupported = true, tenBitNativeLogSession = false),
+            )
+            // The GL-log fallback is never ten-bit native log, whatever a stale flag says.
+            assertEquals(
+                R.string.video_tone_mapped_source,
+                transferSourceCaption(it, nativeLogCurveSupported = false, tenBitNativeLogSession = true),
+            )
+        }
+        assertNull(transferSourceCaption(ColorTransfer.SDR, nativeLogCurveSupported = true, tenBitNativeLogSession = true))
+        assertEquals(
+            R.string.video_tone_mapped_source,
+            transferSourceCaption(ColorTransfer.HLG, nativeLogCurveSupported = true, tenBitNativeLogSession = true),
+        )
+    }
+
+    @Test
+    fun `accepted outputs carry the bridge truth`() {
+        val plan = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = false,
+            supportsRaw = true,
+            standalone = true,
+            logicalMultiCamera = false,
+            teleconverterMode = false,
+            wantHiRes = false,
+            tenBitVideoOnly = false,
+            frontRoute = false,
+            yuvStillRequired = false,
+            rawStandaloneOnly = true,
+        )
+        assertTrue(acceptedPhotoSessionOutputs(plan, true, true, false, p010BridgePresent = true).tenBitNativeLog)
+        assertFalse(acceptedPhotoSessionOutputs(plan, true, true, false, p010BridgePresent = false).tenBitNativeLog)
+        assertFalse(acceptedPhotoSessionOutputs(plan, true, true, false).tenBitNativeLog)
+    }
+
     // ---- Log EI offset row ----
 
     @Test

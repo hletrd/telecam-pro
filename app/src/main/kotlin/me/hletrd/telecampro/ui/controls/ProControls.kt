@@ -1044,12 +1044,19 @@ internal fun TransferSelector(
  * A log transfer on a camera that takes the native ISP curve ([nativeLogCurveSupported], the same
  * capability answer the Engine routes on) is NOT applied to an already tone-mapped stream — the ISP
  * encodes it in place of its tone curve — so the old caveat would now be false there. Its own
- * caveat keeps the two honesty limits that remain: an 8-bit source, and no latitude above the
- * sensor clip. HLG, and log on the GL fallback, keep the tone-mapped caveat.
+ * caveat keeps the honesty limits that remain: the source bit depth, and no latitude above the
+ * sensor clip. The bit depth is ACCEPTED-session truth ([tenBitNativeLogSession], the P010 bridge
+ * that configured): an unaccepted or refused bridge still reads "8-bit". HLG, and log on the GL
+ * fallback, keep the tone-mapped caveat.
  */
 @StringRes
-internal fun transferSourceCaption(transfer: ColorTransfer, nativeLogCurveSupported: Boolean): Int? = when {
+internal fun transferSourceCaption(
+    transfer: ColorTransfer,
+    nativeLogCurveSupported: Boolean,
+    tenBitNativeLogSession: Boolean = false,
+): Int? = when {
     transfer == ColorTransfer.SDR -> null
+    transfer.isLog && nativeLogCurveSupported && tenBitNativeLogSession -> R.string.video_native_log_source_10bit
     transfer.isLog && nativeLogCurveSupported -> R.string.video_native_log_source
     else -> R.string.video_tone_mapped_source
 }

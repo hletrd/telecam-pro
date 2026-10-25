@@ -1555,6 +1555,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val sourceCaption = transferSourceCaption(
         state.transfer,
         me.hletrd.telecampro.camera.nativeLogCurveSupported(state.caps),
+        tenBitNativeLogSession = state.cameraReady && state.photoSessionOutputs.tenBitNativeLog,
     )?.let { stringResource(it) }
     val makerCaption = transferMakerCaption(state.transfer)?.let { stringResource(it) }
     Captioned(listOfNotNull(makerCaption, sourceCaption).joinToString("\n").ifEmpty { null }) {
