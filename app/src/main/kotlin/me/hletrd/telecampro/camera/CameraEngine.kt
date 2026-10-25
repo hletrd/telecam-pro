@@ -1541,8 +1541,8 @@ class CameraEngine internal constructor(
         if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
             android.util.Log.i(
                 "CameraEngine",
-                "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
-                    "home=${inventory.homeEquivMm} available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
+                "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range home=${inventory.homeEquivMm} " +
+                    "available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
             )
         }
         // Latch only on a real publication: setting it first meant a null listener at this instant
