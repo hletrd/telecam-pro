@@ -851,6 +851,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   33.367 ms) and 30 (33.333 ms) produced byte-identical cadences, so making the app-side frame
   interval exact for drop-frame rates was measured, changed nothing, and was reverted. The container
   still tags the selected rate; players and NLEs follow the real timestamps.
+  **Re-measured 2026-10-26 with a debug request override (camera 4, TELE, 4K native-log session),
+  and the frame duration is ignored OUTRIGHT, not only inside a fixed range:** with AE off, requested
+  durations of 33.367, 33.4, 34, 40 and 41.708 ms all ran 33.320 ms (`SENSOR_FRAME_DURATION` result
+  33.333 ms) under `[30,30]`, `[10,30]` and even `CONTROL_MODE_OFF`. The cadence is 1/upper of the
+  integer target range, about 0.04 % fast: `[24,24]` → 41.650 ms (24.0096 fps) with AE on or off,
+  `[60,60]` AE off → 16.660 ms (60.024), AE on → 16.80 ms (59.52), `[30,30]` AE on → 33.4475 ms
+  (29.898). Camera2 ranges are integers, so no public request reaches 30000/1001, 60000/1001 or
+  24000/1001; an exact NTSC file can only come from retiming encoder timestamps onto the 1001 grid.
 - **Recorded single-frame drops have three sources (two perfetto-bisected on PMA110, 2026-10-13;
   the third measured 2026-10-25).**
   (1) STEADY STATE, camera side: the HAL's sensor timestamps skip a slot when its 3A nodes run long
@@ -925,7 +933,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   orientation the HAL is told (`docs/FIELD_CHECKS.md` D8). Every built-in input profile in
   `dumpsys media.audio_policy` is PCM 16-bit ≤ 48 kHz (a 4-channel `fast_raw_input` mask exists);
   AudioRecord GRANTS float, 24/32-bit and 96 kHz requests but converts them from that, so they add no
-  resolution. UNPROCESSED is declared supported, and a 4-channel index mask is granted. A USB input
+  resolution. UNPROCESSED is declared supported, and a 4-channel index mask is granted — but channels 3
+  and 4 are digital silence for CAMCORDER, UNPROCESSED, MIC and VOICE_RECOGNITION alike (in-app probe,
+  2026-10-26): a third-party app gets exactly the two capsules, so a Sony-style 4-channel/backup track
+  has no source here. UNPROCESSED left/right correlate 0.32–0.43 on room tone versus ~0.85 for the
+  processed sources, so the stock processing mixes the capsules. A USB input
   profile offers PCM 32-bit / float up to 192 kHz. MediaMuxer cannot carry PCM in MP4 (AAC/AMR only);
   Media3's `Mp4Muxer` can (16/24/32-bit integer and 32-bit float tracks).
 - **The Gyroflow gyro log (`.gcsv`, opt-in) lands in `Documents/TeleCamPro/`, not beside the clip,
@@ -1128,7 +1140,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   and Java EGL cannot create the `EGL_KHR_no_config_context` context a per-surface config needs (EGL14
   rejects a null config), so a `tenBitNativeLogBridge` profile starts EVERY GL generation on
   RGBA1010102; SDR AVC/HEVC, HLG, preview and Photo were device-checked unchanged through it (no
-  colour shift; FIELD_CHECKS A18). Gating: `tenBitNativeLogBridgeSupported` = profile flag (PMA110
+  colour shift; FIELD_CHECKS A18). That RGBA input costs a conversion INSIDE the encoder (perfetto,
+  4K 29.97 native-log take, 2026-10-26): `c2.qti.hevc.encoder`'s image-transformer thread in
+  `media.hwcodec` ran 2.43 CPU-s over the ~8 s take with two GPU `QueueSubmit`s per encoded frame and
+  964 buffer import/free pairs. Rendering YUV straight into the encoder (`EGL_EXT_yuv_surface` and
+  `GL_EXT_YUV_target` are both exposed) would remove that pass; it is not attempted — it needs its own
+  EGL config/context and an encode matrix that must match the container tags. Gating: `tenBitNativeLogBridgeSupported` = profile flag (PMA110
   family only — GENERIC unmeasured) + curve capability + `(P010, STANDARD)` advertised + the GL input
   size among the P010 sizes + not FRONT, resolved by `CameraEngine.tenBitNativeLogStreamFor` into
   `CameraController.open(tenBitNativeLogStream)`. The controller tries the bridge first on each rung
