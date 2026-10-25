@@ -1470,6 +1470,10 @@ data class PhotoSessionOutputs(
     // the 8-bit preview-only rung has no still readers AND no HLG, and must not be captioned as the
     // designed "10-bit video · stills off" trade.
     val hlg: Boolean = false,
+    // True only when the ACCEPTED session carries its GL stream as ten-bit P010 through the
+    // P010InputBridge (native log on a measured route) — a refused bridge lands the SAME rung on the
+    // 8-bit SurfaceTexture, so intent cannot answer "how many bits does this native log have".
+    val tenBitNativeLog: Boolean = false,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }

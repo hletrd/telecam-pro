@@ -22,13 +22,18 @@ class EglCore(sharedContext: EGLContext = EGL14.EGL_NO_CONTEXT, tenBit: Boolean 
     val eglContext: EGLContext
     private val eglConfig: EGLConfig
 
+    /** Whether the RGBA1010102 config was actually found (a ten-bit request falls back to 8-bit). */
+    val tenBitConfig: Boolean
+
     init {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "eglGetDisplay failed" }
         val version = IntArray(2)
         check(EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) { "eglInitialize failed" }
 
-        eglConfig = chooseConfig(tenBit) ?: chooseConfig(false)
+        val tenBitChoice = if (tenBit) chooseConfig(true) else null
+        tenBitConfig = tenBitChoice != null
+        eglConfig = tenBitChoice ?: chooseConfig(false)
             ?: error("No suitable EGL config")
 
         val attrib = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)

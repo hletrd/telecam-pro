@@ -157,4 +157,53 @@ class NativeLogCurveTest {
         // PMA110 photo stills must stay byte-identical to the measured path: no key written.
         assertNull(stillToneMapMode(false, pma110ToneMapModes))
     }
+
+    // ---- ten-bit native-log bridge gate ----
+
+    private val pma110P010Sizes = listOf(3840 to 2160, 1920 to 1080, 4096 to 3072)
+
+    @Test
+    fun `the measured PMA110 bridge facts qualify at an advertised P010 size`() {
+        assertTrue(
+            tenBitNativeLogBridgeSupported(
+                profileAllows = true,
+                nativeLogCurveSupported = true,
+                p010StandardAdvertised = true,
+                p010Sizes = pma110P010Sizes,
+                streamWidth = 3840,
+                streamHeight = 2160,
+            ),
+        )
+    }
+
+    @Test
+    fun `every half of the bridge gate is required`() {
+        fun gate(
+            profile: Boolean = true,
+            curve: Boolean = true,
+            advertised: Boolean = true,
+            sizes: List<Pair<Int, Int>> = pma110P010Sizes,
+            w: Int = 3840,
+            h: Int = 2160,
+            front: Boolean = false,
+        ) = tenBitNativeLogBridgeSupported(profile, curve, advertised, sizes, w, h, front)
+        assertFalse("unmeasured device profile", gate(profile = false))
+        assertFalse("no programmable curve (the GL-log fallback owns that camera)", gate(curve = false))
+        assertFalse("P010 not advertised under STANDARD", gate(advertised = false))
+        assertFalse("no P010 output sizes", gate(sizes = emptyList()))
+        assertFalse("stream size not an advertised P010 size", gate(w = 2560, h = 1440))
+        assertFalse("transposed size is a different stream", gate(w = 2160, h = 3840))
+        assertFalse("the unmeasured front route", gate(front = true))
+    }
+
+    @Test
+    fun `GENERIC does not take the bridge while PMA110 does`() {
+        assertFalse(DeviceProfile.GENERIC.tenBitNativeLogBridge)
+        assertTrue(DeviceProfile.PMA110.tenBitNativeLogBridge)
+    }
+
+    @Test
+    fun `unknown caps never take the bridge`() {
+        assertFalse(tenBitNativeLogBridgeSupported(DeviceProfile.PMA110, caps = null, 3840, 2160))
+    }
 }

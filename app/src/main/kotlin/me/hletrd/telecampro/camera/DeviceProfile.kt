@@ -89,6 +89,18 @@ internal data class DeviceProfile(
      * offset where false; the persisted value is ignored (wire offset 0).
      */
     val nativeLogEiSupported: Boolean = true,
+    /**
+     * Whether a native-log VIDEO session may carry its stream as YCBCR_P010 under the STANDARD
+     * dynamic-range profile, bridged into GL through an ImageWriter ([P010InputBridge]): ten bits of
+     * the ISP's S-Log3 curve WITH the full-res JPEG and RAW readers kept. PMA110 is MEASURED
+     * (2026-10-25, standalone probe): P010 + curve + JPEG + RAW configured on cam 2 and on cam 4
+     * under 0x80b4; raw Y reached GL at 94 distinct levels against 27 for the same scene through an
+     * 8-bit stream; ImageWriter kept the sensor timestamp; 30 fps sustained. Capability alone is not
+     * enough — a HAL can advertise (P010, STANDARD) and still reject it in a session or mis-tag it —
+     * so GENERIC stays off until a device is measured. The capability gate still applies on top
+     * ([tenBitNativeLogBridgeSupported]).
+     */
+    val tenBitNativeLogBridge: Boolean = false,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -101,6 +113,7 @@ internal data class DeviceProfile(
             videoMinFrameDurationsUnderstated = true,
             nativeLogFlavor = ColorTransfer.OLOG2,
             nativeLogEiSupported = false,
+            tenBitNativeLogBridge = true,
         )
 
         val GENERIC = DeviceProfile(

@@ -61,6 +61,55 @@ internal fun nativeLogCurveSupported(
 internal fun nativeLogCurveSupported(caps: CameraCaps?): Boolean = caps != null &&
     nativeLogCurveSupported(caps.supportsManualPostProcessing, caps.toneMapModes, caps.maxCurvePoints)
 
+/*
+ * Ten-bit native log (device-measured PMA110 2026-10-25, standalone probe). The 8-bit precision
+ * limit above is a property of the STREAM, not of the curve: the same programmed S-Log3 curve on a
+ * YCBCR_P010 stream under the STANDARD dynamic-range profile carries ten bits, and — unlike HLG10,
+ * whose session must drop JPEG and RAW on this HAL — keeps both still readers (P010 + curve + JPEG +
+ * RAW configured on cam 2, and on cam 4 under the 0x80b4 TC session type). GL cannot take P010
+ * from a camera-fed SurfaceTexture (a PRIVATE stream stays 8-bit NV12), so [P010InputBridge] hands
+ * each P010 buffer to the existing GL input SurfaceTexture through an ImageWriter, zero-copy: raw Y
+ * sampled in GL showed 94 distinct levels against 27 for the same scene through an 8-bit stream,
+ * and the SurfaceTexture timestamp equalled the camera Image timestamp. Still NOT claimed: highlight
+ * latitude (sensor clip is unchanged) and the stock O-Log2 pipeline (2-exposure DOL + DRC), which a
+ * third-party session never entered in any measured shape.
+ */
+
+/**
+ * Android-free core: whether a native-log VIDEO session may carry its stream as P010 through the
+ * bridge. [profileAllows] is [DeviceProfile.tenBitNativeLogBridge] (measured devices only);
+ * [p010StandardAdvertised] is the colour-space-profile capability; the stream size must be an
+ * advertised P010 output size exactly (the bridge reader is allocated at the GL input size). The
+ * FRONT route is excluded: only rear cameras 2 and 4 were measured, and the front stream's own
+ * pre-mirror quirk ([DeviceProfile.frontStreamPreMirrored]) was diagnosed on the PRIVATE stream.
+ */
+internal fun tenBitNativeLogBridgeSupported(
+    profileAllows: Boolean,
+    nativeLogCurveSupported: Boolean,
+    p010StandardAdvertised: Boolean,
+    p010Sizes: List<Pair<Int, Int>>,
+    streamWidth: Int,
+    streamHeight: Int,
+    frontRoute: Boolean = false,
+): Boolean = profileAllows && nativeLogCurveSupported && p010StandardAdvertised && !frontRoute &&
+    p010Sizes.any { (w, h) -> w == streamWidth && h == streamHeight }
+
+/** [tenBitNativeLogBridgeSupported] for a selected route and its GL input stream size. */
+internal fun tenBitNativeLogBridgeSupported(
+    profile: DeviceProfile,
+    caps: CameraCaps?,
+    streamWidth: Int,
+    streamHeight: Int,
+): Boolean = caps != null && tenBitNativeLogBridgeSupported(
+    profileAllows = profile.tenBitNativeLogBridge,
+    nativeLogCurveSupported = nativeLogCurveSupported(caps),
+    p010StandardAdvertised = caps.p010StandardAdvertised,
+    p010Sizes = caps.p010OutputSizes.map { it.width to it.height },
+    streamWidth = streamWidth,
+    streamHeight = streamHeight,
+    frontRoute = caps.lensFacingFront,
+)
+
 /**
  * The S-Log3 OETF as TONEMAP_CURVE control points: interleaved (Pin, Pout) pairs, Pin strictly
  * increasing from exactly 0 to exactly 1, Pout = [LogProfiles.slog3Oetf] (Pin). The same array is

@@ -165,6 +165,16 @@ class CameraController internal constructor(
     private var nativeLogCurve = false
     // The curve's control points, sized to this camera's advertised budget. Built once per open().
     private var nativeLogCurvePoints: FloatArray? = null
+    // Ten-bit native log (P010InputBridge): the GL input stream size the engine resolved the bridge
+    // for, or null when the route/profile does not take it. Set once per open(). The bridge itself is
+    // built per configure attempt and refused for the rest of this controller once any attempt with
+    // it fails — the retry then lands on the SAME ladder rung through the 8-bit SurfaceTexture.
+    private var p010BridgeSize: android.util.Size? = null
+    private var p010Bridge: P010InputBridge? = null
+    private var p010BridgeRefused = false
+    // The surface the CURRENT session's repeating request targets: the bridge's P010 reader when the
+    // bridge configured, else the GL input Surface itself. Camera-thread confined.
+    private var cameraOutputSurface: Surface? = null
     // Log EI offset (NativeLogCurve.kt): the curve for the ACHIEVED factor the repeating request's
     // wire carries, rebuilt only when that factor moves (camera-thread confined). k = 1 reuses
     // [nativeLogCurvePoints], the historical curve.
@@ -218,6 +228,15 @@ class CameraController internal constructor(
      * the (dormant) constrained high-speed session never carries it and leaves this false.
      */
     @Volatile var nativeLogConfigured = false
+        private set
+
+    /**
+     * Whether the session that actually CONFIGURED carries its GL stream as ten-bit P010 through the
+     * [P010InputBridge] — accepted truth: a refused bridge leaves the same rung on the 8-bit
+     * SurfaceTexture. The engine freezes it into the REC packet (a ten-bit EGL encoder target is only
+     * worth its cost over a ten-bit source).
+     */
+    @Volatile var tenBitNativeLogConfigured = false
         private set
     // True only while the CURRENT configure attempt built its processed reader at the full-sensor
     // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
@@ -318,6 +337,10 @@ class CameraController internal constructor(
         // No default, same rule as the route terms below: an open path that forgot it would compile
         // into a session whose GL decode and wire curve disagree.
         nativeLogCurve: Boolean,
+        // The resolved [tenBitNativeLogBridgeSupported] answer as the GL input stream size, or null.
+        // No default, same rule as the route terms: an open path that forgot it would silently keep
+        // a supported route on eight bits.
+        tenBitNativeLogStream: android.util.Size?,
         highSpeedFps: Int = 0,
         // No defaults on the route terms (AGG6-37): a default is a fix-off switch — a new open path
         // that forgot one compiled and silently opened with stabilization off, the TC hints off,
@@ -368,6 +391,8 @@ class CameraController internal constructor(
         // same caps, so this only matters if a future caller passes intent instead of a decision.
         this.nativeLogCurve = nativeLogCurve && nativeLogCurveSupported(caps)
         this.nativeLogCurvePoints = if (this.nativeLogCurve) nativeLogToneCurve(caps.maxCurvePoints) else null
+        this.p010BridgeSize = tenBitNativeLogStream.takeIf { this.nativeLogCurve }
+        this.p010BridgeRefused = false
         this.nativeLogEiCurvePoints = null
         this.nativeLogEiCurveFactor = 1.0
         this.acceptedNativeLogEi = NativeLogEiApplied.NONE
@@ -728,6 +753,9 @@ class CameraController internal constructor(
         rawReader = null
         hiResReaderActive = false
         zslReaderDeep = false
+        // A previous FAILED attempt's bridge still owns the GL input Surface as its producer; release
+        // it before this attempt connects either a new bridge or the camera stream to that Surface.
+        closeP010Bridge()
 
         // High-speed (slow-motion) uses a dedicated constrained session with ONLY the GL surface;
         // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
@@ -769,7 +797,25 @@ class CameraController internal constructor(
 
         val configs = ArrayList<OutputConfiguration>()
 
-        val previewCfg = OutputConfiguration(preview).apply {
+        // Ten-bit native log: the same rung, with the GL stream carried as P010 (STANDARD profile)
+        // through the bridge instead of the 8-bit PRIVATE SurfaceTexture stream. Never with HLG10
+        // (that rung is the GL-log fallback for curve-less cameras, which never resolve a size).
+        val bridgeSize = p010BridgeSize
+        val bridge = if (bridgeSize != null && !p010BridgeRefused && nativeLogCurve && !useHlg) {
+            runCatching { P010InputBridge.create(preview, bridgeSize.width, bridgeSize.height) }
+                .onFailure { failure ->
+                    p010BridgeRefused = true
+                    if (BuildConfig.DEBUG) Log.w(TAG, "P010 bridge refused; 8-bit native log: ${failure.message}")
+                }
+                .getOrNull()
+        } else {
+            null
+        }
+        p010Bridge = bridge
+        val cameraOut = bridge?.cameraSurface ?: preview
+        cameraOutputSurface = cameraOut
+
+        val previewCfg = OutputConfiguration(cameraOut).apply {
             selection.physicalId?.let { setPhysicalCameraId(it) }
             if (useHlg) setDynamicRangeProfile(DynamicRangeProfiles.HLG10)
         }
@@ -848,8 +894,9 @@ class CameraController internal constructor(
                     StartupTrace.mark(startupTraceOwner, "onConfigured")
                     hlgConfigured = useHlg
                     nativeLogConfigured = nativeLogCurve
+                    tenBitNativeLogConfigured = p010Bridge != null
                     if (recurringDiagnosticAllowed(BuildConfig.DEBUG)) {
-                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, nativeLog=$nativeLogCurve, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
+                        android.util.Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, nativeLog=$nativeLogCurve, p010=${p010Bridge != null}, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
                     }
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
@@ -877,6 +924,7 @@ class CameraController internal constructor(
                                 processedReaderPresent = jpegReader != null,
                                 rawReaderPresent = rawReader != null,
                                 hiResReaderPresent = hiResReaderActive,
+                                p010BridgePresent = p010Bridge != null,
                             ),
                         )
                         SessionStartDelivery.ERROR ->
@@ -889,6 +937,16 @@ class CameraController internal constructor(
                     // would throw, convert into a spurious onError, and race the replacement
                     // controller's own bring-up (2026-07-30 review L5).
                     if (closed) return
+                    // A failed BRIDGE attempt retries the SAME rung on the 8-bit SurfaceTexture: the
+                    // P010 shape is the only difference, so dropping a still reader for it would
+                    // punish the operator for a ten-bit experiment the HAL declined.
+                    if (p010Bridge != null) {
+                        p010BridgeRefused = true
+                        if (BuildConfig.DEBUG) Log.w(TAG, "Session configure failed with the P010 bridge at fallback $attempt; retrying 8-bit")
+                        runCatching { configureSession(onReady, onError) }
+                            .onFailure { onError.onError(it) }
+                        return
+                    }
                     // Advance the fallback ladder and retry; give up once it is exhausted.
                     configAttempt = attempt + 1
 // SAME profile-collapsed ladder shape as sessionAttemptPlan (review 2026-08-01): the raw
@@ -925,6 +983,13 @@ class CameraController internal constructor(
         StartupTrace.mark(startupTraceOwner, "createCaptureSession")
         val sessionAdmitted = runNativeAcquisition {
             runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
+                if (p010Bridge != null) {
+                    // Same rung, 8-bit, exactly as onConfigureFailed above.
+                    p010BridgeRefused = true
+                    if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession threw with the P010 bridge at fallback $attempt; retrying 8-bit: ${failure.message}")
+                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                    return@onFailure
+                }
                 configAttempt = attempt + 1
                 // Same profile-collapsed bound as above.
                 val maxAttempt = maxSessionAttempt(teleconverterMode && deviceProfile.vendorTcSessionType, hiResStill)
@@ -945,6 +1010,14 @@ class CameraController internal constructor(
                 ),
             )
         }
+    }
+
+    /** Releases the current attempt's [P010InputBridge], if any. Camera-thread confined. */
+    private fun closeP010Bridge() {
+        val owned = p010Bridge ?: return
+        p010Bridge = null
+        cameraOutputSurface = null
+        owned.close()
     }
 
     /**
@@ -1130,7 +1203,8 @@ class CameraController internal constructor(
         var builtNativeLogEi = NativeLogEiApplied.NONE
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(preview)
+                // The P010 bridge's reader when it configured, else the GL input Surface.
+                addTarget(cameraOutputSurface ?: preview)
                 // Pseudo-ZSL streaming (cycle 8): the LOGICAL photo route keeps its full-res YUV
                 // still reader on the repeating request so the zero-lag ring is always warm
                 // (S4a device-measured: no fps/stability/thermal cost). The cached fast-path
@@ -2627,6 +2701,9 @@ class CameraController internal constructor(
                         releaseOwned { zslRingFlush() }
                         releaseOwned { jpegReader?.close() }
                         releaseOwned { rawReader?.close() }
+                        // After the device: the camera no longer feeds the bridge reader, and closing
+                        // the writer frees the GL input Surface for the next controller's producer.
+                        releaseOwned { closeP010Bridge() }
                         session = null
                         device = null
                         jpegReader = null
@@ -2878,10 +2955,12 @@ internal fun acceptedPhotoSessionOutputs(
     processedReaderPresent: Boolean,
     rawReaderPresent: Boolean,
     hiResReaderPresent: Boolean,
+    p010BridgePresent: Boolean = false,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
     hlg = plan.useHlg,
+    tenBitNativeLog = p010BridgePresent,
     // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
     // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).
     hiRes = processedReaderPresent && hiResReaderPresent,

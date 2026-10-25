@@ -2075,10 +2075,15 @@ class CameraEngine internal constructor(
                     startupTraceOwnership.revoke(startupTraceOwner)
                     return@runIfOpen
                 }
-                // Shipping non-SDR video requests an HLG10 Camera2 source and drops both still
-                // readers because HLG10 + full-res JPEG/RAW crashes this HAL. This separate debug
-                // flag asks only for an RGBA1010102 EGL target; release EGL remains 8-bit.
-                val tenBit = tenBitExperimentEnabled()
+                // The EGL config is per GL GENERATION (Java EGL cannot create the no-config context
+                // EGL_KHR_no_config_context needs), so a ten-bit encoder target means a ten-bit
+                // generation. A device whose profile takes the P010 native-log bridge runs every
+                // generation on RGBA1010102: the bridge's ten bits would otherwise be quantized back
+                // to eight (plus GL dither) at the encoder surface — device-measured 2026-10-25, a
+                // 0.40–0.45 grey ramp reached the file as clean 10-bit steps through RGBA1010102 and
+                // as dithered 8-bit through RGBA8888. EglCore falls back to 8-bit when no recordable
+                // 1010102 config exists. The DEBUG flag file still forces it elsewhere.
+                val tenBit = deviceProfile.tenBitNativeLogBridge || tenBitExperimentEnabled()
                 val ownedGl = glOwners.current()
                 glInputPending = true
                 ownedGl.start(tenBit) { _ ->
@@ -2752,6 +2757,7 @@ class CameraEngine internal constructor(
                 // transfer this camera cannot encode natively (the GL-log fallback).
                 tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                 nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -4737,6 +4743,7 @@ class CameraEngine internal constructor(
                     // transfer this camera cannot encode natively (the GL-log fallback).
                     tenBitHlg = tenBitSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
                     nativeLogCurve = nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)),
+                    tenBitNativeLogStream = tenBitNativeLogStreamFor(c, previewStreamSize),
                     highSpeedFps = desiredHighSpeedFps(),
                         videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
@@ -8325,6 +8332,18 @@ class CameraEngine internal constructor(
             rendererAssists.setTeleFinderResolved(resolved)
         }
     }
+
+    /**
+     * The GL input stream size for the ten-bit native-log bridge on route [c], or null when the
+     * session is not native log or the route/profile/size cannot take the bridge
+     * ([tenBitNativeLogBridgeSupported]). Read at open, against the same [previewStreamSize] GL's
+     * input SurfaceTexture is sized to, so the bridge reader and the GL input agree.
+     */
+    private fun tenBitNativeLogStreamFor(c: CameraCaps, stream: Size): Size? =
+        stream.takeIf {
+            nativeLogSessionWanted(videoMode, transfer, nativeLogCurveSupported(c)) &&
+                tenBitNativeLogBridgeSupported(deviceProfile, c, it.width, it.height)
+        }
 
     /**
      * DEBUG-only RGBA1010102 EGL experiment gate. It does not arm native log or the shipping HLG10

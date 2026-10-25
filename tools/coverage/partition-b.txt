@@ -25,6 +25,10 @@ me/hletrd/telecampro/camera/CameraCaps
 me/hletrd/telecampro/camera/CameraCaps$*
 me/hletrd/telecampro/camera/VendorTagInspector
 me/hletrd/telecampro/camera/VendorTagInspector$*
+# Ten-bit native-log bridge: wholly ImageReader/ImageWriter/HandlerThread/Handler glue (android.jar
+# stubs throw on the host). Its gate, tenBitNativeLogBridgeSupported, stays a host-tested A function.
+me/hletrd/telecampro/camera/P010InputBridge
+me/hletrd/telecampro/camera/P010InputBridge$*
 # RendererAssists depends on concrete GlPipeline (ctor throws on host: EGL stubs); a renderer-sink
 # interface seam would convert it to A — deferred, tracked in docs/TESTING.md future work.
 me/hletrd/telecampro/camera/RendererAssists

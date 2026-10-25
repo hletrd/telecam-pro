@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.params.DynamicRangeProfiles
+import android.os.Build
 import android.util.Range
 import android.util.Rational
 import android.util.Size
@@ -248,6 +249,16 @@ data class CameraCaps(
     val faceDetectModes: IntArray = IntArray(0),
     val maxFaceCount: Int = 0,
     val sceneModes: IntArray = IntArray(0),
+    /**
+     * YCBCR_P010 output sizes and whether REQUEST_AVAILABLE_COLOR_SPACE_PROFILES advertises P010
+     * under the STANDARD dynamic-range profile (API 34+; false below). Together they are the
+     * capability half of the 10-bit native-log bridge ([tenBitNativeLogBridgeSupported]). PMA110
+     * lists P010 on cameras 0–5 (48–49 sizes each, incl. 3840×2160) and advertises (SRGB, P010,
+     * STANDARD) — dumpsys 2026-10-25; the 07-28 note that it was absent grepped a decimal dump for
+     * a hex literal. Defaulted so every fixture predating the bridge reads "unsupported".
+     */
+    val p010OutputSizes: List<Size> = emptyList(),
+    val p010StandardAdvertised: Boolean = false,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
@@ -513,6 +524,19 @@ data class CameraCaps(
                     ?: IntArray(0),
                 maxFaceCount = chars.get(CameraCharacteristics.STATISTICS_INFO_MAX_FACE_COUNT) ?: 0,
                 sceneModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES) ?: IntArray(0),
+                // Defensive: an odd vendor map degrades to "no 10-bit bridge", never a failed read.
+                p010OutputSizes = runCatching {
+                    map?.getOutputSizes(ImageFormat.YCBCR_P010)?.toList()
+                }.getOrNull().orEmpty(),
+                p010StandardAdvertised = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    runCatching {
+                        chars.get(CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES)
+                            ?.getSupportedColorSpacesForDynamicRange(
+                                ImageFormat.YCBCR_P010,
+                                DynamicRangeProfiles.STANDARD,
+                            )
+                            ?.isNotEmpty() == true
+                    }.getOrDefault(false),
             )
         }
     }

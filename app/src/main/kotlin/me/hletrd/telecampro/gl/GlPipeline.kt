@@ -325,7 +325,13 @@ class GlPipeline(
             // release on and nothing of ours is current on this thread.
             beforeNativeAcquisition?.invoke()
             val admitted = UnsafeRecorderQuarantine.runNativeAcquisition(nativeAcquisitionOwner) {
-                egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
+                egl = runCatching { EglCore(tenBit = tenBit) }.onSuccess { core ->
+                    // One row per GL generation (quota-safe): the device evidence for which encoder
+                    // target bit depth this generation records through.
+                    if (me.hletrd.telecampro.camera.recurringDiagnosticAllowed(me.hletrd.telecampro.BuildConfig.DEBUG)) {
+                        android.util.Log.i("GlPipeline", "EGL config requested tenBit=$tenBit, RGBA1010102=${core.tenBitConfig}")
+                    }
+                }.getOrElse { failure ->
                     if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                         me.hletrd.telecampro.camera.DiagnosticLog.e(
                             "GlPipeline",
