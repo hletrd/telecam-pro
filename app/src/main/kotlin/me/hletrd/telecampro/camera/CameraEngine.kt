@@ -1899,7 +1899,8 @@ class CameraEngine internal constructor(
     @Volatile private var hiResStillIntent = false
     private val modeIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val lensIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
-    // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
+    // Video stabilization strategy: HAL OIS+EIS (motion-blur reduction at 300 mm). Default STANDARD
+    // since the general-purpose defaults of 2026-10-26; ENHANCED ("Active") crops harder.
     @Volatile private var videoStabMode = VideoStabMode.STANDARD
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
     // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
