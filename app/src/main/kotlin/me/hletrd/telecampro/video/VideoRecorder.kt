@@ -848,14 +848,6 @@ class VideoRecorder(private val context: Context) {
     }
 
     /**
-     * Applies the device's Sound Focus / Sound Stage effect via the vendor audio-HAL parameters
-     * (`vendor_audiorecord_effect_type` etc.). Uses [AudioManager.setParameters] (public, forwards
-     * to the audio HAL) while our CAMCORDER-source AudioRecord is live — the standard recording
-     * source the audio HAL applies the effect to. Best-effort and fully
-     * guarded: we log the HAL echo (getParameters) so device acceptance is verifiable, and a
-     * rejected param never affects recording. No-op for STANDARD.
-     */
-    /**
      * GL thread, once per take: the sensor timestamp the video PTS is rebased from. One atomic
      * store; never blocks the encoder draw.
      */
@@ -863,6 +855,20 @@ class VideoRecorder(private val context: Context) {
         if (timestampNs > 0L) firstVideoFrameNs.compareAndSet(0L, timestampNs)
     }
 
+    /**
+     * Applies the device's Sound Focus / Sound Stage effect via the vendor audio-HAL parameters
+     * (`vendor_audiorecord_effect_type` etc.). Uses [AudioManager.setParameters] (public, forwards
+     * to the audio HAL) while our CAMCORDER-source AudioRecord is live — the standard recording
+     * source the audio HAL applies the effect to. Best-effort and fully guarded: a rejected param
+     * never affects recording. No-op for STANDARD.
+     *
+     * NOT IN EFFECT on PMA110 as shipped (device-measured 2026-10-25): AudioFlinger refuses
+     * setParameters from an app without MODIFY_AUDIO_SETTINGS, silently, and the manifest declares
+     * only CAMERA + RECORD_AUDIO — the HAL logged `mEffectType(0)` for every scene. With the
+     * permission (debug experiment) the writes land (`OplusAudAlgoManager: effectType 5`,
+     * `orientation 0`). The echo read below cannot prove either way: ColorOS answers getParameters
+     * for these keys only to "system or list" apps, so it is always empty for us.
+     */
     private fun applyAudioScene(record: AudioRecord) {
         if (audioScene == AudioScene.STANDARD) return
         val am = context.getSystemService(AudioManager::class.java) ?: return
