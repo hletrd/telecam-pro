@@ -9,8 +9,8 @@ its absence from the open list is a recorded fact rather than an omission.
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ◐ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
-Twenty-five remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
+**Status (2026-10-02):** A1 ✅ · A2 ✅ · A3 ◐ · A4 ☐ · A5 ☐ · A6 ☐ · A7 ☐ · A8 ☐ · A9 ☐ · A10 ☐ · A11 ☐ · A12 ☐ · A13 ☐ · A14 ☐ · A15 ☐ · A16 ☐ · A17 ☐ · A18 ✅ · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐ · D2 ☐ · D3 ☐ · D4 ☐ · D5 ☐ · E1 ☐ · E2 ☐ · E3 ☐ · E4 ☐ · F1 ⊘ · F2 ⊘ · F3 ⊘ · F4 ⊘ · F5 ⊘ · F6 ⊘ · F7 ⊘ · F8 ⊘ · F9 ⊘.
+Twenty-four remain: **A3** needs the rear camera pointed at a lit room, **A4** needs a rotatable
 large-screen front route, **A5** needs a sustained front pseudo-ZSL soak, **A6** needs a photo-P TELE
 capture pair, a FrameGap read during a pinch, and an OWNER DECISION on the exposure delta it records,
 **A7** needs one JPEG+HEIF still pair, **A8** needs a `dumpsys` YUV list beside a pulled still,
@@ -20,7 +20,6 @@ few FRONT presses with DNG on, **A13** needs the status plate watched through re
 REC press, **A14** needs one pulled DNG per device, **A15** needs a native-log REC take with a still
 inside it, **A16** needs a face in front of the rear, TELE and front routes with Face Priority AF on,
 **A17** needs a bright native-log scene recorded at Log EI offset 0 and +2 in P and M,
-**A18** needs native-log REC takes on the main and TELE routes plus one SDR and one HLG take,
 **D1** needs an off-axis sound source,
 **D2** needs REC takes on the TB336ZU tablet, **D3** needs a short run of ordinary clips through the
 live publication tail, **D4** needs quick REC/Stop pairs with the standby meter showing, **D5** needs a
@@ -540,7 +539,7 @@ excluded) in M: preview p98 decoded to 0.206 / 0.057 / 0.023 / 0.011 for EI 0 / 
 the ISP output is not exposure-linear under the programmed curve (an adaptive pre-curve gain). +2
 also showed banding and desaturation. A GENERIC device would need its own run of this check.
 
-### A18. Ten-bit native log through the P010 bridge, stills and SDR unchanged — ◐ HALF DONE 2026-10-25 (developer build; evidence rerun owed)
+### A18. Ten-bit native log through the P010 bridge, stills and SDR unchanged — ✅ PASSED 2026-10-25 (immutable debug `3c214cfb`)
 
 Native-log VIDEO sessions on a measured route carry the GL stream as YCBCR_P010 (STANDARD profile)
 through `P010InputBridge` (ImageReader → ImageWriter → the GL input SurfaceTexture), and every GL
@@ -557,15 +556,26 @@ check proves the app wiring.
   Photo-mode still. Flip Photo ↔ Video and S-Log3 ↔ SDR a few times (bridge ↔ direct producer
   hand-off on the GL input Surface).
 
-**Pass:** the S-Log3 clips are HEVC Main 10, `bt2020` full range, black ≈ Y10 95, with a smooth-patch
-distinct-level count well above the same scene recorded with the bridge off; the in-REC stills (JPEG
+**Pass:** the S-Log3 clips are HEVC Main 10, `bt2020` full range, black ≈ Y10 95 (O-Log2 ≈ 154),
+every code used across smooth patches (the source-precision A/B against an 8-bit stream is the
+probe's raw-Y measurement, 94 vs 27 levels — the app has no path that turns the bridge off); the in-REC stills (JPEG
 and DNG) save normally; the SDR and HLG clips decode and look like before (no colour shift, no
 corruption) — they now pass through a ten-bit EGL target; the Photo still is normal; no
 `CAMERA_ERROR`, no `P010 bridge refused` line on the measured routes, and no black or frozen preview
 across the hand-offs. A refused bridge must fall back to the same rung at 8 bits (caption "8-bit").
 
-**Result 2026-10-25 — every item passed on a DEVELOPER build; the evidence-grade rerun is still
-owed.** PMA110, an uncommitted `feat/native-log-p010` worktree built with `assembleDebug` and installed
+**Evidence 2026-10-25 — PASSED on the immutable debug APK** (`build_immutable_debug.py`,
+commit `3c214cfb`, installed as `me.hletrd.telecampro.debug` 1.0.5-debug; the app was left in the
+operator's Video · O-Log2 · TELE · M ISO 100 1/125 s state it was found in). dumpsys: TELE
+`CUSTOM (32948)` and TELE-off `NORMAL (0)` both carry `3840 x 2160, format 0x36, dataspace
+0x8c60000` beside JPEG and RAW 4096×3072; logcat `EGL config requested tenBit=true, RGBA1010102=true`;
+caption "· 10-bit". Takes, all with AAC and a clean full decode: TELE O-Log2 (M, near-black room)
+Main 10 bt2020 full, 422 frames, black Y10 153–158 against the O-Log2 floor 154, in-REC still saved
+`heic,jpg,dng`; TELE-off O-Log2 Main 10, 151 frames; SDR HEVC Main bt709 limited, 154 frames; a lit
+TELE O-Log2 take in P: Main 10, 182 frames, black 156, 181 distinct levels, every code used in three
+smooth 128×128 patches (20/20, 22/22, 7/7). The exposure mode was put back to M at ISO 100 · 1/125 s.
+
+**Developer-build run (same day, before the commit):** PMA110, an uncommitted `feat/native-log-p010` worktree built with `assembleDebug` and installed
 as `me.hletrd.telecampro.p010` (a separate package, so a concurrent session's `.debug` app was not
 overwritten) — not the immutable wrapper APK CLAUDE.md requires for evidence, hence ◐. Logcat:
 `EGL config requested tenBit=true, RGBA1010102=true`; S-Log3 main route `Session configured
@@ -580,8 +590,7 @@ colour shift through the ten-bit EGL). HLG: Main 10 arib-std-b67 bt2020, 154 fra
 Photo HEIF normal. Four Photo ↔ Video flips with S-Log3: no crash, live preview, zero
 `P010InputBridge` threads afterwards; the `ImageReader$ListenerHandler … dead thread` warnings also
 appear with SDR (no bridge), so they are pre-existing. The same-scene bridge-off A/B was measured in
-the standalone probe (raw Y 94 vs 27 levels), not in the app. Rerun the main S-Log3 take and one SDR
-take from the immutable debug APK to close this.
+the standalone probe (raw Y 94 vs 27 levels), not in the app.
 
 ## B. Held in hand — 3 min
 
